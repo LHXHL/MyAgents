@@ -1128,11 +1128,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             stage = 'ensure-session-sidecar';
             // Ensure = pre-warm：伴侣窗作为长寿 owner 让 sidecar 常驻（唤起即出字
             // 的体感来源，PRD §10「最高效 = 预热」）。
-            await ensureSessionSidecar(sid, workspace, 'tab', OWNER_ID);
+            await ensureSessionSidecar(sid, workspace, 'companion', OWNER_ID);
             ownerEnsured = true;
             console.info(`[fb-session] ensure sidecar ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'sync-config';
-            // Floating companion is a Tab owner, so it must push the same
+            // Floating companion is a frontend owner, so it must push the same
             // frontend-authoritative MCP/sub-agent config as Chat before turns.
             await syncFloatingSidecarConfig(sid, workspace, configSnapshot, projectSnapshot);
             console.info(`[fb-session] sync config ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
@@ -1147,7 +1147,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             sseRef.current?.disconnect();
             sseRef.current = null;
             if (ownerEnsured) {
-                await releaseSessionSidecar(sid, 'tab', OWNER_ID).catch(() => false);
+                await releaseSessionSidecar(sid, 'companion', OWNER_ID).catch(() => false);
             }
             console.error(
                 `[fb-session] connect failed session=${sid} stage=${stage} elapsed=${elapsedMs(startedAt)} error=${describeError(err)}`,
@@ -1200,7 +1200,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                     }
                                 }
                                 await startBackgroundCompletion(oldSid);
-                                await releaseSessionSidecar(oldSid, 'tab', OWNER_ID);
+                                await releaseSessionSidecar(oldSid, 'companion', OWNER_ID);
                             } catch (err) {
                                 console.warn('[fb] migrated old session handover failed (non-fatal):', err);
                             }
@@ -1397,7 +1397,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         if (base) await floatingProxyFetch(oldSid, `${base}/chat/stop`, { method: 'POST' });
                     }
                     await startBackgroundCompletion(oldSid);
-                    await releaseSessionSidecar(oldSid, 'tab', OWNER_ID);
+                    await releaseSessionSidecar(oldSid, 'companion', OWNER_ID);
                 } catch (err) {
                     console.warn(`[fb-session] old session handover failed old=${oldSid} error=${describeError(err)}`);
                 }
@@ -1671,7 +1671,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         sseRef.current = null;
         if (sid) {
             try {
-                await releaseSessionSidecar(sid, 'tab', OWNER_ID);
+                await releaseSessionSidecar(sid, 'companion', OWNER_ID);
             } catch (err) {
                 console.warn('[fb] release sidecar failed:', err);
             }

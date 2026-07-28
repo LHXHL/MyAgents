@@ -17,7 +17,7 @@ interface SessionSearchItemProps {
     hit: SessionSearchHit;
     session?: SessionMetadata; // The full session metadata if available
     project?: Project;
-    isCronProtected: boolean;
+    deleteProtected: boolean;
     onClick: () => void;
     onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
     onShowStats: (e: React.MouseEvent) => void;
@@ -28,7 +28,7 @@ export default memo(function SessionSearchItem({
     hit,
     session,
     project,
-    isCronProtected,
+    deleteProtected,
     onClick,
     onContextMenu,
     onShowStats,
@@ -108,23 +108,13 @@ export default memo(function SessionSearchItem({
                         >
                             <BarChart2 className="h-3.5 w-3.5" />
                         </button>
-                        {isCronProtected ? (
-                            <button
-                                disabled
-                                title={t('historyOverlay.deleteBlocked')}
-                                className="flex h-7 w-7 cursor-not-allowed items-center justify-center rounded-md text-[var(--ink-muted)] opacity-40"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        ) : (
-                            <button
-                                onClick={onDelete}
-                                title={t('historyOverlay.delete')}
-                                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        )}
+                        <button
+                            onClick={onDelete}
+                            title={deleteProtected ? t('historyOverlay.deleteBlocked') : t('historyOverlay.delete')}
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                     </div>
                 </div>
             </div>

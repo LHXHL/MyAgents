@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
     searchSessions: vi.fn(),
+    deleteSession: vi.fn(),
     toast: {
         success: vi.fn(),
         error: vi.fn(),
+        warning: vi.fn(),
     },
 }));
 
@@ -16,6 +18,10 @@ vi.mock('@/api/searchClient', async (importOriginal) => {
 
 vi.mock('@/components/Toast', () => ({
     useToast: () => mocks.toast,
+}));
+
+vi.mock('@/context/SessionDeletionContext', () => ({
+    useSessionDeletion: () => mocks.deleteSession,
 }));
 
 vi.mock('react-virtuoso', () => ({
@@ -54,11 +60,11 @@ const project: Project = {
 function taskCenterData(overrides: Partial<TaskCenterData> = {}): TaskCenterData {
     return {
         sessions: [session],
-        protectedSchedulerSessionIds: new Set(),
+        deleteProtectedSessionIds: new Set(),
         sessionTagsMap: new Map(),
         isSessionsLoading: false,
         actions: {
-            deleteSession: vi.fn(async () => true),
+            deleteSession: vi.fn(async () => ({ deleted: true as const })),
             setSessionFavorite: vi.fn(async () => true),
         },
         ...overrides,
@@ -140,7 +146,28 @@ describe('HistorySearchOverlayContent', () => {
         });
     });
 
-    it('opens the same menu for a direct Session ID match', () => {
+    it('routes browse deletion through the App owner and explains a live owner refusal', async () => {
+        mocks.deleteSession.mockResolvedValue({ deleted: false, reason: 'in-use' });
+        renderOverlay();
+
+        const row = screen.getByText(session.title).closest<HTMLElement>('[data-history-session-row]')!;
+        fireEvent.contextMenu(row, { clientX: 120, clientY: 90 });
+        const menu = document.querySelector<HTMLElement>('.session-context-menu')!;
+        fireEvent.click(within(menu).getByRole('button', { name: i18n.t('launcher:rightRail.delete') }));
+        const confirm = screen.getByText(i18n.t('app:historyOverlay.deleteTitle'))
+            .closest<HTMLElement>('.glass-panel')!;
+        fireEvent.click(within(confirm).getByRole('button', { name: i18n.t('app:historyOverlay.delete') }));
+
+        await waitFor(() => {
+            expect(mocks.deleteSession).toHaveBeenCalledWith(session.id);
+            expect(mocks.toast.warning).toHaveBeenCalledWith(
+                i18n.t('launcher:rightRail.deleteBlockedByOwner'),
+            );
+        });
+    });
+
+    it('routes a direct Session ID deletion through the App owner', async () => {
+        mocks.deleteSession.mockResolvedValue({ deleted: true });
         renderOverlay('search');
         fireEvent.change(screen.getByPlaceholderText(i18n.t('app:historyOverlay.searchPlaceholder')), {
             target: { value: `SessionID: ${session.id}` },
@@ -150,6 +177,18 @@ describe('HistorySearchOverlayContent', () => {
         fireEvent.contextMenu(row, { clientX: 160, clientY: 110 });
 
         expectSharedSessionMenu();
+        const menu = document.querySelector<HTMLElement>('.session-context-menu')!;
+        fireEvent.click(within(menu).getByRole('button', { name: i18n.t('launcher:rightRail.delete') }));
+        const confirm = screen.getByText(i18n.t('app:historyOverlay.deleteTitle'))
+            .closest<HTMLElement>('.glass-panel')!;
+        fireEvent.click(within(confirm).getByRole('button', { name: i18n.t('app:historyOverlay.delete') }));
+
+        await waitFor(() => {
+            expect(mocks.deleteSession).toHaveBeenCalledWith(session.id);
+            expect(mocks.toast.success).toHaveBeenCalledWith(
+                i18n.t('app:historyOverlay.deleted'),
+            );
+        });
     });
 
     it('opens the same menu for a full-text search result', async () => {

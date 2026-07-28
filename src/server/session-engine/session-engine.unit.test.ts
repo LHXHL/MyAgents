@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => {
   const state = {
     useExternal: false,
     externalActive: false,
+    externalBusy: false,
     externalProcessAlive: false,
     builtinTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     builtinDispatchedQueueId: null as string | null,
@@ -185,6 +186,7 @@ const mocks = vi.hoisted(() => {
     hasExternalRuntimeProcess: vi.fn(() => state.externalProcessAlive || state.externalActive),
     hasPendingExternalAskUserQuestion: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalAsk),
     isExternalSessionActive: vi.fn(() => state.externalActive),
+    isExternalSessionBusy: vi.fn(() => state.externalBusy),
     isExternalSessionStateRestoredFor: vi.fn(() => true),
     isExternalTurnCurrent: vi.fn((queueId: string) => state.externalCurrentQueueId === queueId),
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
@@ -342,6 +344,7 @@ vi.mock('../runtimes/external-session', () => ({
   hasExternalRuntimeProcess: mocks.hasExternalRuntimeProcess,
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
+  isExternalSessionBusy: mocks.isExternalSessionBusy,
   isExternalSessionStateRestoredFor: mocks.isExternalSessionStateRestoredFor,
   isExternalTurnCurrent: mocks.isExternalTurnCurrent,
   popLastUserMessageForRetry: mocks.popLastUserMessageForRetry,
@@ -408,6 +411,7 @@ describe('session-engine selector and adapters', () => {
     vi.clearAllMocks();
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
+    mocks.state.externalBusy = false;
     mocks.state.externalProcessAlive = false;
     mocks.state.builtinTurnIdentity = null;
     mocks.state.builtinDispatchedQueueId = null;
@@ -691,6 +695,7 @@ describe('session-engine selector and adapters', () => {
 
   it('exposes external read, config, and restore surfaces behind the external adapter', () => {
     mocks.state.useExternal = true;
+    mocks.state.externalBusy = true;
     mocks.getCurrentBoundSessionId.mockReturnValueOnce('bound-session');
     mocks.getExternalLiveSessionSnapshot.mockReturnValueOnce({
       snapshotRevision: 3,
@@ -706,6 +711,12 @@ describe('session-engine selector and adapters', () => {
     });
 
     const engine = getSessionEngine();
+
+    expect(engine.isBusy()).toBe(true);
+    expect(engine.getLiveSessionState()).toEqual({
+      sessionState: 'idle',
+      isBusy: true,
+    });
 
     expect(engine.getRuntimeIdentity()).toEqual({
       kind: 'external',

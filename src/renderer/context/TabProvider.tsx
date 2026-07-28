@@ -367,6 +367,11 @@ interface TabProviderProps {
     onTitleChange?: (title: string) => void;
     /** Callback when unread state changes (message completed on non-active tab) */
     onUnreadChange?: (hasUnread: boolean) => void;
+    /**
+     * App-owned admission for fixed-Session recovery and turn submission.
+     * Neither may race deletion of the same Session identity.
+     */
+    claimSessionOpeningTransition: (sessionId: string) => (() => void) | null;
     // Note: sidecarPort prop removed - now using Session-centric Sidecar (Owner model)
     // Ready port is dynamically retrieved via getSessionPort(sessionId)
 }
@@ -536,6 +541,7 @@ export default function TabProvider({
     onSessionIdChange,
     onTitleChange,
     onUnreadChange,
+    claimSessionOpeningTransition,
 }: TabProviderProps) {
     // Core state
     // currentSessionId tracks the actual loaded session (starts from prop, updated by loadSession)
@@ -953,13 +959,13 @@ export default function TabProvider({
                 resetBirthSessionIdRef.current = response.sessionId;
                 if (currentSessionIdRef.current !== response.sessionId) {
                     console.log(`[TabProvider ${tabId}] resetSession adopting backend sessionId: ${currentSessionIdRef.current ?? 'none'} -> ${response.sessionId}`);
-                    currentSessionIdRef.current = response.sessionId;
-                    setCurrentSessionId(response.sessionId);
                     const changed = await onSessionIdChangeRef.current?.(response.sessionId);
                     if (changed === false) {
                         console.error(`[TabProvider ${tabId}] resetSession failed to upgrade parent session id to ${response.sessionId}`);
                         return false;
                     }
+                    currentSessionIdRef.current = response.sessionId;
+                    setCurrentSessionId(response.sessionId);
                 }
             }
             console.log(`[TabProvider ${tabId}] resetSession complete`);
@@ -2674,10 +2680,6 @@ export default function TabProvider({
                     // This ensures currentSessionId stays in sync with the actual session
                     // Use our sessionId (for SessionStore matching) not SDK's session_id
                     if (newSessionId && systemInitSessionDecision.shouldSyncSessionId) {
-                        if (isNewSessionRef.current || resetBirthPendingRef.current) {
-                            resetBirthSessionIdRef.current = newSessionId;
-                            resetBirthPendingRef.current = false;
-                        }
                         // PRD 0.2.19 cross-review fix (B1, B4): unified session_new tracking
                         // happens here for ALL three paths (after we have the real id):
                         //
@@ -2695,41 +2697,44 @@ export default function TabProvider({
                         const isSessionBirth = systemInitSessionDecision.isSessionBirth;
 
                         console.log(`[TabProvider ${tabId}] Auto-syncing sessionId from system_init: ${newSessionId}`);
-                        // Update the ref synchronously alongside the state dispatch so that
-                        // async handlers (cron sync, loadOlderMessages) running their
-                        // post-await session-match guard see the new id immediately, rather
-                        // than waiting until the next render commits line 233's assignment.
-                        currentSessionIdRef.current = newSessionId;
-                        setCurrentSessionId(newSessionId);
                         // Notify parent (App.tsx) to update Tab.sessionId for Session singleton constraint
-                        // This ensures history dropdown can detect if this session is already open
+                        // before committing the provider-local identity. App owns the
+                        // pending→real admission boundary, so a concurrent deletion that
+                        // wins that claim must leave every renderer projection on pending.
                         void Promise.resolve(onSessionIdChangeRef.current?.(newSessionId))
                             .then((changed) => {
                                 if (changed === false) {
                                     console.error(`[TabProvider ${tabId}] system_init session id sync was refused by parent for ${newSessionId}`);
+                                    return;
+                                }
+                                currentSessionIdRef.current = newSessionId;
+                                setCurrentSessionId(newSessionId);
+                                if (isNewSessionRef.current || resetBirthPendingRef.current) {
+                                    resetBirthSessionIdRef.current = newSessionId;
+                                    resetBirthPendingRef.current = false;
+                                }
+
+                                if (isSessionBirth) {
+                                    // Fallback policy:
+                                    //   - isNewSessionRef.current === true → explicit reset path,
+                                    //     resetSession should have setPendingSurface('new_chat_button'),
+                                    //     so fallback to 'new_chat_button' even if pending was lost
+                                    //   - otherwise → organic mint via launcher input (most common
+                                    //     case where caller didn't setPendingSurface)
+                                    const fallback = isNewSessionRef.current
+                                        ? birthContextForSurface('new_chat_button')
+                                        : birthContextForSurface('launcher_input');
+                                    trackSessionNewForBirth(
+                                        newSessionId,
+                                        fallback,
+                                        payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
+                                        payload.runtime ? (payload.runtimeSource ?? null) : undefined,
+                                    );
                                 }
                             })
                             .catch((error) => {
                                 console.error(`[TabProvider ${tabId}] system_init session id sync failed:`, error);
                             });
-
-                        if (isSessionBirth) {
-                            // Fallback policy:
-                            //   - isNewSessionRef.current === true → explicit reset path,
-                            //     resetSession should have setPendingSurface('new_chat_button'),
-                            //     so fallback to 'new_chat_button' even if pending was lost
-                            //   - otherwise → organic mint via launcher input (most common
-                            //     case where caller didn't setPendingSurface)
-                            const fallback = isNewSessionRef.current
-                                ? birthContextForSurface('new_chat_button')
-                                : birthContextForSurface('launcher_input');
-                            trackSessionNewForBirth(
-                                newSessionId,
-                                fallback,
-                                payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
-                                payload.runtime ? (payload.runtimeSource ?? null) : undefined,
-                            );
-                        }
                     } else if (
                         newSessionId &&
                         resetBirthPendingRef.current &&
@@ -3540,6 +3545,8 @@ export default function TabProvider({
             console.error(`[TabProvider ${tabId}] Max recovery attempts (${MAX_RECOVERY_ATTEMPTS}) reached, giving up`);
             return;
         }
+        const releaseOpeningTransition = claimSessionOpeningTransition(sid);
+        if (!releaseOpeningTransition) return;
         recoveryInFlightRef.current = true;
         recoveryAttemptsRef.current++;
         try {
@@ -3570,8 +3577,9 @@ export default function TabProvider({
             console.error(`[TabProvider ${tabId}] Session Sidecar recovery failed:`, err);
         } finally {
             recoveryInFlightRef.current = false;
+            releaseOpeningTransition();
         }
-    }, [tabId, agentDir]);
+    }, [tabId, agentDir, claimSessionOpeningTransition]);
 
     // Connect SSE.
     // Uses Session-centric port lookup via currentSessionIdRef.
@@ -3823,6 +3831,10 @@ export default function TabProvider({
         const skill = skillMatch ? skillMatch[1] : null;
         const hasImages = !!(images && images.length > 0);
         const sessionIdForSend = currentSessionIdRef.current ?? sessionId;
+        const releaseSendTransition = sessionIdForSend
+            ? claimSessionOpeningTransition(sessionIdForSend)
+            : null;
+        if (sessionIdForSend && !releaseSendTransition) return false;
         const isSessionBirthSend = !sessionIdForSend || isPendingSessionId(sessionIdForSend) || isNewSessionRef.current;
         const birthOrigin = isSessionBirthSend
             ? originFromDesktopSurface(peekPendingSessionBirth(
@@ -3899,7 +3911,7 @@ export default function TabProvider({
             ...(providerRoute ? {} : { providerEnv: providerEnv ?? 'subscription' }),
         };
 
-        postJson<{
+        void postJson<{
             success: boolean;
             error?: string;
             queued?: boolean;
@@ -3994,12 +4006,14 @@ export default function TabProvider({
             const msg = error instanceof Error ? error.message : appText('tabProvider.networkError');
             setAgentError(msg === 'Failed to fetch' ? appText('tabProvider.networkDisconnected') : msg);
             pendingAttachmentsRef.current = null;
+        }).finally(() => {
+            releaseSendTransition?.();
         });
 
         // Return true immediately — input clears without waiting for HTTP response
         return true;
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    }, [tabId]);
+    }, [tabId, sessionId, claimSessionOpeningTransition]);
 
     // Stop response with timeout fallback
     const stopResponse = useCallback(async (): Promise<{ success: boolean; alreadyStopped: boolean }> => {
@@ -4851,6 +4865,11 @@ export default function TabProvider({
     // Force-execute a queued message (interrupt current + run immediately)
     // Does NOT optimistically remove from queue — queue:started SSE is the single source of truth
     const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
+        const sid = currentSessionIdRef.current ?? sessionId;
+        const releaseSendTransition = sid
+            ? claimSessionOpeningTransition(sid)
+            : null;
+        if (sid && !releaseSendTransition) return false;
         try {
             const response = await postJson<{ success: boolean; stale?: boolean }>('/chat/queue/force', { queueId });
             if (response.stale) {
@@ -4863,9 +4882,11 @@ export default function TabProvider({
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Force execute queue item failed:`, error);
             return false;
+        } finally {
+            releaseSendTransition?.();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
-    }, [tabId]);
+    }, [tabId, sessionId, claimSessionOpeningTransition]);
 
     // Respond to permission request
     const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {

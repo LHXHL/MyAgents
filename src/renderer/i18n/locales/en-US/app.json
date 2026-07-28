@@ -934,8 +934,8 @@
     "favorite": "Favorite",
     "turnCount": "{{count}} turn(s)",
     "viewStats": "View stats",
-    "deleteBlocked": "Stop the scheduled task before deleting",
-    "deleteBlockedAria": "Delete (stop the scheduled task first)",
+    "deleteBlocked": "This chat is still in use. End the related activity before deleting.",
+    "deleteBlockedAria": "Delete (chat is still in use)",
     "delete": "Delete",
     "deleteTitle": "Delete conversation",
     "deleteMessage": "Delete \"{{title}}\"? This cannot be undone."

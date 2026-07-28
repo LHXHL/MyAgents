@@ -2687,10 +2687,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     .lock()
                                     .await
                                     .metadata_birth_pending(&session_key);
-                                let buf_config_held_by_tab = task_manager
+                                let buf_config_held_by_frontend = task_manager
                                     .lock()
                                     .unwrap()
-                                    .session_has_tab_owner(&sidecar_session_id_initial);
+                                    .session_has_frontend_owner(&sidecar_session_id_initial);
                                 let result = enqueue_to_sidecar(
                                     &task_stream_client,
                                     port,
@@ -2705,7 +2705,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     task_bot_name.as_deref(),
                                     None,
                                     buf_metadata_birth_pending,
-                                    buf_config_held_by_tab,
+                                    buf_config_held_by_frontend,
                                     Some(&allowed_snapshot_buf),
                                     bridge_ctx_buf,
                                 )
@@ -2828,10 +2828,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             .lock()
                             .await
                             .metadata_birth_pending(&session_key);
-                        let config_held_by_tab = task_manager
+                        let config_held_by_frontend = task_manager
                             .lock()
                             .unwrap()
-                            .session_has_tab_owner(&sidecar_session_id_initial);
+                            .session_has_frontend_owner(&sidecar_session_id_initial);
                         let allowed_snapshot = task_allowed_users.read().await.clone();
                         let bridge_ctx = task_adapter.bridge_context();
                         match enqueue_to_sidecar(
@@ -2848,7 +2848,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             task_bot_name.as_deref(),
                             group_ctx.as_ref(),
                             metadata_birth_pending,
-                            config_held_by_tab,
+                            config_held_by_frontend,
                             Some(&allowed_snapshot),
                             bridge_ctx,
                         )

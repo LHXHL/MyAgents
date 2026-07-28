@@ -84,7 +84,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-每个 Sidecar 服务一个 Session。Tab / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
+每个 Sidecar 服务一个 Session。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
 
 ---
 
@@ -99,11 +99,12 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 | **Sidecar = Agent 实例** | 一个 Sidecar 进程 = 一个 Claude Agent SDK 实例 |
 | **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应 |
 | **后端优先，前端辅助** | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab |
-| **Owner 模型** | Tab、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
+| **Owner 模型** | Tab、Companion、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
 
 ```rust
 pub enum SidecarOwner {
     Tab(String),                   // Tab ID
+    Companion(String),             // Floating companion surface ID
     Task(String),                  // Task ID
     Goal(String),                  // Session Goal ID
     BackgroundCompletion(String),  // Session ID（AI 后台完成保活）
@@ -283,7 +284,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_ensure_session_sidecar` | 确保 Session 有运行中的 Sidecar |
 | `cmd_release_session_sidecar` | 释放 Owner 对 Sidecar 的使用 |
 | `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
-| `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：在同一 owner 锁边界内拒绝仍被 Sidecar 或持久 scheduler 拥有的 Session，并用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
+| `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：App 先互斥同 Session 的所有 open/switch/delete transition，并提交自己拥有的 exact `Tab` owner ids；Rust 在同一 lifecycle fence 内拒绝 Task/Goal、持久 IM peer binding、Companion/Agent/BackgroundCompletion 或未授权 Tab，完成 Node 存储删除后才释放获授权 Tab。因此任何拒绝都原样保留 owner/UI，不需要 renderer rollback。删除保护快照只做 UI 投影。IM binding 同时读取 live router 与仍在配置中的 Channel health state，覆盖显式停止和 replacement 暂时 detach 的窗口；router 预检遵守 router → lifecycle 既有锁序，锁内以 live `Agent` owner 关闭新绑定竞态。通过后用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
 | `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
@@ -326,6 +327,7 @@ Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPos
 - 侧栏展开/rail 切换的布局槽一次提交最终宽度，不能给 `width` / `flex-basis` 加逐帧 transition 让 Chat、Browser、Terminal 等 resize-sensitive surface 连续重排。可见边界由固定展开宽度的独立 paint-only 材质层通过 `clip-path` 横向揭示/收回；右侧 Tab 标题栏与内容用一次布局后的 compositor transform 保持旧视觉中心，再与边界同节奏归位。Chat 右侧工作区复用镜像模式：面板材质横移，对话区在最终 flex 布局上从旧中心归位；内容只做 opacity/translate/clip 编排，且必须提供 `prefers-reduced-motion` 立即切换路径。
 - App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
 - 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
+- 删除 Session 必须回到 `App` 的统一 deletion capability，因为只有 App 拥有全部 mounted Tab：同一 App-owned admission map 先互斥目标 Session 的 open/switch、fork attach、pending→real identity adoption、TabProvider recovery、mounted Tab turn submission 与 delete，实时非 Tab owner 预检通过后，再由 Rust 将运行中 turn 接管为 `BackgroundCompletion` 或权威确认 idle；只有明确 idle 才把全部匹配 Chat Tab ids 交给 Rust，由 Rust 在同一 lifecycle fence 内以 `SessionEngine.isBusy()` 复核已接纳队列、完成最终 owner 裁决、存储删除与这些 Tab owner 的释放，成功后 App 才清退 UI 与 SSE。任何拒绝都必须原样保留 mounted Tab，不建立 renderer rollback。Floating companion 使用独立 `Companion` owner；headless Inbox 的 healthy reuse 与 dead resume 都在同一 fence 内用 transient `Agent` owner 覆盖投递到 `BackgroundCompletion` 接管，不能伪装成 App 可释放的 Tab。删除专用 strict handoff 不吞 transport / activity-check 错误；运行中或状态查询不可用都保留 mounted Tab 与 transcript，并返回结构化拒绝，不能拿 renderer `isGenerating` 投影当删除许可。GlobalSidebar、搜索覆盖层、Chat 菜单和历史下拉只消费这项 capability；不得各自猜当前 Tab、直接删存储或把 UI 快照当最终 authority。
 - 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
 - Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
 - “技能与工具”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。

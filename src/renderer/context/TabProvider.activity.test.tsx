@@ -42,6 +42,7 @@ const sseHarness = vi.hoisted(() => {
 
 const tauriHarness = vi.hoisted(() => ({
   proxyFetch: vi.fn(),
+  ensureSessionSidecar: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/api/SseConnection', () => ({
@@ -81,7 +82,7 @@ vi.mock('@/api/tauriClient', () => ({
   isTauri: () => false,
   getSessionActivation: vi.fn(async () => null),
   getSessionPort: vi.fn(async () => null),
-  ensureSessionSidecar: vi.fn(async () => undefined),
+  ensureSessionSidecar: tauriHarness.ensureSessionSidecar,
   resetTabServerUrlCache: vi.fn(),
   setActiveCorrelation: vi.fn(),
   setFocusedCorrelationTabId: vi.fn(),
@@ -95,6 +96,7 @@ function Probe() {
     historyMessages,
     systemInitInfo,
     queuedMessages,
+    sendMessage,
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
   } = useTabState();
@@ -111,6 +113,7 @@ function Probe() {
       </output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
+      <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
     </>
@@ -149,6 +152,8 @@ function readInitTools(): string[] {
   return JSON.parse(screen.getByTestId('init-tools').textContent ?? '[]') as string[];
 }
 
+const allowSessionOpening = () => () => undefined;
+
 describe('TabProvider session activity ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -156,6 +161,90 @@ describe('TabProvider session activity ownership', () => {
     sseHarness.state.eventHandler = null;
     sseHarness.state.statusHandler = null;
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
+  });
+
+  it('does not reacquire a Tab owner while App is deleting the Session', async () => {
+    const claimSessionOpeningTransition = vi.fn(() => null);
+    render(
+      <TabProvider
+        tabId="tab-delete-race"
+        agentDir="/tmp/workspace"
+        sessionId="session-delete-race"
+        claimSessionOpeningTransition={claimSessionOpeningTransition}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.statusHandler).not.toBeNull());
+    act(() => {
+      sseHarness.state.connected = false;
+      sseHarness.state.statusHandler?.('failed');
+    });
+
+    await waitFor(() => {
+      expect(claimSessionOpeningTransition).toHaveBeenCalledWith('session-delete-race');
+    });
+    expect(tauriHarness.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it('does not submit a turn while App is deleting the Session', () => {
+    const claimSessionOpeningTransition = vi.fn(() => null);
+    render(
+      <TabProvider
+        tabId="tab-delete-send"
+        agentDir="/tmp/workspace"
+        sessionId="session-delete-send"
+        claimSessionOpeningTransition={claimSessionOpeningTransition}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+
+    expect(claimSessionOpeningTransition).toHaveBeenCalledWith('session-delete-send');
+    expect(tauriHarness.proxyFetch.mock.calls.some(
+      ([url]) => String(url).includes('/chat/send'),
+    )).toBe(false);
+  });
+
+  it('holds turn admission until the backend accepts the send', async () => {
+    let resolveSend!: (response: Response) => void;
+    const sendResponse = new Promise<Response>((resolve) => {
+      resolveSend = resolve;
+    });
+    tauriHarness.proxyFetch.mockReturnValueOnce(sendResponse);
+    const releaseSendTransition = vi.fn();
+    const claimSessionOpeningTransition = vi.fn(() => releaseSendTransition);
+    render(
+      <TabProvider
+        tabId="tab-send-admission"
+        agentDir="/tmp/workspace"
+        sessionId="session-send-admission"
+        claimSessionOpeningTransition={claimSessionOpeningTransition}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    await waitFor(() => {
+      expect(tauriHarness.proxyFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/chat/send'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(releaseSendTransition).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSend(new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      await sendResponse;
+    });
+    await waitFor(() => expect(releaseSendTransition).toHaveBeenCalledOnce());
   });
 
   it.each([false, true])(
@@ -166,6 +255,7 @@ describe('TabProvider session activity ownership', () => {
           tabId="tab-activity"
           agentDir="/tmp/workspace"
           sessionId="pending-activity"
+          claimSessionOpeningTransition={allowSessionOpening}
         >
           <Probe />
         </TabProvider>,
@@ -224,12 +314,71 @@ describe('TabProvider session activity ownership', () => {
     },
   );
 
+  it('keeps the pending identity when App refuses system-init adoption', async () => {
+    const onSessionIdChange = vi.fn(async () => false);
+    render(
+      <TabProvider
+        tabId="tab-refused-upgrade"
+        agentDir="/tmp/workspace"
+        sessionId="pending-refused-upgrade"
+        onSessionIdChange={onSessionIdChange}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-refused-upgrade',
+      runtime: 'builtin',
+    });
+
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('real-refused-upgrade'));
+    expect(readActivity().sessionId).toBe('pending-refused-upgrade');
+  });
+
+  it('commits system-init identity only after App accepts adoption', async () => {
+    let resolveAdoption!: (accepted: boolean) => void;
+    const onSessionIdChange = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveAdoption = resolve;
+    }));
+    render(
+      <TabProvider
+        tabId="tab-delayed-upgrade"
+        agentDir="/tmp/workspace"
+        sessionId="pending-delayed-upgrade"
+        onSessionIdChange={onSessionIdChange}
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: { timestamp: '2026-07-15T00:00:00.000Z', model: 'model-a' },
+      sessionId: 'real-delayed-upgrade',
+      runtime: 'builtin',
+    });
+
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('real-delayed-upgrade'));
+    expect(readActivity().sessionId).toBe('pending-delayed-upgrade');
+
+    await act(async () => {
+      resolveAdoption(true);
+    });
+    await waitFor(() => expect(readActivity().sessionId).toBe('real-delayed-upgrade'));
+  });
+
   it('keeps the live SSE owner when an active pending session receives its real id', async () => {
     const view = render(
       <TabProvider
         tabId="tab-upgrade"
         agentDir="/tmp/workspace"
         sessionId="pending-upgrade"
+        claimSessionOpeningTransition={allowSessionOpening}
       >
         <Probe />
       </TabProvider>,
@@ -250,6 +399,7 @@ describe('TabProvider session activity ownership', () => {
         tabId="tab-upgrade"
         agentDir="/tmp/workspace"
         sessionId="session-upgrade"
+        claimSessionOpeningTransition={allowSessionOpening}
       >
         <Probe />
       </TabProvider>,
@@ -268,7 +418,7 @@ describe('TabProvider session activity ownership', () => {
 
   it('clears runtime tool metadata when switching to another session', async () => {
     const view = render(
-      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-a">
+      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-a" claimSessionOpeningTransition={allowSessionOpening}>
         <Probe />
       </TabProvider>,
     );
@@ -286,7 +436,7 @@ describe('TabProvider session activity ownership', () => {
     expect(readInitTools()).toEqual(['mcp__playwright__browser_click']);
 
     view.rerender(
-      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-b">
+      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-b" claimSessionOpeningTransition={allowSessionOpening}>
         <Probe />
       </TabProvider>,
     );
@@ -325,6 +475,7 @@ describe('TabProvider session activity ownership', () => {
         tabId="tab-rest"
         agentDir="/tmp/workspace"
         sessionId="session-rest"
+        claimSessionOpeningTransition={allowSessionOpening}
       >
         <Probe />
       </TabProvider>,
@@ -365,6 +516,7 @@ describe('TabProvider session activity ownership', () => {
           tabId={`tab-${queueId}`}
           agentDir="/tmp/workspace"
           sessionId={`pending-${queueId}`}
+          claimSessionOpeningTransition={allowSessionOpening}
         >
           <Probe />
         </TabProvider>,

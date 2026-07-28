@@ -2002,6 +2002,12 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   cronStateRef.current = cronState;
   const sessionGoalStateRef = useRef(sessionGoalState);
   sessionGoalStateRef.current = sessionGoalState;
+  // Surface tags (PRD 0.2.14): pull agent status snapshot for the channel pill.
+  // Keeping this beside deletion protection lets channel owner changes refresh
+  // the menu projection without duplicating the owner predicate in Chat.
+  const { statuses: agentStatuses } = useAgentStatuses(true);
+  const surfaces = useSessionSurfaces(sessionId, agentStatuses, cronState.task);
+  channelSurfaceRef.current = surfaces.channel;
   const startScheduledTask = useCallback(async (prompt: string): Promise<'goal' | 'cron' | null> => {
     const goalConfig = goalDraftConfigRef.current;
     if (goalConfig) {
@@ -2029,8 +2035,8 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       setSessionDeleteProtected(false);
       return;
     }
-    // Disable deletion while lifecycle truth is loading. The underlying
-    // deleteSession boundary repeats this fail-closed check.
+    // Show a fail-closed protection hint while lifecycle truth is loading.
+    // Rust still makes the final lock-held deletion decision after confirm.
     setSessionDeleteProtected(true);
     void sessionHasPersistentOwners(sessionId).then((protectedByOwner) => {
       if (!canceled) setSessionDeleteProtected(protectedByOwner);
@@ -2041,6 +2047,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     cronState.task?.status,
     sessionGoalState.goal?.revision,
     sessionGoalState.goal?.status,
+    surfaces.channel?.sessionKey,
   ]);
   const composerConfigLockedReason = activeCurrentSessionCronTask
       ? t('shell.toasts.composerLockedByCron')
@@ -4729,13 +4736,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     }
   }, [onSwitchSession, loadSession]);
 
-  // Surface tags (PRD 0.2.14): pull agent status snapshot for the channel pill.
-  // Single 5s polling instance per Chat tab — SessionHistoryDropdown maintains
-  // its own (only mounted when open) so they don't share, but the cost is low.
-  const { statuses: agentStatuses } = useAgentStatuses(true);
-  const surfaces = useSessionSurfaces(sessionId, agentStatuses, cronState.task);
-  channelSurfaceRef.current = surfaces.channel;
-
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
   //   - session was not originally created from an IM source (sessionMeta.source)
@@ -4844,13 +4844,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     return success;
   }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
 
-  const prepareCurrentSessionForDelete = useCallback(async (): Promise<boolean> => {
-    if (surfaces.channel && sessionId) {
-      return await newSessionKeepingBinding({ allowPlainResetFallback: false });
-    }
-    return await handleNewSession();
-  }, [handleNewSession, newSessionKeepingBinding, surfaces.channel, sessionId]);
-
   return (
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
@@ -4895,7 +4888,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 workspacePath={agentDir}
                 boundChannel={surfaces.channel}
                 availableChannels={availableHandoverChannels}
-                schedulerProtected={sessionDeleteProtected}
+                deleteProtected={sessionDeleteProtected}
                 favorite={!!sessionMeta?.favorite}
                 // The inline editor only mounts once a session has a real
                 // title (see the `sessionTitle && sessionTitle !== 'New Tab' …`
@@ -4908,7 +4901,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 onShowContext={isExternalRuntime ? undefined : () => { void handleSendMessageRef.current('/context'); }}
                 onOpenRename={() => titleEditorRef.current?.openRename()}
                 onFavoriteChanged={(_, updated) => { if (updated) setSessionMeta(updated); }}
-                prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
               />
             )}
           </div>
@@ -4942,7 +4934,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               currentSessionId={sessionId}
               onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
               onOpenInNewTab={onOpenSessionInNewTab}
-              prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
               isOpen={showHistory}
               onClose={() => setShowHistory(false)}
               triggerRef={historyBtnRef}

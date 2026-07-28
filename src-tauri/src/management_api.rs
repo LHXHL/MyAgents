@@ -3500,18 +3500,15 @@ async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<ser
         .as_ref()
         .map(std::path::PathBuf::from);
 
-    let outcome = if resume_path.is_some() {
-        let Some(app_handle) = crate::logger::get_app_handle() else {
-            return Json(serde_json::json!({
-                "ok": false,
-                "error": "global AppHandle not initialized — cannot resume dead session"
-            }));
-        };
-        crate::inbox::deliver::deliver_with_resume(app_handle, manager, req.message, resume_path)
-            .await
-    } else {
-        crate::inbox::deliver::deliver_inbox_message(manager, req.message).await
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "global AppHandle not initialized — cannot deliver inbox message"
+        }));
     };
+    let outcome =
+        crate::inbox::deliver::deliver_with_resume(app_handle, manager, req.message, resume_path)
+            .await;
 
     Json(serde_json::json!({
         "ok": true,

@@ -46,7 +46,7 @@ Sidecar、Plugin Bridge、MCP Server 与 CLI 共用应用内置的单一 Node.js
 
 ### Session、Sidecar 与 Tab
 
-- `Session : Sidecar = 1 : 1`。Tab / Task / Goal / BackgroundCompletion / Agent 只是共享该 Sidecar 的 owner token；全部释放后才停止进程。
+- `Session : Sidecar = 1 : 1`。Tab / Companion / Task / Goal / BackgroundCompletion / Agent 只是共享该 Sidecar 的 owner token；全部释放后才停止进程。
 - 每个 Chat Tab 独立隔离。Tab 内请求使用 `useTabState()` 提供的 `apiGet` / `apiPost`，不能误发到 Global Sidecar。
 - `messageGenerator()` 是常驻 generator。中止必须走 `abortPersistentSession()`；配置变更先保存 resume session，再 abort。Pre-warm 创建的是后续直接复用的真实 session，不能假设“非 pre-warm”分支总会执行。
 - 已有 Session 保持自己的运行时与 MCP authority。Chat mount 的 push / adopt 只能服从 `ensureSessionSidecar` 锁内返回的 `result.isNew`，不能用事前端口探测猜测。

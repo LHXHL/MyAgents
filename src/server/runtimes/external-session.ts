@@ -4382,6 +4382,14 @@ export function isExternalSessionActive(): boolean {
   return isExternalTurnBusy();
 }
 
+/** External turn admission includes work accepted into the serialized queue. */
+export function isExternalSessionBusy(): boolean {
+  return isExternalTurnBusy()
+    || hasExternalSendInFlight()
+    || hasExternalQueuedOperations()
+    || isExternalOperationDrainInFlight();
+}
+
 /**
  * True when an external runtime process is still alive, even if no turn is
  * currently running. Persistent runtimes such as Codex app-server keep an idle

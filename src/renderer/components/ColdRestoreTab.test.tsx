@@ -73,6 +73,7 @@ const noopProps = {
   onRenameSession: vi.fn(),
   onForkSession: vi.fn(),
   onUpdateSessionId: vi.fn(async () => true),
+  claimSessionOpeningTransition: vi.fn(() => () => undefined),
   onClearInitialMessage: vi.fn(),
   onSidecarConfigAdopted: vi.fn(),
   onSettingsSectionChange: vi.fn(),

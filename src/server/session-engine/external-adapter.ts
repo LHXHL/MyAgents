@@ -38,6 +38,7 @@ import {
   hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
   isExternalSessionActive,
+  isExternalSessionBusy,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
   popLastUserMessageForRetry,
@@ -200,7 +201,7 @@ export function createExternalSessionEngine(): SessionEngine {
     kind: 'external',
 
     isBusy() {
-      return isExternalSessionActive();
+      return isExternalSessionBusy();
     },
 
     getRuntimeIdentity() {
@@ -217,7 +218,7 @@ export function createExternalSessionEngine(): SessionEngine {
     getLiveSessionState() {
       return {
         sessionState: getExternalSessionState(),
-        isBusy: isExternalSessionActive(),
+        isBusy: isExternalSessionBusy(),
       };
     },
 

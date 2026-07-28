@@ -645,6 +645,23 @@ impl SidecarManager {
         found
     }
 
+    /// Atomically attach an owner to an already-healthy Session Sidecar and
+    /// return its port. Callers hold the Session lifecycle fence while using
+    /// this to prevent deletion between lookup and owner attachment.
+    pub fn attach_owner_to_healthy_session(
+        &mut self,
+        session_id: &str,
+        owner: SidecarOwner,
+    ) -> Option<u16> {
+        let sidecar = self.sidecars.get_mut(session_id)?;
+        if !matches!(sidecar.state, SidecarState::Healthy) {
+            return None;
+        }
+        let port = sidecar.port;
+        sidecar.add_owner(owner);
+        Some(port)
+    }
+
     /// Remove an owner from a Session's Sidecar
     /// If this was the last owner, the Sidecar and its session identity are
     /// removed together (the process is killed via Drop).
@@ -816,7 +833,8 @@ impl SidecarManager {
         self.session_owners(session_id).any(|owner| {
             matches!(
                 owner,
-                SidecarOwner::Task(_)
+                SidecarOwner::Companion(_)
+                    | SidecarOwner::Task(_)
                     | SidecarOwner::Goal(_)
                     | SidecarOwner::BackgroundCompletion(_)
                     | SidecarOwner::Agent(_)
@@ -824,20 +842,49 @@ impl SidecarManager {
         })
     }
 
-    /// Check if a session's Sidecar currently has any desktop Tab owner.
+    /// Snapshot the Session identities protected by non-Tab Sidecar owners.
+    /// Renderer deletion affordances use this as a projection only; the
+    /// in-lock `session_has_owners` check remains the mutation authority.
+    pub fn persistent_owner_session_ids(&self) -> Vec<String> {
+        let mut session_ids = self
+            .sidecars
+            .keys()
+            .chain(self.recovering_sidecars.keys())
+            .filter(|session_id| self.session_has_persistent_owners(session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        session_ids.sort();
+        session_ids.dedup();
+        session_ids
+    }
+
+    /// Check if a session's Sidecar currently has a frontend surface owner.
     ///
-    /// IM uses this as a runtime-only config hold signal: while a desktop Tab is
-    /// attached to an IM-bound session, subsequent IM turns must keep using the
+    /// IM uses this as a runtime-only config hold signal: while a desktop Tab or
+    /// floating companion is attached, subsequent IM turns must keep using the
     /// live Sidecar config instead of following Agent defaults changed elsewhere.
-    pub fn session_has_tab_owner(&self, session_id: &str) -> bool {
+    pub fn session_has_frontend_owner(&self, session_id: &str) -> bool {
         self.session_owners(session_id)
-            .any(|owner| matches!(owner, SidecarOwner::Tab(_)))
+            .any(|owner| matches!(owner, SidecarOwner::Tab(_) | SidecarOwner::Companion(_)))
     }
 
     /// Ownership is independent of process liveness: a dead Sidecar entry with
     /// owners is restartable and still protects the session transcript.
     pub fn session_has_owners(&self, session_id: &str) -> bool {
         self.session_owners(session_id).next().is_some()
+    }
+
+    /// Whether deletion is blocked by any owner other than the exact mounted
+    /// Tabs that App has authorized this transaction to release.
+    pub fn session_has_unreleasable_owners(
+        &self,
+        session_id: &str,
+        releasable_tab_ids: &std::collections::HashSet<String>,
+    ) -> bool {
+        self.session_owners(session_id).any(|owner| match owner {
+            SidecarOwner::Tab(tab_id) => !releasable_tab_ids.contains(tab_id),
+            _ => true,
+        })
     }
 
     fn session_owners<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a SidecarOwner> {

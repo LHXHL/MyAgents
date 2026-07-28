@@ -33,6 +33,7 @@ import SessionContextMenu from '@/components/SessionContextMenu';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomSelect from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
+import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { getFolderName, formatTime, getSessionDisplayText, formatTurnCount } from '@/utils/taskCenterUtils';
 import type { SessionMetadata } from '@/api/sessionClient';
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
@@ -60,7 +61,7 @@ interface HistorySessionRowProps {
     session: SessionMetadata;
     project: Project;
     tags: SessionTag[];
-    isCronProtected: boolean;
+    deleteProtected: boolean;
     onOpen: () => void;
     onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
     onToggleFavorite: (event: React.MouseEvent) => void;
@@ -72,7 +73,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
     session,
     project,
     tags,
-    isCronProtected,
+    deleteProtected,
     onOpen,
     onContextMenu,
     onToggleFavorite,
@@ -142,27 +143,18 @@ const HistorySessionRow = memo(function HistorySessionRow({
                                 <BarChart2 className="h-3.5 w-3.5" />
                             </button>
                         </Tip>
-                        {isCronProtected ? (
-                            <Tip label={t('historyOverlay.deleteBlocked')} position="bottom">
-                                <button
-                                    disabled
-                                    aria-label={t('historyOverlay.deleteBlockedAria')}
-                                    className="flex h-7 w-7 cursor-not-allowed items-center justify-center rounded-md text-[var(--ink-muted)] opacity-40"
-                                >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                            </Tip>
-                        ) : (
-                            <Tip label={t('historyOverlay.delete')} position="bottom">
-                                <button
-                                    onClick={onDelete}
-                                    aria-label={t('historyOverlay.delete')}
-                                    className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
-                                >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                            </Tip>
-                        )}
+                        <Tip
+                            label={deleteProtected ? t('historyOverlay.deleteBlocked') : t('historyOverlay.delete')}
+                            position="bottom"
+                        >
+                            <button
+                                onClick={onDelete}
+                                aria-label={deleteProtected ? t('historyOverlay.deleteBlockedAria') : t('historyOverlay.delete')}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        </Tip>
                     </div>
                 </div>
             </div>
@@ -179,7 +171,8 @@ export default memo(function HistorySearchOverlayContent({
 }: HistorySearchOverlayContentProps) {
     const { t } = useTranslation('app');
     const { t: tLauncher } = useTranslation('launcher');
-    const { sessions, protectedSchedulerSessionIds, sessionTagsMap, isSessionsLoading, actions } = taskCenterData;
+    const { sessions, deleteProtectedSessionIds, sessionTagsMap, isSessionsLoading, actions } = taskCenterData;
+    const deleteSession = useSessionDeletion();
     const toast = useToast();
 
     // Search state
@@ -324,7 +317,7 @@ export default memo(function HistorySearchOverlayContent({
         }
     }, [directSessionMatch, onOpenSession]);
 
-    const cronProtectedSessionIds = protectedSchedulerSessionIds;
+    const protectedSessionIds = deleteProtectedSessionIds;
 
     const requestDelete = useCallback((session: SessionMetadata) => {
         setPendingDeleteSession({ id: session.id, title: getSessionDisplayText(session) });
@@ -340,9 +333,15 @@ export default memo(function HistorySearchOverlayContent({
         const { id } = pendingDeleteSession;
         setPendingDeleteSession(null);
         try {
-            const success = await actions.deleteSession(id);
-            if (success) {
+            const result = await deleteSession(id);
+            if (result.deleted) {
                 toast.success(t('historyOverlay.deleted'));
+            } else if (result.reason === 'in-use') {
+                toast.warning(tLauncher('rightRail.deleteBlockedByOwner'));
+            } else if (result.reason === 'transition-in-progress') {
+                toast.warning(tLauncher('rightRail.deleteTransitionInProgress'));
+            } else if (result.reason === 'activity-unavailable') {
+                toast.warning(tLauncher('rightRail.deleteActivityUnavailable'));
             } else {
                 toast.error(t('historyOverlay.deleteFailedRetry'));
             }
@@ -350,7 +349,7 @@ export default memo(function HistorySearchOverlayContent({
             console.error('[HistorySearchOverlayContent] Delete session failed:', err);
             toast.error(t('historyOverlay.deleteFailed'));
         }
-    }, [actions, pendingDeleteSession, t, toast]);
+    }, [deleteSession, pendingDeleteSession, t, tLauncher, toast]);
 
     const showStats = useCallback((session: SessionMetadata) => {
         setStatsSession({ id: session.id, title: getSessionDisplayText(session) });
@@ -551,14 +550,14 @@ export default memo(function HistorySearchOverlayContent({
                                             const session = sessionsById.get(hit.sessionId);
                                             const project = projectsByWorkspace.get(normalizeWorkspacePathIdentity(hit.agentDir));
                                             if (!session || !project) return null;
-                                            const isCronProtected = cronProtectedSessionIds.has(session.id);
+                                            const deleteProtected = protectedSessionIds.has(session.id);
                                             return (
                                                 <SessionSearchItem
                                                     key={`${hit.sessionId}-${hit.matchType}`}
                                                     hit={hit}
                                                     session={session}
                                                     project={project}
-                                                    isCronProtected={isCronProtected}
+                                                    deleteProtected={deleteProtected}
                                                     onClick={() => onOpenSession(session, project)}
                                                     onContextMenu={(event) => openContextMenu(event, session)}
                                                     onShowStats={(event) => handleShowStats(event, session)}
@@ -590,7 +589,7 @@ export default memo(function HistorySearchOverlayContent({
                                         session={row.session}
                                         project={row.project}
                                         tags={sessionTagsMap.get(row.session.id) ?? []}
-                                        isCronProtected={cronProtectedSessionIds.has(row.session.id)}
+                                        deleteProtected={protectedSessionIds.has(row.session.id)}
                                         onOpen={() => onOpenSession(row.session, row.project)}
                                         onContextMenu={(event) => openContextMenu(event, row.session)}
                                         onToggleFavorite={(event) => handleToggleFavorite(event, row.session)}
@@ -619,7 +618,7 @@ export default memo(function HistorySearchOverlayContent({
                     anchorRef={contextMenuAnchorRef}
                     placement="bottom-start"
                     session={contextMenu.session}
-                    deleteProtected={cronProtectedSessionIds.has(contextMenu.session.id)}
+                    deleteProtected={protectedSessionIds.has(contextMenu.session.id)}
                     onCopySessionId={() => handleCopySessionId(contextMenu.session)}
                     onToggleFavorite={() => toggleFavorite(contextMenu.session)}
                     onShowStats={() => showStats(contextMenu.session)}

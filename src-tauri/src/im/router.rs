@@ -1169,6 +1169,19 @@ impl SessionRouter {
         self.peer_sessions.values()
     }
 
+    /// Session identities retained by channel→conversation bindings, even
+    /// when their Sidecars were collected or released for hot reload.
+    pub fn bound_session_ids(&self) -> Vec<String> {
+        let mut session_ids = self
+            .peer_sessions
+            .values()
+            .map(|peer| peer.session_id.clone())
+            .collect::<Vec<_>>();
+        session_ids.sort();
+        session_ids.dedup();
+        session_ids
+    }
+
     /// Snapshot the set of peer_session_keys currently bound. Used by the
     /// runtime-change orchestrator (`runtime_change.rs`) to iterate without
     /// holding a borrow into the HashMap during async freeze HTTP calls.
@@ -1772,6 +1785,19 @@ mod tests {
         assert!(router
             .peer_session_snapshot("agent:a:feishu:private:other")
             .is_some());
+    }
+
+    #[test]
+    fn bound_session_ids_survive_sidecar_release_state() {
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer("agent:a:feishu:private:first", "session-b"));
+        router.upsert_peer_session(peer("agent:a:feishu:private:second", "session-a"));
+        router.upsert_peer_session(peer("agent:a:feishu:private:duplicate", "session-b"));
+
+        assert_eq!(
+            router.bound_session_ids(),
+            vec!["session-a".to_string(), "session-b".to_string()]
+        );
     }
 
     #[test]
