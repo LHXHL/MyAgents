@@ -73,6 +73,9 @@ describe("Markdown typography contract", () => {
     expect(markdownStyles).toMatch(
       /\.markdown-content--compact\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1\)/,
     );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content--compact\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-6\)/,
+    );
   });
 
   it("pins the default readable-but-clustered rhythm", () => {
@@ -87,6 +90,12 @@ describe("Markdown typography contract", () => {
     );
     expect(markdownStyles).toMatch(
       /\.markdown-content\s*\{[\s\S]*?--markdown-list-item-gap:\s*var\(--space-1-5\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-content\s*\{[\s\S]*?--markdown-list-indent:\s*var\(--space-8\)/,
+    );
+    expect(markdownStyles).toMatch(
+      /\.markdown-list\s*\{[\s\S]*?margin-inline-start:\s*var\(--markdown-list-indent\)/,
     );
     expect(markdownStyles).toMatch(
       /\.markdown-strong\s*\{[\s\S]*?font-weight:\s*600/,

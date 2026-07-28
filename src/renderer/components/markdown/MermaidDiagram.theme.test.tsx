@@ -45,6 +45,9 @@ describe('MermaidDiagram Theme adapter', () => {
       'rounded-md',
       'border',
       'border-[var(--line)]',
+      'bg-[var(--paper-inset)]/30',
+    );
+    expect(view.container.querySelector('.markdown-code-block')?.firstElementChild).toHaveClass(
       'bg-[var(--code-bg)]',
     );
     expect(mermaidCapture.initialize).toHaveBeenLastCalledWith(expect.objectContaining({

@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.42
+> **Version**: 2.8.43
 > **Last Updated**: 2026-07-29
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -893,9 +893,8 @@ transition: opacity var(--duration-slow),
 
 #### 多行代码块
 ```
-背景: Theme-owned var(--code-bg)
-  - Light: 位于 paper → paper-inset 之间的浅色代码面
-  - Dark: 位于或略高于 paper-inset 的主题炭色代码面
+正文背景: var(--paper-inset) / 30%，与 Chat tool/process 组共用同一表面
+  - Light / Dark 均由当前 Theme 的 paper 层级自然适配
 文字: Theme Prism Adapter 语法高亮，普通文字 var(--code-text)
 字体: var(--font-mono)
 字号: 14px (text-sm)
@@ -906,7 +905,7 @@ transition: opacity var(--duration-slow),
 阴影: none
 
 头部:
-  - 背景: var(--code-header-bg)
+  - 背景: Theme-owned var(--code-bg)（原代码正文色，作为比正文深一阶的标题面）
   - 与正文之间: 1px solid var(--line)
   - 语言标签: 左上角
   - 复制按钮: 右上角
@@ -968,11 +967,15 @@ AI 的思考过程，用户可选择查看。
 .markdown-list-item + .markdown-list-item {
   margin-top: var(--space-1-5);  /* 6px */
 }
+
+.markdown-list {
+  margin-inline-start: var(--space-8); /* 32px，marker 与正文边界形成可见区隔 */
+}
 ```
 
 正文采用单向 `margin-block-start`：后一个内容块拥有间距，禁止同时给前后元素设置
 上下 margin 后依赖 margin collapse。Chat 与 Document 使用同一默认节奏；`compact`
-是唯一独立变体，正文 14px / 1.55、段落 8px、列表块 6px、列表项 4px，并同步收紧
+是唯一独立变体，正文 14px / 1.55、段落 8px、列表块 6px、列表项 4px、列表缩进 24px，并同步收紧
 标题、表格、引用、代码块和分隔线，不能只缩字号。
 
 #### 内容宽度
@@ -1403,6 +1406,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.43 | 2026-07-29 | **Markdown 列表与代码面层级校准**：默认有序/无序列表整体缩进从 20px 调至 32px，让 marker 与正文左边界形成轻量区隔；compact 使用 24px，嵌套与 task list 保持文字列对齐。代码正文改与 Chat tool/process 组共用 `paper-inset / 30%` 浅表面，标题行接手原正文 `--code-bg`，Mermaid code view 同步，不新增颜色 Token |
 | 2.8.42 | 2026-07-29 | **App Shell 材质边界减法**：顶部 Tab 标题栏改与全局侧栏共用 `--global-sidebar-bg`，并移除标题栏底部分割线；Chat 与右侧工作区的通顶左边框改为上下各留 16px 的内部短分隔线，不改变三栏宽度、面板内容或收展动效 |
 | 2.8.41 | 2026-07-29 | **Chat 顶部信息减法**：AI 对话顶栏默认隐藏工作区历史入口，完整保留按钮、下拉与切换实现，并在“设置 → 关于 → 开发者”的开发者模式下方提供默认关闭的持久化开关；右侧工作区标题栏移除冗余“工作区”文字，搜索、终端、浏览器、Agent 设置与收展动作保持不变 |
 | 2.8.40 | 2026-07-29 | **代码块双外观主题适配**：八套生产 Theme 的 Light 代码块从突兀深底改为各自 paper/inset 色系内的浅色代码面；Dark 保留各主题炭色材质，canonical Prism 从 light/dark 共用 `oneDark` 收口为按 Theme 语义色分别生成；Markdown 与 Mermaid 代码块统一细边框、Header 分隔、10px 圆角及 code-local hover，不增加阴影或 Theme ID 分支 |
