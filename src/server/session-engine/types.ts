@@ -289,6 +289,8 @@ export type CapabilityOperationResult = {
   sessionId?: string;
   text?: string;
   images?: ImagePayload[];
+  /** Files intentionally left untouched by SDK rewind link-safety checks. */
+  skippedLinks?: number;
 };
 
 export interface SessionEngine {

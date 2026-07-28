@@ -738,6 +738,8 @@
         "toolCalls": "Called {{count}} tool(s)",
         "toolCallsShort": "{{count}} tool call(s)",
         "tokenUsage": "Used {{tokens}} tokens",
+        "resolvedModel": "Model {{model}}",
+        "modelsUsed": "Models {{models}}",
         "statusCompleted": "Completed",
         "statusError": "Error",
         "statusRunning": "Running",
@@ -746,6 +748,10 @@
         "backgroundRunning": "Background running",
         "traceTitle": "Call trace ({{count}})",
         "output": "Output"
+      },
+      "grep": {
+        "partialLines": "Showing lines {{start}}–{{end}} of {{total}}",
+        "partialFiles": "Showing files {{start}}–{{end}} of {{total}}"
       },
       "webSearch": {
         "initializing": "Initializing search...",
@@ -769,6 +775,8 @@
         "moreOutput": "More terminal content is hidden",
         "contentTruncated": "Terminal content is too long; showing the safe inline range",
         "duration": "Duration {{duration}}",
+        "backgroundedAfter": "Backgrounded after {{duration}}",
+        "backgroundCwdUnchanged": "Session working directory unchanged",
         "status": {
           "initializing": "Initializing",
           "running": "Running",
@@ -948,6 +956,7 @@
       "unknownError": "Unknown error",
       "rewindFailedWithError": "Time rewind failed: {{error}}",
       "rewindFailedRetry": "Time rewind failed. Please try again.",
+      "rewindPartialLinks": "Conversation rewound, but {{count}} linked file(s) were left unchanged for safety.",
       "retryFailedWithError": "Retry failed: {{error}}",
       "retryFailed": "Retry failed",
       "forkOpenFailed": "Failed to create branch: cannot open a new chat.",
@@ -1015,6 +1024,30 @@
         "model_error": {
           "label": "Model returned an error",
           "detail": "The model returned an error. Check logs for the specific cause."
+        },
+        "api_error": {
+          "label": "API request failed",
+          "detail": "The model provider API request failed. Check the network, credentials, provider status, or response details in logs."
+        },
+        "malformed_tool_use_exhausted": {
+          "label": "Tool-call formatting repeatedly failed",
+          "detail": "The model repeatedly produced invalid tool-call formatting, so the SDK stopped this turn. Retry or choose another model."
+        },
+        "budget_exhausted": {
+          "label": "Turn budget reached",
+          "detail": "This turn reached the SDK execution budget before completing. Continue the chat or narrow the task."
+        },
+        "structured_output_retry_exhausted": {
+          "label": "Structured output generation failed",
+          "detail": "The model still could not produce valid structured output after retries."
+        },
+        "tool_deferred_unavailable": {
+          "label": "Deferred tool unavailable",
+          "detail": "A previously deferred tool was unavailable when execution resumed, so the turn did not complete normally."
+        },
+        "turn_setup_failed": {
+          "label": "Turn setup failed",
+          "detail": "The SDK could not initialize this turn. Check configuration, the provider, and runtime logs."
         }
       }
     },

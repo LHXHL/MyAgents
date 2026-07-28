@@ -12,8 +12,31 @@ describe('decideInFlightActionOnResult (issue #289 — force-send must surface, 
     expect(decideInFlightActionOnResult({ isInterrupting: true, forced: true, hasMeta: true })).toBe('surface');
   });
 
-  it('plain STOP: interrupting + NOT forced → drop (unchanged long-standing behavior)', () => {
-    expect(decideInFlightActionOnResult({ isInterrupting: true, forced: false, hasMeta: true })).toBe('drop');
+  it('plain STOP drops only when the receipt explicitly omits the in-flight uuid', () => {
+    expect(decideInFlightActionOnResult({
+      isInterrupting: true,
+      forced: false,
+      hasMeta: true,
+      survivedInterrupt: false,
+    })).toBe('drop');
+  });
+
+  it('plain STOP preserves the queue when an older CLI returns no receipt', () => {
+    expect(decideInFlightActionOnResult({
+      isInterrupting: true,
+      forced: false,
+      hasMeta: true,
+      survivedInterrupt: null,
+    })).toBe('await-replay');
+  });
+
+  it('plain STOP preserves an in-flight item that the interrupt receipt says will still run', () => {
+    expect(decideInFlightActionOnResult({
+      isInterrupting: true,
+      forced: false,
+      hasMeta: true,
+      survivedInterrupt: true,
+    })).toBe('await-replay');
   });
 
   it('natural completion: not interrupting + has meta → await replay (no false queue:started)', () => {

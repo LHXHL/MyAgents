@@ -9,8 +9,9 @@
  * acknowledgement. So whether the item should be SURFACED (shown as a user bubble),
  * DROPPED, or kept waiting depends on the terminal reason and user intent:
  *
- *  - Plain STOP: the user wants to stop; treat the in-flight item as "AI may not have
- *    seen it" and drop it from the UI (matches the long-standing stop behavior).
+ *  - Plain STOP: the interrupt receipt decides whether the queued item survived.
+ *    Preserve it until replay when the receipt lists it, or when an older CLI omits
+ *    the receipt; drop it only when the receipt explicitly omits its UUID.
  *  - FORCE ("立即发送"): the user explicitly asked for THIS item to run now. force
  *    interrupts the current turn precisely so the SDK drains + processes the queued
  *    command — so it MUST be surfaced as a user bubble (the AI's reply renders under it).
@@ -43,8 +44,15 @@ export function decideInFlightActionOnResult(opts: {
   forced: boolean;
   /** inFlightMetadata is available to build the user bubble. */
   hasMeta: boolean;
+  /** true/false from a public receipt; null/undefined when the CLI omitted it. */
+  survivedInterrupt?: boolean | null;
 }): InFlightTerminalAction {
-  // Plain stop (interrupt, not a force): drop — AI may not have seen the item.
+  // SDK 0.3.220's interrupt receipt is authoritative: an explicitly listed
+  // survivor WILL run, while an explicitly absent UUID can be dropped. Older
+  // CLIs omit the receipt; preserve in that case because Stop only owns the
+  // current turn and must not invent cancellation of a queued message.
+  if (opts.isInterrupting && !opts.forced && opts.survivedInterrupt !== false) return 'await-replay';
+  // Receipt explicitly says this in-flight UUID did not survive the interrupt.
   if (opts.isInterrupting && !opts.forced) return 'drop';
   // Force-send: explicit user intent to interrupt and process this item now.
   if (opts.forced) return opts.hasMeta ? 'surface' : 'noop';

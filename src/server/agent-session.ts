@@ -771,7 +771,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.201 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.220 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -789,7 +789,7 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.201. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.220. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
@@ -803,6 +803,10 @@ type PostInterruptTurnEndOutcome = 'result-claimed' | 'session-ended';
 // installs its waiter, closing the former resolve-before-listen race.
 let postInterruptTurnEndOutcome: PostInterruptTurnEndOutcome | null = null;
 let postInterruptTurnEndResolve: ((outcome: PostInterruptTurnEndOutcome) => void) | null = null;
+// Public SDK interrupt receipt for the current cooperative interrupt only.
+// `null` means the CLI did not advertise/return a receipt. Queue ids are the
+// same UUIDs stamped by messageGenerator, so no parallel identity map exists.
+let interruptSurvivingQueueIds: ReadonlySet<string> | null = null;
 
 function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void {
   if (!isInterruptingResponse) return;
@@ -813,6 +817,10 @@ function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void 
     postInterruptTurnEndResolve = null;
     resolve(settled);
   }
+}
+
+function didInFlightSurviveInterrupt(queueId: string): boolean | null {
+  return interruptSurvivingQueueIds?.has(queueId) ?? null;
 }
 // Count of MCP tool_use blocks emitted by the model in the current turn that
 // haven't seen their matching tool_result yet. Read by the post-interrupt
@@ -6847,6 +6855,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getProviderEnv: () => configState.currentProviderEnv,
   getCurrentModel: () => configState.currentModel,
   getIsInterruptingResponse: () => isInterruptingResponse,
+  didInFlightSurviveInterrupt,
   setStreamingMessage: (value) => { isStreamingMessage = value; },
   resetInFlightToolCount: () => { inFlightToolCount = 0; },
   resetWatchdogFired: () => { watchdogFired = false; },
@@ -9577,6 +9586,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
   setInterruptingInFlightQueueId(getInFlightQueueId());
   isInterruptingResponse = true;
+  interruptSurvivingQueueIds = null;
   postInterruptTurnEndOutcome = null;
   postInterruptTurnEndResolve = null;
   try {
@@ -9584,7 +9594,19 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     // interrupt() is cooperative — the SDK subprocess must be responsive to process it.
     // If a MCP tool is hung (e.g., Playwright screenshot on heavy page), the subprocess
     // may be blocked on I/O and unable to handle the interrupt signal.
-    const interruptPromise = lifecycleState.query.interrupt();
+    const interruptQuery = lifecycleState.query;
+    const interruptPromise = interruptQuery.interrupt().then((receipt) => {
+      // A timed-out request can still resolve after this interrupt owner has
+      // finished or the Query has been replaced. Ignore that stale receipt.
+      if (!isInterruptingResponse || lifecycleState.query !== interruptQuery) return receipt;
+      if (receipt) {
+        interruptSurvivingQueueIds = new Set(receipt.still_queued);
+        console.log(`[agent] Interrupt receipt: stillQueued=${receipt.still_queued.length}`);
+      } else {
+        console.log('[agent] Interrupt receipt unavailable (older CLI capability)');
+      }
+      return receipt;
+    });
     const timeoutPromise = new Promise<void>((_, reject) => {
       setTimeout(() => reject(new Error('Interrupt timeout')), 5000);
     });
@@ -9663,6 +9685,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     return true;
   } finally {
     isInterruptingResponse = false;
+    interruptSurvivingQueueIds = null;
     setInterruptingInFlightQueueId(null);
     postInterruptTurnEndResolve = null;
     postInterruptTurnEndOutcome = null;
@@ -10025,6 +10048,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   error?: string;
   content?: string;
   attachments?: MessageWire['attachments'];
+  skippedLinks?: number;
 }> {
   const doRewind = async () => {
     // 1. 找到目标 user message
@@ -10049,6 +10073,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    跳过不属于当前 session 的 UUID：SDK 不认识，调用必定失败且日志噪声。
     //    跳过无 sdkUuid 的用户消息：旧存储加载或 SDK 尚未回传 UUID。
     const targetUserUuid = targetMessage.sdkUuid;
+    let skippedLinks = 0;
     if (lifecycleState.query && targetUserUuid && !lifecycleState.abortRequested && transcriptState.currentSessionUuids.has(targetUserUuid)) {
       try {
         const REWIND_FILES_TIMEOUT_MS = 5_000;
@@ -10059,6 +10084,10 @@ export async function rewindSession(userMessageId: string): Promise<{
           ),
         ]);
         console.log('[agent] rewindFiles result:', JSON.stringify(result));
+        skippedLinks = result.skippedLinks ?? 0;
+        if (skippedLinks > 0) {
+          console.warn(`[agent] rewindFiles partially restored files: skippedLinks=${skippedLinks}`);
+        }
         if (!result.canRewind) {
           console.warn('[agent] rewindFiles cannot rewind:', result.error);
         }
@@ -10138,7 +10167,12 @@ export async function rewindSession(userMessageId: string): Promise<{
     // 8. 预热下次 session
     schedulePreWarm();
 
-    return { success: true as const, content: removedContent, attachments: removedAttachments };
+    return {
+      success: true as const,
+      content: removedContent,
+      attachments: removedAttachments,
+      ...(skippedLinks > 0 ? { skippedLinks } : {}),
+    };
   };
 
   const promise = doRewind();
@@ -12126,7 +12160,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Sentinel for system message kinds added by FUTURE SDK versions.
-        // The set below enumerates every system subtype in SDK 0.3.201
+        // The set below enumerates every system subtype in SDK 0.3.220
         // (handled or deliberately untouched) — a subtype outside it means the
         // SDK started emitting something we have never seen. Without this log
         // line, new message kinds vanish silently (the pre-0.3.173 default,
@@ -12844,7 +12878,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
-        // half lives in the system block above): a type outside the 0.3.201
+        // half lives in the system block above): a type outside the 0.3.220
         // union means a NEWER SDK started emitting a message kind this loop
         // has never seen — log once instead of letting it vanish silently.
         warnedUnknownMessageTypes.add(sdkMessage.type);

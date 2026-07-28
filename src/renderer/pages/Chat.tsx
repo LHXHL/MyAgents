@@ -4544,13 +4544,15 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost('/chat/rewind', { userMessageId: messageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string } | undefined;
+        const r = res as { success?: boolean; error?: string; skippedLinks?: number } | undefined;
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
           chatInputRef.current?.setValue('');
           chatInputRef.current?.setImages([]);
           toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+        } else if (r?.skippedLinks && r.skippedLinks > 0) {
+          toastRef.current.warning(t('shell.toasts.rewindPartialLinks', { count: r.skippedLinks }));
         }
       })
       .catch(err => {
@@ -4601,11 +4603,14 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost(retryEndpoint, { userMessageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string } | undefined;
+        const r = res as { success?: boolean; error?: string; skippedLinks?: number } | undefined;
         if (r && !r.success) {
           setMessages(snapshot);
           toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
           return;
+        }
+        if (r?.skippedLinks && r.skippedLinks > 0) {
+          toastRef.current.warning(t('shell.toasts.rewindPartialLinks', { count: r.skippedLinks }));
         }
         // Rewind succeeded → auto-resend the original message
         track('message_retry', {});

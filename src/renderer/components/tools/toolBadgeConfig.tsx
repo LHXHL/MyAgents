@@ -866,7 +866,17 @@ export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslat
  * falls back to deriving from `content` for older payloads or `output_mode: "content"`
  * results that omit the count fields.
  */
-function parseGrepStats(result: string | undefined): { matches: number; files: number } | null {
+export type GrepResultStats = {
+  matches: number;
+  files: number;
+  returnedLines?: number;
+  totalFiles?: number;
+  totalLines?: number;
+  appliedLimit?: number;
+  appliedOffset?: number;
+};
+
+export function parseGrepStats(result: string | undefined): GrepResultStats | null {
   if (!result) return null;
   const trimmed = result.trimStart();
   if (!trimmed.startsWith('{')) return null;
@@ -876,6 +886,10 @@ function parseGrepStats(result: string | undefined): { matches: number; files: n
       numLines?: number;
       numFiles?: number;
       content?: string;
+      totalFiles?: number;
+      totalLines?: number;
+      appliedLimit?: number;
+      appliedOffset?: number;
     };
     if (!parsed || typeof parsed !== 'object') return null;
     const files = typeof parsed.numFiles === 'number' ? parsed.numFiles : 0;
@@ -883,11 +897,22 @@ function parseGrepStats(result: string | undefined): { matches: number; files: n
       typeof parsed.numMatches === 'number' ? parsed.numMatches
       : typeof parsed.numLines === 'number' ? parsed.numLines
       : null;
-    if (sdkMatches !== null) return { matches: sdkMatches, files };
+    const pagination = {
+      returnedLines: parsed.numLines,
+      totalFiles: parsed.totalFiles,
+      totalLines: parsed.totalLines,
+      appliedLimit: parsed.appliedLimit,
+      appliedOffset: parsed.appliedOffset,
+    };
+    if (sdkMatches !== null) return { matches: sdkMatches, files, ...pagination };
     // Fallback: derive from content (only valid for output_mode: 'content').
     const content = typeof parsed.content === 'string' ? parsed.content : '';
-    if (!content) return { matches: 0, files };
-    return { matches: content.split('\n').filter(Boolean).length, files };
+    if (!content) return { matches: 0, files, ...pagination };
+    return {
+      matches: content.split('\n').filter(Boolean).length,
+      files,
+      ...pagination,
+    };
   } catch { /* not JSON */ }
   return null;
 }

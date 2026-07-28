@@ -43,7 +43,10 @@ interface TaskResult {
   totalDurationMs?: number;
   totalTokens?: number;
   totalToolUseCount?: number;
+  resolvedModel?: string;
+  modelsUsed?: string[];
   output_file?: string;  // 后台任务输出文件路径
+  outputFile?: string;   // SDK 0.3.220 async_launched output
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -55,6 +58,22 @@ function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`;
   if (tokens < 1000000) return `${(tokens / 1000).toFixed(1)}k`;
   return `${(tokens / 1000000).toFixed(2)}M`;
+}
+
+function resolveTaskModels(result: TaskResult | null): string[] {
+  if (!result) return [];
+  const rawModels: unknown[] = Array.isArray(result.modelsUsed) ? result.modelsUsed : [];
+  const models = rawModels.filter((model, index, all): model is string => (
+    typeof model === 'string' && model.length > 0 && all.indexOf(model) === index
+  ));
+  if (
+    typeof result.resolvedModel === 'string'
+    && result.resolvedModel.length > 0
+    && !models.includes(result.resolvedModel)
+  ) {
+    models.push(result.resolvedModel);
+  }
+  return models;
 }
 
 // 可折叠内容组件 - 默认最多显示 5 行
@@ -237,6 +256,7 @@ function TaskCompletedStats({
     : result.totalTokens || 0;
   const toolCount = stats?.toolCount || result.totalToolUseCount || 0;
   const duration = result.totalDurationMs;
+  const models = resolveTaskModels(result);
 
   const bgColor = isSuccess
     ? 'bg-[var(--success)]/10 hover:bg-[var(--success)]/15'
@@ -291,6 +311,14 @@ function TaskCompletedStats({
             <span>{t('shell.toolChrome.task.tokenUsage', { tokens: formatTokens(totalTokens) })}</span>
           </div>
         )}
+
+        {models.length > 0 && (
+          <div data-task-models="true" className="min-w-0 truncate font-mono">
+            {models.length > 1
+              ? t('shell.toolChrome.task.modelsUsed', { models: models.join(' → ') })
+              : t('shell.toolChrome.task.resolvedModel', { model: models[0] })}
+          </div>
+        )}
       </div>
 
       {/* 展开/收起箭头 */}
@@ -308,11 +336,13 @@ function TaskCompletedStats({
 function TaskBackgroundStats({
   stats,
   terminalStatus,
-  startTime
+  startTime,
+  result,
 }: {
   stats: BackgroundTaskStats | null;
   terminalStatus: BackgroundTaskTerminalStatus | null;
   startTime: number;
+  result: TaskResult | null;
 }) {
   const { t } = useTranslation('chat');
   const [frontendElapsed, setFrontendElapsed] = useState(0);
@@ -343,6 +373,7 @@ function TaskBackgroundStats({
 
   // Use backend elapsed if available and larger, otherwise frontend timer
   const elapsed = stats?.elapsed && stats.elapsed > frontendElapsed ? stats.elapsed : frontendElapsed;
+  const models = resolveTaskModels(result);
 
   return (
     <div className="flex w-full items-center justify-between text-xs rounded-lg bg-[var(--accent)]/5 px-3 py-2 cursor-default transition-colors">
@@ -385,6 +416,14 @@ function TaskBackgroundStats({
           <div className="flex items-center gap-1">
             <Wrench className="size-3.5" />
             <span>{t('shell.toolChrome.task.toolCalls', { count: stats.toolCount })}</span>
+          </div>
+        )}
+
+        {models.length > 0 && (
+          <div data-task-models="true" className="min-w-0 truncate font-mono">
+            {models.length > 1
+              ? t('shell.toolChrome.task.modelsUsed', { models: models.join(' → ') })
+              : t('shell.toolChrome.task.resolvedModel', { model: models[0] })}
           </div>
         )}
       </div>
@@ -590,7 +629,9 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const bgComplete = bgTerminalStatus !== null;
 
   // Live stats polling (for tool count display during execution, NOT for completion)
-  const outputFile = isBackgroundTask ? parsedResult?.output_file ?? null : null;
+  const outputFile = isBackgroundTask
+    ? parsedResult?.outputFile ?? parsedResult?.output_file ?? null
+    : null;
   const tabApi = useTabApiOptional();
   const noopApiPost = useCallback(async <T,>(_path: string, _body?: unknown): Promise<T> => { throw new Error('no apiPost'); }, []);
   const { stats: bgStats } = useBackgroundTaskPolling({
@@ -638,6 +679,7 @@ export default function TaskTool({ tool }: TaskToolProps) {
             stats={bgStats}
             terminalStatus={bgTerminalStatus}
             startTime={tool.taskStartTime || bgFallbackStartTime}
+            result={parsedResult}
           />
         ) : parsedResult ? (
           <TaskCompletedStats

@@ -1013,7 +1013,7 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   { model: 'claude-opus-4-6', modelName: 'Claude Opus 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.201 当前模型族：fable5/opus48/sonnet5/haiku45）。
+/** Anthropic 官方默认别名（对齐 SDK 0.3.220 当前模型族：fable5/opus48/sonnet5/haiku45）。
  *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
 const ANTHROPIC_ALIASES = {
   fable: 'claude-fable-5',

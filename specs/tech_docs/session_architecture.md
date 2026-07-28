@@ -180,6 +180,13 @@ origin 补齐为 exact binding；`origin` 缺失、`null`、畸形或属于 desk
 - 一旦 `turnBoundaryQueue` 或 turn-mode admission ticket 已存在，后续同 session 的桌面 `/chat/send` 忙时发送必须继续排到 turn boundary；非桌面来源不读取该 UI 设置，保持各自既有队列语义。
 - abort / stop / crash recovery 必须同时清理或恢复 `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue` 和 admission ticket，避免只处理旧队列造成 orphan query。
 
+主 Stop 仍只中止当前 Turn，不私自调用 SDK 未公开的 `cancel_queued`。SDK 0.3.220 的
+公开 `Query.interrupt()` receipt 会返回 `still_queued`：其中 UUID 与
+`messageGenerator()` 写入的 queue id 是同一身份。若 receipt 明确包含当前 in-flight
+项，UI queue pill 必须保留到 replay / assistant-start 确认消费；receipt 缺失时按旧 CLI
+保守兼容，同样保留 queue pill，不能臆造取消。未知 UUID 只记数量并忽略，不创建第二份
+队列 owner。
+
 规则 owner：`src/server/session-core/turn-queue.ts`。副作用 state owner：`src/server/builtin-session/queue.ts`。`agent-session.ts` facade 负责把 enqueue / cancel / force / terminal orchestration 接到 SDK、SSE、IM reply 等副作用，但 queue 数组、in-flight slot、turn admission ticket 不再作为 facade 顶层裸状态维护。admission、cancel location、force-start reordering、abort ticket 清理必须继续调用 `turn-queue` policy。
 
 ### Goal Mode Session State（0.3.0）
@@ -431,6 +438,10 @@ if (sdkMessage.uuid) {
 stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SDK 报
 `No message found with message.uuid` 才是最终拒绝信号；恢复逻辑要驱逐该 UUID，
 防止 pre-warm / reload 反复派生同一个坏锚点。
+
+`rewindFiles()` 的 `skippedLinks` 表示 SDK 因 symlink / hard link / 非普通文件安全检查
+而没有恢复的文件数。对话截断仍可成功，但该计数必须沿既有 `/chat/rewind` 返回契约
+传到 Chat warning，不能把部分文件回溯展示成完整成功；文件路径不进入通知或日志。
 
 ### reloadAnchor：冷加载后的 Rewind 对齐
 

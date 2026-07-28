@@ -75,6 +75,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     getProviderEnv: () => undefined,
     getCurrentModel: () => 'claude-test',
     getIsInterruptingResponse: () => false,
+    didInFlightSurviveInterrupt: () => null,
     setStreamingMessage: vi.fn(),
     resetInFlightToolCount: vi.fn(),
     resetWatchdogFired: vi.fn(),
@@ -693,5 +694,30 @@ describe('turn-lifecycle owner', () => {
     expect(natural.deps.preserveInFlightAfterTerminalBoundary).toHaveBeenCalledWith('natural result');
     expect(natural.deps.surfaceInFlightQueueItem).not.toHaveBeenCalled();
     expect(natural.deps.dropInFlightQueueItem).not.toHaveBeenCalled();
+  });
+
+  it('preserves a plain-stop in-flight item when the interrupt receipt says it will run', () => {
+    const { deps } = makeDeps({
+      getIsInterruptingResponse: () => true,
+      didInFlightSurviveInterrupt: queueId => queueId === 'queued-survivor',
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    setInFlightQueueItem('queued-survivor', {
+      messageText: 'continue after stop',
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
+    setInterruptingInFlightQueueId('queued-survivor');
+    appendMessage({ id: '1', role: 'assistant', content: 'partial', timestamp: 't1' });
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      result: 'partial',
+      terminal_reason: 'aborted_streaming',
+    }));
+
+    expect(deps.preserveInFlightAfterTerminalBoundary).toHaveBeenCalledWith(
+      'interrupt receipt confirms queued survivor',
+    );
+    expect(deps.dropInFlightQueueItem).not.toHaveBeenCalled();
   });
 });

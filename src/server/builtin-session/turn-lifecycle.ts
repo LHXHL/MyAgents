@@ -94,6 +94,7 @@ export type BuiltinTurnLifecycleDeps = {
   getProviderEnv: () => ProviderEnv | undefined;
   getCurrentModel: () => string | undefined;
   getIsInterruptingResponse: () => boolean;
+  didInFlightSurviveInterrupt: (queueId: string) => boolean | null;
   setStreamingMessage: (value: boolean) => void;
   resetInFlightToolCount: () => void;
   resetWatchdogFired: () => void;
@@ -250,10 +251,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         deps.preserveInFlightAfterTerminalBoundary(`interrupt result targets ${getInterruptingInFlightQueueId() ?? 'none'}`);
       } else {
         const forced = getForceSurfaceInFlightId() === stale;
+        const survivedInterrupt = deps.didInFlightSurviveInterrupt(stale);
         const inFlightAction = decideInFlightActionOnResult({
           isInterrupting: deps.getIsInterruptingResponse(),
           forced,
           hasMeta: !!meta,
+          survivedInterrupt,
         });
         if (inFlightAction === 'drop') {
           deps.dropInFlightQueueItem('graceful interrupt result before SDK consumption confirmation', 'cancelled');
@@ -267,7 +270,13 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           });
           confirmedQueueTurnKeepStreaming = true;
         } else if (inFlightAction === 'await-replay') {
-          deps.preserveInFlightAfterTerminalBoundary('natural result');
+          deps.preserveInFlightAfterTerminalBoundary(
+            deps.getIsInterruptingResponse()
+              ? survivedInterrupt === true
+                ? 'interrupt receipt confirms queued survivor'
+                : 'interrupt receipt unavailable; preserving queued item'
+              : 'natural result',
+          );
         }
       }
     }
