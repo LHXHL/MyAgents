@@ -12,6 +12,11 @@ interface SessionDeletionCoordinatorInput {
 }
 
 export type SessionResourceTransition = 'opening' | 'deleting';
+export type SessionResourceTransitionClaim = {
+    transition: SessionResourceTransition;
+    ownerId?: string;
+    holders: number;
+};
 
 /**
  * Synchronous App-level admission for operations that can create or destroy a
@@ -20,14 +25,44 @@ export type SessionResourceTransition = 'opening' | 'deleting';
  * vice versa). The returned release only clears its own claim.
  */
 export function tryClaimSessionResourceTransition(
-    transitions: Map<string, SessionResourceTransition>,
+    transitions: Map<string, SessionResourceTransitionClaim>,
     sessionId: string,
     transition: SessionResourceTransition,
+    ownerId?: string,
 ): (() => void) | null {
-    if (transitions.has(sessionId)) return null;
-    transitions.set(sessionId, transition);
+    const existing = transitions.get(sessionId);
+    if (existing) {
+        if (
+            transition === 'opening'
+            && existing.transition === 'opening'
+            && ownerId !== undefined
+            && existing.ownerId === ownerId
+        ) {
+            existing.holders += 1;
+            let released = false;
+            return () => {
+                if (released || transitions.get(sessionId) !== existing) return;
+                released = true;
+                existing.holders -= 1;
+                if (existing.holders === 0) {
+                    transitions.delete(sessionId);
+                }
+            };
+        }
+        return null;
+    }
+    const claim = {
+        transition,
+        ...(ownerId !== undefined ? { ownerId } : {}),
+        holders: 1,
+    };
+    transitions.set(sessionId, claim);
+    let released = false;
     return () => {
-        if (transitions.get(sessionId) === transition) {
+        if (released || transitions.get(sessionId) !== claim) return;
+        released = true;
+        claim.holders -= 1;
+        if (claim.holders === 0) {
             transitions.delete(sessionId);
         }
     };

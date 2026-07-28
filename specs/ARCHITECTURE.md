@@ -206,13 +206,16 @@ Tab2 listen('sse:tab2:*') ◄── Rust supervisor ◄── owner resolve ◄�
 
 每个 subscription 有两个独立 generation：start replacement 的 `subscription generation` 防止旧 task emit/cleanup 新 entry，并在实际 Tauri emit 时再次验证当前 authority；每条成功 HTTP 200 stream 分配进程内全局单调的 `transport generation`。Rust 转发 payload 为 `{ transportGeneration, data }`；Renderer 小于已观察 generation 的事件 fail closed，大于时先建立 REST/liveRevision restore fence，再处理业务事件。`start_sse_proxy` command ack 只代表订阅已安装，不代表物理流 connected。connect error、非 2xx、body error、read timeout 与 EOF 都由同一个 Rust supervisor capped backoff；只有 stop/replacement 结束订阅。Browser development mode 仍使用原生 EventSource 自己重连。
 
+subscription 跟随稳定的 renderer `connectionKey + SidecarOwner`，不是跟随可变的 Session key：pending→real materialization、桌面 reset 与已由 Rust 完成的 surface migration 都是在同一 Sidecar 内升级 Session identity。pending→real 可由 generic binding effect 识别；real→real 只能由实际 reset / migration owner 按 exact A→B 操作原子采用 business current 与 attachment，拒绝或异常时做 exact rollback，不能把长期 birth marker 当 transport authority。SSE status callback只报告 liveness，不得从 business current反向改写 attachment。普通历史 Session切换到另一 Sidecar才 replacement。带 `sessionId` 的业务事件以 payload 与当前 Session是否一致为 scope authority，并在 live-revision dispatch前拒绝 concrete mismatch；connection创建时的 `sessionIdHint` 只用于 Sidecar resolver / attachment，不能否决同一 Sidecar A→B handover中已经明确属于 B 的事件。
+
 Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广播：
 - `broadcast(event, data)` —— 向所有客户端广播
 - **Last-Value Cache** —— 缓存 `chat:status` 最新值。新 SSE 客户端连接时自动 replay
+- **Scoped replay snapshot** —— `SessionEngineStreamReplaySnapshot` 同时返回当前 `sessionId`、replay messages与active assistant；external adapter在pending→real启动窗口优先使用已promoted的bound Session，并从既有 immutable live snapshot提供尚在内存的accepted turn。`/chat/stream` 在注册新client前同步取得snapshot，把scope与active assistant合入既有`chat:init`，再发送带scope的cold-history；Renderer原子采用assistant snapshot，只有后续真实`chat:message-chunk`按delta追加。Route不读取adapter internal、不从消息猜identity，也不新增恢复事件
 - **日志降噪** —— 高频流式事件（chunk / delta）跳过 `console.log`
 
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
-会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按当前 SSE connection/session 过滤；否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
+会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按 payload/current Session 过滤；无 scope 的 legacy 事件在 identity transition 中 fail closed。否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
 恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 transport generation 变化就重新取快照。live-recovery commit 只替换权威 recent tail 并保留已分页的 older prefix、滚动锚点与无关 UI state；无 overlap 才 fail closed 为 snapshot。snapshot 请求瞬时失败时保留同一 fence 与 buffer 并重试，Session/token 变化使旧 retry 失效。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
 

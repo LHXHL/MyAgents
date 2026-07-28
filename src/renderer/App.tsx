@@ -94,7 +94,7 @@ import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
 import {
   deleteSessionThroughAppOwner,
   tryClaimSessionResourceTransition,
-  type SessionResourceTransition,
+  type SessionResourceTransitionClaim,
 } from '@/utils/sessionDeletionCoordinator';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { listenWithCleanup } from '@/utils/tauriListen';
@@ -263,7 +263,7 @@ interface TabContentProps {
   onRenameSession: (tabId: string, newTitle: string) => void;
   onForkSession: (tabId: string, newSessionId: string, agentDir: string, title: string, initialMessage?: string) => Promise<boolean>;
   onUpdateSessionId: (tabId: string, newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;
-  claimSessionOpeningTransition: (sessionId: string) => (() => void) | null;
+  claimSessionOpeningTransition: (sessionId: string, ownerId: string) => (() => void) | null;
   onClearInitialMessage: (tabId: string) => void;
   onSidecarConfigAdopted: (tabId: string) => void;
   onFilePreviewIntentConsumed?: (tabId: string, intentId: string) => void;
@@ -313,6 +313,10 @@ export const MemoizedTabContent = memo(function TabContent({
   const handleLauncherWorkspaceChange = useCallback(
     (workspacePath: string | null) => onLauncherWorkspaceSelectionChange(tab.id, workspacePath),
     [onLauncherWorkspaceSelectionChange, tab.id],
+  );
+  const claimTabSessionOpeningTransition = useCallback(
+    (sessionId: string) => claimSessionOpeningTransition(sessionId, tab.id),
+    [claimSessionOpeningTransition, tab.id],
   );
   return (
     <div
@@ -381,7 +385,7 @@ export const MemoizedTabContent = memo(function TabContent({
           onTitleChange={(title) => onUpdateTitle(tab.id, title)}
           onUnreadChange={(hasUnread) => onUpdateUnread(tab.id, hasUnread)}
           onSessionIdChange={(newSessionId, options) => onUpdateSessionId(tab.id, newSessionId, options)}
-          claimSessionOpeningTransition={claimSessionOpeningTransition}
+          claimSessionOpeningTransition={claimTabSessionOpeningTransition}
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
@@ -1370,7 +1374,7 @@ export default function App() {
   // App-owned admission boundary for operations that can acquire, migrate, or
   // destroy a fixed Session identity. Claims are per Session, so unrelated
   // Tabs remain fully concurrent.
-  const sessionResourceTransitionsRef = useRef<Map<string, SessionResourceTransition>>(new Map());
+  const sessionResourceTransitionsRef = useRef<Map<string, SessionResourceTransitionClaim>>(new Map());
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
@@ -1395,6 +1399,7 @@ export default function App() {
         sessionResourceTransitionsRef.current,
         newSessionId,
         'opening',
+        tabId,
       )
       : null;
     if (identityChanges && !releaseTargetTransition) {
@@ -1612,11 +1617,12 @@ export default function App() {
 
   // Stable capability passed to TabProvider recovery so it shares the same
   // fixed-identity admission boundary as App opens and deletion.
-  const claimSessionOpeningTransition = useCallback((sessionId: string) => (
+  const claimSessionOpeningTransition = useCallback((sessionId: string, ownerId: string) => (
     tryClaimSessionResourceTransition(
       sessionResourceTransitionsRef.current,
       sessionId,
       'opening',
+      ownerId,
     )
   ), []);
 

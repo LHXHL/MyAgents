@@ -211,8 +211,10 @@ export type SessionEngineReplayMessage = Omit<SessionMessage, 'content' | 'attac
 };
 
 export type SessionEngineStreamReplaySnapshot = {
+  sessionId: string;
   initState: Record<string, unknown>;
   replayMessages: SessionEngineReplayMessage[];
+  liveStreamingMessage?: SessionEngineReplayMessage | null;
   systemInitPayload?: unknown;
   pendingInteractiveRequests: SessionEnginePendingInteractiveRequest[];
 };

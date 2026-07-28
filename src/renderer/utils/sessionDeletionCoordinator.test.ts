@@ -47,6 +47,49 @@ describe('deleteSessionThroughAppOwner', () => {
         expect(transitions.size).toBe(0);
     });
 
+    it('allows only the owning Tab to reenter its opening transition', () => {
+        const transitions = new Map();
+        const releaseOuter = tryClaimSessionResourceTransition(
+            transitions,
+            'target-session',
+            'opening',
+            'tab-a',
+        );
+
+        const releaseNested = tryClaimSessionResourceTransition(
+            transitions,
+            'target-session',
+            'opening',
+            'tab-a',
+        );
+        expect(releaseNested).not.toBeNull();
+        expect(tryClaimSessionResourceTransition(
+            transitions,
+            'target-session',
+            'opening',
+            'tab-b',
+        )).toBeNull();
+        expect(tryClaimSessionResourceTransition(
+            transitions,
+            'target-session',
+            'deleting',
+        )).toBeNull();
+
+        releaseOuter?.();
+        expect(transitions.has('target-session')).toBe(true);
+        expect(tryClaimSessionResourceTransition(
+            transitions,
+            'target-session',
+            'deleting',
+        )).toBeNull();
+
+        releaseNested?.();
+        expect(transitions.has('target-session')).toBe(false);
+
+        releaseNested?.();
+        expect(transitions.has('target-session')).toBe(false);
+    });
+
     it('atomically deletes with every matching Tab owner before resetting those Tabs', async () => {
         const tabsRef = { current: [
             chatTab('active-tab', 'target-session'),

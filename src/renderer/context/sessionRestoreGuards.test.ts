@@ -95,7 +95,7 @@ describe('shouldSkipHistoryReplay', () => {
                 isNewSession: true,
                 isLoadingSession: false,
                 isColdHistoryReplay: false,
-                isCurrentSessionLiveEcho: false,
+                isCurrentSessionReplay: false,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
@@ -108,24 +108,25 @@ describe('shouldSkipHistoryReplay', () => {
                 isNewSession: true,
                 isLoadingSession: false,
                 isColdHistoryReplay: false,
-                isCurrentSessionLiveEcho: true,
+                isCurrentSessionReplay: true,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
         ).toBe(false);
     });
 
-    it('skips reset-birth cold-history without suppressing the live user echo', () => {
+    it('accepts scoped reset-birth cold-history without suppressing the live user echo', () => {
         expect(
             shouldSkipHistoryReplay({
                 isNewSession: false,
                 isLoadingSession: false,
                 isColdHistoryReplay: true,
+                isCurrentSessionReplay: true,
                 isResetBirthPending: true,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
-        ).toBe(true);
+        ).toBe(false);
 
         expect(
             shouldSkipHistoryReplay({

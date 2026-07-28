@@ -62,6 +62,7 @@ import type {
   InjectedTurnRequest,
   InjectedTurnResult,
   SessionEngine,
+  SessionEngineReplayMessage,
 } from './types';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
@@ -81,6 +82,8 @@ import {
 } from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import type { SessionMessage } from '../types/session';
+import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
   DESKTOP_CHANNEL_DELIVERY,
   IM_CHANNEL_DELIVERY,
@@ -141,6 +144,13 @@ async function stopExternalTarget(): Promise<boolean> {
 
 function getRuntimeSessionId(): string {
   return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
+}
+
+function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineReplayMessage {
+  return {
+    ...message,
+    content: shrinkReplayContentForClient(message.content),
+  };
 }
 
 function getRuntimeWorkspacePath(): string {
@@ -230,12 +240,22 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     getStreamReplaySnapshot() {
+      // The bound identity is promoted before the lifecycle id during startup.
+      // Stream replay must follow the accepted Session, not the lagging runtime
+      // lifecycle, or pending→real reconnects query an empty snapshot.
+      const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
+      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
       const systemInitPayload = getExternalSystemInitPayload();
       return {
+        sessionId,
         initState: { ...getAgentState(), sessionState: getExternalSessionState() },
-        replayMessages: [],
+        replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
+        liveStreamingMessage: liveSnapshot?.liveStreamingMessage
+          ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
+          : null,
         systemInitPayload: systemInitPayload ?? undefined,
-        pendingInteractiveRequests: getExternalPendingInteractiveRequests(),
+        pendingInteractiveRequests: liveSnapshot?.pendingInteractiveRequests
+          ?? getExternalPendingInteractiveRequests(),
       };
     },
 

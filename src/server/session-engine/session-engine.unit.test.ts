@@ -171,7 +171,7 @@ const mocks = vi.hoisted(() => {
     getActiveRuntimeType: vi.fn(() => 'codex'),
     getCurrentBoundSessionId: vi.fn<() => string | null>(() => null),
     getExternalLiveAssistantMessage: vi.fn<() => { id: string; role: 'user' | 'assistant'; content: string; timestamp: string } | null>(() => null),
-    getExternalLiveSessionSnapshot: vi.fn<() => Record<string, unknown> | null>(() => null),
+    getExternalLiveSessionSnapshot: vi.fn<(targetSessionId: string) => Record<string, unknown> | null>(() => null),
     getExternalCurrentTurnIdentity: vi.fn(() => state.externalTurnIdentity),
     getExternalQueueStatus: vi.fn(() => [{ id: 'xq1', messagePreview: 'hello' }]),
     getExternalPendingInteractiveRequests: vi.fn(() => []),
@@ -625,6 +625,7 @@ describe('session-engine selector and adapters', () => {
       latestResult: 'builtin answer',
     });
     expect(engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId: 'builtin-session',
       replayMessages: [
         { id: 'u1', content: 'hello' },
         { id: 'a1', content: [{ type: 'text', text: 'saved answer' }] },
@@ -696,10 +697,19 @@ describe('session-engine selector and adapters', () => {
   it('exposes external read, config, and restore surfaces behind the external adapter', () => {
     mocks.state.useExternal = true;
     mocks.state.externalBusy = true;
-    mocks.getCurrentBoundSessionId.mockReturnValueOnce('bound-session');
-    mocks.getExternalLiveSessionSnapshot.mockReturnValueOnce({
+    mocks.getCurrentBoundSessionId
+      .mockReturnValueOnce('bound-session')
+      .mockReturnValueOnce('bound-session');
+    mocks.getExternalLiveSessionSnapshot.mockImplementation((targetSessionId: string) => {
+      expect(targetSessionId).toBe('bound-session');
+      return {
       snapshotRevision: 3,
-      inMemoryMessages: [],
+      inMemoryMessages: [{
+        id: 'external-user',
+        role: 'user',
+        content: 'accepted before reconnect',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      }],
       liveStreamingMessage: {
         id: 'live',
         role: 'assistant',
@@ -708,6 +718,7 @@ describe('session-engine selector and adapters', () => {
       },
       liveSessionState: 'idle',
       pendingInteractiveRequests: [],
+      };
     });
 
     const engine = getSessionEngine();
@@ -724,6 +735,19 @@ describe('session-engine selector and adapters', () => {
       runtimeSource: 'system-cli',
       sessionId: 'external-session',
       boundSessionId: 'bound-session',
+    });
+    expect(engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId: 'bound-session',
+      replayMessages: [{
+        id: 'external-user',
+        role: 'user',
+        content: 'accepted before reconnect',
+      }],
+      liveStreamingMessage: {
+        id: 'live',
+        role: 'assistant',
+        content: 'typing',
+      },
     });
     expect(engine.getSessionConfigSnapshot()).toEqual({
       success: true,
@@ -744,7 +768,7 @@ describe('session-engine selector and adapters', () => {
       permissionMode: 'no-restrictions',
       reasoningEffort: 'medium',
     });
-    expect(engine.getLiveSessionOverlay('external-session')).toMatchObject({
+    expect(engine.getLiveSessionOverlay('bound-session')).toMatchObject({
       isActive: true,
       runtime: 'codex',
       liveStreamingMessage: { id: 'live', content: 'typing' },
