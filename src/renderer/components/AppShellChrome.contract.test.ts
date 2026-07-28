@@ -210,6 +210,6 @@ describe('App Shell chrome contract', () => {
     expect(trafficLights).toContain('Some(ns_window),');
     expect(trafficLights).toContain('objc_setAssociatedObject(');
     expect(nativeOwnerSources).not.toContain('WindowEvent::Resized');
-    expect(app).toContain('const MAIN_TRAFFIC_LIGHT_X: f64 = 5.0;');
+    expect(app).toContain('const MAIN_TRAFFIC_LIGHT_X: f64 = 15.0;');
   });
 });

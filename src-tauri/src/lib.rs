@@ -71,7 +71,7 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 
 #[cfg(target_os = "macos")]
-const MAIN_TRAFFIC_LIGHT_X: f64 = 5.0;
+const MAIN_TRAFFIC_LIGHT_X: f64 = 15.0;
 #[cfg(target_os = "macos")]
 const MAIN_TRAFFIC_LIGHT_Y: f64 = 20.0;
 
@@ -859,9 +859,12 @@ pub fn run() {
                     e
                 })?;
 
-            // x=5 centers the native cluster in the 64px rail;
-            // y=20 preserves its established vertical alignment. Install the
-            // native owner before the first visible frame.
+            // x=15 gives the native cluster a conventional leading inset and
+            // leaves the same optical gap before the fixed toggle slot. The
+            // shared sidebar/titlebar surface means the cluster no longer has
+            // to stay geometrically centered inside the 64px rail. y=20 keeps
+            // the established vertical alignment. Install the owner before
+            // the first visible frame.
             #[cfg(target_os = "macos")]
             if let Err(e) = macos_traffic_light::install_native_layout_owner(
                 &main_window,

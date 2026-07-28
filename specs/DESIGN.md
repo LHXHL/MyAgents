@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.43
+> **Version**: 2.8.44
 > **Last Updated**: 2026-07-29
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1273,7 +1273,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 ```
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
-- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
+- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 红绿灯使用 15px 左侧 inset：顶部 Tab 与侧栏已共用同一材质，三按钮无需再硬性居中于 64px rail；15px 同时让窗口左缘到关闭按钮、第三颗按钮到 `x=84px` toggle 槽形成近似等距留白。原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
 - 常驻展开态 256px，rail 64px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=22px` 且复用同一 DOM；其中心与 16px 功能图标共同落在 `x=32px` 中线上，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
@@ -1406,6 +1406,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.44 | 2026-07-29 | **macOS 红绿灯留白校准**：顶部 Tab 与侧栏同色后，主窗口红绿灯左侧 inset 从 5px 调至 15px，使左缘留白接近顶部留白，并与右侧固定 toggle 槽形成更均衡的间隔；继续由原生布局 owner 保证 zoom、resize 与全屏切换稳定，Windows 不受影响 |
 | 2.8.43 | 2026-07-29 | **Markdown 列表与代码面层级校准**：默认有序/无序列表整体缩进从 20px 调至 32px，让 marker 与正文左边界形成轻量区隔；compact 使用 24px，嵌套与 task list 保持文字列对齐。代码正文改与 Chat tool/process 组共用 `paper-inset / 30%` 浅表面，标题行接手原正文 `--code-bg`，Mermaid code view 同步，不新增颜色 Token |
 | 2.8.42 | 2026-07-29 | **App Shell 材质边界减法**：顶部 Tab 标题栏改与全局侧栏共用 `--global-sidebar-bg`，并移除标题栏底部分割线；Chat 与右侧工作区的通顶左边框改为上下各留 16px 的内部短分隔线，不改变三栏宽度、面板内容或收展动效 |
 | 2.8.41 | 2026-07-29 | **Chat 顶部信息减法**：AI 对话顶栏默认隐藏工作区历史入口，完整保留按钮、下拉与切换实现，并在“设置 → 关于 → 开发者”的开发者模式下方提供默认关闭的持久化开关；右侧工作区标题栏移除冗余“工作区”文字，搜索、终端、浏览器、Agent 设置与收展动作保持不变 |
