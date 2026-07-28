@@ -67,4 +67,33 @@ describe('GrepTool SDK pagination metadata', () => {
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
+
+  it.each([
+    { totalLines: -1, appliedOffset: 0 },
+    { totalLines: 90, appliedOffset: -1 },
+    { totalLines: 90, appliedOffset: 1e20 },
+    { numFiles: -1, numLines: undefined, totalFiles: 10, appliedOffset: 0 },
+    { numFiles: '3', numLines: undefined, totalFiles: 10, appliedOffset: 0 },
+    { numFiles: null, numLines: undefined, totalFiles: 10, appliedOffset: 0 },
+  ])('omits pagination claims for malformed SDK metadata: %o', (metadata) => {
+    render(<GrepTool tool={grepTool({
+      numFiles: 3,
+      numLines: 20,
+      numMatches: 18,
+      ...metadata,
+      content: 'src/a.ts:needle',
+    })} />);
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('does not render an impossible range whose offset is beyond the total', () => {
+    render(<GrepTool tool={grepTool({
+      numLines: 20,
+      totalLines: 10,
+      appliedOffset: 20,
+    })} />);
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
 });

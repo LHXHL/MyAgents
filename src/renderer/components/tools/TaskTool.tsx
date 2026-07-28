@@ -24,6 +24,9 @@ const TRACE_VIRTUALIZE_THRESHOLD = 30;
 // Constants
 const DEFAULT_LINE_HEIGHT = 22;
 const DEFAULT_MAX_LINES = 5;
+const MAX_TASK_MODEL_PATH_ITEMS = 8;
+const MAX_TASK_MODEL_ID_LENGTH = 128;
+const MAX_TASK_MODEL_METADATA_ITEMS = 32;
 
 interface TaskToolProps {
   tool: ToolUseSimple;
@@ -63,17 +66,35 @@ function formatTokens(tokens: number): string {
 function resolveTaskModels(result: TaskResult | null): string[] {
   if (!result) return [];
   const rawModels: unknown[] = Array.isArray(result.modelsUsed) ? result.modelsUsed : [];
-  const models = rawModels.filter((model, index, all): model is string => (
-    typeof model === 'string' && model.length > 0 && all.indexOf(model) === index
-  ));
-  if (
-    typeof result.resolvedModel === 'string'
-    && result.resolvedModel.length > 0
-    && !models.includes(result.resolvedModel)
-  ) {
-    models.push(result.resolvedModel);
+  const normalizeModel = (model: unknown): string | null => {
+    if (typeof model !== 'string') return null;
+    const normalized = model.trim();
+    return normalized.length > 0 && normalized.length <= MAX_TASK_MODEL_ID_LENGTH
+      ? normalized
+      : null;
+  };
+  const finalModel = normalizeModel(result.resolvedModel);
+  if (rawModels.length > MAX_TASK_MODEL_METADATA_ITEMS) {
+    return finalModel ? [finalModel] : [];
   }
-  return models;
+  const models: string[] = [];
+  const seen = new Set<string>();
+  for (const rawModel of rawModels) {
+    const model = normalizeModel(rawModel);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+    if (models.length > MAX_TASK_MODEL_PATH_ITEMS) {
+      // An incomplete truncated path is misleading; retain only the SDK's
+      // authoritative final model for malformed/unexpectedly large payloads.
+      return finalModel ? [finalModel] : [];
+    }
+  }
+  if (!finalModel) return models;
+  if (!seen.has(finalModel) && models.length >= MAX_TASK_MODEL_PATH_ITEMS) {
+    return [finalModel];
+  }
+  return [...models.filter(model => model !== finalModel), finalModel];
 }
 
 // 可折叠内容组件 - 默认最多显示 5 行
@@ -629,8 +650,9 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const bgComplete = bgTerminalStatus !== null;
 
   // Live stats polling (for tool count display during execution, NOT for completion)
-  const outputFile = isBackgroundTask
-    ? parsedResult?.outputFile ?? parsedResult?.output_file ?? null
+  const outputFileCandidate = parsedResult?.outputFile ?? parsedResult?.output_file;
+  const outputFile = isBackgroundTask && typeof outputFileCandidate === 'string'
+    ? outputFileCandidate
     : null;
   const tabApi = useTabApiOptional();
   const noopApiPost = useCallback(async <T,>(_path: string, _body?: unknown): Promise<T> => { throw new Error('no apiPost'); }, []);

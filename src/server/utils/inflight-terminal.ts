@@ -81,3 +81,61 @@ export function terminalEventMatchesInFlight(opts: {
   if (!opts.isInterrupting) return true;
   return opts.interruptTargetQueueId === opts.currentQueueId;
 }
+
+/**
+ * Reconcile the narrow result-before-interrupt-receipt race.
+ *
+ * The result handler preserves an in-flight queued command when no receipt is
+ * available yet. If the receipt arrives later and explicitly omits that exact
+ * UUID, the preserved queue pill must be cancelled at the existing queue owner.
+ */
+export function shouldDropInFlightAfterLateInterruptReceipt(opts: {
+  postInterruptOutcome: 'result-claimed' | 'session-ended' | null;
+  interruptTargetQueueId: string | null;
+  currentQueueId: string | null;
+  stillQueued: ReadonlySet<string>;
+}): boolean {
+  return opts.postInterruptOutcome === 'result-claimed'
+    && opts.interruptTargetQueueId !== null
+    && opts.currentQueueId === opts.interruptTargetQueueId
+    && !opts.stillQueued.has(opts.interruptTargetQueueId);
+}
+
+export type InterruptReceipt = { still_queued: readonly string[] };
+
+/**
+ * Imperative receipt shell shared by the live interrupt owner and its race
+ * tests. Live state is read after the deferred SDK control response resolves,
+ * so result-first and Query-replacement ordering cannot use stale snapshots.
+ */
+export async function reconcileInterruptReceipt(params: {
+  requestReceipt: () => Promise<InterruptReceipt | undefined>;
+  isCurrentOwner: () => boolean;
+  getPostInterruptOutcome: () => 'result-claimed' | 'session-ended' | null;
+  interruptTargetQueueId: string | null;
+  getCurrentQueueId: () => string | null;
+  onReceipt: (stillQueued: ReadonlySet<string>) => void;
+  onUnavailable: () => void;
+  dropExactInFlight: () => void;
+  scheduleDrain: () => void;
+}): Promise<InterruptReceipt | undefined> {
+  const receipt = await params.requestReceipt();
+  if (!params.isCurrentOwner()) return receipt;
+  if (!receipt) {
+    params.onUnavailable();
+    return receipt;
+  }
+
+  const stillQueued = new Set(receipt.still_queued);
+  params.onReceipt(stillQueued);
+  if (shouldDropInFlightAfterLateInterruptReceipt({
+    postInterruptOutcome: params.getPostInterruptOutcome(),
+    interruptTargetQueueId: params.interruptTargetQueueId,
+    currentQueueId: params.getCurrentQueueId(),
+    stillQueued,
+  })) {
+    params.dropExactInFlight();
+    params.scheduleDrain();
+  }
+  return receipt;
+}

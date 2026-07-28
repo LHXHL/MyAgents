@@ -19,9 +19,12 @@ import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNp
 import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
+import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
+import { summarizeSensitiveSdkMessage } from './utils/sdk-log-summary';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
 import {
   decideInFlightCancelSettlement,
+  reconcileInterruptReceipt,
   terminalEventMatchesInFlight,
   type InFlightAsyncCancelResult,
 } from './utils/inflight-terminal';
@@ -273,6 +276,7 @@ import {
   getCommittingTurnAdmissionQueueId,
   getInFlightMetadata,
   getInFlightQueueId,
+  getInterruptingInFlightQueueId,
   isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
@@ -9585,6 +9589,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
   }
 
   setInterruptingInFlightQueueId(getInFlightQueueId());
+  const interruptTargetQueueId = getInterruptingInFlightQueueId();
   isInterruptingResponse = true;
   interruptSurvivingQueueIds = null;
   postInterruptTurnEndOutcome = null;
@@ -9595,17 +9600,28 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     // If a MCP tool is hung (e.g., Playwright screenshot on heavy page), the subprocess
     // may be blocked on I/O and unable to handle the interrupt signal.
     const interruptQuery = lifecycleState.query;
-    const interruptPromise = interruptQuery.interrupt().then((receipt) => {
+    const interruptPromise = reconcileInterruptReceipt({
+      requestReceipt: () => interruptQuery.interrupt(),
       // A timed-out request can still resolve after this interrupt owner has
       // finished or the Query has been replaced. Ignore that stale receipt.
-      if (!isInterruptingResponse || lifecycleState.query !== interruptQuery) return receipt;
-      if (receipt) {
-        interruptSurvivingQueueIds = new Set(receipt.still_queued);
-        console.log(`[agent] Interrupt receipt: stillQueued=${receipt.still_queued.length}`);
-      } else {
+      isCurrentOwner: () => isInterruptingResponse && lifecycleState.query === interruptQuery,
+      getPostInterruptOutcome: () => postInterruptTurnEndOutcome,
+      interruptTargetQueueId,
+      getCurrentQueueId: getInFlightQueueId,
+      onReceipt: (stillQueued) => {
+        interruptSurvivingQueueIds = stillQueued;
+        console.log(`[agent] Interrupt receipt: stillQueued=${stillQueued.size}`);
+      },
+      onUnavailable: () => {
         console.log('[agent] Interrupt receipt unavailable (older CLI capability)');
-      }
-      return receipt;
+      },
+      dropExactInFlight: () => {
+        dropInFlightQueueItem(
+          'late interrupt receipt confirms queued item was cancelled',
+          'cancelled',
+        );
+      },
+      scheduleDrain: () => schedulePostTerminalQueueDrain('stopped'),
     });
     const timeoutPromise = new Promise<void>((_, reject) => {
       setTimeout(() => reject(new Error('Interrupt timeout')), 5000);
@@ -10049,6 +10065,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   content?: string;
   attachments?: MessageWire['attachments'];
   skippedLinks?: number;
+  fileRewindStatus?: FileRewindStatus;
 }> {
   const doRewind = async () => {
     // 1. 找到目标 user message
@@ -10073,28 +10090,27 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    跳过不属于当前 session 的 UUID：SDK 不认识，调用必定失败且日志噪声。
     //    跳过无 sdkUuid 的用户消息：旧存储加载或 SDK 尚未回传 UUID。
     const targetUserUuid = targetMessage.sdkUuid;
-    let skippedLinks = 0;
-    if (lifecycleState.query && targetUserUuid && !lifecycleState.abortRequested && transcriptState.currentSessionUuids.has(targetUserUuid)) {
-      try {
-        const REWIND_FILES_TIMEOUT_MS = 5_000;
-        const result = await Promise.race([
-          lifecycleState.query.rewindFiles(targetUserUuid),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('rewindFiles timeout')), REWIND_FILES_TIMEOUT_MS)
-          ),
-        ]);
-        console.log('[agent] rewindFiles result:', JSON.stringify(result));
-        skippedLinks = result.skippedLinks ?? 0;
-        if (skippedLinks > 0) {
-          console.warn(`[agent] rewindFiles partially restored files: skippedLinks=${skippedLinks}`);
-        }
-        if (!result.canRewind) {
-          console.warn('[agent] rewindFiles cannot rewind:', result.error);
-        }
-      } catch (err) {
-        console.error('[agent] rewindFiles error:', err);
-        // 文件回溯失败不阻断消息截断
-      }
+    const fileRewind = await attemptFileRewind({
+      query: lifecycleState.query,
+      targetUserUuid,
+      abortRequested: lifecycleState.abortRequested,
+      isCurrentSessionUuid: Boolean(targetUserUuid && transcriptState.currentSessionUuids.has(targetUserUuid)),
+    });
+    const { skippedLinks, fileRewindStatus } = fileRewind;
+    if (fileRewind.diagnostics) {
+      console.log(
+        '[agent] rewindFiles result:'
+        + ` canRewind=${fileRewind.diagnostics.canRewind}`
+        + ` filesChanged=${fileRewind.diagnostics.filesChanged}`
+        + ` insertions=${fileRewind.diagnostics.insertions}`
+        + ` deletions=${fileRewind.diagnostics.deletions}`
+        + ` skippedLinks=${skippedLinks}`,
+      );
+    }
+    if (fileRewindStatus === 'partial') {
+      console.warn(`[agent] rewindFiles partially restored files: skippedLinks=${skippedLinks}`);
+    } else if (fileRewindStatus === 'failed') {
+      console.error('[agent] rewindFiles failed or was refused (details withheld from logs)');
     } else if (!targetUserUuid) {
       console.log('[agent] rewind: target user message has no sdkUuid, skipping rewindFiles');
     }
@@ -10171,6 +10187,7 @@ export async function rewindSession(userMessageId: string): Promise<{
       success: true as const,
       content: removedContent,
       attachments: removedAttachments,
+      fileRewindStatus,
       ...(skippedLinks > 0 ? { skippedLinks } : {}),
     };
   };
@@ -11793,19 +11810,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
       // stream_event is high-frequency (per token delta) — skip logging entirely.
       // All other types are low-frequency and logged with type-specific detail:
-      //   system/init  — full JSON dump (once per session, all fields for diagnostics)
-      //   result       — full JSON dump, long strings truncated to 100 chars
+      //   system/init  — redacted counts/model summary (no workspace/plugin paths)
+      //   result       — redacted terminal/usage summary (no assistant/error content)
       //   rate_limit   — key fields (was previously silenced)
       //   others       — compact one-line summary
       if (sdkMessage.type !== 'stream_event') {
         const msg = sdkMessage as Record<string, unknown>;
+        const safeSdkLogMessage = summarizeSensitiveSdkMessage(sdkMessage);
 
         if (sdkMessage.type === 'system' && msg.subtype === 'init') {
-          // Full system_init — all fields visible for diagnostics (MCP status, tools, model, etc.)
-          console.log(`[agent][sdk] system_init: ${logStringify(sdkMessage)}`);
+          console.log(`[agent][sdk] system_init: ${logStringify(safeSdkLogMessage)}`);
         } else if (sdkMessage.type === 'result') {
-          // Full result — truncate long strings to 100 chars (e.g. result text)
-          console.log(`[agent][sdk] result: ${logStringify(sdkMessage, 100)}`);
+          console.log(`[agent][sdk] result: ${logStringify(safeSdkLogMessage)}`);
         } else if (sdkMessage.type === 'rate_limit_event') {
           const rli = msg.rate_limit_info as Record<string, unknown> | undefined;
           if (rli) {
@@ -11839,7 +11855,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
       } else {
         try {
-          const line = `${localTimestamp()} ${logStringify(sdkMessage)}`;
+          const line = `${localTimestamp()} ${logStringify(summarizeSensitiveSdkMessage(sdkMessage))}`;
           appendLogLine(line);
         } catch (error) {
           console.log('[agent][sdk] (unserializable)', error);

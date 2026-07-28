@@ -79,6 +79,7 @@ describe('handleSessionOperationRoute', () => {
       success: true,
       content: 'removed',
       skippedLinks: 2,
+      fileRewindStatus: 'partial',
     });
     const rewind = await handleSessionOperationRoute(
       '/chat/rewind',
@@ -109,6 +110,7 @@ describe('handleSessionOperationRoute', () => {
       success: true,
       content: 'removed',
       skippedLinks: 2,
+      fileRewindStatus: 'partial',
     });
     expect(await readJson(retry as Response)).toEqual({ success: true, content: 'retry text' });
     expect(await readJson(fork as Response)).toEqual({ success: true, newSessionId: 'forked' });

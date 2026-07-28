@@ -876,6 +876,12 @@ export type GrepResultStats = {
   appliedOffset?: number;
 };
 
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
 export function parseGrepStats(result: string | undefined): GrepResultStats | null {
   if (!result) return null;
   const trimmed = result.trimStart();
@@ -892,17 +898,28 @@ export function parseGrepStats(result: string | undefined): GrepResultStats | nu
       appliedOffset?: number;
     };
     if (!parsed || typeof parsed !== 'object') return null;
-    const files = typeof parsed.numFiles === 'number' ? parsed.numFiles : 0;
+    const files = nonNegativeSafeInteger(parsed.numFiles) ?? 0;
     const sdkMatches =
-      typeof parsed.numMatches === 'number' ? parsed.numMatches
-      : typeof parsed.numLines === 'number' ? parsed.numLines
-      : null;
-    const pagination = {
-      returnedLines: parsed.numLines,
-      totalFiles: parsed.totalFiles,
-      totalLines: parsed.totalLines,
-      appliedLimit: parsed.appliedLimit,
-      appliedOffset: parsed.appliedOffset,
+      nonNegativeSafeInteger(parsed.numMatches)
+      ?? nonNegativeSafeInteger(parsed.numLines)
+      ?? null;
+    const paginationValues = [
+      parsed.numFiles,
+      parsed.numLines,
+      parsed.totalFiles,
+      parsed.totalLines,
+      parsed.appliedLimit,
+      parsed.appliedOffset,
+    ];
+    const hasMalformedPagination = paginationValues.some(value => (
+      value !== undefined && nonNegativeSafeInteger(value) === undefined
+    ));
+    const pagination = hasMalformedPagination ? {} : {
+      returnedLines: nonNegativeSafeInteger(parsed.numLines),
+      totalFiles: nonNegativeSafeInteger(parsed.totalFiles),
+      totalLines: nonNegativeSafeInteger(parsed.totalLines),
+      appliedLimit: nonNegativeSafeInteger(parsed.appliedLimit),
+      appliedOffset: nonNegativeSafeInteger(parsed.appliedOffset),
     };
     if (sdkMatches !== null) return { matches: sdkMatches, files, ...pagination };
     // Fallback: derive from content (only valid for output_mode: 'content').

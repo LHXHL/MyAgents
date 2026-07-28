@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { SDK_BUILTIN_TOOLS, SDK_EXCLUDED_BUILTIN_TOOLS } from './sdk-builtin-tools';
@@ -37,5 +38,23 @@ describe('Claude Agent SDK builtin catalog', () => {
     for (const tool of SDK_EXCLUDED_BUILTIN_TOOLS) {
       expect(SDK_BUILTIN_TOOLS).not.toContain(tool);
     }
+  });
+
+  it('keeps control-plane SDK queries tool-free while product sessions use the catalog', () => {
+    for (const relativePath of [
+      'provider-verify.ts',
+      'subscription-auth.ts',
+      'title-generator.ts',
+      'official-tools/vision.ts',
+    ]) {
+      const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+      const queryCount = source.match(/\bquery\(\{/g)?.length ?? 0;
+      const disabledToolCount = source.match(/\btools:\s*\[\]/g)?.length ?? 0;
+      expect(queryCount, `${relativePath} should contain a production SDK query`).toBeGreaterThan(0);
+      expect(disabledToolCount, `${relativePath} must disable tools on every control query`).toBeGreaterThanOrEqual(queryCount);
+    }
+
+    const sessionSource = readFileSync(new URL('agent-session.ts', import.meta.url), 'utf8');
+    expect(sessionSource).toContain('tools: [...SDK_BUILTIN_TOOLS]');
   });
 });

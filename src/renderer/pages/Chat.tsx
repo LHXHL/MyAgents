@@ -9,6 +9,7 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
+import { type RewindResponse, warnRewindFileOutcome as showRewindFileOutcomeWarning } from '@/utils/rewindFileOutcome';
 import Tip from '@/components/Tip';
 import DirectoryPanel, { type DirectoryPanelHandle, type WorkspaceTreePersistedState } from '@/components/DirectoryPanel';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
@@ -4488,6 +4489,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     return () => window.removeEventListener('permission-mode-sync', handler);
   }, [tabId]); // stable — reads permissionMode via ref
 
+  const warnRewindFileOutcome = useCallback((result: RewindResponse | undefined) => {
+    showRewindFileOutcomeWarning(result, toastRef.current.warning, t);
+  }, [t]);
+
   // Stable callback for time rewind — uses ref for messages to keep reference stable
   const handleRewind = useCallback((messageId: string) => {
     const msgs = messagesRef.current;
@@ -4544,15 +4549,15 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost('/chat/rewind', { userMessageId: messageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string; skippedLinks?: number } | undefined;
+        const r = res as RewindResponse | undefined;
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
           chatInputRef.current?.setValue('');
           chatInputRef.current?.setImages([]);
           toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
-        } else if (r?.skippedLinks && r.skippedLinks > 0) {
-          toastRef.current.warning(t('shell.toasts.rewindPartialLinks', { count: r.skippedLinks }));
+        } else {
+          warnRewindFileOutcome(r);
         }
       })
       .catch(err => {
@@ -4567,7 +4572,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
         setRewindStatus(null);
         setIsLoading(false);
       });
-  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t]);
+  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome]);
 
   // Retry = rewind to before user message + auto-resend
   // Rewind to before the given user message and re-send its content.
@@ -4603,15 +4608,13 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost(retryEndpoint, { userMessageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string; skippedLinks?: number } | undefined;
+        const r = res as RewindResponse | undefined;
         if (r && !r.success) {
           setMessages(snapshot);
           toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
           return;
         }
-        if (r?.skippedLinks && r.skippedLinks > 0) {
-          toastRef.current.warning(t('shell.toasts.rewindPartialLinks', { count: r.skippedLinks }));
-        }
+        warnRewindFileOutcome(r);
         // Rewind succeeded → auto-resend the original message
         track('message_retry', {});
         resendFired = true;
@@ -4641,7 +4644,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           setIsLoading(false);
         }
       });
-  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t]); // all stable — refs handle the rest
+  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t, warnRewindFileOutcome]); // all stable — refs handle the rest
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback((assistantMessageId: string) => {

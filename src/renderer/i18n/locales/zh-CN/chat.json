@@ -957,6 +957,8 @@
       "rewindFailedWithError": "时间回溯失败：{{error}}",
       "rewindFailedRetry": "时间回溯失败，请重试",
       "rewindPartialLinks": "对话已回溯，但为保证安全，有 {{count}} 个链接文件未恢复。",
+      "rewindFilesFailed": "对话已回溯，但工作区文件恢复失败，文件保持当前状态。",
+      "rewindFilesNotAttempted": "对话已回溯，但没有可用的文件检查点，工作区文件保持当前状态。",
       "retryFailedWithError": "重试失败：{{error}}",
       "retryFailed": "重试失败",
       "forkOpenFailed": "创建分支失败：无法打开新会话",

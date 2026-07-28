@@ -138,6 +138,35 @@ describe('TaskTool renders a CollabAgent card with a nested trace', () => {
     );
   });
 
+  it('keeps the SDK-resolved final model last when it appeared earlier in the path', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'completed',
+        content: [{ type: 'text', text: 'done' }],
+        resolvedModel: 'model-a',
+        modelsUsed: ['model-a', 'model-b', 'model-a'],
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent(
+      '模型 model-b → model-a',
+    );
+  });
+
+  it('bounds malformed model paths and preserves only the authoritative final model', () => {
+    const { container } = render(<TaskTool tool={taskTool({
+      result: JSON.stringify({
+        status: 'completed',
+        content: [{ type: 'text', text: 'done' }],
+        resolvedModel: 'final-model',
+        modelsUsed: Array.from({ length: 20 }, (_, index) => `model-${index}`),
+      }),
+    })} />);
+
+    expect(container.querySelector('[data-task-models]')).toHaveTextContent('模型 final-model');
+    expect(container.querySelector('[data-task-models]')).not.toHaveTextContent('model-0');
+  });
+
   it('shows the SDK-resolved model for an async-launched background task', () => {
     const { container } = render(<TaskTool tool={taskTool({
       result: JSON.stringify({

@@ -291,6 +291,8 @@ export type CapabilityOperationResult = {
   images?: ImagePayload[];
   /** Files intentionally left untouched by SDK rewind link-safety checks. */
   skippedLinks?: number;
+  /** Outcome of the independent workspace checkpoint restoration during rewind. */
+  fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
 };
 
 export interface SessionEngine {

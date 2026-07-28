@@ -244,6 +244,7 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
+        tools: [],
       },
     }) as ClaudeAuthQuery;
 

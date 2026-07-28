@@ -957,6 +957,8 @@
       "rewindFailedWithError": "Time rewind failed: {{error}}",
       "rewindFailedRetry": "Time rewind failed. Please try again.",
       "rewindPartialLinks": "Conversation rewound, but {{count}} linked file(s) were left unchanged for safety.",
+      "rewindFilesFailed": "Conversation rewound, but workspace files could not be restored and remain unchanged.",
+      "rewindFilesNotAttempted": "Conversation rewound without a usable file checkpoint; workspace files remain unchanged.",
       "retryFailedWithError": "Retry failed: {{error}}",
       "retryFailed": "Retry failed",
       "forkOpenFailed": "Failed to create branch: cannot open a new chat.",

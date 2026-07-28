@@ -1,7 +1,7 @@
 import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { InteractionScenario } from '../system-prompt';
 import { trackServer as defaultTrackServer } from '../analytics';
-import { isAbortedTerminalReason, shouldTitleCompletedTurn } from '../../shared/terminalReason';
+import { shouldTitleCompletedTurn } from '../../shared/terminalReason';
 import type { CancelReason } from '../utils/cancellation';
 import {
   extractTurnUsageFromSdkResult,
@@ -10,6 +10,7 @@ import {
   isSuccessfulCompactControlTurn,
 } from '../utils/sdk-turn-outcome';
 import {
+  classifyBuiltinSdkTerminalResult,
   decideTransientProviderTextRetry,
   type TransientProviderTextError,
   type TransientProviderTextRetryDecision,
@@ -316,7 +317,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     // Runtime ownership ends at the SDK result, not when disk I/O finishes.
     // Finishing later can clear the abort/trace/stream state of a realtime
     // message that the persistent SDK has already started behind this turn.
-    commonTerminalCleanup(terminalKind === 'cancelled' ? 'stopped' : 'complete');
+    commonTerminalCleanup(
+      terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'),
+    );
     setCurrentTurnImTerminalEmitted(false);
     if (confirmedQueueTurnKeepStreaming) {
       deps.setStreamingMessage(true);
@@ -460,13 +463,17 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.resetWatchdogFired();
 
     const resultText = resultMessage.result || '';
-    const isAbortResult =
-      isAbortedTerminalReason(resultMessage.terminal_reason) || deps.getIsInterruptingResponse();
+    const terminalDisposition = classifyBuiltinSdkTerminalResult({
+      isError: resultMessage.is_error,
+      terminalReason: resultMessage.terminal_reason,
+    });
+    const isAbortResult = terminalDisposition === 'stopped' || deps.getIsInterruptingResponse();
+    const isTerminalFailure = terminalDisposition === 'error' && !isAbortResult;
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
 
     const transientRetryDecision = decideTransientProviderTextRetry({
       resultText,
-      isError: resultMessage.is_error,
+      isError: isTerminalFailure,
       isAbortResult,
       apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
       toolUseCount: getCurrentTurnToolCount(),
@@ -516,7 +523,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       return;
     }
 
-    if (resultMessage.is_error) {
+    if (isTerminalFailure || isAbortResult) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
       if (isSdkMissingResumeMessageError(rawError) && deps.recoverInvalidResumeAnchorError(rawError)) {
         console.warn('[agent] SDK result rejected resumeSessionAt anchor; cleared stale anchor and restarting without surfacing user error');
@@ -561,9 +568,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       || resultMessage.errors?.join('; ')
       || getLastAssistantMessageError()
       || '';
-    const noOutputResultText = resultMessage.is_error ? resultErrorText : (hasResultText ? resultText : '');
+    const noOutputResultText = isTerminalFailure ? resultErrorText : (hasResultText ? resultText : '');
     if (noOutputResultText && !hasCurrentTurnOutput() && !getCurrentTurnToolCount() && !isAbortResult) {
-      if (resultMessage.is_error) {
+      if (isTerminalFailure) {
         console.warn('[agent] SDK error result with no streamed output, showing as agent-error:', resultErrorText);
         deps.setLastAgentError(resultErrorText);
         deps.broadcast('chat:agent-error', { message: resultErrorText });
@@ -582,7 +589,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const finalTurnToolCount = getCurrentTurnToolCount();
     const finalTurnHasOutput = hasCurrentTurnOutput();
     const emptySuccessfulResult = isEmptySuccessfulSdkResult({
-      isError: resultMessage.is_error,
+      isError: isTerminalFailure,
       result: resultText,
       terminalReason: resultMessage.terminal_reason,
       hasVisibleOutput: finalTurnHasOutput,
@@ -605,11 +612,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     if (recoveredAssistantMessageError && lastAssistantMessageError) {
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
-    const terminalError = resultMessage.is_error && !isAbortResult
-      ? (resultErrorText || resultText || 'turn ended with error')
+    const terminalError = isTerminalFailure
+      ? (resultErrorText || resultText || `turn ended with terminal reason ${resultMessage.terminal_reason ?? 'unknown'}`)
       : undefined;
     deps.emitTrace('final', {
-      status: resultMessage.is_error || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
+      status: isTerminalFailure || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
       durationMs,
       count: finalTurnToolCount,
       detail: {
@@ -689,7 +696,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           scenarioType: scenario.type,
           desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
         });
-      if (!isAbortResult) {
+      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()) {
         track('ai_turn_complete', {
           source: turnAnalyticsSource,
           ...originAnalyticsFields(turnOrigin),
@@ -742,7 +749,8 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         isAbortResult ? 'cancelled' : 'complete',
       );
 
-      if (!isAbortResult && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
+      if (terminalDisposition === 'complete' && !deps.getIsInterruptingResponse()
+        && shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();
         const titleModel = deps.getCurrentModel();
         const titleProviderEnv = deps.getProviderEnv();
@@ -753,7 +761,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
 
       const sessionEventText = getCurrentTurnText();
-      const sessionEventError = resultMessage.is_error
+      const sessionEventError = isTerminalFailure
         ? {
             code: 'turn_failed',
             message:

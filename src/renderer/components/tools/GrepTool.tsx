@@ -71,6 +71,11 @@ function getGrepResultRange(stats: ReturnType<typeof parseGrepStats>): {
   if (total === undefined) return null;
   const returned = kind === 'lines' ? stats.returnedLines ?? stats.matches : stats.files;
   const offset = stats.appliedOffset ?? 0;
+  if (
+    !Number.isSafeInteger(total) || total < 0
+    || !Number.isSafeInteger(returned) || returned < 0
+    || !Number.isSafeInteger(offset) || offset < 0 || offset > total
+  ) return null;
   const end = Math.min(total, offset + returned);
   const isPartial = offset > 0 || end < total;
   if (!isPartial) return null;

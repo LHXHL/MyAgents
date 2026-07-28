@@ -249,6 +249,7 @@ async function verifyViaSdk(
         includePartialMessages: true,
         persistSession: false,
         mcpServers: {},
+        tools: [],
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path.
         ...(opts.model ? { model: applyProviderContextWindowSuffix(opts.model, opts.providerId) } : {}),
@@ -526,6 +527,7 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
       env,
       persistSession: false,
       mcpServers: {},
+      tools: [],
       systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
     },
   });
