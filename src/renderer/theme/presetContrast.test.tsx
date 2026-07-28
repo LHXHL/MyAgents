@@ -193,6 +193,57 @@ describe('production Theme contrast', () => {
     }
   });
 
+  it('keeps every code surface integrated with its scheme and every Prism color readable', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
+        const paper = tokens.get('--paper')!;
+        const inset = tokens.get('--paper-inset')!;
+        const codeBackground = tokens.get('--code-bg')!;
+        const codeHeader = tokens.get('--code-header-bg')!;
+        const codeText = tokens.get('--code-text')!;
+        const codeLineNumber = tokens.get('--code-line-number')!;
+        const paperLuminance = luminance(paper);
+        const insetLuminance = luminance(inset);
+        const codeLuminance = luminance(codeBackground);
+        const headerLuminance = luminance(codeHeader);
+
+        expect(
+          contrast(codeText, codeBackground),
+          `${definition.id}.${scheme} code text`,
+        ).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrast(codeLineNumber, codeBackground),
+          `${definition.id}.${scheme} code line number`,
+        ).toBeGreaterThanOrEqual(3);
+
+        if (scheme === 'light') {
+          expect(codeLuminance, `${definition.id}.light code vs paper`)
+            .toBeLessThan(paperLuminance);
+          expect(codeLuminance, `${definition.id}.light code vs inset`)
+            .toBeGreaterThan(insetLuminance);
+          expect(headerLuminance, `${definition.id}.light code header`)
+            .toBeLessThan(codeLuminance);
+        } else {
+          expect(codeLuminance, `${definition.id}.dark code vs paper`)
+            .toBeLessThan(paperLuminance);
+          expect(codeLuminance, `${definition.id}.dark code vs inset`)
+            .toBeGreaterThanOrEqual(insetLuminance);
+          expect(headerLuminance, `${definition.id}.dark code header`)
+            .toBeGreaterThan(codeLuminance);
+        }
+
+        for (const [selector, style] of Object.entries(definition.schemes[scheme].prism)) {
+          if (!style.color?.startsWith('#')) continue;
+          expect(
+            contrast(style.color, codeBackground),
+            `${definition.id}.${scheme} Prism ${selector}`,
+          ).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
   it('keeps the Default Black light primary action readable', () => {
     const definition = themeRegistry.getAcceptedDefinitions().find(
       candidate => candidate.id === 'default-black',

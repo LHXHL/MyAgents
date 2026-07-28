@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.39
-> **Last Updated**: 2026-07-28
+> **Version**: 2.8.40
+> **Last Updated**: 2026-07-29
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -893,18 +893,28 @@ transition: opacity var(--duration-slow),
 
 #### 多行代码块
 ```
-背景: #1e1e1e (深色) 或 var(--paper-inset) (浅色)
-文字: 根据语法高亮
+背景: Theme-owned var(--code-bg)
+  - Light: 位于 paper → paper-inset 之间的浅色代码面
+  - Dark: 位于或略高于 paper-inset 的主题炭色代码面
+文字: Theme Prism Adapter 语法高亮，普通文字 var(--code-text)
 字体: var(--font-mono)
 字号: 14px (text-sm)
-行高: 1.5
+行高: 1.6
 圆角: var(--radius-md)
 内边距: var(--space-4)
+边界: 1px solid var(--line)
+阴影: none
 
-头部 (可选):
+头部:
+  - 背景: var(--code-header-bg)
+  - 与正文之间: 1px solid var(--line)
   - 语言标签: 左上角
   - 复制按钮: 右上角
 ```
+
+Theme 与 AppearanceMode 正交：每套 Theme 必须分别交付 light/dark Code Token 与 Prism
+palette。Light 不得复用 dark palette，Dark 也不能退回无主题色的通用纯黑；组件只消费
+`ResolvedTheme.adapters.prism` 和 Code Token，不判断 Theme ID。
 
 ### 10.5 思考块 (Thinking Blocks)
 
@@ -1392,6 +1402,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.40 | 2026-07-29 | **代码块双外观主题适配**：八套生产 Theme 的 Light 代码块从突兀深底改为各自 paper/inset 色系内的浅色代码面；Dark 保留各主题炭色材质，canonical Prism 从 light/dark 共用 `oneDark` 收口为按 Theme 语义色分别生成；Markdown 与 Mermaid 代码块统一细边框、Header 分隔、10px 圆角及 code-local hover，不增加阴影或 Theme ID 分支 |
 | 2.8.39 | 2026-07-28 | **Markdown 排版聚落感校准**：Chat 与 Document 收口到同一默认节奏（16px/1.625、正文零额外字距、段落 12px、列表块 8px、列表项 6px、嵌套列表 4px），`strong` 与 H1 收至 600；改用后项拥有间距的单向流，补齐引用段落、GFM task list 和首尾块处理；`compact` 成为 14px/1.55 且标题、列表、表格、引用、代码块、分隔线同步收紧的完整变体 |
 | 2.8.38 | 2026-07-28 | **全局历史搜索层级修正**：稳定搜索外壳 portal 到 App 根内容之后的 `document.body`，避免 macOS WKWebView 把后续 Tab 的原生纵横滚动条合成到遮罩和搜索面板上方；Suspense、动画与关闭层生命周期保持不变 |
 | 2.8.37 | 2026-07-27 | **输入框菜单动效与层级收口**：`+`、会话模式、工具菜单统一为 200ms 淡入与自下向上归位，移除横向感和缩放；`@` 文件引用与 `/` 技能选择弹窗统一使用和输入框一致的 `shadow-md` |

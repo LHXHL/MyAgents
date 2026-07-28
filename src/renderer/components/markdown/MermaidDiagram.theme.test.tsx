@@ -41,6 +41,12 @@ describe('MermaidDiagram Theme adapter', () => {
     );
 
     await act(async () => vi.advanceTimersByTimeAsync(310));
+    expect(view.container.querySelector('.markdown-code-block')).toHaveClass(
+      'rounded-md',
+      'border',
+      'border-[var(--line)]',
+      'bg-[var(--code-bg)]',
+    );
     expect(mermaidCapture.initialize).toHaveBeenLastCalledWith(expect.objectContaining({
       theme: 'neutral',
       securityLevel: 'strict',

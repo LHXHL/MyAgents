@@ -177,7 +177,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
 
     // Header bar with toggle and copy button (shared across all states)
     const headerBar = (
-        <div className="flex items-center justify-between bg-[var(--code-header-bg)] px-4 py-2 text-xs">
+        <div className="flex items-center justify-between border-b border-[var(--line)] bg-[var(--code-header-bg)] px-4 py-2 text-xs">
             <span className="font-mono uppercase tracking-wide text-[var(--code-line-number)]">
                 mermaid
             </span>
@@ -213,7 +213,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
                 <button
                     type="button"
                     onClick={handleCopy}
-                    className="flex items-center gap-1.5 rounded px-2 py-1 text-[var(--code-line-number)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                    className="flex items-center gap-1.5 rounded px-2 py-1 text-[var(--code-line-number)] transition-colors hover:bg-[var(--line-subtle)] hover:text-[var(--code-text)]"
                     title={copied ? t('markdown.copied') : t('markdown.copyCode')}
                 >
                     {copied ? (
@@ -311,7 +311,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
     })();
 
     return (
-        <div className="markdown-code-block w-full overflow-hidden rounded-lg">
+        <div className="markdown-code-block w-full overflow-hidden rounded-md border border-[var(--line)] bg-[var(--code-bg)]">
             {headerBar}
             {viewMode === 'code' ? codeView : previewContent}
         </div>

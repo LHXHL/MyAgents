@@ -112,11 +112,11 @@ html[data-theme-id='proof'][data-color-scheme='light'] {
   --focus-border: #3d755d;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(47 49 45 / 0.18);
-  --code-bg: #18201c;
-  --code-bg-a0: rgb(24 32 28 / 0);
-  --code-header-bg: #222b26;
-  --code-text: #e8ebe5;
-  --code-line-number: #929e93;
+  --code-bg: #eeece5;
+  --code-bg-a0: rgb(238 236 229 / 0);
+  --code-header-bg: #e1ded5;
+  --code-text: #454941;
+  --code-line-number: #7e857b;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #d8e4d8 0%, rgb(216 228 216 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #e7dfce 0%, rgb(231 223 206 / 0) 55%),

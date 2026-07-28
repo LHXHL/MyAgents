@@ -112,11 +112,11 @@ html[data-theme-id='linear'][data-color-scheme='light'] {
   --focus-border: #5e6ad2;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(27 27 27 / 0.18);
-  --code-bg: #0f0f11;
-  --code-bg-a0: rgb(15 15 17 / 0);
-  --code-header-bg: #18181b;
-  --code-text: #e3e4e6;
-  --code-line-number: #8b8c96;
+  --code-bg: #f5f5f8;
+  --code-bg-a0: rgb(245 245 248 / 0);
+  --code-header-bg: #eaeaf0;
+  --code-text: #333337;
+  --code-line-number: #85858e;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #dfe1fb 0%, rgb(223 225 251 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #dcebea 0%, rgb(220 235 234 / 0) 55%),

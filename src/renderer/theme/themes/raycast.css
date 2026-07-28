@@ -112,11 +112,11 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --focus-border: #c83f45;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(3 3 3 / 0.18);
-  --code-bg: #101010;
-  --code-bg-a0: rgb(16 16 16 / 0);
-  --code-header-bg: #1a1a1a;
-  --code-text: #fefefe;
-  --code-line-number: #999999;
+  --code-bg: #f6f6f6;
+  --code-bg-a0: rgb(246 246 246 / 0);
+  --code-header-bg: #ebebeb;
+  --code-text: #242424;
+  --code-line-number: #808080;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #ffe0e0 0%, rgb(255 224 224 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #dfecea 0%, rgb(223 236 234 / 0) 55%),

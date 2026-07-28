@@ -112,11 +112,11 @@ html[data-theme-id='sage'][data-color-scheme='light'] {
   --focus-border: #47754f;
   --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(23 34 27 / 0.18);
-  --code-bg: #121912;
-  --code-bg-a0: rgb(18 25 18 / 0);
-  --code-header-bg: #1a241a;
-  --code-text: #dce8d7;
-  --code-line-number: #94a28f;
+  --code-bg: #ebf1e7;
+  --code-bg-a0: rgb(235 241 231 / 0);
+  --code-header-bg: #e0e9db;
+  --code-text: #27352b;
+  --code-line-number: #788476;
   --theme-body-background:
     radial-gradient(1200px 700px at 82% -10%, #d5e8d0 0%, rgb(213 232 208 / 0) 55%),
     radial-gradient(900px 600px at -10% 110%, #cfe4de 0%, rgb(207 228 222 / 0) 55%),

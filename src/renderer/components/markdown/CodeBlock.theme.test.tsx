@@ -31,6 +31,19 @@ describe('CodeBlock Theme adapter', () => {
 
     expect(syntaxCapture.styles.at(-1)?.['code[class*="language-"]']?.color).toBe('#21002f');
 
+    const codeBlock = view.container.querySelector('.markdown-code-block');
+    expect(codeBlock).toHaveClass(
+      'rounded-md',
+      'border',
+      'border-[var(--line)]',
+      'bg-[var(--code-bg)]',
+    );
+    expect(codeBlock?.firstElementChild).toHaveClass('border-b', 'border-[var(--line)]');
+    expect(view.getByRole('button')).toHaveClass(
+      'hover:bg-[var(--line-subtle)]',
+      'hover:text-[var(--code-text)]',
+    );
+
     view.rerender(
       <ThemeRuntimeProvider
         registry={registry}
