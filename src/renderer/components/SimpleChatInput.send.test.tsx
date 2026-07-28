@@ -585,6 +585,50 @@ describe('SimpleChatInput send paths', () => {
     expect(workspaceMocks.service.prepareUserImageAttachments).not.toHaveBeenCalled();
   });
 
+  it('opens the image preview with a single click on a pasted attachment', async () => {
+    const user = userEvent.setup();
+    renderInput({ mode: 'launcher' });
+    const textarea = screen.getByPlaceholderText('今天，想干点啥？');
+    const image = new File(['png'], 'clip.png', { type: 'image/png' });
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [
+          {
+            kind: 'file',
+            getAsFile: () => image,
+          },
+        ],
+      },
+    });
+
+    const thumbnail = await screen.findByRole('button', { name: 'clip.png' });
+    await user.click(thumbnail);
+
+    expect(screen.getByAltText('clip.png')).toBeInTheDocument();
+  });
+
+  it('accepts up to eight pasted image attachments', async () => {
+    renderInput({ mode: 'launcher' });
+    const textarea = screen.getByPlaceholderText('今天，想干点啥？');
+    const images = Array.from(
+      { length: 9 },
+      (_, index) => new File(['png'], `clip-${index + 1}.png`, { type: 'image/png' }),
+    );
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: images.map((image) => ({
+          kind: 'file',
+          getAsFile: () => image,
+        })),
+      },
+    });
+
+    await waitFor(() => expect(screen.getAllByAltText('attachment')).toHaveLength(8));
+    expect(screen.queryByRole('button', { name: 'clip-9.png' })).not.toBeInTheDocument();
+  });
+
   it('pastes non-image attachments as workspace file references', async () => {
     renderInput({ mode: 'launcher', workspacePath: '/workspace' });
     const textarea = screen.getByPlaceholderText('今天，想干点啥？');

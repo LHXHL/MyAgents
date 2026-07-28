@@ -1475,12 +1475,19 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             <div className="flex gap-2 px-4 pt-3 pb-1 overflow-x-auto">
               {images.map((img) => (
                 <div key={img.id} className="relative group flex-shrink-0">
-                  <img
-                    src={img.preview}
-                    alt="attachment"
-                    className="h-16 w-16 rounded-lg object-cover border border-[var(--line)] cursor-pointer"
-                    onDoubleClick={() => openPreview(img.preview, imageAttachmentName(img))}
-                  />
+                  <button
+                    type="button"
+                    aria-label={imageAttachmentName(img)}
+                    title={imageAttachmentName(img)}
+                    onClick={() => openPreview(img.preview, imageAttachmentName(img))}
+                    className="block h-16 w-16 cursor-pointer overflow-hidden rounded-lg border border-[var(--line)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+                  >
+                    <img
+                      src={img.preview}
+                      alt="attachment"
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
                   <button
                     type="button"
                     onClick={() => removeImage(img.id)}
