@@ -945,15 +945,13 @@ pre code {
    字阶分叉正是那段历史的产物）。 */
 .ai-message-content {
   font-size: var(--text-base);
-  line-height: 1.7;
-  letter-spacing: 0.01em;
+  line-height: 1.625;
+  letter-spacing: 0;
 }
 
-/* 间距规则已删（v2.4 cross-review）：本类沉睡期间遗留的 `p + p` / `li + li`
-   descendant 规则与 Markdown 组件的间距 utility（my-4 / space-y-2.5）构成双
-   owner——unlayered 作者样式恒胜 @layer utilities，接线后会无声压缩列表间距
-   （10px→8px）。间距的唯一 owner = Markdown 组件；本类只管 font-size /
-   line-height / letter-spacing 三件套。 */
+/* 具体段落、标题、列表与 compact 节奏的唯一 owner = Markdown.css 中的
+   `.markdown-content`。本类只给 host prose 容器提供默认正文 fallback，不能再
+   添加 descendant 间距规则，否则会重新形成跨文件双 owner。 */
 
 /* User message bubble */
 .user-message {
@@ -1088,7 +1086,7 @@ code {
 /* (PRD 0.2.34 P0-2). */
 .introduction-content {
   font-size: var(--text-base);
-  line-height: 1.7;
+  line-height: 1.625;
   color: var(--ink-muted);
 }
 

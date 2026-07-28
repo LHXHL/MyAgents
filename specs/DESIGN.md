@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.38
+> **Version**: 2.8.39
 > **Last Updated**: 2026-07-28
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -238,7 +238,7 @@ Token 定义在 `src/renderer/index.css` 的 `@theme` 块（单一真相源，�
 |------|----------------|------|------|---------|
 | meta | `--text-xs` / `text-xs` | 12px | 1.45 | 时间戳、badge、计数、快捷键、分类头(uppercase)、描述行、hint |
 | ui | `--text-sm` / `text-sm` | 14px | 1.5 | 按钮、菜单项、树节点、tab、工具卡、控制台输出、Markdown 表格 |
-| prose | `--text-base` / `text-base` | 16px | 1.7 | **正文主体**——AI 回答、用户气泡、widget body、输入框* |
+| prose | `--text-base` / `text-base` | 16px | 1.7 默认；Markdown 1.625 | **正文主体**——AI 回答、用户气泡、widget body、输入框* |
 | display | `--text-lg/xl/2xl` | 18/20/22px | 1.5/1.4/1.3 | 弹窗标题/Markdown H3、H2、H1 |
 | stat | `--text-3xl` / `text-3xl` | 28px | 1.2 | 数据大数字（占用率百分比等）、页面大标题 |
 | brand | `--text-brand` | 56px | 1.1 | 品牌名（Launcher 品牌区与 Settings About） |
@@ -262,7 +262,7 @@ meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 
   禁止裸 px。
 
 **字号使用原则**：
-- AI 回复的 Markdown 正文使用 16px / 1.7，确保阅读舒适
+- AI 回复与文档预览的 Markdown 正文使用 16px / 1.625；保持正文可读性的同时，让短段落和列表形成清晰聚落
 - AI 回复内的 Markdown 表格用 dense 档：td=14px，th=12px uppercase（表格是密集内容，
   但 13px 会在同一条消息内造成肉眼可见跳变；v2.5 起 ui 档即 14，自然归一）
 - 全部按钮（含工具栏 ghost）使用 14px（text-sm），配合 h-3.5 w-3.5 图标；按钮文字下限 14px
@@ -833,8 +833,8 @@ transition: opacity var(--duration-slow),
 背景: transparent (与页面融合)
 文字: var(--ink)
 字号: var(--text-base) / 16px
-行高: 1.7 (阅读优化，@theme 配对行高)
-段落间距: var(--space-4)
+行高: 1.625（26px；聊天与文档共用的 Markdown 阅读节奏）
+段落间距: var(--space-3) / 12px
 最大宽度: 768px (居中)
 ```
 
@@ -844,7 +844,7 @@ transition: opacity var(--duration-slow),
 文字: var(--ink)
 圆角: var(--radius-lg)
 内边距: var(--space-4)
-字号: var(--text-base)，行高 1.7（与 AI 消息一致，不另设 leading）
+字号: var(--text-base)，行高 1.625（与 AI Markdown 一致）
 对齐: 右侧（或左侧皆可，但需与 AI 区分）
 ```
 
@@ -942,23 +942,28 @@ AI 的思考过程，用户可选择查看。
 
 #### 行高与段落
 ```css
-/* AI 回复正文 */
-.ai-message-content {
+/* Chat 与 Document 共用的 Markdown 正文 */
+.markdown-content {
   font-size: var(--text-base);  /* 16px */
-  line-height: 1.7;              /* 27.2px - 适合长文本阅读 */
-  letter-spacing: 0.01em;        /* 略微增加字间距 */
+  line-height: 1.625;            /* 26px - 长文可读，短列表不漂散 */
+  letter-spacing: 0;
 }
 
 /* 段落间距 */
-.ai-message-content p + p {
-  margin-top: var(--space-2);    /* 8px */
+.markdown-paragraph {
+  margin-top: var(--space-3);    /* 12px */
 }
 
 /* 列表项间距 */
-.ai-message-content li + li {
-  margin-top: var(--space-1.5);  /* 6px */
+.markdown-list-item + .markdown-list-item {
+  margin-top: var(--space-1-5);  /* 6px */
 }
 ```
+
+正文采用单向 `margin-block-start`：后一个内容块拥有间距，禁止同时给前后元素设置
+上下 margin 后依赖 margin collapse。Chat 与 Document 使用同一默认节奏；`compact`
+是唯一独立变体，正文 14px / 1.55、段落 8px、列表块 6px、列表项 4px，并同步收紧
+标题、表格、引用、代码块和分隔线，不能只缩字号。
 
 #### 内容宽度
 - 最大宽度限制 768px，避免单行过长影响阅读
@@ -968,12 +973,12 @@ AI 的思考过程，用户可选择查看。
 在 AI 生成的 Markdown 内容中：
 | Markdown | 样式 |
 |----------|------|
-| `# H1` | 22px, bold, margin-top: 24px, margin-bottom: 16px |
-| `## H2` | 20px, semibold, margin-top: 20px, margin-bottom: 12px |
-| `### H3` | 18px, semibold, margin-top: 16px, margin-bottom: 8px |
-| `#### H4` | 16px, semibold, margin-top: 12px, margin-bottom: 8px |
-| `##### H5` | 16px, medium, margin-top: 12px, margin-bottom: 8px |
-| `###### H6` | 16px, medium, margin-top: 12px, margin-bottom: 8px |
+| `# H1` | 22px, semibold, margin-top: 24px；到正文 8px |
+| `## H2` | 20px, semibold, margin-top: 20px；到正文 8px |
+| `### H3` | 18px, semibold, margin-top: 20px；到正文 8px |
+| `#### H4` | 16px, semibold, margin-top: 16px；到正文 8px |
+| `##### H5` | 16px, medium, margin-top: 12px；到正文 8px |
+| `###### H6` | 16px, medium, margin-top: 12px；到正文 8px |
 
 #### 表格 (Markdown Table)
 
@@ -992,10 +997,12 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 | 场景 | 间距 |
 |------|------|
 | 消息之间 | var(--space-4) / 16px |
-| 消息内段落 | var(--space-4) / 16px |
+| 消息内段落 | var(--space-3) / 12px |
 | 工具块与文本 | var(--space-3) / 12px |
 | 代码块与文本 | var(--space-3) / 12px |
-| 列表项之间 | var(--space-2) / 8px |
+| 列表块上下 | var(--space-2) / 8px |
+| 列表项之间 | var(--space-1-5) / 6px |
+| 嵌套列表项之间 | var(--space-1) / 4px |
 
 ### 10.9 加载与过渡状态
 
@@ -1385,6 +1392,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.39 | 2026-07-28 | **Markdown 排版聚落感校准**：Chat 与 Document 收口到同一默认节奏（16px/1.625、正文零额外字距、段落 12px、列表块 8px、列表项 6px、嵌套列表 4px），`strong` 与 H1 收至 600；改用后项拥有间距的单向流，补齐引用段落、GFM task list 和首尾块处理；`compact` 成为 14px/1.55 且标题、列表、表格、引用、代码块、分隔线同步收紧的完整变体 |
 | 2.8.38 | 2026-07-28 | **全局历史搜索层级修正**：稳定搜索外壳 portal 到 App 根内容之后的 `document.body`，避免 macOS WKWebView 把后续 Tab 的原生纵横滚动条合成到遮罩和搜索面板上方；Suspense、动画与关闭层生命周期保持不变 |
 | 2.8.37 | 2026-07-27 | **输入框菜单动效与层级收口**：`+`、会话模式、工具菜单统一为 200ms 淡入与自下向上归位，移除横向感和缩放；`@` 文件引用与 `/` 技能选择弹窗统一使用和输入框一致的 `shadow-md` |
 | 2.8.36 | 2026-07-27 | **定时任务文案明确化**：中文输入框 `+` 菜单入口由“定时”改为“定时任务”，不改变 i18n key、英文翻译或功能行为 |

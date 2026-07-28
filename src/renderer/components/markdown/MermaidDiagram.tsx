@@ -311,7 +311,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
     })();
 
     return (
-        <div className="my-3 w-full overflow-hidden rounded-lg">
+        <div className="markdown-code-block w-full overflow-hidden rounded-lg">
             {headerBar}
             {viewMode === 'code' ? codeView : previewContent}
         </div>
