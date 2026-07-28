@@ -326,7 +326,7 @@ IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.a
 | `dynamicToolCall` | `<tool>` | `contentItems[]`：`inputText` 进 content，`inputImage{imageUrl}` 生成 ToolAttachment；`namespace` / `durationMs` 透出 |
 | `webSearch` | `WebSearch` | `action` union 全分支（search/openPage/findInPage/other） |
 | `imageView` | `Read` | `path` |
-| `imageGeneration` | `ImageGeneration` | **生图核心**：优先 `savedPath`（零拷贝引用 Codex 自动保存），fallback `result` (base64) 解码落盘 → ToolAttachment[]；content 留 `revisedPrompt` 文字 |
+| `imageGeneration` | `ImageGeneration` | **生图核心**：System CLI 优先 `savedPath`（零拷贝），fallback `result`；Managed Provider 只取 `result` (base64) 解码到 MyAgents generated root，禁止引用同时承载 `auth.json` 的 managed `CODEX_HOME`；content 留 `revisedPrompt` 文字 |
 | `collabAgentToolCall` | `CollabAgent` | tool / prompt / model / senderThreadId / receiverThreadIds 摘要 |
 | `plan` | — (started 走 thinking_start) | text 通过 `item/plan/delta` 流式 |
 | `reasoning` | — (started 走 thinking_start) | summary 通过 `summaryTextDelta` 流式 |
@@ -382,6 +382,10 @@ Codex 的 `imageGeneration` / `mcpToolCall` 含 image content / `dynamicToolCall
 路径都走统一 `saveToolAttachment(...)` → `tool_result.attachments[]`。前端用单一
 `ToolAttachmentGallery` 渲染。完整管道（异步落盘 placeholder、5 层路径校验、SSRF 防护、session
 resume 重 register）详见 [Tool Attachment 管道](./tool_attachment_pipeline.md)。
+
+Managed Codex 的 `CODEX_HOME` 同时包含认证文件与 `generated_images`，因此 attachment 黑名单必须覆盖
+整个目录，不能为图片子目录开洞。`imageGeneration` 事件同时返回图片 base64 时，由 adapter 将其复制到
+MyAgents 专用 generated root；若事件缺少 base64，则 fail closed，不降级引用 managed `savedPath`。
 
 ### 权限模式映射
 

@@ -43,6 +43,10 @@
            ┌─────────────────────────────────────────────────────┐
            │ codex.ts::parseNotification (Sidecar)               │
            │                                                     │
+           │  selectCodexImageGenerationAttachmentSource         │
+           │  ├── system-cli: savedPath 优先，result fallback     │
+           │  └── managed-provider: 只用 result（见安全边界）     │
+           │                                                     │
            │  scheduleAttachmentSave(source, ctx, asyncEmit)     │
            │  ├── makePlaceholderAttachment → pendingId          │
            │  └── trackInFlightSave(promise)                     │
@@ -279,7 +283,7 @@ attachment。任何触发这种路径的入口视为 bug。
 
 | Codex item.type | 修复内容 |
 |---|---|
-| `imageGeneration` | 优先 savedPath（零拷贝引用），fallback `result` base64 落盘 |
+| `imageGeneration` | System CLI 优先 savedPath（零拷贝引用），fallback `result` base64；Managed Provider 只用 `result` base64 落盘，不把同时存有凭据的 managed `CODEX_HOME` 暴露给 attachment reader |
 | `mcpToolCall` | `result.content[]` 走 MCP ContentBlock union（text / image / audio / resource_link）；attachments 收集图片/音频 |
 | `dynamicToolCall` | `contentItems[]` 处理 `inputImage{imageUrl}`；namespace / durationMs 透出 |
 | `webSearch` | `action` union 全分支（search/openPage/findInPage/other），多 query 显示 |

@@ -93,6 +93,27 @@ export function summarizeCodexThreadParamsForLog(
   };
 }
 
+export function selectCodexImageGenerationAttachmentSource(
+  runtimeSource: RuntimeSource,
+  item: { savedPath?: unknown; result?: unknown },
+): AttachmentSource | undefined {
+  // Managed Codex stores auth.json and generated_images under the same CODEX_HOME.
+  // Keep that whole tree unreadable to the generic attachment pipeline and copy
+  // the event bytes into MyAgents' dedicated generated root instead.
+  if (runtimeSource === 'managed-provider') {
+    return typeof item.result === 'string' && item.result
+      ? { kind: 'base64', data: item.result }
+      : undefined;
+  }
+  if (typeof item.savedPath === 'string' && item.savedPath) {
+    return { kind: 'externalPath', sourcePath: item.savedPath };
+  }
+  if (typeof item.result === 'string' && item.result) {
+    return { kind: 'base64', data: item.result };
+  }
+  return undefined;
+}
+
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
@@ -4149,28 +4170,29 @@ export class CodexRuntime implements AgentRuntime {
             // PRD 0.2.15 — the core fix. Prior code only read revisedPrompt/status
             // and dropped the actual image bytes on the floor.
             //
-            // Sources, in preference order:
-            //   1. savedPath (Codex v0.117+ auto-saved file in its cache) → zero-copy reference
-            //   2. result (base64 image bytes from OpenAI image_generation_call) → decode + write
+            // Source policy follows the runtime owner boundary:
+            //   - system-cli: savedPath first (zero-copy), then result base64
+            //   - managed-provider: result base64 only; its CODEX_HOME also stores credentials
             const attachments: ToolAttachment[] = [];
             const caption = typeof item.revisedPrompt === 'string' ? item.revisedPrompt : undefined;
             const mime = 'image/png';
 
-            if (typeof item.savedPath === 'string' && item.savedPath) {
+            const source = selectCodexImageGenerationAttachmentSource(
+              codexProc.runtimeSource,
+              item,
+            );
+            if (source) {
               attachments.push(this.scheduleAttachmentSave(
-                { kind: 'externalPath', sourcePath: item.savedPath },
+                source,
                 attachCtx(mime, caption, 'codex.image_generation'),
                 asyncEmit,
               ));
-            } else if (typeof (item as Record<string, unknown>).result === 'string') {
-              const b64 = (item as Record<string, unknown>).result as string;
-              if (b64) {
-                attachments.push(this.scheduleAttachmentSave(
-                  { kind: 'base64', data: b64 },
-                  attachCtx(mime, caption, 'codex.image_generation'),
-                  asyncEmit,
-                ));
-              }
+            } else {
+              console.warn(
+                `[codex] imageGeneration completed without a safe image source `
+                + `(runtimeSource=${codexProc.runtimeSource}, hasSavedPath=${Boolean(item.savedPath)}, `
+                + `resultType=${typeof item.result})`,
+              );
             }
 
             return [
