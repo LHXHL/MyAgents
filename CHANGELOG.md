@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.1] - 2026-07-29
+
+> MyAgents 0.4.1 聚焦会话可靠性与聊天体验：升级 Claude Agent SDK，修复断线、重置和删除期间的会话竞态，并让 Agent 停用或移除后及时释放 Channel 与 Plugin Runtime。版本同时改进 Markdown、代码主题、图片预览、Tab 标题与 macOS 构建资源隔离。
+
+### Added
+
+- **粘贴图片支持单击预览**：Chat 与 Launcher 中的粘贴图片可以直接打开大图预览；单次最多保留八张，并发导入也会遵守同一上限。
+
+### Changed
+
+- **Claude Agent SDK 升级至 0.3.220**：适配新的终态、Runtime 元数据和工具能力；中断、文件回溯与 Task / Goal 的完成判定使用更严格的真实终态，未知终态不会误报成功。
+- **会话操作与 Tab 信息更聚焦**：历史入口收敛到全局侧边栏与开发者选项，Session 菜单保留高频动作；Tab 优先显示对话标题，标题栏、Tab 与侧边栏使用统一的 App Shell 材质。
+- **Markdown 与代码阅读体验优化**：调整段落、列表、引用和代码块节奏，代码高亮与 Mermaid 会跟随当前主题；横向滚动和触控手势被限制在代码区域内，不再带动外层 Chat。
+
+### Fixed
+
+- **Tauri SSE 断线与 Session 重置恢复更可靠**：订阅会自动重连并隔离旧连接事件；恢复中的 Session 通过快照与 live revision 衔接，新 Session 仍保留实时出生路径，减少内容回退、重复或丢失。
+- **会话删除不再与创建、恢复和持久化竞态**：删除、pending 身份迁移、Tab / Companion owner 获取及 SessionStore 写入按同一生命周期串行，避免被删除会话复活或留下孤立进程。
+- **Agent 停用、归档或移除后及时释放资源**：配置状态先持久化，再停止对应 Channel；Plugin Bridge 与 Sidecar owner 会在生命周期边界释放，不再继续占用后台 Runtime。
+- **SDK 启动失败更有界且可诊断**：确定性的子进程启动失败会进入 Rust 管理的退避与半开探测，崩溃工件按数量、大小和时间清理，避免快速重启循环与日志目录持续膨胀。
+- **Managed Codex 生成图片恢复显示**：认证保护只覆盖受管 Codex 的鉴权路径，生成图片仍通过受限附件通道加载；路径、来源和大小校验继续生效。
+- **自定义 Provider 不再误做 Anthropic WebFetch 预检**：只有实际使用 Anthropic 官方 WebFetch 的请求才要求对应凭据，其他 Provider 不会在发送前被无关校验拦截。
+- **macOS 开发与发布构建不再混入陈旧跨架构资源**：每次构建都会重建可变 native staging，并为目标架构准备和校验 Sharp，避免历史 arm64 / x64 资源累积放大 `.app`。
+
+---
+
 ## [0.4.0] - 2026-07-27
 
 > MyAgents 0.4.0 重构桌面导航与资源浏览：全局侧边栏让工作区、历史会话和产品能力在所有 Tab 间始终可达，Launcher 回归专注的新对话入口。版本同时优化输入框权限与工具操作、历史搜索和网络代理设置，并修复跨 Runtime 的 IM 回复、Codex 子 Agent 归属、统一日志噪音及 macOS 窗口缩放稳定性。
