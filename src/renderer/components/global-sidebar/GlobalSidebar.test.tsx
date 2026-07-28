@@ -973,11 +973,15 @@ describe('GlobalSidebar rail flyout', () => {
 
   it('opens the global search overlay directly in search mode', async () => {
     mocks.isTauri = true;
-    renderSidebar();
+    const { container } = renderSidebar();
 
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
     const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
     expect(coldPanel).toBeInTheDocument();
+
+    const backdrop = coldPanel?.parentElement ?? null;
+    expect(container).not.toContainElement(backdrop);
+    expect(backdrop?.parentElement).toBe(document.body);
 
     await act(async () => {
       await vi.dynamicImportSettled();

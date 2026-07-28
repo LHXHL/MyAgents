@@ -42,6 +42,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -259,7 +260,13 @@ function HistorySearchOverlayFrame({
     return true;
   }, 40);
 
-  return (
+  // This App-wide overlay is declared by GlobalSidebar, which precedes the
+  // active Tab workspace in DOM order. WKWebView paints macOS overflow
+  // scrollbars in a separate composited layer, so keeping the backdrop in that
+  // earlier subtree lets a later Tab scrollbar overpaint it despite z-index.
+  // Portalling the stable shell to body makes it a root-level, later paint
+  // surface while preserving the same Suspense and close-layer lifetimes.
+  return createPortal(
     <OverlayBackdrop
       onClose={onClose}
       className="z-40"
@@ -272,7 +279,8 @@ function HistorySearchOverlayFrame({
       >
         {children}
       </div>
-    </OverlayBackdrop>
+    </OverlayBackdrop>,
+    document.body,
   );
 }
 

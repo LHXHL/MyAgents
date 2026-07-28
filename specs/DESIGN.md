@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.37
-> **Last Updated**: 2026-07-27
+> **Version**: 2.8.38
+> **Last Updated**: 2026-07-28
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -531,6 +531,8 @@ Item 选中: 文字 var(--accent-warm)
 ```
 
 所有新 Overlay 必须复用 `src/renderer/components/OverlayBackdrop.tsx`，不要手写裸 backdrop。组件封装了正确的 pointer dismissal 语义；`className` 只补 z-index、padding、overflow 等布局差异，图片预览用 `variant="dark"`。可关闭 Overlay 还必须用 `useCloseLayer(handler, zIndex)` 注册关闭层，且 z-index 与视觉层级一致，避免 Cmd+W 跳过 Overlay 直接关闭 Tab。
+
+全局历史搜索由 DOM 顺序早于 Tab 工作区的 `GlobalSidebar` 声明，因此 `HistorySearchOverlayFrame` 的稳定外壳必须 portal 到 `document.body`。这里不能只提高 `z-index`：macOS WKWebView 的 overflow scrollbar 使用独立合成层，后续 Tab 滚动面仍可能穿透较早的 backdrop。未来新增或重构同类 App 级 Overlay 时应先核对 owner 与 DOM 绘制顺序；页面内部、天然位于自身滚动面之后的局部 Overlay不受此约束。
 
 **适用范围**：
 - 模态框（ConfirmDialog、SessionStatsModal 等）
@@ -1383,6 +1385,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.38 | 2026-07-28 | **全局历史搜索层级修正**：稳定搜索外壳 portal 到 App 根内容之后的 `document.body`，避免 macOS WKWebView 把后续 Tab 的原生纵横滚动条合成到遮罩和搜索面板上方；Suspense、动画与关闭层生命周期保持不变 |
 | 2.8.37 | 2026-07-27 | **输入框菜单动效与层级收口**：`+`、会话模式、工具菜单统一为 200ms 淡入与自下向上归位，移除横向感和缩放；`@` 文件引用与 `/` 技能选择弹窗统一使用和输入框一致的 `shadow-md` |
 | 2.8.36 | 2026-07-27 | **定时任务文案明确化**：中文输入框 `+` 菜单入口由“定时”改为“定时任务”，不改变 i18n key、英文翻译或功能行为 |
 | 2.8.35 | 2026-07-27 | **输入框低频动作归位**：Launcher 与 Chat 的定时入口从常驻工具栏移入共享 `+` 菜单；菜单增加 200ms 淡入、上移归位与轻微缩放动效，并兼容 reduced motion 与 Floating UI 定位（缩放后由 2.8.37 移除） |
