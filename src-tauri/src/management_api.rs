@@ -150,6 +150,7 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/agent/reload-config",
             post(agent_reload_config_handler),
         )
+        .route("/api/agent/stop-channel", post(agent_stop_channel_handler))
         .route(
             "/api/agent/stop-channels",
             post(agent_stop_channels_handler),
@@ -2207,6 +2208,59 @@ struct AgentStopChannelsRequest {
     agent_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStopChannelRequest {
+    agent_id: String,
+    channel_id: String,
+}
+
+async fn agent_stop_channel_handler(
+    Json(req): Json<AgentStopChannelRequest>,
+) -> Json<serde_json::Value> {
+    let Some(agents) = get_agents() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Agent state unavailable"
+        }));
+    };
+    let Some(sidecar_manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Sidecar manager unavailable"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App not initialized"
+        }));
+    };
+
+    match im::stop_agent_channel_runtime(
+        &app_handle,
+        agents,
+        sidecar_manager,
+        &req.agent_id,
+        &req.channel_id,
+    )
+    .await
+    {
+        Ok(stopped) => Json(serde_json::json!({
+            "ok": true,
+            "agentId": req.agent_id,
+            "channelId": req.channel_id,
+            "stopped": stopped
+        })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": req.agent_id,
+            "channelId": req.channel_id,
+            "error": error
+        })),
+    }
+}
+
 async fn agent_stop_channels_handler(
     Json(req): Json<AgentStopChannelsRequest>,
 ) -> Json<serde_json::Value> {
@@ -2223,18 +2277,25 @@ async fn agent_stop_channels_handler(
         }));
     };
 
-    let stopped = im::stop_agent_channels_for_archive(agents, sidecar_manager, &req.agent_id).await;
-    ulog_info!(
-        "[management] stopped {} channel(s) for archived agent {}",
-        stopped,
-        req.agent_id
-    );
-
-    Json(serde_json::json!({
-        "ok": true,
-        "agentId": req.agent_id,
-        "stoppedChannels": stopped
-    }))
+    match im::stop_agent_channels_runtime(agents, sidecar_manager, &req.agent_id).await {
+        Ok(stopped) => {
+            ulog_info!(
+                "[management] stopped {} channel(s) for agent {}",
+                stopped,
+                req.agent_id
+            );
+            Json(serde_json::json!({
+                "ok": true,
+                "agentId": req.agent_id,
+                "stoppedChannels": stopped
+            }))
+        }
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": req.agent_id,
+            "error": error
+        })),
+    }
 }
 
 // ===== Bridge Message handler (OpenClaw Channel Plugin → Rust) =====

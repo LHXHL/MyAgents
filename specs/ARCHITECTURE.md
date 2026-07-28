@@ -251,7 +251,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
-| `/api/agent/runtime-status` | Agent 运行时状态查询 | Node.js / 前端 |
+| `/api/agent/runtime-status`、`/api/agent/stop-channel(s)` | Agent 运行时状态查询；durable 删除/停用/归档后的精确或整组 Channel 生命周期收敛 | Node.js / 前端 |
 
 这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"Renderer / Sidecar 控制面走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
 

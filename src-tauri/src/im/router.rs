@@ -1555,25 +1555,45 @@ impl SessionRouter {
     /// Release all sessions and DROP the peer→session binding map.
     ///
     /// **Destructive.** Use only when the bot itself is being torn down
-    /// (`shutdown_bot_instance`) — after this call, `peer_sessions` is empty,
-    /// so any handover / message-routing / `most_recent_peer_session_key`
-    /// lookup will treat the channel as if it had never seen a chat. For
+    /// (`shutdown_bot_instance`) — after a successful call, `peer_sessions` is
+    /// empty, so any handover / message-routing / `most_recent_peer_session_key`
+    /// lookup will treat the channel as if it had never seen a chat. Failed
+    /// releases retain their binding so the lifecycle owner can report the
+    /// incomplete teardown instead of silently losing retry evidence. For
     /// hot-reload paths that just need sidecars to restart (e.g. runtime
     /// switch), use [`Self::release_all_sidecars_preserve_bindings`] instead.
-    pub fn release_all(&mut self, manager: &ManagedSidecarManager) {
+    pub fn release_all(&mut self, manager: &ManagedSidecarManager) -> Result<usize, String> {
         let count = self.peer_sessions.len();
         let keys: Vec<String> = self.peer_sessions.keys().cloned().collect();
+        let mut released = 0usize;
+        let mut failures = Vec::new();
         for key in keys {
-            if let Some(ps) = self.peer_sessions.remove(&key) {
-                let owner = SidecarOwner::Agent(key);
-                let _ = release_session_sidecar(manager, &ps.session_id, &owner);
+            if let Some(ps) = self.peer_sessions.get(&key) {
+                let owner = SidecarOwner::Agent(key.clone());
+                match release_session_sidecar(manager, &ps.session_id, &owner) {
+                    Ok(_) => {
+                        self.peer_sessions.remove(&key);
+                        released += 1;
+                    }
+                    Err(error) => failures.push(format!("{}: {}", ps.session_id, error)),
+                }
             }
         }
-        if count > 0 {
+        if released > 0 {
             ulog_info!(
                 "[im-router] release_all: dropped {} peer_session(s) and released their sidecars",
-                count,
+                released,
             );
+        }
+        if failures.is_empty() {
+            Ok(released)
+        } else {
+            Err(format!(
+                "failed to release {} of {} Sidecar owner(s): {}",
+                failures.len(),
+                count,
+                failures.join("; ")
+            ))
         }
     }
 
