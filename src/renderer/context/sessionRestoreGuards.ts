@@ -145,3 +145,28 @@ export function updateMessageById<T extends { id: string }>(
     next[idx] = updated;
     return next;
 }
+
+/**
+ * Replace the authoritative recent tail from a live REST snapshot while
+ * preserving older pages that were already paginated into the viewport.
+ * If the two views do not overlap, fail closed to the snapshot instead of
+ * guessing an ordering relationship.
+ */
+export function reconcileLiveRecoveryHistory<T extends { id: string }>(
+    current: T[],
+    snapshot: T[],
+): { messages: T[]; hasOverlap: boolean } {
+    if (snapshot.length === 0) {
+        return { messages: [], hasOverlap: false };
+    }
+
+    const overlapIndex = current.findIndex(message => message.id === snapshot[0].id);
+    if (overlapIndex < 0) {
+        return { messages: snapshot, hasOverlap: false };
+    }
+
+    return {
+        messages: [...current.slice(0, overlapIndex), ...snapshot],
+        hasOverlap: true,
+    };
+}

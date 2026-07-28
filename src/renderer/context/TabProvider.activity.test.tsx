@@ -17,6 +17,7 @@ type StatusHandler = (
 const sseHarness = vi.hoisted(() => {
   const state = {
     connected: false,
+    generation: 1,
     eventHandler: null as EventHandler | null,
     statusHandler: null as StatusHandler | null,
   };
@@ -34,8 +35,8 @@ const sseHarness = vi.hoisted(() => {
     disconnect: vi.fn(async () => {
       state.connected = false;
     }),
-    isConnected: vi.fn(() => state.connected),
-    getConnectionGeneration: vi.fn(() => 1),
+    isActive: vi.fn(() => state.connected),
+    getConnectionGeneration: vi.fn(() => state.generation),
   };
   return { state, connection };
 });
@@ -92,6 +93,7 @@ function Probe() {
   const {
     sessionId,
     isLoading,
+    isSessionLoading,
     sessionState,
     historyMessages,
     systemInitInfo,
@@ -112,6 +114,7 @@ function Probe() {
         })}
       </output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
+      <output data-testid="session-loading">{String(isSessionLoading)}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
@@ -140,7 +143,7 @@ function emit(eventName: string, data: unknown): void {
   const handler = sseHarness.state.eventHandler;
   if (!handler) throw new Error('SSE event handler is not installed');
   act(() => {
-    handler(eventName, data, { connectionGeneration: 1 });
+    handler(eventName, data, { connectionGeneration: sseHarness.state.generation });
   });
 }
 
@@ -158,12 +161,13 @@ describe('TabProvider session activity ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sseHarness.state.connected = false;
+    sseHarness.state.generation = 1;
     sseHarness.state.eventHandler = null;
     sseHarness.state.statusHandler = null;
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
   });
 
-  it('does not reacquire a Tab owner while App is deleting the Session', async () => {
+  it('does not reacquire a Tab owner from an SSE status failure', async () => {
     const claimSessionOpeningTransition = vi.fn(() => null);
     render(
       <TabProvider
@@ -182,9 +186,8 @@ describe('TabProvider session activity ownership', () => {
       sseHarness.state.statusHandler?.('failed');
     });
 
-    await waitFor(() => {
-      expect(claimSessionOpeningTransition).toHaveBeenCalledWith('session-delete-race');
-    });
+    await waitFor(() => expect(readActivity().isLoading).toBe(false));
+    expect(claimSessionOpeningTransition).not.toHaveBeenCalled();
     expect(tauriHarness.ensureSessionSidecar).not.toHaveBeenCalled();
   });
 
@@ -492,6 +495,162 @@ describe('TabProvider session activity ownership', () => {
     });
 
     expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconciles a new transport generation without a session-loading overlay', async () => {
+    let resolveRecovery!: (response: Response) => void;
+    const recoveryResponse = new Promise<Response>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    let sessionGetCount = 0;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-recovery?') && !init?.method) {
+        sessionGetCount += 1;
+        if (sessionGetCount === 2) return recoveryResponse;
+        return new Response(JSON.stringify({
+          success: true,
+          session: {
+            id: 'session-recovery',
+            agentDir: '/tmp/workspace',
+            title: 'Recovery session',
+            createdAt: '2026-07-15T00:00:00.000Z',
+            lastActiveAt: '2026-07-15T00:00:01.000Z',
+            runtime: 'builtin',
+            messages: [
+              { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
+              { id: 'm2', role: 'assistant', content: 'two', timestamp: '2026-07-15T00:00:01.000Z' },
+            ],
+            snapshotRevision: 2,
+            liveSessionState: 'idle',
+            liveStreamingMessage: null,
+            hasMoreBefore: true,
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-recovery"
+        agentDir="/tmp/workspace"
+        sessionId="session-recovery"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+    await waitFor(() => expect(readActivity().historyCount).toBe(2));
+
+    act(() => {
+      sseHarness.state.generation = 2;
+      sseHarness.state.statusHandler?.('connected');
+    });
+    await waitFor(() => expect(sessionGetCount).toBe(2));
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+    expect(readActivity().historyCount).toBe(2);
+
+    await act(async () => {
+      resolveRecovery(new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: 'session-recovery',
+          agentDir: '/tmp/workspace',
+          title: 'Recovery session',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          lastActiveAt: '2026-07-15T00:00:02.000Z',
+          runtime: 'builtin',
+          messages: [
+            { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
+            { id: 'm2', role: 'assistant', content: 'two-final', timestamp: '2026-07-15T00:00:01.000Z' },
+            { id: 'm3', role: 'user', content: 'three', timestamp: '2026-07-15T00:00:02.000Z' },
+          ],
+          snapshotRevision: 3,
+          liveSessionState: 'idle',
+          liveStreamingMessage: null,
+          hasMoreBefore: true,
+        },
+      }), { status: 200 }));
+      await recoveryResponse;
+    });
+
+    await waitFor(() => expect(readActivity().historyCount).toBe(3));
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+    expect(tauriHarness.proxyFetch.mock.calls.filter(
+      ([url]) => String(url).endsWith('/sessions/switch'),
+    )).toHaveLength(1);
+  });
+
+  it('retries a failed live snapshot while keeping the recovered transport attached', async () => {
+    let sessionGetCount = 0;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-retry?') && !init?.method) {
+        sessionGetCount += 1;
+        if (sessionGetCount === 2) {
+          throw new Error('transient snapshot reset');
+        }
+        const recovered = sessionGetCount >= 3;
+        return new Response(JSON.stringify({
+          success: true,
+          session: {
+            id: 'session-retry',
+            agentDir: '/tmp/workspace',
+            title: 'Retry session',
+            createdAt: '2026-07-15T00:00:00.000Z',
+            lastActiveAt: recovered
+              ? '2026-07-15T00:00:02.000Z'
+              : '2026-07-15T00:00:01.000Z',
+            runtime: 'builtin',
+            messages: recovered
+              ? [
+                  { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
+                  { id: 'm2', role: 'assistant', content: 'two', timestamp: '2026-07-15T00:00:01.000Z' },
+                  { id: 'm3', role: 'assistant', content: 'recovered', timestamp: '2026-07-15T00:00:02.000Z' },
+                ]
+              : [
+                  { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
+                  { id: 'm2', role: 'assistant', content: 'two', timestamp: '2026-07-15T00:00:01.000Z' },
+                ],
+            snapshotRevision: recovered ? 3 : 2,
+            liveSessionState: 'idle',
+            liveStreamingMessage: null,
+            hasMoreBefore: false,
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-retry"
+        agentDir="/tmp/workspace"
+        sessionId="session-retry"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+    await waitFor(() => expect(readActivity().historyCount).toBe(2));
+
+    act(() => {
+      sseHarness.state.generation = 2;
+      sseHarness.state.statusHandler?.('connected');
+    });
+
+    await waitFor(() => expect(sessionGetCount).toBe(3), { timeout: 2_000 });
+    await waitFor(() => expect(readActivity().historyCount).toBe(3));
+    expect(sseHarness.connection.connect).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+    expect(tauriHarness.proxyFetch.mock.calls.filter(
+      ([url]) => String(url).endsWith('/sessions/switch'),
+    )).toHaveLength(1);
   });
 
   it.each([

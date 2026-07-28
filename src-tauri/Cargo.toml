@@ -149,4 +149,5 @@ junction = "1.0"
 tauri-winrt-notification = "0.7"
 
 [dev-dependencies]
+tauri = { version = "2.11.2", features = ["test"] }
 tempfile = "3.10"

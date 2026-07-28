@@ -192,17 +192,19 @@ Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理�
 
 ### SSE 流式事件
 
-Rust SSE Proxy (`src-tauri/src/sse_proxy.rs`) 多连接代理，按 Tab 隔离事件：
+Rust SSE Proxy (`src-tauri/src/sse_proxy.rs`) 按 renderer surface 维护长期订阅。`connectionKey` 只负责 Tauri event namespace；物理端口在每次 HTTP attempt 前由 `SidecarManager` 用 `sessionIdHint + SidecarOwner` 解析，因此 Sidecar crash/换端口不依赖 Renderer 重建 URL，也不另存 owner→port 副本。普通 Chat 使用既有 `Tab(tabId)` owner，Floating Ball 使用既有 `Companion("floating-ball")` owner。
 
 ```
-事件格式: sse:${tabId}:${eventName}
+事件格式: sse:${connectionKey}:${eventName}
 示例:     sse:tab-xxx:chat:message-chunk
 ```
 
 ```
-Tab1 listen('sse:tab1:*') ◄── Rust emit(sse:tab1:event) ◄── reqwest stream ◄── Sidecar:31415
-Tab2 listen('sse:tab2:*') ◄── Rust emit(sse:tab2:event) ◄── reqwest stream ◄── Sidecar:31416
+Tab1 listen('sse:tab1:*') ◄── Rust supervisor ◄── owner resolve ◄── Sidecar:31415 → replacement port
+Tab2 listen('sse:tab2:*') ◄── Rust supervisor ◄── owner resolve ◄── Sidecar:31416
 ```
+
+每个 subscription 有两个独立 generation：start replacement 的 `subscription generation` 防止旧 task emit/cleanup 新 entry，并在实际 Tauri emit 时再次验证当前 authority；每条成功 HTTP 200 stream 分配进程内全局单调的 `transport generation`。Rust 转发 payload 为 `{ transportGeneration, data }`；Renderer 小于已观察 generation 的事件 fail closed，大于时先建立 REST/liveRevision restore fence，再处理业务事件。`start_sse_proxy` command ack 只代表订阅已安装，不代表物理流 connected。connect error、非 2xx、body error、read timeout 与 EOF 都由同一个 Rust supervisor capped backoff；只有 stop/replacement 结束订阅。Browser development mode 仍使用原生 EventSource 自己重连。
 
 Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广播：
 - `broadcast(event, data)` —— 向所有客户端广播
@@ -212,7 +214,7 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
 会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按当前 SSE connection/session 过滤；否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
-恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 SSE connection generation 变化就重新取快照。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
+恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 transport generation 变化就重新取快照。live-recovery commit 只替换权威 recent tail 并保留已分页的 older prefix、滚动锚点与无关 UI state；无 overlap 才 fail closed 为 snapshot。snapshot 请求瞬时失败时保留同一 fence 与 buffer 并重试，Session/token 变化使旧 retry 失效。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
 
 普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external terminal 产出同一份 turn identity/owner/origin descriptor，Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口，`notification.rs` 以 `(sessionId, turnId)` 瞬时 claim 并统一决定 domain 抑制、focus、系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息/UI/unread，不再发送通用完成通知。
 

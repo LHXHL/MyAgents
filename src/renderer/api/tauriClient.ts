@@ -736,7 +736,7 @@ export async function stopSseProxy(tabId: string): Promise<void> {
     }
 
     try {
-        await invoke('stop_sse_proxy', { tabId });
+        await invoke('stop_sse_proxy', { connectionKey: tabId });
         console.debug(`[tauriClient] Tab ${tabId} SSE proxy stopped`);
     } catch (error) {
         console.error(`[tauriClient] Failed to stop SSE proxy for tab ${tabId}:`, error);

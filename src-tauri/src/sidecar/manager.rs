@@ -454,6 +454,132 @@ impl SidecarManager {
         })
     }
 
+    /// Resolve the current ready Sidecar URL for a renderer-owned long-lived
+    /// subscription. The Session hint gives an exact match during normal
+    /// operation; the stable owner is the fallback after pending -> real key
+    /// migration. Both reads stay inside the SidecarManager authority so SSE
+    /// retry never caches or reconstructs a second owner -> port map.
+    pub fn resolve_session_sidecar_url_for_frontend_owner(
+        &mut self,
+        session_id_hint: &str,
+        owner: &SidecarOwner,
+    ) -> Result<String, String> {
+        if let Some(sidecar) = self.sidecars.get_mut(session_id_hint) {
+            if !sidecar.owners.contains(owner) {
+                return Err(format!(
+                    "session hint {} is not owned by {:?}",
+                    session_id_hint, owner
+                ));
+            }
+            return if sidecar.is_ready_for_requests() {
+                Ok(format!("http://127.0.0.1:{}", sidecar.port))
+            } else {
+                Err(format!(
+                    "session hint {} sidecar is not ready",
+                    session_id_hint
+                ))
+            };
+        }
+
+        if let Some(sidecar) = self.recovering_sidecars.get(session_id_hint) {
+            if !sidecar.owners.contains(owner) {
+                return Err(format!(
+                    "recovering session hint {} is not owned by {:?}",
+                    session_id_hint, owner
+                ));
+            }
+            return Err(format!(
+                "session hint {} sidecar is recovering",
+                session_id_hint
+            ));
+        }
+
+        let mut matches: Vec<(String, Option<u16>)> = Vec::new();
+        for (session_id, sidecar) in &mut self.sidecars {
+            if sidecar.owners.contains(owner) {
+                let ready_port = sidecar.is_ready_for_requests().then_some(sidecar.port);
+                matches.push((session_id.clone(), ready_port));
+            }
+        }
+        for (session_id, sidecar) in &self.recovering_sidecars {
+            if sidecar.owners.contains(owner) {
+                matches.push((session_id.clone(), None));
+            }
+        }
+
+        match matches.as_slice() {
+            [(_session_id, Some(port))] => Ok(format!("http://127.0.0.1:{}", port)),
+            [(session_id, None)] => Err(format!(
+                "owner {:?} sidecar {} is not ready",
+                owner, session_id
+            )),
+            [] => Err(format!(
+                "no session sidecar found for hint {} and owner {:?}",
+                session_id_hint, owner
+            )),
+            _ => {
+                let mut session_ids = matches
+                    .into_iter()
+                    .map(|(session_id, _)| session_id)
+                    .collect::<Vec<_>>();
+                session_ids.sort();
+                Err(format!(
+                    "owner {:?} ambiguously matches sessions {}",
+                    owner,
+                    session_ids.join(",")
+                ))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_ready_frontend_sidecar(
+        &mut self,
+        session_id: &str,
+        port: u16,
+        owner: SidecarOwner,
+    ) {
+        #[cfg(windows)]
+        let mut process = {
+            let mut command = crate::process_cmd::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut process = {
+            let mut command = crate::process_cmd::new("sleep");
+            command.arg("60");
+            command
+        };
+        process
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        self.insert_sidecar(
+            session_id,
+            SessionSidecar {
+                process: process.spawn().expect("spawn test sidecar process"),
+                port,
+                session_id: session_id.to_string(),
+                workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
+                state: SidecarState::Healthy,
+                owners: std::iter::once(owner).collect(),
+                created_at: std::time::Instant::now(),
+                runtime: None,
+                runtime_source: None,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_sidecar_port(&mut self, session_id: &str, port: u16) {
+        self.sidecars
+            .get_mut(session_id)
+            .expect("test sidecar")
+            .port = port;
+    }
+
     /// Check if a Session has an active Sidecar (Starting or Healthy)
     pub fn has_session_sidecar(&mut self, session_id: &str) -> bool {
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {

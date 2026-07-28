@@ -22,6 +22,7 @@
 - [`killWithEscalation`](#killwithescalation) — 子进程 stop 升级链
 - [`withAbortSignal` / `cancellableFetch`](#cancellation) — 统一 cancel 协议
 - [`maybeSpill` + `/refs/:id` + SSE 优先级](#maybespill) — 大 payload 分流
+- [Tauri SSE subscription authority](#tauri-sse-subscription) — Rust owner 路由、重试与 connected 语义
 - [`withLogContext` + ALS pipeline](#withlogcontext) — 自动注入 correlation
 - [`DeferredInitState` + readiness endpoints](#deferredinitstate) — 三分健康探针
 
@@ -80,6 +81,19 @@
 - proxy_config 不存在副作用——helper 不读取系统代理环境变量
 
 **Don't.** 任何 `reqwest::Client::builder()` / `reqwest::Client::new()` 直接连 `127.0.0.1`。即使是 "看起来一定不会被拦"的环境也禁止——出问题难以排查。
+
+---
+
+<a id="tauri-sse-subscription"></a>
+## Tauri SSE subscription authority
+
+**Problem.** Renderer 用 raw Sidecar URL 启动一次性 Rust stream，再靠一次性 error event 和有限 JS timer 重建连接，会同时缓存旧端口、误把 command ack 当 connected，并在 EOF/error event 丢失时永久假在线。
+
+**Surface.** `sse_proxy.rs` 的长期 supervisor；`SidecarManager::resolve_session_sidecar_url_for_frontend_owner()`；Rust `{ transportGeneration, data }` envelope；Renderer `SseConnection.isActive()`。
+
+**Invariants enforced.** Tauri transport connect/EOF/error/read-timeout/retry 只归 Rust；每次 attempt 都用 `sessionIdHint + SidecarOwner` 向 SidecarManager 取当前端口。command ack 只代表 subscription attachment，第一条新 generation envelope 才代表 Renderer 观察到物理流。subscription generation 与 transport generation 不得合并；旧 generation 在 cleanup 和 emit 两处都 fail closed，stop/replacement 返回后旧 task 不得再向复用的 event namespace 发布。Browser EventSource retry 是独立开发路径。
+
+**Don't.** 不向 `start_sse_proxy` 传 Renderer 构造的 URL；不以 `sse:*:error`、Sidecar restart event、React watchdog 或有限 JS retry 作为 Tauri transport authority；不因 SSE disconnect abort turn；不为 owner→port 建第二张 map。
 
 ---
 

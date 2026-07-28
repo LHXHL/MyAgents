@@ -452,6 +452,66 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
+    fn sse_owner_resolver_uses_exact_hint_and_requires_owner_match() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        insert_test_sidecar(&mut manager, "session-b", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session-a")
+            .owners = owners(vec![SidecarOwner::Tab("tab-other".to_string())]);
+
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        let error = manager
+            .resolve_session_sidecar_url_for_frontend_owner("session-a", &owner)
+            .expect_err("an exact hint with the wrong owner must fail closed");
+
+        assert!(error.contains("not owned"));
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("session-b", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+    }
+
+    #[test]
+    fn sse_owner_resolver_follows_pending_to_real_key_upgrade() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "pending-tab-a", SidecarState::Healthy);
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+
+        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("pending-tab-a", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+    }
+
+    #[test]
+    fn sse_owner_resolver_rejects_ambiguous_companion_handover() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-old", SidecarState::Healthy);
+        insert_test_sidecar(&mut manager, "session-new", SidecarState::Healthy);
+        let owner = SidecarOwner::Companion("floating-ball".to_string());
+        for session_id in ["session-old", "session-new"] {
+            manager
+                .get_session_sidecar_mut(session_id)
+                .expect("session sidecar")
+                .owners = owners(vec![owner.clone()]);
+        }
+
+        assert_eq!(
+            manager.resolve_session_sidecar_url_for_frontend_owner("session-new", &owner),
+            Ok("http://127.0.0.1:31418".to_string())
+        );
+        let error = manager
+            .resolve_session_sidecar_url_for_frontend_owner("missing-hint", &owner)
+            .expect_err("owner-only fallback must reject multiple matches");
+        assert!(error.contains("ambiguously matches"));
+        assert!(error.contains("session-new"));
+        assert!(error.contains("session-old"));
+    }
+
+    #[test]
     fn session_has_frontend_owner_tracks_tab_and_companion_presence() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);

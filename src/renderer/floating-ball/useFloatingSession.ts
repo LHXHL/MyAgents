@@ -1118,8 +1118,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         // permission/ask/plan 事件，handler 会用已切到新 sid 的 ref → 用户的回应
         // POST 到新 sid、旧后端 pending 永久挂起。SSE 连接读的是 sessionIdRef，
         // 断开后再换 ref 即可干净重建。
-        sseRef.current?.disconnect();
+        const previousSse = sseRef.current;
         sseRef.current = null;
+        if (previousSse) {
+            await previousSse.disconnect();
+        }
         sessionIdRef.current = sid;
         setSessionId(sid);
         setAnalyticsContext({ sessionId: sid });
@@ -1138,13 +1141,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             console.info(`[fb-session] sync config ok session=${sid} elapsed=${elapsedMs(startedAt)}`);
             stage = 'connect-sse';
             // SSE（事件名/payload 与 Tab 完全同构，白名单已覆盖）。
-            const sse = createSseConnection('fb', sessionIdRef);
+            const sse = createSseConnection('fb', sessionIdRef, {
+                type: 'companion',
+                id: OWNER_ID,
+            });
             sse.setEventHandler((eventName, data) => handleSseEventRef.current(eventName, data));
             sseRef.current = sse;
             await sse.connect();
             console.info(`[fb-session] sse connected session=${sid} elapsed=${elapsedMs(startedAt)}`);
         } catch (err) {
-            sseRef.current?.disconnect();
+            await sseRef.current?.disconnect();
             sseRef.current = null;
             if (ownerEnsured) {
                 await releaseSessionSidecar(sid, 'companion', OWNER_ID).catch(() => false);
@@ -1667,7 +1673,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
      *  没有这步，关掉悬浮球后 Mino sidecar 会常驻到 app 退出（review C2）。 */
     const suspend = useCallback(async () => {
         const sid = sessionIdRef.current;
-        sseRef.current?.disconnect();
+        await sseRef.current?.disconnect();
         sseRef.current = null;
         if (sid) {
             try {
