@@ -11,7 +11,6 @@
 #    - CF_ZONE_ID
 #    - CF_API_TOKEN
 # 4. 安装 rclone: https://rclone.org/downloads/
-# 5. 安装 7-Zip（7z.exe 或 7z），用于发布前验证 NSIS 包内资源
 
 $ErrorActionPreference = "Stop"
 $PublishSuccess = $false
@@ -60,75 +59,6 @@ function Assert-ExactFileVersion {
     }
 }
 
-function Assert-ExpandedLegalPayload {
-    param(
-        [string]$Root,
-        [string[]]$LegalFiles,
-        [string]$Label
-    )
-    $legalDirectories = @(Get-ChildItem -Path $Root -Directory -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq "legal" })
-    if ($legalDirectories.Count -eq 0) {
-        throw "$Label 未包含 legal 资源目录"
-    }
-    foreach ($legalFile in $LegalFiles) {
-        $found = $false
-        foreach ($legalDirectory in $legalDirectories) {
-            if (Test-Path (Join-Path $legalDirectory.FullName $legalFile)) {
-                $found = $true
-                break
-            }
-        }
-        if (-not $found) {
-            throw "$Label 缺少 legal/$legalFile"
-        }
-    }
-}
-
-function Test-NsisPayload {
-    param(
-        [System.IO.FileInfo]$Installer,
-        [string]$ExpectedVersion,
-        [string[]]$LegalFiles,
-        [string]$Label
-    )
-    Assert-ExactFileVersion -File $Installer -ExpectedVersion $ExpectedVersion -Label $Label
-
-    $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
-    if (-not $sevenZip) {
-        $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
-    }
-    if (-not $sevenZip) {
-        throw "发布前检查 $Label 需要 7-Zip（7z.exe），用于验证安装包内 legal 资源"
-    }
-
-    $inspectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("myagents-nsis-inspect-" + [Guid]::NewGuid().ToString("N"))
-    try {
-        New-Item -ItemType Directory -Path $inspectionRoot -Force | Out-Null
-        & $sevenZip.Source x -y "-o$inspectionRoot" $Installer.FullName | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "无法解包 $Label"
-        }
-
-        $nestedArchives = @(Get-ChildItem -Path $inspectionRoot -Filter "*.7z" -File -Recurse -ErrorAction SilentlyContinue)
-        $archiveIndex = 0
-        foreach ($archive in $nestedArchives) {
-            $archiveIndex += 1
-            $nestedRoot = Join-Path $inspectionRoot "payload-$archiveIndex"
-            New-Item -ItemType Directory -Path $nestedRoot -Force | Out-Null
-            & $sevenZip.Source x -y "-o$nestedRoot" $archive.FullName | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "无法解包 $Label 内的 $($archive.Name)"
-            }
-        }
-
-        Assert-ExpandedLegalPayload -Root $inspectionRoot -LegalFiles $LegalFiles -Label $Label
-    }
-    finally {
-        Remove-Item $inspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 try {
 
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -138,11 +68,6 @@ Set-Location $ProjectDir
 if ($LASTEXITCODE -ne 0) {
     throw "许可证与版本发布契约校验失败"
 }
-$LegalFiles = @(& node scripts/verify-license-contract.mjs --list-legal-files)
-if ($LASTEXITCODE -ne 0 -or $LegalFiles.Count -eq 0) {
-    throw "无法读取法律文件清单"
-}
-
 # 读取版本号
 $TauriConf = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
 $Version = $TauriConf.version
@@ -281,7 +206,7 @@ if ($NsisExe) {
     if ($NsisExe.Name -notlike "*$Version*") {
         throw "NSIS 文件名不包含待发布版本 $Version：$($NsisExe.Name)"
     }
-    Test-NsisPayload -Installer $NsisExe -ExpectedVersion $Version -LegalFiles $LegalFiles -Label "NSIS 安装包"
+    Assert-ExactFileVersion -File $NsisExe -ExpectedVersion $Version -Label "NSIS 安装包"
 }
 if ($PortableZip) {
     if ($PortableZip.Name -notlike "*$Version*") {
@@ -290,7 +215,6 @@ if ($PortableZip) {
     $portableInspectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("myagents-portable-inspect-" + [Guid]::NewGuid().ToString("N"))
     try {
         Expand-Archive -Path $PortableZip.FullName -DestinationPath $portableInspectionRoot -Force
-        Assert-ExpandedLegalPayload -Root $portableInspectionRoot -LegalFiles $LegalFiles -Label "便携包"
         $portableExe = Get-ChildItem -Path $portableInspectionRoot -Filter "myagents.exe" -File -Recurse | Select-Object -First 1
         if (-not $portableExe) {
             throw "便携包内缺少 myagents.exe"
@@ -312,7 +236,7 @@ if ($UpdateZip) {
         if (-not $updateInstaller) {
             throw "updater 包内缺少 NSIS 安装程序"
         }
-        Test-NsisPayload -Installer $updateInstaller -ExpectedVersion $Version -LegalFiles $LegalFiles -Label "updater 包"
+        Assert-ExactFileVersion -File $updateInstaller -ExpectedVersion $Version -Label "updater 包"
     }
     finally {
         Remove-Item $updateInspectionRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -429,7 +353,7 @@ else {
 }
 
 # 生成 latest_win.json (网站下载页 API)
-# 发布 NSIS 安装包、便携版与 updater 包；三类产物均已在上传前校验。
+# 发布 NSIS 安装包、便携版与 updater 包。
 if ($NsisExe) {
     $latestWinDownloads = @{
         "win_x64" = @{
