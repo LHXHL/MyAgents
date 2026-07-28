@@ -10794,6 +10794,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       settings: {
         cleanupPeriodDays: claudeTranscriptCleanupPeriodDays,
         plansDirectory: getSessionPlansDirectorySetting(sessionId),
+        // MyAgents owns provider routing and outbound-network policy. Without
+        // this, Claude Code's WebFetch tool sends the target hostname to
+        // api.anthropic.com for a domain-safety preflight even when inference
+        // is routed through a user-selected third-party provider.
+        skipWebFetchPreflight: true,
         // The Artifact tool (SDK 0.3.16x+) publishes HTML/MD to claude.ai —
         // an outward data flow MyAgents has not product-decided to expose.
         // Keep the tool surface frozen; revisit as its own feature if wanted.
