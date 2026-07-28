@@ -630,6 +630,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   // to avoid re-rendering Chat (and MessageList) on every keystroke
   const [showLogs, setShowLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const isChatHistoryEntryVisible = config.showChatHistoryEntry === true;
+  useEffect(() => {
+    if (!isChatHistoryEntryVisible) setShowHistory(false);
+  }, [isChatHistoryEntryVisible]);
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   // Imperative handle for the inline title editor — lets the SessionMenuButton's
   // "重命名" item invoke the same flow as clicking the title.
@@ -4915,30 +4919,35 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
               {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
             </button>
-            {/* History button */}
-            <button
-              ref={historyBtnRef}
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setShowHistory((prev) => !prev)}
-              className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${showHistory
-                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                }`}
-            >
-              <History className="h-3.5 w-3.5 flex-shrink-0" />
-              {!splitFile && <span>{t('shell.header.history')}</span>}
-            </button>
-            <SessionHistoryDropdown
-              agentDir={agentDir}
-              currentSessionId={sessionId}
-              onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
-              onOpenInNewTab={onOpenSessionInNewTab}
-              isOpen={showHistory}
-              onClose={() => setShowHistory(false)}
-              triggerRef={historyBtnRef}
-              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-            />
+            {/* Developer setting keeps this legacy entry reversible while it is phased out. */}
+            {isChatHistoryEntryVisible && (
+              <>
+                {/* History button */}
+                <button
+                  ref={historyBtnRef}
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => setShowHistory((prev) => !prev)}
+                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${showHistory
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                    }`}
+                >
+                  <History className="h-3.5 w-3.5 flex-shrink-0" />
+                  {!splitFile && <span>{t('shell.header.history')}</span>}
+                </button>
+                <SessionHistoryDropdown
+                  agentDir={agentDir}
+                  currentSessionId={sessionId}
+                  onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+                  onOpenInNewTab={onOpenSessionInNewTab}
+                  isOpen={showHistory}
+                  onClose={() => setShowHistory(false)}
+                  triggerRef={historyBtnRef}
+                  sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+                />
+              </>
+            )}
             {/* Dev-only buttons - controlled by config.showDevTools */}
             {config.showDevTools && (
               <>
@@ -5299,16 +5308,23 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           <div
             ref={directoryPanelContainerRef}
             className={shouldUseWorkspaceOverlay
-              ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg'
+              ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col bg-[var(--paper-elevated)] shadow-lg'
               : showWorkspace
-                ? 'relative z-10 flex w-[var(--chat-workspace-panel-width)] shrink-0 flex-col border-l border-[var(--line-subtle)]'
-                : 'pointer-events-none absolute bottom-0 right-0 top-0 z-20 flex w-[var(--chat-workspace-panel-width)] flex-col border-l border-[var(--line-subtle)]'
+                ? 'relative z-10 flex w-[var(--chat-workspace-panel-width)] shrink-0 flex-col'
+                : 'pointer-events-none absolute bottom-0 right-0 top-0 z-20 flex w-[var(--chat-workspace-panel-width)] flex-col'
             }
             aria-hidden={!showWorkspace}
             inert={!showWorkspace}
             data-chat-workspace-panel
             data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}
           >
+            <span
+              aria-hidden="true"
+              className={`pointer-events-none absolute bottom-4 left-0 top-4 z-20 w-px ${
+                shouldUseWorkspaceOverlay ? 'bg-[var(--line)]' : 'bg-[var(--line-subtle)]'
+              }`}
+              data-chat-workspace-divider
+            />
             <DirectoryPanel
               ref={directoryPanelRef}
               agentDir={agentDir}

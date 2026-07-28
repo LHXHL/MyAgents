@@ -72,6 +72,31 @@ describe('App Shell chrome contract', () => {
     expect(newSessionAction).not.toContain('<Plus ');
   });
 
+  it('gates the legacy Chat history entry behind its default-off developer setting', () => {
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
+    const config = source('src/shared/config-types.ts');
+
+    expect(config).toContain('showChatHistoryEntry: false,');
+    expect(chat).toContain('const isChatHistoryEntryVisible = config.showChatHistoryEntry === true;');
+    expect(chat).toContain('if (!isChatHistoryEntryVisible) setShowHistory(false);');
+    expect(chat).toContain('{isChatHistoryEntryVisible && (');
+    expect(chat).toContain('<SessionHistoryDropdown');
+    expect(chat).toContain("handleSelectSession(id, 'chat_dropdown')");
+    expect(settings).toContain('about.developer.chatHistoryEntryTitle');
+    expect(settings).toContain('updateConfig({ showChatHistoryEntry: config.showChatHistoryEntry !== true })');
+    expect(settings.indexOf('about.developer.devModeTitle'))
+      .toBeLessThan(settings.indexOf('about.developer.chatHistoryEntryTitle'));
+  });
+
+  it('keeps the right workspace toolbar free of a redundant text heading', () => {
+    const directory = source('src/renderer/components/directory-panel/DirectoryPanel.tsx');
+
+    expect(directory).not.toContain('workspaceFiles.directory.title');
+    expect(directory).toContain('workspaceFiles.directory.fileSearch');
+    expect(directory).toContain('workspaceFiles.directory.openAgentSettings');
+  });
+
   it('wires layout-aware pointer leave handling to the forced-rail workspace flyout', () => {
     const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
 
@@ -83,10 +108,17 @@ describe('App Shell chrome contract', () => {
 
   it('animates the sidebar material without continuously resizing the Tab workspace', () => {
     const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    const titlebar = source('src/renderer/components/CustomTitleBar.tsx');
+    const tabbar = source('src/renderer/components/TabBar.tsx');
     const app = source('src/renderer/App.tsx');
     const styles = source('src/renderer/index.css');
 
     expect(sidebar).toContain('[--global-sidebar-surface:var(--global-sidebar-bg)]');
+    expect(titlebar).toContain('bg-[var(--global-sidebar-bg)]');
+    expect(titlebar).not.toContain('border-b border-[var(--line)]');
+    expect(tabbar).toContain("background: 'var(--global-sidebar-bg)'");
+    expect(tabbar).toContain("maskImage: 'linear-gradient(to right, #000 0%, rgba(0, 0, 0, 0) 100%)'");
+    expect(tabbar).not.toContain('var(--paper-a0)');
     expect(sidebar).toContain('data-global-sidebar-motion={sidebarMotion ?? undefined}');
     expect(sidebar).toContain("data-global-sidebar-titlebar-follow={isWindows ? 'full' : 'toggle-slot'}");
     expect(sidebar).not.toContain('transition-[width]');
@@ -119,6 +151,9 @@ describe('App Shell chrome contract', () => {
     expect(chat).toContain('data-chat-workspace-motion=');
     expect(chat).toContain('data-chat-conversation');
     expect(chat).toContain('data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}');
+    expect(chat).toContain('data-chat-workspace-divider');
+    expect(chat).toContain('absolute bottom-4 left-0 top-4 z-20 w-px');
+    expect(chat).not.toContain('flex-col border-l border-[var(--line-subtle)]');
     expect(chat).toContain('<OverlayBackdrop');
     expect(styles).toContain('@keyframes chat-workspace-panel-expand');
     expect(styles).toContain('@keyframes chat-workspace-panel-collapse');

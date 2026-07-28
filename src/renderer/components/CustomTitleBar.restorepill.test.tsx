@@ -51,11 +51,12 @@ describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
         expect(screen.queryByText('恢复上次对话')).toBeNull();
     });
 
-    it('uses the right workspace paper as one flat titlebar surface', () => {
+    it('shares the global sidebar surface without a bottom divider', () => {
         const { container } = renderBar();
         const titlebar = container.querySelector('.custom-titlebar');
 
-        expect(titlebar).toHaveClass('bg-[var(--paper)]', 'border-[var(--line)]', 'pl-2');
+        expect(titlebar).toHaveClass('bg-[var(--global-sidebar-bg)]', 'pl-2');
+        expect(titlebar).not.toHaveClass('bg-[var(--paper)]', 'border-b', 'border-[var(--line)]');
         expect(titlebar).not.toHaveClass('bg-gradient-to-b', 'from-[var(--paper)]', 'to-[var(--paper-inset)]/30');
     });
 

@@ -1901,6 +1901,8 @@
     "developer": {
       "devModeTitle": "Developer Mode",
       "devModeDescription": "Show log entry buttons on pages, such as Logs and System Info.",
+      "chatHistoryEntryTitle": "Chat History Entry",
+      "chatHistoryEntryDescription": "Show the History button in the AI chat header. Global session search and workspace session lists remain available when this is off.",
       "codexProviderTitle": "Codex Subscription Provider",
       "codexProviderDescription": "Show the MyAgents-managed Codex subscription entry on the Model Providers page.",
       "spaceEnvironmentTitle": "Team Service Environment",
