@@ -66,6 +66,7 @@ export default function CodeBlock({ children, language, className }: CodeBlockPr
             <SyntaxHighlighter
                 language={extractedLanguage}
                 style={customTheme}
+                className="overflow-x-auto"
                 customStyle={{
                     margin: 0,
                     background: 'transparent',

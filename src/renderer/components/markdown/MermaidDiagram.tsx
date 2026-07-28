@@ -237,6 +237,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
         <SyntaxHighlighter
             language="mermaid"
             style={codeTheme}
+            className="overflow-x-auto"
             customStyle={{ margin: 0, background: 'transparent' }}
             showLineNumbers={children.trim().split('\n').length > 5}
             lineNumberStyle={{

@@ -37,6 +37,7 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
 vi.mock('@/analytics', () => ({ track: vi.fn() }));
 
 import Message from '@/components/Message';
+import { renderWithTheme } from '@/test/renderWithTheme';
 import type { Message as MessageType } from '@/types/chat';
 import {
     SPACE_ISSUE_CONTEXT_TAG,
@@ -83,6 +84,26 @@ describe('assistant 正文 prose 上下文接线（ai-message-content）', () =>
         const prose = container.querySelector('.ai-message-content');
         expect(prose).not.toBeNull();
         expect(prose!.textContent).toContain('块模式下的 AI 回复文本');
+    });
+});
+
+describe('chat Markdown fenced code horizontal scroll ownership', () => {
+    const longCode = [
+        '```text',
+        'a long unwrapped code line that must stay inside its own horizontal scroll surface',
+        '```',
+    ].join('\n');
+
+    it('keeps user/query code blocks horizontally scrollable', () => {
+        const { container } = renderWithTheme(<Message message={userMessage(longCode)} />);
+
+        expect(container.querySelector('.user-message-content pre')).toHaveClass('overflow-x-auto');
+    });
+
+    it('keeps assistant code blocks horizontally scrollable', () => {
+        const { container } = renderWithTheme(<Message message={assistantMessage(longCode)} />);
+
+        expect(container.querySelector('.ai-message-content pre')).toHaveClass('overflow-x-auto');
     });
 });
 

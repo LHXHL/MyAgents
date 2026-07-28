@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ThemeRegistry, ThemeRuntimeProvider } from '@/theme';
@@ -50,6 +50,8 @@ describe('MermaidDiagram Theme adapter', () => {
     expect(view.container.querySelector('.markdown-code-block')?.firstElementChild).toHaveClass(
       'bg-[var(--code-bg)]',
     );
+    fireEvent.click(view.getByRole('button', { name: /code|代码/i }));
+    expect(view.container.querySelector('.markdown-code-block pre')).toHaveClass('overflow-x-auto');
     expect(mermaidCapture.initialize).toHaveBeenLastCalledWith(expect.objectContaining({
       theme: 'neutral',
       securityLevel: 'strict',
