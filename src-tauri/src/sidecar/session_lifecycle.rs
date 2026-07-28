@@ -777,6 +777,7 @@ fn create_new_session_sidecar<R: Runtime>(
         cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
     }
     let sidecar_generation = manager_guard.next_generation(session_id);
+    cmd.env("MYAGENTS_SIDECAR_ID", session_id);
     cmd.env(
         "MYAGENTS_SIDECAR_GENERATION",
         sidecar_generation.to_string(),

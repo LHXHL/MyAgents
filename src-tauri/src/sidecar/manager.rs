@@ -155,6 +155,14 @@ impl SidecarManager {
             && self.sidecar_generations.get(session_id).copied() == Some(generation)
     }
 
+    /// Validate the process identity injected into either a Session Sidecar or
+    /// the canonical Global Sidecar. Both process types consume the management
+    /// API, while only Session Sidecars live in `sidecars`.
+    pub fn is_live_process(&self, sidecar_id: &str, generation: u64) -> bool {
+        (self.sidecars.contains_key(sidecar_id) || self.instances.contains_key(sidecar_id))
+            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation)
+    }
+
     /// Allocate the next instance ID and stash it as this session's current
     /// generation. The ID comes from the process-global atomic counter, so
     /// it is unique for the whole process lifetime — repeated sidecars under
@@ -221,7 +229,11 @@ impl SidecarManager {
 
     /// Remove and return an instance (will be dropped, killing the process)
     pub fn remove_instance(&mut self, tab_id: &str) -> Option<SidecarInstance> {
-        self.instances.remove(tab_id)
+        let removed = self.instances.remove(tab_id);
+        if removed.is_some() {
+            self.sidecar_generations.remove(tab_id);
+        }
+        removed
     }
 
     /// Get all Tab IDs

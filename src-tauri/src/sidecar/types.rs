@@ -397,6 +397,33 @@ mod lifecycle_contract_tests {
         assert!(third > second);
     }
 
+    #[test]
+    fn management_process_identity_covers_global_and_session_sidecars() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let session_generation = manager.current_generation("session-a");
+        assert!(manager.is_live_process("session-a", session_generation));
+
+        let global_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: spawn_test_child(),
+                port: 31419,
+                agent_dir: None,
+                healthy: true,
+                is_global: true,
+                session_delete_authority: None,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        assert!(manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
+        assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation + 1));
+
+        manager.remove_instance(GLOBAL_SIDECAR_ID);
+        assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
+    }
+
     fn spawn_test_child() -> Child {
         #[cfg(windows)]
         let mut cmd = {

@@ -7,6 +7,7 @@ pub mod browser;
 pub mod cli;
 mod commands;
 pub mod config_io;
+mod crash_artifact_retention;
 pub mod cron_task;
 pub mod device_identity;
 pub mod floating_ball;
@@ -35,6 +36,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
 pub mod session_metadata;
@@ -741,6 +743,10 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            // Tauri is the only process guaranteed to exist for the whole app
+            // lifetime, so it owns shared crash-artifact cleanup. The first
+            // sweep handles upgrade backlog without requiring any Sidecar.
+            crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
             space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);

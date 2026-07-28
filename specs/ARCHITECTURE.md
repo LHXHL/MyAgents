@@ -247,12 +247,15 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/task/*`（13 条） | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts` |
 | `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
 | `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model mutation |
+| `/api/runtime/sdk-child/{admit,settle}` | Rust-owned Claude SDK native child launch circuit；按 executable identity 限流 deterministic exec denial | Global / Session Sidecar 的 `createGuardedSdkQuery()` |
 | `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
 | `/api/agent/runtime-status` | Agent 运行时状态查询 | Node.js / 前端 |
 
 这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"Renderer / Sidecar 控制面走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
+
+Rust 为 Global 与 Session 两类 Sidecar 都在 spawn 前分配 process-global 单调 generation，并注入真实 manager key（`MYAGENTS_SIDECAR_ID`）；Management API 以 live `(sidecarId, generation)` 校验 caller，不能给 Global 伪造 Session identity。SDK native child 的 EPERM / EACCES / ENOEXEC circuit 归 Rust 应用进程持有：admission 携带 epoch，half-open lease 自动过期，旧 settlement 不能清除较新的 failure epoch。只有 Management API transport 真不可达时 Node 可 fail-open；`invalid_request` / `stale_sidecar` 必须 fail-closed。
 
 ---
 

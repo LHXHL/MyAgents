@@ -335,6 +335,7 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 - `abortPersistentSession()` 仍是唯一语义化 abort 入口；abort flag 的内部写入归 `lifecycle.ts`。
 - `agent-session.ts` 需要修改 owner state 时走 `builtin-session/*` 的命名 API；`runtime-boundary.unit.test.ts` 有 direct-write guard，防止重新裸写 lifecycle/queue/turn/config/transcript 状态。
 - `agent-session.ts` 不再解释 SDK terminal result，也不再实现 transcript persistence mapping/chain；这两类行为分别归 `turn-lifecycle.ts` 与 `transcript-persistence.ts`，facade 只组装必要依赖并委托。
+- builtin pre-warm 遇到 SDK native child 的确定性 exec denial 时，第一次失败只做短暂 control-plane handoff；随后必须采用 Rust admission 返回的 `retryAfterMs`，不得回落为 process-local 500ms/0ms 重启循环。Rust half-open lease 是唯一重试时钟，详见 `bundled_node.md`。
 
 #### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
 

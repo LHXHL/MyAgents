@@ -39,6 +39,7 @@ import {
   type InvalidResumeAnchorKind,
 } from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
   SESSION_PLANS_GITIGNORE_PATTERN,
@@ -3259,7 +3260,7 @@ export function forceReloadActiveSession(reason: RestartReason = 'mcp'): void {
   }
 }
 
-function schedulePreWarm(): void {
+function schedulePreWarm(delayMs = 500): void {
   if (lifecycleState.preWarmTimer) clearTimeout(lifecycleState.preWarmTimer);
   if (!agentDir) return;
   if (lifecycleState.preWarmDisabled) return;
@@ -3320,7 +3321,7 @@ function schedulePreWarm(): void {
     startStreamingSession(true).catch((error) => {
       console.error('[agent] pre-warm failed:', error);
     });
-  }, 500));
+  }, Math.max(0, delayMs)));
 }
 
 /**
@@ -10554,6 +10555,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let preWarmStartedOk = false; // Tracks whether pre-warm received system_init
   let abortedByTimeout = false; // Distinguishes timeout abort from config-change abort
   let detectedAlreadyInUse = false; // stderr reported "Session ID already in use"
+  let sdkLaunchRetryDelayMs: number | undefined;
   const recentSdkStderr: string[] = [];
   streamIndexToToolId.clear();
   streamIndexToBlockType.clear();
@@ -10835,6 +10837,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       getSessionMetadata(sessionId),
       configState.currentEnabledOfficialToolIds,
     );
+    const claudeCodeExecutable = resolveClaudeCodeCli();
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
@@ -10888,7 +10891,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
       model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
-      pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
+      pathToClaudeCodeExecutable: claudeCodeExecutable,
       env,
       stderr: (message: string) => {
         recentSdkStderr.push(message);
@@ -11488,10 +11491,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     try {
-      activeQuery = query({
+      activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
         prompt: promptGen,
         options: { ...sessionOption, ...commonQueryOptions },
-      });
+      }));
       setQuerySession(activeQuery);
     } catch (queryError: unknown) {
       // Defensive fallback: metadata lost but SDK disk data exists → switch to resume
@@ -11501,14 +11504,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (!resumeFrom && msg.includes('already in use')) {
         console.warn(`[agent] Session ${effectiveSdkSessionId} already exists on disk, switching to resume`);
         sessionRegistered = true;
-        activeQuery = query({
+        activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
           prompt: promptGen,
           options: {
             resume: effectiveSdkSessionId,
             ...(rewindResumeAt ? { resumeSessionAt: rewindResumeAt } : {}),
             ...commonQueryOptions,
           },
-        });
+        }));
         setQuerySession(activeQuery);
       } else {
         throw queryError;
@@ -13055,16 +13058,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // Fall through to error handling so IM SSE stream closes properly
     }
 
-    // Enhanced error diagnostics for Windows subprocess failures
+    // Cross-platform SDK subprocess diagnostics. Deterministic executable
+    // denials also carry the Rust circuit's next legal probe delay.
     let userFacingError = errorMessage;
     const sdkSubprocessDiagnostic = diagnoseSdkSubprocessFailure({
+      error,
       errorMessage,
       stderr: recentSdkStderr,
     });
     if (sdkSubprocessDiagnostic) {
+      sdkLaunchRetryDelayMs = sdkSubprocessDiagnostic.automaticRetryDelayMs;
       console.error(
-        `[agent] Windows SDK subprocess failure classified: kind=${sdkSubprocessDiagnostic.kind} ` +
-        `code=${sdkSubprocessDiagnostic.exitCodeHex ?? 'unknown'} os=${process.env.OS || 'unknown'}`,
+        `[agent] SDK subprocess failure classified: kind=${sdkSubprocessDiagnostic.kind} ` +
+        `code=${sdkSubprocessDiagnostic.errorCode ?? sdkSubprocessDiagnostic.exitCodeHex ?? 'unknown'} ` +
+        `platform=${process.platform}`,
       );
       userFacingError = sdkSubprocessDiagnostic.userMessage;
     }
@@ -13229,7 +13236,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // sessionRegistered 不修改 — pre-warm 永不触碰此标志
 
       if (!preWarmStartedOk) {
-        if (!lifecycleState.abortRequested || abortedByTimeout) {
+        if (sdkLaunchRetryDelayMs !== undefined) {
+          resetPreWarmFailCount();
+          console.warn(
+            `[agent] pre-warm SDK launch blocked; next application probe in ${sdkLaunchRetryDelayMs}ms`,
+          );
+        } else if (!lifecycleState.abortRequested || abortedByTimeout) {
           const failCount = incrementPreWarmFailCount();
           console.warn(`[agent] pre-warm failed, failCount=${failCount}${abortedByTimeout ? ' (timeout)' : ''}`);
         } else {
@@ -13238,16 +13250,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
 
       if (!preWarmStartedOk || lifecycleState.abortRequested) {
-        schedulePreWarm();
+        schedulePreWarm(sdkLaunchRetryDelayMs);
       }
     } else if (!lifecycleState.abortRequested && sessionRegistered) {
       // 非主动中止的意外退出（subprocess crash / error）→ 安排恢复。
       // 包含 sessionState === 'error' 的情况 — session 刚死，必须恢复，
       // 否则用户再发消息时无可用 subprocess。
       // Error 已通过 catch block 广播给前端（line 4702），用户已知出错。
-      console.log('[agent] Unexpected session exit, scheduling recovery pre-warm');
+      console.log(
+        `[agent] Unexpected session exit, scheduling recovery pre-warm`
+        + (sdkLaunchRetryDelayMs !== undefined ? ` in ${sdkLaunchRetryDelayMs}ms` : ''),
+      );
       resetPreWarmFailCount(); // 新的故障上下文，重置重试计数
-      schedulePreWarm();
+      schedulePreWarm(sdkLaunchRetryDelayMs);
     }
 
     // Safety net: detect orphaned transcriptState.messages left in queue with no session or timer to process them.
@@ -13271,15 +13286,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         if (lifecycleState.preWarmTimer) {
           clearPreWarmTimer();
         }
-        console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), starting recovery turn`);
         resetPreWarmFailCount();
-        if (!startNextTurnQueuedItem('recovery')) {
-          schedulePreWarm();
+        if (sdkLaunchRetryDelayMs !== undefined) {
+          console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), waiting for SDK launch probe`);
+          schedulePreWarm(sdkLaunchRetryDelayMs);
+        } else {
+          console.warn(`[agent] Safety net: ${turnBoundaryQueueLength} turn-boundary message(s), starting recovery turn`);
+          if (!startNextTurnQueuedItem('recovery')) {
+            schedulePreWarm();
+          }
         }
       } else if (!lifecycleState.preWarmTimer) {
         console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s) in queue, scheduling recovery`);
         resetPreWarmFailCount();
-        schedulePreWarm();
+        schedulePreWarm(sdkLaunchRetryDelayMs);
       }
     }
   }
