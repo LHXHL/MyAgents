@@ -7,6 +7,7 @@ pub mod browser;
 pub mod cli;
 mod commands;
 pub mod config_io;
+mod crash_artifact_retention;
 pub mod cron_task;
 pub mod device_identity;
 pub mod floating_ball;
@@ -35,6 +36,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
 pub mod session_metadata;
@@ -69,7 +71,7 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 
 #[cfg(target_os = "macos")]
-const MAIN_TRAFFIC_LIGHT_X: f64 = 5.0;
+const MAIN_TRAFFIC_LIGHT_X: f64 = 15.0;
 #[cfg(target_os = "macos")]
 const MAIN_TRAFFIC_LIGHT_Y: f64 = 20.0;
 
@@ -741,6 +743,10 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            // Tauri is the only process guaranteed to exist for the whole app
+            // lifetime, so it owns shared crash-artifact cleanup. The first
+            // sweep handles upgrade backlog without requiring any Sidecar.
+            crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
             space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
@@ -853,9 +859,12 @@ pub fn run() {
                     e
                 })?;
 
-            // x=5 centers the native cluster in the 64px rail;
-            // y=20 preserves its established vertical alignment. Install the
-            // native owner before the first visible frame.
+            // x=15 gives the native cluster a conventional leading inset and
+            // leaves the same optical gap before the fixed toggle slot. The
+            // shared sidebar/titlebar surface means the cluster no longer has
+            // to stay geometrically centered inside the 64px rail. y=20 keeps
+            // the established vertical alignment. Install the owner before
+            // the first visible frame.
             #[cfg(target_os = "macos")]
             if let Err(e) = macos_traffic_light::install_native_layout_owner(
                 &main_window,

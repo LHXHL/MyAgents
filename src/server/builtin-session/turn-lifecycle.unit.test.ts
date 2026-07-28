@@ -75,6 +75,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     getProviderEnv: () => undefined,
     getCurrentModel: () => 'claude-test',
     getIsInterruptingResponse: () => false,
+    didInFlightSurviveInterrupt: () => null,
     setStreamingMessage: vi.fn(),
     resetInFlightToolCount: vi.fn(),
     resetWatchdogFired: vi.fn(),
@@ -378,6 +379,37 @@ describe('turn-lifecycle owner', () => {
       expect.objectContaining({ queueId: 'desktop-failed' }),
       expect.any(Object),
     );
+  });
+
+  it('fails a non-completed terminal reason even when the SDK leaves is_error false', async () => {
+    const { deps, broadcasts } = makeDeps();
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushOutputOwner('desktop-incomplete', null, SESSION_BOUND_CHANNEL_DELIVERY.assistant);
+    markCurrentTurnHasOutput();
+    setCurrentTurnSourceItem({
+      id: 'task-turn',
+      message: { role: 'user', content: 'run task' },
+      messageText: 'run task',
+      wasQueued: false,
+      resolve: vi.fn(),
+      turnOwner: { kind: 'task', id: 'task-1' },
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
+
+    lifecycle.handleSdkResult(makeResult({
+      is_error: false,
+      result: 'partial output before setup failure',
+      terminal_reason: 'turn_setup_failed',
+    }));
+    await lifecycle.getLastTurnEndPersist();
+
+    expect(deps.failOutputOwner).toHaveBeenCalledOnce();
+    expect(deps.completeOutputOwnerAfterPersistence).not.toHaveBeenCalled();
+    expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
+    expect(deps.trackServer).not.toHaveBeenCalledWith('ai_turn_complete', expect.anything());
+    expect(broadcasts.find(item => item.event === 'chat:message-complete')?.data).toMatchObject({
+      completionTerminal: { status: 'error' },
+    });
   });
 
   it('lets a graceful interrupt result claim exactly one IM terminal owner', async () => {
@@ -693,5 +725,30 @@ describe('turn-lifecycle owner', () => {
     expect(natural.deps.preserveInFlightAfterTerminalBoundary).toHaveBeenCalledWith('natural result');
     expect(natural.deps.surfaceInFlightQueueItem).not.toHaveBeenCalled();
     expect(natural.deps.dropInFlightQueueItem).not.toHaveBeenCalled();
+  });
+
+  it('preserves a plain-stop in-flight item when the interrupt receipt says it will run', () => {
+    const { deps } = makeDeps({
+      getIsInterruptingResponse: () => true,
+      didInFlightSurviveInterrupt: queueId => queueId === 'queued-survivor',
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    setInFlightQueueItem('queued-survivor', {
+      messageText: 'continue after stop',
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
+    setInterruptingInFlightQueueId('queued-survivor');
+    appendMessage({ id: '1', role: 'assistant', content: 'partial', timestamp: 't1' });
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      result: 'partial',
+      terminal_reason: 'aborted_streaming',
+    }));
+
+    expect(deps.preserveInFlightAfterTerminalBoundary).toHaveBeenCalledWith(
+      'interrupt receipt confirms queued survivor',
+    );
+    expect(deps.dropInFlightQueueItem).not.toHaveBeenCalled();
   });
 });

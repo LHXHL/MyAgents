@@ -87,7 +87,7 @@ function deferred<T>() {
 beforeEach(() => {
     __resetTaskCenterStoreForTest();
     vi.clearAllMocks();
-    sessionClientMocks.deleteSession.mockResolvedValue(true);
+    sessionClientMocks.deleteSession.mockResolvedValue({ deleted: true });
     sessionClientMocks.getSessions.mockResolvedValue([]);
     cronTaskMocks.getAllCronTasks.mockResolvedValue([]);
     cronTaskMocks.getBackgroundSessions.mockResolvedValue([]);
@@ -473,6 +473,19 @@ describe('store snapshot', () => {
         } finally {
             unsubscribe();
         }
+    });
+});
+
+describe('actions.deleteSession', () => {
+    it('treats an already-absent Session as an idempotent deletion success', async () => {
+        __setTaskCenterSessionsForTest([favoriteSession(false)]);
+        sessionClientMocks.deleteSession.mockResolvedValueOnce({
+            deleted: false,
+            reason: 'not-found',
+        });
+
+        await expect(actions.deleteSession('s1')).resolves.toEqual({ deleted: true });
+        expect(getSnapshot().sessions).toEqual([]);
     });
 });
 

@@ -1959,6 +1959,16 @@ describe('external SessionEngine with fake runtime', () => {
     const live = harness.engine.getLiveSessionOverlay(sessionId);
     expect(live.isActive).toBe(true);
     expect(live.liveStreamingMessage?.content).toContain('first fake answer');
+    expect(harness.engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId,
+      replayMessages: [
+        expect.objectContaining({ role: 'user', content: 'hello' }),
+      ],
+      liveStreamingMessage: expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('first fake answer'),
+      }),
+    });
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.engine.getLatestAssistantResult()).toEqual({
@@ -1999,6 +2009,39 @@ describe('external SessionEngine with fake runtime', () => {
         }),
       }),
     }));
+  });
+
+  it('replays the promoted bound session during pending-to-real startup', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer during promoted startup', completeDelayMs: 200 },
+    ]);
+    const pendingSessionId = 'pending-replay-startup';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(pendingSessionId, workspacePath, 'hello before lifecycle commit'),
+    );
+    await waitFor(() => {
+      const boundSessionId = harness.externalSession.getCurrentBoundSessionId();
+      return Boolean(
+        boundSessionId
+        && boundSessionId !== pendingSessionId
+        && harness.engine.getLiveSessionOverlay(boundSessionId).liveStreamingMessage?.content.includes('answer during promoted startup'),
+      );
+    }, 'promoted startup live snapshot');
+
+    const boundSessionId = harness.externalSession.getCurrentBoundSessionId();
+    expect(boundSessionId).not.toBe(pendingSessionId);
+    expect(harness.engine.getStreamReplaySnapshot()).toMatchObject({
+      sessionId: boundSessionId,
+      replayMessages: [
+        expect.objectContaining({ role: 'user', content: 'hello before lifecycle commit' }),
+      ],
+      liveStreamingMessage: expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('answer during promoted startup'),
+      }),
+    });
   });
 
   it('materializes a birth-pending Agent Channel session through an injected turn', async () => {

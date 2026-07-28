@@ -70,7 +70,9 @@
     "unfavorite": "Remove from favorites",
     "viewStats": "View stats",
     "delete": "Delete",
-    "stopCronBeforeDelete": "Stop or cancel the active Goal or scheduled task before deleting this chat"
+    "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
+    "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
+    "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment."
   },
   "workspaceCard": {
     "more": "More",

@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.37
-> **Last Updated**: 2026-07-27
+> **Version**: 2.8.45
+> **Last Updated**: 2026-07-29
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -238,7 +238,7 @@ Token 定义在 `src/renderer/index.css` 的 `@theme` 块（单一真相源，�
 |------|----------------|------|------|---------|
 | meta | `--text-xs` / `text-xs` | 12px | 1.45 | 时间戳、badge、计数、快捷键、分类头(uppercase)、描述行、hint |
 | ui | `--text-sm` / `text-sm` | 14px | 1.5 | 按钮、菜单项、树节点、tab、工具卡、控制台输出、Markdown 表格 |
-| prose | `--text-base` / `text-base` | 16px | 1.7 | **正文主体**——AI 回答、用户气泡、widget body、输入框* |
+| prose | `--text-base` / `text-base` | 16px | 1.7 默认；Markdown 1.625 | **正文主体**——AI 回答、用户气泡、widget body、输入框* |
 | display | `--text-lg/xl/2xl` | 18/20/22px | 1.5/1.4/1.3 | 弹窗标题/Markdown H3、H2、H1 |
 | stat | `--text-3xl` / `text-3xl` | 28px | 1.2 | 数据大数字（占用率百分比等）、页面大标题 |
 | brand | `--text-brand` | 56px | 1.1 | 品牌名（Launcher 品牌区与 Settings About） |
@@ -262,7 +262,7 @@ meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 
   禁止裸 px。
 
 **字号使用原则**：
-- AI 回复的 Markdown 正文使用 16px / 1.7，确保阅读舒适
+- AI 回复与文档预览的 Markdown 正文使用 16px / 1.625；保持正文可读性的同时，让短段落和列表形成清晰聚落
 - AI 回复内的 Markdown 表格用 dense 档：td=14px，th=12px uppercase（表格是密集内容，
   但 13px 会在同一条消息内造成肉眼可见跳变；v2.5 起 ui 档即 14，自然归一）
 - 全部按钮（含工具栏 ghost）使用 14px（text-sm），配合 h-3.5 w-3.5 图标；按钮文字下限 14px
@@ -531,6 +531,8 @@ Item 选中: 文字 var(--accent-warm)
 ```
 
 所有新 Overlay 必须复用 `src/renderer/components/OverlayBackdrop.tsx`，不要手写裸 backdrop。组件封装了正确的 pointer dismissal 语义；`className` 只补 z-index、padding、overflow 等布局差异，图片预览用 `variant="dark"`。可关闭 Overlay 还必须用 `useCloseLayer(handler, zIndex)` 注册关闭层，且 z-index 与视觉层级一致，避免 Cmd+W 跳过 Overlay 直接关闭 Tab。
+
+全局历史搜索由 DOM 顺序早于 Tab 工作区的 `GlobalSidebar` 声明，因此 `HistorySearchOverlayFrame` 的稳定外壳必须 portal 到 `document.body`。这里不能只提高 `z-index`：macOS WKWebView 的 overflow scrollbar 使用独立合成层，后续 Tab 滚动面仍可能穿透较早的 backdrop。未来新增或重构同类 App 级 Overlay 时应先核对 owner 与 DOM 绘制顺序；页面内部、天然位于自身滚动面之后的局部 Overlay不受此约束。
 
 **适用范围**：
 - 模态框（ConfirmDialog、SessionStatsModal 等）
@@ -831,8 +833,8 @@ transition: opacity var(--duration-slow),
 背景: transparent (与页面融合)
 文字: var(--ink)
 字号: var(--text-base) / 16px
-行高: 1.7 (阅读优化，@theme 配对行高)
-段落间距: var(--space-4)
+行高: 1.625（26px；聊天与文档共用的 Markdown 阅读节奏）
+段落间距: var(--space-3) / 12px
 最大宽度: 768px (居中)
 ```
 
@@ -842,7 +844,7 @@ transition: opacity var(--duration-slow),
 文字: var(--ink)
 圆角: var(--radius-lg)
 内边距: var(--space-4)
-字号: var(--text-base)，行高 1.7（与 AI 消息一致，不另设 leading）
+字号: var(--text-base)，行高 1.625（与 AI Markdown 一致）
 对齐: 右侧（或左侧皆可，但需与 AI 区分）
 ```
 
@@ -891,18 +893,28 @@ transition: opacity var(--duration-slow),
 
 #### 多行代码块
 ```
-背景: #1e1e1e (深色) 或 var(--paper-inset) (浅色)
-文字: 根据语法高亮
+正文背景: var(--paper-inset) / 30%，与 Chat tool/process 组共用同一表面
+  - Light / Dark 均由当前 Theme 的 paper 层级自然适配
+文字: Theme Prism Adapter 语法高亮，普通文字 var(--code-text)
 字体: var(--font-mono)
 字号: 14px (text-sm)
-行高: 1.5
+行高: 1.6
+长行: 不换行，由代码正文自身 `overflow-x-auto` 承担横向滚动；该显式声明同时使正文在 App-level Tab 横滑手势前取得完整手势所有权，抵达边缘也不得切换 Tab
 圆角: var(--radius-md)
 内边距: var(--space-4)
+边界: 1px solid var(--line)
+阴影: none
 
-头部 (可选):
+头部:
+  - 背景: Theme-owned var(--code-bg)（原代码正文色，作为比正文深一阶的标题面）
+  - 与正文之间: 1px solid var(--line)
   - 语言标签: 左上角
   - 复制按钮: 右上角
 ```
+
+Theme 与 AppearanceMode 正交：每套 Theme 必须分别交付 light/dark Code Token 与 Prism
+palette。Light 不得复用 dark palette，Dark 也不能退回无主题色的通用纯黑；组件只消费
+`ResolvedTheme.adapters.prism` 和 Code Token，不判断 Theme ID。
 
 ### 10.5 思考块 (Thinking Blocks)
 
@@ -940,23 +952,32 @@ AI 的思考过程，用户可选择查看。
 
 #### 行高与段落
 ```css
-/* AI 回复正文 */
-.ai-message-content {
+/* Chat 与 Document 共用的 Markdown 正文 */
+.markdown-content {
   font-size: var(--text-base);  /* 16px */
-  line-height: 1.7;              /* 27.2px - 适合长文本阅读 */
-  letter-spacing: 0.01em;        /* 略微增加字间距 */
+  line-height: 1.625;            /* 26px - 长文可读，短列表不漂散 */
+  letter-spacing: 0;
 }
 
 /* 段落间距 */
-.ai-message-content p + p {
-  margin-top: var(--space-2);    /* 8px */
+.markdown-paragraph {
+  margin-top: var(--space-3);    /* 12px */
 }
 
 /* 列表项间距 */
-.ai-message-content li + li {
-  margin-top: var(--space-1.5);  /* 6px */
+.markdown-list-item + .markdown-list-item {
+  margin-top: var(--space-1-5);  /* 6px */
+}
+
+.markdown-list {
+  margin-inline-start: var(--space-8); /* 32px，marker 与正文边界形成可见区隔 */
 }
 ```
+
+正文采用单向 `margin-block-start`：后一个内容块拥有间距，禁止同时给前后元素设置
+上下 margin 后依赖 margin collapse。Chat 与 Document 使用同一默认节奏；`compact`
+是唯一独立变体，正文 14px / 1.55、段落 8px、列表块 6px、列表项 4px、列表缩进 24px，并同步收紧
+标题、表格、引用、代码块和分隔线，不能只缩字号。
 
 #### 内容宽度
 - 最大宽度限制 768px，避免单行过长影响阅读
@@ -966,12 +987,12 @@ AI 的思考过程，用户可选择查看。
 在 AI 生成的 Markdown 内容中：
 | Markdown | 样式 |
 |----------|------|
-| `# H1` | 22px, bold, margin-top: 24px, margin-bottom: 16px |
-| `## H2` | 20px, semibold, margin-top: 20px, margin-bottom: 12px |
-| `### H3` | 18px, semibold, margin-top: 16px, margin-bottom: 8px |
-| `#### H4` | 16px, semibold, margin-top: 12px, margin-bottom: 8px |
-| `##### H5` | 16px, medium, margin-top: 12px, margin-bottom: 8px |
-| `###### H6` | 16px, medium, margin-top: 12px, margin-bottom: 8px |
+| `# H1` | 22px, semibold, margin-top: 24px；到正文 8px |
+| `## H2` | 20px, semibold, margin-top: 20px；到正文 8px |
+| `### H3` | 18px, semibold, margin-top: 20px；到正文 8px |
+| `#### H4` | 16px, semibold, margin-top: 16px；到正文 8px |
+| `##### H5` | 16px, medium, margin-top: 12px；到正文 8px |
+| `###### H6` | 16px, medium, margin-top: 12px；到正文 8px |
 
 #### 表格 (Markdown Table)
 
@@ -990,10 +1011,12 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 | 场景 | 间距 |
 |------|------|
 | 消息之间 | var(--space-4) / 16px |
-| 消息内段落 | var(--space-4) / 16px |
+| 消息内段落 | var(--space-3) / 12px |
 | 工具块与文本 | var(--space-3) / 12px |
 | 代码块与文本 | var(--space-3) / 12px |
-| 列表项之间 | var(--space-2) / 8px |
+| 列表块上下 | var(--space-2) / 8px |
+| 列表项之间 | var(--space-1-5) / 6px |
+| 嵌套列表项之间 | var(--space-1) / 4px |
 
 ### 10.9 加载与过渡状态
 
@@ -1251,17 +1274,17 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 ```
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
-- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
+- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 红绿灯使用 15px 左侧 inset：顶部 Tab 与侧栏已共用同一材质，三按钮无需再硬性居中于 64px rail；15px 同时让窗口左缘到关闭按钮、第三颗按钮到 `x=84px` toggle 槽形成近似等距留白。原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
 - 常驻展开态 256px，rail 64px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=22px` 且复用同一 DOM；其中心与 16px 功能图标共同落在 `x=32px` 中线上，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
-- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 60px 预留同时包含固定 toggle 槽位及其后的 8px 留白，使 rail 收窄后首个 Tab 仍固定在窗口 `x=124px`。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
+- 右侧标题栏与全局侧栏共用 `var(--global-sidebar-bg)` 单色根面，不使用 `paper → paper-inset` 混合渐变，也不在下方叠加横向分割线；材质色差直接承担顶部 chrome 与页面的分区。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 60px 预留同时包含固定 toggle 槽位及其后的 8px 留白，使 rail 收窄后首个 Tab 仍固定在窗口 `x=124px`。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab、溢出按钮与溢出渐隐都基于同一侧栏表面色，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
 ### 15.2 全局侧边栏
 
 展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与工具的连续主导航、Agent 工作区树、底部小助理/设置；其中团队入口仅在 Team Space 实验室开关开启且当前构建能力可用时出现，关闭后展开态与 rail 均不保留失效入口。主导航项与底部入口使用 36px 命中高度且不添加行间距；从主导航到 Agent 工作区、再到底部入口均不使用横分割线，主要层级只依靠 8–12px 组间留白、工作区标题和选中面，不将每组包成卡片。
 
-全局侧栏根面只消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使侧栏同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担左右分区，不再叠加右侧竖分割线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片、弹层和顶部 Tab 栏继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
+全局侧栏根面与顶部 Tab 标题栏共同消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使两块 App Shell chrome 同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担分区，不再叠加侧栏右侧竖线或标题栏底部横线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片与弹层继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
 
 ```
 展开态 256px:
@@ -1304,7 +1327,8 @@ rail 64px:
 - 资源树始终只有一个持久选中面：Launcher 选择工作区时，工作区行与普通 hover 统一使用 `var(--hover-bg)`；Chat 已进入具体 Session 时，只由 Session active 行使用 `var(--hover-bg)`，父工作区不同时涂底或声明 `aria-current`，仅以中等字重保留路径上下文。两者均不增加 `paper-elevated` 或阴影；小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、静默加载占位和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。rail 工作区 flyout 与侧栏消费同一个 `--global-sidebar-bg`，避免白色浮层从侧栏材质中突兀跳出。
 - Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
-- Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
+- Chat 顶栏默认不展示工作区历史入口，既有按钮、下拉内容与切换逻辑继续保留；`AppConfig.showChatHistoryEntry` 缺省为 `false`，并由“设置 → 关于 → 开发者”中紧跟“开发者模式”的开关控制，切换后即时生效。全局侧栏中的跨工作区搜索与 Session 树不受影响。
+- Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板标题栏不再显示冗余的“工作区”文字，只保留左侧工具与右侧动作；Chat 与面板之间不使用通顶边框，只保留上下各 16px 留白的 1px 内部短分隔线。面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
 - Chat 右侧工作区头部只展示工作区图标、名称、分支与路径，不展示文件/文件夹聚合计数，避免易过期的扫描结果与资源导航争夺注意力。底部 `Agent 能力` 初始收起，仅保留标题与总数；用户显式展开后再分配内容高度并渲染能力列表。
 - 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
 - 历史搜索 Overlay 在冷模块加载时立即显示同尺寸搜索壳；App Shell 从点击开始唯一持有 Backdrop、面板 DOM、关闭层和一次入场动画，Suspense 只能替换面板内部内容，禁止真实内容就绪时重新挂载或重播 opacity-from-zero。搜索入口 hover/focus 预取内容模块，实际面板入场压缩到 160ms。非搜索浏览态只保留“全部 / 收藏”分类与工作区筛选，不再用“活跃中 / 桌面 / 聊天机器人”重复切割同一历史集合；Session 来源继续由行内 tag 表达。空搜索默认历史使用虚拟列表，只渲染可视区与小幅 overscan，连续滚动中不得一次 mount 全部 Session；非空全文检索结果保持现有 50 条上限，不另做前端分页。
@@ -1383,6 +1407,14 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.45 | 2026-07-29 | **Markdown 代码横滑归属修复**：非换行代码正文显式声明 `overflow-x-auto`，让 user/query、assistant、文档等共享代码块及 Mermaid 源码视图恢复原生横向滚动，并在到达边缘时继续持有手势；普通正文的双指左右切 Tab 保持不变 |
+| 2.8.44 | 2026-07-29 | **macOS 红绿灯留白校准**：顶部 Tab 与侧栏同色后，主窗口红绿灯左侧 inset 从 5px 调至 15px，使左缘留白接近顶部留白，并与右侧固定 toggle 槽形成更均衡的间隔；继续由原生布局 owner 保证 zoom、resize 与全屏切换稳定，Windows 不受影响 |
+| 2.8.43 | 2026-07-29 | **Markdown 列表与代码面层级校准**：默认有序/无序列表整体缩进从 20px 调至 32px，让 marker 与正文左边界形成轻量区隔；compact 使用 24px，嵌套与 task list 保持文字列对齐。代码正文改与 Chat tool/process 组共用 `paper-inset / 30%` 浅表面，标题行接手原正文 `--code-bg`，Mermaid code view 同步，不新增颜色 Token |
+| 2.8.42 | 2026-07-29 | **App Shell 材质边界减法**：顶部 Tab 标题栏改与全局侧栏共用 `--global-sidebar-bg`，并移除标题栏底部分割线；Chat 与右侧工作区的通顶左边框改为上下各留 16px 的内部短分隔线，不改变三栏宽度、面板内容或收展动效 |
+| 2.8.41 | 2026-07-29 | **Chat 顶部信息减法**：AI 对话顶栏默认隐藏工作区历史入口，完整保留按钮、下拉与切换实现，并在“设置 → 关于 → 开发者”的开发者模式下方提供默认关闭的持久化开关；右侧工作区标题栏移除冗余“工作区”文字，搜索、终端、浏览器、Agent 设置与收展动作保持不变 |
+| 2.8.40 | 2026-07-29 | **代码块双外观主题适配**：八套生产 Theme 的 Light 代码块从突兀深底改为各自 paper/inset 色系内的浅色代码面；Dark 保留各主题炭色材质，canonical Prism 从 light/dark 共用 `oneDark` 收口为按 Theme 语义色分别生成；Markdown 与 Mermaid 代码块统一细边框、Header 分隔、10px 圆角及 code-local hover，不增加阴影或 Theme ID 分支 |
+| 2.8.39 | 2026-07-28 | **Markdown 排版聚落感校准**：Chat 与 Document 收口到同一默认节奏（16px/1.625、正文零额外字距、段落 12px、列表块 8px、列表项 6px、嵌套列表 4px），`strong` 与 H1 收至 600；改用后项拥有间距的单向流，补齐引用段落、GFM task list 和首尾块处理；`compact` 成为 14px/1.55 且标题、列表、表格、引用、代码块、分隔线同步收紧的完整变体 |
+| 2.8.38 | 2026-07-28 | **全局历史搜索层级修正**：稳定搜索外壳 portal 到 App 根内容之后的 `document.body`，避免 macOS WKWebView 把后续 Tab 的原生纵横滚动条合成到遮罩和搜索面板上方；Suspense、动画与关闭层生命周期保持不变 |
 | 2.8.37 | 2026-07-27 | **输入框菜单动效与层级收口**：`+`、会话模式、工具菜单统一为 200ms 淡入与自下向上归位，移除横向感和缩放；`@` 文件引用与 `/` 技能选择弹窗统一使用和输入框一致的 `shadow-md` |
 | 2.8.36 | 2026-07-27 | **定时任务文案明确化**：中文输入框 `+` 菜单入口由“定时”改为“定时任务”，不改变 i18n key、英文翻译或功能行为 |
 | 2.8.35 | 2026-07-27 | **输入框低频动作归位**：Launcher 与 Chat 的定时入口从常驻工具栏移入共享 `+` 菜单；菜单增加 200ms 淡入、上移归位与轻微缩放动效，并兼容 reduced motion 与 Floating UI 定位（缩放后由 2.8.37 移除） |

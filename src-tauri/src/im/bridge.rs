@@ -1161,16 +1161,36 @@ pub struct BridgeProcess {
 }
 
 impl BridgeProcess {
-    pub fn kill_sync(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait(); // Reap zombie
+    pub fn kill_sync(&mut self) -> Result<(), String> {
+        match self.child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!("failed to inspect Plugin Bridge process: {error}"));
+            }
+        }
+
+        if let Err(kill_error) = self.child.kill() {
+            return match self.child.try_wait() {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => Err(format!("failed to terminate Plugin Bridge process: {kill_error}")),
+                Err(wait_error) => Err(format!(
+                    "failed to terminate Plugin Bridge process: {kill_error}; status check failed: {wait_error}"
+                )),
+            };
+        }
+
+        self.child
+            .wait()
+            .map(|_| ())
+            .map_err(|error| format!("failed to reap Plugin Bridge process: {error}"))
     }
 
-    pub async fn kill(&mut self) {
+    pub async fn kill(&mut self) -> Result<(), String> {
         // Use spawn_blocking to avoid blocking the tokio runtime
         // We take ownership issues here, so just do sync kill inline
         // since kill + wait are fast operations on an already-killed process.
-        self.kill_sync();
+        self.kill_sync()
     }
 }
 

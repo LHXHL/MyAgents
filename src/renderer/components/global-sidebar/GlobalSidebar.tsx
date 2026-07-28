@@ -42,6 +42,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -82,6 +83,7 @@ import {
   unarchiveProject,
 } from '@/config/services/projectService';
 import { useConfig } from '@/hooks/useConfig';
+import { useSessionDeletion } from '@/context/SessionDeletionContext';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { useGlobalSidebarTaskCenterData, type SessionTag, type TaskCenterData } from '@/hooks/useTaskCenterData';
 import { ensureWorkspaceSessions } from '@/hooks/taskCenterStore';
@@ -258,7 +260,13 @@ function HistorySearchOverlayFrame({
     return true;
   }, 40);
 
-  return (
+  // This App-wide overlay is declared by GlobalSidebar, which precedes the
+  // active Tab workspace in DOM order. WKWebView paints macOS overflow
+  // scrollbars in a separate composited layer, so keeping the backdrop in that
+  // earlier subtree lets a later Tab scrollbar overpaint it despite z-index.
+  // Portalling the stable shell to body makes it a root-level, later paint
+  // surface while preserving the same Suspense and close-layer lifetimes.
+  return createPortal(
     <OverlayBackdrop
       onClose={onClose}
       className="z-40"
@@ -271,7 +279,8 @@ function HistorySearchOverlayFrame({
       >
         {children}
       </div>
-    </OverlayBackdrop>
+    </OverlayBackdrop>,
+    document.body,
   );
 }
 
@@ -320,6 +329,7 @@ export default memo(function GlobalSidebar({
   const { t } = useTranslation('app');
   const { t: tLauncher } = useTranslation('launcher');
   const toast = useToast();
+  const deleteSession = useSessionDeletion();
   const toastRef = useRef(toast);
   useEffect(() => {
     toastRef.current = toast;
@@ -785,8 +795,11 @@ export default memo(function GlobalSidebar({
     const target = pendingDeleteSession;
     setPendingDeleteSession(null);
     try {
-      const success = await taskCenterData.actions.deleteSession(target.id);
-      if (success) toastRef.current.success(tLauncher('rightRail.deleted'));
+      const result = await deleteSession(target.id);
+      if (result.deleted) toastRef.current.success(tLauncher('rightRail.deleted'));
+      else if (result.reason === 'in-use') toastRef.current.warning(tLauncher('rightRail.deleteBlockedByOwner'));
+      else if (result.reason === 'transition-in-progress') toastRef.current.warning(tLauncher('rightRail.deleteTransitionInProgress'));
+      else if (result.reason === 'activity-unavailable') toastRef.current.warning(tLauncher('rightRail.deleteActivityUnavailable'));
       else toastRef.current.error(tLauncher('rightRail.deleteFailedRetry'));
     } catch (error) {
       console.error('[GlobalSidebar] Failed to delete session:', error);
@@ -794,7 +807,7 @@ export default memo(function GlobalSidebar({
     } finally {
       restoreChildLayerFocus();
     }
-  }, [pendingDeleteSession, restoreChildLayerFocus, tLauncher, taskCenterData.actions]);
+  }, [deleteSession, pendingDeleteSession, restoreChildLayerFocus, tLauncher]);
 
   const handleToggleFavorite = useCallback(async (session: SessionMetadata) => {
     const success = await taskCenterData.actions.setSessionFavorite(session.id, !session.favorite);
@@ -1558,7 +1571,7 @@ function WorkspaceTree({
                               active={activeTab?.view === 'chat' && activeTab.sessionId === session.id}
                               tags={taskCenterData.sessionTagsMap.get(session.id) ?? EMPTY_TAGS}
                               unreadNotificationCount={sessionNotificationBadgeCounts?.get(session.id) ?? 0}
-                              deleteProtected={taskCenterData.protectedSchedulerSessionIds.has(session.id)}
+                              deleteProtected={taskCenterData.deleteProtectedSessionIds.has(session.id)}
                               onOpen={() => onOpenSession(session, project)}
                               onToggleFavorite={() => onToggleFavorite(session)}
                               onCopySessionId={() => onCopySessionId(session)}

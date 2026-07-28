@@ -124,6 +124,11 @@ Token 组：
 
 `index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
 
+Code Token 必须在每套 Theme 的 light/dark scheme 内分别设计：light 代码面位于 `paper → paper-inset`
+之间，dark 代码面位于或略高于 `paper-inset`，Header 再向对应方向推进一级。Prism 由同一组
+Theme 语义色生成并在各自代码背景上满足正文对比度；CodeBlock、Mermaid、Bash、FilePatch
+只消费 Token / Adapter，禁止用 Theme ID 或 DOM scheme 分支补本地 palette。
+
 ## 5. Runtime 与首帧
 
 ### 5.0 设置选择入口

@@ -5214,6 +5214,33 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                             </div>
                                         </div>
 
+                                        {/* Legacy Chat History Entry */}
+                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex-1 pr-4">
+                                                    <h3 className="text-sm font-medium text-[var(--ink)]">
+                                                        {tSettings('about.developer.chatHistoryEntryTitle')}
+                                                    </h3>
+                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                                        {tSettings('about.developer.chatHistoryEntryDescription')}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => updateConfig({ showChatHistoryEntry: config.showChatHistoryEntry !== true })}
+                                                    aria-label={tSettings('about.developer.chatHistoryEntryTitle')}
+                                                    aria-pressed={config.showChatHistoryEntry === true}
+                                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${config.showChatHistoryEntry === true ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                                        }`}
+                                                >
+                                                    <span
+                                                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.showChatHistoryEntry === true ? 'translate-x-5' : 'translate-x-0'
+                                                            }`}
+                                                    />
+                                                </button>
+                                            </div>
+                                        </div>
+
                                         {/* Desktop Pet Gate */}
                                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                             <div className="flex items-center justify-between">

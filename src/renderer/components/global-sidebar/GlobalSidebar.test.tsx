@@ -11,10 +11,10 @@ const mocks = vi.hoisted(() => ({
     error: null as string | null,
     sessionTagsMap: new Map(),
     workspaceSessionStates: new Map<string, { isLoading: boolean; error: string | null }>(),
-    protectedSchedulerSessionIds: new Set(),
+    deleteProtectedSessionIds: new Set<string>(),
     refresh: vi.fn(),
     actions: {
-      deleteSession: vi.fn(async () => true),
+      deleteSession: vi.fn(async () => ({ deleted: true as const })),
       setSessionFavorite: vi.fn(async () => true),
     },
   },
@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   forcedRail: true,
   isTauri: false,
   openExternal: vi.fn(async () => undefined),
+  deleteSession: vi.fn(),
   toast: {
     error: vi.fn(),
     success: vi.fn(),
@@ -103,6 +104,10 @@ vi.mock('@/components/Toast', () => ({
   useToast: () => mocks.toast,
 }));
 
+vi.mock('@/context/SessionDeletionContext', () => ({
+  useSessionDeletion: () => mocks.deleteSession,
+}));
+
 import { i18n } from '@/i18n';
 import type { Tab } from '@/types/tab';
 import { GLOBAL_SIDEBAR_PREFERENCE_KEY } from '@/utils/globalSidebarPreference';
@@ -152,6 +157,8 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.taskData.sessions.length = 0;
     mocks.taskData.sessionTagsMap.clear();
     mocks.taskData.workspaceSessionStates.clear();
+    mocks.taskData.deleteProtectedSessionIds.clear();
+    mocks.deleteSession.mockResolvedValue({ deleted: true });
     mocks.config.defaultWorkspacePath = null;
     mocks.configError = null;
     mocks.forcedRail = true;
@@ -478,6 +485,76 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent(sessionRow, contextMenu);
     expect(contextMenu.defaultPrevented).toBe(true);
     expect(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.copySessionId')) })).toBeInTheDocument();
+  });
+
+  it('routes sidebar Session deletion through the App-owned lifecycle capability', async () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'deletable-session',
+      agentDir: '/work/project-one',
+      title: 'Deletable session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const row = screen.getByText('Deletable session').closest<HTMLElement>('[data-global-sidebar-session-row]')!;
+    fireEvent.click(within(row).getByRole('button', { name: String(i18n.t('launcher:rightRail.more')) }));
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.delete')) }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '删除' }));
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteSession).toHaveBeenCalledWith('deletable-session');
+    expect(mocks.toast.success).toHaveBeenCalledWith(String(i18n.t('launcher:rightRail.deleted')));
+  });
+
+  it('lets the Rust authority decide protected sidebar deletion and explains its refusal', async () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'protected-session',
+      agentDir: '/work/project-one',
+      title: 'Protected session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    mocks.taskData.deleteProtectedSessionIds.add('protected-session');
+    mocks.deleteSession.mockResolvedValue({ deleted: false, reason: 'in-use' });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const row = screen.getByText('Protected session').closest<HTMLElement>('[data-global-sidebar-session-row]')!;
+    fireEvent.click(within(row).getByRole('button', { name: String(i18n.t('launcher:rightRail.more')) }));
+    const deleteButton = screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.delete')) });
+    expect(deleteButton).not.toBeDisabled();
+    fireEvent.click(deleteButton);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '删除' }));
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteSession).toHaveBeenCalledWith('protected-session');
+    expect(mocks.toast.warning).toHaveBeenCalledWith(String(i18n.t('launcher:rightRail.deleteBlockedByOwner')));
   });
 
   it('copies the Session ID from the first row of the history menu', async () => {
@@ -896,11 +973,15 @@ describe('GlobalSidebar rail flyout', () => {
 
   it('opens the global search overlay directly in search mode', async () => {
     mocks.isTauri = true;
-    renderSidebar();
+    const { container } = renderSidebar();
 
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
     const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
     expect(coldPanel).toBeInTheDocument();
+
+    const backdrop = coldPanel?.parentElement ?? null;
+    expect(container).not.toContainElement(backdrop);
+    expect(backdrop?.parentElement).toBe(document.body);
 
     await act(async () => {
       await vi.dynamicImportSettled();

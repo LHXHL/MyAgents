@@ -1901,6 +1901,8 @@
     "developer": {
       "devModeTitle": "开发者模式",
       "devModeDescription": "显示页面上的日志入口按钮（如 Logs、System Info 等）。",
+      "chatHistoryEntryTitle": "对话页历史入口",
+      "chatHistoryEntryDescription": "在 AI 对话页顶部显示「历史」按钮。关闭不影响全局会话搜索和工作区 Session 列表。",
       "codexProviderTitle": "Codex 订阅 Provider",
       "codexProviderDescription": "在模型供应商页显示 MyAgents 托管的 Codex (订阅) 配置入口。",
       "spaceEnvironmentTitle": "团队服务环境",

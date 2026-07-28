@@ -275,11 +275,21 @@ function summarizeLongFields(value: unknown, limit = TEXT_SUMMARY_LIMIT, fieldNa
   return result;
 }
 
-function summarizePayload(event: string, data: unknown): string {
+export function summarizeSsePayload(event: string, data: unknown): string {
   if (event === 'chat:message-replay' && typeof data === 'object' && data !== null) {
-    const message = (data as { message?: { id?: string } }).message;
+    const replay = data as {
+      message?: { id?: string; role?: string };
+      replayKind?: string;
+      sessionId?: string;
+    };
+    const message = replay.message;
     if (message?.id) {
-      return `messageId=${message.id}`;
+      return [
+        `messageId=${message.id}`,
+        `replayKind=${replay.replayKind ?? 'legacy'}`,
+        `role=${message.role ?? 'unknown'}`,
+        `sessionScope=${replay.sessionId ? 'present' : 'none'}`,
+      ].join(' ');
     }
   }
   if (event === 'chat:message-chunk' && typeof data === 'string') {
@@ -421,7 +431,7 @@ function flushAllCoalesced(): void {
 function broadcastImmediate(event: string, data: unknown): void {
   const eventPayload = isLiveRevisionEnvelope(data) ? data.payload : data;
   if (!SILENT_EVENTS.has(event)) {
-    console.log(`[sse] ${event} -> ${summarizePayload(event, eventPayload)}`);
+    console.log(`[sse] ${event} -> ${summarizeSsePayload(event, eventPayload)}`);
   }
   // Update last-value cache for stateful events
   if (CACHED_EVENTS.has(event)) {

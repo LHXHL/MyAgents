@@ -28,6 +28,7 @@ import { GeminiRuntime } from './runtimes/gemini';
 import type { AgentRuntime, RuntimeProcess } from './runtimes/types';
 import type { RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
+import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -236,7 +237,7 @@ async function generateTitleInner(
       };
     }
 
-    const titleQuery = query({
+    const titleQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: titlePrompt(),
       options: {
         maxTurns: 1,
@@ -271,7 +272,7 @@ async function generateTitleInner(
         // the suffix before the wire.
         ...(model ? { model: applyProviderContextWindowSuffix(model, providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID) } : {}),
       },
-    });
+    }));
 
     let titleText: string | null = null;
 

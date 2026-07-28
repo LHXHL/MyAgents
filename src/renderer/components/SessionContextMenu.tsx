@@ -21,7 +21,7 @@ interface SessionContextMenuProps {
 
 /**
  * The single owner of the Session resource menu shared by the global sidebar
- * and history-search overlay. Keep item order, labels and disabled states here
+ * and history-search overlay. Keep item order, labels and action hints here
  * so the two entry points cannot drift.
  */
 export default function SessionContextMenu({
@@ -75,10 +75,8 @@ export default function SessionContextMenu({
                 icon={<Trash2 className="h-3.5 w-3.5" />}
                 label={t('rightRail.delete')}
                 tone="danger"
-                disabled={deleteProtected}
-                title={deleteProtected ? t('rightRail.stopCronBeforeDelete') : undefined}
+                title={deleteProtected ? t('rightRail.deleteBlockedByOwner') : undefined}
                 onClick={() => {
-                    if (deleteProtected) return;
                     onClose();
                     onDelete(anchorRef.current);
                 }}

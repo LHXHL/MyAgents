@@ -55,21 +55,21 @@ export default memo(function SortableTabItem({
 
     const fixedViewTitle = getFixedTabChromeTitle(tab.view, t);
 
-    // A chat tab needs both pieces of identity once it has a real session title:
-    // the workspace answers "which Agent?", while the session title answers
-    // "which conversation?". Fixed product tabs remain localized chrome.
+    // Prefer the session title once it exists; before that, the workspace name
+    // gives an untitled chat tab a useful identity. Fixed product tabs remain
+    // localized chrome.
     const hasSessionTitle = tab.title && tab.title !== 'New Tab' && tab.title !== 'New Chat';
     const workspaceTitle = tab.agentDir ? getFolderName(tab.agentDir) : undefined;
     const displayTitle = fixedViewTitle ?? (hasSessionTitle
         ? tab.title
         : (workspaceTitle ?? tab.title));
-    const showWorkspaceContext = tab.view === 'chat'
-        && !!workspaceTitle
-        && !!hasSessionTitle;
-    const tooltipTitle = showWorkspaceContext
+    const hasChatContext = tab.view === 'chat'
+        && workspaceTitle
+        && hasSessionTitle;
+    const tooltipTitle = hasChatContext
         ? `${workspaceTitle} — ${displayTitle}`
         : displayTitle;
-    const accessibleTitle = showWorkspaceContext
+    const accessibleTitle = hasChatContext
         ? `${workspaceTitle}, ${displayTitle}`
         : displayTitle;
 
@@ -103,21 +103,7 @@ export default memo(function SortableTabItem({
                 aria-label={accessibleTitle}
                 {...listeners}
             >
-                {showWorkspaceContext ? (
-                    <>
-                        <span className="max-w-[35%] flex-shrink-0 truncate">
-                            {workspaceTitle}
-                        </span>
-                        <span
-                            data-tab-title-divider
-                            className="mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70"
-                            aria-hidden="true"
-                        />
-                        <span className="min-w-0 truncate">{displayTitle}</span>
-                    </>
-                ) : (
-                    <span className="min-w-0 truncate">{displayTitle}</span>
-                )}
+                <span className="min-w-0 truncate">{displayTitle}</span>
             </span>
 
             <TabActivityIndicator

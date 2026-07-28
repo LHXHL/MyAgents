@@ -3000,9 +3000,6 @@ const DirectoryPanel = memo(
           }
         >
           <div className="flex items-center gap-2">
-            <span className="text-base font-semibold text-[var(--ink)]">
-              {t("workspaceFiles.directory.title")}
-            </span>
             {/* Search toggle button */}
             <Tip
               label={

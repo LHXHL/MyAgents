@@ -303,7 +303,7 @@ pub struct SessionRouter {
 群聊： im:telegram:group:{group_id}
 ```
 
-**Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar owner，与 `Tab`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
+**Sidecar 所有权**：IM Bot / Agent Channel 使用 `SidecarOwner::Agent(session_key)` 作为 Sidecar owner，与 `Tab`、`Companion`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
 ### 2.6.1 通用代理变化时的 Channel 重连
 
@@ -1091,7 +1091,7 @@ IM Bot 升级为 Agent 实体，Channel 为可插拔连接。新旧 Tauri Comman
 
 > 旧命令 `cmd_start_im_bot` 等已标 `@deprecated`，内部转发到新 Agent API。
 
-归档 Agent 工作区时，`Project.archivedAt` 是权威状态。Rust IM runtime 在 `cmd_start_agent_channel`、开机 `schedule_agent_auto_start()`、以及 `monitor_agent_channels()` 的缺失/异常频道重启路径都会读取 `projects.json`，跳过 archived workspace。CLI/Admin API 的 `agent archive` 还会通过 Management API `/api/agent/stop-channels` 立即停止已运行的 Channel；这只是运行时副作用，不能替代 `Project.archivedAt`。
+归档 Agent 工作区时，`Project.archivedAt` 是权威状态。Rust IM runtime 在 `cmd_start_agent_channel`、开机 `schedule_agent_auto_start()`、以及 `monitor_agent_channels()` 的缺失/异常频道重启路径都会读取 `projects.json`，跳过 archived workspace。CLI/Admin API 的 `agent archive`、`agent disable` 与 `agent set <id> enabled false` 会在 durable intent 落盘后通过 Management API `/api/agent/stop-channels` 立即停止已运行的 Channel；`agent channel remove` 则通过 `/api/agent/stop-channel` 收敛精确 runtime。Rust stop lifecycle 位于 `im/agent_channel.rs`，负责释放 Channel Sidecar owner、Plugin Bridge 与 plugin-use registry；整组停止同时锁住 durable 与 live Channel identity，因此会等待尚未发布进运行表的启动流程。`config:changed` 只负责配置刷新，不能替代资源释放。重复删除/禁用/归档必须仍然执行 stop，以修复历史上可能存在的 disk/live drift。
 
 ### InteractionScenario 扩展
 

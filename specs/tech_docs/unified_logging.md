@@ -126,7 +126,20 @@ appendUnifiedLog({
 // 特性：懒加载创建（首次写入时才创建文件）
 ```
 
-### 4. logUtils.ts (共享常量)
+### 4. 异常 crash artifact（不属于 unified log）
+
+`~/.myagents/logs/crash/*.log` 只记录 `uncaughtException`、`unhandledRejection`、异常 stdio 等真正异常事件；正常 STARTUP / EXIT / SIGTERM 只进入 unified log，健康生命周期不会创建 crash 目录或文件。
+
+Node Sidecar 只拥有自己的懒写文件：文件名含 timestamp + PID + nonce，单文件硬上限 50MB，并按创建时间在 30 天边界轮转。共享目录清理归始终存在的 Tauri 应用进程单一持有，在应用启动立即执行并每小时复查，覆盖升级前 backlog 与没有 Global Sidecar 的 idle 场景：
+
+- 最长 30 天；
+- 最多 20 个 `.log`；
+- 历史单文件超过 50MB 时删除；
+- 目录总量最多 200MB，超限时从最旧文件开始删除。
+
+排查磁盘增长时必须分别统计 unified/session log 与 crash artifact；后者的文件数量不再代表 Sidecar 生命周期次数。
+
+### 5. logUtils.ts (共享常量)
 
 ```typescript
 export const MYAGENTS_DIR = join(homedir(), '.myagents');
@@ -221,7 +234,9 @@ for (const entry of entries) {
     ├── unified-2025-01-25.log      # 统一日志（React/NODE/Rust）
     ├── unified-2025-01-24.log
     ├── 2025-01-25-abc123.log       # Agent 会话日志
-    └── 2025-01-25-def456.log
+    ├── 2025-01-25-def456.log
+    └── crash/                       # 仅异常事件；Tauri 应用级 retention owner
+        └── 2025-01-25T10-30-45.000Z-12345-a1b2c3d4.log
 ```
 
 ## 日志格式

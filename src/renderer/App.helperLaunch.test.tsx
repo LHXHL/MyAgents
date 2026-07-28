@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { CUSTOM_EVENTS } from '../shared/constants';
+import { SessionDeletionContext } from '@/context/SessionDeletionContext';
 
 const mocks = vi.hoisted(() => {
   const project = {
@@ -43,24 +44,36 @@ const mocks = vi.hoisted(() => {
       createdAt: '2026-06-27T00:00:00.000Z',
       lastActiveAt: '2026-06-27T00:00:00.000Z',
     })),
-    deleteSession: vi.fn(async () => true),
+    deleteSession: vi.fn(async () => ({ deleted: true as const })),
+    deleteTargetSessionId: null as string | null,
+    deleteResults: [] as Array<{ deleted: boolean; reason?: string }>,
     startGlobalSidecar: vi.fn(async () => undefined),
     initGlobalSidecarReadyPromise: vi.fn(),
     markGlobalSidecarReady: vi.fn(),
     getGlobalServerUrl: vi.fn(async () => 'http://127.0.0.1:31415'),
     ensureSessionSidecar: vi.fn(async () => ({ port: 31417, isNew: true })),
     activateSession: vi.fn(async () => undefined),
+    upgradeSessionId: vi.fn(async () => true),
     getSessionActivation: vi.fn(async () => null as { tab_id: string | null; task_id: string | null } | null),
     updateSessionTab: vi.fn(async () => undefined),
     cancelBackgroundCompletion: vi.fn(async () => undefined),
     releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
     hasSessionSidecar: vi.fn(async () => true),
-    startBackgroundCompletion: vi.fn(async () => ({ started: false })),
+    startBackgroundCompletion: vi.fn(async () => ({ started: false, sessionId: 'session' })),
+    querySessionHasPersistentOwners: vi.fn(async () => false),
+    canRestoreSession: vi.fn(async () => true),
+    durableTabs: null as null | {
+      version: 1;
+      tabs: Array<{ id: string; agentDir: string; sessionId: string; title: string }>;
+      activeTabId: string | null;
+    },
+    lastExitWasClean: true,
     setAppActiveCorrelation: vi.fn(),
     setAppActiveTabId: vi.fn(),
     track: vi.fn(),
     chatProps: [] as Array<Record<string, unknown>>,
+    tabProviderProps: [] as Array<Record<string, unknown>>,
     launcherProps: [] as Array<Record<string, unknown>>,
     sidebarProps: [] as Array<Record<string, unknown>>,
     tabbarProps: [] as Array<Record<string, unknown>>,
@@ -98,16 +111,18 @@ vi.mock('@/api/tauriClient', () => ({
   ensureSessionSidecar: mocks.ensureSessionSidecar,
   releaseTabSession: mocks.releaseTabSession,
   activateSession: mocks.activateSession,
-  upgradeSessionId: vi.fn(async () => true),
+  upgradeSessionId: mocks.upgradeSessionId,
   getSessionPort: mocks.getSessionPort,
   hasSessionSidecar: mocks.hasSessionSidecar,
   getSessionGeneration: vi.fn(async () => 1),
   stopSseProxy: vi.fn(async () => undefined),
   startBackgroundCompletion: mocks.startBackgroundCompletion,
+  startBackgroundCompletionForDeletion: mocks.startBackgroundCompletion,
   cancelBackgroundCompletion: mocks.cancelBackgroundCompletion,
   updateGlobalServerUrl: vi.fn(),
-  canRestoreSession: vi.fn(async () => true),
-  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, protectedSessionIds: [] })),
+  canRestoreSession: mocks.canRestoreSession,
+  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, deleteProtectedSessionIds: [] })),
+  querySessionHasPersistentOwners: mocks.querySessionHasPersistentOwners,
   sessionHasPersistentOwners: vi.fn(async () => false),
 }));
 
@@ -141,13 +156,41 @@ vi.mock('@/components/BugReportOverlay', () => ({
 }));
 
 vi.mock('@/components/CustomTitleBar', () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div data-testid="titlebar">{children}</div>,
+  default: ({
+    children,
+    restoreCount = 0,
+    onRestoreSession,
+  }: {
+    children: React.ReactNode;
+    restoreCount?: number;
+    onRestoreSession?: () => void;
+  }) => (
+    <div data-testid="titlebar">
+      {restoreCount > 0 && (
+        <button data-testid="restore-session" onClick={onRestoreSession} />
+      )}
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@/components/global-sidebar/GlobalSidebar', () => ({
-  default: (props: Record<string, unknown>) => {
+  default: function MockGlobalSidebar(props: Record<string, unknown>) {
     mocks.sidebarProps.push(props);
-    return <aside data-testid="global-sidebar" />;
+    const deleteSession = useContext(SessionDeletionContext);
+    return (
+      <aside data-testid="global-sidebar">
+        <button
+          data-testid="app-delete-session"
+          onClick={() => {
+            if (!mocks.deleteTargetSessionId || !deleteSession) return;
+            void deleteSession(mocks.deleteTargetSessionId).then((result) => {
+              mocks.deleteResults.push(result);
+            });
+          }}
+        />
+      </aside>
+    );
   },
 }));
 
@@ -163,7 +206,10 @@ vi.mock('@/components/TabBar', () => ({
 }));
 
 vi.mock('@/context/TabProvider', () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div data-testid="tab-provider">{children}</div>,
+  default: function MockTabProvider(props: Record<string, unknown> & { children: React.ReactNode }) {
+    mocks.tabProviderProps.push(props);
+    return <div data-testid="tab-provider">{props.children}</div>;
+  },
 }));
 
 vi.mock('@/pages/Chat', () => {
@@ -293,12 +339,12 @@ vi.mock('@/utils/frontendLogger', () => ({
 }));
 
 vi.mock('@/utils/lastExitMarker', () => ({
-  consumeCleanExitMarker: vi.fn(async () => true),
+  consumeCleanExitMarker: vi.fn(async () => mocks.lastExitWasClean),
 }));
 
 vi.mock('@/utils/tabPersistenceDurable', () => ({
   persistOpenTabsDurable: vi.fn(async () => undefined),
-  loadAndClearOpenTabsDurable: vi.fn(async () => null),
+  loadAndClearOpenTabsDurable: vi.fn(async () => mocks.durableTabs),
   clearOpenTabsDurable: vi.fn(async () => undefined),
 }));
 
@@ -323,11 +369,17 @@ import App from './App';
 describe('App helper launch', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     mocks.chatProps.length = 0;
+    mocks.tabProviderProps.length = 0;
     mocks.launcherProps.length = 0;
     mocks.sidebarProps.length = 0;
     mocks.tabbarProps.length = 0;
     mocks.settingsProps.length = 0;
+    mocks.deleteTargetSessionId = null;
+    mocks.deleteResults.length = 0;
+    mocks.durableTabs = null;
+    mocks.lastExitWasClean = true;
     mocks.agent.runtime = 'builtin';
     mocks.agent.permissionMode = 'auto';
     mocks.agent.reasoningEffort = undefined;
@@ -336,9 +388,12 @@ describe('App helper launch', () => {
     mocks.hasSessionSidecar.mockResolvedValue(true);
     mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
     mocks.activateSession.mockResolvedValue(undefined);
+    mocks.upgradeSessionId.mockResolvedValue(true);
     mocks.getSessionActivation.mockResolvedValue(null);
     mocks.updateSessionTab.mockResolvedValue(undefined);
     mocks.cancelBackgroundCompletion.mockResolvedValue(undefined);
+    mocks.querySessionHasPersistentOwners.mockResolvedValue(false);
+    mocks.canRestoreSession.mockResolvedValue(true);
     mocks.resolveBuiltinSelection.mockReturnValue({ provider: mocks.provider, model: 'mimo-v2.5-pro' });
   });
 
@@ -590,6 +645,172 @@ describe('App helper launch', () => {
       false,
     );
     expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+  });
+
+  it('admits only one custom-event open transition for the same Session', async () => {
+    let resolveActivation!: (value: null) => void;
+    mocks.getSessionActivation.mockReturnValueOnce(new Promise((resolve) => {
+      resolveActivation = resolve;
+    }));
+    render(<App />);
+
+    const detail = {
+      sessionId: 'task-center-session',
+      workspacePath: mocks.project.path,
+    };
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SESSION_IN_NEW_TAB, { detail }));
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SESSION_IN_NEW_TAB, { detail }));
+    });
+
+    await waitFor(() => {
+      expect(mocks.getSessionActivation).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      resolveActivation(null);
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        detail.sessionId,
+        detail.workspacePath,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+    });
+  });
+
+  it('serializes Settings helper resume with deletion of the same Session', async () => {
+    let resolveActivation!: (value: null) => void;
+    mocks.getSessionActivation.mockReturnValueOnce(new Promise((resolve) => {
+      resolveActivation = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'helper-resume-session';
+    render(<App />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: {
+          description: '',
+          appVersion: '0.4.1',
+          resumeSessionId: mocks.deleteTargetSessionId,
+        },
+      }));
+    });
+    await waitFor(() => {
+      expect(mocks.getSessionActivation).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveActivation(null);
+    });
+  });
+
+  it('serializes cold restore activation with deletion of the same Session', async () => {
+    const sessionId = '11111111-2222-4333-8444-555555555555';
+    let resolveRestoreCheck!: (value: boolean) => void;
+    mocks.canRestoreSession.mockReturnValueOnce(new Promise((resolve) => {
+      resolveRestoreCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = sessionId;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'restored-tab',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Restored history',
+      }],
+      activeTabId: 'restored-tab',
+    };
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => {
+      expect(mocks.canRestoreSession).toHaveBeenCalledWith(sessionId, mocks.project.path);
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveRestoreCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        sessionId,
+        mocks.project.path,
+        'tab',
+        'restored-tab',
+      );
+    });
+  });
+
+  it('preserves a cold restored Tab when an earlier deletion is refused', async () => {
+    const sessionId = '66666666-7777-4888-8999-000000000000';
+    let resolveOwnerCheck!: (value: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = sessionId;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'refused-delete-restored-tab',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Still restorable',
+      }],
+      activeTabId: 'refused-delete-restored-tab',
+    };
+    render(<App />);
+
+    const restoreButton = await screen.findByTestId('restore-session');
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(sessionId);
+    });
+
+    fireEvent.click(restoreButton);
+    await waitFor(() => {
+      expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Still restorable');
+    });
+    expect(mocks.canRestoreSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOwnerCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'in-use',
+      }]);
+    });
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      id: string;
+      restoreState?: string;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      id: 'refused-delete-restored-tab',
+      restoreState: 'cold',
+    }));
   });
 
   it('does not yank focus back when a slow sidebar Session finishes after the user switches tabs', async () => {
@@ -873,6 +1094,221 @@ describe('App helper launch', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  it('serializes fork owner acquisition with deletion of the forked Session', async () => {
+    render(<App />);
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, {
+        detail: {
+          description: 'help',
+          providerId: mocks.provider.id,
+          model: 'mimo-v2.5-pro',
+          appVersion: 'test',
+          images: [],
+        },
+      }));
+    });
+    await waitFor(() => {
+      expect(mocks.chatProps.some((props) => typeof props.onForkSession === 'function')).toBe(true);
+    });
+
+    let resolveForkEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveForkEnsure = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'fork-delete-race';
+    const chatProps = [...mocks.chatProps]
+      .reverse()
+      .find((props) => typeof props.onForkSession === 'function') as {
+        onForkSession: (sessionId: string, agentDir: string, title: string) => Promise<boolean>;
+      };
+
+    let forkPromise!: Promise<boolean>;
+    act(() => {
+      forkPromise = chatProps.onForkSession(
+        mocks.deleteTargetSessionId!,
+        mocks.project.path,
+        'Fork race',
+      );
+    });
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+        mocks.project.path,
+        'tab',
+        expect.stringMatching(/^tab-/),
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    let opened = false;
+    await act(async () => {
+      resolveForkEnsure({ port: 31417, isNew: true });
+      opened = await forkPromise;
+    });
+    expect(opened).toBe(true);
+  });
+
+  it('serializes pending-to-real identity adoption with deletion of the target Session', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+    expect(providerProps.sessionId).toMatch(/^pending-/);
+
+    let resolveUpgrade!: (upgraded: boolean) => void;
+    mocks.upgradeSessionId.mockReturnValueOnce(new Promise((resolve) => {
+      resolveUpgrade = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'real-session-delete-race';
+    let adoptionPromise!: Promise<boolean>;
+    act(() => {
+      adoptionPromise = providerProps.onSessionIdChange(mocks.deleteTargetSessionId!);
+    });
+    await waitFor(() => {
+      expect(mocks.upgradeSessionId).toHaveBeenCalledWith(
+        providerProps.sessionId,
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{
+        deleted: false,
+        reason: 'transition-in-progress',
+      }]);
+    });
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    let adopted = false;
+    await act(async () => {
+      resolveUpgrade(true);
+      adopted = await adoptionPromise;
+    });
+    expect(adopted).toBe(true);
+  });
+
+  it('lets an earlier deletion terminate a pending creator before it can adopt that identity', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (newSessionId: string) => Promise<boolean>;
+      };
+    expect(providerProps.sessionId).toMatch(/^pending-/);
+
+    let resolveOwnerCheck!: (hasOwners: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'delete-first-real-session';
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    let adopted = true;
+    await act(async () => {
+      adopted = await providerProps.onSessionIdChange(mocks.deleteTargetSessionId!);
+    });
+    expect(adopted).toBe(false);
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith(
+      providerProps.sessionId,
+      expect.stringMatching(/^tab-/),
+    );
+
+    await act(async () => {
+      resolveOwnerCheck(false);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{ deleted: true }]);
+    });
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      view?: string;
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      view: 'launcher',
+      sessionId: null,
+    }));
+  });
+
+  it('keeps a refused deletion from reviving the pending creator it already defeated', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        sessionId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+
+    let resolveOwnerCheck!: (hasOwners: boolean) => void;
+    mocks.querySessionHasPersistentOwners.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOwnerCheck = resolve;
+    }));
+    mocks.deleteTargetSessionId = 'delete-first-owned-session';
+    fireEvent.click(screen.getByTestId('app-delete-session'));
+    await waitFor(() => {
+      expect(mocks.querySessionHasPersistentOwners).toHaveBeenCalledWith(
+        mocks.deleteTargetSessionId,
+      );
+    });
+
+    await expect(providerProps.onSessionIdChange(
+      mocks.deleteTargetSessionId!,
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(false);
+    await act(async () => {
+      resolveOwnerCheck(true);
+    });
+    await waitFor(() => {
+      expect(mocks.deleteResults).toEqual([{ deleted: false, reason: 'in-use' }]);
+    });
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith(
+      mocks.deleteTargetSessionId,
+      expect.stringMatching(/^tab-/),
+    );
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      view?: string;
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({
+      view: 'launcher',
+      sessionId: null,
+    }));
   });
 
   it('releases the fork tab owner when fork tab activation fails', async () => {

@@ -65,7 +65,7 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 同一原则适用于 Session 绑定渠道投递：这是 runtime-neutral 的行为契约，但 admission、完整 text-block 边界与成功终态 commit 仍由各 Runtime 自己的 turn owner 判定。SessionEngine 的语义入口显式选择 `TurnChannelDelivery`；Builtin 把 assistant owner 与暂存 block 放进既有 per-yield output-owner FIFO，并在 SDK result 边界同步摘下 owner、按原顺序预留 transport，持久化成功后才放行；provider text 自动重试复用原 owner 并清掉被撤回 attempt 的 block。external turn lifecycle 在持久化前 capture 并预留全 Session 顺序、真实成功后 commit、其余路径 discard；两者复用 `utils/im-mirror.ts` transport。Desktop user note 与 assistant response 是两个独立方向；ReplyRouter、Heartbeat/Task caller、Goal outbox 可显式 claim assistant transport，Session Inbox 则只投递 assistant。不得在 route / adapter 层按 Runtime 补发，不得从 `SessionOrigin` / `InteractionScenario` 推断 owner，也不得让 IM-origin requestId 回复再次进入 Session binding 造成双发。
 
-`src/server/session-core/` 承载会话内核的 pure policy：`channel-delivery.ts` 定义 user/assistant transport owner 与 realtime owner 合并规则，`turn-result-policy.ts` 判定 injected turn 真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
+`src/server/session-core/` 承载会话内核的 pure policy：`channel-delivery.ts` 定义 user/assistant transport owner 与 realtime owner 合并规则，`turn-result-policy.ts` 判定 builtin SDK terminal 与 injected turn 是否真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
 
 `agent-session.ts` 是 builtin SDK 的 public facade，`session-engine/builtin-adapter.ts` 只委托该 facade。Phase6 后，builtin 内部 mutable state 的真实 owner 是 `src/server/builtin-session/`；Phase7 后，turn terminal 与 transcript persistence 的行为 owner 也在同一目录：
 
@@ -382,6 +382,10 @@ Codex 的 `imageGeneration` / `mcpToolCall` 含 image content / `dynamicToolCall
 路径都走统一 `saveToolAttachment(...)` → `tool_result.attachments[]`。前端用单一
 `ToolAttachmentGallery` 渲染。完整管道（异步落盘 placeholder、5 层路径校验、SSRF 防护、session
 resume 重 register）详见 [Tool Attachment 管道](./tool_attachment_pipeline.md)。
+
+Managed Codex 的 `CODEX_HOME` 是运行时状态目录，不整体视作 credential root。共享 Node/Rust 路径
+黑名单仅精确保护其中的 `auth.json`；`generated_images` 等非凭据产物仍走既有 externalPath 注册与
+attachment URL 服务，并继续接受 canonical path、符号链接、文件类型与大小校验。
 
 ### 权限模式映射
 
@@ -832,7 +836,7 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/server/runtimes/external-session.ts` | 外部 Runtime public facade + high-level orchestration |
 | `src/server/runtimes/external-session/*` | 外部 Runtime lifecycle / config / queue / turn / content / transcript / interactive owners |
 | `src/server/session-core/runtime-config-policy.ts` | builtin/external runtime config snapshot/source guard + external runtime config patch policy |
-| `src/server/session-core/turn-result-policy.ts` | injected turn 成败判定：builtin/external 均只以真 turn 成功为 success |
+| `src/server/session-core/turn-result-policy.ts` | terminal / injected turn 成败判定：builtin SDK 仅 `completed`（及旧 payload 缺失 reason）成功，abort 映射 stopped，其余未知 reason fail closed；external 同样只以真 turn 成功为 success |
 | `src/server/session-core/session-activity-policy.ts` | admission/terminal meaningful activity 判定；human/visible classifier 不拥有 recency |
 | `src/server/session-core/heartbeat-ack.ts` | Heartbeat terminal ack remainder 解析纯函数 |
 | `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、force-start 纯规则 |

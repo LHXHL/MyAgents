@@ -195,8 +195,9 @@ export default memo(function TabBar({
                         <div
                             className="absolute left-0 top-0 bottom-0 w-6 z-10 pointer-events-none"
                             style={{
-                                // #333: same-color 0-alpha endpoint, never the `transparent` keyword (see index.css --*-a0)
-                                background: 'linear-gradient(to right, var(--paper) 0%, var(--paper-a0) 100%)',
+                                background: 'var(--global-sidebar-bg)',
+                                WebkitMaskImage: 'linear-gradient(to right, #000 0%, rgba(0, 0, 0, 0) 100%)',
+                                maskImage: 'linear-gradient(to right, #000 0%, rgba(0, 0, 0, 0) 100%)',
                             }}
                         />
                     )}
@@ -206,7 +207,9 @@ export default memo(function TabBar({
                         <div
                             className="absolute right-0 top-0 bottom-0 w-6 z-10 pointer-events-none"
                             style={{
-                                background: 'linear-gradient(to left, var(--paper) 0%, var(--paper-a0) 100%)',
+                                background: 'var(--global-sidebar-bg)',
+                                WebkitMaskImage: 'linear-gradient(to left, #000 0%, rgba(0, 0, 0, 0) 100%)',
+                                maskImage: 'linear-gradient(to left, #000 0%, rgba(0, 0, 0, 0) 100%)',
                             }}
                         />
                     )}

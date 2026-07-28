@@ -16,13 +16,14 @@ import {
   hashAgentNameSync,
 } from '@/analytics';
 import type { AssistantEntry, EntryIntent, HistoryEntrySource, PendingSessionBirthContext, Surface } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseTabSession, activateSession, upgradeSessionId, getSessionPort, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseTabSession, activateSession, upgradeSessionId, getSessionPort, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, cancelBackgroundCompletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import GlobalSidebar, { type CapabilitySection } from '@/components/global-sidebar/GlobalSidebar';
 import LinkContextMenuProvider from '@/components/LinkContextMenuProvider';
 import TabBar from '@/components/TabBar';
+import { SessionDeletionContext } from '@/context/SessionDeletionContext';
 import TabProvider from '@/context/TabProvider';
 import type { AdoptMigratedSessionOptions } from '@/context/TabContext';
 import { useToast } from '@/components/Toast';
@@ -32,6 +33,7 @@ import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
 import { useTabSwipeGesture } from '@/hooks/useTabSwipeGesture';
+import { actions as taskCenterActions } from '@/hooks/taskCenterStore';
 import Launcher from '@/pages/Launcher'; // eager: default first view → no cold-start fallback
 // Route-split (P1): heavy / non-initial pages load on demand. lazy-Chat moves the
 // entire markdown/mermaid/katex/syntax-highlighter chain out of the entry chunk
@@ -89,6 +91,11 @@ import {
   type NotificationBadgeTarget,
 } from '@/utils/notificationBadgeRegistry';
 import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
+import {
+  deleteSessionThroughAppOwner,
+  tryClaimSessionResourceTransition,
+  type SessionResourceTransitionClaim,
+} from '@/utils/sessionDeletionCoordinator';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { migrateFloatingBallSessionBinding } from '@/floating-ball/sessionBinding';
@@ -256,6 +263,7 @@ interface TabContentProps {
   onRenameSession: (tabId: string, newTitle: string) => void;
   onForkSession: (tabId: string, newSessionId: string, agentDir: string, title: string, initialMessage?: string) => Promise<boolean>;
   onUpdateSessionId: (tabId: string, newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;
+  claimSessionOpeningTransition: (sessionId: string, ownerId: string) => (() => void) | null;
   onClearInitialMessage: (tabId: string) => void;
   onSidecarConfigAdopted: (tabId: string) => void;
   onFilePreviewIntentConsumed?: (tabId: string, intentId: string) => void;
@@ -280,6 +288,7 @@ export const MemoizedTabContent = memo(function TabContent({
   tab, isActive, isLoading, error, isDeferredMount,
   onLaunchProject, onSwitchSession, onOpenSessionInNewTab, onNewSession,
   onUpdateGenerating, onUpdateTitle, onUpdateUnread, onRenameSession, onForkSession, onUpdateSessionId, onClearInitialMessage,
+  claimSessionOpeningTransition,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onLauncherWorkspaceSelectionChange,
   settingsInitialSection,
@@ -304,6 +313,10 @@ export const MemoizedTabContent = memo(function TabContent({
   const handleLauncherWorkspaceChange = useCallback(
     (workspacePath: string | null) => onLauncherWorkspaceSelectionChange(tab.id, workspacePath),
     [onLauncherWorkspaceSelectionChange, tab.id],
+  );
+  const claimTabSessionOpeningTransition = useCallback(
+    (sessionId: string) => claimSessionOpeningTransition(sessionId, tab.id),
+    [claimSessionOpeningTransition, tab.id],
   );
   return (
     <div
@@ -372,6 +385,7 @@ export const MemoizedTabContent = memo(function TabContent({
           onTitleChange={(title) => onUpdateTitle(tab.id, title)}
           onUnreadChange={(hasUnread) => onUpdateUnread(tab.id, hasUnread)}
           onSessionIdChange={(newSessionId, options) => onUpdateSessionId(tab.id, newSessionId, options)}
+          claimSessionOpeningTransition={claimTabSessionOpeningTransition}
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
@@ -1357,6 +1371,11 @@ export default function App() {
     acknowledgeActiveChatSessionNotifications();
   }, [acknowledgeActiveChatSessionNotifications, clearActiveTabUnread]);
 
+  // App-owned admission boundary for operations that can acquire, migrate, or
+  // destroy a fixed Session identity. Claims are per Session, so unrelated
+  // Tabs remain fully concurrent.
+  const sessionResourceTransitionsRef = useRef<Map<string, SessionResourceTransitionClaim>>(new Map());
+
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
   // - Tab.sessionId syncs with the actual session ID
@@ -1374,33 +1393,64 @@ export default function App() {
       return false;
     }
     const oldSessionId = currentTab?.sessionId;
-
-    console.log(`[App] Tab ${tabId} sessionId updating: ${oldSessionId} -> ${newSessionId}`);
-
-    // Upgrade the session ID in Rust HashMap (sidecars + session_activations)
-    // This is a no-op if oldSessionId is null or same as newSessionId
-    if (oldSessionId && oldSessionId !== newSessionId && !options?.sidecarAlreadyMigrated) {
-      const upgraded = await upgradeSessionId(oldSessionId, newSessionId);
-      console.log(`[App] Rust HashMap upgrade: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
-      if (!upgraded) {
-        console.error(`[App] Refusing to update tab ${tabId} sessionId because Rust sidecar upgrade failed: ${oldSessionId} -> ${newSessionId}`);
-        return false;
+    const identityChanges = oldSessionId !== newSessionId;
+    const releaseTargetTransition = identityChanges
+      ? tryClaimSessionResourceTransition(
+        sessionResourceTransitionsRef.current,
+        newSessionId,
+        'opening',
+        tabId,
+      )
+      : null;
+    if (identityChanges && !releaseTargetTransition) {
+      // A concrete identity already owned by another open/delete transition
+      // cannot be adopted by this creator. Pending sidecars have no safe old
+      // identity to resume, so terminate that exact Tab/owner instead of
+      // leaving a continuation that can republish the contested Session.
+      if (oldSessionId && isPendingSessionId(oldSessionId)) {
+        clearPendingSessionBirth(tabId);
+        setTabs((current) => [...applyTerminalSessionToTabs(current, oldSessionId)]);
+        const rustOwnerSessionId = options?.sidecarAlreadyMigrated
+          ? newSessionId
+          : oldSessionId;
+        await Promise.allSettled([
+          stopSseProxy(tabId),
+          releaseTabSession(rustOwnerSessionId, tabId),
+        ]);
       }
-      if (upgraded) {
-        const fbResult = await migrateFloatingBallSessionBinding(oldSessionId, newSessionId);
-        if (fbResult.migrated) {
-          console.log(`[App] Floating ball session binding migrated: ${oldSessionId} -> ${newSessionId}, notified=${fbResult.notified}`);
-        }
-      }
-    } else if (oldSessionId && oldSessionId !== newSessionId && options?.sidecarAlreadyMigrated) {
-      console.log(`[App] Skipping Rust HashMap upgrade for already-migrated sidecar: ${oldSessionId} -> ${newSessionId}`);
+      return false;
     }
 
-    // Update UI state
-    setTabs(prev => prev.map(t =>
-      t.id === tabId ? { ...t, sessionId: newSessionId } : t
-    ));
-    return true;
+    try {
+      console.log(`[App] Tab ${tabId} sessionId updating: ${oldSessionId} -> ${newSessionId}`);
+
+      // Upgrade the session ID in Rust HashMap (sidecars + session_activations)
+      // This is a no-op if oldSessionId is null or same as newSessionId
+      if (oldSessionId && oldSessionId !== newSessionId && !options?.sidecarAlreadyMigrated) {
+        const upgraded = await upgradeSessionId(oldSessionId, newSessionId);
+        console.log(`[App] Rust HashMap upgrade: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
+        if (!upgraded) {
+          console.error(`[App] Refusing to update tab ${tabId} sessionId because Rust sidecar upgrade failed: ${oldSessionId} -> ${newSessionId}`);
+          return false;
+        }
+        if (upgraded) {
+          const fbResult = await migrateFloatingBallSessionBinding(oldSessionId, newSessionId);
+          if (fbResult.migrated) {
+            console.log(`[App] Floating ball session binding migrated: ${oldSessionId} -> ${newSessionId}, notified=${fbResult.notified}`);
+          }
+        }
+      } else if (oldSessionId && oldSessionId !== newSessionId && options?.sidecarAlreadyMigrated) {
+        console.log(`[App] Skipping Rust HashMap upgrade for already-migrated sidecar: ${oldSessionId} -> ${newSessionId}`);
+      }
+
+      // Update UI state
+      setTabs(prev => prev.map(t =>
+        t.id === tabId ? { ...t, sessionId: newSessionId } : t
+      ));
+      return true;
+    } finally {
+      releaseTargetTransition?.();
+    }
   }, []);
 
   // Perform the actual tab close operation (pure function, no confirmation)
@@ -1565,6 +1615,17 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via tabsRef
   }, [setActiveTabId]);
 
+  // Stable capability passed to TabProvider recovery so it shares the same
+  // fixed-identity admission boundary as App opens and deletion.
+  const claimSessionOpeningTransition = useCallback((sessionId: string, ownerId: string) => (
+    tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      sessionId,
+      'opening',
+      ownerId,
+    )
+  ), []);
+
   /**
    * Launch a project with Session Singleton Architecture
    *
@@ -1648,6 +1709,18 @@ export default function App() {
     // `history_open` explicitly reports the TARGET session id. It is not in the
     // Active Context auto-inject allowlist, so missing this id would make history
     // joins impossible instead of merely falling back.
+
+    const releaseSessionTransition = sessionId
+      ? tryClaimSessionResourceTransition(
+        sessionResourceTransitionsRef.current,
+        sessionId,
+        'opening',
+      )
+      : null;
+    if (sessionId && !releaseSessionTransition) {
+      launchingTabRef.current = null;
+      return;
+    }
 
     setTabErrors((prev) => ({ ...prev, [activeTabId]: null }));
     setLoadingTabs((prev) => ({ ...prev, [activeTabId]: true }));
@@ -2148,6 +2221,7 @@ export default function App() {
         );
       }
     } finally {
+      releaseSessionTransition?.();
       launchingTabRef.current = null;
       setLoadingTabs((prev) => ({ ...prev, [activeTabId]: false, [targetTabId]: false }));
     }
@@ -2199,6 +2273,12 @@ export default function App() {
       toastRef.current.error(t('appChrome.tabLimitReached'));
       return false;
     }
+    const releaseTransition = tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      newSessionId,
+      'opening',
+    );
+    if (!releaseTransition) return false;
 
     const newTab: Tab = {
       id: `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2206,8 +2286,9 @@ export default function App() {
       sessionId: newSessionId,
       view: 'chat',
       title,
-      // Fork mints a brand-new session id → fresh sidecar (no concurrent creator
-      // can target it) → 'push'. The post-ensure step below confirms it.
+      // Fork mints a brand-new session id → fresh sidecar → 'push'. Metadata is
+      // already visible to history, so the opening claim above still excludes
+      // user deletion until this Tab owner is attached.
       sidecarConfigDisposition: 'push',
       ...(initialMessage ? { initialMessage: { text: initialMessage } } : {}),
     };
@@ -2236,6 +2317,7 @@ export default function App() {
       return false;
     } finally {
       setLoadingTabs(prev => ({ ...prev, [newTab.id]: false }));
+      releaseTransition();
     }
   }, [setActiveTabId, t]);
 
@@ -2340,12 +2422,6 @@ export default function App() {
     }
   }, [setActiveTabId, t]);
 
-  // Per-session in-flight guard for open-in-new-tab. Without it, a rapid
-  // double-click both observe a `tabsRef.current` that doesn't yet reflect the
-  // first `setTabs`, so planSessionOpen returns non-jump twice → two tabs for
-  // one session (violates Session:Tab 1:1, can exceed MAX_TABS).
-  const openingInNewTabRef = useRef<Set<string>>(new Set());
-
   /** Open a history session from any surface using an explicit target workspace. */
   const handleOpenTargetSession = useCallback(async (
     sessionId: string,
@@ -2353,8 +2429,12 @@ export default function App() {
     title: string,
     historyEntrySource: HistoryEntrySource,
   ): Promise<boolean> => {
-    if (openingInNewTabRef.current.has(sessionId)) return false;
-    openingInNewTabRef.current.add(sessionId);
+    const releaseTransition = tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      sessionId,
+      'opening',
+    );
+    if (!releaseTransition) return false;
     try {
       trackHistorySessionOpenAsync(sessionId, sessionAgentDir, historyEntrySource);
 
@@ -2415,7 +2495,7 @@ export default function App() {
         preserveCronActivation: plan.type === 'attach-existing-sidecar',
       });
     } finally {
-      openingInNewTabRef.current.delete(sessionId);
+      releaseTransition();
     }
   }, [setActiveTabId, spawnTabForExistingSession, trackHistorySessionOpenAsync]);
 
@@ -2448,6 +2528,13 @@ export default function App() {
     sessionId: string,
     historyEntrySource: HistoryEntrySource = 'chat_dropdown',
   ) => {
+    const releaseTransition = tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      sessionId,
+      'opening',
+    );
+    if (!releaseTransition) return;
+    try {
     const tabsSnapshot = tabsRef.current;
     const currentTab = tabsSnapshot.find(t => t.id === tabId);
     if (currentTab?.agentDir) {
@@ -2807,6 +2894,9 @@ export default function App() {
     // spawnTabForExistingSession has stable identity ([] deps), so listing it
     // keeps exhaustive-deps happy without changing handleSwitchSession's own
     // stability (callers rely on this being reference-stable).
+    } finally {
+      releaseTransition();
+    }
   }, [setActiveTabId, spawnTabForExistingSession, trackHistorySessionOpenAsync]);
 
   /**
@@ -2941,8 +3031,19 @@ export default function App() {
       if (!tab || tab.restoreState !== 'cold') return;
       if (!tab.agentDir || !tab.sessionId) { dropRestoredTab(tabId); return; }
       if (restoreActivationInFlight.current.has(tabId)) return;
-      restoreActivationInFlight.current.add(tabId);
       const { sessionId, agentDir } = tab;
+      const releaseTransition = tryClaimSessionResourceTransition(
+        sessionResourceTransitionsRef.current,
+        sessionId,
+        'opening',
+      );
+      if (!releaseTransition) {
+        // Another same-Session open/delete already owns the transition. Keep
+        // the cold projection unchanged: deletion can still be refused, and
+        // losing the Tab before that decision would discard valid UI state.
+        return;
+      }
+      restoreActivationInFlight.current.add(tabId);
       try {
         // Lazy validation, decoupled from global sidecar readiness: reads
         // sessions.json + workspace dir directly via Rust.
@@ -2979,6 +3080,7 @@ export default function App() {
         dropRestoredTab(tabId);
       } finally {
         restoreActivationInFlight.current.delete(tabId);
+        releaseTransition();
       }
     },
     [attachSessionToTab, dropRestoredTab, releaseAbandonedRestore],
@@ -3527,6 +3629,14 @@ export default function App() {
       }>;
       const { sessionId, workspacePath, preview, historyEntrySource } = event.detail ?? {};
       if (!sessionId || !workspacePath) return;
+      const releaseTransition = tryClaimSessionResourceTransition(
+        sessionResourceTransitionsRef.current,
+        sessionId,
+        'opening',
+      );
+      if (!releaseTransition) return;
+
+      try {
       const pendingFilePreview: FilePreviewIntent | undefined = preview?.path
         ? {
           id: `fp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3587,6 +3697,9 @@ export default function App() {
           pendingFilePreview,
         },
       );
+      } finally {
+        releaseTransition();
+      }
     };
     window.addEventListener(CUSTOM_EVENTS.OPEN_SESSION_IN_NEW_TAB, handler);
     return () =>
@@ -3828,6 +3941,40 @@ export default function App() {
     )
   ), [handleOpenTargetSession]);
 
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const releaseTransition = tryClaimSessionResourceTransition(
+      sessionResourceTransitionsRef.current,
+      sessionId,
+      'deleting',
+    );
+    if (!releaseTransition) {
+      return { deleted: false as const, reason: 'transition-in-progress' as const };
+    }
+
+    try {
+      return await deleteSessionThroughAppOwner({
+        sessionId,
+        getTabs: () => tabsRef.current,
+        terminateTabsForSession: (targetSessionId) => {
+          for (const tab of tabsRef.current) {
+            if (tab.view === 'chat' && tab.sessionId === targetSessionId) {
+              clearPendingSessionBirth(tab.id);
+            }
+          }
+          setTabs((current) => [...applyTerminalSessionToTabs(current, targetSessionId)]);
+        },
+        hasPersistentOwners: querySessionHasPersistentOwners,
+        handoffMountedSessionActivity: startBackgroundCompletionForDeletion,
+        stopSseProxy,
+        deletePersistedSession: (targetSessionId, releasableTabIds) => (
+          taskCenterActions.deleteSession(targetSessionId, releasableTabIds)
+        ),
+      });
+    } finally {
+      releaseTransition();
+    }
+  }, []);
+
   // System tray event handling (minimize to tray, exit confirmation)
   useTrayEvents({
     minimizeToTray: config.minimizeToTray,
@@ -3920,6 +4067,7 @@ export default function App() {
   const activeWorkspacePath = resolveGlobalSidebarWorkspace(activeTab);
 
   return (
+    <SessionDeletionContext.Provider value={handleDeleteSession}>
     <LinkContextMenuProvider>
     <div className="flex h-screen bg-[var(--paper)]">
       <GlobalSidebar
@@ -3995,6 +4143,7 @@ export default function App() {
             onRenameSession={handleRenameSession}
             onForkSession={handleForkSession}
             onUpdateSessionId={updateTabSessionId}
+            claimSessionOpeningTransition={claimSessionOpeningTransition}
             onClearInitialMessage={clearInitialMessage}
             onSidecarConfigAdopted={markSidecarConfigAdopted}
             onFilePreviewIntentConsumed={handleFilePreviewIntentConsumed}
@@ -4064,5 +4213,6 @@ export default function App() {
       )}
     </div>
     </LinkContextMenuProvider>
+    </SessionDeletionContext.Provider>
   );
 }

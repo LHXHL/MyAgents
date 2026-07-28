@@ -1241,10 +1241,7 @@ function stripFrontmatter(markdown: string): string {
 
 function SkillMarkdownDocument({ text }: { text: string }) {
   return (
-    <div
-      className="ai-message-content text-[var(--ink-secondary)] [&>h1:first-child]:mt-0 [&>h1]:mb-3 [&>h1]:text-xl [&>h2]:mb-2 [&>h2]:mt-4 [&>h2]:text-lg [&>h3]:mb-2 [&>h3]:mt-4 [&>h3]:text-base [&>ol]:my-2.5 [&>ol]:space-y-1.5 [&>p]:my-3 [&>ul]:my-2.5 [&>ul]:space-y-1.5"
-      style={{ fontSize: "var(--text-sm)", lineHeight: 1.65 }}
-    >
+    <div className="ai-message-content text-[var(--ink-secondary)]">
       <Markdown raw>{stripFrontmatter(text)}</Markdown>
     </div>
   );

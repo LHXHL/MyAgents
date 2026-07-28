@@ -69,7 +69,7 @@ export type SessionTag =
 export interface TaskCenterData {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
-    protectedSchedulerSessionIds: ReadonlySet<string>;
+    deleteProtectedSessionIds: ReadonlySet<string>;
     tasks: Task[];
     sessionTagsMap: Map<string, SessionTag[]>;
     cronBotInfoMap: Map<string, { name: string; platform: string }>;
@@ -96,7 +96,10 @@ export interface TaskCenterRefreshOptions {
 }
 
 export interface TaskCenterActions {
-    deleteSession: (sessionId: string) => Promise<boolean>;
+    deleteSession: (
+        sessionId: string,
+        releasableTabIds?: readonly string[],
+    ) => ReturnType<typeof deleteSessionApi>;
     setSessionFavorite: (sessionId: string, favorite: boolean) => Promise<boolean>;
     refreshSessions: () => void;
     refreshCronTasks: () => void;
@@ -202,7 +205,7 @@ function filterManagedCronTasks(data: CronTask[]): CronTask[] {
 interface StoreState {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
-    protectedSchedulerSessionIds: string[];
+    deleteProtectedSessionIds: string[];
     tasks: Task[];
     backgroundSessionIds: string[];
     agentStatuses: AgentStatusMap;
@@ -218,7 +221,7 @@ interface StoreState {
 let state: StoreState = {
     sessions: [],
     cronTasks: [],
-    protectedSchedulerSessionIds: [],
+    deleteProtectedSessionIds: [],
     tasks: [],
     backgroundSessionIds: [],
     agentStatuses: {},
@@ -317,7 +320,7 @@ function buildSnapshot(): TaskCenterData {
     return {
         sessions: state.sessions,
         cronTasks: state.cronTasks,
-        protectedSchedulerSessionIds: new Set(state.protectedSchedulerSessionIds),
+        deleteProtectedSessionIds: new Set(state.deleteProtectedSessionIds),
         tasks: state.tasks,
         sessionTagsMap: mapsCache.sessionTagsMap,
         cronBotInfoMap: mapsCache.cronBotInfoMap,
@@ -469,7 +472,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
             getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
             getUserSchedulerLifecycleSnapshot().catch(() => {
                 ok.lifecycle = false;
-                return { runningTaskCount: 0, protectedSessionIds: state.protectedSchedulerSessionIds };
+                return { runningTaskCount: 0, deleteProtectedSessionIds: state.deleteProtectedSessionIds };
             }),
             fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
@@ -495,7 +498,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         if (isLatest('sessions', requestSeq)) patch.isSessionsLoading = false;
         if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = filterManagedCronTasks(cronData);
         if (ok.lifecycle && isLatest('cronTasks', requestSeq)) {
-            patch.protectedSchedulerSessionIds = schedulerLifecycle.protectedSessionIds;
+            patch.deleteProtectedSessionIds = schedulerLifecycle.deleteProtectedSessionIds;
         }
         if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
@@ -558,7 +561,7 @@ function refreshCronTasksNow(): void {
             if (isLatest('cronTasks', s)) {
                 setState({
                     cronTasks: filterManagedCronTasks(data),
-                    protectedSchedulerSessionIds: lifecycle.protectedSessionIds,
+                    deleteProtectedSessionIds: lifecycle.deleteProtectedSessionIds,
                 });
             }
         })
@@ -592,7 +595,7 @@ async function refreshSessionDecorationsOnDemand(): Promise<void> {
             getAllCronTasks().then(filterManagedCronTasks).catch(() => state.cronTasks),
             getUserSchedulerLifecycleSnapshot().catch(() => ({
                 runningTaskCount: 0,
-                protectedSessionIds: state.protectedSchedulerSessionIds,
+                deleteProtectedSessionIds: state.deleteProtectedSessionIds,
             })),
             getBackgroundSessions().catch(() => state.backgroundSessionIds),
             isTauriEnvironment()
@@ -605,7 +608,7 @@ async function refreshSessionDecorationsOnDemand(): Promise<void> {
         if (generation !== onDemandGeneration) return;
         setState({
             cronTasks: cronData,
-            protectedSchedulerSessionIds: schedulerLifecycle.protectedSessionIds,
+            deleteProtectedSessionIds: schedulerLifecycle.deleteProtectedSessionIds,
             backgroundSessionIds: bgSessions,
             agentStatuses,
             ...(appConfig ? {
@@ -713,13 +716,18 @@ export const refresh = (scope: TaskCenterRefreshScope = 'all', options: TaskCent
 };
 
 export const actions: TaskCenterActions = {
-    deleteSession: async (sessionId: string) => {
-        const success = await deleteSessionApi(sessionId);
-        if (!success) return false;
+    deleteSession: async (sessionId: string, releasableTabIds = []) => {
+        const result = await deleteSessionApi(sessionId, releasableTabIds);
+        if (!result.deleted && result.reason !== 'not-found') {
+            if (result.reason === 'in-use') {
+                refresh('cronTasks', { force: true, reason: 'delete-session-in-use', silent: true });
+            }
+            return result;
+        }
         deletedSessionIds.add(sessionId); // tombstone — survives across all subscribers
         setState({ sessions: state.sessions.filter((s) => s.id !== sessionId) });
         if (started) refresh('sessions', { force: true, reason: 'delete-session', silent: true });
-        return true;
+        return result.deleted ? result : { deleted: true };
     },
     setSessionFavorite: async (sessionId: string, favorite: boolean) => {
         const existing = favoriteMutations.get(sessionId);
@@ -759,6 +767,7 @@ function registerTauriListeners(): void {
     void listenWithCleanup('session:background-complete', () => {
         debounced('background', refreshBackgroundNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
     void listenWithCleanup('cron:task-stopped', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
     void listenWithCleanup('cron:task-started', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
@@ -779,11 +788,16 @@ function registerTauriListeners(): void {
     void listenWithCleanup('agent:status-changed', () => {
         debounced('agent', refreshAgentStatusNow, 1000);
         debounced('sessions', refreshSessionsNow, 1000);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
-    void listenWithCleanup('task:status-changed', () => debounced('tasks', refreshTasksNow, 500), ac.signal);
+    void listenWithCleanup('task:status-changed', () => {
+        debounced('tasks', refreshTasksNow, 500);
+        debounced('cron', refreshCronTasksNow, 100);
+    }, ac.signal);
     void listenWithCleanup('task:session-rebound', () => {
         debounced('tasks', refreshTasksNow, 100);
         debounced('sessions', refreshSessionsNow, 100);
+        debounced('cron', refreshCronTasksNow, 100);
     }, ac.signal);
 
     cleanupTauriListeners = () => {
@@ -844,7 +858,7 @@ export function getSnapshot(): TaskCenterData {
 /** Test-only: reset all module state between cases. */
 export function __resetTaskCenterStoreForTest(): void {
     onDemandGeneration++;
-    state = { sessions: [], cronTasks: [], protectedSchedulerSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, workspaceSessionStates: new Map() };
+    state = { sessions: [], cronTasks: [], deleteProtectedSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null, workspaceSessionStates: new Map() };
     listeners.clear();
     passiveListeners.clear();
     deletedSessionIds.clear();

@@ -74,6 +74,7 @@ import {
   getPersistedSessionOrigin,
   getSessionData,
 } from '../SessionStore';
+import type { SessionMessage } from '../types/session';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
@@ -168,7 +169,7 @@ function getBuiltinWorkspacePath(): string | null {
     : null;
 }
 
-function messageWireToReplayMessage(message: MessageWire): SessionEngineReplayMessage {
+function messageWireToReplayMessage(message: MessageWire | SessionMessage): SessionEngineReplayMessage {
   const strippedContent = typeof message.content !== 'string'
     ? stripPlaywrightResults(message.content)
     : message.content;
@@ -218,14 +219,20 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     getStreamReplaySnapshot() {
+      const sessionId = getSessionId();
+      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId);
       const streamingId = getStreamingAssistantId();
       const replayMessages = getMessages()
         .filter(message => !(streamingId && message.id === streamingId))
         .map(messageWireToReplayMessage);
       const systemInitInfo = getSystemInitInfo();
       return {
+        sessionId,
         initState: getAgentState(),
         replayMessages,
+        liveStreamingMessage: liveSnapshot?.liveStreamingMessage
+          ? messageWireToReplayMessage(liveSnapshot.liveStreamingMessage)
+          : null,
         systemInitPayload: systemInitInfo ? { info: systemInitInfo } : undefined,
         pendingInteractiveRequests: getPendingInteractiveRequests(),
       };

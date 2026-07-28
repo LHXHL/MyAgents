@@ -9,6 +9,7 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
+import { type RewindResponse, warnRewindFileOutcome as showRewindFileOutcomeWarning } from '@/utils/rewindFileOutcome';
 import Tip from '@/components/Tip';
 import DirectoryPanel, { type DirectoryPanelHandle, type WorkspaceTreePersistedState } from '@/components/DirectoryPanel';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
@@ -629,6 +630,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   // to avoid re-rendering Chat (and MessageList) on every keystroke
   const [showLogs, setShowLogs] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const isChatHistoryEntryVisible = config.showChatHistoryEntry === true;
+  useEffect(() => {
+    if (!isChatHistoryEntryVisible) setShowHistory(false);
+  }, [isChatHistoryEntryVisible]);
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   // Imperative handle for the inline title editor — lets the SessionMenuButton's
   // "重命名" item invoke the same flow as clicking the title.
@@ -2001,6 +2006,12 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   cronStateRef.current = cronState;
   const sessionGoalStateRef = useRef(sessionGoalState);
   sessionGoalStateRef.current = sessionGoalState;
+  // Surface tags (PRD 0.2.14): pull agent status snapshot for the channel pill.
+  // Keeping this beside deletion protection lets channel owner changes refresh
+  // the menu projection without duplicating the owner predicate in Chat.
+  const { statuses: agentStatuses } = useAgentStatuses(true);
+  const surfaces = useSessionSurfaces(sessionId, agentStatuses, cronState.task);
+  channelSurfaceRef.current = surfaces.channel;
   const startScheduledTask = useCallback(async (prompt: string): Promise<'goal' | 'cron' | null> => {
     const goalConfig = goalDraftConfigRef.current;
     if (goalConfig) {
@@ -2028,8 +2039,8 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       setSessionDeleteProtected(false);
       return;
     }
-    // Disable deletion while lifecycle truth is loading. The underlying
-    // deleteSession boundary repeats this fail-closed check.
+    // Show a fail-closed protection hint while lifecycle truth is loading.
+    // Rust still makes the final lock-held deletion decision after confirm.
     setSessionDeleteProtected(true);
     void sessionHasPersistentOwners(sessionId).then((protectedByOwner) => {
       if (!canceled) setSessionDeleteProtected(protectedByOwner);
@@ -2040,6 +2051,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     cronState.task?.status,
     sessionGoalState.goal?.revision,
     sessionGoalState.goal?.status,
+    surfaces.channel?.sessionKey,
   ]);
   const composerConfigLockedReason = activeCurrentSessionCronTask
       ? t('shell.toasts.composerLockedByCron')
@@ -4488,6 +4500,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     return () => window.removeEventListener('permission-mode-sync', handler);
   }, [tabId]); // stable — reads permissionMode via ref
 
+  const warnRewindFileOutcome = useCallback((result: RewindResponse | undefined) => {
+    showRewindFileOutcomeWarning(result, toastRef.current.warning, t);
+  }, [t]);
+
   // Stable callback for time rewind — uses ref for messages to keep reference stable
   const handleRewind = useCallback((messageId: string) => {
     const msgs = messagesRef.current;
@@ -4544,13 +4560,15 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost('/chat/rewind', { userMessageId: messageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string } | undefined;
+        const r = res as RewindResponse | undefined;
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
           chatInputRef.current?.setValue('');
           chatInputRef.current?.setImages([]);
           toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+        } else {
+          warnRewindFileOutcome(r);
         }
       })
       .catch(err => {
@@ -4565,7 +4583,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
         setRewindStatus(null);
         setIsLoading(false);
       });
-  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t]);
+  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome]);
 
   // Retry = rewind to before user message + auto-resend
   // Rewind to before the given user message and re-send its content.
@@ -4601,12 +4619,13 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setRewindStatus('rewinding');
     apiPost(retryEndpoint, { userMessageId })
       .then(res => {
-        const r = res as { success?: boolean; error?: string } | undefined;
+        const r = res as RewindResponse | undefined;
         if (r && !r.success) {
           setMessages(snapshot);
           toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
           return;
         }
+        warnRewindFileOutcome(r);
         // Rewind succeeded → auto-resend the original message
         track('message_retry', {});
         resendFired = true;
@@ -4636,7 +4655,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           setIsLoading(false);
         }
       });
-  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t]); // all stable — refs handle the rest
+  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t, warnRewindFileOutcome]); // all stable — refs handle the rest
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback((assistantMessageId: string) => {
@@ -4720,13 +4739,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       void loadSession(id);
     }
   }, [onSwitchSession, loadSession]);
-
-  // Surface tags (PRD 0.2.14): pull agent status snapshot for the channel pill.
-  // Single 5s polling instance per Chat tab — SessionHistoryDropdown maintains
-  // its own (only mounted when open) so they don't share, but the cost is low.
-  const { statuses: agentStatuses } = useAgentStatuses(true);
-  const surfaces = useSessionSurfaces(sessionId, agentStatuses, cronState.task);
-  channelSurfaceRef.current = surfaces.channel;
 
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
@@ -4836,13 +4848,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     return success;
   }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
 
-  const prepareCurrentSessionForDelete = useCallback(async (): Promise<boolean> => {
-    if (surfaces.channel && sessionId) {
-      return await newSessionKeepingBinding({ allowPlainResetFallback: false });
-    }
-    return await handleNewSession();
-  }, [handleNewSession, newSessionKeepingBinding, surfaces.channel, sessionId]);
-
   return (
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
@@ -4887,7 +4892,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 workspacePath={agentDir}
                 boundChannel={surfaces.channel}
                 availableChannels={availableHandoverChannels}
-                schedulerProtected={sessionDeleteProtected}
+                deleteProtected={sessionDeleteProtected}
                 favorite={!!sessionMeta?.favorite}
                 // The inline editor only mounts once a session has a real
                 // title (see the `sessionTitle && sessionTitle !== 'New Tab' …`
@@ -4900,7 +4905,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 onShowContext={isExternalRuntime ? undefined : () => { void handleSendMessageRef.current('/context'); }}
                 onOpenRename={() => titleEditorRef.current?.openRename()}
                 onFavoriteChanged={(_, updated) => { if (updated) setSessionMeta(updated); }}
-                prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
               />
             )}
           </div>
@@ -4915,31 +4919,35 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
               {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
             </button>
-            {/* History button */}
-            <button
-              ref={historyBtnRef}
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setShowHistory((prev) => !prev)}
-              className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${showHistory
-                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                }`}
-            >
-              <History className="h-3.5 w-3.5 flex-shrink-0" />
-              {!splitFile && <span>{t('shell.header.history')}</span>}
-            </button>
-            <SessionHistoryDropdown
-              agentDir={agentDir}
-              currentSessionId={sessionId}
-              onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
-              onOpenInNewTab={onOpenSessionInNewTab}
-              prepareCurrentSessionForDelete={prepareCurrentSessionForDelete}
-              isOpen={showHistory}
-              onClose={() => setShowHistory(false)}
-              triggerRef={historyBtnRef}
-              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-            />
+            {/* Developer setting keeps this legacy entry reversible while it is phased out. */}
+            {isChatHistoryEntryVisible && (
+              <>
+                {/* History button */}
+                <button
+                  ref={historyBtnRef}
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => setShowHistory((prev) => !prev)}
+                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${showHistory
+                    ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                    }`}
+                >
+                  <History className="h-3.5 w-3.5 flex-shrink-0" />
+                  {!splitFile && <span>{t('shell.header.history')}</span>}
+                </button>
+                <SessionHistoryDropdown
+                  agentDir={agentDir}
+                  currentSessionId={sessionId}
+                  onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+                  onOpenInNewTab={onOpenSessionInNewTab}
+                  isOpen={showHistory}
+                  onClose={() => setShowHistory(false)}
+                  triggerRef={historyBtnRef}
+                  sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+                />
+              </>
+            )}
             {/* Dev-only buttons - controlled by config.showDevTools */}
             {config.showDevTools && (
               <>
@@ -5300,16 +5308,23 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           <div
             ref={directoryPanelContainerRef}
             className={shouldUseWorkspaceOverlay
-              ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg'
+              ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col bg-[var(--paper-elevated)] shadow-lg'
               : showWorkspace
-                ? 'relative z-10 flex w-[var(--chat-workspace-panel-width)] shrink-0 flex-col border-l border-[var(--line-subtle)]'
-                : 'pointer-events-none absolute bottom-0 right-0 top-0 z-20 flex w-[var(--chat-workspace-panel-width)] flex-col border-l border-[var(--line-subtle)]'
+                ? 'relative z-10 flex w-[var(--chat-workspace-panel-width)] shrink-0 flex-col'
+                : 'pointer-events-none absolute bottom-0 right-0 top-0 z-20 flex w-[var(--chat-workspace-panel-width)] flex-col'
             }
             aria-hidden={!showWorkspace}
             inert={!showWorkspace}
             data-chat-workspace-panel
             data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}
           >
+            <span
+              aria-hidden="true"
+              className={`pointer-events-none absolute bottom-4 left-0 top-4 z-20 w-px ${
+                shouldUseWorkspaceOverlay ? 'bg-[var(--line)]' : 'bg-[var(--line-subtle)]'
+              }`}
+              data-chat-workspace-divider
+            />
             <DirectoryPanel
               ref={directoryPanelRef}
               agentDir={agentDir}

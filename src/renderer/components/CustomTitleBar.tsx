@@ -153,7 +153,7 @@ export default function CustomTitleBar({
 
     return (
         <div
-            className="custom-titlebar flex h-11 flex-shrink-0 items-center border-b border-[var(--line)] bg-[var(--paper)] pl-2"
+            className="custom-titlebar flex h-11 flex-shrink-0 items-center bg-[var(--global-sidebar-bg)] pl-2"
         >
             {/* Windows: keep a reliable left-edge drag target even when tabs fill the bar. */}
             {isWindows && (
