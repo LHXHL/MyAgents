@@ -8,10 +8,33 @@ import {
     upsertMessageById,
     updateMessageById,
     reconcileLiveRecoveryHistory,
+    normalizeSessionMessageContent,
 } from './sessionRestoreGuards';
 
 const SID = 'e959f73c-42af-4fb6-9c50-4b9c589ee975';
 const OTHER = '11111111-2222-3333-4444-555555555555';
+
+describe('normalizeSessionMessageContent', () => {
+    it('preserves structured blocks and parses their persisted JSON representation', () => {
+        const blocks = [{ type: 'text' as const, text: '**rendered once**' }];
+        expect(normalizeSessionMessageContent(blocks)).toBe(blocks);
+        expect(normalizeSessionMessageContent(JSON.stringify(blocks))).toEqual(blocks);
+    });
+
+    it('leaves plain and malformed JSON-looking strings as text', () => {
+        expect(normalizeSessionMessageContent('**plain markdown**')).toBe('**plain markdown**');
+        expect(normalizeSessionMessageContent('[{"type":')).toBe('[{"type":');
+        expect(normalizeSessionMessageContent('[{"value":1}]')).toBe('[{"value":1}]');
+    });
+
+    it('keeps malformed or unknown block arrays visible as text', () => {
+        const missingText = '[{"type":"text"}]';
+        const unknown = '[{"type":"not-a-block","value":"hello"}]';
+        expect(normalizeSessionMessageContent(missingText)).toBe(missingText);
+        expect(normalizeSessionMessageContent(unknown)).toBe(unknown);
+        expect(normalizeSessionMessageContent([{ type: 'thinking' }])).toBe('[{"type":"thinking"}]');
+    });
+});
 
 describe('isRestoredSession', () => {
     it('matches only when both ids are non-null and equal', () => {

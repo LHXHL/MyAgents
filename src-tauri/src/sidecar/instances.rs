@@ -384,19 +384,16 @@ pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Resu
         .find(|a| a.tab_id.as_deref() == Some(tab_id))
         .map(|a| (a.session_id.clone(), a.port));
 
-    if let Some((session_id, port)) = activation_session {
-        // Verify the sidecar is still healthy in Session-centric storage
-        let is_healthy = manager_guard
+    if let Some((session_id, activation_port)) = activation_session {
+        // The live Sidecar entry owns the physical port. Activation is an
+        // association index, not a second port authority; using its stale port
+        // after a replacement can re-cache a dead URL even though the new
+        // process is healthy.
+        let ready_session_port = manager_guard
             .sidecars
             .get_mut(&session_id)
-            .map(|s| s.is_ready_for_requests())
-            .unwrap_or(false)
-            || manager_guard
-                .instances
-                .values_mut()
-                .any(|i| i.port == port && i.is_running());
-
-        if is_healthy {
+            .and_then(|sidecar| sidecar.is_ready_for_requests().then_some(sidecar.port));
+        if let Some(port) = ready_session_port {
             ulog_info!(
                 "[sidecar] Tab {} using session {} sidecar on port {} (via session_activation)",
                 tab_id,
@@ -404,6 +401,13 @@ pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Resu
                 port
             );
             return Ok(format!("http://127.0.0.1:{}", port));
+        }
+        if manager_guard
+            .instances
+            .values_mut()
+            .any(|instance| instance.port == activation_port && instance.is_running())
+        {
+            return Ok(format!("http://127.0.0.1:{}", activation_port));
         }
     }
 
@@ -1048,11 +1052,7 @@ pub async fn monitor_session_sidecars(
                         .map(|sidecar| sidecar.is_dead() && !sidecar.owners.is_empty())
                         .unwrap_or(false);
                     if should_restart {
-                        if let Some(sidecar) = guard.remove_sidecar(&session_id) {
-                            guard
-                                .recovering_sidecars
-                                .insert(session_id.clone(), sidecar);
-                        }
+                        guard.begin_session_sidecar_replacement(&session_id);
                     }
                 }
                 guard
@@ -1100,21 +1100,15 @@ pub async fn monitor_session_sidecars(
 
             match restart {
                 Ok(Ok(result)) => {
-                    let installed = manager.lock().ok().is_some_and(|mut guard| {
-                        let Some(mut dead_sidecar) = guard.recovering_sidecars.remove(&session_id)
-                        else {
-                            return false;
-                        };
-                        let owners = std::mem::take(&mut dead_sidecar.owners);
-                        let Some(replacement) = guard.sidecars.get_mut(&session_id) else {
-                            dead_sidecar.owners = owners;
-                            guard
-                                .recovering_sidecars
-                                .insert(session_id.clone(), dead_sidecar);
-                            return false;
-                        };
-                        replacement.owners = owners;
-                        true
+                    // The shared ensure kernel commits retained owners and the
+                    // activation port before returning. The monitor only
+                    // verifies that exact replacement is still current before
+                    // publishing its process epoch.
+                    let installed = manager.lock().ok().is_some_and(|guard| {
+                        guard
+                            .sidecars
+                            .get(&session_id)
+                            .is_some_and(|replacement| replacement.port == result.port)
                     });
                     if !installed {
                         continue;

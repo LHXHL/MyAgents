@@ -376,11 +376,6 @@ export interface SessionEngine {
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
-  switchToExistingSession(
-    sessionId: string,
-    workspacePath: string,
-    getSessionMetadata: (sessionId: string) => { runtime?: RuntimeType; runtimeSource?: RuntimeSource } | null | undefined,
-  ): Promise<{ success: boolean; sessionId?: string; error?: string; status?: number }>;
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
   resetForNewImSession(
     workspacePath: string,

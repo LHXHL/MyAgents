@@ -49,7 +49,6 @@ import {
   setProxyConfig,
   setSessionReasoningEffort,
   stripPlaywrightResults,
-  switchToSession,
   waitForSessionIdle,
 } from '../agent-session';
 import type { MessageWire, PermissionMode, ProviderEnv } from '../agent-session';
@@ -716,13 +715,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateDesktopInteractionScenario(scenario) {
       await setInteractionScenario(scenario);
       return { success: true };
-    },
-
-    async switchToExistingSession(sessionId) {
-      const success = await switchToSession(sessionId);
-      return success
-        ? { success: true, sessionId }
-        : { success: false, error: 'Session not found.', status: 404 };
     },
 
     async resetForNewDesktopSession() {

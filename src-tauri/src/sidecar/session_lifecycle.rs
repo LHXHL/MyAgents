@@ -65,7 +65,7 @@ pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     runtime_source_override: Option<String>,
 ) -> Result<EnsureSidecarResult, String> {
     let _update_spawn_permit = begin_update_spawn_permit()?;
-    ensure_session_sidecar_attempt(
+    let result = ensure_session_sidecar_attempt(
         app_handle,
         manager,
         session_id,
@@ -74,7 +74,21 @@ pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
         runtime_override,
         runtime_source_override,
         0,
-    )
+    )?;
+    if result.is_new {
+        let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+        if !manager_guard.finish_session_sidecar_replacement(
+            session_id,
+            result.port,
+            workspace_path,
+        ) {
+            return Err(format!(
+                "Session {} replacement on port {} lost lifecycle authority before commit",
+                session_id, result.port
+            ));
+        }
+    }
+    Ok(result)
 }
 
 /// Async pit-of-success entrypoint for every owner-acquiring ensure.
@@ -148,9 +162,11 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
     // Keep the caller's authority alive until the blocking ensure and its
     // readiness wait finish. This is intentionally not a fresh acquisition.
     let _lifecycle = lifecycle;
-    tauri::async_runtime::spawn_blocking(move || {
+    let ensure_app_handle = app_handle.clone();
+    let event_session_id = session_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         ensure_session_sidecar_with_runtime_identity_override(
-            &app_handle,
+            &ensure_app_handle,
             &manager,
             &session_id,
             &workspace_path,
@@ -160,7 +176,24 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
         )
     })
     .await
-    .map_err(|error| format!("ensure_session_sidecar blocking task failed: {error:?}"))?
+    .map_err(|error| format!("ensure_session_sidecar blocking task failed: {error:?}"))??;
+
+    // Every newly-created process starts a fresh liveRevision epoch. Emit from
+    // the shared async ensure authority (not just the renderer command) so a
+    // Task/IM/Goal revive cannot leave an attached Tab comparing revisions
+    // from the previous process. First-ever creates are harmless: renderer
+    // consumers filter by their currently attached Session, and pending births
+    // already ignore this event.
+    if result.is_new {
+        let _ = app_handle.emit(
+            "session-sidecar:restarted",
+            serde_json::json!({
+                "sessionId": event_session_id,
+                "port": result.port,
+            }),
+        );
+    }
+    Ok(result)
 }
 
 fn resolve_runtime_identity_for_owner(
@@ -331,7 +364,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     "[sidecar] Session {} has dead Sidecar process, removing",
                     session_id
                 );
-                manager_guard.remove_sidecar(session_id);
+                manager_guard.begin_session_sidecar_replacement(session_id);
                 None
             } else if sidecar.is_reusable() {
                 if validate_sidecar_runtime_invariant(
@@ -343,7 +376,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.remove_sidecar(session_id);
+                    manager_guard.begin_session_sidecar_replacement(session_id);
                     manager_guard.clear_generation(session_id);
                     None
                 } else {
@@ -373,7 +406,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 )
                 .is_err()
                 {
-                    manager_guard.remove_sidecar(session_id);
+                    manager_guard.begin_session_sidecar_replacement(session_id);
                     manager_guard.clear_generation(session_id);
                     None
                 } else {
@@ -480,7 +513,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     )
                     .is_err()
                     {
-                        manager_guard.remove_sidecar(session_id);
+                        manager_guard.begin_session_sidecar_replacement(session_id);
                         manager_guard.clear_generation(session_id);
                     } else {
                         drop(manager_guard);
@@ -581,7 +614,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 }
             }
             if remove_for_runtime_drift {
-                manager_guard.remove_sidecar(session_id);
+                manager_guard.begin_session_sidecar_replacement(session_id);
                 manager_guard.clear_generation(session_id);
             }
             // Sidecar gone but generation unchanged (removed without replacement)
@@ -629,7 +662,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 "[sidecar] Session {} Sidecar process alive but HTTP unresponsive on port {}, removing",
                 session_id, port
             );
-            manager_guard.remove_sidecar(session_id);
+            manager_guard.begin_session_sidecar_replacement(session_id);
         }
 
         let result = create_new_session_sidecar(
@@ -722,7 +755,7 @@ fn create_new_session_sidecar<R: Runtime>(
             );
         }
         // Exists but process dead — remove before creating fresh
-        manager_guard.remove_sidecar(session_id);
+        manager_guard.begin_session_sidecar_replacement(session_id);
     }
 
     // Need to start a new Sidecar
@@ -1142,7 +1175,6 @@ pub async fn cmd_ensure_session_sidecar(
     };
 
     let workspace_path = PathBuf::from(&workspacePath);
-
     // The async lifecycle entrypoint owns both the per-session deletion fence
     // and the blocking-thread handoff for the full cold boot/readiness wait.
     let manager = state.inner().clone();

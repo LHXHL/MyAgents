@@ -26,7 +26,11 @@ describe('App Shell chrome contract', () => {
 
     expect(app).toContain('<Suspense fallback={<ChatBootOverlay />}>');
     expect(app).not.toContain(') : isLoading ? (\n        <ChatBootOverlay />');
-    expect(chat).toContain('<ChatBootOverlay show={showStartupOverlay} />');
+    expect(chat).toContain("show={showStartupOverlay || (isSessionLoading && sessionRestoreMode === 'initial')}");
+    expect(chat).toContain("error={sessionRestoreMode === 'initial' ? sessionRestoreError : null}");
+    expect(chat).toContain("isSessionLoading && sessionRestoreMode === 'live-recovery'");
+    expect(chat).toContain('if (isSessionLoading || (!text');
+    expect(chat).toContain('sendBlocked={isSessionLoading}');
   });
 
   it('uses one simple right-panel glyph and custom tips at the stable far-right slot', () => {
@@ -82,7 +86,7 @@ describe('App Shell chrome contract', () => {
     expect(chat).toContain('if (!isChatHistoryEntryVisible) setShowHistory(false);');
     expect(chat).toContain('{isChatHistoryEntryVisible && (');
     expect(chat).toContain('<SessionHistoryDropdown');
-    expect(chat).toContain("handleSelectSession(id, 'chat_dropdown')");
+    expect(chat).toContain("handleSelectSession(id, title, 'chat_dropdown')");
     expect(settings).toContain('about.developer.chatHistoryEntryTitle');
     expect(settings).toContain('updateConfig({ showChatHistoryEntry: config.showChatHistoryEntry !== true })');
     expect(settings.indexOf('about.developer.devModeTitle'))

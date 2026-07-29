@@ -546,26 +546,27 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
-新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/chat/external-retry`、`/sessions/fork`、`/sessions/switch`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。仅 external-only legacy/diagnostic endpoint 可直接调用 `external-session.ts`，并需在代码注释说明兼容原因。
+新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/chat/external-retry`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。仅 external-only legacy/diagnostic endpoint 可直接调用 `external-session.ts`，并需在代码注释说明兼容原因。
 
 **测试防线：** server 测试必须显式后缀分层：`*.unit.test.ts`（pure policy / parser / boundary）、`*.integration.test.ts`（credential-free stateful server 集成，singleFork）、`*.credentialed.test.ts`（真实 Provider / SDK / upstream smoke，显式本地跑）。`unit` / `integration` 都加载 `src/test/setup-no-egress.ts`，阻断 fetch / undici / http(s) / net / tls / dns 非 loopback 出站；`npm run test:classification` 用实际 Vitest project list 扫描并禁止裸 `src/server/**/*.test.ts`。External runtime 的回归主路径通过 `external-session-mock.integration.test.ts` 在测试层 mock `runtimes/factory.ts`，fake runtime 伪装为真实 `RuntimeType`（如 `codex`），穿过 `SessionEngine` 覆盖正常 turn、failed turn、queue、permission response，不在生产代码里增加 mock runtime 类型。
 
 详见 `tech_docs/multi_agent_runtime.md`。
 
-### 10. Session 切换与持久化
+### 10. 既有 Session 打开与持久历史恢复
 
-| 场景 | 描述 | 行为 |
-|------|------|------|
-| 1 | 新 Tab + 新 Session | 创建新 Sidecar |
-| 2 | 新 Tab + 其他 Tab 正在用的 Session | 跳转到已有 Tab |
-| 3 | 同 Tab 切换到后台 Task/Goal Session | 跳转 / 连接到现有 Session Sidecar |
-| 4 | 同 Tab 切换到无人使用的 Session | **Handover**：Sidecar 资源复用 |
+| 场景 | 唯一行为 |
+|------|----------|
+| 目标 Session 已在活跃 Tab | 跳转到该 Tab，不重复创建 Sidecar 或恢复投影 |
+| 目标 Tab 存在但 Sidecar 不活跃 | 复用该 Tab，由 Rust lifecycle revive 目标 Sidecar |
+| 目标 Session 尚无 Tab | 新建从首帧即绑定目标 Session 的 Tab，再 ensure 目标 Sidecar |
 
-**编排收敛**（PRD 0.2.6）：所有切换入口（`handleSwitchSession` / `handleLaunchProject` / `OPEN_SESSION_IN_NEW_TAB`）MUST 通过纯函数 `src/renderer/utils/sessionOpenPlan.ts::planSessionOpen()` 拿到统一 plan 类型（`jump-to-tab` / `open-new-tab` / `attach-existing-sidecar` / `switch-current-tab`）再执行。已有后台 owner 的 attach 必须排在 runtime-mismatch 检查前，否则 Session 会被错误 fork 并丢失后台 activation。部分字段名仍保留 `cron` 作为 wire compatibility。
+**导航 owner**：Global Sidebar、Search Overlay、通知 / Task deep-link 与开发者模式 Chat History 都必须进入 `App.handleOpenTargetSession()`，由 `planSessionOpen()` 只决定 open / jump；目标 Tab 的 create / reuse 统一交给 `reconcileExistingSessionTabOwner()`。应用启动时的 cold Tab hydration 不是导航入口，但激活后也复用同一个 reconcile，不得复制 Sidecar owner / activation 编排。Chat 与 `TabProvider` 不得自行把当前真实 Session A hot-swap 为 B；历史恢复也不得修改 Node runtime binding。旧 `POST /sessions/switch` 与 `SessionEngine.switchToExistingSession` 已删除。新对话、pending→real、desktop reset 与已确认 surface migration 继续走各自既有 identity handover，不属于历史导航。
 
-**Cross-runtime 检测**：比较**目标 session.runtime vs 当前 Tab 已加载 session.runtime**（agent template 仅在没有当前 session 时 fallback）。Agent.runtime 可从 Tab 已冻结的 session.runtime 漂移，旧实现以 agent 为基准会让漂移触发不必要的 fork。
+**Sidecar owner**：目标 Tab 的 Session identity 在 mount 前已经确定；App 的 `reconcileExistingSessionTabOwner()` 串起 exact Tab owner 的 ensure / activation / abandoned release，Rust manager 裁决创建、复用与释放。配置 push / adopt 只服从锁内返回的 `result.isNew`。
 
-**Loading 安全**：`TabProvider.loadSession()` MUST `await /sessions/switch` 成功后再替换 history；失败时保留可见 messages、回滚 `currentSessionIdRef`，让 UI 与后端始终一致。
+**首屏历史 owner**：`TabProvider` 的 persisted restore lifecycle（`inactive / restoring / ready / failed`）独占可见性裁决；`liveRevisionFence` 只是该 lifecycle 下属的事件连续性机制，不是第二个 UI owner。真实 persisted Session 在首帧同步进入 `restoring`；`GET /sessions/:id` 是持久历史唯一权威，统一 normalize 后原子提交，完成前 `cold-history` 不得进入可见 messages。`target + restoreToken + connectionGeneration` 共同拒绝 stale REST 结果；恢复失败保持目标壳并禁止发送。MessageList 不再维护第二层 session-loading fade。
+
+**重连连续性**：同一 Sidecar 的新 transport generation 若延续已采纳 revision，直接更新 generation 并继续投影，不重新加载或闪动；revision gap / 无基线才进入同一 lifecycle 的 REST recovery。`session-sidecar:restarted` 表示进程内 revision epoch 已重置，必须立即从 REST 重建基线，不能拿旧进程序号比较。恢复期间 buffer snapshot 后的连续事件，完成时按 `snapshotRevision` 去重并 replay；持续 gap 最多自动补一张快照，随后进入 failed，只有用户在同一 target 上显式重试。
 
 **Live config 采纳**：Tab 加入活跃 IM/Task/Goal Sidecar 时，`/api/session/config` 返回 sidecar 的 runtime + external-runtime model + permissionMode，Tab 采纳 live config 而非 push 自己的；Chat 用 sticky `adoptedSessionRef` 防止 sessionMeta hydration 覆盖已采纳的值。
 

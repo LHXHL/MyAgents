@@ -422,9 +422,9 @@ const SessionTitleEditor = forwardRef<
 interface ChatProps {
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
-  /** Called when user selects a different session from history - uses Session singleton logic */
-  onSwitchSession?: (sessionId: string, historyEntrySource?: HistoryEntrySource) => void;
-  /** Called when user opens a history session in a NEW tab (vs. switching the current one) */
+  /** Opens a persisted Session through App's canonical new/jump/revive path. */
+  onOpenSession?: (sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => void;
+  /** Explicit per-row new-tab action; it shares the same canonical App path. */
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
   initialMessage?: InitialMessage;
@@ -453,7 +453,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -467,6 +467,8 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     loadOlderMessages,
     isLoading,
     isSessionLoading,
+    sessionRestoreError,
+    sessionRestoreMode,
     sessionState,
     sessionRuntime,
     sessionRuntimeSource,
@@ -493,7 +495,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setSystemNotice,
     sendMessage,
     stopResponse,
-    loadSession,
+    retryCurrentSessionRestore,
     resetSession,
     adoptMigratedSession,
     clearUnifiedLogs,
@@ -1937,11 +1939,11 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       // chat is "ready" the moment the session connects (SSE up). The
       // initialMessage path keeps waiting for the turn (conditions above) so the
       // overlay doesn't flash an empty chat before the auto-sent message lands.
-      || (isConnected && !hadInitialMessage.current)
+      || (isConnected && !hadInitialMessage.current && !isSessionLoading)
     ) {
       setShowStartupOverlay(false);
     }
-  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected]);
+  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected, isSessionLoading]);
 
   // Safety timeout (30s) — covers prewarm failures / unresponsive backend.
   // Prevents the overlay from sticking forever if neither sessionState nor
@@ -1970,20 +1972,12 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     onComplete: (task, reason) => {
       console.log('[Chat] Cron task completed:', task.id, reason);
     },
-    onExecutionComplete: async (task, success) => {
-      // Called when a single execution completes (task may still be running)
-      // Refresh the session to show the latest messages
-      // Use internalSessionId when available, falling back to sessionId.
-      // Both point to our internal message storage key (Sidecar session ID).
+    onExecutionComplete: (task, success) => {
+      // TabProvider owns exact-Session refresh from the same Tauri completion
+      // event. Chat only clears its local execution projection here.
       const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
       setIsLoading(false);
-      // Only refresh session on successful execution.
-      // On timeout (success=false), the original streaming task may still be running
-      // and calling loadSession would abort it (via switchToSession) and lose data.
-      if (success && effectiveSessionId) {
-        await loadSession(effectiveSessionId);
-      }
     },
   });
 
@@ -3674,7 +3668,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
   const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[]): Promise<boolean | void> => {
     // Must have content and not be in stopping state
-    if ((!text && (!images || images.length === 0)) || sessionState === 'stopping') {
+    if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
       return false;
     }
 
@@ -3819,7 +3813,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
-  }, [sessionState, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
+  }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
 
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
@@ -4739,24 +4733,17 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       });
   }, [forkTarget, apiPost, onForkSession, deleteUnopenedForkSession, t]);
 
-  // Handler for selecting a session from history dropdown
-  const handleSelectSession = useCallback((id: string, historyEntrySource: HistoryEntrySource = 'chat_dropdown') => {
-    // PRD 0.2.19 cross-review fix (B3): explicitly stamp session_switch with the
-    // TARGET session id, not the source. Without this, Active Context auto-inject
-    // attaches the pre-switch session id (still the "source") because the switch
-    // hasn't completed yet, making the event semantics "from→to" backwards.
-    track('session_switch', { session_id: id, legacy_compat: true });
-    if (onSwitchSession) {
-      onSwitchSession(id, historyEntrySource);
-    } else {
-      if (cronStateRef.current.task?.status === 'running'
-        || (sessionGoalStateRef.current.goal && !isTerminalGoalStatus(sessionGoalStateRef.current.goal.status))) {
-        console.log('[Chat] Cannot switch session while a scheduled session surface is running (no onSwitchSession handler)');
-        return;
-      }
-      void loadSession(id);
+  const handleSelectSession = useCallback((
+    id: string,
+    title: string,
+    historyEntrySource: HistoryEntrySource = 'chat_dropdown',
+  ) => {
+    if (!onOpenSession) {
+      console.error('[Chat] Cannot open history Session without the App navigation owner');
+      return;
     }
-  }, [onSwitchSession, loadSession]);
+    onOpenSession(id, title, historyEntrySource);
+  }, [onOpenSession]);
 
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
@@ -4957,7 +4944,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 <SessionHistoryDropdown
                   agentDir={agentDir}
                   currentSessionId={sessionId}
-                  onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+                  onSelectSession={(id, title) => handleSelectSession(id, title, 'chat_dropdown')}
                   onOpenInNewTab={onOpenSessionInNewTab}
                   isOpen={showHistory}
                   onClose={() => setShowHistory(false)}
@@ -5017,9 +5004,36 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           {/* Unified boot overlay — same component App renders as the lazy-Chat
               Suspense fallback, so the chunk-load → mount handoff is seamless: ONE
               continuous "AI 启动中" state from the Launcher→Chat flip through the
-              sidecar boot. Pass `show` (not a conditional render) so the overlay
-              self-manages a soft fade-out on dismiss, revealing the chat underneath. */}
-          <ChatBootOverlay show={showStartupOverlay} />
+              sidecar boot. Persisted history keeps the same shell until its REST
+              projection commits, so cold SSE replay is never a visible phase. */}
+          <ChatBootOverlay
+            show={showStartupOverlay || (isSessionLoading && sessionRestoreMode === 'initial')}
+            error={sessionRestoreMode === 'initial' ? sessionRestoreError : null}
+            onRetry={sessionRestoreMode === 'initial' && sessionRestoreError && sessionId
+              ? () => { void retryCurrentSessionRestore(); }
+              : undefined}
+          />
+
+          {isSessionLoading && sessionRestoreMode === 'live-recovery' && (
+            <div
+              role={sessionRestoreError ? 'alert' : 'status'}
+              className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-xs text-[var(--ink-muted)] shadow-sm"
+            >
+              {sessionRestoreError
+                ? <AlertTriangle className="h-3.5 w-3.5 text-[var(--error)]" />
+                : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              <span>{sessionRestoreError ? t('shell.boot.restoreFailed') : t('shell.boot.loading')}</span>
+              {sessionRestoreError && (
+                <button
+                  type="button"
+                  onClick={() => { void retryCurrentSessionRestore(); }}
+                  className="rounded px-1.5 py-0.5 font-medium text-[var(--ink)] hover:bg-[var(--paper-inset)]"
+                >
+                  {t('shell.boot.retry')}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
               already surface via agentError (image_error / model_error), suppress
@@ -5158,7 +5172,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               layoutByMessageId={chatScrollModel.layoutByMessageId}
               onLoadOlder={handleLoadOlderMessages}
               isLoading={isLoading}
-              isSessionLoading={isSessionLoading}
               sessionId={sessionId}
               isActive={isActive}
               virtuosoRef={virtuosoRef}
@@ -5228,6 +5241,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
             onSend={handleSendMessage}
             onStop={handleStop}
             active={isActive}
+            sendBlocked={isSessionLoading}
             isLoading={isLoading || sessionState === 'running' || sessionState === 'starting'}
             sessionState={sessionState}
             systemStatus={systemStatus}
@@ -5921,7 +5935,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
             setCronDetailTask(updated);
             toastRef.current?.success(t('shell.toasts.taskStopped'));
           }}
-          onOpenSession={(id) => handleSelectSession(id, 'task_run_history')}
+          onOpenSession={(id) => handleSelectSession(id, '', 'task_run_history')}
         />
       )}
     </div>

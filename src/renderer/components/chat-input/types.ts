@@ -50,6 +50,8 @@ export interface SimpleChatInputProps {
     permissionMode?: PermissionMode,
   ) => boolean | void | Promise<boolean | void>;
   active?: boolean;
+  /** Blocks both keyboard and button send while the owning Session is not authoritative. */
+  sendBlocked?: boolean;
   onStop?: () => void;
   isLoading: boolean;
   workspacePath?: string | null;

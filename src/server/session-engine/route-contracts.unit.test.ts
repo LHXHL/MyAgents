@@ -35,7 +35,6 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       'POST /api/session-watch/register',
       'GET /sessions/:id',
       'POST /sessions/fork',
-      'POST /sessions/switch',
       'POST /api/im/session/new',
       'POST /api/interaction-scenario/set',
       'POST /api/mcp/set',

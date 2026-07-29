@@ -39,7 +39,6 @@ import {
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionBusy,
-  isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
   popLastUserMessageForRetry,
   prewarmExternalSession,
@@ -81,7 +80,6 @@ import {
   setProcessProxyConfig,
 } from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
-import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import type { SessionMessage } from '../types/session';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
@@ -167,14 +165,6 @@ function getLatestExternalResult(): string {
       : NO_TEXT_RESPONSE;
   }
   return latestResult.trim() || NO_TEXT_RESPONSE;
-}
-
-function normalizeExternalRuntimeSource(
-  runtime: RuntimeType,
-  runtimeSource: RuntimeSource | undefined,
-): RuntimeSource | undefined {
-  if (runtime === 'builtin') return undefined;
-  return runtimeSource ?? 'system-cli';
 }
 
 type ExternalFreezeSnapshotPatch = NonNullable<
@@ -784,47 +774,6 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async updateDesktopInteractionScenario() {
       return { success: true, skipped: 'external-runtime' };
-    },
-
-    async switchToExistingSession(sessionId, workspacePath, getSessionMetadata) {
-      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
-        return { success: true, sessionId };
-      }
-
-      await awaitExternalSessionStarting();
-      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
-        return { success: true, sessionId };
-      }
-
-      const meta = getSessionMetadata(sessionId);
-      if (!meta) {
-        return { success: false, error: 'Session not found.', status: 404 };
-      }
-      const activeRuntime = getActiveRuntimeType();
-      if (meta.runtime && meta.runtime !== activeRuntime) {
-        return {
-          success: false,
-          error: `Session runtime mismatch: persisted=${meta.runtime}, current=${activeRuntime}`,
-          status: 409,
-        };
-      }
-      if (meta.runtime) {
-        const activeRuntimeSource = normalizeExternalRuntimeSource(activeRuntime, getActiveRuntimeSource());
-        const persistedRuntimeSource = normalizeExternalRuntimeSource(meta.runtime, meta.runtimeSource);
-        if (persistedRuntimeSource !== activeRuntimeSource) {
-          return {
-            success: false,
-            error: `Session runtime source mismatch: persisted=${persistedRuntimeSource ?? 'none'}, current=${activeRuntimeSource ?? 'none'}`,
-            status: 409,
-          };
-        }
-      }
-
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
-      }
-      restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
-      return { success: true, sessionId };
     },
 
     async resetForNewDesktopSession(workspacePath) {

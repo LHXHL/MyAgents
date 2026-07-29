@@ -689,6 +689,60 @@ impl SidecarManager {
         removed
     }
 
+    /// Move a displaced process into manager-owned recovery state so every
+    /// existing owner remains authoritative while its replacement starts.
+    /// Owner releases update both active and recovering entries, so the final
+    /// transfer cannot resurrect an owner that left during readiness waits.
+    pub(super) fn begin_session_sidecar_replacement(&mut self, session_id: &str) {
+        let Some(mut displaced) = self.remove_sidecar(session_id) else {
+            return;
+        };
+        if let Some(recovering) = self.recovering_sidecars.get_mut(session_id) {
+            recovering
+                .owners
+                .extend(std::mem::take(&mut displaced.owners));
+        } else {
+            self.recovering_sidecars
+                .insert(session_id.to_string(), displaced);
+        }
+    }
+
+    /// Install retained owners onto the ready replacement and refresh the
+    /// existing activation's physical process coordinates before consumers
+    /// receive the new process epoch.
+    pub(super) fn finish_session_sidecar_replacement(
+        &mut self,
+        session_id: &str,
+        replacement_port: u16,
+        workspace_path: &std::path::Path,
+    ) -> bool {
+        let retained = self.recovering_sidecars.remove(session_id);
+        let Some(replacement) = self.sidecars.get_mut(session_id) else {
+            if let Some(retained) = retained {
+                self.recovering_sidecars
+                    .insert(session_id.to_string(), retained);
+            }
+            return false;
+        };
+        if replacement.port != replacement_port {
+            if let Some(retained) = retained {
+                self.recovering_sidecars
+                    .insert(session_id.to_string(), retained);
+            }
+            return false;
+        }
+        if let Some(mut retained) = retained {
+            replacement
+                .owners
+                .extend(std::mem::take(&mut retained.owners));
+        }
+        if let Some(activation) = self.session_activations.get_mut(session_id) {
+            activation.port = replacement_port;
+            activation.workspace_path = workspace_path.to_string_lossy().into_owned();
+        }
+        true
+    }
+
     /// Runtime drift helper for the IM router (v0.1.66).
     ///
     /// Looks up the Sidecar for `session_id` and checks whether its spawn-time
@@ -854,6 +908,23 @@ impl SidecarManager {
         let (owner_removed, sidecar_stopped) =
             self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()));
         if !owner_removed {
+            // A close can remove the Tab owner while an in-flight renderer
+            // reconcile is still awaiting activate_session. Its compensating
+            // release then arrives with no owner left, but the late activation
+            // still names this exact Tab. Clear only that matching stale
+            // projection; never touch an activation already claimed by a
+            // different Tab.
+            let activation_matches_tab = self
+                .session_activations
+                .get(session_id)
+                .is_some_and(|activation| activation.tab_id.as_deref() == Some(tab_id));
+            if activation_matches_tab {
+                if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
+                    self.update_session_tab(session_id, None);
+                } else {
+                    self.deactivate_session(session_id);
+                }
+            }
             return false;
         }
 

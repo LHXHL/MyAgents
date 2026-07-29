@@ -54,7 +54,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 - `runInjectedTurn()`：用于 cron sync、heartbeat、memory update、Goal 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。Builtin adapter 只保留 domain dispatch guard 与 turn timeout；MCP soft pre-warm 在所有 builtin entrypoint 共用的 generator dispatch seam 执行。
 - `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()`、`getSessionCompletionTerminal()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
-- operation methods：`rewindToUserMessage()`、`retryLastExternalUserMessage()`、`forkAtAssistantMessage()`、`switchToExistingSession()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。
+- operation methods：`rewindToUserMessage()`、`retryLastExternalUserMessage()`、`forkAtAssistantMessage()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。打开既有 Session 属于 App 的 Tab 导航，不是 Runtime operation。
 - queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦；`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/interaction-scenario/set` 对 external runtime 显式 skip，不在 route 层静默判断。
 
 新增“注入 user 消息 / 同步 config / 等待 idle 后判定 completed”的 endpoint 必须优先接入 `SessionEngine`，不要在 `index.ts` 或新 route module 里重新手写 builtin/external 分支。
@@ -542,24 +542,13 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 | 2 | 进程已退出（CC -p 模式） | `--resume` 恢复 |
 | 3 | 进程存活（Codex 持久模式） | `sendMessage()` 到 stdin |
 
-### 历史 Session 切换
+### 打开历史 Session
 
-桌面 History 切换遵循完整 runtime identity（`runtime + runtimeSource`）边界：
+桌面 History 不再执行 Runtime 内的 real→real hot-swap。Global Sidebar、Search、通知 / Task deep-link 与开发者 Chat History 都进入 App 的 canonical new / jump / revive 导航：目标已在 Tab 中就跳转，Tab 存在但 Sidecar 已停就复用该 Tab 并由 Rust revive，否则新建从首帧即绑定目标 Session 的 Tab。`codex/system-cli` 与 `codex/managed-provider` 等完整 runtime identity 由目标 Session 自己的 Sidecar 冻结，不需要在当前 Tab 上做兼容性比较。
 
-- 目标 session 已在其它 Tab 打开：不切换当前 sidecar，直接跳到已打开 Tab。
-- 切换前后完整 identity 不同：新开 Tab。`codex/system-cli` 与
-  `codex/managed-provider` 是两种 runtime identity，不可互相复用。
-- 完整 identity 相同且当前 turn idle：允许在当前 Tab 热切换。
+因此 Renderer 的 persisted restore 只读 `GET /sessions/:id`，不会调用 Node binding mutation；`POST /sessions/switch` 与 `SessionEngine.switchToExistingSession()` 已删除。`cmd_upgrade_session_id(old,new)` 只服务 pending→real、desktop reset 或已确认 surface migration 等同一 Sidecar identity upgrade，不能扩展为 History navigation。
 
-热切换必须同时完成两件事：Rust 层的 Sidecar key handover，以及 Node runtime owner
-state 的 session switch。`cmd_upgrade_session_id(old,new)` 只做 Rust `HashMap`
-key rename，不会调用 Node `/sessions/switch`；因此它只能作为 TabProvider
-随后执行 `/sessions/switch` 的代理/owner handover 前半步。external adapter 不能只凭
-`getCurrentBoundSessionId()===target` no-op；还必须确认 transcript owner 已 seed 到目标
-磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。否则会出现 Rust
-已经指向目标 session，但 Node external transcript 仍属于旧 session 的错位。
-
-所有 session boundary（桌面「新对话」、pending materialization commit、历史切换、
+所有实际 session identity boundary（桌面「新对话」、pending materialization commit、
 pre-warm、IM reset、external config boundary）必须按 runtime process 存活性清理，
 而不是只看 active turn。Codex app-server 这类 persistent runtime 在 turn 结束后会进入
 idle，但进程仍持有 stdin/thread owner；在 `restoreExternalSessionState(target, ...)`

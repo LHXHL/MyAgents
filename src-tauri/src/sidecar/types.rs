@@ -625,6 +625,92 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
+    fn compensating_release_clears_a_late_matching_activation_without_an_owner() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners = owners(vec![SidecarOwner::Goal("goal-a".to_string())]);
+        manager.activate_session(
+            "session-a".to_string(),
+            Some("closed-tab".to_string()),
+            None,
+            31418,
+            "/tmp/workspace".to_string(),
+            false,
+        );
+
+        assert!(!manager.release_tab_session("session-a", "closed-tab", false));
+        assert_eq!(
+            manager
+                .session_activations
+                .get("session-a")
+                .and_then(|activation| activation.tab_id.as_deref()),
+            None
+        );
+        assert!(manager.session_has_persistent_owners("session-a"));
+    }
+
+    #[test]
+    fn replacement_commit_preserves_all_owners_and_refreshes_activation_coordinates() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("dead sidecar")
+            .owners
+            .insert(SidecarOwner::Goal("goal-a".to_string()));
+        manager.activate_session(
+            "session-a".to_string(),
+            Some("tab-a".to_string()),
+            Some("task-a".to_string()),
+            31418,
+            "/tmp/old-workspace".to_string(),
+            false,
+        );
+
+        manager.begin_session_sidecar_replacement("session-a");
+        assert!(!manager.sidecars.contains_key("session-a"));
+        assert!(manager.recovering_sidecars.contains_key("session-a"));
+
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let replacement = manager
+            .get_session_sidecar_mut("session-a")
+            .expect("replacement sidecar");
+        replacement.port = 32002;
+        replacement.owners = owners(vec![SidecarOwner::Task("task-a".to_string())]);
+
+        assert!(manager.finish_session_sidecar_replacement(
+            "session-a",
+            32002,
+            std::path::Path::new("/tmp/new-workspace"),
+        ));
+        let replacement = manager
+            .get_session_sidecar_mut("session-a")
+            .expect("committed replacement");
+        assert!(replacement
+            .owners
+            .contains(&SidecarOwner::Tab("tab-a".to_string())));
+        assert!(replacement
+            .owners
+            .contains(&SidecarOwner::Goal("goal-a".to_string())));
+        assert!(replacement
+            .owners
+            .contains(&SidecarOwner::Task("task-a".to_string())));
+        assert!(!manager.recovering_sidecars.contains_key("session-a"));
+
+        let activation = manager
+            .session_activations
+            .get("session-a")
+            .expect("activation");
+        assert_eq!(activation.port, 32002);
+        assert_eq!(activation.workspace_path, "/tmp/new-workspace");
+        assert_eq!(activation.task_id.as_deref(), Some("task-a"));
+        assert_eq!(activation.tab_id.as_deref(), Some("tab-a"));
+    }
+
+    #[test]
     fn background_completion_keeps_identity_active_after_tab_release() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
