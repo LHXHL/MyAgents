@@ -94,13 +94,26 @@ pub fn is_update_shutdown_in_progress() -> bool {
     UPDATE_SHUTDOWN_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Stop all sidecar instances and clean up child processes
-/// This should be called when the app is closing
-pub fn stop_all_sidecars(manager: &ManagedSidecarManager) -> Result<(), String> {
-    ulog_info!("[sidecar] Stopping all sidecars and cleaning up child processes...");
+/// Stop all sidecar instances and clean up child processes.
+///
+/// `reason` is required because this is an application-wide destructive
+/// boundary. Callers must make the owning lifecycle explicit in diagnostics.
+pub fn stop_all_sidecars(manager: &ManagedSidecarManager, reason: &str) -> Result<(), String> {
+    ulog_info!(
+        "[sidecar] stop_all action=begin reason={} scope=application",
+        reason
+    );
 
     // 1. Stop all managed sidecar instances (kills bun sidecars via Drop)
-    let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+    let mut manager_guard = manager.lock().map_err(|error| {
+        let error = error.to_string();
+        ulog_error!(
+            "[sidecar] stop_all action=error reason={} scope=application error={}",
+            reason,
+            error
+        );
+        error
+    })?;
     manager_guard.stop_all();
     drop(manager_guard);
 
@@ -108,6 +121,11 @@ pub fn stop_all_sidecars(manager: &ManagedSidecarManager) -> Result<(), String> 
     // This is necessary because SDK spawns child processes that don't die
     // when the parent bun sidecar is killed
     cleanup_child_processes();
+
+    ulog_info!(
+        "[sidecar] stop_all action=complete reason={} scope=application",
+        reason
+    );
 
     Ok(())
 }
@@ -132,7 +150,7 @@ fn shutdown_for_update_inner(
     ulog_info!("[sidecar] Shutdown for update: stopping all processes...");
 
     // 1. Stop all sidecar instances (via Drop → kill_process → taskkill /T /F)
-    stop_all_sidecars(manager)?;
+    stop_all_sidecars(manager, "update")?;
 
     // 2. Actively kill orphan processes that may survive sidecar tree-kill
     //    (e.g., node.exe from bundled npx — cmd.exe intermediate layers break process tree)

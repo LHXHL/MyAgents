@@ -1,6 +1,6 @@
 # Session 架构
 
-> Session 的标识、存储、状态同步机制。Sidecar Owner 模型、Session 切换四场景见 `ARCHITECTURE.md` 的核心抽象与模块地图。
+> Session 的标识、存储、状态同步机制。Sidecar Owner 模型与既有 Session 的 new / jump / revive 导航见 `ARCHITECTURE.md` 的核心抽象与模块地图。
 
 ## Session ID
 
@@ -492,7 +492,7 @@ freshness cache / 持久 anchor，静默重启为裸 `resume`，并在当前 tur
 |------|------|-------|
 | 追加消息 | O(n) 全文件重写 | O(1) 追加一行 |
 | 崩溃恢复 | 文件可能损坏 | 最多丢失最后一行 |
-| 并发写入 | 需要文件锁 | 追加通常是原子的 |
+| 并发写入 | 需要文件锁 | 仍需按 Session 文件锁串行；同一 Session 可被 Tab / Cron / Background 等不同写者提交 |
 | 部分读取 | 需要解析整个文件 | 可以逐行读取 |
 
 ### SessionMessage 格式
@@ -516,17 +516,20 @@ interface SessionMessage {
 
 **增量统计**：只计算新增消息的 token 用量，而非全量重算。统计更新在文件锁内执行避免 TOCTOU：
 ```typescript
-const newMessages = messages.slice(existingCount);
-if (newMessages.length > 0) {
-    appendFileSync(filePath, linesToAppend);  // JSONL 不需要锁，每个 session 文件单写者
+await withSessionFileLock(sessionId, async () => {
+    const newMessages = messages.slice(existingCount);
+    if (newMessages.length === 0) return;
+    appendFileSync(filePath, linesToAppend);  // transcript commit point
     const incrementalStats = calculateSessionStats(newMessages);
-    withSessionsLock(() => {
-        // sessions.json 在锁内 read-modify-write
+    await withSessionsLock(() => {
+        // sessions.json 派生统计在锁内 read-modify-write
     });
-}
+});
 ```
 
-**文件锁**：`sessions.json` 多 Sidecar 共享需锁。MyAgents 走 `withFileLock` / `with_file_lock`（详见 `pit_of_success.md` 的「withFileLock」节）。
+**文件锁**：JSONL append / rewrite 使用 per-Session `withSessionFileLock`，`sessions.json` 的多 Sidecar read-modify-write 使用全局 `withSessionsLock`。底层走 `withFileLock` / `with_file_lock`（详见 `pit_of_success.md` 的「withFileLock」节）。
+
+JSONL append / rewrite 是 transcript 的 durability commit point；`sessions.json.stats` 与 preview 等 metadata 是派生投影，后续更新失败只能告警，`saveSessionMessages()` 仍返回 transcript 成功，调用方不得回滚已经落盘的消息。Builtin direct 与 turn-boundary user surface 必须在 SDK dispatch 前完成该持久化；失败时撤回对应 UI row、终止 exact turn / IM request。由于失败可能发生在 append 已提交后的后续步骤，rollback 使用 authoritative full rewrite；若 rewrite 也失败，`forceRewrite` latch 保持到后续一次完整重写成功，禁止退回增量追加猜测磁盘状态。
 
 ### 损坏行容错
 
@@ -754,18 +757,19 @@ setSystemStatus(null);
 | 6 | `stopResponse` 超时 | 停止请求 5s 后无 SSE 确认 |
 | 7 | `stopResponse` 失败 | 停止请求网络错误 |
 | 8 | `resetSession` | 用户点击「新对话」 |
-| 9 | `loadSession` | 用户加载历史会话 |
+| 9 | `restorePersistedSession` | 用户加载历史会话 |
 
 ### 会话历史恢复：REST 单一权威（#0608，load-bearing 不变量）
 
 上面的「新会话」靠 `isNewSessionRef` skip 旧事件；**恢复一个已存在会话的历史**是另一条路径，权威源不同。恢复历史的**唯一权威 = REST `GET /sessions/:id`**（磁盘、分页、有序；active session 已 merge 内存未持久化消息）。SSE `chat:message-replay` 让位——它是**重载**事件：SSE-connect 冷历史 backfill **＋** 新发 user/command 气泡的 live echo。
 
-- `loadSession` 用**同步**标志 `restoredSessionIdRef`（**不是**异步滞后的 `historyMessagesRef.length`）决定是否 skip replay。在 `setHistoryMessages` 前就放开 loading 标志，会让迟到的 `chat:init` 命中 `!isLoading && length===0` → 清掉刚恢复的 REST 页 + `seenIds` → 内存 replay（可能传输截断）回填**旧**集（#0608 实测：后端发 id 111-190，前端却停在 109）。
+- `TabProvider` 只维护一个同步镜像的 persisted restore lifecycle：`inactive / restoring / ready / failed`，并让 UI state 与 event-handler ref 执行同一套迁移。初始 prop 已是真实 persisted Session 时，state initializer 就进入 `restoring`，不能等待 passive effect；这样任何 SSE cold replay 到达前，首屏 owner 已经成立。`isSessionLoading`、错误壳、发送门禁与“是否已 REST restored”都从该 lifecycle 派生，不再由多个 loading / restored flag 互相校正。
 - 冷历史 backfill 打 `replayKind:'cold-history'`，并使用 builtin/external `SessionEngineStreamReplaySnapshot.sessionId` 携带 snapshot scope；snapshot还携带active assistant。external adapter在pending→real启动窗口优先采用已promoted的bound Session，并从既有immutable live snapshot投影accepted in-memory user message与assistant前缀。`/chat/stream` 必须在注册新client前同步取得snapshot，避免snapshot flush把事件排到初始化之前；scope与assistant snapshot合入既有`chat:init`，Renderer按identity/content原子采用并保留structured blocks，只有之后的真实`chat:message-chunk`才按delta追加。新发user/command气泡打`replayKind:'live-user-echo'`并携带创建事件时的`sessionId`。REST-restored session只skip cold history；new session birth只接受通过当前Session scope校验的live echo或cold reconnect snapshot。Route只能消费SessionEngine public facade，不能读取adapter internal或从message推导identity。决策纯核心`sessionRestoreGuards.ts`（可单测）。
 - `GET /sessions/:id` 的 active overlay 由 `SessionEngine.getLiveSessionOverlay()` 提供：磁盘历史先与 finalized in-memory tail 按 message id 合并，当前 streaming assistant 独立返回，同时带 live session state、pending interactive requests 与 `snapshotRevision`。builtin/external public facade 都返回 immutable snapshot；Route 只做分页、redaction、response shaping，不直接读取 runtime owner internal。
-- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap、没有已采纳基线，或 SSE transport generation 变化时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
-- Tauri 新 transport generation 必须在第一条业务 event 前建立上述 restore fence；REST live-recovery commit 不走 session-switch overlay，不先清空消息，也不重置已有 pagination/scroll anchor。它按 snapshot 首条 message id 与当前 history overlap：有 overlap 时保留 older prefix 并权威替换 recent tail；无 overlap 时才整体采用 snapshot。随后恢复 `liveStreamingMessage`、`liveSessionState` 与 pending interactive requests，再 replay snapshotRevision 后的连续 buffer。若该权威 REST 请求瞬时失败，Renderer 保留同一 fence/token 与已 buffer 的 live events，只重试 snapshot；Session 切换或更新 token 会让迟到 retry 自动失效。
-- `liveRevision` 是当前 Sidecar 绑定 Session 的 generation-local 内存序号，Session identity 切换时归零；它不写 JSONL、不做 checkpoint，也不改变 REST 的历史权威。新 Session 在首次被 REST adopt 前仍可走 SSE-native birth，避免为尚未持久化的会话制造恢复状态机。
+- `restorePersistedSession` 是只读投影：创建 `AbortController`，读取并统一 normalize structured blocks、JSON-stringified `ContentBlock[]` 与 plain text，提交前核对 `target + restoreToken + connectionGeneration`，再原子替换 history；它不调用 `/sessions/switch`，不修改 App Tab identity，也不改变 Node runtime binding。公开 context 只暴露不接受 target 参数的 `retryCurrentSessionRestore()`，因此调用方不能借恢复 API 跨 Session；普通事件不能越过 `failed` 自动重试，只有用户显式重试或 Rust 发布新的 `session-sidecar:restarted` 进程 epoch 才能生成新 token。Tab 关闭、target 变化或 token/generation 替换会 abort 或静默丢弃旧结果。
+- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap 或没有已采纳基线时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
+- transport generation 变化本身不是历史不连续：同一 Sidecar 上，新 generation 的第一条 revision 若等于 `lastAppliedRevision + 1`，fence 更新 generation 后直接投影，不重新请求 REST、不显示 loading；重复 revision 继续丢弃。只有真实 gap 才进入同一 lifecycle recovery。Recovery 有 overlap 时保留 older prefix 并权威替换 recent tail；无 overlap 时整体采用 snapshot，随后恢复 live assistant/state/interactive requests 并 replay 连续 buffer。持续 gap 只允许一次自动 follow-up snapshot，随后进入 `failed`、保留可信内容并由同一个 `ChatBootOverlay` 覆盖所有 action boundary；普通 revision 继续隔离，用户显式重试或新的 Rust replacement epoch 可在同一 target 上生成新 token。
+- `liveRevision` 是当前 Sidecar 进程内、绑定 Session 的内存序号，Session identity 切换或 Sidecar replacement 时归零；它不写 JSONL、不做 checkpoint，也不改变 REST 的历史权威。Rust 发出 `session-sidecar:restarted` 后，Renderer 必须立即废弃旧 baseline 并从 REST 重建新 epoch；不能仅凭 transport generation 猜测进程是否更换。新 Session 在首次被 REST adopt 前仍可走 SSE-native birth，避免为尚未持久化的会话制造恢复状态机。
 - 诊断"恢复只显示一部分"：读磁盘 `~/.myagents/refs/<id>` 的 spilled body（后端实发的 JSON，可直接 `node` 解析）对比前端显示，先把"后端发了什么 vs 前端显示什么"一刀切开。
 
 ### Turn terminal 与通用完成通知
@@ -778,13 +782,13 @@ transport 断线窗口内 turn 仍照常完成并持久化；普通 Chat 的新 
 
 ### 会话快照类 SSE 必须按 session scope 过滤
 
-Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 端口”，不能单独保证“事件仍属于这个 Tab 当前展示的 session”。历史切换、新对话 birth、pending session materialization、Sidecar key handover 都可能让旧 sidecar/旧连接的缓存或 live 事件晚到。
+Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 端口”，不能单独保证“事件仍属于这个 Tab 当前展示的 session”。既有 Session revive、新对话 birth、pending session materialization、Sidecar key handover 都可能让旧 sidecar/旧连接的缓存或 live 事件晚到。
 
-反过来也不能把 connection 创建时的 Session label 当作业务 authority：`connectionKey + SidecarOwner` 拥有长期 transport，Session key 可在同一 Sidecar 内通过 pending→real、桌面 reset 或已确认 surface migration 升级。pending→real 可由 generic effect 识别；real→real 只能由发起 reset / migration 的 owner 在 parent prop effect 前按 exact A→B 同步采用 business current 与 attachment，并在拒绝/异常时仅对仍指向 B 的状态做 exact rollback。SSE status callback只报告liveness，attachment identity由connect/reset/migration operation拥有。birth marker不参与transport裁决，离开exact target即清理。带scope事件在live-revision dispatch前按`payload.sessionId === currentSessionId`裁决，旧A payload自然丢弃，B payload即使经A时期建立的physical stream送达也合法。普通历史切换没有同一Sidecar birth证明，仍必须replacement。
+反过来也不能把 connection 创建时的 Session label 当作业务 authority：`connectionKey + SidecarOwner` 拥有长期 transport，Session key 可在同一 Sidecar 内通过 pending→real、桌面 reset 或已确认 surface migration 升级。pending→real 可由 generic effect 识别；real→real 只允许 reset / migration owner 在 parent prop effect 前按 exact A→B 同步采用 business current 与 attachment，并在拒绝/异常时仅对仍指向 B 的状态做 exact rollback。SSE status callback只报告liveness，attachment identity由connect/reset/migration operation拥有。birth marker不参与transport裁决，离开exact target即清理。带scope事件在live-revision dispatch前按`payload.sessionId === currentSessionId`裁决，旧A payload自然丢弃，B payload即使经A时期建立的physical stream送达也合法。普通历史导航不复用该 identity upgrade：App 必须 new / jump / revive 目标 Tab。
 
 凡是会更新 Tab 会话快照或展示阻塞式交互 UI 的 SSE 事件，payload MUST 带 `sessionId`，前端 MUST 先通过 `src/renderer/context/sessionScopedEventGuards.ts::shouldAcceptSessionScopedSseSnapshot()` 或 `decideSystemInitSessionId()` 过滤，再写 React state。当前范围包括：
 
-- `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史切换中的 mismatch 一律视为 stale。
+- `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史导航中的 mismatch 一律视为 stale。
 - `chat:runtime-tool-catalog`：external runtime 工具目录的可变快照；必须按 sessionId 过滤，重连时由既有 `chat:system-init` replay snapshot 恢复，不能另建第二份 replay 状态。
 - `chat:message-replay`：`live-user-echo` 既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；`cold-history` 只闭合 stream attach/reconnect snapshot 窗口。两者都必须带各自创建 snapshot/event 时的 `sessionId`；REST-restored Session 仍拒绝 cold history。
 - `queue:started`：排队消息正式 promotion 后的用户气泡与 turn 边界；必须带 promotion 所属的 `sessionId`，guarded Goal 只能在 admission accepted 后发送。
@@ -792,7 +796,7 @@ Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 
 - `ask-user-question:request` / `ask-user-question:expired`
 - `exit-plan-mode:*` / `enter-plan-mode:*`
 
-允许 connection label 暂时落后 current Session 的只有已证明复用同一 Sidecar 的 identity upgrade：pending→real、desktop reset 或已完成 surface migration。无论 connection label 如何，payload session 与 current concrete Session 不一致都必须丢弃；没有上述证明的 real→real 变化是普通 history switch，必须 replacement。新增 request/expired 类 SSE 时，如果它会弹 UI、清 UI、改变 plan-mode 或改变 current session snapshot，必须先把 `sessionId` 加到后端 broadcast / pending replay payload，再接入这层 guard；不要只依赖 Tab-scoped SSE channel。
+允许 connection label 暂时落后 current Session 的只有已证明复用同一 Sidecar 的 identity upgrade：pending→real、desktop reset 或已完成 surface migration。无论 connection label 如何，payload session 与 current concrete Session 不一致都必须丢弃；历史导航必须通过目标 Tab 的 new / jump / revive，不得把该例外扩展成 real→real hot-swap。新增 request/expired 类 SSE 时，如果它会弹 UI、清 UI、改变 plan-mode 或改变 current session snapshot，必须先把 `sessionId` 加到后端 broadcast / pending replay payload，再接入这层 guard；不要只依赖 Tab-scoped SSE channel。
 
 ### Sidecar 配置归置：`sidecarConfigDisposition`（push / adopt / pending，0.2.31）
 
@@ -802,7 +806,7 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - **`adopt`** — 采纳已在跑的 sidecar 的现有配置、**不推**（接管 IM / Task / Goal / background 占用的 sidecar）。
 - **`pending`** — 还不知道：tab 在 sidecar ensure **之前**就 instant-flip 到了 chat（即时进入）。此态下 Chat **既不推也不采纳**，等裁决。
 
-**唯一裁决者**：`ensureSessionSidecar` 返回的 `result.isNew`（在 Rust manager 锁内决定）是 `pending → push|adopt` 的**唯一**来源（`App.handleLaunchProject` 的 ensure 后一步，instant 与非 instant 两条路径都跑）。前端 `getSessionPort` 仅作"绘制时机提示"，**不参与配置正确性**——即便它竞态/出错，最坏只是翻页时机偏差，绝不会推错配置。
+**唯一裁决者**：`ensureSessionSidecar` 返回的 `result.isNew`（在 Rust manager 锁内决定）是 `pending → push|adopt` 的**唯一**来源。新 Session 由 `handleLaunchProject` 创建；已有 Session 的用户导航只经 `handleOpenTargetSession`，cold Tab 激活与导航共同复用 `reconcileExistingSessionTabOwner`。任何路径都不得用端口探测预测配置方向。
 
 **为什么是三态（#300/#301 实战）**：旧的 `joinedExistingSidecar?: boolean` 有个表达不出的第三态（`undefined → ?? false → push`），instant-flip 时被迫用 `getSessionPort` 预测 → 并发 Rust creator（Task / Goal / IM / 崩溃重启）在"检查"与"ensure"之间起了 sidecar → ensure 接管活的 sidecar，而 Chat 把配置推上去 → **config-stomp + MCP 指纹 abort + 30s 重启循环**（TOCTOU）。三态把"还没定"变成一等公民。
 
@@ -810,13 +814,14 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - Chat 里**任何**"mount 期把配置推给 sidecar"的 effect MUST 门控 `configDispositionRef.current === 'push'`（`pending`/`adopt` 跳过）。漏一个 = 静默 config-stomp。
 - **依赖不对称**：推送 effect 依赖布尔 `configPending`（`pending→push` 重跑，`adopt→push` 不重放）；采纳 effect 依赖 `isAdopt`（`pending→adopt` 触发一次）。写反 = 漏推或重复采纳。
 - 用户**主动**改配置（`persistTabConfigChange`）走 **defer-while-pending**（仅 `pending` 时延迟推送、磁盘照写；`push`/`adopt` 都推——用户意图）。
-- instant-flip 的 `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在 pending 时触发）。
-- "在新标签打开已有 session" MUST 走 background-owner 感知的 `spawnTabForExistingSession`（`preserveCronActivation` 是兼容字段名，`updateSessionTab` 保留 Task activation）；**别** pre-seed 一个带 sessionId 的 tab 再 handleLaunchProject——那会让 planner 走 jump-to-tab → Scenario 4 的 deactivate/reactivate 抹掉后台归属。
-- 启动失败的 catch MUST 把 instant-flip 的 `pending` tab 重置为终态 `push`（否则永远卡 `pending`，既不推也不采纳）。
+- `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在归置裁决前触发）。
+- 已有 Session 的用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者和 cold Tab 激活都调用同一个 `reconcileExistingSessionTabOwner` 对精确 Tab owner 执行幂等 ensure，再由 Rust 单锁原子 reconcile activation（保留最新 Task identity），禁止 Renderer read / branch / write activation，也禁止 `hasSessionSidecar → ensure` 的 TOCTOU 双阶段判断。
+- replacement commit 属于 Rust ensure authority：旧进程进入 `recovering_sidecars` 保留完整 owner 集合，owner release 在 readiness 窗口仍可生效；新进程 ready 后先原子迁移剩余 owners 并刷新 activation port / workspace，再向 Renderer 发新 epoch。Renderer 不复制该 owner 或端口协调。
+- Rust 是 Sidecar process epoch 的唯一 authority；共享 ensure authority 每次实际创建进程都发 `session-sidecar:restarted`。TabProvider 只处理当前绑定 Session，既能在 replacement 时重置 live revision baseline，也不会让无绑定消费者为首次创建建立第二套状态。
 
-即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。`getSessionPort` 之所以只能是提示：见上方「唯一裁决者」。
+即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。
 
-从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再 await `ensureSessionSidecar` / activation。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority；同步 commit 同时保证 warm Sidecar 极快返回时，后续 liveness check 已能看见新 Tab。Chat owner 子树立即挂载，由其自身 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure/activation 失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。该顺序不改变 `planSessionOpen` 前置裁决，也不允许在 planner 之前预塞 session Tab，否则会重新触发上文 `jump-to-tab` / 后台 owner 归属陷阱。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority，不能关闭用户随后重新打开的资源面。
+从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再 await `ensureSessionSidecar` / activation。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority。Chat owner 子树立即挂载，由 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure/activation 失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。planner 必须先于 Tab 构造运行，避免把刚预塞的 Tab 误判为既有 owner。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority。
 
 ### Session 配置写入方向矩阵：setter 边界的 snapshot guard（#327，0.2.32+）
 
@@ -859,7 +864,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 | 文件 | 职责 |
 |------|------|
 | `src/renderer/types/tab.ts` | `Tab.sidecarConfigDisposition` 三态 + `buildChatFlipPatch`（必填 disposition） |
-| `src/renderer/App.tsx` | `handleLaunchProject`（instant-flip + 单一 post-ensure resolver）、各 Tab 构造点 disposition 映射、`spawnTabForExistingSession`（background-owner preserve） |
+| `src/renderer/App.tsx` | `handleLaunchProject`（只创建新 Session）、`handleOpenTargetSession`（已有 Session 导航 owner）、`reconcileExistingSessionTabOwner`（导航 / cold restore 共用 owner 编排）、各 Tab 构造点 disposition 映射 |
 | `src/renderer/pages/Chat.tsx` | 9 个 disposition 门控的配置同步 effect + `persistTabConfigChange` defer-while-pending |
 | `src/renderer/components/ChatBootOverlay.tsx` | "AI 启动中"蒙层 + 淡出过渡 |
 | `src/server/types/session.ts` | `SessionMetadata` 类型定义、`createSessionMetadata()` |
@@ -874,6 +879,6 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 ## 相关文档
 
 - `ARCHITECTURE.md` 的核心抽象「Sidecar Owner 模型」「持久 Session」「Pre-warm 机制」
-- `ARCHITECTURE.md` 的模块「Session 切换与持久化」（四场景 + 分层 config snapshot）
+- `ARCHITECTURE.md` 的模块「既有 Session 打开与持久历史恢复」（new / jump / revive + 分层 config snapshot）
 - `pit_of_success.md` 的「withFileLock」「Snapshot Helpers」
 - `multi_agent_runtime.md` 的「External Session Handler」（外部 Runtime 的会话生命周期）

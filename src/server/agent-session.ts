@@ -233,6 +233,7 @@ import {
   getQueryMcpMutation,
   incrementPreWarmFailCount,
   getBuiltinLiveRevision,
+  getSessionMutationBarrier,
   lifecycleState,
   nextBuiltinLiveRevision,
   requestAbort,
@@ -240,6 +241,7 @@ import {
   recordQueryBackgroundTask,
   resetPreWarmFailCount,
   resetBuiltinLiveRevision,
+  runSerializedSessionMutation,
   setPreWarmInProgress,
   setPreWarmTimer,
   setPreWarmDisabled,
@@ -323,6 +325,7 @@ import {
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
   getPendingImRequestIds,
+  hasPendingOutputOwnerByQueueId,
   peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
   isAssistantMessagePresent,
@@ -1012,6 +1015,27 @@ async function surfaceBuiltinUserMessage(
   return activityMerged;
 }
 
+async function rollbackFailedBuiltinUserSurface(messageId: string): Promise<void> {
+  applyTranscriptRetractionToPersistence(new Set([messageId]));
+  broadcast('chat:messages-retracted', {
+    messageIds: [messageId],
+    retractedStreamingTail: false,
+  });
+  try {
+    // The failed write may have appended the row before a later index/stat
+    // update failed. Replace the complete transcript so memory, UI and disk
+    // converge before this message is rejected.
+    await persistMessagesToStorage(
+      transcriptState.messages.length,
+      undefined,
+      'skip',
+      true,
+    );
+  } catch (rollbackError) {
+    console.error('[agent][admission-persist] action=rollback_persist_failed', rollbackError);
+  }
+}
+
 type SurfaceInFlightOptions = {
   sdkUuid?: string;
   midTurnBreak?: boolean;
@@ -1290,10 +1314,20 @@ function finalizeOutputOwnerRequest(
   data?: unknown,
   markCurrentTurn = false,
 ): void {
-  if (!owner?.requestId) return;
-  imEventBus.emit(owner.requestId, type, data);
-  imRequestRegistry.setStatus(owner.requestId, status);
-  imRequestRegistry.unregister(owner.requestId);
+  finalizeImRequest(owner?.requestId, type, status, data, markCurrentTurn);
+}
+
+function finalizeImRequest(
+  requestId: string | null | undefined,
+  type: 'complete' | 'cancelled' | 'error',
+  status: 'completed' | 'cancelled' | 'failed',
+  data?: unknown,
+  markCurrentTurn = false,
+): void {
+  if (!requestId) return;
+  imEventBus.emit(requestId, type, data);
+  imRequestRegistry.setStatus(requestId, status);
+  imRequestRegistry.unregister(requestId);
   if (markCurrentTurn) setCurrentTurnImTerminalEmitted(true);
 }
 
@@ -1382,17 +1416,6 @@ function broadcast(event: string, data: unknown): void {
 
 function publishCurrentSessionEnv(): void {
   process.env.MYAGENTS_SESSION_ID = sessionId;
-}
-// Reset guard: prevents enqueueUserMessage from racing with async resetSession()/switchToSession()
-// Single promise — non-null means a reset is in progress; enqueueUserMessage awaits it.
-let resetPromise: Promise<void> | null = null;
-
-/** Mark the start of an async reset. Returns a cleanup function for the finally block. */
-function beginReset(): () => void {
-  if (resetPromise) console.warn('[agent] beginReset: already resetting — possible reentrancy');
-  let resolve: () => void;
-  resetPromise = new Promise(r => { resolve = r; });
-  return () => { resetPromise = null; resolve!(); };
 }
 
 // Pre-warm: start SDK subprocess + MCP servers before user sends first message
@@ -1909,7 +1932,7 @@ function startNextTurnQueuedItem(
     shouldAbortSession: lifecycleState.abortRequested,
     reason,
     hasQuerySession: lifecycleState.query !== null,
-    hasResetInProgress: Boolean(resetPromise),
+    hasResetInProgress: getSessionMutationBarrier() !== null,
     hasRewindInProgress: Boolean(rewindPromise),
   })) {
     return false;
@@ -1936,12 +1959,11 @@ function startNextTurnQueuedItem(
     mirrorImages: item.mirrorImages,
     channelDelivery: sourceItem.channelDelivery,
   };
-  if (sourceItem.beforeDispatch) {
-    sourceItem.deferredUserSurface = surface;
-  } else {
-    void surfaceBuiltinUserMessage(surface, 'pre-admission')
-      .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
-  }
+  // Turn-boundary messages are not runtime-visible yet. Keep their user
+  // surface attached to the queue owner so admission can persist it before
+  // yielding to the SDK. A failed write must terminate this turn, never race a
+  // fire-and-forget persistence promise against runtime dispatch.
+  sourceItem.deferredUserSurface = surface;
 
   console.log(`[agent] Starting turn-boundary queued message: queueId=${item.queueId} reason=${reason} remaining=${getTurnBoundaryQueue().length}`);
   if (!sourceItem.deferVisibleAdmission) {
@@ -2400,6 +2422,32 @@ function emitBuiltinTurnTrace(
     count: options.count,
     detail: options.detail,
   });
+}
+
+function reportBuiltinAdmissionPersistenceFailure(
+  queueId: string,
+  requestId: string | undefined,
+  error: unknown,
+): string {
+  const admissionError = error instanceof Error ? error.message : String(error);
+  emitPerfTrace({
+    trace: 'turn',
+    phase: 'admission_persist',
+    status: 'error',
+    runtime: 'builtin',
+    sessionId,
+    requestId,
+    turnId: queueId,
+    detail: {
+      action: 'dispatch_blocked',
+      queueId,
+      error: admissionError,
+    },
+  });
+  console.error(
+    `[agent] admission_persist action=dispatch_blocked runtime=builtin sessionId=${sessionId} queueId=${queueId} requestId=${requestId ?? '-'} error=${admissionError}`,
+  );
+  return admissionError;
 }
 
 function emitBuiltinFirstDeltaTrace(delta: string): void {
@@ -4663,6 +4711,7 @@ async function persistMessagesToStorage(
   targetMessageCount = transcriptState.messages.length,
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
+  forceRewrite = false,
 ): Promise<void> {
   return scheduleTranscriptPersist({
     sessionId,
@@ -4670,6 +4719,7 @@ async function persistMessagesToStorage(
     targetMessageCount,
     lastActiveAt,
     metadataDisposition,
+    forceRewrite,
   });
 }
 
@@ -7602,10 +7652,8 @@ function pushInboxAbortReplyForQueuedItem(
  * Simply interrupting is not enough - we must wait for the session to fully end.
  */
 export async function resetSession(): Promise<void> {
+  return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
-
-  const endReset = beginReset();
-  try {
   // 1. Properly terminate the SDK session (same pattern as switchToSession)
   // Must abort persistent session so the generator exits and subprocess terminates
   if (lifecycleState.query || lifecycleState.termination) {
@@ -7684,9 +7732,7 @@ export async function resetSession(): Promise<void> {
 
   // Pre-warm with fresh session so next message is fast
   schedulePreWarm();
-  } finally {
-    endReset();
-  }
+  });
 }
 
 /**
@@ -7715,8 +7761,7 @@ export async function resetSession(): Promise<void> {
  * broadcast, NO clearMessageState, NO permission reset.
  */
 async function recoverFromStaleSession(): Promise<void> {
-  const endReset = beginReset();
-  try {
+  return runSerializedSessionMutation(async () => {
     // 1. Terminate the failed SDK subprocess (same pattern as resetSession).
     //    Without this, the next user message would reuse the same broken
     //    subprocess and hit the same "No conversation found" on its next
@@ -7755,9 +7800,7 @@ async function recoverFromStaleSession(): Promise<void> {
     schedulePreWarm();
 
     console.log(`[agent] recoverFromStaleSession: complete, sessionId=${sessionId} preserved`);
-  } finally {
-    endReset();
-  }
+  });
 }
 
 /**
@@ -7999,6 +8042,7 @@ export async function initializeAgent(
  * - Metadata-only sessions start fresh but keep the same session ID
  */
 export async function switchToSession(targetSessionId: string): Promise<boolean> {
+  return runSerializedSessionMutation(async () => {
   console.log(`[agent] switchToSession: ${targetSessionId}`);
 
   // Skip if already on the target session — prevents aborting an active streaming task
@@ -8015,8 +8059,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     return false;
   }
 
-  const endReset = beginReset();
-  try {
   // Properly terminate the old session if one is running
   // Must abort persistent session so the generator exits and subprocess terminates
   // Otherwise the old session continues processing transcriptState.messages with stale settings
@@ -8152,9 +8194,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   // Pre-warm with resumed session so subprocess + MCP are ready before user types
   schedulePreWarm();
   return true;
-  } finally {
-    endReset();
-  }
+  });
 }
 
 /**
@@ -8407,7 +8447,7 @@ async function consumePendingContinueAfterAbort(
 
     if (sessionId !== sessionIdSnapshot) {
       // switchToSession raced between our call and the recursive enqueue's
-      // resetPromise wait — reminder went to the new session. Preserve the
+      // session-mutation barrier wait — reminder went to the new session. Preserve the
       // original session's flag for retry; do NOT clear it or mark the
       // per-process cap.
       console.error(`[agent] Reminder enqueue raced session switch ${sessionIdSnapshot} -> ${sessionId}; flag for ${sessionIdSnapshot} preserved for retry`);
@@ -8556,7 +8596,7 @@ export async function enqueueUserMessage(
   let reservedAdmissionAction: QueueAdmissionAction | null = null;
   let admissionTicket: import('./builtin-session/types').TurnAdmissionTicket | null = null;
   const infrastructureTransitionReservation = options?.beforeUserPersistence
-    && (resetPromise !== null || rewindPromise !== null)
+    && (getSessionMutationBarrier() !== null || rewindPromise !== null)
     && getTurnAdmissionTicket() === null;
   if (
     queueResponseMode === 'turn'
@@ -8598,9 +8638,10 @@ export async function enqueueUserMessage(
   // Register the turn admission ticket above before waiting on reset/rewind.
   // Goal/Task cancellation can therefore abort both MCP fences while the
   // session transition is still in progress, before any metadata can change.
-  if (resetPromise) {
+  const sessionMutationBarrier = getSessionMutationBarrier();
+  if (sessionMutationBarrier) {
     console.log('[agent] enqueueUserMessage: waiting for session reset to complete...');
-    await resetPromise;
+    await sessionMutationBarrier;
     console.log('[agent] enqueueUserMessage: session reset completed, proceeding');
   }
 
@@ -8642,7 +8683,7 @@ export async function enqueueUserMessage(
   //     (queue full) or `sessionId !== sessionIdSnapshot` post-await, leave the
   //     flag set so the next legit enqueue on the original session re-attempts.
   //
-  //  4. The recursive `enqueueUserMessage` itself awaits resetPromise,
+  //  4. The recursive `enqueueUserMessage` itself awaits the session-mutation barrier,
   //     so a switchToSession running between this call and the recursive
   //     entry is serialized. But it would then route the reminder to
   //     the NEW session — which is wrong. The post-await sessionId
@@ -8966,10 +9007,6 @@ export async function enqueueUserMessage(
   // `lifecycleState.systemInitInfo` as a fallback: if a session somehow received system_init
   // without lifecycleState.sdkControlReady having flipped (e.g., recovery paths that bypass
   // pre-warm), the per-turn metadata still proves the subprocess is alive.
-  if (!deferVisibleAdmission) {
-    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
-  }
-
   const takeAdmissionCallbacks = () => {
     const callbacks = {
       onTerminal: admissionTicket?.onTerminal ?? options?.onTerminal,
@@ -8983,6 +9020,9 @@ export async function enqueueUserMessage(
     return callbacks;
   };
   if (isSessionBusy && !holdForWatchdogRecovery) {
+    if (!deferVisibleAdmission) {
+      setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+    }
     if (!reservedTurnBoundaryItem && queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
     }
@@ -9360,7 +9400,16 @@ export async function enqueueUserMessage(
     channelDelivery,
   };
   if (!options?.beforeDispatch) {
-    await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
+    try {
+      await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
+    } catch (error) {
+      await rollbackFailedBuiltinUserSurface(userMessage.id);
+      reportBuiltinAdmissionPersistenceFailure(queueId, requestId, error);
+      throw error;
+    }
+  }
+  if (!deferVisibleAdmission) {
+    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
   }
 
   if (admissionTicket?.canceled) {
@@ -9751,6 +9800,29 @@ export async function cancelImRequest(
     broadcast('queue:cancelled', { queueId: removed.turnBoundary.queueId });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=turn-boundary (never yielded to CLI)`);
     return { aborted: true, mode: 'queued' };
+  }
+  // Admission has already transferred to the active turn before its user row
+  // is durably persisted, but the output-owner FIFO is created only at the SDK
+  // yield. Cancellation in that narrow window must terminalize the exact IM
+  // request instead of looking only at the (not-yet-created) FIFO head.
+  const activeSource = getCurrentTurnSourceItem();
+  if (
+    activeSource?.requestId === requestId
+    && !hasPendingOutputOwnerByQueueId(activeSource.id)
+    && isTurnInFlight()
+  ) {
+    if (imRequestRegistry.get(requestId)) {
+      finalizeImRequest(
+        requestId,
+        'cancelled',
+        'cancelled',
+        buildImCancelledPayload(),
+        true,
+      );
+    }
+    console.log(`[agent] cancelImRequest requestId=${requestId} mode=running phase=admission-persist`);
+    await interruptCurrentResponse(reason);
+    return { aborted: true, mode: 'running' };
   }
   // Active turn? (queue head matches)
   if (peekPendingOutputOwner()?.requestId === requestId && isTurnInFlight()) {
@@ -13694,10 +13766,36 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
           admissionActivityAt,
         );
       } catch (error) {
-        // The row is appended/broadcast before persistence. Keep the admitted
-        // turn moving so it cannot become an orphan bubble; terminal
-        // persistence will retry from the unchanged cursor.
-        console.error('[agent] admitted user message persistence failed; continuing runtime dispatch:', error);
+        const failedSurface = item.deferredUserSurface;
+        item.deferredUserSurface = undefined;
+        await rollbackFailedBuiltinUserSurface(failedSurface.message.id);
+        if (
+          lifecycleState.abortRequested
+          || isInterruptingResponse
+          || !isStreamingMessage
+          || getCurrentTurnSourceItem() !== item
+        ) {
+          item.resolve();
+          return;
+        }
+        const admissionError = reportBuiltinAdmissionPersistenceFailure(
+          item.id,
+          item.requestId,
+          error,
+        );
+        const terminalError = `Failed to persist user message before runtime dispatch: ${admissionError}`;
+        if (!item.requestId || imRequestRegistry.get(item.requestId)) {
+          finalizeImRequest(
+            item.requestId,
+            'error',
+            'failed',
+            buildImErrorPayload(terminalError),
+            true,
+          );
+        }
+        builtinTurnLifecycle.failAdmittedTurnSetup(terminalError);
+        item.resolve();
+        continue;
       }
       item.deferredUserSurface = undefined;
     } else if (getSessionMetadata(sessionId)?.materializationState === 'prepared') {

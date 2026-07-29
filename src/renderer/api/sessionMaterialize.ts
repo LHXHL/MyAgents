@@ -21,7 +21,7 @@ export type MaterializePostBody = {
 export type MaterializeTransport = {
     postCurrent: (body: MaterializePostBody) => Promise<MaterializeResponse>;
     postForSession?: (sessionId: string, body: MaterializePostBody) => Promise<MaterializeResponse>;
-    upgradeSessionId?: (oldSessionId: string, newSessionId: string) => Promise<boolean>;
+    upgradeSessionId?: (oldSessionId: string, newSessionId: string, tabId: string) => Promise<boolean>;
 };
 
 async function postMaterializeForSession(
@@ -46,6 +46,7 @@ async function postMaterializeForSession(
 
 export async function materializePendingSessionConfig(params: {
     pendingSessionId: string;
+    tabId: string;
     workspacePath: string;
     snapshotPatch: SessionSnapshotPatch;
     transport: MaterializeTransport;
@@ -67,7 +68,7 @@ export async function materializePendingSessionConfig(params: {
     let rustUpgraded = false;
     let committed = false;
     try {
-        rustUpgraded = await upgradeSessionId(params.pendingSessionId, preparedSessionId);
+        rustUpgraded = await upgradeSessionId(params.pendingSessionId, preparedSessionId, params.tabId);
         if (!rustUpgraded) {
             await postCurrent({
                 workspacePath: params.workspacePath,
@@ -99,7 +100,7 @@ export async function materializePendingSessionConfig(params: {
                 }).catch((rollbackError) => {
                     console.warn('[sessionMaterialize] rollback on target sidecar failed:', rollbackError);
                 });
-                await upgradeSessionId(preparedSessionId, params.pendingSessionId).catch((rollbackError) => {
+                await upgradeSessionId(preparedSessionId, params.pendingSessionId, params.tabId).catch((rollbackError) => {
                     console.warn('[sessionMaterialize] Rust session id rollback failed:', rollbackError);
                 });
             } else {

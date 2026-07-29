@@ -208,7 +208,8 @@ console.log('[FrontendLogger] ...');  // 会被过滤掉
 useEffect(() => {
   return () => {
     forceFlushLogs();  // 确保日志不丢失
-    void stopAllSidecars();
+    // Sidecar 应用生命周期由 Rust RunEvent::ExitRequested 统一清理；
+    // React unmount 也可能来自 error recovery，不能在这里停止进程。
   };
 }, []);
 ```

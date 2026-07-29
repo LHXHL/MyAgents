@@ -11,7 +11,7 @@
 // This test pins that invariant at the Virtuoso boundary: it captures the `data`
 // / `firstItemIndex` props Virtuoso receives and asserts they stay frozen while
 // inactive and resume live on re-activation.
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { VirtuosoHandle } from 'react-virtuoso';
@@ -84,6 +84,39 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('reveals restored history without resetting the visible list opacity on the next frame', () => {
+    const { rerender } = renderList({
+      messages: [],
+    });
+
+    rerender(
+      <MessageList
+        messages={[msg('restored', 'already restored')]}
+        streamingMessage={null}
+        isLoading={false}
+        isActive
+        firstItemIndex={1_000_000}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        {...createFollowProps()}
+        scrollToBottom={vi.fn()}
+        handleAtBottomChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('virtuoso').parentElement).not.toHaveStyle({
+      animation: 'message-list-fade-in 600ms ease-out both',
+    });
+  });
+
+  it('does not mount a second restore spinner beneath the boot overlay', () => {
+    const { container } = renderList({
+      messages: [],
+    });
+
+    expect(container.querySelector('.animate-spin')).not.toBeInTheDocument();
   });
 
   it('does NOT forward streaming growth to Virtuoso while inactive, and resumes live on re-activation', () => {

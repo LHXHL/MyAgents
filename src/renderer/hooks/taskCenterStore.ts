@@ -16,7 +16,8 @@
  * spinner — which supersedes and removes `taskCenterCache.ts`.
  *
  * The app-global sidebar is a passive projection over this same authority. It
- * demand-loads only expanded workspace Session slices and never starts Task
+ * demand-loads only expanded workspace Session slices and keeps one lightweight
+ * listener for authoritative Session projection changes, without starting Task
  * polling/listeners. Full Task Center/search reads take over through the same
  * generation fence, then hand current workspace demand back on teardown.
  *
@@ -111,6 +112,7 @@ export const TASK_CENTER_FRESHNESS_TTL_MS = 2_000;
 const MAX_AUTO_RETRIES = 3;
 const RETRY_DELAY_MS = 2_000;
 const BACKGROUND_REFRESH_INTERVAL_MS = 60_000;
+const SESSION_METADATA_LISTENER_RETRY_MS = 2_000;
 
 // ===== Pure helpers (unit-tested) =====
 
@@ -257,6 +259,8 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let intervalTimer: ReturnType<typeof setInterval> | null = null;
 const refreshTimers: Record<string, ReturnType<typeof setTimeout> | null> = {};
 let cleanupTauriListeners: (() => void) | null = null;
+let sessionMetadataListenerAbort: AbortController | null = null;
+let sessionMetadataListenerRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastFullFetchAt = 0;
 
 // per-scope request sequence (latest-wins) — protects against out-of-order async
@@ -696,6 +700,86 @@ export function setSidebarWorkspaceSessionDemand(agentDirs: readonly string[]): 
     ensureWorkspaceSessions(agentDirs);
 }
 
+interface SessionMetadataChangedPayload {
+    agentDirs?: string[];
+}
+
+/**
+ * Invalidate the passive workspace cache from the persisted projection owner,
+ * not from whichever Runtime/channel happened to author the write.
+ */
+function handleSessionMetadataChanged(payload: SessionMetadataChangedPayload): void {
+    const changedKeys = new Set(
+        (payload.agentDirs ?? [])
+            .map(normalizeWorkspacePathIdentity)
+            .filter(Boolean),
+    );
+    if (changedKeys.size === 0) {
+        loadedWorkspaceSessionKeys.clear();
+    } else {
+        for (const key of changedKeys) loadedWorkspaceSessionKeys.delete(key);
+    }
+
+    // Active Task Center/search surfaces own a complete global snapshot. A
+    // newer global request also supersedes any full read that raced this event.
+    if (started || fullSessionAuthoritySeq !== null) {
+        refreshSessionsNow();
+        return;
+    }
+
+    const affectedDemand = [...demandedWorkspaceDirs]
+        .filter(([key]) => changedKeys.size === 0 || changedKeys.has(key))
+        .map(([, agentDir]) => agentDir);
+    if (affectedDemand.length > 0) ensureWorkspaceSessions(affectedDemand, true);
+}
+
+function ensureSessionMetadataListener(): void {
+    if (
+        sessionMetadataListenerAbort ||
+        !isTauriEnvironment() ||
+        (listeners.size === 0 && passiveListeners.size === 0)
+    ) return;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
+    const ac = new AbortController();
+    sessionMetadataListenerAbort = ac;
+    void listenWithCleanup<SessionMetadataChangedPayload>(
+        'session:metadata-changed',
+        (event) => handleSessionMetadataChanged(event.payload ?? {}),
+        ac.signal,
+    ).then((registration) => {
+        if (sessionMetadataListenerAbort !== ac || ac.signal.aborted) return;
+        if (!registration.isRegistered()) {
+            ac.abort();
+            sessionMetadataListenerAbort = null;
+            if (listeners.size > 0 || passiveListeners.size > 0) {
+                sessionMetadataListenerRetryTimer = setTimeout(() => {
+                    sessionMetadataListenerRetryTimer = null;
+                    ensureSessionMetadataListener();
+                }, SESSION_METADATA_LISTENER_RETRY_MS);
+            }
+            return;
+        }
+
+        // Tauri events are edge-triggered and are not replayed. Re-read the
+        // persisted authority after registration to close both the async
+        // install window and any zero-subscriber interval before this mount.
+        handleSessionMetadataChanged({});
+    });
+}
+
+function maybeStopSessionMetadataListener(): void {
+    if (listeners.size > 0 || passiveListeners.size > 0) return;
+    sessionMetadataListenerAbort?.abort();
+    sessionMetadataListenerAbort = null;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
+}
+
 function debounced(key: string, fn: () => void, delayMs: number): void {
     if (refreshTimers[key]) clearTimeout(refreshTimers[key]!);
     refreshTimers[key] = setTimeout(() => { refreshTimers[key] = null; fn(); }, delayMs);
@@ -836,18 +920,22 @@ function maybeStop(): void {
 
 export function subscribe(listener: () => void): () => void {
     listeners.add(listener);
+    ensureSessionMetadataListener();
     ensureStarted();
     return () => {
         listeners.delete(listener);
         maybeStop();
+        maybeStopSessionMetadataListener();
     };
 }
 
 /** Subscribe to the shared snapshot without starting the full Task Center lifecycle. */
 export function subscribePassive(listener: () => void): () => void {
     passiveListeners.add(listener);
+    ensureSessionMetadataListener();
     return () => {
         passiveListeners.delete(listener);
+        maybeStopSessionMetadataListener();
     };
 }
 
@@ -876,6 +964,12 @@ export function __resetTaskCenterStoreForTest(): void {
     seq = 0;
     cleanupTauriListeners?.();
     cleanupTauriListeners = null;
+    sessionMetadataListenerAbort?.abort();
+    sessionMetadataListenerAbort = null;
+    if (sessionMetadataListenerRetryTimer) {
+        clearTimeout(sessionMetadataListenerRetryTimer);
+        sessionMetadataListenerRetryTimer = null;
+    }
     if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     for (const k of Object.keys(refreshTimers)) {

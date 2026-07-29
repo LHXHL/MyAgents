@@ -12,7 +12,7 @@ import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { track } from '@/analytics';
-import type { EntryIntent, HistoryEntrySource, Surface } from '@/analytics';
+import type { EntryIntent, Surface } from '@/analytics';
 import { type ImageAttachment } from '@/components/SimpleChatInput';
 import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
 import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthFields';
@@ -54,9 +54,8 @@ import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
 interface LauncherProps {
     onLaunchProject: (
         project: Project,
-        sessionId?: string,
         initialMessage?: InitialMessage,
-        analyticsContext?: { surface?: Surface; entryIntent?: EntryIntent; historyEntrySource?: HistoryEntrySource },
+        analyticsContext?: { surface?: Surface; entryIntent?: EntryIntent },
         sessionBirthHint?: LaunchSessionBirthHint,
     ) => void;
     isStarting?: boolean;
@@ -734,7 +733,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
 
         onLaunchProject(
             selectedWorkspace,
-            undefined,
             initialMessage,
             { surface: 'launcher_input', entryIntent: 'send_message' },
         );

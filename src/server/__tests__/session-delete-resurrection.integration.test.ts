@@ -96,6 +96,24 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(existsSync(jsonlPath(meta.id))).toBe(true);
     });
 
+    it('treats a durable transcript append as success when only derived stats fail', async () => {
+        const meta = await store.createSession('/tmp/workspace-stats-failure');
+        mkdirSync(sessionsTmpJson());
+
+        try {
+            const result = await store.saveSessionMessages(meta.id, [msg(11)]);
+
+            expect(result).toMatchObject({
+                ok: true,
+                action: 'appended',
+                count: 1,
+            });
+            expect(readFileSync(jsonlPath(meta.id), 'utf-8')).toContain('message 11');
+        } finally {
+            rmSync(sessionsTmpJson(), { recursive: true, force: true });
+        }
+    });
+
     it('salvages valid metadata from a malformed sessions.json array before metadata creation', async () => {
         const beforeBackups = readdirSync(join(home, '.myagents'))
             .filter(name => name.startsWith('sessions.json.corrupt-')).length;
@@ -247,6 +265,25 @@ describe('issue #336 — delete vs persist resurrection', () => {
 
         const lines = readFileSync(jsonlPath(orphanId), 'utf-8').trim().split('\n');
         expect(lines).toHaveLength(2);
+    });
+
+    it('force-rewrites equal-length content after an ambiguous failed append', async () => {
+        const meta = await store.createSession('/tmp/workspace-force-rewrite');
+        const original = [msg(0), msg(1)];
+        expect((await store.saveSessionMessages(meta.id, original)).ok).toBe(true);
+        const authoritative = [original[0], { ...original[1], content: 'authoritative replacement' }];
+
+        const result = await store.saveSessionMessages(meta.id, authoritative, { forceRewrite: true });
+
+        expect(result).toMatchObject({ ok: true, action: 'rewritten', count: 2 });
+        const stored = readFileSync(jsonlPath(meta.id), 'utf-8')
+            .trim()
+            .split('\n')
+            .map(line => JSON.parse(line) as { content: string });
+        expect(stored.map(message => message.content)).toEqual([
+            original[0].content,
+            'authoritative replacement',
+        ]);
     });
 
     it('deleteSession returns a typed not-found result for an unknown id', async () => {

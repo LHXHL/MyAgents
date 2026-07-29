@@ -104,7 +104,6 @@ Application lifecycle:
 Session management:
 
 - `session_new`
-- `session_switch`
 - `session_rewind`
 - `session_title_edit`
 - `session_fork`

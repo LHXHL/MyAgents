@@ -171,12 +171,6 @@
   display: none;
 }
 
-/* Fade-in animation for message list after session load completes */
-@keyframes message-list-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 /* ── Streaming leading-edge fade ──
    While streaming, a rehype plugin (Markdown.tsx::rehypeStreamTail) wraps the LAST few
    characters of the last text node in <span class="md-stream-tail">. The horizontal mask

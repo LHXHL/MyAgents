@@ -187,15 +187,15 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 ---
 
 <a id="session-watcher"></a>
-## Session watcher (`src-tauri/src/search/session_watcher.rs`)
+## Session watchers (`src-tauri/src/search/watcher.rs` + `src-tauri/src/session_metadata.rs`)
 
-**Problem.** Session 索引需要在每个写者（Sidecar / CLI / 迁移）都通知索引层。新写者忘记调用通知 → 索引漂移。
+**Problem.** Session 搜索索引与 App 级导航投影都需要感知每个写者（Sidecar / IM / Cron / CLI / 迁移）的结果。新写者忘记调用来源专属通知 → 索引漂移或 GlobalSidebar 长期停留在旧 snapshot。
 
-**Surface.** `notify-debouncer-full` 5s 滑动去抖观察 `~/.myagents/sessions/`，**任何**写入者的变更都自动流入索引。
+**Surface.** 两个不同延迟/生命周期的 `notify-debouncer-full` observer 读取同一权威文件：搜索 watcher 用 5s 滑动去抖更新 Tantivy；App 级 metadata watcher 用 300ms 去抖投影 history-visible metadata，并发出携带受影响 workspace 的 `session:metadata-changed`。后者独立于可选 SearchEngine，Renderer 只定向重读当前需要的 workspace slice。
 
-**Invariants enforced.** 索引一致性由"观察结果目录"保证，与写入路径解耦。
+**Invariants enforced.** 搜索与导航 freshness 都由“观察权威结果目录”保证，与写入路径、Runtime、Channel 和 mounted Tab 解耦；两个 watcher 因成本和可用性目标不同而不共享生命周期。Tauri event 与 OS watcher 都不提供注册前 replay：Rust observer 在 watches + baseline 建立后发一次 broad ready invalidation，OS watch 初始化/通道异常退出则由同一 app-lifetime thread 重建；Renderer listener 每次注册成功后再从持久化 authority 对账一次，以覆盖两侧异步注册窗口和零 subscriber 间隔。注册失败时只要仍有 subscriber 就重试；启动 baseline 不可读必须保留为 unknown，首次恢复即使为空也 broad invalidate。
 
-**Don't.** 在写入路径里硬编码"通知索引"调用——这种约束无法在编译期保证。
+**Don't.** 在写入路径里硬编码“通知索引/侧栏”调用，也不要让 GlobalSidebar 靠打开搜索、临时 Task Center subscriber 或来源事件碰巧刷新——这种约束无法在编译期保证。
 
 完整搜索架构详见 `search_architecture.md`。
 

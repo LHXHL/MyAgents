@@ -145,7 +145,6 @@ export type EventName =
   | 'app_launch'
   // 会话管理
   | 'session_new'
-  | 'session_switch'
   | 'session_rewind'
   | 'session_title_edit'
   | 'session_fork'
@@ -292,7 +291,6 @@ export interface WorkspaceOpenParams {
  * history_open 事件参数
  *
  * 用户从历史相关入口打开已有 session 时触发（带 sessionId）。
- * Chat 内切换路径会继续保留 `session_switch` 作为兼容事件。
  */
 export interface HistoryOpenParams {
   /** 用户点击的目标 session id。显式传值，不依赖 Active Context。 */
@@ -308,20 +306,6 @@ export interface HistoryOpenParams {
    * 历史入口处理，不影响历史兼容聚合。
    */
   entry_source?: HistoryEntrySource;
-}
-
-/**
- * session_switch 事件参数
- */
-export interface SessionSwitchParams {
-  /** 用户切换到的目标 session id。 */
-  session_id: string;
-  /**
-   * 新版本在 Chat 历史下拉切换时同时上报 `history_open`。这个标记让
-   * admin 兼容查询只把旧版未标记的 `session_switch` 当 history fallback，
-   * 避免新版本同一次点击被双计。
-   */
-  legacy_compat?: boolean;
 }
 
 /**

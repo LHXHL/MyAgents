@@ -309,7 +309,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const outputOwner = outputOwnerClaimedByCancellation
       ? null
       : deps.takeCurrentOutputOwner();
-    if (outputOwnerClaimedByCancellation) {
+    if (outputOwnerClaimedByCancellation && !hasCurrentTurnImTerminalEmitted()) {
       deps.cancelCurrentImRequest(buildImCancelledPayload());
     } else if (terminalError) {
       deps.failOutputOwner(outputOwner, buildImErrorPayload(deps.localizeImError(terminalError)));
@@ -390,7 +390,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
     commonTerminalCleanup('stopped');
-    deps.cancelCurrentImRequest(buildImCancelledPayload());
+    if (!hasCurrentTurnImTerminalEmitted()) {
+      deps.cancelCurrentImRequest(buildImCancelledPayload());
+    }
     setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageStopped');
     lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);

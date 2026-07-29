@@ -30,7 +30,6 @@ interface MessageListProps {
   messages: readonly MessageType[];
   streamingMessage: MessageType | null;
   isLoading: boolean;
-  isSessionLoading?: boolean;
   sessionId?: string | null;
   /**
    * Whether this Tab is currently visible. When `false`, the host wraps this
@@ -223,7 +222,6 @@ const MessageList = memo(function MessageList({
   messages,
   streamingMessage,
   isLoading,
-  isSessionLoading,
   sessionId,
   isActive = true,
   firstItemIndex,
@@ -293,14 +291,6 @@ const MessageList = memo(function MessageList({
     : sessionState === 'starting'
       ? t('shell.messageList.starting')
       : streamingStatusMessage;
-
-  // Fade-in
-  const wasSessionLoadingRef = useRef(false);
-  const [fadeIn, setFadeIn] = useState(false);
-  useEffect(() => {
-    if (isSessionLoading) { wasSessionLoadingRef.current = true; setFadeIn(false); }
-    else if (wasSessionLoadingRef.current) { wasSessionLoadingRef.current = false; setFadeIn(true); }
-  }, [isSessionLoading]);
 
   // Scroll to bottom after session load / switch. Runs synchronously before
   // the next paint so there's no visible top→bottom jump when the new session's
@@ -596,17 +586,7 @@ const MessageList = memo(function MessageList({
     <div
       className="relative flex-1"
       data-streaming={isStreaming || undefined}
-      style={fadeIn ? { animation: 'message-list-fade-in 600ms ease-out both' } : undefined}
-      onAnimationEnd={() => setFadeIn(false)}
     >
-      {isSessionLoading && messages.length === 0 && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center" style={{ paddingBottom: 140 }}>
-          <div className="flex items-center gap-2 text-sm text-[var(--ink-muted)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>{t('shell.messageList.loadingHistory')}</span>
-          </div>
-        </div>
-      )}
       {/*
         Virtuoso stays mounted across session switches. Previously `key={sessionId}`
         forced a full remount, which dropped every cached item height, rebuilt

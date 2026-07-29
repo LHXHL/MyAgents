@@ -9,6 +9,7 @@ import {
   pushPendingOutputOwner,
   resetTurnForTest,
   setCurrentTurnCompactResult,
+  setCurrentTurnImTerminalEmitted,
   setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
@@ -446,6 +447,28 @@ describe('turn-lifecycle owner', () => {
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
   });
 
+  it('preserves an older FIFO owner when an exact request already claimed graceful cancellation', () => {
+    const { deps } = makeDeps({
+      getIsInterruptingResponse: () => true,
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushOutputOwner('older-queue', 'older-request');
+    setCurrentTurnImTerminalEmitted(true);
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      terminal_reason: 'aborted_streaming',
+      result: 'partial answer',
+    }));
+
+    expect(deps.cancelCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toMatchObject({
+      queueId: 'older-queue',
+      requestId: 'older-request',
+    });
+  });
+
   it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
     const { deps, broadcasts } = makeDeps({
       recoverInvalidResumeAnchorError: vi.fn(() => true),
@@ -645,6 +668,21 @@ describe('turn-lifecycle owner', () => {
     });
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
     expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
+  });
+
+  it('does not pop the output-owner FIFO after an exact request already emitted its terminal', () => {
+    const { deps } = makeDeps();
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushOutputOwner('older-queue', 'older-request');
+    setCurrentTurnImTerminalEmitted(true);
+
+    lifecycle.stopTurn();
+
+    expect(deps.cancelCurrentImRequest).not.toHaveBeenCalled();
+    expect(peekPendingOutputOwner()).toMatchObject({
+      queueId: 'older-queue',
+      requestId: 'older-request',
+    });
   });
 
   it('persists unexpected errors and commits terminal metadata for expected terminations', async () => {

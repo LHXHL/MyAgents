@@ -95,6 +95,7 @@ function Probe() {
     sessionId,
     isLoading,
     isSessionLoading,
+    sessionRestoreError,
     sessionState,
     historyMessages,
     streamingMessage,
@@ -102,6 +103,7 @@ function Probe() {
     queuedMessages,
     adoptMigratedSession,
     resetSession,
+    retryCurrentSessionRestore,
     sendMessage,
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
@@ -120,9 +122,12 @@ function Probe() {
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
       <output data-testid="streaming-content">{JSON.stringify(streamingMessage?.content ?? null)}</output>
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
+      <output data-testid="session-restore-error">{sessionRestoreError ?? ''}</output>
+      <output data-testid="history-content">{JSON.stringify(historyMessages.map(message => message.content))}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
+      <button type="button" onClick={() => void retryCurrentSessionRestore()}>retry restore</button>
       <button type="button" onClick={() => void adoptMigratedSession('session-migrated-b', { sidecarAlreadyMigrated: true })}>adopt migrated session</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
@@ -187,7 +192,7 @@ describe('TabProvider session activity ownership', () => {
       <TabProvider
         tabId="tab-delete-race"
         agentDir="/tmp/workspace"
-        sessionId="session-delete-race"
+        sessionId="pending-delete-race"
         claimSessionOpeningTransition={claimSessionOpeningTransition}
       >
         <Probe />
@@ -211,7 +216,7 @@ describe('TabProvider session activity ownership', () => {
       <TabProvider
         tabId="tab-delete-send"
         agentDir="/tmp/workspace"
-        sessionId="session-delete-send"
+        sessionId="pending-delete-send"
         claimSessionOpeningTransition={claimSessionOpeningTransition}
       >
         <Probe />
@@ -220,7 +225,7 @@ describe('TabProvider session activity ownership', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
 
-    expect(claimSessionOpeningTransition).toHaveBeenCalledWith('session-delete-send');
+    expect(claimSessionOpeningTransition).toHaveBeenCalledWith('pending-delete-send');
     expect(tauriHarness.proxyFetch.mock.calls.some(
       ([url]) => String(url).includes('/chat/send'),
     )).toBe(false);
@@ -231,7 +236,28 @@ describe('TabProvider session activity ownership', () => {
     const sendResponse = new Promise<Response>((resolve) => {
       resolveSend = resolve;
     });
-    tauriHarness.proxyFetch.mockReturnValueOnce(sendResponse);
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-send-admission?') && !init?.method) {
+        return new Response(JSON.stringify({
+          success: true,
+          session: {
+            id: 'session-send-admission',
+            agentDir: '/tmp/workspace',
+            title: 'Admission',
+            createdAt: '2026-07-15T00:00:00.000Z',
+            lastActiveAt: '2026-07-15T00:00:00.000Z',
+            runtime: 'builtin',
+            messages: [],
+            snapshotRevision: 0,
+            liveSessionState: 'idle',
+            liveStreamingMessage: null,
+            hasMoreBefore: false,
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/chat/send') && init?.method === 'POST') return sendResponse;
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
     const releaseSendTransition = vi.fn();
     const claimSessionOpeningTransition = vi.fn(() => releaseSendTransition);
     render(
@@ -245,6 +271,7 @@ describe('TabProvider session activity ownership', () => {
       </TabProvider>,
     );
 
+    await waitFor(() => expect(screen.getByTestId('session-loading')).toHaveTextContent('false'));
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
     await waitFor(() => {
       expect(tauriHarness.proxyFetch).toHaveBeenCalledWith(
@@ -461,9 +488,6 @@ describe('TabProvider session activity ownership', () => {
           },
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       if (url.endsWith('/chat/reset') && init?.method === 'POST') {
         return new Response(JSON.stringify({
           success: true,
@@ -623,9 +647,6 @@ describe('TabProvider session activity ownership', () => {
           sessionId: 'session-reset-race-b',
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       if (url.endsWith('/chat/send') && init?.method === 'POST') {
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
@@ -745,9 +766,6 @@ describe('TabProvider session activity ownership', () => {
           },
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
@@ -828,9 +846,6 @@ describe('TabProvider session activity ownership', () => {
           },
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
@@ -891,9 +906,6 @@ describe('TabProvider session activity ownership', () => {
             hasMoreBefore: false,
           },
         }), { status: 200 });
-      }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
@@ -962,9 +974,6 @@ describe('TabProvider session activity ownership', () => {
           },
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
@@ -1028,6 +1037,202 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(readInitTools()).toEqual([]));
   });
 
+  it('keeps cold history invisible until the normalized REST snapshot is ready', async () => {
+    let resolveSnapshot!: (response: Response) => void;
+    const snapshot = new Promise<Response>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-single-reveal?') && !init?.method) {
+        return snapshot;
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-single-reveal"
+        agentDir="/tmp/workspace"
+        sessionId="session-single-reveal"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('true');
+
+    emit('chat:message-replay', {
+      replayKind: 'cold-history',
+      sessionId: 'session-single-reveal',
+      message: {
+        id: 'raw-first-frame',
+        role: 'assistant',
+        content: '**raw markdown**',
+        timestamp: '2026-07-15T00:00:00.000Z',
+      },
+    });
+    expect(readActivity().historyCount).toBe(0);
+
+    await act(async () => {
+      resolveSnapshot(new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: 'session-single-reveal',
+          agentDir: '/tmp/workspace',
+          title: 'Single reveal',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          lastActiveAt: '2026-07-15T00:00:01.000Z',
+          runtime: 'builtin',
+          messages: [{
+            id: 'normalized',
+            role: 'assistant',
+            content: JSON.stringify([{ type: 'text', text: '**final**' }]),
+            timestamp: '2026-07-15T00:00:01.000Z',
+          }],
+          snapshotRevision: 1,
+          liveSessionState: 'idle',
+          liveStreamingMessage: null,
+          hasMoreBefore: false,
+        },
+      }), { status: 200 }));
+      await snapshot;
+    });
+
+    await waitFor(() => expect(readActivity().historyCount).toBe(1));
+    expect(screen.getByTestId('history-content')).toHaveTextContent(
+      JSON.stringify([[{ type: 'text', text: '**final**' }]]),
+    );
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+    expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays a buffered live echo after the initial REST snapshot becomes visible', async () => {
+    let resolveSnapshot!: (response: Response) => void;
+    const snapshot = new Promise<Response>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-buffered-echo?') && !init?.method) return snapshot;
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-buffered-echo"
+        agentDir="/tmp/workspace"
+        sessionId="session-buffered-echo"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(1));
+    emit('chat:message-replay', {
+      replayKind: 'live-user-echo',
+      sessionId: 'session-buffered-echo',
+      message: {
+        id: 'live-echo',
+        role: 'user',
+        content: JSON.stringify([{ type: 'text', text: '**live**' }]),
+        timestamp: '2026-07-15T00:00:01.000Z',
+      },
+    }, {
+      sessionId: 'session-buffered-echo',
+      liveRevision: 1,
+      connectionGeneration: 1,
+    });
+    expect(readActivity().historyCount).toBe(0);
+
+    await act(async () => {
+      resolveSnapshot(new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: 'session-buffered-echo',
+          agentDir: '/tmp/workspace',
+          title: 'Buffered echo',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          lastActiveAt: '2026-07-15T00:00:01.000Z',
+          runtime: 'builtin',
+          messages: [],
+          snapshotRevision: 0,
+          liveSessionState: 'idle',
+          liveStreamingMessage: null,
+          hasMoreBefore: false,
+        },
+      }), { status: 200 }));
+      await snapshot;
+    });
+
+    await waitFor(() => expect(readActivity().historyCount).toBe(1));
+    expect(screen.getByTestId('history-content')).toHaveTextContent(
+      JSON.stringify([[{ type: 'text', text: '**live**' }]]),
+    );
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+  });
+
+  it('lets only the current transport generation commit its REST snapshot', async () => {
+    const snapshotResolvers: Array<(response: Response) => void> = [];
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-generation-fence?') && !init?.method) {
+        return new Promise<Response>((resolve) => snapshotResolvers.push(resolve));
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-generation-fence"
+        agentDir="/tmp/workspace"
+        sessionId="session-generation-fence"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(snapshotResolvers).toHaveLength(1));
+    act(() => {
+      sseHarness.state.generation = 2;
+      sseHarness.state.statusHandler?.('connected');
+    });
+    await waitFor(() => expect(snapshotResolvers).toHaveLength(2));
+
+    const responseFor = (id: string, content: string) => new Response(JSON.stringify({
+      success: true,
+      session: {
+        id: 'session-generation-fence',
+        agentDir: '/tmp/workspace',
+        title: 'Generation fence',
+        createdAt: '2026-07-15T00:00:00.000Z',
+        lastActiveAt: '2026-07-15T00:00:01.000Z',
+        runtime: 'builtin',
+        messages: [{ id, role: 'assistant', content, timestamp: '2026-07-15T00:00:01.000Z' }],
+        snapshotRevision: 0,
+        liveSessionState: 'idle',
+        liveStreamingMessage: null,
+        hasMoreBefore: false,
+      },
+    }), { status: 200 });
+
+    await act(async () => {
+      snapshotResolvers[0](responseFor('stale', 'stale generation'));
+      await Promise.resolve();
+    });
+    expect(readActivity().historyCount).toBe(0);
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('true');
+
+    await act(async () => {
+      snapshotResolvers[1](responseFor('current', 'current generation'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(readActivity().historyCount).toBe(1));
+    expect(screen.getByTestId('history-content')).toHaveTextContent('current generation');
+    expect(screen.getByTestId('history-content')).not.toHaveTextContent('stale generation');
+  });
+
   it('restores a running session as active before any assistant chunk exists', async () => {
     tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/sessions/session-rest?') && !init?.method) {
@@ -1047,9 +1252,6 @@ describe('TabProvider session activity ownership', () => {
             hasMoreBefore: false,
           },
         }), { status: 200 });
-      }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
@@ -1075,19 +1277,14 @@ describe('TabProvider session activity ownership', () => {
       });
     });
 
-    expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(2);
+    expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('reconciles a new transport generation without a session-loading overlay', async () => {
-    let resolveRecovery!: (response: Response) => void;
-    const recoveryResponse = new Promise<Response>((resolve) => {
-      resolveRecovery = resolve;
-    });
+  it('continues a stable reconnect without REST reload or loading chrome', async () => {
     let sessionGetCount = 0;
     tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/sessions/session-recovery?') && !init?.method) {
         sessionGetCount += 1;
-        if (sessionGetCount === 2) return recoveryResponse;
         return new Response(JSON.stringify({
           success: true,
           session: {
@@ -1108,9 +1305,6 @@ describe('TabProvider session activity ownership', () => {
           },
         }), { status: 200 });
       }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
@@ -1130,50 +1324,31 @@ describe('TabProvider session activity ownership', () => {
       sseHarness.state.generation = 2;
       sseHarness.state.statusHandler?.('connected');
     });
-    await waitFor(() => expect(sessionGetCount).toBe(2));
-    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
-    expect(readActivity().historyCount).toBe(2);
-
-    await act(async () => {
-      resolveRecovery(new Response(JSON.stringify({
-        success: true,
-        session: {
-          id: 'session-recovery',
-          agentDir: '/tmp/workspace',
-          title: 'Recovery session',
-          createdAt: '2026-07-15T00:00:00.000Z',
-          lastActiveAt: '2026-07-15T00:00:02.000Z',
-          runtime: 'builtin',
-          messages: [
-            { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
-            { id: 'm2', role: 'assistant', content: 'two-final', timestamp: '2026-07-15T00:00:01.000Z' },
-            { id: 'm3', role: 'user', content: 'three', timestamp: '2026-07-15T00:00:02.000Z' },
-          ],
-          snapshotRevision: 3,
-          liveSessionState: 'idle',
-          liveStreamingMessage: null,
-          hasMoreBefore: true,
-        },
-      }), { status: 200 }));
-      await recoveryResponse;
+    emit('chat:message-replay', {
+      replayKind: 'live-user-echo',
+      sessionId: 'session-recovery',
+      message: {
+        id: 'm3',
+        role: 'user',
+        content: 'three',
+        timestamp: '2026-07-15T00:00:02.000Z',
+      },
+    }, {
+      sessionId: 'session-recovery',
+      liveRevision: 3,
+      connectionGeneration: 2,
     });
 
     await waitFor(() => expect(readActivity().historyCount).toBe(3));
+    expect(sessionGetCount).toBe(1);
     expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
-    expect(tauriHarness.proxyFetch.mock.calls.filter(
-      ([url]) => String(url).endsWith('/sessions/switch'),
-    )).toHaveLength(1);
   });
-
-  it('retries a failed live snapshot while keeping the recovered transport attached', async () => {
+  it('fails a revision-gap restore closed and retries only on user action', async () => {
     let sessionGetCount = 0;
     tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/sessions/session-retry?') && !init?.method) {
         sessionGetCount += 1;
-        if (sessionGetCount === 2) {
-          throw new Error('transient snapshot reset');
-        }
-        const recovered = sessionGetCount >= 3;
+        const recovered = sessionGetCount === 4;
         return new Response(JSON.stringify({
           success: true,
           session: {
@@ -1181,9 +1356,7 @@ describe('TabProvider session activity ownership', () => {
             agentDir: '/tmp/workspace',
             title: 'Retry session',
             createdAt: '2026-07-15T00:00:00.000Z',
-            lastActiveAt: recovered
-              ? '2026-07-15T00:00:02.000Z'
-              : '2026-07-15T00:00:01.000Z',
+            lastActiveAt: '2026-07-15T00:00:02.000Z',
             runtime: 'builtin',
             messages: recovered
               ? [
@@ -1195,15 +1368,12 @@ describe('TabProvider session activity ownership', () => {
                   { id: 'm1', role: 'user', content: 'one', timestamp: '2026-07-15T00:00:00.000Z' },
                   { id: 'm2', role: 'assistant', content: 'two', timestamp: '2026-07-15T00:00:01.000Z' },
                 ],
-            snapshotRevision: recovered ? 3 : 2,
+            snapshotRevision: recovered ? 4 : 2,
             liveSessionState: 'idle',
             liveStreamingMessage: null,
             hasMoreBefore: false,
           },
         }), { status: 200 });
-      }
-      if (url.endsWith('/sessions/switch') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
@@ -1222,18 +1392,44 @@ describe('TabProvider session activity ownership', () => {
 
     act(() => {
       sseHarness.state.generation = 2;
-      sseHarness.state.statusHandler?.('connected');
+    });
+    emit('chat:status', { sessionState: 'idle' }, {
+      sessionId: 'session-retry',
+      liveRevision: 4,
+      connectionGeneration: 2,
     });
 
-    await waitFor(() => expect(sessionGetCount).toBe(3), { timeout: 2_000 });
-    await waitFor(() => expect(readActivity().historyCount).toBe(3));
-    expect(sseHarness.connection.connect).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
-    expect(tauriHarness.proxyFetch.mock.calls.filter(
-      ([url]) => String(url).endsWith('/sessions/switch'),
-    )).toHaveLength(1);
-  });
+    await waitFor(() => expect(sessionGetCount).toBe(3));
+    await waitFor(() => expect(screen.getByTestId('session-restore-error').textContent).not.toBe(''));
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('true');
+    expect(readActivity().historyCount).toBe(2);
 
+    emit('chat:status', { sessionState: 'idle' }, {
+      sessionId: 'session-retry',
+      liveRevision: 5,
+      connectionGeneration: 2,
+    });
+    emit('chat:message-replay', {
+      replayKind: 'cold-history',
+      message: {
+        id: 'untrusted-reconnect-row',
+        role: 'assistant',
+        content: 'must stay hidden',
+        timestamp: '2026-07-15T00:00:03.000Z',
+      },
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(sessionGetCount).toBe(3);
+    expect(readActivity().historyCount).toBe(2);
+    expect(screen.getByTestId('history-content')).not.toHaveTextContent('must stay hidden');
+
+    fireEvent.click(screen.getByRole('button', { name: 'retry restore' }));
+
+    await waitFor(() => expect(sessionGetCount).toBe(4));
+    await waitFor(() => expect(readActivity().historyCount).toBe(3));
+    expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
+    expect(sseHarness.connection.connect).toHaveBeenCalledTimes(1);
+  });
   it.each([
     ['queue-stale-cancel', 'cancel stale', '/chat/queue/cancel'],
     ['queue-stale-force', 'force stale', '/chat/queue/force'],

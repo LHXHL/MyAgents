@@ -134,7 +134,12 @@ import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
-import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
+import {
+  DEFAULT_WORKSPACE_LAYOUT_METRICS,
+  nextSplitViewAfterBrowserClose,
+  resolveWorkspacePanelMode,
+  shouldPresentBrowserFullscreen,
+} from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
@@ -417,9 +422,9 @@ const SessionTitleEditor = forwardRef<
 interface ChatProps {
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
-  /** Called when user selects a different session from history - uses Session singleton logic */
-  onSwitchSession?: (sessionId: string, historyEntrySource?: HistoryEntrySource) => void;
-  /** Called when user opens a history session in a NEW tab (vs. switching the current one) */
+  /** Opens a persisted Session through App's canonical new/jump/revive path. */
+  onOpenSession?: (sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => void;
+  /** Explicit per-row new-tab action; it shares the same canonical App path. */
   onOpenSessionInNewTab?: (sessionId: string, title: string) => void;
   /** Initial message from Launcher for auto-send on workspace open */
   initialMessage?: InitialMessage;
@@ -448,7 +453,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -462,6 +467,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     loadOlderMessages,
     isLoading,
     isSessionLoading,
+    sessionRestoreError,
     sessionState,
     sessionRuntime,
     sessionRuntimeSource,
@@ -488,7 +494,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setSystemNotice,
     sendMessage,
     stopResponse,
-    loadSession,
+    retryCurrentSessionRestore,
     resetSession,
     adoptMigratedSession,
     clearUnifiedLogs,
@@ -747,6 +753,29 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setBrowserCurrentUrl(u);
   }, []);
 
+  // Browser resource cleanup has one owner. Every close entry point delegates
+  // here so a surviving terminal/file view always takes over consistently.
+  const handleBrowserClose = useCallback(() => {
+    setBrowserUrl(null);
+    setBrowserAlive(false);
+    setBrowserSourceFile(null);
+    setBrowserCurrentUrl('');
+    const nextView = nextSplitViewAfterBrowserClose({
+      terminalVisible: terminalPinned && terminalAlive,
+      fileVisible: splitFile !== null,
+    });
+    if (nextView) setSplitActiveView(nextView);
+  }, [terminalPinned, terminalAlive, splitFile]);
+
+  // Browser links stay inside MyAgents even when the split layout has no room.
+  // In that case the same BrowserPanel owner fills the Chat surface instead of
+  // falling back to a system browser.
+  const browserUsesFullscreen = shouldPresentBrowserFullscreen({
+    browserPresented: browserUrl !== null && splitActiveView === 'browser',
+    splitViewEnabled: isSplitViewEnabled,
+    narrowLayout: isNarrowLayout,
+  });
+
   // Derived: is the right split panel visible?
   const splitPanelVisible = splitFile !== null
     || (terminalPinned && (terminalAlive || splitActiveView === 'terminal'))
@@ -777,7 +806,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   const workspacePanelMode = resolveWorkspacePanelMode({
     viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
-    splitPanelVisible: isSplitViewEnabled && splitPanelVisible,
+    splitPanelVisible: isSplitViewEnabled && splitPanelVisible && !browserUsesFullscreen,
     splitRatio,
     contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
     sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
@@ -802,16 +831,18 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       return true;
     }
     if (splitActiveView === 'browser' && browserUrl) {
-      setBrowserUrl(null);
-      setBrowserAlive(false);
-      setBrowserSourceFile(null);
-      setBrowserCurrentUrl('');
-      if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-      else if (splitFile) setSplitActiveView('file');
+      handleBrowserClose();
       return true;
     }
     return false;
   }, 0);
+
+  // Fullscreen BrowserPanel is an overlay-like surface above Chat chrome.
+  useCloseLayer(() => {
+    if (!isActive || !browserUsesFullscreen || splitActiveView !== 'browser' || !browserUrl) return false;
+    handleBrowserClose();
+    return true;
+  }, 30);
 
   // Fullscreen preview triggered from split panel's "全屏预览" button
   const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
@@ -918,10 +949,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   // Open a URL in the embedded browser panel
   const handleOpenInBrowserPanel = useCallback((url: string) => {
-    startBrowserSplitTransitionIfNeeded();
+    if (isSplitViewEnabled && !isNarrowLayout) startBrowserSplitTransitionIfNeeded();
     setBrowserUrl(url);
     setSplitActiveView('browser');
-  }, [startBrowserSplitTransitionIfNeeded]);
+  }, [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded]);
 
   // Open empty browser from toolbar button.
   // First click → create blank webview (BROWSER_BLANK_URL is a data: URL, not
@@ -935,19 +966,8 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   const handleBrowserCreated = useCallback(() => setBrowserAlive(true), []);
   const handleBrowserCreateFailed = useCallback(() => {
-    setBrowserAlive(false);
-    setBrowserUrl(null);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-  }, []);
-  const handleBrowserClose = useCallback(() => {
-    setBrowserUrl(null);
-    setBrowserAlive(false);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-    if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-    else if (splitFile) setSplitActiveView('file');
-  }, [terminalPinned, terminalAlive, splitFile]);
+    handleBrowserClose();
+  }, [handleBrowserClose]);
 
   // Switch from browser preview to editor for a local HTML file.
   // Re-reads from disk to ensure editor shows the latest saved content
@@ -985,17 +1005,16 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     }, 300);
   }, [browserUrl, tabId]);
 
-  // Stable context value for BrowserPanelContext (only provided when split view is available)
+  // Stable context value for the Chat-owned browser. Presentation (split vs.
+  // fullscreen) is decided here, not by individual link renderers.
   const browserPanelCtx = useMemo(
-    () => (isSplitViewEnabled && !isNarrowLayout ? { openUrl: handleOpenInBrowserPanel } : null),
-    [isSplitViewEnabled, isNarrowLayout, handleOpenInBrowserPanel],
+    () => ({ openUrl: handleOpenInBrowserPanel }),
+    [handleOpenInBrowserPanel],
   );
 
   // Listen for the global LinkContextMenuProvider's "预览（内置浏览器）" intent.
-  // Only the active Chat tab with an available BrowserPanel claims the action
-  // (preventDefault → dispatcher skips the system-browser fallback). Inactive
-  // Chats or non-split layouts deliberately don't claim, so the dispatcher
-  // falls back to openExternal — the menu item never feels dead.
+  // Only the active Chat tab claims the global context-menu action. Wide layouts
+  // use the split panel; narrow/disabled split layouts use fullscreen BrowserPanel.
   useEffect(() => {
     if (!isActive || !browserPanelCtx) return;
     const handler = (e: Event) => {
@@ -1919,11 +1938,11 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       // chat is "ready" the moment the session connects (SSE up). The
       // initialMessage path keeps waiting for the turn (conditions above) so the
       // overlay doesn't flash an empty chat before the auto-sent message lands.
-      || (isConnected && !hadInitialMessage.current)
+      || (isConnected && !hadInitialMessage.current && !isSessionLoading)
     ) {
       setShowStartupOverlay(false);
     }
-  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected]);
+  }, [showStartupOverlay, sessionState, streamingMessage, agentError, isConnected, isSessionLoading]);
 
   // Safety timeout (30s) — covers prewarm failures / unresponsive backend.
   // Prevents the overlay from sticking forever if neither sessionState nor
@@ -1952,20 +1971,12 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     onComplete: (task, reason) => {
       console.log('[Chat] Cron task completed:', task.id, reason);
     },
-    onExecutionComplete: async (task, success) => {
-      // Called when a single execution completes (task may still be running)
-      // Refresh the session to show the latest messages
-      // Use internalSessionId when available, falling back to sessionId.
-      // Both point to our internal message storage key (Sidecar session ID).
+    onExecutionComplete: (task, success) => {
+      // TabProvider owns exact-Session refresh from the same Tauri completion
+      // event. Chat only clears its local execution projection here.
       const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete, refreshing session:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
       setIsLoading(false);
-      // Only refresh session on successful execution.
-      // On timeout (success=false), the original streaming task may still be running
-      // and calling loadSession would abort it (via switchToSession) and lose data.
-      if (success && effectiveSessionId) {
-        await loadSession(effectiveSessionId);
-      }
     },
   });
 
@@ -1976,6 +1987,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
     const result = await materializePendingSessionConfig({
       pendingSessionId: sessionId,
+      tabId,
       workspacePath: agentDir,
       snapshotPatch: {},
       transport: {
@@ -1986,7 +1998,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     if (!adopted) throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
     setSessionMeta(result.metadata);
     return { sessionId: result.sessionId, workspacePath: agentDir };
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
   const {
     state: sessionGoalState,
     start: startGoal,
@@ -2556,6 +2568,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
       const result = await materializePendingSessionConfig({
         pendingSessionId: sessionId,
+        tabId,
         workspacePath: agentDir,
         snapshotPatch: patch,
         transport: {
@@ -2574,7 +2587,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       throw new Error(`Session ${sessionId} not found.`);
     }
     setSessionMeta(updated);
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
 
   // Persist a Tab-UI config change to session snapshot (owned) + project + agent.
   // See PRD v0.1.69 §4.3 rule 2. Toasts on persistence failure without rolling
@@ -3656,7 +3669,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
   // Returns false to signal SimpleChatInput NOT to clear the input (e.g., on rejection).
   const handleSendMessage = useCallback(async (text: string, images?: ImageAttachment[]): Promise<boolean | void> => {
     // Must have content and not be in stopping state
-    if ((!text && (!images || images.length === 0)) || sessionState === 'stopping') {
+    if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
       return false;
     }
 
@@ -3801,7 +3814,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
-  }, [sessionState, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
+  }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
 
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
@@ -4721,24 +4734,17 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       });
   }, [forkTarget, apiPost, onForkSession, deleteUnopenedForkSession, t]);
 
-  // Handler for selecting a session from history dropdown
-  const handleSelectSession = useCallback((id: string, historyEntrySource: HistoryEntrySource = 'chat_dropdown') => {
-    // PRD 0.2.19 cross-review fix (B3): explicitly stamp session_switch with the
-    // TARGET session id, not the source. Without this, Active Context auto-inject
-    // attaches the pre-switch session id (still the "source") because the switch
-    // hasn't completed yet, making the event semantics "from→to" backwards.
-    track('session_switch', { session_id: id, legacy_compat: true });
-    if (onSwitchSession) {
-      onSwitchSession(id, historyEntrySource);
-    } else {
-      if (cronStateRef.current.task?.status === 'running'
-        || (sessionGoalStateRef.current.goal && !isTerminalGoalStatus(sessionGoalStateRef.current.goal.status))) {
-        console.log('[Chat] Cannot switch session while a scheduled session surface is running (no onSwitchSession handler)');
-        return;
-      }
-      void loadSession(id);
+  const handleSelectSession = useCallback((
+    id: string,
+    title: string,
+    historyEntrySource: HistoryEntrySource = 'chat_dropdown',
+  ) => {
+    if (!onOpenSession) {
+      console.error('[Chat] Cannot open history Session without the App navigation owner');
+      return;
     }
-  }, [onSwitchSession, loadSession]);
+    onOpenSession(id, title, historyEntrySource);
+  }, [onOpenSession]);
 
   // Handover-button visibility predicate (Q10 lockdown):
   //   - session is currently NOT bound to any channel
@@ -4853,7 +4859,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
-        style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}
+        style={{ width: splitPanelVisible && !browserUsesFullscreen ? `${splitRatio * 100}%` : '100%' }}
         data-chat-workspace-motion={shouldUseWorkspaceOverlay ? undefined : (workspacePanelMotion ?? undefined)}
       >
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-chat-conversation>
@@ -4939,7 +4945,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                 <SessionHistoryDropdown
                   agentDir={agentDir}
                   currentSessionId={sessionId}
-                  onSelectSession={(id) => handleSelectSession(id, 'chat_dropdown')}
+                  onSelectSession={(id, title) => handleSelectSession(id, title, 'chat_dropdown')}
                   onOpenInNewTab={onOpenSessionInNewTab}
                   isOpen={showHistory}
                   onClose={() => setShowHistory(false)}
@@ -4999,9 +5005,15 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
           {/* Unified boot overlay — same component App renders as the lazy-Chat
               Suspense fallback, so the chunk-load → mount handoff is seamless: ONE
               continuous "AI 启动中" state from the Launcher→Chat flip through the
-              sidecar boot. Pass `show` (not a conditional render) so the overlay
-              self-manages a soft fade-out on dismiss, revealing the chat underneath. */}
-          <ChatBootOverlay show={showStartupOverlay} />
+              sidecar boot. Persisted history keeps the same shell until its REST
+              projection commits, so cold SSE replay is never a visible phase. */}
+          <ChatBootOverlay
+            show={showStartupOverlay || isSessionLoading}
+            error={sessionRestoreError}
+            onRetry={sessionRestoreError && sessionId
+              ? () => { void retryCurrentSessionRestore(); }
+              : undefined}
+          />
 
           {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
               already surface via agentError (image_error / model_error), suppress
@@ -5140,7 +5152,6 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               layoutByMessageId={chatScrollModel.layoutByMessageId}
               onLoadOlder={handleLoadOlderMessages}
               isLoading={isLoading}
-              isSessionLoading={isSessionLoading}
               sessionId={sessionId}
               isActive={isActive}
               virtuosoRef={virtuosoRef}
@@ -5210,6 +5221,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
             onSend={handleSendMessage}
             onStop={handleStop}
             active={isActive}
+            sendBlocked={isSessionLoading}
             isLoading={isLoading || sessionState === 'running' || sessionState === 'starting'}
             sessionState={sessionState}
             systemStatus={systemStatus}
@@ -5368,14 +5380,17 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
         <>
           {/* Draggable divider — hidden when panel is not visible */}
           <div
-            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible ? 'hidden' : ''}`}
+            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible || browserUsesFullscreen ? 'hidden' : ''}`}
             onMouseDown={handleSplitDividerMouseDown}
           >
             <div className="h-8 w-0.5 rounded-full bg-[var(--ink-subtle)]" />
           </div>
           {/* Right panel — single flex-1 container for tab bar + file + terminal.
               Uses `hidden` when panel is not visible but terminal is alive in background. */}
-          <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}>
+          <div className={browserUsesFullscreen
+            ? 'absolute inset-0 z-30 flex min-w-0 flex-col overflow-hidden bg-[var(--paper)]'
+            : `flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}
+          >
             {/* Tab switcher — only when 2+ views are active */}
             {(() => {
               const activeViews = [splitFile, terminalPinned && terminalAlive, browserUrl].filter(Boolean).length;
@@ -5474,12 +5489,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setBrowserUrl(null);
-                        setBrowserAlive(false);
-                        setBrowserSourceFile(null);
-                        setBrowserCurrentUrl('');
-                        if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-                        else if (splitFile) setSplitActiveView('file');
+                        handleBrowserClose();
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
                       title={t('shell.split.closeBrowser')}
@@ -5905,7 +5915,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
             setCronDetailTask(updated);
             toastRef.current?.success(t('shell.toasts.taskStopped'));
           }}
-          onOpenSession={(id) => handleSelectSession(id, 'task_run_history')}
+          onOpenSession={(id) => handleSelectSession(id, '', 'task_run_history')}
         />
       )}
     </div>

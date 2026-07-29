@@ -1201,6 +1201,18 @@ export async function updateSessionTab(sessionId: string, newTabId: string | nul
     }
 }
 
+/** Atomically attach an ensured Tab to Rust's latest activation state. */
+export async function reconcileSessionTabActivation(
+    sessionId: string,
+    tabId: string,
+): Promise<boolean> {
+    if (!isTauri()) return true;
+    return await invoke<boolean>('cmd_reconcile_session_tab_activation', {
+        sessionId,
+        tabId,
+    });
+}
+
 
 // ============= Session-Centric Sidecar API (v0.1.11) =============
 // These functions support the new Owner model where Sidecar lifecycle
@@ -1371,7 +1383,8 @@ export async function getSessionGeneration(sessionId: string): Promise<number | 
  */
 export async function upgradeSessionId(
     oldSessionId: string,
-    newSessionId: string
+    newSessionId: string,
+    tabId: string,
 ): Promise<boolean> {
     if (!isTauri()) {
         return true;
@@ -1381,6 +1394,7 @@ export async function upgradeSessionId(
         const upgraded = await invoke<boolean>('cmd_upgrade_session_id', {
             oldSessionId,
             newSessionId,
+            tabId,
         });
         console.debug(`[tauriClient] upgradeSessionId: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
         return upgraded;

@@ -36,6 +36,9 @@ vi.mock('@/pages/Settings', () => ({
   },
 }));
 vi.mock('@/pages/TaskCenter', () => ({ default: () => <div data-testid="taskcenter" /> }));
+vi.mock('@/components/ChatBootOverlay', () => ({
+  default: () => <div data-testid="chat-boot-overlay" />,
+}));
 
 import { MemoizedTabContent } from '@/App';
 
@@ -64,8 +67,7 @@ const noopProps = {
   capabilityInitialSelect: undefined,
   onLauncherWorkspaceSelectionChange: vi.fn(),
   onLaunchProject: vi.fn(),
-  onSwitchSession: vi.fn(async () => {}),
-  onOpenSessionInNewTab: vi.fn(async () => {}),
+  onOpenHistorySession: vi.fn(async () => {}),
   onNewSession: vi.fn(async () => true),
   onUpdateGenerating: vi.fn(),
   onUpdateTitle: vi.fn(),
@@ -95,6 +97,14 @@ describe('cold restored tab', () => {
     expect(tabProviderSpy).not.toHaveBeenCalled();
     expect(screen.queryByTestId('tab-provider')).toBeNull();
     expect(screen.queryByTestId('chat')).toBeNull();
+    expect(screen.getByTestId('chat-boot-overlay')).toBeInTheDocument();
+  });
+
+  it('keeps inactive cold tabs side-effect-free without mounting a visible loading shell', () => {
+    tabProviderSpy.mockClear();
+    render(<MemoizedTabContent tab={coldTab()} isActive={false} {...noopProps} />);
+    expect(tabProviderSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('chat-boot-overlay')).toBeNull();
   });
 
   it('mounts TabProvider once restoreState is cleared (activated)', async () => {

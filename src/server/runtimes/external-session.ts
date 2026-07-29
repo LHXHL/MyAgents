@@ -1751,10 +1751,9 @@ export function restoreExternalSessionState(
       .reverse()
       .find((msg) => msg.role === 'assistant' && msg.usage?.model)?.usage?.model
     || '';
-  // Rehydrate model/permission from session snapshot so a Tab that joins an
-  // idle external Sidecar via /sessions/switch can adopt the session's last
-  // known config via /api/session/config. Without this, a fresh switch into
-  // an existing session (sidecar process not yet running) leaves
+  // Rehydrate model/permission from session snapshot so a restored external
+  // Sidecar can expose the session's last known config via /api/session/config.
+  // Without this, starting an existing session with no runtime process leaves
   // runtime-config desired state empty and adoption silently no-ops.
   restoreExternalRuntimeConfigFromMetadata({
     model: meta?.model,
@@ -1974,11 +1973,10 @@ export function shouldUseExternalRuntime(): boolean {
 
 /**
  * Wait for any in-flight startExternalSession (notably pre-warm) to finish.
- * Used by callers that touch module state which the spawn path will write to —
- * /sessions/switch's external branch races against pre-warm post-spawn writes
- * if it doesn't serialize. updateExternalRuntimeConfig uses the same pattern
- * internally; this exported helper is for HTTP-route callers
- * that don't have direct access to `startingPromise`.
+ * Used by reset and materialization callers that touch module state which the
+ * spawn path will write to. updateExternalRuntimeConfig uses the same pattern
+ * internally; this exported helper is for callers without direct access to
+ * `startingPromise`.
  */
 export async function awaitExternalSessionStarting(): Promise<void> {
   await awaitExternalLifecycleStarting();
@@ -2028,9 +2026,7 @@ export function getExternalSessionWorkspacePath(): string {
 
 /** The session this Sidecar is bound to right now — either already committed
  *  (lastSessionId, set by restoreExternalSessionState at boot or by a completed
- *  start) or about to be committed by an in-flight prewarm/start (startingSessionId).
- *  Used by /sessions/switch to detect a no-op switch (target matches the bound
- *  session) without awaiting the prewarm's CLI cold-start. */
+ *  start) or about to be committed by an in-flight prewarm/start (startingSessionId). */
 export function getCurrentBoundSessionId(): string {
   return getCurrentExternalBoundSessionId();
 }
@@ -2349,10 +2345,9 @@ export async function startExternalSession(options: {
   }
 
   // Wrap the body so concurrent callers serialize via startingPromise.
-  // startingSessionId is set BEFORE _doStartExternalSession runs so that any
-  // concurrent /sessions/switch into the same target can short-circuit even
-  // while the spawn is still mid-flight (lastSessionId isn't written until
-  // _doStartExternalSession reaches its session-context-bind step).
+  // startingSessionId is set BEFORE _doStartExternalSession runs so ownership
+  // and configuration callers can observe the target while spawn is mid-flight
+  // (lastSessionId is written at the session-context-bind step).
   const releaseStarting = beginExternalLifecycleStart(options.sessionId);
 
   try {

@@ -839,7 +839,9 @@
       "subtitle": "Non-image files will be copied to myagents_files and referenced automatically."
     },
     "boot": {
-      "loading": "Starting AI"
+      "loading": "Starting AI",
+      "restoreFailed": "Couldn't load this chat. Reopen it or switch chats to try again.",
+      "retry": "Try again"
     },
     "agentError": {
       "title": "AI call failed: ",

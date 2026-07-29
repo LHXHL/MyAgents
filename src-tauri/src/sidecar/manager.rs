@@ -159,8 +159,14 @@ impl SidecarManager {
     /// the canonical Global Sidecar. Both process types consume the management
     /// API, while only Session Sidecars live in `sidecars`.
     pub fn is_live_process(&self, sidecar_id: &str, generation: u64) -> bool {
-        (self.sidecars.contains_key(sidecar_id) || self.instances.contains_key(sidecar_id))
-            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation)
+        let session_process_is_live = self.sidecars.iter().any(|(session_id, sidecar)| {
+            sidecar.management_id == sidecar_id
+                && self.sidecar_generations.get(session_id).copied() == Some(generation)
+        });
+        let global_process_is_live = self.instances.contains_key(sidecar_id)
+            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation);
+
+        session_process_is_live || global_process_is_live
     }
 
     /// Allocate the next instance ID and stash it as this session's current
@@ -409,6 +415,46 @@ impl SidecarManager {
         );
     }
 
+    /// Attach an already-ensured Tab to the latest activation in one manager lock.
+    /// Existing Task identity is preserved; only the Tab projection and current
+    /// process endpoint are refreshed.
+    pub fn reconcile_session_tab_activation(&mut self, session_id: &str, tab_id: &str) -> bool {
+        let tab_owner = SidecarOwner::Tab(tab_id.to_string());
+        let Some((port, workspace_path)) = self.sidecars.get(session_id).and_then(|sidecar| {
+            (sidecar.is_reusable() && sidecar.owners.contains(&tab_owner)).then(|| {
+                (
+                    sidecar.port,
+                    sidecar.workspace_path.to_string_lossy().into_owned(),
+                )
+            })
+        }) else {
+            return false;
+        };
+
+        let background_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+        self.remove_session_owner(session_id, &background_owner);
+        self.clear_tab_id_from_other_activations(session_id, tab_id);
+
+        if let Some(activation) = self.session_activations.get_mut(session_id) {
+            activation.tab_id = Some(tab_id.to_string());
+            activation.port = port;
+            activation.workspace_path = workspace_path;
+        } else {
+            self.session_activations.insert(
+                session_id.to_string(),
+                SessionActivation {
+                    session_id: session_id.to_string(),
+                    tab_id: Some(tab_id.to_string()),
+                    task_id: None,
+                    port,
+                    workspace_path,
+                    is_cron_task: false,
+                },
+            );
+        }
+        true
+    }
+
     /// Deactivate a session
     pub fn deactivate_session(&mut self, session_id: &str) -> Option<SessionActivation> {
         ulog_info!("[sidecar] Deactivating session {}", session_id);
@@ -574,6 +620,7 @@ impl SidecarManager {
                 process: process.spawn().expect("spawn test sidecar process"),
                 port,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
                 state: SidecarState::Healthy,
                 owners: std::iter::once(owner).collect(),
@@ -680,6 +727,60 @@ impl SidecarManager {
             }
         }
         removed
+    }
+
+    /// Move a displaced process into manager-owned recovery state so every
+    /// existing owner remains authoritative while its replacement starts.
+    /// Owner releases update both active and recovering entries, so the final
+    /// transfer cannot resurrect an owner that left during readiness waits.
+    pub(super) fn begin_session_sidecar_replacement(&mut self, session_id: &str) {
+        let Some(mut displaced) = self.remove_sidecar(session_id) else {
+            return;
+        };
+        if let Some(recovering) = self.recovering_sidecars.get_mut(session_id) {
+            recovering
+                .owners
+                .extend(std::mem::take(&mut displaced.owners));
+        } else {
+            self.recovering_sidecars
+                .insert(session_id.to_string(), displaced);
+        }
+    }
+
+    /// Install retained owners onto the ready replacement and refresh the
+    /// existing activation's physical process coordinates before consumers
+    /// receive the new process epoch.
+    pub(super) fn finish_session_sidecar_replacement(
+        &mut self,
+        session_id: &str,
+        replacement_port: u16,
+        workspace_path: &std::path::Path,
+    ) -> bool {
+        let retained = self.recovering_sidecars.remove(session_id);
+        let Some(replacement) = self.sidecars.get_mut(session_id) else {
+            if let Some(retained) = retained {
+                self.recovering_sidecars
+                    .insert(session_id.to_string(), retained);
+            }
+            return false;
+        };
+        if replacement.port != replacement_port {
+            if let Some(retained) = retained {
+                self.recovering_sidecars
+                    .insert(session_id.to_string(), retained);
+            }
+            return false;
+        }
+        if let Some(mut retained) = retained {
+            replacement
+                .owners
+                .extend(std::mem::take(&mut retained.owners));
+        }
+        if let Some(activation) = self.session_activations.get_mut(session_id) {
+            activation.port = replacement_port;
+            activation.workspace_path = workspace_path.to_string_lossy().into_owned();
+        }
+        true
     }
 
     /// Runtime drift helper for the IM router (v0.1.66).
@@ -847,6 +948,23 @@ impl SidecarManager {
         let (owner_removed, sidecar_stopped) =
             self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()));
         if !owner_removed {
+            // A close can remove the Tab owner while an in-flight renderer
+            // reconcile is still awaiting activate_session. Its compensating
+            // release then arrives with no owner left, but the late activation
+            // still names this exact Tab. Clear only that matching stale
+            // projection; never touch an activation already claimed by a
+            // different Tab.
+            let activation_matches_tab = self
+                .session_activations
+                .get(session_id)
+                .is_some_and(|activation| activation.tab_id.as_deref() == Some(tab_id));
+            if activation_matches_tab {
+                if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
+                    self.update_session_tab(session_id, None);
+                } else {
+                    self.deactivate_session(session_id);
+                }
+            }
             return false;
         }
 
@@ -902,7 +1020,10 @@ impl SidecarManager {
 
         let mut upgraded = false;
 
-        // 1. Upgrade in sidecars HashMap
+        // 1. Upgrade the mutable logical Session binding in sidecars HashMap.
+        // `management_id` remains the immutable process-birth identity sent in
+        // MYAGENTS_SIDECAR_ID, so management requests from this live process
+        // remain valid across the rekey.
         // NOTE: Direct HashMap access (not insert_sidecar/remove_sidecar) because this is
         // a key rename, not a creation. Generation is migrated separately in step 2.
         if let Some(mut sidecar) = self.sidecars.remove(old_session_id) {
@@ -963,6 +1084,55 @@ impl SidecarManager {
         }
 
         upgraded
+    }
+
+    /// Renderer adoption is idempotent only when the exact Tab owns the source
+    /// identity or the already-migrated target identity.
+    pub fn upgrade_session_id_for_tab(
+        &mut self,
+        old_session_id: &str,
+        new_session_id: &str,
+        tab_id: &str,
+    ) -> bool {
+        let owner = SidecarOwner::Tab(tab_id.to_string());
+        let old_recovering = self.recovering_sidecars.contains_key(old_session_id);
+        let old_exists = self.sidecars.contains_key(old_session_id)
+            || old_recovering
+            || self.session_activations.contains_key(old_session_id);
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.recovering_sidecars.contains_key(new_session_id)
+            || self.session_activations.contains_key(new_session_id);
+
+        if old_session_id == new_session_id {
+            return new_exists && self.session_has_exact_owner(new_session_id, &owner);
+        }
+        if !old_exists && new_exists {
+            return self.session_has_exact_owner(new_session_id, &owner);
+        }
+        if old_recovering {
+            return false;
+        }
+        if !old_exists || !self.session_has_exact_owner(old_session_id, &owner) {
+            return false;
+        }
+        self.upgrade_session_id(old_session_id, new_session_id)
+    }
+
+    pub fn session_id_upgrade_is_already_applied_for_tab(
+        &self,
+        old_session_id: &str,
+        new_session_id: &str,
+        tab_id: &str,
+    ) -> bool {
+        let old_exists = self.sidecars.contains_key(old_session_id)
+            || self.recovering_sidecars.contains_key(old_session_id)
+            || self.session_activations.contains_key(old_session_id);
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.recovering_sidecars.contains_key(new_session_id)
+            || self.session_activations.contains_key(new_session_id);
+        !old_exists
+            && new_exists
+            && self.session_has_exact_owner(new_session_id, &SidecarOwner::Tab(tab_id.to_string()))
     }
 
     /// Check if a session's Sidecar has an owner whose work remains bound to
@@ -1036,6 +1206,11 @@ impl SidecarManager {
                     .into_iter()
                     .flat_map(|sidecar| sidecar.owners.iter()),
             )
+    }
+
+    fn session_has_exact_owner(&self, session_id: &str, owner: &SidecarOwner) -> bool {
+        self.session_owners(session_id)
+            .any(|candidate| candidate == owner)
     }
 }
 

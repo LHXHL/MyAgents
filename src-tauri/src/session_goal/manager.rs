@@ -1590,6 +1590,7 @@ mod tests {
                 process,
                 port,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 state: SidecarState::Healthy,
                 owners: HashSet::from([SidecarOwner::Goal(goal_id.to_string())]),

@@ -13,8 +13,10 @@ import {
   isAbortRequested,
   getQueryMcpMutation,
   getQueryMcpPrewarmOwner,
+  getSessionMutationBarrier,
   requestAbort,
   resetLifecycleForTest,
+  runSerializedSessionMutation,
   setQuerySession,
   setQueryMcpPrewarmOwner,
   settleQueryMcpPrewarmOwner,
@@ -55,6 +57,7 @@ import {
   getCurrentTurnQueueId,
   getCurrentTurnText,
   getPendingImRequestIds,
+  hasPendingOutputOwnerByQueueId,
   notifyCurrentTurnTerminal,
   notifyQueuedTurnStopped,
   pushPendingOutputOwner,
@@ -206,6 +209,37 @@ describe('builtin-session owners', () => {
       ['same-task', { toolUseId: 'tool-replacement', description: 'replacement' }],
     ]);
     expect(hasQueryBackgroundTasks(replacementQuery)).toBe(false);
+  });
+
+  it('serializes session mutations and keeps the barrier through the final queued mutation', async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+
+    const first = runSerializedSessionMutation(async () => {
+      order.push('first:start');
+      await firstGate;
+      order.push('first:end');
+    });
+    const second = runSerializedSessionMutation(async () => {
+      order.push('second:start');
+      await secondGate;
+      order.push('second:end');
+    });
+    const barrier = getSessionMutationBarrier();
+
+    await vi.waitFor(() => expect(order).toEqual(['first:start']));
+    expect(barrier).not.toBeNull();
+    releaseFirst();
+    await first;
+    await vi.waitFor(() => expect(order).toEqual(['first:start', 'first:end', 'second:start']));
+    expect(getSessionMutationBarrier()).not.toBeNull();
+    releaseSecond();
+    await Promise.all([second, barrier]);
+    expect(order).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+    expect(getSessionMutationBarrier()).toBeNull();
   });
 
   it('lifecycle awaitSessionTermination force-cleans process state on timeout', async () => {
@@ -455,7 +489,10 @@ describe('builtin-session owners', () => {
       channelSessionId: 'session-1',
     });
     expect(getPendingImRequestIds()).toEqual(['r1', 'r2']);
+    expect(hasPendingOutputOwnerByQueueId('q1')).toBe(true);
+    expect(hasPendingOutputOwnerByQueueId('missing')).toBe(false);
     expect(removePendingOutputOwnerByQueueId('q2')).toBe(true);
+    expect(hasPendingOutputOwnerByQueueId('q2')).toBe(false);
     expect(clearPendingOutputOwners()).toEqual(['r1']);
 
     const onTerminal = vi.fn();

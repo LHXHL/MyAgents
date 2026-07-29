@@ -253,15 +253,6 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     behavior: 'Forks builtin sessions through the engine; external runtimes return an unsupported capability error.',
   },
   {
-    path: '/sessions/switch',
-    method: 'POST',
-    engineMethod: 'switchToExistingSession',
-    requiredFields: ['sessionId'],
-    responseKeys: ['success', 'sessionId', 'error'],
-    failureStatuses: [400, 404, 409, 500],
-    behavior: 'Switches the active engine to an existing session; external validates persisted runtime before binding.',
-  },
-  {
     path: '/api/im/session/new',
     method: 'POST',
     engineMethod: 'resetForNewImSession',
