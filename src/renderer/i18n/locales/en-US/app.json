@@ -96,7 +96,9 @@
     "hiddenSystemMessage": "System message",
     "sendFailed": "Send failed",
     "networkError": "Network error",
-    "networkDisconnected": "Network connection interrupted. Try again."
+    "networkDisconnected": "Network connection interrupted. Try again.",
+    "sessionRestoreFailed": "This chat could not be restored",
+    "sessionAlreadyOpen": "This chat is already open in another tab"
   },
   "floatingSession": {
     "sidecarUnavailable": "Sidecar is unavailable",

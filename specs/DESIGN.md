@@ -1043,6 +1043,14 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 滚动: 自动滚动到底部（用户手动滚动时暂停）
 ```
 
+#### 已有 Session 恢复
+
+- 从 active cold Tab 尚未挂载 `TabProvider` 开始，到 REST 历史完成采用同一个稳定的 `ChatBootOverlay`；inactive cold Tab 仍保持廉价 paper placeholder。遮罩允许在同一 Chat 挂载周期内即时重新启用，只在退出时做轻量淡出。
+- 历史内容只揭示一次：不得先显示 SSE cold replay、原始 Markdown / stringified ContentBlock 或旧 Session 内容，再用 REST 结果替换。
+- REST 内容提交后直接显示最终排版；禁止在下一帧把已可见 MessageList 的 opacity 重置为 0 后再次淡入。
+- `ChatBootOverlay` 是恢复期唯一的可见状态与旋转动画 owner，MessageList 不在其下重复挂载 loading。恢复失败时同一壳层原位显示失败态，并继续覆盖不可信的旧内容，直到用户重开、切换或新建对话。
+- 恢复失败文案属于当前目标 Session 的 restore token，不与普通对话错误共用；后续实时快照成功修复时，最终内容与壳层退出同次提交。恢复壳存在期间发送按钮与 action boundary 都不可提交消息。
+
 ---
 
 ## 11. CSS 变量完整定义
@@ -1410,6 +1418,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.46 | 2026-07-29 | **Session 恢复单次揭示**：已有 Session 从 active cold Tab 首帧起即由同一 Chat shell 覆盖，REST history restore 前不投影 SSE cold replay，消除 raw Markdown 中间态；最终历史同帧提交，移除 MessageList 的 600ms 二次淡入与重复 spinner；恢复失败继续隔离旧内容和迟到 replay，revision/generation 修复成功后一次释放，target 变更会取消旧 REST/timer；恢复期间发送 fail closed，同 Tab UI intent、renderer 已确认 Node binding 与服务端全部 binding mutation 分层串行，并以有限 predecessor 候选做 CAS，保证快速切换/reset 的最终 identity |
 | 2.8.45 | 2026-07-29 | **Markdown 代码横滑归属修复**：非换行代码正文显式声明 `overflow-x-auto`，让 user/query、assistant、文档等共享代码块及 Mermaid 源码视图恢复原生横向滚动，并在到达边缘时继续持有手势；普通正文的双指左右切 Tab 保持不变 |
 | 2.8.44 | 2026-07-29 | **macOS 红绿灯留白校准**：顶部 Tab 与侧栏同色后，主窗口红绿灯左侧 inset 从 5px 调至 15px，使左缘留白接近顶部留白，并与右侧固定 toggle 槽形成更均衡的间隔；继续由原生布局 owner 保证 zoom、resize 与全屏切换稳定，Windows 不受影响 |
 | 2.8.43 | 2026-07-29 | **Markdown 列表与代码面层级校准**：默认有序/无序列表整体缩进从 20px 调至 32px，让 marker 与正文左边界形成轻量区隔；compact 使用 24px，嵌套与 task list 保持文字列对齐。代码正文改与 Chat tool/process 组共用 `paper-inset / 30%` 浅表面，标题行接手原正文 `--code-bg`，Mermaid code view 同步，不新增颜色 Token |

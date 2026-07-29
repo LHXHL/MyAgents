@@ -96,7 +96,9 @@
     "hiddenSystemMessage": "系统消息",
     "sendFailed": "发送失败",
     "networkError": "网络错误",
-    "networkDisconnected": "网络连接中断，请重试"
+    "networkDisconnected": "网络连接中断，请重试",
+    "sessionRestoreFailed": "无法恢复这段对话",
+    "sessionAlreadyOpen": "这段对话已在另一个标签页中打开"
   },
   "floatingSession": {
     "sidecarUnavailable": "sidecar 不可达",
