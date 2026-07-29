@@ -205,7 +205,7 @@
     "rotate": "Rotate",
     "reset": "Reset",
     "closeEsc": "Close (Esc)",
-    "hint": "Double-click image to zoom · Press Esc to close"
+    "hint": "Double-click to zoom · Pinch to scale · Two-finger scroll or drag to move · Press Esc to close"
   },
   "errorBoundary": {
     "title": "Interface render error",

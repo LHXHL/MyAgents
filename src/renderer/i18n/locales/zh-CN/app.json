@@ -205,7 +205,7 @@
     "rotate": "旋转",
     "reset": "重置",
     "closeEsc": "关闭 (Esc)",
-    "hint": "双击图片放大 · 按 Esc 关闭"
+    "hint": "双击放大 · 捏合缩放 · 双指或拖拽移动 · 按 Esc 关闭"
   },
   "errorBoundary": {
     "title": "界面渲染出错",
