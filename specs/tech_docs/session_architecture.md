@@ -492,7 +492,7 @@ freshness cache / 持久 anchor，静默重启为裸 `resume`，并在当前 tur
 |------|------|-------|
 | 追加消息 | O(n) 全文件重写 | O(1) 追加一行 |
 | 崩溃恢复 | 文件可能损坏 | 最多丢失最后一行 |
-| 并发写入 | 需要文件锁 | 追加通常是原子的 |
+| 并发写入 | 需要文件锁 | 仍需按 Session 文件锁串行；同一 Session 可被 Tab / Cron / Background 等不同写者提交 |
 | 部分读取 | 需要解析整个文件 | 可以逐行读取 |
 
 ### SessionMessage 格式
@@ -516,17 +516,20 @@ interface SessionMessage {
 
 **增量统计**：只计算新增消息的 token 用量，而非全量重算。统计更新在文件锁内执行避免 TOCTOU：
 ```typescript
-const newMessages = messages.slice(existingCount);
-if (newMessages.length > 0) {
-    appendFileSync(filePath, linesToAppend);  // JSONL 不需要锁，每个 session 文件单写者
+await withSessionFileLock(sessionId, async () => {
+    const newMessages = messages.slice(existingCount);
+    if (newMessages.length === 0) return;
+    appendFileSync(filePath, linesToAppend);  // transcript commit point
     const incrementalStats = calculateSessionStats(newMessages);
-    withSessionsLock(() => {
-        // sessions.json 在锁内 read-modify-write
+    await withSessionsLock(() => {
+        // sessions.json 派生统计在锁内 read-modify-write
     });
-}
+});
 ```
 
-**文件锁**：`sessions.json` 多 Sidecar 共享需锁。MyAgents 走 `withFileLock` / `with_file_lock`（详见 `pit_of_success.md` 的「withFileLock」节）。
+**文件锁**：JSONL append / rewrite 使用 per-Session `withSessionFileLock`，`sessions.json` 的多 Sidecar read-modify-write 使用全局 `withSessionsLock`。底层走 `withFileLock` / `with_file_lock`（详见 `pit_of_success.md` 的「withFileLock」节）。
+
+JSONL append / rewrite 是 transcript 的 durability commit point；`sessions.json.stats` 与 preview 等 metadata 是派生投影，后续更新失败只能告警，`saveSessionMessages()` 仍返回 transcript 成功，调用方不得回滚已经落盘的消息。Builtin direct 与 turn-boundary user surface 必须在 SDK dispatch 前完成该持久化；失败时撤回对应 UI row、终止 exact turn / IM request。由于失败可能发生在 append 已提交后的后续步骤，rollback 使用 authoritative full rewrite；若 rewrite 也失败，`forceRewrite` latch 保持到后续一次完整重写成功，禁止退回增量追加猜测磁盘状态。
 
 ### 损坏行容错
 

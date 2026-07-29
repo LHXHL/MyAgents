@@ -204,9 +204,9 @@ Tab1 listen('sse:tab1:*') ◄── Rust supervisor ◄── owner resolve ◄�
 Tab2 listen('sse:tab2:*') ◄── Rust supervisor ◄── owner resolve ◄── Sidecar:31416
 ```
 
-每个 subscription 有两个独立 generation：start replacement 的 `subscription generation` 防止旧 task emit/cleanup 新 entry，并在实际 Tauri emit 时再次验证当前 authority；每条成功 HTTP 200 stream 分配进程内全局单调的 `transport generation`。Rust 转发 payload 为 `{ transportGeneration, data }`；Renderer 小于已观察 generation 的事件 fail closed；大于时，已被 REST adopt / restore 的 Session 先建立 REST/liveRevision restore fence，再处理业务事件，尚未被 REST adopt 的新 Session 则继续走 SSE-native birth。`start_sse_proxy` command ack 只代表订阅已安装，不代表物理流 connected。connect error、非 2xx、body error、read timeout 与 EOF 都由同一个 Rust supervisor capped backoff；只有 stop/replacement 结束订阅。Browser development mode 仍使用原生 EventSource 自己重连。
+每个 subscription 有两个独立 generation：start replacement 的 `subscription generation` 防止旧 task emit/cleanup 新 entry，并在实际 Tauri emit 时再次验证当前 authority；每条成功 HTTP 200 stream 分配进程内全局单调的 `transport generation`。Rust 转发 payload 为 `{ transportGeneration, data }`；Renderer 小于已观察 generation 的事件 fail closed。更大的 transport generation 只表示物理流重连：已被 REST adopt / restore 的 Session 若第一条 `liveRevision` 连续就直接续投影，只有 gap / 无基线才建立 REST restore fence；Rust 单独发布的 `session-sidecar:restarted` 才表示进程 epoch 更换并强制重建基线。尚未被 REST adopt 的新 Session 继续走 SSE-native birth。`start_sse_proxy` command ack 只代表订阅已安装，不代表物理流 connected。connect error、非 2xx、body error、read timeout 与 EOF 都由同一个 Rust supervisor capped backoff；只有 stop/replacement 结束订阅。Browser development mode 仍使用原生 EventSource 自己重连。
 
-subscription 跟随稳定的 renderer `connectionKey + SidecarOwner`，不是跟随可变的 Session key：pending→real materialization、桌面 reset 与已由 Rust 完成的 surface migration 都是在同一 Sidecar 内升级 Session identity。pending→real 可由 generic binding effect 识别；real→real 只能由实际 reset / migration owner 按 exact A→B 操作原子采用 business current 与 attachment，拒绝或异常时做 exact rollback，不能把长期 birth marker 当 transport authority。SSE status callback只报告 liveness，不得从 business current反向改写 attachment。普通历史 Session切换到另一 Sidecar才 replacement。带 `sessionId` 的业务事件以 payload 与当前 Session是否一致为 scope authority，并在 live-revision dispatch前拒绝 concrete mismatch；connection创建时的 `sessionIdHint` 只用于 Sidecar resolver / attachment，不能否决同一 Sidecar A→B handover中已经明确属于 B 的事件。
+subscription 跟随稳定的 renderer `connectionKey + SidecarOwner`，不是跟随可变的 Session key：pending→real materialization、桌面 reset 与已由 Rust 完成的 surface migration 都是在同一 Sidecar 内升级 Session identity。pending→real 可由 generic binding effect 识别；real→real 只能由实际 reset / migration owner 按 exact A→B 操作原子采用 business current 与 attachment，拒绝或异常时做 exact rollback，不能把长期 birth marker 当 transport authority。SSE status callback只报告 liveness，不得从 business current反向改写 attachment。普通历史导航通过 App new / jump / revive 目标 Tab，不在现有 subscription 上 hot-swap Session。带 `sessionId` 的业务事件以 payload 与当前 Session是否一致为 scope authority，并在 live-revision dispatch前拒绝 concrete mismatch；connection创建时的 `sessionIdHint` 只用于 Sidecar resolver / attachment，不能否决同一 Sidecar A→B handover中已经明确属于 B 的事件。
 
 Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广播：
 - `broadcast(event, data)` —— 向所有客户端广播
@@ -215,9 +215,9 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 - **日志降噪** —— 高频流式事件（chunk / delta）跳过 `console.log`
 
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
-会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按 payload/current Session 过滤；无 scope 的 legacy 事件在 identity transition 中 fail closed。否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
+会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按 payload/current Session 过滤；无 scope 的 legacy 事件在 identity transition 中 fail closed。否则历史导航 / target replacement 或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
-恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 transport generation 变化就重新取快照。live-recovery commit 只替换权威 recent tail 并保留已分页的 older prefix、滚动锚点与无关 UI state；无 overlap 才 fail closed 为 snapshot。snapshot 请求瞬时失败时保留同一 fence 与 buffer 并重试，Session/token 变化使旧 retry 失效。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
+恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；只有 gap / 无基线或明确的 Sidecar replacement epoch 才重新取快照，transport generation 变化本身不触发恢复。live-recovery commit 只替换权威 recent tail 并保留已分页的 older prefix、滚动锚点与无关 UI state；无 overlap 才整体采用 snapshot。持续 gap 只自动补取一次；请求失败或补取后仍不连续就进入 `failed`，隔离后续普通 revision，等待用户显式重试或下一次 `session-sidecar:restarted`。revision 只属于当前 Sidecar/session process epoch 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
 
 普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external terminal 产出同一份 turn identity/owner/origin descriptor，Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口，`notification.rs` 以 `(sessionId, turnId)` 瞬时 claim 并统一决定 domain 抑制、focus、系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息/UI/unread，不再发送通用完成通知。
 
@@ -295,7 +295,8 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：App 先互斥同 Session 的所有 open/switch/delete transition，并提交自己拥有的 exact `Tab` owner ids；Rust 在同一 lifecycle fence 内拒绝 Task/Goal、持久 IM peer binding、Companion/Agent/BackgroundCompletion 或未授权 Tab，完成 Node 存储删除后才释放获授权 Tab。因此任何拒绝都原样保留 owner/UI，不需要 renderer rollback。删除保护快照只做 UI 投影。IM binding 同时读取 live router 与仍在配置中的 Channel health state，覆盖显式停止和 replacement 暂时 detach 的窗口；router 预检遵守 router → lifecycle 既有锁序，锁内以 live `Agent` owner 关闭新绑定竞态。通过后用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
-| `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
+| `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后的 activation authority；在 Rust manager 单锁内保留最新 Task identity，并原子写入精确 Tab owner / port / workspace |
+| `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认 surface migration）；old/new 任一 identity 被持久 owner 占用时拒绝 rename，历史导航不得调用 |
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
 | `cmd_stop_all_sidecars` | 显式 IPC / debug stop；不拥有应用生命周期 |
 
@@ -501,7 +502,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 | Owner module | 职责 |
 |------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry |
+| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry、Session reset/switch/stale-recovery mutation barrier |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，同时保存 requestId、assistant channel owner 与成功前暂存的完整文本 block）、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、成功终态 channel-delivery commit、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
@@ -513,6 +514,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 Builtin SDK 工具的**可见性 authority** 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，产品会话必须通过 `Options.tools` 显式传入该目录；Provider 验证、订阅登录、标题生成、视觉识别等纯控制面 Query 必须传 `tools: []`。`Options.tools` 只决定模型能看到哪些 SDK 内置工具，不是授权规则；真正的执行许可仍由 `allowedTools` / `disallowedTools`、`canUseTool` 和 `PreToolUse` / `PermissionRequest` hooks 分层裁决。新增或移除内置工具时只修改这一可见性 owner，并分别验证权限链，不得把工具目录复制到 route 或 UI。
 
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
+
+Builtin Session 的 reset、legacy internal switch 与 stale-SDK recovery 都必须进入 `lifecycle.ts::runSerializedSessionMutation()`；enqueue 在登记可取消的 admission ticket 后等待同一 barrier，再读取 metadata 或 dispatch。不得让两个 identity mutation 并行清理 Query / transcript，也不得让用户消息越过进行中的 mutation 发给旧 runtime。
 
 **Builtin MCP soft pre-warm：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。初始 Query 或成功安装新 MCP map 时，`lifecycle.ts` 以 Query identity + generation + 单调 installed-map revision + runtime fingerprint 建立一次性 owner，并在 owner 上记录 `startedAt + deadlineAt`；默认预算只由 `session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 定义（当前 10 秒）。Desktop、IM 与 Cron / Goal / Heartbeat / Memory Update 等 injected turn 全部在 `messageGenerator()` promotion 后、live mutation fence 之后消费该 owner 的**剩余**预算。只有 `pending` 会继续等待；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期都把当前 generation 标为 degraded 并继续 AI turn。ready / degraded 都是 terminal one-shot，后续 turn 不再读 status、不开新 timer。用户取消仍立即取消 promotion；Query/map owner replacement 则 requeue 给 replacement generator，不能让旧 control response放行旧 Query。
 
@@ -609,6 +612,7 @@ Chat / Tab 自己持有的 URL 预览器（Tauri Multi-Webview）。AI Markdown 
 **关键设计：**
 - 依赖 Tauri `"unstable"` feature（`Window::add_child()` 多 Webview API）
 - **安全隔离**：`browser.json` Capability 零权限，Webview 无法访问 Tauri IPC；`on_navigation` 限制 http/https scheme
+- **链接动作 owner**：Markdown、`ExternalLink`、WebSearch / WebFetch 与文件工具不各自解释点击。HTTP(S) 统一走 `useOpenWebLink()`：Chat 普通点击进入当前 Tab 的 `BrowserPanel`，Cmd/Ctrl 点击或 Chat 外 surface 才交给系统浏览器。文件链接、inline path 与工具 path 统一走 `FileActionContext`：可预览文件内部打开、工作区目录 reveal 到文件树、Cmd/Ctrl 显式外部打开；不存在或不支持的目标必须给出明确反馈，不能静默交给 OS 或退化成无动作文本。
 - **Overlay 协调**：原生 Webview 浮于 React DOM 之上，Overlay 出现时通过 `closeLayer.hasOverlayLayer()` 自动 hide
 - **呈现与关闭 owner**：全屏条件只由“Browser 是当前 active split view”派生，不能由残留 `browserUrl` 单独决定；分屏、全屏、工具栏和 Tab × 共用同一个资源清理与剩余 view handoff callback
 - **Cookie 持久化**：同 App 所有 Webview 共享，默认持久化磁盘
@@ -770,7 +774,7 @@ v0.2.15 wire 上 Codex Runtime；v0.2.33（#293）wire 上 builtin（tool_result
   `mergeAttachmentsByPendingId` 防 `tool-result-complete` 重发覆盖已 patched 的 entry
 
 **多 Sidecar 边界**：attachment endpoint 注册在每个 Sidecar 的 HTTP server 上，Sidecar Owner 模型
-决定 attachments 由 sessionOwner sidecar 持有；Handover scenario 4 切到目标 Sidecar 时通过
+决定 attachments 由 sessionOwner sidecar 持有；已有 Session 的 Sidecar 创建 / revive 时通过
 SessionStore 反查 attachments 重 register。跨 Sidecar fetch attachment **不支持**。
 
 **HTTP endpoint**：`GET /api/attachment/tool/<sessionId>/<turnId>/<filename>`（CORS + Cache-Control

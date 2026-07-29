@@ -546,6 +546,7 @@ Item 选中: 文字 var(--accent-warm)
 **例外**：
 - 图片预览（ImagePreview）使用 `bg-black/80 backdrop-blur-sm`，深色背景便于查看图片内容
 - 图片预览的双击、触摸板捏合、双指平移、鼠标拖拽和工具栏必须共享一个 viewport transform owner；双击在适应窗口与 200% 间切换，缩放锚定手势位置，放大后平移受图片边界约束，重置同时清除缩放、位移与旋转
+- PDF / DOCX / PPTX 文档预览的各自 zoom owner 也必须消费统一的跨 WebView 捏合协议：WebView2 使用 Ctrl+wheel，WKWebView 使用 gesturestart/change；它们只复用缩放手势归一化，不继承 ImagePreview 的平移、拖拽或 transform state
 
 **点击遮罩关闭**：
 - 支持点击遮罩层区域触发关闭（等同于取消操作）
@@ -1338,7 +1339,7 @@ rail 64px:
 - 资源树始终只有一个持久选中面：Launcher 选择工作区时，工作区行与普通 hover 统一使用 `var(--hover-bg)`；Chat 已进入具体 Session 时，只由 Session active 行使用 `var(--hover-bg)`，父工作区不同时涂底或声明 `aria-current`，仅以中等字重保留路径上下文。两者均不增加 `paper-elevated` 或阴影；小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、静默加载占位和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。rail 工作区 flyout 与侧栏消费同一个 `--global-sidebar-bg`，避免白色浮层从侧栏材质中突兀跳出。
 - Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
-- Chat 顶栏默认不展示工作区历史入口，既有按钮、下拉内容与切换逻辑继续保留；`AppConfig.showChatHistoryEntry` 缺省为 `false`，并由“设置 → 关于 → 开发者”中紧跟“开发者模式”的开关控制，切换后即时生效。全局侧栏中的跨工作区搜索与 Session 树不受影响。
+- Chat 顶栏默认不展示工作区历史入口，既有按钮、下拉内容与打开 / 聚焦逻辑继续保留；`AppConfig.showChatHistoryEntry` 缺省为 `false`，并由“设置 → 关于 → 开发者”中紧跟“开发者模式”的开关控制，切换后即时生效。全局侧栏中的跨工作区搜索与 Session 树不受影响。
 - Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板标题栏不再显示冗余的“工作区”文字，只保留左侧工具与右侧动作；Chat 与面板之间不使用通顶边框，只保留上下各 16px 留白的 1px 内部短分隔线。面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
 - Chat 右侧工作区头部只展示工作区图标、名称、分支与路径，不展示文件/文件夹聚合计数，避免易过期的扫描结果与资源导航争夺注意力。底部 `Agent 能力` 初始收起，仅保留标题与总数；用户显式展开后再分配内容高度并渲染能力列表。
 - 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
