@@ -6,6 +6,7 @@ let messageSequence = 0;
 let lastPersistedIndex = 0;
 const persistedSessionMessageCache: SessionMessage[] = [];
 const persistChainBySession = new Map<string, Promise<void>>();
+const authoritativeRewritePendingSessions = new Set<string>();
 const currentSessionUuids = new Set<string>();
 const liveSessionUuids = new Set<string>();
 let pendingReloadAnchor: string | undefined = undefined;
@@ -151,6 +152,18 @@ export function clearPersistChains(): void {
   persistChainBySession.clear();
 }
 
+export function markAuthoritativeRewritePending(sessionId: string): void {
+  authoritativeRewritePendingSessions.add(sessionId);
+}
+
+export function clearAuthoritativeRewritePending(sessionId: string): void {
+  authoritativeRewritePendingSessions.delete(sessionId);
+}
+
+export function hasAuthoritativeRewritePending(sessionId: string): boolean {
+  return authoritativeRewritePendingSessions.has(sessionId);
+}
+
 export function getCurrentSessionUuids(): Set<string> {
   return currentSessionUuids;
 }
@@ -211,10 +224,12 @@ export function snapshotTranscript() {
     liveSessionUuids: new Set(liveSessionUuids),
     pendingReloadAnchor,
     persistChainSessionIds: [...persistChainBySession.keys()],
+    authoritativeRewritePendingSessionIds: [...authoritativeRewritePendingSessions],
   };
 }
 
 export function resetTranscriptForTest(): void {
   clearTranscriptState();
   persistChainBySession.clear();
+  authoritativeRewritePendingSessions.clear();
 }

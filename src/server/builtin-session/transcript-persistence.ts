@@ -13,9 +13,12 @@ import {
   addCurrentSessionUuid,
   appendMessage,
   appendPersistedSessionMessage,
+  clearAuthoritativeRewritePending,
   clearPersistedSessionMessageCache,
   deletePersistChain,
   getMessages,
+  hasAuthoritativeRewritePending,
+  markAuthoritativeRewritePending,
   removeMessageAt,
   removePersistedSessionMessageAt,
   replacePersistedSessionMessageCache,
@@ -40,6 +43,8 @@ export type ScheduleTranscriptPersistOptions = {
   targetMessageCount?: number;
   lastActiveAt?: string;
   metadataDisposition?: 'update' | 'skip';
+  /** Recover an ambiguous failed write by replacing the full durable transcript. */
+  forceRewrite?: boolean;
 };
 
 export function stripPlaywrightResults(content: ContentBlock[]): ContentBlock[] {
@@ -126,6 +131,7 @@ export function scheduleTranscriptPersist(options: ScheduleTranscriptPersistOpti
       targetMessageCount,
       lastActiveAt: options.lastActiveAt,
       metadataDisposition: options.metadataDisposition,
+      forceRewrite: options.forceRewrite,
     });
   });
   transcriptState.persistChainBySession.set(key, next);
@@ -142,7 +148,10 @@ export async function persistTranscriptNow(options: {
   targetMessageCount?: number;
   lastActiveAt?: string;
   metadataDisposition?: 'update' | 'skip';
+  forceRewrite?: boolean;
 }): Promise<void> {
+  const forceRewrite = options.forceRewrite
+    || hasAuthoritativeRewritePending(options.sessionId);
   if (transcriptState.lastPersistedIndex > transcriptState.messages.length) {
     console.warn(`[agent-session] persist cursor (${transcriptState.lastPersistedIndex}) exceeds transcriptState.messages.length (${transcriptState.messages.length}); resetting`);
     resetTranscriptPersistenceCursor();
@@ -153,7 +162,7 @@ export async function persistTranscriptNow(options: {
 
   const targetMessageCount = options.targetMessageCount ?? transcriptState.messages.length;
   const boundedTargetCount = Math.min(targetMessageCount, transcriptState.messages.length);
-  if (transcriptState.lastPersistedIndex >= boundedTargetCount) {
+  if (!forceRewrite && transcriptState.lastPersistedIndex >= boundedTargetCount) {
     if (options.lastActiveAt && options.metadataDisposition !== 'skip') {
       try {
         await updateSessionMetadata(options.sessionId, { lastActiveAt: options.lastActiveAt });
@@ -170,16 +179,30 @@ export async function persistTranscriptNow(options: {
     .slice(0, transcriptState.lastPersistedIndex)
     .concat(tailMapped);
 
-  assertSaveSessionMessagesOk(
-    await saveSessionMessages(options.sessionId, sessionMessages),
-    options.sessionId,
-  );
+  try {
+    assertSaveSessionMessagesOk(
+      await saveSessionMessages(
+        options.sessionId,
+        sessionMessages,
+        forceRewrite ? { forceRewrite: true } : undefined,
+      ),
+      options.sessionId,
+    );
+  } catch (error) {
+    if (forceRewrite) {
+      markAuthoritativeRewritePending(options.sessionId);
+    }
+    throw error;
+  }
 
   truncatePersistedSessionMessageCache(transcriptState.lastPersistedIndex);
   for (const message of tailMapped) {
     appendPersistedSessionMessage(message);
   }
   setLastPersistedIndex(boundedTargetCount);
+  if (forceRewrite) {
+    clearAuthoritativeRewritePending(options.sessionId);
+  }
 
   if (options.metadataDisposition === 'skip') return;
   const { preview: lastMessagePreview } =

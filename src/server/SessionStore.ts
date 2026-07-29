@@ -1170,11 +1170,10 @@ export async function appendSessionMessage(sessionId: string, message: SessionMe
  *
  * `opts.allowShrink` (default true) gates the rewind/retry shrink-rewrite: when
  * `messages.length < existingCount` the file is rewritten to the shorter array
- * (deleting the tail). That is correct for an INTENTIONAL truncation (builtin
- * rewind, external retry) but catastrophic if a caller ever passes a partial /
- * truncated array (e.g. a failed cold-load). Append-only callers MUST pass
- * `allowShrink: false` so a spurious short array refuses to delete on-disk data
- * instead of silently nuking it.
+ * (deleting the tail). `opts.forceRewrite` is reserved for a caller recovering
+ * from an ambiguous failed write, where equal line counts do not prove equal
+ * content. Append-only callers MUST pass `allowShrink: false` so a spurious
+ * short array refuses to delete on-disk data instead of silently nuking it.
  */
 export type SaveSessionMessagesResult =
     | { ok: true; action: 'appended' | 'rewritten' | 'noop'; count: number; totalCount: number }
@@ -1185,9 +1184,10 @@ export type SaveSessionMessagesResult =
 export async function saveSessionMessages(
     sessionId: string,
     messages: SessionMessage[],
-    opts?: { allowShrink?: boolean },
+    opts?: { allowShrink?: boolean; forceRewrite?: boolean },
 ): Promise<SaveSessionMessagesResult> {
     const allowShrink = opts?.allowShrink ?? true;
+    const forceRewrite = opts?.forceRewrite ?? false;
     ensureStorageDir();
 
     const filePath = getSessionFilePath(sessionId);
@@ -1235,12 +1235,12 @@ export async function saveSessionMessages(
             // to the shorter state. An append-only caller seeing this means its
             // in-memory array is partial (failed/truncated load) — rewriting would
             // delete the on-disk tail, so we refuse and keep the durable copy.
-            if (messages.length < existingCount) {
-                if (!allowShrink) {
+            if (messages.length < existingCount || forceRewrite) {
+                if (messages.length < existingCount && !allowShrink) {
                     console.error(`[SessionStore] REFUSING shrink-rewrite for session ${sessionId}: in-memory ${messages.length} < on-disk ${existingCount} but allowShrink=false (likely a partial/failed load). Keeping the on-disk file intact, skipping write.`);
                     return { ok: false, reason: 'shrink-refused', count: messages.length, existingCount };
                 }
-                console.log(`[SessionStore] Intentional truncation: messages.length=${messages.length} < existingCount=${existingCount}, rewriting JSONL for session ${sessionId}`);
+                console.log(`[SessionStore] Rewriting authoritative transcript: messages.length=${messages.length}, existingCount=${existingCount}, forceRewrite=${forceRewrite}, session=${sessionId}`);
                 const fullContent = messages.map(msg => JSON.stringify(msg)).join('\n') + (messages.length > 0 ? '\n' : '');
                 const rewriteStart = nowMs();
                 writeFileSync(filePath, fullContent, 'utf-8');

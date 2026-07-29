@@ -253,14 +253,14 @@ pub async fn cmd_get_global_server_url(state: State<'_, ManagedSidecar>) -> Resu
     get_tab_server_url(&state, GLOBAL_SIDECAR_ID)
 }
 
-/// Command: Stop all sidecar instances (for app exit)
+/// Command: Explicit IPC/debug stop; application lifecycle cleanup is owned by ExitRequested.
 #[tauri::command]
 pub async fn cmd_stop_all_sidecars(
     app_handle: AppHandle,
     state: State<'_, ManagedSidecar>,
 ) -> Result<(), String> {
     logger::info(&app_handle, "[sidecar] Stopping all instances".to_string());
-    stop_all_sidecars(&state)
+    stop_all_sidecars(&state, "ipc-command")
 }
 
 /// Command: Shutdown for update — blocks until all child processes are fully terminated.

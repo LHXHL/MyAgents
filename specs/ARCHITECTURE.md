@@ -297,7 +297,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
 | `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
-| `cmd_stop_all_sidecars` | 应用退出清理 |
+| `cmd_stop_all_sidecars` | 显式 IPC / debug stop；不拥有应用生命周期 |
 
 冷启动性能详见 `tech_docs/sidecar_cold_start.md`。
 
@@ -888,7 +888,7 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
 | 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
 | Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
-| 应用退出 | `stopAllSidecars()` + `close_all_terminals()` + `close_all_browsers()` |
+| 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 是唯一应用清理 owner：停止 Sidecar、IM、终端、浏览器并释放进程锁；普通重启入口使用 `request_restart()` 进入该路径。更新安装保留 verified shutdown 后的 updater `relaunch()` 路径 |
 
 **Owner 释放规则：** 当一个 Session 的所有 Owner 都释放后，Sidecar 才停止。
 

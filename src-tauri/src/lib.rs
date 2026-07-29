@@ -245,7 +245,6 @@ pub fn run() {
     let im_bot_state = im::create_im_bot_state();
     // Create Agent managed state (v0.1.41)
     let agent_state = im::create_agent_state();
-    let sidecar_state_for_window = sidecar_state.clone();
     let sidecar_state_for_exit = sidecar_state.clone();
     let sidecar_state_for_monitor = sidecar_state.clone();
     let sidecar_state_for_session_monitor = sidecar_state.clone();
@@ -255,18 +254,12 @@ pub fn run() {
     let im_state_for_management = im_bot_state.clone();
     let agent_state_for_management = agent_state.clone();
     let sidecar_state_for_management = sidecar_state.clone();
-    let im_state_for_window = im_bot_state.clone();
     let im_state_for_exit = im_bot_state.clone();
-    let agent_state_for_window = agent_state.clone();
     let agent_state_for_exit = agent_state.clone();
 
-    // Track if cleanup has been performed to avoid duplicate cleanup
-    // All clones share the same underlying AtomicBool - whichever exit path
-    // triggers first will do cleanup, and all others will see the flag as true
-    // and skip. The separate variables are needed because each is moved into
-    // a different closure (window event, app exit).
+    // App-owned cleanup is performed exactly once by the app exit lifecycle.
+    // Monitor tasks only observe the same flag so they can stop promptly.
     let cleanup_done = Arc::new(AtomicBool::new(false));
-    let cleanup_done_for_window = cleanup_done.clone();
     let cleanup_done_for_exit = cleanup_done.clone();
     let cleanup_done_for_monitor = cleanup_done.clone();
     let cleanup_done_for_session_monitor = cleanup_done.clone();
@@ -277,12 +270,10 @@ pub fn run() {
     // Create terminal manager state
     let terminal_state = terminal::TerminalManager::new();
     let terminal_state_for_exit = terminal_state.clone();
-    let terminal_state_for_window = terminal_state.clone();
 
     // Create browser manager state
     let browser_state = browser::BrowserManager::new();
     let browser_state_for_exit = browser_state.clone();
-    let browser_state_for_window = browser_state.clone();
 
     // Create Task Center state (v0.1.69 — thought & task stores)
     let data_dir = app_dirs::myagents_data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -1335,23 +1326,15 @@ pub fn run() {
                         }
                     }
                 }
-                // Clean up when window is actually destroyed
                 tauri::WindowEvent::Destroyed => {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    if !cleanup_done_for_window.swap(true, Relaxed) {
-                        ulog_info!("[App] Window destroyed, cleaning up sidecars...");
-                        im::signal_all_agents_shutdown(&agent_state_for_window);
-                        im::signal_all_bots_shutdown(&im_state_for_window);
-                        let _ = stop_all_sidecars(&sidecar_state_for_window);
-                        // Clean up terminal PTY sessions
-                        let ts = terminal_state_for_window.clone();
-                        tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));
-                        // Clean up browser webviews
-                        let bs = browser_state_for_window.clone();
-                        let app_for_browser = window.app_handle().clone();
-                        tauri::async_runtime::block_on(browser::close_all_browsers(&bs, &app_for_browser));
-                        app_dirs::release_lock();
-                    }
+                    // A window owns only its WebView. Auxiliary windows are
+                    // routinely destroyed while the application and every
+                    // Session Sidecar remain live; app-wide teardown belongs
+                    // exclusively to RunEvent::ExitRequested/update shutdown.
+                    ulog_info!(
+                        "[App] window_lifecycle event=destroyed label={} app_cleanup=false",
+                        window.label()
+                    );
                 }
                 _ => {}
             }
@@ -1367,13 +1350,20 @@ pub fn run() {
                 // Only cleanup once (Relaxed is sufficient for simple flag)
                 use std::sync::atomic::Ordering::Relaxed;
                 if !cleanup_done_for_exit.swap(true, Relaxed) {
+                    let shutdown_reason = if code == Some(tauri::RESTART_EXIT_CODE) {
+                        "app-restart"
+                    } else {
+                        "app-exit"
+                    };
                     ulog_info!(
-                        "[App] Exit requested (Cmd+Q or Dock quit), cleaning up sidecars..."
+                        "[App] app_lifecycle event=exit_requested code={:?} reason={} app_cleanup=begin",
+                        code,
+                        shutdown_reason
                     );
                     // Record a deliberate-quit marker so the next boot starts
                     // fresh instead of restoring the session (Issue #309), UNLESS
                     // this is an update-restart. Both update paths — plugin
-                    // `relaunch()` and `AppHandle::restart` — fire ExitRequested
+                    // `relaunch()` and `AppHandle::request_restart` — fire ExitRequested
                     // with `code == RESTART_EXIT_CODE`; a deliberate quit carries
                     // `None` (Cmd+Q / Dock) or `Some(0)` (tray "Exit"). Gating on
                     // the code keeps "offer restore after an update" working on
@@ -1381,7 +1371,20 @@ pub fn run() {
                     app_dirs::record_clean_exit(code == Some(tauri::RESTART_EXIT_CODE));
                     im::signal_all_agents_shutdown(&agent_state_for_exit);
                     im::signal_all_bots_shutdown(&im_state_for_exit);
-                    let _ = stop_all_sidecars(&sidecar_state_for_exit);
+                    let sidecar_cleanup_ok = match stop_all_sidecars(
+                        &sidecar_state_for_exit,
+                        shutdown_reason,
+                    ) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            ulog_error!(
+                                "[App] app_lifecycle cleanup=sidecars status=error reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                            false
+                        }
+                    };
                     // Clean up terminal PTY sessions
                     let ts = terminal_state_for_exit.clone();
                     tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));
@@ -1389,6 +1392,11 @@ pub fn run() {
                     let bs = browser_state_for_exit.clone();
                     tauri::async_runtime::block_on(browser::close_all_browsers(&bs, _app_handle));
                     app_dirs::release_lock();
+                    ulog_info!(
+                        "[App] app_lifecycle event=cleanup_complete reason={} sidecars_ok={}",
+                        shutdown_reason,
+                        sidecar_cleanup_ok
+                    );
                 }
             }
             // Handle Dock icon click on macOS (Reopen event)
@@ -1516,5 +1524,47 @@ mod nav_guard_tests {
         assert!(script.contains("report('native-init-script')"));
         assert!(script.contains("report('renderer-uncaught-error'"));
         assert!(script.contains("report('renderer-unhandled-rejection'"));
+    }
+
+    #[test]
+    fn window_destruction_never_owns_application_cleanup() {
+        let source = include_str!("lib.rs");
+        let window_handler = source
+            .split_once(".on_window_event")
+            .and_then(|(_, tail)| tail.split_once(".build(tauri::generate_context!())"))
+            .map(|(handler, _)| handler)
+            .expect("window event handler source");
+
+        for forbidden in [
+            "stop_all_sidecars(",
+            "signal_all_agents_shutdown(",
+            "signal_all_bots_shutdown(",
+            "close_all_terminals(",
+            "close_all_browsers(",
+            "release_lock()",
+        ] {
+            assert!(
+                !window_handler.contains(forbidden),
+                "window lifecycle must not perform app cleanup via {forbidden}"
+            );
+        }
+
+        let exit_handler = source
+            .split_once("tauri::RunEvent::ExitRequested { code, .. } => {")
+            .and_then(|(_, tail)| tail.split_once("// Handle Dock icon click on macOS"))
+            .map(|(handler, _)| handler)
+            .expect("app exit handler source");
+        assert!(exit_handler.contains("stop_all_sidecars("));
+        assert!(exit_handler.contains("&sidecar_state_for_exit"));
+        assert!(exit_handler.contains("app_dirs::release_lock()"));
+
+        let updater = include_str!("updater.rs");
+        let restart_command = updater
+            .split_once("pub fn restart_app")
+            .and_then(|(_, tail)| tail.split_once("/// Command: Check if a pending update exists"))
+            .map(|(command, _)| command)
+            .expect("restart command source");
+        assert!(restart_command.contains("app.request_restart()"));
+        assert!(!restart_command.contains("app.restart()"));
     }
 }

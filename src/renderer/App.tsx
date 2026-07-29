@@ -1318,7 +1318,8 @@ export default function App() {
       // This cleanup runs on ANY unmount (including error boundary recovery),
       // not just app exit. Killing the sidecar during error recovery creates a
       // death loop: error → unmount → kill sidecar → sidecar unavailable → more errors.
-      // Rust handles sidecar cleanup on actual exit (WindowEvent::Destroyed, ExitRequested).
+      // Rust owns application cleanup on RunEvent::ExitRequested. WebView
+      // destruction is window-scoped and must never stop application resources.
     };
   }, [startGlobalSidecarSilent]);
 

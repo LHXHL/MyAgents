@@ -316,6 +316,73 @@ describe('transcript-persistence owner', () => {
     expect(transcriptState.lastPersistedIndex).toBe(2);
   });
 
+  it('force-rewrites the authoritative transcript after an ambiguous failed write', async () => {
+    appendMessage({ id: '0', role: 'user', content: 'kept', timestamp: 't0' });
+    appendMessage({ id: '1', role: 'user', content: 'rolled back', timestamp: 't1' });
+    replacePersistedSessionMessageCache([
+      { id: '0', role: 'user', content: 'kept', timestamp: 't0' },
+    ]);
+    setLastPersistedIndex(1);
+    applyTranscriptRetractionToPersistence(new Set(['1']));
+    vi.mocked(saveSessionMessages).mockResolvedValueOnce(okSave(1));
+
+    await scheduleTranscriptPersist({
+      sessionId: 'session-1',
+      getCurrentSessionId: () => 'session-1',
+      forceRewrite: true,
+      metadataDisposition: 'skip',
+    });
+
+    expect(saveSessionMessages).toHaveBeenCalledWith(
+      'session-1',
+      [{ id: '0', role: 'user', content: 'kept', timestamp: 't0' }],
+      { forceRewrite: true },
+    );
+    expect(transcriptState.lastPersistedIndex).toBe(1);
+  });
+
+  it('retains authoritative rewrite debt until a later persist succeeds', async () => {
+    appendMessage({ id: '0', role: 'user', content: 'kept', timestamp: 't0' });
+    replacePersistedSessionMessageCache([
+      { id: '0', role: 'user', content: 'kept', timestamp: 't0' },
+    ]);
+    setLastPersistedIndex(1);
+    vi.mocked(saveSessionMessages)
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: 'write-error',
+        count: 1,
+        error: 'disk unavailable',
+      })
+      .mockResolvedValueOnce(okSave(1));
+
+    await expect(scheduleTranscriptPersist({
+      sessionId: 'session-1',
+      getCurrentSessionId: () => 'session-1',
+      forceRewrite: true,
+      metadataDisposition: 'skip',
+    })).rejects.toThrow('disk unavailable');
+
+    await scheduleTranscriptPersist({
+      sessionId: 'session-1',
+      getCurrentSessionId: () => 'session-1',
+      metadataDisposition: 'skip',
+    });
+    await scheduleTranscriptPersist({
+      sessionId: 'session-1',
+      getCurrentSessionId: () => 'session-1',
+      metadataDisposition: 'skip',
+    });
+
+    expect(saveSessionMessages).toHaveBeenCalledTimes(2);
+    expect(saveSessionMessages).toHaveBeenNthCalledWith(
+      2,
+      'session-1',
+      [{ id: '0', role: 'user', content: 'kept', timestamp: 't0' }],
+      { forceRewrite: true },
+    );
+  });
+
   it('does not advance cursor/cache when SessionStore refuses a persist', async () => {
     appendMessage({ id: '0', role: 'user', content: 'hello', timestamp: 't0' });
     vi.mocked(saveSessionMessages).mockResolvedValueOnce({

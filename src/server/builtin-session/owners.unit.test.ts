@@ -55,6 +55,7 @@ import {
   getCurrentTurnQueueId,
   getCurrentTurnText,
   getPendingImRequestIds,
+  hasPendingOutputOwnerByQueueId,
   notifyCurrentTurnTerminal,
   notifyQueuedTurnStopped,
   pushPendingOutputOwner,
@@ -455,7 +456,10 @@ describe('builtin-session owners', () => {
       channelSessionId: 'session-1',
     });
     expect(getPendingImRequestIds()).toEqual(['r1', 'r2']);
+    expect(hasPendingOutputOwnerByQueueId('q1')).toBe(true);
+    expect(hasPendingOutputOwnerByQueueId('missing')).toBe(false);
     expect(removePendingOutputOwnerByQueueId('q2')).toBe(true);
+    expect(hasPendingOutputOwnerByQueueId('q2')).toBe(false);
     expect(clearPendingOutputOwners()).toEqual(['r1']);
 
     const onTerminal = vi.fn();

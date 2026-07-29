@@ -249,6 +249,25 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(lines).toHaveLength(2);
     });
 
+    it('force-rewrites equal-length content after an ambiguous failed append', async () => {
+        const meta = await store.createSession('/tmp/workspace-force-rewrite');
+        const original = [msg(0), msg(1)];
+        expect((await store.saveSessionMessages(meta.id, original)).ok).toBe(true);
+        const authoritative = [original[0], { ...original[1], content: 'authoritative replacement' }];
+
+        const result = await store.saveSessionMessages(meta.id, authoritative, { forceRewrite: true });
+
+        expect(result).toMatchObject({ ok: true, action: 'rewritten', count: 2 });
+        const stored = readFileSync(jsonlPath(meta.id), 'utf-8')
+            .trim()
+            .split('\n')
+            .map(line => JSON.parse(line) as { content: string });
+        expect(stored.map(message => message.content)).toEqual([
+            original[0].content,
+            'authoritative replacement',
+        ]);
+    });
+
     it('deleteSession returns a typed not-found result for an unknown id', async () => {
         expect(await store.deleteSession(
             '99999999-9999-9999-9999-999999999999',

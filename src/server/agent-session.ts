@@ -323,6 +323,7 @@ import {
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
   getPendingImRequestIds,
+  hasPendingOutputOwnerByQueueId,
   peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
   isAssistantMessagePresent,
@@ -1012,6 +1013,27 @@ async function surfaceBuiltinUserMessage(
   return activityMerged;
 }
 
+async function rollbackFailedBuiltinUserSurface(messageId: string): Promise<void> {
+  applyTranscriptRetractionToPersistence(new Set([messageId]));
+  broadcast('chat:messages-retracted', {
+    messageIds: [messageId],
+    retractedStreamingTail: false,
+  });
+  try {
+    // The failed write may have appended the row before a later index/stat
+    // update failed. Replace the complete transcript so memory, UI and disk
+    // converge before this message is rejected.
+    await persistMessagesToStorage(
+      transcriptState.messages.length,
+      undefined,
+      'skip',
+      true,
+    );
+  } catch (rollbackError) {
+    console.error('[agent][admission-persist] action=rollback_persist_failed', rollbackError);
+  }
+}
+
 type SurfaceInFlightOptions = {
   sdkUuid?: string;
   midTurnBreak?: boolean;
@@ -1290,10 +1312,20 @@ function finalizeOutputOwnerRequest(
   data?: unknown,
   markCurrentTurn = false,
 ): void {
-  if (!owner?.requestId) return;
-  imEventBus.emit(owner.requestId, type, data);
-  imRequestRegistry.setStatus(owner.requestId, status);
-  imRequestRegistry.unregister(owner.requestId);
+  finalizeImRequest(owner?.requestId, type, status, data, markCurrentTurn);
+}
+
+function finalizeImRequest(
+  requestId: string | null | undefined,
+  type: 'complete' | 'cancelled' | 'error',
+  status: 'completed' | 'cancelled' | 'failed',
+  data?: unknown,
+  markCurrentTurn = false,
+): void {
+  if (!requestId) return;
+  imEventBus.emit(requestId, type, data);
+  imRequestRegistry.setStatus(requestId, status);
+  imRequestRegistry.unregister(requestId);
   if (markCurrentTurn) setCurrentTurnImTerminalEmitted(true);
 }
 
@@ -1936,12 +1968,11 @@ function startNextTurnQueuedItem(
     mirrorImages: item.mirrorImages,
     channelDelivery: sourceItem.channelDelivery,
   };
-  if (sourceItem.beforeDispatch) {
-    sourceItem.deferredUserSurface = surface;
-  } else {
-    void surfaceBuiltinUserMessage(surface, 'pre-admission')
-      .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
-  }
+  // Turn-boundary messages are not runtime-visible yet. Keep their user
+  // surface attached to the queue owner so admission can persist it before
+  // yielding to the SDK. A failed write must terminate this turn, never race a
+  // fire-and-forget persistence promise against runtime dispatch.
+  sourceItem.deferredUserSurface = surface;
 
   console.log(`[agent] Starting turn-boundary queued message: queueId=${item.queueId} reason=${reason} remaining=${getTurnBoundaryQueue().length}`);
   if (!sourceItem.deferVisibleAdmission) {
@@ -2400,6 +2431,32 @@ function emitBuiltinTurnTrace(
     count: options.count,
     detail: options.detail,
   });
+}
+
+function reportBuiltinAdmissionPersistenceFailure(
+  queueId: string,
+  requestId: string | undefined,
+  error: unknown,
+): string {
+  const admissionError = error instanceof Error ? error.message : String(error);
+  emitPerfTrace({
+    trace: 'turn',
+    phase: 'admission_persist',
+    status: 'error',
+    runtime: 'builtin',
+    sessionId,
+    requestId,
+    turnId: queueId,
+    detail: {
+      action: 'dispatch_blocked',
+      queueId,
+      error: admissionError,
+    },
+  });
+  console.error(
+    `[agent] admission_persist action=dispatch_blocked runtime=builtin sessionId=${sessionId} queueId=${queueId} requestId=${requestId ?? '-'} error=${admissionError}`,
+  );
+  return admissionError;
 }
 
 function emitBuiltinFirstDeltaTrace(delta: string): void {
@@ -4663,6 +4720,7 @@ async function persistMessagesToStorage(
   targetMessageCount = transcriptState.messages.length,
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
+  forceRewrite = false,
 ): Promise<void> {
   return scheduleTranscriptPersist({
     sessionId,
@@ -4670,6 +4728,7 @@ async function persistMessagesToStorage(
     targetMessageCount,
     lastActiveAt,
     metadataDisposition,
+    forceRewrite,
   });
 }
 
@@ -8966,10 +9025,6 @@ export async function enqueueUserMessage(
   // `lifecycleState.systemInitInfo` as a fallback: if a session somehow received system_init
   // without lifecycleState.sdkControlReady having flipped (e.g., recovery paths that bypass
   // pre-warm), the per-turn metadata still proves the subprocess is alive.
-  if (!deferVisibleAdmission) {
-    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
-  }
-
   const takeAdmissionCallbacks = () => {
     const callbacks = {
       onTerminal: admissionTicket?.onTerminal ?? options?.onTerminal,
@@ -8983,6 +9038,9 @@ export async function enqueueUserMessage(
     return callbacks;
   };
   if (isSessionBusy && !holdForWatchdogRecovery) {
+    if (!deferVisibleAdmission) {
+      setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+    }
     if (!reservedTurnBoundaryItem && queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
     }
@@ -9360,7 +9418,16 @@ export async function enqueueUserMessage(
     channelDelivery,
   };
   if (!options?.beforeDispatch) {
-    await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
+    try {
+      await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
+    } catch (error) {
+      await rollbackFailedBuiltinUserSurface(userMessage.id);
+      reportBuiltinAdmissionPersistenceFailure(queueId, requestId, error);
+      throw error;
+    }
+  }
+  if (!deferVisibleAdmission) {
+    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
   }
 
   if (admissionTicket?.canceled) {
@@ -9751,6 +9818,29 @@ export async function cancelImRequest(
     broadcast('queue:cancelled', { queueId: removed.turnBoundary.queueId });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=turn-boundary (never yielded to CLI)`);
     return { aborted: true, mode: 'queued' };
+  }
+  // Admission has already transferred to the active turn before its user row
+  // is durably persisted, but the output-owner FIFO is created only at the SDK
+  // yield. Cancellation in that narrow window must terminalize the exact IM
+  // request instead of looking only at the (not-yet-created) FIFO head.
+  const activeSource = getCurrentTurnSourceItem();
+  if (
+    activeSource?.requestId === requestId
+    && !hasPendingOutputOwnerByQueueId(activeSource.id)
+    && isTurnInFlight()
+  ) {
+    if (imRequestRegistry.get(requestId)) {
+      finalizeImRequest(
+        requestId,
+        'cancelled',
+        'cancelled',
+        buildImCancelledPayload(),
+        true,
+      );
+    }
+    console.log(`[agent] cancelImRequest requestId=${requestId} mode=running phase=admission-persist`);
+    await interruptCurrentResponse(reason);
+    return { aborted: true, mode: 'running' };
   }
   // Active turn? (queue head matches)
   if (peekPendingOutputOwner()?.requestId === requestId && isTurnInFlight()) {
@@ -13694,10 +13784,36 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
           admissionActivityAt,
         );
       } catch (error) {
-        // The row is appended/broadcast before persistence. Keep the admitted
-        // turn moving so it cannot become an orphan bubble; terminal
-        // persistence will retry from the unchanged cursor.
-        console.error('[agent] admitted user message persistence failed; continuing runtime dispatch:', error);
+        const failedSurface = item.deferredUserSurface;
+        item.deferredUserSurface = undefined;
+        await rollbackFailedBuiltinUserSurface(failedSurface.message.id);
+        if (
+          lifecycleState.abortRequested
+          || isInterruptingResponse
+          || !isStreamingMessage
+          || getCurrentTurnSourceItem() !== item
+        ) {
+          item.resolve();
+          return;
+        }
+        const admissionError = reportBuiltinAdmissionPersistenceFailure(
+          item.id,
+          item.requestId,
+          error,
+        );
+        const terminalError = `Failed to persist user message before runtime dispatch: ${admissionError}`;
+        if (!item.requestId || imRequestRegistry.get(item.requestId)) {
+          finalizeImRequest(
+            item.requestId,
+            'error',
+            'failed',
+            buildImErrorPayload(terminalError),
+            true,
+          );
+        }
+        builtinTurnLifecycle.failAdmittedTurnSetup(terminalError);
+        item.resolve();
+        continue;
       }
       item.deferredUserSurface = undefined;
     } else if (getSessionMetadata(sessionId)?.materializationState === 'prepared') {
