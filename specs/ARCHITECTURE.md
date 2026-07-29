@@ -603,12 +603,13 @@ PTY 进程由 `portable-pty` 管理，**不走** `process_cmd`。
 
 ### 12. 内嵌浏览器 (`src-tauri/src/browser.rs` + `src/renderer/components/BrowserPanel.tsx`)
 
-Chat 分屏右侧面板的 URL 预览器（Tauri Multi-Webview）。AI Markdown 链接和 HTML 文件优先在此打开。
+Chat / Tab 自己持有的 URL 预览器（Tauri Multi-Webview）。AI Markdown 链接和 HTML 文件优先在此打开。宽布局呈现在右侧分屏；窄布局或关闭分屏能力时，同一个 `BrowserPanel` 原位切换为覆盖 Chat 的全屏面板，不重新 mount，也不重建绑定 `tabId` 的原生 child Webview。
 
 **关键设计：**
 - 依赖 Tauri `"unstable"` feature（`Window::add_child()` 多 Webview API）
 - **安全隔离**：`browser.json` Capability 零权限，Webview 无法访问 Tauri IPC；`on_navigation` 限制 http/https scheme
 - **Overlay 协调**：原生 Webview 浮于 React DOM 之上，Overlay 出现时通过 `closeLayer.hasOverlayLayer()` 自动 hide
+- **呈现与关闭 owner**：全屏条件只由“Browser 是当前 active split view”派生，不能由残留 `browserUrl` 单独决定；分屏、全屏、工具栏和 Tab × 共用同一个资源清理与剩余 view handoff callback
 - **Cookie 持久化**：同 App 所有 Webview 共享，默认持久化磁盘
 - **关闭即销毁**，不后台保活
 

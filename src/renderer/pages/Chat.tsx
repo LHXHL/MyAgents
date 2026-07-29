@@ -134,7 +134,12 @@ import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
-import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
+import {
+  DEFAULT_WORKSPACE_LAYOUT_METRICS,
+  nextSplitViewAfterBrowserClose,
+  resolveWorkspacePanelMode,
+  shouldPresentBrowserFullscreen,
+} from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
@@ -747,6 +752,29 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     setBrowserCurrentUrl(u);
   }, []);
 
+  // Browser resource cleanup has one owner. Every close entry point delegates
+  // here so a surviving terminal/file view always takes over consistently.
+  const handleBrowserClose = useCallback(() => {
+    setBrowserUrl(null);
+    setBrowserAlive(false);
+    setBrowserSourceFile(null);
+    setBrowserCurrentUrl('');
+    const nextView = nextSplitViewAfterBrowserClose({
+      terminalVisible: terminalPinned && terminalAlive,
+      fileVisible: splitFile !== null,
+    });
+    if (nextView) setSplitActiveView(nextView);
+  }, [terminalPinned, terminalAlive, splitFile]);
+
+  // Browser links stay inside MyAgents even when the split layout has no room.
+  // In that case the same BrowserPanel owner fills the Chat surface instead of
+  // falling back to a system browser.
+  const browserUsesFullscreen = shouldPresentBrowserFullscreen({
+    browserPresented: browserUrl !== null && splitActiveView === 'browser',
+    splitViewEnabled: isSplitViewEnabled,
+    narrowLayout: isNarrowLayout,
+  });
+
   // Derived: is the right split panel visible?
   const splitPanelVisible = splitFile !== null
     || (terminalPinned && (terminalAlive || splitActiveView === 'terminal'))
@@ -777,7 +805,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   const workspacePanelMode = resolveWorkspacePanelMode({
     viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
-    splitPanelVisible: isSplitViewEnabled && splitPanelVisible,
+    splitPanelVisible: isSplitViewEnabled && splitPanelVisible && !browserUsesFullscreen,
     splitRatio,
     contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
     sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
@@ -802,16 +830,18 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       return true;
     }
     if (splitActiveView === 'browser' && browserUrl) {
-      setBrowserUrl(null);
-      setBrowserAlive(false);
-      setBrowserSourceFile(null);
-      setBrowserCurrentUrl('');
-      if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-      else if (splitFile) setSplitActiveView('file');
+      handleBrowserClose();
       return true;
     }
     return false;
   }, 0);
+
+  // Fullscreen BrowserPanel is an overlay-like surface above Chat chrome.
+  useCloseLayer(() => {
+    if (!isActive || !browserUsesFullscreen || splitActiveView !== 'browser' || !browserUrl) return false;
+    handleBrowserClose();
+    return true;
+  }, 30);
 
   // Fullscreen preview triggered from split panel's "全屏预览" button
   const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
@@ -918,10 +948,10 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   // Open a URL in the embedded browser panel
   const handleOpenInBrowserPanel = useCallback((url: string) => {
-    startBrowserSplitTransitionIfNeeded();
+    if (isSplitViewEnabled && !isNarrowLayout) startBrowserSplitTransitionIfNeeded();
     setBrowserUrl(url);
     setSplitActiveView('browser');
-  }, [startBrowserSplitTransitionIfNeeded]);
+  }, [isNarrowLayout, isSplitViewEnabled, startBrowserSplitTransitionIfNeeded]);
 
   // Open empty browser from toolbar button.
   // First click → create blank webview (BROWSER_BLANK_URL is a data: URL, not
@@ -935,19 +965,8 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
 
   const handleBrowserCreated = useCallback(() => setBrowserAlive(true), []);
   const handleBrowserCreateFailed = useCallback(() => {
-    setBrowserAlive(false);
-    setBrowserUrl(null);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-  }, []);
-  const handleBrowserClose = useCallback(() => {
-    setBrowserUrl(null);
-    setBrowserAlive(false);
-    setBrowserSourceFile(null);
-    setBrowserCurrentUrl('');
-    if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-    else if (splitFile) setSplitActiveView('file');
-  }, [terminalPinned, terminalAlive, splitFile]);
+    handleBrowserClose();
+  }, [handleBrowserClose]);
 
   // Switch from browser preview to editor for a local HTML file.
   // Re-reads from disk to ensure editor shows the latest saved content
@@ -985,17 +1004,16 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
     }, 300);
   }, [browserUrl, tabId]);
 
-  // Stable context value for BrowserPanelContext (only provided when split view is available)
+  // Stable context value for the Chat-owned browser. Presentation (split vs.
+  // fullscreen) is decided here, not by individual link renderers.
   const browserPanelCtx = useMemo(
-    () => (isSplitViewEnabled && !isNarrowLayout ? { openUrl: handleOpenInBrowserPanel } : null),
-    [isSplitViewEnabled, isNarrowLayout, handleOpenInBrowserPanel],
+    () => ({ openUrl: handleOpenInBrowserPanel }),
+    [handleOpenInBrowserPanel],
   );
 
   // Listen for the global LinkContextMenuProvider's "预览（内置浏览器）" intent.
-  // Only the active Chat tab with an available BrowserPanel claims the action
-  // (preventDefault → dispatcher skips the system-browser fallback). Inactive
-  // Chats or non-split layouts deliberately don't claim, so the dispatcher
-  // falls back to openExternal — the menu item never feels dead.
+  // Only the active Chat tab claims the global context-menu action. Wide layouts
+  // use the split panel; narrow/disabled split layouts use fullscreen BrowserPanel.
   useEffect(() => {
     if (!isActive || !browserPanelCtx) return;
     const handler = (e: Event) => {
@@ -4853,7 +4871,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
-        style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}
+        style={{ width: splitPanelVisible && !browserUsesFullscreen ? `${splitRatio * 100}%` : '100%' }}
         data-chat-workspace-motion={shouldUseWorkspaceOverlay ? undefined : (workspacePanelMotion ?? undefined)}
       >
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-chat-conversation>
@@ -5368,14 +5386,17 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
         <>
           {/* Draggable divider — hidden when panel is not visible */}
           <div
-            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible ? 'hidden' : ''}`}
+            className={`z-10 flex w-1 cursor-col-resize items-center justify-center bg-[var(--line)] transition-colors hover:bg-[var(--accent)] ${!splitPanelVisible || browserUsesFullscreen ? 'hidden' : ''}`}
             onMouseDown={handleSplitDividerMouseDown}
           >
             <div className="h-8 w-0.5 rounded-full bg-[var(--ink-subtle)]" />
           </div>
           {/* Right panel — single flex-1 container for tab bar + file + terminal.
               Uses `hidden` when panel is not visible but terminal is alive in background. */}
-          <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}>
+          <div className={browserUsesFullscreen
+            ? 'absolute inset-0 z-30 flex min-w-0 flex-col overflow-hidden bg-[var(--paper)]'
+            : `flex min-w-0 flex-1 flex-col overflow-hidden ${!splitPanelVisible ? 'hidden' : ''}`}
+          >
             {/* Tab switcher — only when 2+ views are active */}
             {(() => {
               const activeViews = [splitFile, terminalPinned && terminalAlive, browserUrl].filter(Boolean).length;
@@ -5474,12 +5495,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setBrowserUrl(null);
-                        setBrowserAlive(false);
-                        setBrowserSourceFile(null);
-                        setBrowserCurrentUrl('');
-                        if (terminalPinned && terminalAlive) setSplitActiveView('terminal');
-                        else if (splitFile) setSplitActiveView('file');
+                        handleBrowserClose();
                       }}
                       className="ml-0.5 flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--paper-inset)] group-hover:opacity-100"
                       title={t('shell.split.closeBrowser')}
