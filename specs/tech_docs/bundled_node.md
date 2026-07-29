@@ -47,6 +47,7 @@ SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK 
 - 首次拒绝后每分钟最多放行一个 half-open probe。probe 是 Rust-owned lease，即使 Sidecar 退出或 settlement 丢失也会自动到期。
 - admission epoch 随 settlement 返回；旧 `ready` 不得清除更新的 failure epoch。只有 `initializationResult()` 成功才算 control plane ready。
 - executable identity 在应用更新/重装后变化，旧 circuit 自动失效。普通 Provider / network failure 只释放本次 admission，不打开 circuit。
+- circuit 是 best-effort 重试保护，不拥有 SDK 启动权。只有 Rust 显式返回携带 `EPERM` / `EACCES` / `ENOEXEC` 的 circuit denial 才能阻止本次启动；Sidecar identity 缺失/过期、Management transport 异常或响应畸形都必须跳过 circuit 并继续调用 SDK。Session 业务 ID 重绑时保留进程出生时注入的不可变 management identity。
 - Desktop 与 IM 显示可操作的更新/重装提示；内部 epoch/circuit 标记不得泄漏到用户错误文本。
 
 ## 应用结构

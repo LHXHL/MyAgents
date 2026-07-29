@@ -400,9 +400,19 @@ mod lifecycle_contract_tests {
     #[test]
     fn management_process_identity_covers_global_and_session_sidecars() {
         let mut manager = SidecarManager::new();
-        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
-        let session_generation = manager.current_generation("session-a");
-        assert!(manager.is_live_process("session-a", session_generation));
+        insert_test_sidecar(&mut manager, "pending-a", SidecarState::Healthy);
+        let session_generation = manager.current_generation("pending-a");
+        assert!(manager.is_live_process("pending-a", session_generation));
+
+        assert!(manager.upgrade_session_id("pending-a", "session-a"));
+        assert!(
+            manager.is_live_process("pending-a", session_generation),
+            "a logical Session key upgrade must not invalidate the immutable identity injected into the live process"
+        );
+        assert!(
+            !manager.is_live_process("session-a", session_generation),
+            "the mutable Session key is not a substitute for the process's injected management identity"
+        );
 
         let global_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
         manager.insert_instance(
@@ -453,6 +463,7 @@ mod lifecycle_contract_tests {
                 process: spawn_test_child(),
                 port: 31418,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 state,
                 owners: owners(vec![SidecarOwner::Tab("tab-a".to_string())]),
@@ -817,6 +828,10 @@ pub struct SessionSidecar {
     pub port: u16,
     /// Session ID this Sidecar serves
     pub session_id: String,
+    /// Immutable manager identity injected into `MYAGENTS_SIDECAR_ID` when
+    /// this process was spawned. Unlike `session_id`, this does not change
+    /// when pending/reset/handover flows rekey the logical Session.
+    pub management_id: String,
     /// Workspace path for this session
     /// Reserved for future use (e.g., workspace-aware operations)
     #[allow(dead_code)]

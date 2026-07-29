@@ -159,8 +159,14 @@ impl SidecarManager {
     /// the canonical Global Sidecar. Both process types consume the management
     /// API, while only Session Sidecars live in `sidecars`.
     pub fn is_live_process(&self, sidecar_id: &str, generation: u64) -> bool {
-        (self.sidecars.contains_key(sidecar_id) || self.instances.contains_key(sidecar_id))
-            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation)
+        let session_process_is_live = self.sidecars.iter().any(|(session_id, sidecar)| {
+            sidecar.management_id == sidecar_id
+                && self.sidecar_generations.get(session_id).copied() == Some(generation)
+        });
+        let global_process_is_live = self.instances.contains_key(sidecar_id)
+            && self.sidecar_generations.get(sidecar_id).copied() == Some(generation);
+
+        session_process_is_live || global_process_is_live
     }
 
     /// Allocate the next instance ID and stash it as this session's current
@@ -574,6 +580,7 @@ impl SidecarManager {
                 process: process.spawn().expect("spawn test sidecar process"),
                 port,
                 session_id: session_id.to_string(),
+                management_id: session_id.to_string(),
                 workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
                 state: SidecarState::Healthy,
                 owners: std::iter::once(owner).collect(),
@@ -902,7 +909,10 @@ impl SidecarManager {
 
         let mut upgraded = false;
 
-        // 1. Upgrade in sidecars HashMap
+        // 1. Upgrade the mutable logical Session binding in sidecars HashMap.
+        // `management_id` remains the immutable process-birth identity sent in
+        // MYAGENTS_SIDECAR_ID, so management requests from this live process
+        // remain valid across the rekey.
         // NOTE: Direct HashMap access (not insert_sidecar/remove_sidecar) because this is
         // a key rename, not a creation. Generation is migrated separately in step 2.
         if let Some(mut sidecar) = self.sidecars.remove(old_session_id) {

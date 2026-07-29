@@ -258,7 +258,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 
 这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"Renderer / Sidecar 控制面走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
 
-Rust 为 Global 与 Session 两类 Sidecar 都在 spawn 前分配 process-global 单调 generation，并注入真实 manager key（`MYAGENTS_SIDECAR_ID`）；Management API 以 live `(sidecarId, generation)` 校验 caller，不能给 Global 伪造 Session identity。SDK native child 的 EPERM / EACCES / ENOEXEC circuit 归 Rust 应用进程持有：admission 携带 epoch，half-open lease 自动过期，旧 settlement 不能清除较新的 failure epoch。只有 Management API transport 真不可达时 Node 可 fail-open；`invalid_request` / `stale_sidecar` 必须 fail-closed。
+Rust 为 Global 与 Session 两类 Sidecar 都在 spawn 前分配 process-global 单调 generation，并注入不可变的进程管理 identity（`MYAGENTS_SIDECAR_ID`）；Session pending / reset / handover 只迁移可变的业务 `sessionId` key，Management API 仍以进程出生时的 `(sidecarId, generation)` 校验 caller，不能给 Global 伪造 Session identity。SDK native child 的 EPERM / EACCES / ENOEXEC circuit 归 Rust 应用进程持有：admission 携带 epoch，half-open lease 自动过期，旧 settlement 不能清除较新的 failure epoch。该 circuit 是 best-effort 重试保护而非 SDK 启动 authority：只有携带上述确定性系统错误的显式 circuit denial 可以阻止启动；identity 缺失、`invalid_request` / `stale_sidecar`、transport 异常或畸形响应只跳过 circuit，继续调用 SDK，生命周期清理由 Sidecar owner 收敛。
 
 ---
 

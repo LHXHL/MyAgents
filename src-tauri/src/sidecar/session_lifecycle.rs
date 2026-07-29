@@ -904,6 +904,7 @@ fn create_new_session_sidecar<R: Runtime>(
         process: child,
         port,
         session_id: session_id.to_string(),
+        management_id: session_id.to_string(),
         workspace_path: workspace_path.to_path_buf(),
         state: SidecarState::Starting,
         owners,
