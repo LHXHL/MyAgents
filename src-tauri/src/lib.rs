@@ -1155,6 +1155,12 @@ pub fn run() {
                 }
             };
 
+            // Arm the App-level persisted Session observer before scheduling
+            // startup writers. The watcher also emits a broad readiness
+            // invalidation after its OS watches and baseline are established,
+            // closing the unavoidable background-thread startup interval.
+            session_metadata::spawn_session_metadata_watcher(app.handle().clone());
+
             // Start the internal control plane before any backend automation can
             // create a Sidecar that needs MYAGENTS_MANAGEMENT_PORT.
             let automation_app_handle = app.handle().clone();
