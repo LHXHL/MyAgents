@@ -452,10 +452,18 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
           ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
           : await svc.readPreview({ path });
         if (!isMountedRef.current) return;
-        setPreviewFile(prev => prev ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false } : null);
+        setPreviewFile(prev => (
+          prev?.path === path && prev.sourceScope === scope
+            ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false }
+            : prev
+        ));
       } catch (err) {
         if (!isMountedRef.current) return;
-        setPreviewFile(prev => prev ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' } : null);
+        setPreviewFile(prev => (
+          prev?.path === path && prev.sourceScope === scope
+            ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' }
+            : prev
+        ));
       }
     })();
     return true;

@@ -40,6 +40,12 @@ vi.mock('@/context/ImagePreviewContext', () => ({
   useImagePreview: () => ({ openPreview: mocks.openImagePreview }),
 }));
 
+vi.mock('@/components/FilePreviewModal', () => ({
+  default: ({ path, content }: { path: string; content: string }) => (
+    <output data-testid="fullscreen-file-preview">{JSON.stringify({ path, content })}</output>
+  ),
+}));
+
 vi.mock('@/hooks/useWorkspaceFileService', () => ({
   useWorkspaceFileService: () => ({
     isAvailable: true,
@@ -83,6 +89,14 @@ function renderFloatingMarkdown(markdown: string) {
       menuProfile="floatingBall"
       onOpenMyAgentsPreview={mocks.onOpenMyAgentsPreview}
     >
+      <Markdown>{markdown}</Markdown>
+    </FileActionProvider>,
+  );
+}
+
+function renderFullscreenMarkdown(markdown: string) {
+  render(
+    <FileActionProvider workspacePath={WORKSPACE}>
       <Markdown>{markdown}</Markdown>
     </FileActionProvider>,
   );
@@ -156,6 +170,36 @@ describe('Markdown local file links', () => {
         initialLineNumber: 42,
       }));
     });
+  });
+
+  it('does not let a stale fullscreen read replace a newer file target', async () => {
+    let resolveA!: (value: { name: string; content: string; size: number }) => void;
+    let resolveB!: (value: { name: string; content: string; size: number }) => void;
+    mocks.checkPaths.mockResolvedValue({
+      results: {
+        'notes/a.md': { exists: true, type: 'file' },
+        'notes/b.md': { exists: true, type: 'file' },
+      },
+    });
+    mocks.readPreview.mockImplementation(({ path }: { path: string }) => new Promise((resolve) => {
+      if (path === 'notes/a.md') resolveA = resolve;
+      if (path === 'notes/b.md') resolveB = resolve;
+    }));
+    renderFullscreenMarkdown('[A](notes/a.md) [B](notes/b.md)');
+
+    fireEvent.click(screen.getByRole('link', { name: 'A' }));
+    fireEvent.click(screen.getByRole('link', { name: 'B' }));
+    await waitFor(() => expect(mocks.readPreview).toHaveBeenCalledTimes(2));
+
+    resolveB({ name: 'b.md', content: 'content B', size: 9 });
+    await waitFor(() => expect(screen.getByTestId('fullscreen-file-preview')).toHaveTextContent(
+      JSON.stringify({ path: 'notes/b.md', content: 'content B' }),
+    ));
+    resolveA({ name: 'a.md', content: 'content A', size: 9 });
+
+    await waitFor(() => expect(screen.getByTestId('fullscreen-file-preview')).toHaveTextContent(
+      JSON.stringify({ path: 'notes/b.md', content: 'content B' }),
+    ));
   });
 
   it('previews real absolute local links outside the active workspace', async () => {

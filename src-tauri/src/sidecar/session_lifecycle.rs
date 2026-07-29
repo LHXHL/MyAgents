@@ -1240,18 +1240,31 @@ pub async fn cmd_upgrade_session_id(
     state: tauri::State<'_, ManagedSidecarManager>,
     oldSessionId: String,
     newSessionId: String,
+    tabId: String,
 ) -> Result<bool, String> {
     let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &newSessionId]).await;
+    {
+        let manager = state.lock().map_err(|e| e.to_string())?;
+        if manager.session_id_upgrade_is_already_applied_for_tab(
+            &oldSessionId,
+            &newSessionId,
+            &tabId,
+        ) {
+            return Ok(true);
+        }
+    }
     if has_persisted_session_owner(&oldSessionId).await?
         || has_persisted_session_owner(&newSessionId).await?
     {
         return Ok(false);
     }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
-    if manager.session_has_persistent_owners(&oldSessionId) {
+    if manager.session_has_persistent_owners(&oldSessionId)
+        || manager.session_has_persistent_owners(&newSessionId)
+    {
         return Ok(false);
     }
-    Ok(manager.upgrade_session_id(&oldSessionId, &newSessionId))
+    Ok(manager.upgrade_session_id_for_tab(&oldSessionId, &newSessionId, &tabId))
 }
 
 /// Check whether a session identity must remain stable after a Tab detaches.

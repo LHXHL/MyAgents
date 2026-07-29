@@ -96,6 +96,24 @@ describe('issue #336 — delete vs persist resurrection', () => {
         expect(existsSync(jsonlPath(meta.id))).toBe(true);
     });
 
+    it('treats a durable transcript append as success when only derived stats fail', async () => {
+        const meta = await store.createSession('/tmp/workspace-stats-failure');
+        mkdirSync(sessionsTmpJson());
+
+        try {
+            const result = await store.saveSessionMessages(meta.id, [msg(11)]);
+
+            expect(result).toMatchObject({
+                ok: true,
+                action: 'appended',
+                count: 1,
+            });
+            expect(readFileSync(jsonlPath(meta.id), 'utf-8')).toContain('message 11');
+        } finally {
+            rmSync(sessionsTmpJson(), { recursive: true, force: true });
+        }
+    });
+
     it('salvages valid metadata from a malformed sessions.json array before metadata creation', async () => {
         const beforeBackups = readdirSync(join(home, '.myagents'))
             .filter(name => name.startsWith('sessions.json.corrupt-')).length;

@@ -468,7 +468,6 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     isLoading,
     isSessionLoading,
     sessionRestoreError,
-    sessionRestoreMode,
     sessionState,
     sessionRuntime,
     sessionRuntimeSource,
@@ -1988,6 +1987,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
 
     const result = await materializePendingSessionConfig({
       pendingSessionId: sessionId,
+      tabId,
       workspacePath: agentDir,
       snapshotPatch: {},
       transport: {
@@ -1998,7 +1998,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     if (!adopted) throw new Error(`Failed to adopt Goal session ${result.sessionId}.`);
     setSessionMeta(result.metadata);
     return { sessionId: result.sessionId, workspacePath: agentDir };
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
   const {
     state: sessionGoalState,
     start: startGoal,
@@ -2568,6 +2568,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
 
       const result = await materializePendingSessionConfig({
         pendingSessionId: sessionId,
+        tabId,
         workspacePath: agentDir,
         snapshotPatch: patch,
         transport: {
@@ -2586,7 +2587,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
       throw new Error(`Session ${sessionId} not found.`);
     }
     setSessionMeta(updated);
-  }, [sessionId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+  }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
 
   // Persist a Tab-UI config change to session snapshot (owned) + project + agent.
   // See PRD v0.1.69 §4.3 rule 2. Toasts on persistence failure without rolling
@@ -5007,33 +5008,12 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
               sidecar boot. Persisted history keeps the same shell until its REST
               projection commits, so cold SSE replay is never a visible phase. */}
           <ChatBootOverlay
-            show={showStartupOverlay || (isSessionLoading && sessionRestoreMode === 'initial')}
-            error={sessionRestoreMode === 'initial' ? sessionRestoreError : null}
-            onRetry={sessionRestoreMode === 'initial' && sessionRestoreError && sessionId
+            show={showStartupOverlay || isSessionLoading}
+            error={sessionRestoreError}
+            onRetry={sessionRestoreError && sessionId
               ? () => { void retryCurrentSessionRestore(); }
               : undefined}
           />
-
-          {isSessionLoading && sessionRestoreMode === 'live-recovery' && (
-            <div
-              role={sessionRestoreError ? 'alert' : 'status'}
-              className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-xs text-[var(--ink-muted)] shadow-sm"
-            >
-              {sessionRestoreError
-                ? <AlertTriangle className="h-3.5 w-3.5 text-[var(--error)]" />
-                : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              <span>{sessionRestoreError ? t('shell.boot.restoreFailed') : t('shell.boot.loading')}</span>
-              {sessionRestoreError && (
-                <button
-                  type="button"
-                  onClick={() => { void retryCurrentSessionRestore(); }}
-                  className="rounded px-1.5 py-0.5 font-medium text-[var(--ink)] hover:bg-[var(--paper-inset)]"
-                >
-                  {t('shell.boot.retry')}
-                </button>
-              )}
-            </div>
-          )}
 
           {/* SDK 0.2.91+ terminal_reason banner. For error-severity reasons that
               already surface via agentError (image_error / model_error), suppress

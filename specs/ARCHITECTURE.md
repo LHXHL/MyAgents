@@ -562,11 +562,11 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 
 **导航 owner**：Global Sidebar、Search Overlay、通知 / Task deep-link 与开发者模式 Chat History 都必须进入 `App.handleOpenTargetSession()`，由 `planSessionOpen()` 只决定 open / jump；目标 Tab 的 create / reuse 统一交给 `reconcileExistingSessionTabOwner()`。应用启动时的 cold Tab hydration 不是导航入口，但激活后也复用同一个 reconcile，不得复制 Sidecar owner / activation 编排。Chat 与 `TabProvider` 不得自行把当前真实 Session A hot-swap 为 B；历史恢复也不得修改 Node runtime binding。旧 `POST /sessions/switch` 与 `SessionEngine.switchToExistingSession` 已删除。新对话、pending→real、desktop reset 与已确认 surface migration 继续走各自既有 identity handover，不属于历史导航。
 
-**Sidecar owner**：目标 Tab 的 Session identity 在 mount 前已经确定；App 的 `reconcileExistingSessionTabOwner()` 串起 exact Tab owner 的 ensure / activation / abandoned release，Rust manager 裁决创建、复用与释放。配置 push / adopt 只服从锁内返回的 `result.isNew`。
+**Sidecar owner**：目标 Tab 的 Session identity 在 mount 前已经确定；App 的 `reconcileExistingSessionTabOwner()` 串起 exact Tab owner 的 ensure / abandoned release，activation reconcile 由 Rust manager 在单锁内完成并保留并发 Task identity。pending→real adoption 按 Tab 串行，Rust 只接受 exact Tab owner 的 source 或已迁移 target。配置 push / adopt 只服从锁内返回的 `result.isNew`。
 
 **首屏历史 owner**：`TabProvider` 的 persisted restore lifecycle（`inactive / restoring / ready / failed`）独占可见性裁决；`liveRevisionFence` 只是该 lifecycle 下属的事件连续性机制，不是第二个 UI owner。真实 persisted Session 在首帧同步进入 `restoring`；`GET /sessions/:id` 是持久历史唯一权威，统一 normalize 后原子提交，完成前 `cold-history` 不得进入可见 messages。`target + restoreToken + connectionGeneration` 共同拒绝 stale REST 结果；恢复失败保持目标壳并禁止发送。MessageList 不再维护第二层 session-loading fade。
 
-**重连连续性**：同一 Sidecar 的新 transport generation 若延续已采纳 revision，直接更新 generation 并继续投影，不重新加载或闪动；revision gap / 无基线才进入同一 lifecycle 的 REST recovery。`session-sidecar:restarted` 表示进程内 revision epoch 已重置，必须立即从 REST 重建基线，不能拿旧进程序号比较。恢复期间 buffer snapshot 后的连续事件，完成时按 `snapshotRevision` 去重并 replay；持续 gap 最多自动补一张快照，随后进入 failed，只有用户在同一 target 上显式重试。
+**重连连续性**：同一 Sidecar 的新 transport generation 若延续已采纳 revision，直接更新 generation 并继续投影，不重新加载或闪动；revision gap / 无基线才进入同一 lifecycle 的 REST recovery。`session-sidecar:restarted` 表示新的权威进程 epoch，必须重新武装 REST restore 并重建基线，即使旧 epoch 已进入 failed；普通 revision 事件不能越过 failed 自动重试。恢复期间 buffer snapshot 后的连续事件，完成时按 `snapshotRevision` 去重并 replay；持续 gap 最多自动补一张快照，随后保持 failed，等待用户显式重试或下一次 Rust replacement epoch。
 
 **Live config 采纳**：Tab 加入活跃 IM/Task/Goal Sidecar 时，`/api/session/config` 返回 sidecar 的 runtime + external-runtime model + permissionMode，Tab 采纳 live config 而非 push 自己的；Chat 用 sticky `adoptedSessionRef` 防止 sessionMeta hydration 覆盖已采纳的值。
 

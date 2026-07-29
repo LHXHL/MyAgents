@@ -13,8 +13,10 @@ import {
   isAbortRequested,
   getQueryMcpMutation,
   getQueryMcpPrewarmOwner,
+  getSessionMutationBarrier,
   requestAbort,
   resetLifecycleForTest,
+  runSerializedSessionMutation,
   setQuerySession,
   setQueryMcpPrewarmOwner,
   settleQueryMcpPrewarmOwner,
@@ -207,6 +209,37 @@ describe('builtin-session owners', () => {
       ['same-task', { toolUseId: 'tool-replacement', description: 'replacement' }],
     ]);
     expect(hasQueryBackgroundTasks(replacementQuery)).toBe(false);
+  });
+
+  it('serializes session mutations and keeps the barrier through the final queued mutation', async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+
+    const first = runSerializedSessionMutation(async () => {
+      order.push('first:start');
+      await firstGate;
+      order.push('first:end');
+    });
+    const second = runSerializedSessionMutation(async () => {
+      order.push('second:start');
+      await secondGate;
+      order.push('second:end');
+    });
+    const barrier = getSessionMutationBarrier();
+
+    await vi.waitFor(() => expect(order).toEqual(['first:start']));
+    expect(barrier).not.toBeNull();
+    releaseFirst();
+    await first;
+    await vi.waitFor(() => expect(order).toEqual(['first:start', 'first:end', 'second:start']));
+    expect(getSessionMutationBarrier()).not.toBeNull();
+    releaseSecond();
+    await Promise.all([second, barrier]);
+    expect(order).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+    expect(getSessionMutationBarrier()).toBeNull();
   });
 
   it('lifecycle awaitSessionTermination force-cleans process state on timeout', async () => {

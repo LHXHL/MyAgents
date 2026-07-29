@@ -16,7 +16,7 @@ import {
   hashAgentNameSync,
 } from '@/analytics';
 import type { AssistantEntry, EntryIntent, HistoryEntrySource, PendingSessionBirthContext, Surface } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseTabSession, activateSession, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, cancelBackgroundCompletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, ensureSessionSidecar, releaseTabSession, activateSession, reconcileSessionTabActivation, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import CustomTitleBar from '@/components/CustomTitleBar';
@@ -1349,17 +1349,20 @@ export default function App() {
   // destroy a fixed Session identity. Claims are per Session, so unrelated
   // Tabs remain fully concurrent.
   const sessionResourceTransitionsRef = useRef<Map<string, SessionResourceTransitionClaim>>(new Map());
+  const tabSessionIdentityTransitionsRef = useRef<Map<string, Promise<void>>>(new Map());
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
   // - Tab.sessionId syncs with the actual session ID
   // - History dropdown can detect if session is already open in a Tab
   // - Rust HashMap keys are upgraded from "pending-xxx" to real session ID
-  const updateTabSessionId = useCallback(async (
+  const updateTabSessionId = useCallback((
     tabId: string,
     newSessionId: string,
     options?: AdoptMigratedSessionOptions,
   ): Promise<boolean> => {
+    const predecessor = tabSessionIdentityTransitionsRef.current.get(tabId) ?? Promise.resolve();
+    const operation = predecessor.catch(() => undefined).then(async (): Promise<boolean> => {
     // Find the current tab to get the old sessionId
     const currentTab = tabsRef.current.find(t => t.id === tabId);
     if (!currentTab) {
@@ -1400,31 +1403,40 @@ export default function App() {
 
       // Upgrade the session ID in Rust HashMap (sidecars + session_activations)
       // This is a no-op if oldSessionId is null or same as newSessionId
-      if (oldSessionId && oldSessionId !== newSessionId && !options?.sidecarAlreadyMigrated) {
-        const upgraded = await upgradeSessionId(oldSessionId, newSessionId);
+      if (oldSessionId && oldSessionId !== newSessionId) {
+        const upgraded = await upgradeSessionId(oldSessionId, newSessionId, tabId);
         console.log(`[App] Rust HashMap upgrade: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
         if (!upgraded) {
           console.error(`[App] Refusing to update tab ${tabId} sessionId because Rust sidecar upgrade failed: ${oldSessionId} -> ${newSessionId}`);
           return false;
         }
-        if (upgraded) {
+        if (upgraded && !options?.sidecarAlreadyMigrated) {
           const fbResult = await migrateFloatingBallSessionBinding(oldSessionId, newSessionId);
           if (fbResult.migrated) {
             console.log(`[App] Floating ball session binding migrated: ${oldSessionId} -> ${newSessionId}, notified=${fbResult.notified}`);
           }
         }
-      } else if (oldSessionId && oldSessionId !== newSessionId && options?.sidecarAlreadyMigrated) {
-        console.log(`[App] Skipping Rust HashMap upgrade for already-migrated sidecar: ${oldSessionId} -> ${newSessionId}`);
       }
 
       // Update UI state
-      setTabs(prev => prev.map(t =>
-        t.id === tabId ? { ...t, sessionId: newSessionId } : t
-      ));
+      flushSync(() => {
+        setTabs(prev => prev.map(t =>
+          t.id === tabId ? { ...t, sessionId: newSessionId } : t
+        ));
+      });
       return true;
     } finally {
       releaseTargetTransition?.();
     }
+    });
+    const settled = operation.then(() => undefined, () => undefined);
+    tabSessionIdentityTransitionsRef.current.set(tabId, settled);
+    void settled.finally(() => {
+      if (tabSessionIdentityTransitionsRef.current.get(tabId) === settled) {
+        tabSessionIdentityTransitionsRef.current.delete(tabId);
+      }
+    });
+    return operation;
   }, []);
 
   // Perform the actual tab close operation (pure function, no confirmation)
@@ -2021,10 +2033,10 @@ export default function App() {
    * Reconcile one existing Session with the exact Tab that displays it.
    *
    * This is the single App-owned ensure/activation path for history opens and
-   * cold restored Tabs. Activation is deliberately read after ensure: Sidecar
-   * startup may take seconds, during which a Task can claim or release the
-   * Session. Every await boundary is followed by a Tab identity check so a
-   * close/rebind cannot leave a phantom owner or activation behind.
+   * cold restored Tabs. Rust atomically reconciles activation after ensure so
+   * a Task claim racing the cold start cannot be overwritten by Renderer.
+   * Every await boundary is followed by a Tab identity check so a close/rebind
+   * cannot leave a phantom owner or activation behind.
    */
   const reconcileExistingSessionTabOwner = useCallback(async (
     tabId: string,
@@ -2044,37 +2056,12 @@ export default function App() {
         return null;
       }
 
-      // Never make an activation decision from a pre-ensure snapshot. A slow
-      // cold boot is wide enough for Task ownership and process ports to change.
-      const activation = await getSessionActivation(sessionId);
-      if (!tabStillTargetsSession()) {
-        await releaseTabSession(sessionId, tabId).catch(() => {});
-        ownerAcquired = false;
-        return null;
-      }
-
-      if (activation?.task_id) {
-        // Preserve the Task identity while adding this Tab to its projection.
-        // Rust commits replacement owners + activation port before ensure
-        // returns, so this operation changes only the Tab projection.
-        await updateSessionTab(sessionId, tabId);
-      } else {
-        // The exact Tab owner already exists, so releasing a background owner
-        // cannot stop the process. Re-check before writing activation because
-        // cancellation is asynchronous.
-        await cancelBackgroundCompletion(sessionId);
-        if (!tabStillTargetsSession()) {
-          await releaseTabSession(sessionId, tabId).catch(() => {});
-          ownerAcquired = false;
-          return null;
-        }
-        if (
-          activation?.tab_id !== tabId
-          || activation.port !== result.port
-          || activation.workspace_path !== agentDir
-        ) {
-          await activateSession(sessionId, tabId, null, result.port, agentDir, false);
-        }
+      const reconciled = await reconcileSessionTabActivation(
+        sessionId,
+        tabId,
+      );
+      if (!reconciled) {
+        throw new Error(`Rust refused activation reconcile for session ${sessionId} and tab ${tabId}`);
       }
 
       if (!tabStillTargetsSession()) {

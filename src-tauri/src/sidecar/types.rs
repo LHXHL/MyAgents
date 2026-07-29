@@ -434,6 +434,91 @@ mod lifecycle_contract_tests {
         assert!(!manager.is_live_process(GLOBAL_SIDECAR_ID, global_generation));
     }
 
+    #[test]
+    fn tab_scoped_identity_upgrade_accepts_only_the_exact_tab_owner() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-real", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-real")
+            .expect("session sidecar")
+            .add_owner(SidecarOwner::Task("task-1".to_string()));
+
+        assert!(!manager.upgrade_session_id_for_tab("pending-a", "session-real", "tab-b",));
+        assert!(manager.session_id_upgrade_is_already_applied_for_tab(
+            "pending-a",
+            "session-real",
+            "tab-a",
+        ));
+        assert!(manager.upgrade_session_id_for_tab("pending-a", "session-real", "tab-a",));
+    }
+
+    #[test]
+    fn tab_scoped_identity_upgrade_rejects_a_recovering_source() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "pending-recovery", SidecarState::Dead);
+        let recovering = manager
+            .sidecars
+            .remove("pending-recovery")
+            .expect("recovering sidecar");
+        manager
+            .recovering_sidecars
+            .insert("pending-recovery".to_string(), recovering);
+        manager.activate_session(
+            "pending-recovery".to_string(),
+            Some("tab-a".to_string()),
+            None,
+            31418,
+            "/tmp/workspace".to_string(),
+            false,
+        );
+
+        assert!(!manager.upgrade_session_id_for_tab("pending-recovery", "session-real", "tab-a",));
+        assert!(manager.recovering_sidecars.contains_key("pending-recovery"));
+        assert!(manager.session_activations.contains_key("pending-recovery"));
+        assert!(!manager.session_activations.contains_key("session-real"));
+    }
+
+    #[test]
+    fn tab_activation_reconcile_preserves_task_identity_atomically() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-task", SidecarState::Healthy);
+        let sidecar = manager
+            .get_session_sidecar_mut("session-task")
+            .expect("session sidecar");
+        sidecar.add_owner(SidecarOwner::Task("task-1".to_string()));
+        sidecar.add_owner(SidecarOwner::BackgroundCompletion(
+            "session-task".to_string(),
+        ));
+        sidecar.port = 32001;
+        sidecar.workspace_path = PathBuf::from("/tmp/revived");
+        manager.activate_session(
+            "session-task".to_string(),
+            None,
+            Some("task-1".to_string()),
+            31418,
+            "/tmp/original".to_string(),
+            true,
+        );
+
+        assert!(manager.reconcile_session_tab_activation("session-task", "tab-a",));
+
+        let activation = manager
+            .get_session_activation("session-task")
+            .expect("activation");
+        assert_eq!(activation.tab_id.as_deref(), Some("tab-a"));
+        assert_eq!(activation.task_id.as_deref(), Some("task-1"));
+        assert_eq!(activation.port, 32001);
+        assert_eq!(activation.workspace_path, "/tmp/revived");
+        assert!(activation.is_cron_task);
+        assert!(!manager
+            .get_session_sidecar_mut("session-task")
+            .expect("session sidecar")
+            .owners
+            .contains(&SidecarOwner::BackgroundCompletion(
+                "session-task".to_string(),
+            )));
+    }
+
     fn spawn_test_child() -> Child {
         #[cfg(windows)]
         let mut cmd = {

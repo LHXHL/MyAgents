@@ -55,7 +55,7 @@ use cleanup::{
 #[allow(unused_imports)]
 pub use commands::{
     cmd_activate_session, cmd_deactivate_session, cmd_get_session_activation,
-    cmd_update_session_tab,
+    cmd_reconcile_session_tab_activation, cmd_update_session_tab,
 };
 #[allow(unused_imports)]
 pub use cron_execute::{

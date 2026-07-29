@@ -1257,16 +1257,20 @@ export async function saveSessionMessages(
 
                 // Recalculate full stats after rewrite
                 const fullStats = calculateSessionStats(messages);
-                await withSessionsLock(async () => {
-                    const all = readSessionsIndexForWrite();
-                    const index = all.findIndex(s => s.id === sessionId);
-                    if (index < 0) return;
-                    const session = all[index];
-                    if (index >= 0) {
+                try {
+                    await withSessionsLock(async () => {
+                        const all = readSessionsIndexForWrite();
+                        const index = all.findIndex(s => s.id === sessionId);
+                        if (index < 0) return;
+                        const session = all[index];
                         all[index] = { ...session, stats: fullStats };
                         atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-                    }
-                });
+                    });
+                } catch (error) {
+                    // JSONL is the transcript authority. A derived stats failure
+                    // must not make callers roll back a row that is already durable.
+                    console.warn(`[SessionStore] Transcript rewrite committed for ${sessionId}, but stats update failed:`, error);
+                }
                 return { ok: true, action: 'rewritten', count: messages.length, totalCount: messages.length };
             }
 
@@ -1292,39 +1296,41 @@ export async function saveSessionMessages(
 
                 // Update stats in sessions.json atomically (read + calculate + write under lock)
                 const incrementalStats = calculateSessionStats(newMessages);
-                await withSessionsLock(async () => {
-                    // Read metadata inside the lock to prevent TOCTOU race
-                    const all = readSessionsIndexForWrite();
-                    const index = all.findIndex(s => s.id === sessionId);
-                    if (index < 0) {
-                        // Appended to an EXISTING file whose index entry is gone
-                        // (legacy orphan / deleted mid-append). Data is preserved but
-                        // invisible to every session list — say so instead of silently
-                        // diverging (issue #336 family).
-                        console.warn(`[SessionStore] appended ${newMessages.length} message(s) to unindexed session ${sessionId} — sessions.json has no entry; stats not updated`);
-                        return;
-                    }
-                    const session = all[index];
+                try {
+                    await withSessionsLock(async () => {
+                        // Read metadata inside the lock to prevent TOCTOU race
+                        const all = readSessionsIndexForWrite();
+                        const index = all.findIndex(s => s.id === sessionId);
+                        if (index < 0) {
+                            // Appended to an EXISTING file whose index entry is gone
+                            // (legacy orphan / deleted mid-append). Data is preserved but
+                            // invisible to every session list — say so instead of silently
+                            // diverging (issue #336 family).
+                            console.warn(`[SessionStore] appended ${newMessages.length} message(s) to unindexed session ${sessionId} — sessions.json has no entry; stats not updated`);
+                            return;
+                        }
+                        const session = all[index];
 
-                    const existingStats = session.stats ?? {
-                        messageCount: 0,
-                        totalInputTokens: 0,
-                        totalOutputTokens: 0,
-                    };
-                    const updatedStats: SessionStats = {
-                        messageCount: existingStats.messageCount + incrementalStats.messageCount,
-                        totalInputTokens: existingStats.totalInputTokens + incrementalStats.totalInputTokens,
-                        totalOutputTokens: existingStats.totalOutputTokens + incrementalStats.totalOutputTokens,
-                        totalCacheReadTokens: ((existingStats.totalCacheReadTokens ?? 0) + (incrementalStats.totalCacheReadTokens ?? 0)) || undefined,
-                        totalCacheCreationTokens: ((existingStats.totalCacheCreationTokens ?? 0) + (incrementalStats.totalCacheCreationTokens ?? 0)) || undefined,
-                    };
+                        const existingStats = session.stats ?? {
+                            messageCount: 0,
+                            totalInputTokens: 0,
+                            totalOutputTokens: 0,
+                        };
+                        const updatedStats: SessionStats = {
+                            messageCount: existingStats.messageCount + incrementalStats.messageCount,
+                            totalInputTokens: existingStats.totalInputTokens + incrementalStats.totalInputTokens,
+                            totalOutputTokens: existingStats.totalOutputTokens + incrementalStats.totalOutputTokens,
+                            totalCacheReadTokens: ((existingStats.totalCacheReadTokens ?? 0) + (incrementalStats.totalCacheReadTokens ?? 0)) || undefined,
+                            totalCacheCreationTokens: ((existingStats.totalCacheCreationTokens ?? 0) + (incrementalStats.totalCacheCreationTokens ?? 0)) || undefined,
+                        };
 
-                    // Write directly (we already hold the lock — don't call saveSessionMetadata which would deadlock)
-                    if (index >= 0) {
+                        // Write directly (we already hold the lock — don't call saveSessionMetadata which would deadlock)
                         all[index] = { ...session, stats: updatedStats };
                         atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-                    }
-                });
+                    });
+                } catch (error) {
+                    console.warn(`[SessionStore] Transcript append committed for ${sessionId}, but stats update failed:`, error);
+                }
                 return { ok: true, action: 'appended', count: newMessages.length, totalCount: messages.length };
             }
 

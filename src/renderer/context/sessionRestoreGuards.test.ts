@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     isRestoredSession,
+    isRestoreActionBlocked,
     shouldAcceptLiveTurnEvent,
     shouldSkipHistoryReplay,
     shouldClearHistoryOnInit,
@@ -44,6 +45,15 @@ describe('isRestoredSession', () => {
         expect(isRestoredSession(SID, null)).toBe(false);
         // Two nulls must NOT be a match — that is the first-ever / no-session state.
         expect(isRestoredSession(null, null)).toBe(false);
+    });
+});
+
+describe('isRestoreActionBlocked', () => {
+    it('blocks every mutation surface while history authority is restoring or failed', () => {
+        expect(isRestoreActionBlocked('restoring')).toBe(true);
+        expect(isRestoreActionBlocked('failed')).toBe(true);
+        expect(isRestoreActionBlocked('inactive')).toBe(false);
+        expect(isRestoreActionBlocked('ready')).toBe(false);
     });
 });
 

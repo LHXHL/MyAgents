@@ -468,6 +468,7 @@ pub fn run() {
             sidecar::commands::cmd_activate_session,
             sidecar::commands::cmd_deactivate_session,
             sidecar::commands::cmd_update_session_tab,
+            sidecar::commands::cmd_reconcile_session_tab_activation,
             // Session Inbox cross-sidecar delivery (PRD 0.2.18)
             crate::inbox::deliver::cmd_inbox_deliver,
             // Session-centric Sidecar API (v0.1.11)

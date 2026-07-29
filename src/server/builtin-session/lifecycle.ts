@@ -55,6 +55,7 @@ let preWarmDisabled = false;
 let systemInitInfo: SystemInitInfo | null = null;
 let sdkControlReady = false;
 let liveRevision = 0;
+let sessionMutationBarrier: Promise<void> | null = null;
 
 function replaceQuerySession(session: Query | null): void {
   if (querySession === session) return;
@@ -163,6 +164,28 @@ export function clearQuerySession(): Query | null {
   const session = querySession;
   replaceQuerySession(null);
   return session;
+}
+
+/** Serialize reset/switch/recovery mutations against the shared builtin Session. */
+export function runSerializedSessionMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const predecessor = sessionMutationBarrier ?? Promise.resolve();
+  let release!: () => void;
+  const operationDone = new Promise<void>((resolve) => { release = resolve; });
+  const barrier = predecessor.catch(() => undefined).then(() => operationDone);
+  sessionMutationBarrier = barrier;
+
+  return predecessor
+    .catch(() => undefined)
+    .then(operation)
+    .finally(() => {
+      release();
+      if (sessionMutationBarrier === barrier) sessionMutationBarrier = null;
+    });
+}
+
+/** Current barrier includes every session mutation queued at read time. */
+export function getSessionMutationBarrier(): Promise<void> | null {
+  return sessionMutationBarrier;
 }
 
 /** Record a task only against the exact Query that emitted task_started. */
@@ -630,4 +653,5 @@ export function resetLifecycleForTest(): void {
   preWarmDisabled = false;
   systemInitInfo = null;
   sdkControlReady = false;
+  sessionMutationBarrier = null;
 }

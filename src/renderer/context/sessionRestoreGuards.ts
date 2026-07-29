@@ -22,6 +22,12 @@
 
 import type { ContentBlock } from '@/types/chat';
 
+export function isRestoreActionBlocked(
+    phase: 'inactive' | 'restoring' | 'ready' | 'failed',
+): boolean {
+    return phase === 'restoring' || phase === 'failed';
+}
+
 /**
  * Normalize the persisted wire representation once, before it reaches the
  * visible message projection. Older transcripts may contain a JSON-stringified

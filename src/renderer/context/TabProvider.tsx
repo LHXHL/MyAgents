@@ -41,7 +41,7 @@ import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
-import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit, reconcileLiveRecoveryHistory, normalizeSessionMessageContent } from './sessionRestoreGuards';
+import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit, reconcileLiveRecoveryHistory, normalizeSessionMessageContent, isRestoreActionBlocked } from './sessionRestoreGuards';
 import {
     classifySessionActivity,
     decideSystemInitSessionId,
@@ -4051,7 +4051,7 @@ export default function TabProvider({
                 console.log(`[TabProvider ${tabId}] Session Sidecar restarted on port ${port}; invalidating tab URL cache`);
                 resetTabServerUrlCache(tabId);
                 const restore = persistedRestoreLifecycleRef.current;
-                if (restore.phase === 'failed' || isPendingSessionId(restartedSid)) return;
+                if (isPendingSessionId(restartedSid)) return;
                 // liveRevision is process-local. A replacement Sidecar starts a
                 // new epoch, so an old numeric baseline cannot be compared with
                 // its revisions even if the transport generation later looks
@@ -4088,8 +4088,7 @@ export default function TabProvider({
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
-        const restorePhase = persistedRestoreLifecycleRef.current.phase;
-        if (restorePhase === 'restoring' || restorePhase === 'failed') return false;
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         const visibleQueueText = queueDisplayText(trimmed);
 
         // Detect skill/slash command: /command at start of message (for analytics)
@@ -4909,6 +4908,7 @@ export default function TabProvider({
 
     // Cancel a queued message — returns the original text (for restoring to input)
     const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return null;
         try {
             const response = await postJson<{ success: boolean; stale?: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
             if (response.success) {
@@ -4933,6 +4933,7 @@ export default function TabProvider({
     // Force-execute a queued message (interrupt current + run immediately)
     // Does NOT optimistically remove from queue — queue:started SSE is the single source of truth
     const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         const sid = currentSessionIdRef.current ?? sessionId;
         const releaseSendTransition = sid
             ? claimSessionOpeningTransition(sid)
@@ -4958,6 +4959,7 @@ export default function TabProvider({
 
     // Respond to permission request
     const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
         const permission = requestIdOverride
             ? pendingPermissions.find(item => item.requestId === requestIdOverride)
             : pendingPermission;
@@ -4989,6 +4991,7 @@ export default function TabProvider({
 
     // Respond to AskUserQuestion request
     const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
         if (!pendingAskUserQuestion) return;
 
         const requestId = pendingAskUserQuestion.requestId;
@@ -5015,6 +5018,7 @@ export default function TabProvider({
     // card would lock into "已拒绝" while the SDK's pendingExitPlanMode entry
     // hung waiting for a response that never arrives.
     const respondExitPlanMode = useCallback(async (approved: boolean, feedback?: string): Promise<boolean> => {
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return false;
         if (!pendingExitPlanMode) return false;
         const snapshot = pendingExitPlanMode;
         const requestId = pendingExitPlanMode.requestId;

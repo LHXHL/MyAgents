@@ -23,14 +23,21 @@ describe('App Shell chrome contract', () => {
   it('keeps the Chat owner subtree mounted while its existing boot surface covers startup', () => {
     const chat = source('src/renderer/pages/Chat.tsx');
     const app = source('src/renderer/App.tsx');
+    const tabProvider = source('src/renderer/context/TabProvider.tsx');
 
     expect(app).toContain('<Suspense fallback={<ChatBootOverlay />}>');
     expect(app).not.toContain(') : isLoading ? (\n        <ChatBootOverlay />');
-    expect(chat).toContain("show={showStartupOverlay || (isSessionLoading && sessionRestoreMode === 'initial')}");
-    expect(chat).toContain("error={sessionRestoreMode === 'initial' ? sessionRestoreError : null}");
-    expect(chat).toContain("isSessionLoading && sessionRestoreMode === 'live-recovery'");
+    expect(chat).toContain('show={showStartupOverlay || isSessionLoading}');
+    expect(chat).toContain('error={sessionRestoreError}');
+    expect(chat).not.toContain("isSessionLoading && sessionRestoreMode === 'live-recovery'");
     expect(chat).toContain('if (isSessionLoading || (!text');
     expect(chat).toContain('sendBlocked={isSessionLoading}');
+    expect(tabProvider.match(/isRestoreActionBlocked/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+    const replacementHandler = tabProvider.slice(
+      tabProvider.indexOf("listenWithCleanup<{ sessionId: string; port: number }>('session-sidecar:restarted'"),
+      tabProvider.indexOf('// Send message with optional images'),
+    );
+    expect(replacementHandler).not.toContain("restore.phase === 'failed'");
   });
 
   it('uses one simple right-panel glyph and custom tips at the stable far-right slot', () => {
