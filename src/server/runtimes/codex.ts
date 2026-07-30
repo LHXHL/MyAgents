@@ -23,7 +23,12 @@ import type { AgentPlanTodo, AgentRuntime, RuntimeConfigCapabilities, RuntimePro
 import { StaleRuntimeSessionError } from './types';
 import type { InteractionScenario } from '../system-prompt';
 import { shouldDisallowAskUserQuestion } from '../host-interaction';
-import { mapCodexTokenUsage, type CodexThreadTokenUsage } from './codex-token-usage';
+import {
+  addCodexExactResponseUsage,
+  mapCodexTokenUsage,
+  type CodexExactUsageTotals,
+  type CodexThreadTokenUsage,
+} from './codex-token-usage';
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
@@ -1286,7 +1291,7 @@ export function resolveTopLevelSpawnCard(
  *     finalize the user's turn early + resetTurnAccumulators() mid-fan-out.
  *     A child's turn/plan/updated would also overwrite the main AgentStatusPanel
  *     todo snapshot.
- *   - USAGE (thread/tokenUsage/updated): a child's token usage would otherwise
+ *   - USAGE (thread/tokenUsage/updated, rawResponse/completed): a child's token usage would otherwise
  *     flow through as a `usage` event and pollute the MAIN session's context
  *     indicator + persisted lastContextUsage (external-session attributes every
  *     `usage` event to the main turn). Codex sends { threadId, turnId, tokenUsage }.
@@ -1300,6 +1305,7 @@ const CHILD_GATED_METHODS: ReadonlySet<string> = new Set([
   'thread/status/changed',
   'thread/closed',
   'thread/tokenUsage/updated',
+  'rawResponse/completed',
 ]);
 export function isChildThreadGatedMethod(method: string): boolean {
   return CHILD_GATED_METHODS.has(method);
@@ -1759,6 +1765,50 @@ function recordLegacySpawnAgentLifecycle(
 
 type CodexV2InteractionDelivery = 'queue-only' | 'trigger-turn';
 
+type CodexExactTurnUsageState = {
+  responseIds: Set<string>;
+  complete: boolean;
+  usage: CodexExactUsageTotals;
+};
+
+function recordCodexExactResponseUsage(
+  exactUsageByTurn: Map<string, CodexExactTurnUsageState>,
+  params: Record<string, unknown>,
+): void {
+  const turnId = stringValue(params.turnId);
+  const responseId = stringValue(params.responseId);
+  if (!turnId || !responseId) return;
+
+  const existing = exactUsageByTurn.get(turnId);
+  if (existing?.responseIds.has(responseId)) return;
+
+  const next: CodexExactTurnUsageState = existing ?? {
+    responseIds: new Set<string>(),
+    complete: true,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+  };
+  next.responseIds.add(responseId);
+  const nextUsage = addCodexExactResponseUsage(next.usage, params.usage);
+  if (!nextUsage) {
+    // One missing provider usage would make a partial sum look exact. Invalidate
+    // the whole turn and let thread/tokenUsage/updated remain authoritative.
+    next.complete = false;
+  } else {
+    next.usage = nextUsage;
+  }
+  exactUsageByTurn.set(turnId, next);
+}
+
+function takeCodexExactTurnUsage(
+  exactUsageByTurn: Map<string, CodexExactTurnUsageState>,
+  turnId: string | undefined,
+): CodexExactUsageTotals | null {
+  if (!turnId) return null;
+  const exact = exactUsageByTurn.get(turnId);
+  exactUsageByTurn.delete(turnId);
+  return exact?.complete && exact.responseIds.size > 0 ? exact.usage : null;
+}
+
 function hasDeferredToolOwner(
   proc: CodexSubAgentRoutingState,
   toolUseId: string,
@@ -2104,6 +2154,11 @@ class CodexProcess implements RuntimeProcess {
   // official raw item stream so the originating function name can be latched
   // by call_id before the lossy terminal item arrives.
   codexV2InteractionDeliveryByCallId = new Map<string, CodexV2InteractionDelivery>();
+  // Codex 0.146 rawResponse/completed reports provider-authored usage for one
+  // Responses API completion. A turn can make several completions around tool
+  // calls, so accumulate them by turn and dedupe response ids until the root
+  // terminal hands one exact delta to external-session's existing usage owner.
+  exactUsageByTurn = new Map<string, CodexExactTurnUsageState>();
   // `interacted` conflates queue-only send_message and turn-triggering
   // followup_task. Remember an activity that precedes turn/started so the
   // latter does not install a stale causal fence, but never infer execution
@@ -3007,7 +3062,8 @@ export class CodexRuntime implements AgentRuntime {
       // Skip noisy notifications from logging: deltas, legacy duplicates, account events
       const isNoisy = method.startsWith('codex/event/') || method.startsWith('account/')
         || method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta'
-        || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta';
+        || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta'
+        || method === 'rawResponse/completed';
       if (!isNoisy) {
         let detail = '';
         if (method === 'item/started' || method === 'item/completed') {
@@ -3446,6 +3502,7 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.subAgentThreadsAwaitingActivity.clear();
     codexProc.subAgentActivitySeenBeforeTurnStart.clear();
     codexProc.codexV2InteractionDeliveryByCallId.clear();
+    codexProc.exactUsageByTurn.clear();
     codexProc.subAgentInterruptsInFlight.clear();
     codexProc.pendingMainTurnCompletion = null;
     codexProc.interruptPendingSubAgentTurns = false;
@@ -3745,7 +3802,19 @@ export class CodexRuntime implements AgentRuntime {
 
       case 'turn/completed': {
         const turn = p.turn;
+        const completedTurnId = stringValue(objectValue(turn).id)
+          ?? stringValue(p.turnId)
+          ?? codexProc.currentTurnId;
+        const exactUsage = takeCodexExactTurnUsage(codexProc.exactUsageByTurn, completedTurnId);
         const events: UnifiedEvent[] = [
+          ...(exactUsage ? [{
+            kind: 'usage' as const,
+            inputTokens: exactUsage.inputTokens,
+            outputTokens: exactUsage.outputTokens,
+            cacheReadTokens: exactUsage.cacheReadTokens || undefined,
+            cacheCreationTokens: exactUsage.cacheCreationTokens || undefined,
+            semantics: 'delta' as const,
+          }] : []),
           mapCodexTurnCompletedNotification(turn),
           { kind: 'agent_plan_update', todos: [] },
         ];
@@ -3794,6 +3863,13 @@ export class CodexRuntime implements AgentRuntime {
         }
         return null;
       }
+
+      // Codex 0.146 exact provider usage for one Responses API completion.
+      // Keep the raw payload inside the adapter; the root terminal emits one
+      // deduplicated turn delta through the existing UnifiedEvent usage owner.
+      case 'rawResponse/completed':
+        recordCodexExactResponseUsage(codexProc.exactUsageByTurn, p);
+        return null;
 
       // ── Text streaming ──
       case 'item/agentMessage/delta': {

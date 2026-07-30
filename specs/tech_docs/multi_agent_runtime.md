@@ -243,7 +243,7 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `baseInstructions` | string? | ❌ 未对接 | 基础系统指令（区别于 developerInstructions） |
 | `config` | object? | ❌ 未对接 | 通用配置对象（additionalProperties） |
 | `serviceName` | string? | ❌ 未对接 | 服务名称标识 |
-| `experimentalRawEvents` | boolean | ✅ 仅 Managed Codex 新 thread | 开启官方 raw response-item 通知，仅用于恢复 v2 `interacted` 丢失的 `send_message` / `followup_task` 语义；raw payload 不进入 UnifiedEvent / SSE / 持久化 |
+| `experimentalRawEvents` | boolean | ✅ 仅 Managed Codex 新 thread | 开启官方 raw 通知：`rawResponseItem/completed` 仅恢复 v2 `interacted` 丢失的 `send_message` / `followup_task` 语义；Codex 0.146+ 的 `rawResponse/completed` 仅投影为 turn 级精确 usage。raw payload 本身不进入 UnifiedEvent / SSE / 持久化 |
 
 ### `thread/resume` 参数 Schema
 
@@ -265,6 +265,8 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 
 **Managed transport owner 边界**：Managed Codex 的 app-server launch config 注册 MyAgents 私有 provider id；该 provider 保持 `name:'OpenAI'`、`wire_api:'responses'` 与 `requires_openai_auth:true`，不设置 `base_url` / `env_key`，因此 Codex 仍按现有 ChatGPT 登录态解析官方 Codex endpoint、订阅模型与 entitlement。唯一 transport 差异是 `supports_websockets:false`，让 Responses 从首包开始直接走 HTTPS，不再先做五轮 WebSocket reconnect。新 thread 显式传同一 `modelProvider`；resume 只有在 Session metadata 提供权威 model 时才把 model/provider 成对覆盖，model 未知的 legacy thread 则两者都交给 Codex 持久化 metadata 恢复。Pre-warm 同理优先使用 Session metadata 的 model，而不是 renderer 可能尚未同步完成的 payload。`runtimeSource:'system-cli'` 完全不注入或覆盖 provider。
+
+**Codex usage owner**：`thread/tokenUsage/updated` 始终保留：其 `last.inputTokens` 是实时 context 占用，`total` 是旧 runtime / 缺失 raw usage 时的 turn 累计 fallback。Codex 0.146+ 在开启 raw events 后还会为每个上游 Responses API completion 发 `rawResponse/completed {threadId, turnId, responseId, usage}`；adapter 在 root turn 内按 `responseId` 去重，累加 provider 回传的 input/output/cached/cache-write，最后在 root terminal 之前只发一个 `semantics:'delta'` usage，交给 `external-session` 既有的 SessionStore / analytics owner。任一 response 的 `usage:null` 或必需 token 字段非法会使整轮 raw 聚合失效并回退 `thread/tokenUsage/updated`，禁止把部分和伪装成精确统计。child thread 的 raw/thread usage 都经过 `isChildThreadGatedMethod()` 丢弃，不污染主 Session；raw payload 与 response id 不跨 adapter 边界。
 
 **Pinned Codex 0.144.1 models refresh 已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
 
@@ -289,9 +291,10 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `item/completed` (`subAgentActivity`) | `CollabAgent` 容器/控制 trace + thread 关联（Codex multi-agent v2） |
 | `turn/started` | `[status_change(running), agent_plan_update([])]` |
 | `turn/plan/updated` | `agent_plan_update` |
-| `turn/completed` | `[turn_complete, agent_plan_update([])]` |
+| `turn/completed` | raw usage 完整时先发 `usage(delta)`，再发 `[turn_complete, agent_plan_update([])]` |
 | `thread/status/changed` | `active` / `idle` 不映射（thread liveness 不是 turn activity）；仅 `systemError` → `status_change(error)` |
-| `thread/tokenUsage/updated` | `usage` |
+| `thread/tokenUsage/updated` | `usage(running_total)` + 实时 context；无完整 raw usage 时 fallback |
+| `rawResponse/completed` | adapter 内按 `turnId/responseId` 去重聚合；不透传 raw payload |
 
 ### Codex Server Request / 权限协议
 
@@ -360,7 +363,7 @@ Codex 主 agent 可派生 sub-agent。**sub-agent 是独立的 Codex thread**，
 
 **关联与打标（`codex.ts`）**：`CodexProcess` 持 `subThreadToCard`（child → 本 turn 容器）、`subThreadToParent` / `subThreadMeta`（祖先链与装饰信息）、`collabControlToolParents`（v1 控制动作锁存）、`subAgentThreadsAwaitingActivity`（已开始 child turn 的 activity 因果栅栏）、`subAgentActivitySeenBeforeTurnStart`（activity 早于 turn 的瞬时标记）以及 `deferredSubAgentEvents`（activity 晚到窗口内的 child item）。activity 栅栏只有在进程已确认观察到 v2 协议后才启用；v1 child 因此不会等待一个永远不存在的 `subAgentActivity`。v1 与 v2 只负责把各自 wire shape 投影进这套既有 turn-local 关联，不向 session/renderer 暴露协议版本。child→child 的 activity 即使先于 sender 的祖先关联到达，也要先记录 edge，待祖先出现后整体解析。
 
-- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`)+ `threadId !== mainThreadId` → 子生命周期绝不作为主 session lifecycle 上抛；其中 child `turn/started` / `turn/completed` 更新内部 ownership，`thread/closed` 与 `systemError` 也会 settle child ownership，并可能在最后一个 child settle 时释放已暂存的 root terminal；其它 child status/token usage 事件忽略。`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`。item 通知**不**闸(要的就是子工具)。
+- **子线程事件闸门**:`isChildThreadGatedMethod(method)`(`turn/started`/`turn/completed`/`thread/status/changed`/`thread/closed`/`thread/tokenUsage/updated`/`rawResponse/completed`)+ `threadId !== mainThreadId` → 子生命周期绝不作为主 session lifecycle 上抛；其中 child `turn/started` / `turn/completed` 更新内部 ownership，`thread/closed` 与 `systemError` 也会 settle child ownership，并可能在最后一个 child settle 时释放已暂存的 root terminal；其它 child status/token usage 事件忽略。`thread/tokenUsage/updated`(PRD 0.2.32)放行会让子 agent 的占用污染主 context 指示器 + 持久化 `lastContextUsage`；`rawResponse/completed` 放行则会把子 Agent 的 provider usage 计入主 Session。item 通知**不**闸(要的就是子工具)。
 - `computeCodexItemEventRoute()` 把 item 明确分成 `main` / `subagent` / `defer`；`computeSubAgentScope()` → `resolveTopLevelSpawnCard()` 沿父链上溯，深层 sub-sub-agent 归并到第一层容器（UI 只一层）。**foreign thread 未关联时只能 defer，禁止退化为 main**。
 - `deferredSubAgentEvents` 只属于当前 main turn：任何 ancestor 关联建立且对应 activity 栅栏解除后，按 ancestor depth（父先于后代）释放；最终仍无法关联则丢弃并告警。它解决的是 Codex 源码中“先启动/唤醒 child、后 emit activity”的因果窗口，不是 retry/cache。
 - `experimentalApi` handshake 与 `experimentalRawEvents` request 只在 Managed Codex **新 thread** 同时开启；`thread/resume` 的 0.144.1 schema 没有 raw-events 参数，System CLI 也必须兼容旧版本。缺少 raw discriminator 时，adapter 不把模糊 `interacted` 猜成 active turn（否则 queue-only 会让 root 永久不完成）。若 root terminal 到达时仍没有 child `turn/started` 给出确定 ownership，adapter 释放该 root terminal 后结束当前 app-server，由既有 session resume 路径重建干净 runtime；不维护跨 turn quarantine，也不允许旧进程的迟到 child 串入下一 turn。
@@ -680,7 +683,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 | **看门狗** | **Per-turn**(不是 per-process):pre-warm idle 不计时,turn 启动才启动计时器。10 分钟无活动 → kill |
 | **Stale text 防护** | `lastTurnSucceeded` 标志,cron/heartbeat 路径检查,防止崩溃后返回上一轮旧回复 |
 | **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 写入 SessionStore,崩溃不丢用户消息;owner 检查 `saveSessionMessages()` 返回值,`unindexed-create-refused` 视为发送失败而不是 log-only |
-| **Token 用量** | 存储 Codex `usage` 事件(running total,replace 而非 accumulate),附加到 assistant message |
+| **Token 用量** | `thread/tokenUsage/updated` 作为 running-total fallback，与持久化 baseline 做 diff；0.146+ 完整 raw usage 作为 turn delta 累加入同一 baseline。旧 baseline 无法分离历史 cache，fallback 不记 cache 细分，避免把历史量误记到当前 turn |
 | **Cross-runtime 守卫** | pre-warm / restore / send 路径均用 `SessionMetadata.runtime` 校验,阻止跨 runtime 污染 |
 
 ## Runtime 诊断 + envPolicy（PRD 0.2.16）
@@ -816,7 +819,7 @@ config.multiAgentRuntime (磁盘/React state)
 |------|------|
 | `src/server/runtimes/types.ts` | AgentRuntime 接口 + UnifiedEvent 类型（含 PRD 0.2.32 `contextOccupiedTokens`/`runtimeContextWindow`）|
 | `src/shared/contextUsage.ts` | `computeContextUsage` 归一化纯函数（PRD 0.2.32）|
-| `src/server/runtimes/codex-token-usage.ts` | `mapCodexTokenUsage` Codex token schema 解析纯函数（PRD 0.2.32）|
+| `src/server/runtimes/codex-token-usage.ts` | Codex running-total/context schema 解析 + 0.146+ 逐 response 精确 usage 聚合纯函数 |
 | `src/renderer/components/ContextUsageIndicator.tsx` | Context 用量环 + hover 卡片 + 智能压缩入口（PRD 0.2.32）|
 | `src/server/runtimes/factory.ts` | Runtime 工厂 + 检测 |
 | `src/server/runtimes/claude-code.ts` | CC Runtime 实现(NDJSON 协议) |
