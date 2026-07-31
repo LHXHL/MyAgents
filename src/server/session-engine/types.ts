@@ -2,7 +2,7 @@ import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
-import type { EnqueueResult, PermissionMode, ProviderEnv, QueueCancelResult } from '../agent-session';
+import type { EnqueueResult, ProviderEnv, QueueCancelResult } from '../agent-session';
 import type { InteractionScenario } from '../system-prompt';
 import type { SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { SessionMessage } from '../types/session';
@@ -31,7 +31,8 @@ export type { PermissionMode, ProviderEnv } from '../agent-session';
 export type DesktopMessageRequest = {
   text: string;
   images?: ImagePayload[];
-  permissionMode?: PermissionMode;
+  /** Product mode for builtin sessions; runtime-native mode for external sessions. */
+  permissionMode?: string;
   backgroundAgentPermissionMode?: BackgroundAgentPermissionMode;
   model?: string;
   providerRoute?: ProviderRoute;
@@ -358,7 +359,6 @@ export interface SessionEngine {
     sessionId: string;
     workspacePath: string;
     model?: string;
-    permissionMode?: string;
   }): Promise<Record<string, unknown>>;
   restoreInitialSession(sessionId: string, workspacePath: string): boolean;
   respondPermission(

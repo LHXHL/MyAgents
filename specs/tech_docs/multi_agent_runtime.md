@@ -190,15 +190,14 @@ Turn 1: claude -p --session-id abc → 执行 → 退出
 Turn 2: claude -p --resume abc     → 恢复上下文 → 执行 → 退出
 ```
 
-### 权限模式映射
+### 权限模式
 
-| MyAgents | CC CLI |
-|----------|--------|
-| `auto` | `acceptEdits` |
-| `plan` | `plan` |
-| `fullAgency` | `bypassPermissions` |
+System Claude Code 配置直接使用当前 CLI 的 native vocabulary：
+`manual | auto | acceptEdits | dontAsk | plan | bypassPermissions`。未指定时使用
+`manual`。旧的产品级调用仍可在执行边界将 `fullAgency` 投影为
+`bypassPermissions`；`plan` 同名传递。
 
-**IM native-card 例外**：当 `InteractionScenario` 是 IM / Agent Channel 且 `hostInteraction.askUserQuestion === 'native-card'` 时，`fullAgency` 不能直接传给 Claude Code 的 `bypassPermissions`。`AskUserQuestion` 通过 CC `control_request/can_use_tool` + `--permission-prompt-tool stdio` 回到 MyAgents；bypass 会跳过这条交互通道。`external-session.ts` 在 runtime 边界把启动态权限降为 `auto/acceptEdits`，同时对非 `AskUserQuestion` 的 permission request 做 fullAgency fast-path 自动允许，保持“普通工具自治、结构化提问可交互”的语义。
+**IM native-card 例外**：当 `InteractionScenario` 是 IM / Agent Channel 且 `hostInteraction.askUserQuestion === 'native-card'` 时，`fullAgency` 不能直接传给 Claude Code 的 `bypassPermissions`。`AskUserQuestion` 通过 CC `control_request/can_use_tool` + `--permission-prompt-tool stdio` 回到 MyAgents；bypass 会跳过这条交互通道。`external-session.ts` 在 runtime 边界把启动态权限降为 `acceptEdits`，同时对非 `AskUserQuestion` 的 permission request 做 fullAgency fast-path 自动允许，保持“普通工具自治、结构化提问可交互”的语义。
 
 ### SessionStart Hook
 

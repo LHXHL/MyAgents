@@ -40,8 +40,9 @@ import {
   XAI_SUBSCRIPTION_PROVIDER_ID,
 } from '../../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
-  managedCodexProviderPermissionToRuntimePermission,
+  projectManagedCodexPermissionToRuntime,
 } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -54,9 +55,9 @@ import {
 import { applyMcpServerConfigAdditions } from '../../shared/mcpConfig';
 import {
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
   getDefaultRuntimePermissionMode,
   normalizeRuntime,
+  projectPermissionModeForRuntime,
   type RuntimeType,
 } from '../../shared/types/runtime';
 import type { SessionMetadata } from '../types/session';
@@ -1252,13 +1253,15 @@ export function resolveImProviderRouting(
   const model = resolved.model;
 
   if (resolved.runtime !== 'builtin') {
+    const isManagedCodexRuntime = resolved.runtime === 'codex'
+      && resolved.runtimeSource === 'managed-provider';
     return {
       kind: 'external-runtime',
       runtime: resolved.runtime,
       runtimeSource: resolved.runtimeSource,
       model,
       providerId,
-      reason: 'runtime-not-builtin',
+      reason: isManagedCodexRuntime ? 'managed-codex-provider' : 'runtime-not-builtin',
     };
   }
 
@@ -1494,17 +1497,18 @@ export function resolveWorkspaceConfig(
   );
 
   const agentProviderId = agent?.providerId as string | undefined;
-  const agentProvider = agentProviderId
-    ? findEffectiveProvider(agentProviderId, config)
-    : undefined;
-  const agentUsesRuntimeBackedProvider = agentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
+  const agentUsesRuntimeBackedProvider = agentUsesManagedCodexProvider({
+    providerId: agentProviderId,
+    runtime: typeof agent?.runtime === 'string' ? agent.runtime : undefined,
+    runtimeConfig: agent?.runtimeConfig as { source?: string } | undefined,
+  });
   const resolvedRuntime: RuntimeType = agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
     ? 'codex'
     : normalizeRuntime(
         (sessionMeta?.runtime as string | undefined) ?? (agent?.runtime as string | undefined),
       );
   const agentRuntimeConfig = agent?.runtimeConfig as {
+    source?: string;
     model?: string;
     permissionMode?: string;
     reasoningEffort?: string;
@@ -1512,9 +1516,15 @@ export function resolveWorkspaceConfig(
   const agentProductPermissionMode = isProductPermissionMode(agent?.permissionMode)
     ? agent.permissionMode
     : undefined;
-  const agentRuntimeBackedProviderPermissionMode = agentUsesRuntimeBackedProvider && agentProductPermissionMode
-    ? managedCodexProviderPermissionToRuntimePermission(agentProductPermissionMode)
-    : undefined;
+  const resolvedRuntimeSource = resolvedRuntime === 'builtin'
+    ? undefined
+    : (sessionMeta?.runtime !== undefined
+      ? (sessionMeta.runtimeSource
+        ?? sessionMeta.providerExecutionIdentity?.runtimeSource
+        ?? 'system-cli')
+      : (agentUsesRuntimeBackedProvider ? 'managed-provider' : agentRuntimeConfig?.source ?? 'system-cli'));
+  const usesManagedCodexExecution = resolvedRuntime === 'codex'
+    && resolvedRuntimeSource === 'managed-provider';
 
   // --- Resolve Provider ---
   // Priority: session.providerId → agent.providerId → config.defaultProviderId → persisted snapshot
@@ -1627,12 +1637,13 @@ export function resolveWorkspaceConfig(
         ?? asBuiltinPermissionMode(config.defaultPermissionMode)
         ?? 'auto');
   } else {
-    const rawPermissionMode = snapshotOwnsConfig
-      ? sessionMeta?.permissionMode
-      : (sessionMeta?.permissionMode
-        ?? agentRuntimeBackedProviderPermissionMode
+    const rawPermissionMode = sessionMeta
+      ? sessionMeta.permissionMode
+      : ((usesManagedCodexExecution ? agentProductPermissionMode : undefined)
         ?? agentRuntimeConfig?.permissionMode);
-    const coercedPermissionMode = coercePermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
+    const coercedPermissionMode = usesManagedCodexExecution
+      ? projectManagedCodexPermissionToRuntime(rawPermissionMode)
+      : projectPermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
     if (typeof rawPermissionMode === 'string'
         && rawPermissionMode.trim().length > 0
         && coercedPermissionMode === undefined) {
@@ -1641,7 +1652,7 @@ export function resolveWorkspaceConfig(
       );
     }
     permissionMode = coercedPermissionMode
-      ?? getDefaultRuntimePermissionMode(resolvedRuntime)
+      ?? (usesManagedCodexExecution ? 'auto-edit' : getDefaultRuntimePermissionMode(resolvedRuntime))
       ?? 'default';
   }
 

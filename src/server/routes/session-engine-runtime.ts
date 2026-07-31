@@ -5,6 +5,7 @@ import {
   getSessionRuntimeType,
   type SessionEngine,
 } from '../session-engine';
+import { isPermissionModeForRuntimeIdentity } from '../../shared/providerExecution';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -62,6 +63,25 @@ export async function handleSessionEngineRuntimeRoute(
     }
 
     const runtimeConfig = body.runtimeConfig ?? {};
+    const requestedPermissionMode = runtimeConfig.permissionMode;
+    if (requestedPermissionMode !== undefined && requestedPermissionMode !== null
+        && typeof requestedPermissionMode !== 'string') {
+      return jsonResponse({ success: false, error: 'permissionMode must be a string or null' }, 400);
+    }
+    if (typeof requestedPermissionMode === 'string' && requestedPermissionMode.trim()) {
+      const identity = getSessionEngine().getRuntimeIdentity();
+      const valid = isPermissionModeForRuntimeIdentity(
+        requestedPermissionMode,
+        activeRuntime,
+        identity.runtimeSource,
+      );
+      if (!valid) {
+        return jsonResponse({
+          success: false,
+          error: `Invalid permissionMode '${requestedPermissionMode}' for ${identity.runtimeSource ?? activeRuntime}`,
+        }, 400);
+      }
+    }
     const source = parseRuntimeConfigSource(body.source);
     const result = await getSessionEngine().updateRuntimeConfig({
       ...('model' in runtimeConfig ? { model: runtimeConfig.model ?? '' } : {}),
@@ -79,7 +99,6 @@ export async function handleSessionEngineRuntimeRoute(
     const body = (await request.json().catch(() => ({}))) as {
       sessionId?: string;
       model?: string;
-      permissionMode?: string;
     };
     const sessionId = deps.resolvePrewarmSessionId(body.sessionId);
     if (!sessionId) {
@@ -90,7 +109,6 @@ export async function handleSessionEngineRuntimeRoute(
         sessionId,
         workspacePath: deps.workspacePath,
         model: body.model,
-        permissionMode: body.permissionMode,
       });
       return jsonResponse({ success: true, ...result });
     } catch (error) {

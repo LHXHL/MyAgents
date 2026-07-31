@@ -108,6 +108,7 @@ import { getAgentByWorkspacePath, getAgentById } from '@/config/services/agentCo
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -1737,7 +1738,8 @@ export default function App() {
           agentForLaunchBirth?.runtime,
           !!configForLaunchBirth.multiAgentRuntime,
         );
-        if (effectiveAgentRuntime !== 'builtin') {
+        if (effectiveAgentRuntime !== 'builtin'
+            && !agentUsesManagedCodexProvider(agentForLaunchBirth)) {
           return undefined;
         }
         const sel = resolveBuiltinSelection(
@@ -1775,14 +1777,11 @@ export default function App() {
             permissionMode: initialMessage?.permissionMode
               ?? sessionBirthHint?.permissionMode
               ?? (identityResolvedFromCurrentConfig
-                ? (
-                    normalizeStringSetting(agentForLaunchBirth?.runtimeConfig?.permissionMode)
-                    ?? resolveInitialPermissionMode({
-                      project,
-                      agent: agentForLaunchBirth,
-                      defaultPermissionMode: configForLaunchBirth?.defaultPermissionMode,
-                    })
-                  )
+                ? resolveInitialPermissionMode({
+                    project,
+                    agent: agentForLaunchBirth,
+                    defaultPermissionMode: configForLaunchBirth?.defaultPermissionMode,
+                  })
                 : undefined),
             reasoningEffort: initialMessage?.reasoningEffort
               ?? sessionBirthHint?.reasoningEffort

@@ -161,6 +161,12 @@ function getLatestBuiltinResult(): string {
   return latestResult.trim() || NO_TEXT_RESPONSE;
 }
 
+function asBuiltinPermissionMode(mode: string | undefined): PermissionMode | undefined {
+  return mode === 'auto' || mode === 'plan' || mode === 'fullAgency' || mode === 'custom'
+    ? mode
+    : undefined;
+}
+
 function getBuiltinWorkspacePath(): string | null {
   const state = getAgentState();
   return typeof state.agentDir === 'string' && state.agentDir.length > 0
@@ -318,6 +324,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      const permissionMode = asBuiltinPermissionMode(request.permissionMode);
+      if (request.permissionMode !== undefined && permissionMode === undefined) {
+        return { success: false, error: `Invalid builtin permission mode: ${request.permissionMode}`, status: 400 };
+      }
       await setInteractionScenario(request.scenario);
       if (request.backgroundAgentPermissionMode) {
         setBackgroundAgentPermissionMode(request.backgroundAgentPermissionMode);
@@ -329,7 +339,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const result = await enqueueUserMessage(
         request.text,
         request.images,
-        request.permissionMode,
+        permissionMode,
         routed.model,
         routed.providerEnv,
         request.reasoningEffort,

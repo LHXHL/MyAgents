@@ -4,8 +4,15 @@ const mocks = vi.hoisted(() => ({
   state: {
     kind: 'builtin' as 'builtin' | 'external',
     runtime: 'codex',
+    runtimeSource: 'system-cli' as 'system-cli' | 'managed-provider',
   },
   engine: {
+    getRuntimeIdentity: vi.fn(() => ({
+      kind: 'external',
+      runtime: mocks.state.runtime,
+      runtimeSource: mocks.state.runtimeSource,
+      sessionId: 'session-1',
+    })),
     updateRuntimeConfig: vi.fn(async () => ({ success: true })),
     prewarm: vi.fn(async () => ({ prewarmed: true })),
     respondPermission: vi.fn(async () => true),
@@ -35,6 +42,7 @@ describe('handleSessionEngineRuntimeRoute', () => {
     vi.clearAllMocks();
     mocks.state.kind = 'builtin';
     mocks.state.runtime = 'codex';
+    mocks.state.runtimeSource = 'system-cli';
   });
 
   it('returns null for unrelated routes', async () => {
@@ -111,6 +119,79 @@ describe('handleSessionEngineRuntimeRoute', () => {
     );
   });
 
+  it('rejects system-only full-auto at the managed Codex runtime boundary', async () => {
+    mocks.state.kind = 'external';
+    mocks.state.runtimeSource = 'managed-provider';
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'codex', runtimeConfig: { permissionMode: 'full-auto' } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.updateRuntimeConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps full-auto legal for the system Codex runtime', async () => {
+    mocks.state.kind = 'external';
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'codex', runtimeConfig: { permissionMode: 'full-auto' } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.engine.updateRuntimeConfig).toHaveBeenCalledWith(
+      { permissionMode: 'full-auto' },
+      { source: 'runtime-config' },
+    );
+  });
+
+  it.each(['auto', 'manual'])('accepts Claude Code native %s mode', async (permissionMode) => {
+    mocks.state.kind = 'external';
+    mocks.state.runtime = 'claude-code';
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'claude-code', runtimeConfig: { permissionMode } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(mocks.engine.updateRuntimeConfig).toHaveBeenCalledWith(
+      { permissionMode },
+      { source: 'runtime-config' },
+    );
+  });
+
+  it('rejects obsolete Claude Code default literal', async () => {
+    mocks.state.kind = 'external';
+    mocks.state.runtime = 'claude-code';
+
+    const response = await handleSessionEngineRuntimeRoute(
+      '/api/runtime/config',
+      new Request('http://local/api/runtime/config', {
+        method: 'POST',
+        body: JSON.stringify({ runtime: 'claude-code', runtimeConfig: { permissionMode: 'default' } }),
+      }),
+      deps,
+    );
+
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.updateRuntimeConfig).not.toHaveBeenCalled();
+  });
+
   it('prewarms external runtime sessions with resolved session id and workspace', async () => {
     mocks.state.kind = 'external';
 
@@ -130,7 +211,6 @@ describe('handleSessionEngineRuntimeRoute', () => {
       sessionId: 'resolved-session',
       workspacePath: '/workspace',
       model: 'gpt-5',
-      permissionMode: 'no-restrictions',
     });
   });
 

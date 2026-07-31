@@ -571,7 +571,7 @@ describe('admin-api cron create', () => {
 });
 
 describe('admin-api agent set configuration intent', () => {
-  it('normalizes managed Codex permission vocabulary without changing provider or model', async () => {
+  it('stores managed Codex product permission without changing provider or model', async () => {
     const workspacePath = '/tmp/myagents-agent-set-managed-codex';
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
@@ -598,7 +598,7 @@ describe('admin-api agent set configuration intent', () => {
     const result = await handleAgentSet({
       id: 'agent-managed-codex',
       key: 'permissionMode',
-      value: 'no-restrictions',
+      value: 'fullAgency',
     });
 
     expect(result.success).toBe(true);
@@ -690,9 +690,71 @@ describe('admin-api agent set configuration intent', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('cannot be stored losslessly');
+    expect(result.error).toContain('Valid: auto, plan, fullAgency');
     expect(readConfig()).toEqual(config);
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects runtimeConfig permission values outside the selected system runtime vocabulary', async () => {
+    const workspacePath = '/tmp/myagents-agent-runtime-config-invalid';
+    const config = {
+      agents: [{
+        id: 'agent-runtime-config-invalid',
+        name: 'Runtime Config Guard',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'codex',
+        runtimeConfig: { source: 'system-cli', permissionMode: 'full-auto' },
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const invalid = await handleAgentSet({
+      id: 'agent-runtime-config-invalid',
+      key: 'runtimeConfig',
+      value: { source: 'system-cli', permissionMode: 'no-such-mode' },
+    });
+    expect(invalid.success).toBe(false);
+    expect(readConfig()).toEqual(config);
+
+    const valid = await handleAgentSet({
+      id: 'agent-runtime-config-invalid',
+      key: 'runtimeConfig',
+      value: { source: 'system-cli', permissionMode: 'no-restrictions' },
+    });
+    expect(valid.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      runtimeConfig: { source: 'system-cli', permissionMode: 'no-restrictions' },
+    });
+  });
+
+  it('keeps managed Agent permission out of runtimeConfig', async () => {
+    const config = {
+      agents: [{
+        id: 'agent-managed-runtime-config',
+        name: 'Managed Runtime Config Guard',
+        workspacePath: '/tmp/myagents-agent-managed-runtime-config',
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-managed-runtime-config',
+      key: 'runtimeConfig',
+      value: { permissionMode: 'no-restrictions' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('product fields');
+    expect(readConfig()).toEqual(config);
   });
 
   it.each([

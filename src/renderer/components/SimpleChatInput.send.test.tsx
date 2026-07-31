@@ -108,7 +108,7 @@ describe('SimpleChatInput send paths', () => {
       name: 'Claude Code',
       runtime: 'claude-code' as const,
       modes: CC_PERMISSION_MODES,
-      expectedIcons: ['shield-question-mark', 'eye', 'file-pen-line', 'lock-open'],
+      expectedIcons: ['shield-question-mark', 'shield-check', 'eye', 'file-pen-line', 'lock-open', 'ban'],
     },
     {
       name: 'Gemini',

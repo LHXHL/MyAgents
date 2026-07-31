@@ -10,12 +10,17 @@ import type {
   GroupActivation,
 } from './im';
 import {
+  getDefaultRuntimePermissionMode,
   getMaxPermissionForRuntime,
   normalizeRuntime,
+  projectPermissionModeForRuntime,
   type RuntimeType,
   type RuntimeConfig,
 } from './runtime';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../config-types';
+import {
+  agentUsesManagedCodexProvider,
+  managedCodexRuntimePermissionToProviderPermission,
+} from '../providerExecution';
 import type { OfficialToolId } from '../official-tools';
 
 /**
@@ -159,6 +164,17 @@ function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfi
   return channel.overrides?.providerId ?? agent.providerId;
 }
 
+export function agentChannelUsesManagedCodexProvider(
+  agent: AgentConfig,
+  channel: ChannelConfig,
+): boolean {
+  return agentUsesManagedCodexProvider({
+    providerId: resolveAgentChannelProviderId(agent, channel),
+    runtime: channel.overrides?.runtime ?? agent.runtime,
+    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
+  });
+}
+
 /**
  * Resolve the runtime that an Agent Channel will execute on. Channel overrides
  * mirror the Rust start path and win over Agent defaults. Runtime-backed
@@ -166,16 +182,16 @@ function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfi
  * `ChannelConfigRust::to_im_config`.
  */
 export function resolveAgentChannelRuntime(agent: AgentConfig, channel: ChannelConfig): RuntimeType {
-  const providerId = resolveAgentChannelProviderId(agent, channel);
-  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) return 'codex';
-
-  const runtimeConfig = channel.overrides?.runtimeConfig ?? agent.runtimeConfig;
-  if (runtimeConfig?.source === 'managed-provider') return 'builtin';
-
-  return normalizeRuntime(channel.overrides?.runtime ?? agent.runtime ?? 'builtin');
+  const runtime = normalizeRuntime(channel.overrides?.runtime ?? agent.runtime ?? 'builtin');
+  return agentChannelUsesManagedCodexProvider(agent, channel)
+    ? 'codex'
+    : runtime;
 }
 
 export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
+  if (agentChannelUsesManagedCodexProvider(agent, channel)) {
+    return 'fullAgency';
+  }
   return getMaxPermissionForRuntime(resolveAgentChannelRuntime(agent, channel));
 }
 
@@ -186,7 +202,14 @@ export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, cha
  */
 export function resolveAgentChannelPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
   const override = channel.overrides?.permissionMode?.trim();
-  if (override) return override;
+  if (override) {
+    if (agentChannelUsesManagedCodexProvider(agent, channel)) {
+      return managedCodexRuntimePermissionToProviderPermission(override) ?? 'auto';
+    }
+    const runtime = resolveAgentChannelRuntime(agent, channel);
+    return projectPermissionModeForRuntime(override, runtime)
+      ?? getDefaultRuntimePermissionMode(runtime);
+  }
   return resolveAgentChannelDefaultPermissionMode(agent, channel);
 }
 

@@ -1,15 +1,22 @@
 // Agent config service — CRUD helpers, migration from ImBotConfigs
 import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, WorkspaceTemplateAgentDefaults } from '../types';
 import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
-import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
+import {
+  agentChannelUsesManagedCodexProvider,
+  resolveAgentChannelRuntime,
+  type AgentConfig,
+  type ChannelConfig,
+  type ChannelOverrides,
+} from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
   createRuntimeBackedProviderIdentity,
-  runtimeBackedProviderPermissionMode,
+  projectManagedCodexPermissionToRuntime,
   runtimeConfigForRuntimeBackedProvider,
 } from '../../../shared/providerExecution';
-import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
+import { isRuntimePermissionMode, type RuntimeConfig, type RuntimeType } from '../../../shared/types/runtime';
 import {
   atomicModifyConfig,
   loadAppConfig,
@@ -781,7 +788,25 @@ async function modifyAgentChannelConfig(
     const channelIndex = channels.findIndex(channel => channel.id === channelId);
     if (channelIndex < 0) return config;
 
-    updatedChannel = modify(channels[channelIndex]);
+    const currentChannel = channels[channelIndex];
+    updatedChannel = modify(currentChannel);
+    const currentPermission = currentChannel.overrides?.permissionMode;
+    const updatedPermission = updatedChannel.overrides?.permissionMode;
+    const identityChanged = resolveAgentChannelRuntime(agents[agentIndex], currentChannel)
+      !== resolveAgentChannelRuntime(agents[agentIndex], updatedChannel)
+      || agentChannelUsesManagedCodexProvider(agents[agentIndex], currentChannel)
+        !== agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel);
+    if (updatedPermission !== undefined && (updatedPermission !== currentPermission || identityChanged)) {
+      const valid = agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel)
+        ? updatedPermission === 'auto' || updatedPermission === 'plan' || updatedPermission === 'fullAgency'
+        : isRuntimePermissionMode(
+          updatedPermission,
+          resolveAgentChannelRuntime(agents[agentIndex], updatedChannel),
+        );
+      if (!valid) {
+        throw new Error(`Invalid Channel permissionMode '${updatedPermission}' for its Runtime identity.`);
+      }
+    }
     channels[channelIndex] = updatedChannel;
     authoritativeChannels = channels;
     agents[agentIndex] = { ...agents[agentIndex], channels };
@@ -1018,14 +1043,15 @@ export function projectMemoryEvolutionTaskRuntimeForAgent(
   agent: Pick<AgentConfig, 'providerId' | 'model' | 'permissionMode' | 'runtime' | 'runtimeConfig'>,
 ): { runtime?: RuntimeType; runtimeConfig?: RuntimeConfig } {
   const model = typeof agent.model === 'string' ? agent.model.trim() : '';
-  if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && model) {
+  if (agentUsesManagedCodexProvider(agent) && model) {
     const identity = createRuntimeBackedProviderIdentity({
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model,
     });
     const runtimeConfig = runtimeConfigForRuntimeBackedProvider(identity, agent.runtimeConfig);
-    const permissionMode = agent.runtimeConfig?.permissionMode
-      ?? runtimeBackedProviderPermissionMode(identity, agent.permissionMode);
+    const permissionMode = projectManagedCodexPermissionToRuntime(
+      agent.permissionMode ?? agent.runtimeConfig?.permissionMode,
+    ) ?? 'auto-edit';
     return {
       runtime: identity.runtime,
       runtimeConfig: {

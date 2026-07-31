@@ -529,7 +529,7 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
   return {
     text,
     images: [],
-    permissionMode: 'fullAgency',
+    permissionMode: 'full-auto',
     model: 'gpt-5-codex',
     reasoningEffort: 'medium',
     sessionId,
@@ -697,7 +697,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,
@@ -830,7 +830,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath: join(harness.home, 'workspace'),
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     await waitFor(
       () => Boolean(harness.engine.getStreamReplaySnapshot().systemInitPayload),
@@ -865,7 +864,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     broadcastEvents.length = 0;
 
@@ -981,7 +979,6 @@ describe('external SessionEngine with fake runtime', () => {
       workspacePath,
       scenario: { type: 'desktop' },
       model: 'gpt-5-codex',
-      permissionMode: 'fullAgency',
     });
 
     const request = desktopRequest(sessionId, workspacePath, 'must not dispatch');
@@ -1068,7 +1065,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     })).resolves.toEqual({ prewarmed: true });
 
     await expect(harness.engine.waitIdle(100, 10)).resolves.toBe(true);
@@ -1096,7 +1092,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     broadcastEvents.length = 0;
 
@@ -1135,7 +1130,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
 
@@ -1164,7 +1158,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
 
@@ -1192,7 +1185,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
 
     await expect(harness.engine.updateOfficialToolIds(['image-understanding'])).resolves.toEqual({
@@ -1216,7 +1208,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
     })).resolves.toEqual({
@@ -1249,7 +1241,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
 
     const update = harness.engine.updateOfficialToolIds(['image-understanding']);
@@ -1284,7 +1275,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
     }).then((result) => {
@@ -1335,7 +1326,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
 
     const update = harness.externalSession.handleExternalProxyConfigChange({
@@ -1396,7 +1386,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'finish this turn first'),
@@ -1438,7 +1427,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'failing first turn'),
@@ -1483,7 +1471,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'failing turn on old prompt'),
@@ -1614,7 +1601,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     const run = runInjectedTurn(harness, {
       prompt: 'stop while admission persistence is waiting',
@@ -1693,7 +1679,6 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'desktop' },
-      permissionMode: 'fullAgency',
     });
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'stop before rejected persist resumes'),
@@ -2318,7 +2303,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,
@@ -2362,7 +2347,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,
@@ -2410,7 +2395,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,
@@ -2462,7 +2447,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,
@@ -2722,7 +2707,7 @@ describe('external SessionEngine with fake runtime', () => {
       sessionId,
       workspacePath,
       scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
-      permissionMode: 'fullAgency',
+      permissionMode: 'full-auto',
       model: 'gpt-5-codex',
       reasoningEffort: 'medium',
       metadataBirthPending: true,

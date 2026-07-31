@@ -1950,11 +1950,27 @@ pub(crate) async fn reload_agent_config_from_disk(
                 .and_then(|value| serde_json::from_str(value).ok());
         }
         if should_refresh_channel_permission {
-            let agent_permission = types::project_permission_for_provider(
+            let (_, projected_runtime_config) = types::project_runtime_for_provider(
                 updated_agent.provider_id.as_deref(),
+                updated_agent.model.as_deref(),
+                updated_agent.runtime.clone(),
+                updated_agent.runtime_config.clone(),
+            );
+            let permission_provider_id = if projected_runtime_config
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str())
+                == Some("managed-provider")
+            {
+                updated_agent.provider_id.as_deref()
+            } else {
+                None
+            };
+            let agent_permission = types::project_permission_for_provider(
+                permission_provider_id,
                 updated_agent.permission_mode.clone(),
             );
-            agent.config.permission_mode = agent_permission.clone();
+            agent.config.permission_mode = updated_agent.permission_mode.clone();
             *agent.permission_mode.write().await = agent_permission;
         }
         if let Some(ref mcp) = patch.mcp_servers_json {

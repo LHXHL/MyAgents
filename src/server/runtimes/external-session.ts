@@ -2476,7 +2476,7 @@ async function _doStartExternalSession(options: {
     startPermissionMode,
     options.scenario,
   )
-    ? 'auto'
+    ? (runtimeType === 'claude-code' ? 'acceptEdits' : 'auto')
     : startPermissionMode;
 
   const managedCodexMcpServers = runtimeType === 'codex' && runtimeSource === 'managed-provider'
@@ -4452,31 +4452,6 @@ export async function popLastUserMessageForRetry(userMessageId: string): Promise
  * any concurrent send, so a user who sends a message before pre-warm finishes
  * spawning is safely queued behind it.
  */
-/**
- * Resolve the permission mode pre-warm should resume an existing EXTERNAL session
- * with. The renderer fires `/api/runtime/prewarm` at Tab-open, often BEFORE its
- * session-snapshot→input-state sync has run — so the caller-supplied mode can be
- * a generic default (e.g. `'auto'`, which isn't even a Codex mode and maps to the
- * prompting `on-request` policy). For a session with a persisted snapshot, the
- * SESSION METADATA is the authority for what the resumed runtime process must run
- * at; trusting the racy caller value instead resumes the thread with the wrong
- * approval policy, and because pre-warm has already created the live process the
- * first user message reuses it (sendExternalMessage Case 3) without re-resuming —
- * so the wrong mode sticks while the UI pill later converges to the (correct)
- * snapshot. Prefer the snapshot; fall back to the caller's value only for
- * brand-new sessions with no persisted mode yet.
- *
- * (Builtin runtimes are handled separately via resolveWorkspaceConfig; this is
- * the external-runtime analog, scoped to external because Codex/Gemini modes
- * differ from the builtin auto/plan/fullAgency set.)
- */
-export function resolvePrewarmPermissionMode(
-  metaPermissionMode: string | undefined,
-  callerPermissionMode: string | undefined,
-): string | undefined {
-  return metaPermissionMode ?? callerPermissionMode;
-}
-
 export function resolvePrewarmModel(
   metaModel: string | undefined,
   callerModel: string | undefined,
@@ -4489,7 +4464,6 @@ export async function prewarmExternalSession(options: {
   workspacePath: string;
   scenario: InteractionScenario;
   model?: string;
-  permissionMode?: string;
 }): Promise<{ prewarmed: boolean; reason?: string }> {
   const runtimeType = getCurrentRuntimeType();
   const start = nowMs();
@@ -4591,15 +4565,17 @@ export async function prewarmExternalSession(options: {
     ? getExternalRuntimeSessionId()
     : undefined;
 
-  // The session snapshot is authoritative for the resumed process's permission
-  // mode — NOT the renderer's racy prewarm payload (which can be a stale default
-  // like 'auto' before the Tab's snapshot sync runs). Without this, pre-warm
-  // resumes Codex with the wrong approvalPolicy and the first send reuses the
-  // pre-warmed process (Case 3) without re-resuming, so it sticks.
-  const effectivePermissionMode = resolvePrewarmPermissionMode(meta?.permissionMode, options.permissionMode);
+  // Permission always comes from the persisted Session/Agent authority. A Tab
+  // reopen may prewarm before renderer state has hydrated; accepting a caller
+  // mode here is exactly the race that downgraded managed fullAgency.
+  const effectivePermissionMode = resolveWorkspaceConfig(
+    options.workspacePath,
+    meta,
+    { includeMcp: false },
+  ).permissionMode;
   const effectiveModel = resolvePrewarmModel(meta?.model, options.model);
 
-  console.log(`[external-session] Pre-warming ${runtimeType} for session ${options.sessionId}${resumeSessionId ? ` (resume=${resumeSessionId})` : ' (fresh)'} permissionMode=${effectivePermissionMode ?? '(default)'}${meta?.permissionMode && meta.permissionMode !== options.permissionMode ? ` (snapshot override; caller sent ${options.permissionMode ?? '(none)'})` : ''}`);
+  console.log(`[external-session] Pre-warming ${runtimeType} for session ${options.sessionId}${resumeSessionId ? ` (resume=${resumeSessionId})` : ' (fresh)'} permissionMode=${effectivePermissionMode}`);
 
   try {
     await startExternalSession({

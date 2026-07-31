@@ -2036,14 +2036,17 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     if text.starts_with("/mode") {
                         let arg = text.strip_prefix("/mode").unwrap_or("").trim().to_lowercase();
                         let current_runtime = runtime_for_loop.read().await.clone();
+                        let current_runtime_config = runtime_config_for_loop.read().await.clone();
+                        let managed_codex_runtime = current_runtime == "codex"
+                            && current_runtime_config
+                                .as_ref()
+                                .and_then(|value| value.get("source"))
+                                .and_then(|value| value.as_str())
+                                == Some("managed-provider");
 
-                        if is_external_runtime_type(&current_runtime) {
+                        if is_external_runtime_type(&current_runtime) && !managed_codex_runtime {
                             let choices = runtime_permission_choices(&current_runtime);
-                            let current_runtime_config = runtime_config_for_loop.read().await.clone();
-                            let current = runtime_config_string(
-                                current_runtime_config.as_ref(),
-                                "permissionMode",
-                            ).unwrap_or_else(|| "(默认)".to_string());
+                            let current = permission_mode_for_loop.read().await.clone();
 
                             if arg.is_empty() {
                                 let mut menu = format!(
@@ -2085,29 +2088,27 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "permissionMode",
                                     Some(target.value.clone()),
                                 );
-                                *runtime_config_for_loop.write().await = Some(new_config.clone());
+                                *permission_mode_for_loop.write().await = target.value.clone();
                                 sync_runtime_config_to_sidecars(
                                     &router_clone,
                                     &current_runtime,
                                     &new_config,
                                 ).await;
 
-                                let link = agent_link_for_loop.read().await.clone();
-                                if let Some(link) = link {
-                                    *link.runtime_config.write().await = Some(new_config.clone());
-                                    let agent_id = link.agent_id.clone();
-                                    let config_for_disk = new_config.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        let patch = AgentConfigPatch {
-                                            runtime_config: Some(Some(config_for_disk)),
-                                            ..Default::default()
-                                        };
-                                        if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
-                                            ulog_warn!("[im] /mode runtime persist failed: {}", e);
-                                        }
-                                    });
-                                    let _ = app_clone.emit("agent:config-changed", json!({}));
-                                }
+                                let bid = bot_id_for_loop.clone();
+                                let mode_for_disk = target.value.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let patch = BotConfigPatch {
+                                        permission_mode: Some(mode_for_disk),
+                                        ..Default::default()
+                                    };
+                                    if let Err(e) = persist_bot_config_patch(&bid, &patch) {
+                                        ulog_warn!("[im] /mode runtime persist failed: {}", e);
+                                    }
+                                });
+                                let _ = app_clone.emit("im:bot-config-changed", json!({
+                                    "botId": bot_id_for_loop,
+                                }));
 
                                 ulog_info!("[im] /mode: set {} runtime permission to {}", current_runtime, target.value);
                                 if let Err(e) = send_immediate_reply(
@@ -2125,9 +2126,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                         } else {
                             let current = permission_mode_for_loop.read().await.clone();
+                            let current_product_mode = if managed_codex_runtime {
+                                types::managed_permission_for_display(&current)
+                            } else {
+                                current.as_str()
+                            };
 
                             if arg.is_empty() {
-                                let display = match current.as_str() {
+                                let display = match current_product_mode {
                                     "plan" => "🛡 计划模式 (plan) — AI 执行操作前需要审批",
                                     "auto" => "⚡ 自动模式 (auto) — 安全操作自动执行，敏感操作需审批",
                                     "fullAgency" => "🚀 全自主模式 (fullAgency) — 所有操作自动执行",
@@ -2164,7 +2170,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         continue;
                                     }
                                 };
-                                *permission_mode_for_loop.write().await = new_mode.to_string();
+                                let execution_mode = if managed_codex_runtime {
+                                    types::project_permission_for_provider(
+                                        Some("codex-sub"),
+                                        new_mode.to_string(),
+                                    )
+                                } else {
+                                    new_mode.to_string()
+                                };
+                                *permission_mode_for_loop.write().await = execution_mode;
 
                                 let display = match new_mode {
                                     "plan" => "🛡 计划模式 — AI 执行操作前需要审批",

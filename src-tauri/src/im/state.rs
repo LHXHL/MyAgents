@@ -281,9 +281,14 @@ pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermission
         ],
         "claude-code" => vec![
             RuntimePermissionChoice {
-                value: "default".to_string(),
-                label: "Default".to_string(),
+                value: "manual".to_string(),
+                label: "Manual".to_string(),
                 description: "每次工具调用都需要确认".to_string(),
+            },
+            RuntimePermissionChoice {
+                value: "auto".to_string(),
+                label: "Auto".to_string(),
+                description: "由 Claude Code 自动判断工具权限".to_string(),
             },
             RuntimePermissionChoice {
                 value: "plan".to_string(),
@@ -299,6 +304,11 @@ pub(super) fn runtime_permission_choices(runtime: &str) -> Vec<RuntimePermission
                 value: "bypassPermissions".to_string(),
                 label: "Bypass Permissions".to_string(),
                 description: "跳过所有权限确认".to_string(),
+            },
+            RuntimePermissionChoice {
+                value: "dontAsk".to_string(),
+                label: "Don't Ask".to_string(),
+                description: "不弹出权限确认，未授权操作直接拒绝".to_string(),
             },
         ],
         "gemini" => vec![

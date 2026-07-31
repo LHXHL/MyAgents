@@ -532,17 +532,20 @@ import { rehomeImagePayloadsForSession } from './runtimes/image-payload';
 import {
   VALID_RUNTIMES,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
+  projectPermissionModeForRuntime,
   resolveScheduledTurnPermissionMode,
   getMaxPermissionForRuntime,
 } from '../shared/types/runtime';
 import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
 import {
-  coerceRuntimeBirthPermissionMode,
   coerceRuntimeBirthReasoningEffort,
 } from '../shared/runtimeBirthFields';
 import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/runtime';
-import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution';
+import {
+  isPermissionModeForRuntimeIdentity,
+  projectManagedCodexPermissionToRuntime,
+  type RuntimeBackedProviderIdentity,
+} from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import {
@@ -596,7 +599,7 @@ type SendMessagePayload = {
   text?: string;
   images?: ImagePayload[];
   sessionId?: string;
-  permissionMode?: PermissionMode;
+  permissionMode?: string;
   // Background-agent permission policy (#264). Global app-config value the
   // renderer echoes per-send (idempotent setter); controls the builtin
   // PermissionRequest hook for run_in_background sub-agents.
@@ -683,7 +686,7 @@ function getRuntimeConfigPermissionMode(
   runtime: RuntimeType = getActiveRuntimeType(),
 ): string | undefined {
   const permissionMode = runtimeConfig?.permissionMode?.trim();
-  return permissionMode ? coercePermissionModeForRuntime(permissionMode, runtime) : undefined;
+  return permissionMode ? projectPermissionModeForRuntime(permissionMode, runtime) : undefined;
 }
 
 function getRuntimeConfigSource(
@@ -2471,7 +2474,33 @@ async function main() {
         let images = payload?.images ?? [];
         const clientSessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
         const runtimeSessionId = getRuntimeSessionIdForRequest();
-        const permissionMode = payload?.permissionMode ?? 'auto';
+        if (payload.permissionMode !== undefined && typeof payload.permissionMode !== 'string') {
+          return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+        }
+        const requestedPermissionMode = payload.permissionMode?.trim();
+        const permissionMeta = getSessionMetadata(runtimeSessionId);
+        const engine = getSessionEngine();
+        const resolvedPermissionMode = resolveWorkspaceConfig(
+          agentDir,
+          permissionMeta,
+          { includeMcp: false },
+        ).permissionMode;
+        let permissionMode = resolvedPermissionMode;
+        if (!permissionMeta && payload.permissionMode !== undefined) {
+          const birthPermissionMode = payload.permissionMode.trim();
+          const runtimeIdentity = engine.getRuntimeIdentity();
+          if (!isPermissionModeForRuntimeIdentity(
+            birthPermissionMode,
+            runtimeIdentity.runtime,
+            runtimeIdentity.runtimeSource,
+          )) {
+            return jsonResponse({
+              success: false,
+              error: `Invalid permissionMode '${payload.permissionMode}' for ${runtimeIdentity.runtimeSource ?? runtimeIdentity.runtime}.`,
+            }, 400);
+          }
+          permissionMode = birthPermissionMode;
+        }
         const model = payload?.model;
         const providerRoute = payload?.providerRoute;
         const providerEnv = payload?.providerEnv;
@@ -2503,10 +2532,9 @@ async function main() {
         }
 
         try {
-          const engine = getSessionEngine();
           const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
           const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
-          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode} model=${model ?? 'default'} baseUrl=${providerLabel}`);
+          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
             images,
@@ -3491,6 +3519,8 @@ async function main() {
           baseSnapshot.runtimeSource = runtimeSourceValue;
         }
         if (payloadProviderExecutionIdentity) {
+          baseSnapshot.runtime = payloadProviderExecutionIdentity.runtime;
+          baseSnapshot.runtimeSource = payloadProviderExecutionIdentity.runtimeSource;
           baseSnapshot.providerExecutionIdentity = payloadProviderExecutionIdentity;
           baseSnapshot.providerId = payloadProviderExecutionIdentity.providerId;
           baseSnapshot.model = payloadProviderExecutionIdentity.model;
@@ -3520,11 +3550,26 @@ async function main() {
           }
         }
         const snapshotRuntime = (baseSnapshot.runtime ?? runtimeValue ?? 'builtin') as RuntimeType;
-        const payloadPermissionMode = coerceRuntimeBirthPermissionMode(
-          payload.permissionMode,
-          snapshotRuntime,
-        );
-        if (payloadPermissionMode !== undefined) baseSnapshot.permissionMode = payloadPermissionMode;
+        if (payload.permissionMode !== undefined) {
+          if (typeof payload.permissionMode !== 'string') {
+            return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+          }
+          const payloadPermissionMode = payload.permissionMode.trim();
+          const snapshotRuntimeSource = baseSnapshot.runtimeSource
+            ?? payloadProviderExecutionIdentity?.runtimeSource
+            ?? runtimeSourceValue;
+          if (!isPermissionModeForRuntimeIdentity(
+            payloadPermissionMode,
+            snapshotRuntime,
+            snapshotRuntimeSource,
+          )) {
+            return jsonResponse({
+              success: false,
+              error: `Invalid permissionMode '${payload.permissionMode}' for ${snapshotRuntimeSource ?? snapshotRuntime}.`,
+            }, 400);
+          }
+          baseSnapshot.permissionMode = payloadPermissionMode;
+        }
         const payloadReasoningEffort = coerceRuntimeBirthReasoningEffort(
           payload.reasoningEffort,
           snapshotRuntime,
@@ -3678,6 +3723,10 @@ async function main() {
         } catch {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
+        if (payload.permissionMode !== undefined && payload.permissionMode !== null
+            && typeof payload.permissionMode !== 'string') {
+          return jsonResponse({ success: false, error: 'permissionMode must be a string or null.' }, 400);
+        }
 
         // `lastActiveAt` is the recency signal that drives history sort
         // order. Bumping it on EVERY PATCH means a pure-UI flag change
@@ -3760,6 +3809,24 @@ async function main() {
                   })
                 : undefined;
             })();
+          if (typeof payload.permissionMode === 'string') {
+            const requestedPermissionMode = payload.permissionMode.trim();
+            const permissionRuntime = (existingMeta.runtime ?? baseSnapshot?.runtime ?? 'builtin') as RuntimeType;
+            const permissionRuntimeSource = existingMeta.runtimeSource
+              ?? existingMeta.providerExecutionIdentity?.runtimeSource
+              ?? baseSnapshot?.runtimeSource;
+            if (!isPermissionModeForRuntimeIdentity(
+              requestedPermissionMode,
+              permissionRuntime,
+              permissionRuntimeSource,
+            )) {
+              return jsonResponse({
+                success: false,
+                error: `Invalid permissionMode '${payload.permissionMode}' for ${permissionRuntimeSource ?? permissionRuntime}.`,
+              }, 400);
+            }
+            payload.permissionMode = requestedPermissionMode;
+          }
           Object.assign(updates, buildSessionSnapshotPatchUpdates({
             existing: existingMeta,
             payload,
@@ -8067,6 +8134,12 @@ async function main() {
             ? snapshotMetaForConfig.runtime as RuntimeType
             : payloadRuntime;
           const activeRuntime = getActiveRuntimeType();
+          const activeRuntimeSource = engine.getRuntimeIdentity().runtimeSource;
+          const payloadExternalPermissionMode = typeof payload.permissionMode === 'string'
+            ? (activeRuntime === 'codex' && activeRuntimeSource === 'managed-provider'
+              ? projectManagedCodexPermissionToRuntime(payload.permissionMode)
+              : projectPermissionModeForRuntime(payload.permissionMode, activeRuntime))
+            : undefined;
           if (snapshotOwnsConfig && effectiveRuntime !== activeRuntime) {
             imRequestRegistry.unregister(payload.requestId);
             return jsonResponse(
@@ -8108,6 +8181,7 @@ async function main() {
                 : (effectiveRuntime === 'builtin'
                   ? (heldImConfig?.permissionMode ?? payload.permissionMode)
                   : (heldImConfig?.permissionMode
+                    ?? payloadExternalPermissionMode
                     ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime)
                     ?? getMaxPermissionForRuntime(effectiveRuntime))),
               // Legacy frozen env (kept for back-compat); sidecar prefers
@@ -8288,6 +8362,7 @@ async function main() {
             }
             const resolvedExternalPermissionMode = snapshotResolvedConfig?.permissionMode
               ?? heldImConfig?.permissionMode
+              ?? payloadExternalPermissionMode
               ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime)
               ?? getMaxPermissionForRuntime(effectiveRuntime);
             const resolvedExternalModel = snapshotResolvedConfig

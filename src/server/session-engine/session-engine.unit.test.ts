@@ -811,7 +811,7 @@ describe('session-engine selector and adapters', () => {
     const result = await getSessionEngine().sendDesktopMessage({
       text: 'hello external',
       images: [],
-      permissionMode: 'auto',
+      permissionMode: 'full-auto',
       model: 'gpt-5',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -823,7 +823,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.enqueueExternalSendForDesktop).toHaveBeenCalledWith(
       'hello external',
       [],
-      'auto',
+      'full-auto',
       'gpt-5',
       {
         sessionId: 'sid',
@@ -832,7 +832,7 @@ describe('session-engine selector and adapters', () => {
         analyticsSource: undefined,
         analyticsOrigin: undefined,
         birthOrigin: undefined,
-        permissionMode: 'auto',
+        permissionMode: 'full-auto',
         model: 'gpt-5',
         reasoningEffort: undefined,
         turnBoundaryOnly: undefined,

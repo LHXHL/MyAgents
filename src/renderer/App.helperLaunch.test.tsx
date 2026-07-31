@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
     runtime: 'builtin',
     permissionMode: 'auto',
     reasoningEffort: undefined as string | undefined,
-    runtimeConfig: undefined as { permissionMode?: string; reasoningEffort?: string } | undefined,
+    runtimeConfig: undefined as { source?: string; permissionMode?: string; reasoningEffort?: string } | undefined,
   };
   const provider = {
     id: 'provider-1',
@@ -457,7 +457,7 @@ describe('App helper launch', () => {
     return props;
   }
 
-  it('prepares a managed Codex provider session when opening an empty Launcher workspace', async () => {
+  it('prepares managed Codex from the Agent product permission, not stale runtime permission', async () => {
     mocks.agent.runtimeConfig = {
       permissionMode: 'suggest',
       reasoningEffort: 'xhigh',
@@ -481,7 +481,7 @@ describe('App helper launch', () => {
           runtimeSource: 'managed-provider',
           providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
           model: 'gpt-5.5',
-          permissionMode: 'suggest',
+          permissionMode: 'auto-edit',
           reasoningEffort: 'xhigh',
           providerExecutionIdentity: expect.objectContaining({
             kind: 'runtime-backed-provider',
@@ -501,6 +501,32 @@ describe('App helper launch', () => {
       'tab',
       expect.stringMatching(/^tab-/),
     );
+  });
+
+  it('keeps the readable legacy codex/managed-provider Agent identity on empty launch', async () => {
+    mocks.agent.runtime = 'codex';
+    mocks.agent.runtimeConfig = { source: 'managed-provider' };
+    mocks.resolveBuiltinSelection.mockReturnValue({
+      provider: managedCodexProvider(),
+      model: 'gpt-5.5',
+    });
+
+    render(<App />);
+    await act(async () => {
+      latestLauncherProps().onLaunchProject(mocks.project);
+    });
+
+    await waitFor(() => {
+      expect(mocks.createSession).toHaveBeenCalledWith(
+        mocks.project.path,
+        'codex',
+        expect.objectContaining({
+          runtimeSource: 'managed-provider',
+          permissionMode: 'auto-edit',
+          prepareForFirstUserMessage: true,
+        }),
+      );
+    });
   });
 
   it('uses a Launcher birth hint before stale config when opening an empty workspace', async () => {

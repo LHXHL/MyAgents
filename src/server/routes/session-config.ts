@@ -1,8 +1,9 @@
 import type { McpServerDefinition } from '../../shared/config-types';
 import { normalizeOfficialToolIds } from '../../shared/official-tools';
 import { getSessionEngine } from '../session-engine';
-import type { PermissionMode, ProviderEnv, SessionEngineSnapshotMaterializePatch } from '../session-engine/types';
+import type { ProviderEnv, SessionEngineSnapshotMaterializePatch } from '../session-engine/types';
 import type { InteractionScenario } from '../system-prompt';
+import { isPermissionModeForRuntimeIdentity } from '../../shared/providerExecution';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -112,7 +113,17 @@ export async function handleSessionConfigRoute(
       if (!payload?.permissionMode) {
         return jsonResponse({ success: false, error: 'permissionMode is required' }, 400);
       }
-      const result = await getSessionEngine().updatePermissionMode(payload.permissionMode as PermissionMode);
+      const engine = getSessionEngine();
+      const identity = engine.getRuntimeIdentity();
+      const valid = isPermissionModeForRuntimeIdentity(
+        payload.permissionMode,
+        identity.runtime,
+        identity.runtimeSource,
+      );
+      if (!valid) {
+        return jsonResponse({ success: false, error: `Invalid permissionMode '${payload.permissionMode}' for ${identity.runtimeSource ?? identity.runtime}` }, 400);
+      }
+      const result = await engine.updatePermissionMode(payload.permissionMode);
       return jsonResponse(result, result.success ? 200 : 500);
     } catch (error) {
       console.error('[api/session/permission-mode] Error:', error);
@@ -130,6 +141,22 @@ export async function handleSessionConfigRoute(
       };
       if (!payload?.workspacePath || typeof payload.workspacePath !== 'string') {
         return jsonResponse({ success: false, error: 'workspacePath is required' }, 400);
+      }
+      const requestedPermissionMode = payload.snapshotPatch?.permissionMode;
+      if (requestedPermissionMode !== undefined && requestedPermissionMode !== null
+          && typeof requestedPermissionMode !== 'string') {
+        return jsonResponse({ success: false, error: 'permissionMode must be a string or null' }, 400);
+      }
+      if (typeof requestedPermissionMode === 'string' && requestedPermissionMode.trim()) {
+        const identity = getSessionEngine().getRuntimeIdentity();
+        const valid = isPermissionModeForRuntimeIdentity(
+          requestedPermissionMode,
+          identity.runtime,
+          identity.runtimeSource,
+        );
+        if (!valid) {
+          return jsonResponse({ success: false, error: `Invalid permissionMode '${requestedPermissionMode}' for ${identity.runtimeSource ?? identity.runtime}` }, 400);
+        }
       }
       const result = await getSessionEngine().materializePendingDesktopSession({
         workspacePath: payload.workspacePath,

@@ -161,10 +161,10 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 
 `agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
 必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
-Agent/IM Channel。Managed Codex 的 runtime permission 词汇会在写入时规范化为
-产品 permission（`suggest→plan`、`auto-edit→auto`、`no-restrictions→fullAgency`），
-`agent show` 再投影为 effective Codex runtime/permission。`full-auto` 保留
-workspace-write sandbox，无法无损存入现有产品 enum，因此必须拒绝而不是升级成
+Agent/IM Channel。Managed Codex 的 Agent 配置只接受产品 permission
+（`auto | plan | fullAgency`）；`agent show` 再精确投影为 effective Codex
+runtime permission。Native 值属于 Session 执行快照，不能写入 Agent 的产品字段。
+`full-auto` 保留 workspace-write sandbox，不能当作 `fullAgency` 或升级为
 `no-restrictions`。任何单字段更新不得重置未涉及的 provider/model/permission 字段。
 Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-intent.lock`
 保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把

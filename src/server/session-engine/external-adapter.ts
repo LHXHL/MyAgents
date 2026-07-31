@@ -79,7 +79,10 @@ import {
   getProviderProxyScopeKey,
   setProcessProxyConfig,
 } from '../proxy-state';
-import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import {
+  isPermissionModeForRuntimeIdentity,
+  type RuntimeBackedProviderIdentity,
+} from '../../shared/providerExecution';
 import type { SessionMessage } from '../types/session';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
@@ -322,6 +325,17 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      if (request.permissionMode !== undefined && !isPermissionModeForRuntimeIdentity(
+        request.permissionMode,
+        getActiveRuntimeType(),
+        getActiveRuntimeSource(),
+      )) {
+        return {
+          success: false,
+          status: 400,
+          error: `Invalid permissionMode '${request.permissionMode}' for ${getActiveRuntimeSource() ?? getActiveRuntimeType()}`,
+        };
+      }
       const sent = enqueueExternalSendForDesktop(
         request.text,
         request.images,
@@ -723,7 +737,6 @@ export function createExternalSessionEngine(): SessionEngine {
         workspacePath: options.workspacePath,
         scenario: { type: 'desktop' },
         model: options.model,
-        permissionMode: options.permissionMode,
       });
     },
 

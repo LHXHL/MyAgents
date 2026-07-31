@@ -228,6 +228,27 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
       runtimeConfig: { envPolicy: { proxy: 'myagents' } },
     });
   });
+
+  it('does not reroute memory evolution through a dormant managed provider', () => {
+    expect(projectMemoryEvolutionTaskRuntimeForAgent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.5',
+      permissionMode: 'fullAgency',
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
+    })).toEqual({
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
+    });
+  });
 });
 
 describe('migrateImBotConfigsToAgents', () => {

@@ -15,15 +15,14 @@ import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
-  CODEX_SUBSCRIPTION_PROVIDER_ID,
   splitProviderModelInput,
   type McpServerDefinition,
   type PermissionMode,
   type ProxySettings,
 } from '../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
   managedCodexProviderPermissionToRuntimePermission,
-  managedCodexRuntimePermissionToProviderPermission,
 } from '../shared/providerExecution';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
 import { workspacePathsEqual } from '../shared/workspacePath';
@@ -101,6 +100,8 @@ import {
   RUNTIME_DISPLAY_NAMES,
   getRuntimePermissionModes,
   getDefaultRuntimePermissionMode,
+  isRuntimePermissionMode,
+  projectPermissionModeForRuntime,
   buildRuntimeChangePatch,
   type RuntimeType,
   type RecoveryHint,
@@ -1497,33 +1498,79 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
     id,
     (agent, currentConfig) => {
       let normalizedValue = value;
+      if (key === 'runtimeConfig') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return {
+            ok: false,
+            response: { success: false, error: 'runtimeConfig must be a JSON object.' },
+          };
+        }
+        const runtimeConfig = value as RuntimeConfig;
+        const targetManagedCodex = agentUsesManagedCodexProvider({
+          providerId: agent.providerId,
+          runtime: typeof agent.runtime === 'string' ? agent.runtime : undefined,
+          runtimeConfig,
+        });
+        if (targetManagedCodex && (
+          runtimeConfig.source !== undefined
+          || runtimeConfig.model !== undefined
+          || runtimeConfig.permissionMode !== undefined
+          || runtimeConfig.additionalArgs !== undefined
+        )) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'Managed Codex Agent defaults keep provider/model/permission in product fields, not runtimeConfig.',
+            },
+          };
+        }
+        if (runtimeConfig.source === 'managed-provider' && !targetManagedCodex) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'runtimeConfig.source=managed-provider requires the complete managed Codex provider identity.',
+            },
+          };
+        }
+        if (runtimeConfig.permissionMode !== undefined) {
+          if (typeof runtimeConfig.permissionMode !== 'string') {
+            return {
+              ok: false,
+              response: { success: false, error: 'runtimeConfig.permissionMode must be a string.' },
+            };
+          }
+          const runtime = (agent.runtime ?? 'builtin') as RuntimeType;
+          if (runtime === 'builtin' || !isRuntimePermissionMode(runtimeConfig.permissionMode, runtime)) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: `Invalid runtimeConfig.permissionMode for ${runtime}. Run 'myagents runtime describe ${runtime}' for valid values.`,
+              },
+            };
+          }
+        }
+      }
       if (key === 'permissionMode') {
         const requestedMode = (value as string).trim();
-        if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
-          // `full-auto` keeps Codex's workspace-write sandbox, while the product
-          // vocabulary has no lossless storage value for it. Mapping it to
-          // fullAgency would later project as danger-full-access
-          // (`no-restrictions`), silently escalating permissions.
-          if (requestedMode === 'full-auto') {
+        if (agentUsesManagedCodexProvider({
+          providerId: agent.providerId,
+          runtime: typeof agent.runtime === 'string' ? agent.runtime : undefined,
+          runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+        })) {
+          const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
+          if (!validModes.includes(requestedMode as PermissionMode)) {
             return {
               ok: false,
               response: {
                 success: false,
-                error: "Managed Codex permissionMode 'full-auto' cannot be stored losslessly. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.",
+                error: `Invalid managed Codex permissionMode. Valid: ${validModes.join(', ')}.`,
               },
             };
           }
-          const normalized = managedCodexRuntimePermissionToProviderPermission(requestedMode);
-          if (!normalized) {
-            return {
-              ok: false,
-              response: {
-                success: false,
-                error: 'Invalid managed Codex permissionMode. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.',
-              },
-            };
-          }
-          normalizedValue = normalized;
+          normalizedValue = requestedMode;
         } else {
           const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
           if (!validModes.includes(requestedMode as PermissionMode)) {
@@ -2837,10 +2884,8 @@ Options for 'channel add':
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
 
-Managed Codex permissionMode accepts either product values
-(auto | plan | fullAgency) or Codex values
-(auto-edit | suggest | no-restrictions); storage is normalized to
-the product vocabulary and 'show' reports the effective Codex value.
+Managed Codex Agent permissionMode accepts product values only
+(auto | plan | fullAgency); 'show' reports the effective Codex value.
 Codex 'full-auto' is rejected because product storage cannot distinguish its
 workspace-write sandbox from unrestricted danger-full-access.
 
@@ -4865,8 +4910,11 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
   const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
-  const usesManagedCodex = agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    && storedRuntime === 'builtin';
+  const usesManagedCodex = agentUsesManagedCodexProvider({
+    providerId: agent.providerId,
+    runtime: storedRuntime,
+    runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+  });
   const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
   const agentPermissionMode = (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig = (agent.runtimeConfig as Record<string, unknown> | undefined) ?? undefined;
@@ -4891,8 +4939,11 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
     ? (agent.model as string | undefined)
     : (rcModel ?? (agent.model as string | undefined));
   const effectivePermissionMode = usesManagedCodex
-    ? managedCodexProviderPermissionToRuntimePermission(agentPermissionMode)
-    : (rcPermissionMode ?? agentPermissionMode);
+    ? (managedCodexProviderPermissionToRuntimePermission(agentPermissionMode) ?? 'auto-edit')
+    : (isExternal
+      ? (projectPermissionModeForRuntime(rcPermissionMode, runtime)
+        ?? getDefaultRuntimePermissionMode(runtime))
+      : agentPermissionMode);
 
   return {
     success: true,

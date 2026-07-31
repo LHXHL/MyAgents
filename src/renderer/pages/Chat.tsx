@@ -95,9 +95,10 @@ import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
-  managedCodexProviderPermissionToRuntimePermission,
   managedCodexRuntimePermissionToProviderPermission,
+  projectManagedCodexPermissionToRuntime,
   runtimeBackedProviderPermissionMode,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -111,9 +112,9 @@ import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
+  projectPermissionModeForRuntime,
 } from '../../shared/types/runtime';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
@@ -323,7 +324,7 @@ function coerceExternalRuntimeModelForUi(model: string | undefined, runtime: Run
 }
 
 function coerceExternalRuntimePermissionForUi(mode: string | undefined, runtime: RuntimeType): string | undefined {
-  return runtime === 'builtin' ? mode : coercePermissionModeForRuntime(mode, runtime);
+  return runtime === 'builtin' ? mode : projectPermissionModeForRuntime(mode, runtime);
 }
 
 function coerceInitialMessageRuntimePermission(
@@ -1284,11 +1285,8 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
-  const currentAgentRuntimeConfig = currentAgent?.runtimeConfig as RuntimeConfig | undefined;
-  const agentUsesManagedCodexProvider =
-    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || currentAgentRuntimeConfig?.source === 'managed-provider';
-  const agentRuntime: RuntimeType = agentUsesManagedCodexProvider
+  const agentUsesManagedProvider = agentUsesManagedCodexProvider(currentAgent);
+  const agentRuntime: RuntimeType = agentUsesManagedProvider
     ? 'builtin'
     : multiAgentRuntimeEnabled
     ? ((currentAgent?.runtime as RuntimeType) || 'builtin')
@@ -1382,9 +1380,13 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   useEffect(() => {
     if (!isExternalRuntime) return;
     const cfg = currentAgent?.runtimeConfig as { permissionMode?: string; model?: string } | undefined;
-    const saved = cfg?.permissionMode;
-    const effective = coerceExternalRuntimePermissionForUi(saved, currentRuntime)
-      ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default');
+    const saved = managedProviderRuntimeActive
+      ? currentAgent?.permissionMode
+      : cfg?.permissionMode;
+    const effective = managedProviderRuntimeActive
+      ? (projectManagedCodexPermissionToRuntime(saved) ?? 'auto-edit')
+      : (coerceExternalRuntimePermissionForUi(saved, currentRuntime)
+        ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default'));
     setRuntimePermissionMode(effective);
     setRuntimeModel(coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
     // #324 — re-seed effort on runtime transition. RUNTIME_CONFIG_PER_RUNTIME_FIELDS
@@ -1392,7 +1394,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     // different runtime can't be read here; absent = 'default'.
     setReasoningEffort(coerceReasoningEffortForUi((cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort, currentRuntime) ?? 'default');
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only re-sync on runtime transitions, not on every currentAgent.runtimeConfig edit
-  }, [currentRuntime, isExternalRuntime]);
+  }, [currentRuntime, isExternalRuntime, managedProviderRuntimeActive]);
 
   // Runtime-specific models and permission modes
   const runtimePermissionModes = currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
@@ -1485,7 +1487,6 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     apiPost('/api/runtime/prewarm', {
       sessionId,
       model: effectiveModel,  // may be undefined — runtime falls back to its default
-      permissionMode: effectivePermissionMode,
     }, { signal: controller.signal }).then((res) => {
       // Backend returns { success: true, prewarmed: false, reason: '...' } when
       // the endpoint short-circuits (already-active/starting, runtime mismatch,
@@ -1508,7 +1509,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
       prewarmedKeyRef.current = null; // allow a later retry
     });
     return () => { controller.abort(); };
-    // Intentionally omit effectiveModel/effectivePermissionMode from deps —
+    // Intentionally omit effectiveModel from deps —
     // config changes kill the pre-warmed process via setExternalModel/
     // setExternalPermissionMode, and the next user message will resume with
     // the new settings. Re-firing pre-warm on every keystroke-driven option
@@ -2852,11 +2853,13 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     const providerModelValue = snapshotIsManagedProvider
       ? managedProviderSnapshotModel(sessionMeta, rawModel)
       : rawModel;
-    const fallbackMode = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.permissionMode
-      : (currentAgent?.permissionMode as string | undefined);
-    const rawMode = snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode);
-    const runtimePermissionValue = snapshotIsExternal
+    const fallbackMode = currentAgent?.permissionMode as string | undefined;
+    const rawMode = snapshotIsExternal
+      ? sessionMeta.permissionMode
+      : (snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode));
+    const runtimePermissionValue = snapshotIsManagedProvider
+      ? (projectManagedCodexPermissionToRuntime(rawMode) ?? 'auto-edit')
+      : snapshotIsExternal
       ? coerceExternalRuntimePermissionForUi(rawMode, snapshotRuntime)
       : rawMode;
     const providerPermissionValue = snapshotIsManagedProvider
@@ -3622,10 +3625,15 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
       return;
     }
 
-    const runtimeMode = managedCodexProviderPermissionToRuntimePermission(mode)
-      ?? coerceRuntimeBirthPermissionMode(mode, currentRuntime)
-      ?? getDefaultRuntimePermissionMode(currentRuntime);
-    const persisted = await persistTabConfigChange({ permissionMode: runtimeMode });
+    if (currentProviderExecutionIntent?.kind !== 'runtime-backed-provider') return;
+    const runtimeMode = runtimeBackedProviderPermissionMode(
+      currentProviderExecutionIntent,
+      mode,
+    ) ?? 'auto-edit';
+    const persisted = await persistTabConfigChange({
+      runtimeBackedProviderSelection: currentProviderExecutionIntent,
+      permissionMode: mode,
+    });
     if (!persisted) return;
     projectSyncedRef.current = true;
     setPermissionMode(mode);
@@ -3633,7 +3641,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   }, [
     managedProviderRuntimeActive,
     handlePermissionModeChange,
-    currentRuntime,
+    currentProviderExecutionIntent,
     persistTabConfigChange,
     guardCronConfigMutation,
   ]);
@@ -4121,9 +4129,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
             ...(targetIntent.kind === 'runtime-backed-provider'
               ? { runtimeBackedProviderSelection: targetIntent }
               : { builtinSelection: { providerId: pending.providerId, model: targetModel } }),
-            permissionMode: targetIntent.kind === 'runtime-backed-provider'
-              ? runtimeBackedProviderPermissionMode(targetIntent, inputChromePermissionMode)
-              : inputChromePermissionMode,
+            permissionMode: inputChromePermissionMode,
           },
           snapshotWriteMode: 'disabled',
           patchProject,
