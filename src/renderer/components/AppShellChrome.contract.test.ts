@@ -72,6 +72,19 @@ describe('App Shell chrome contract', () => {
     expect(locales.every(locale => !locale.includes('"stats": "{{files}}'))).toBe(true);
   });
 
+  it('gives the workspace name priority while keeping the git branch badge on one line', () => {
+    const directory = source('src/renderer/components/directory-panel/DirectoryPanel.tsx');
+    const identityRow = directory.slice(
+      directory.indexOf('{/* First row: name and git branch */}'),
+      directory.indexOf('{/* Second row: path */}'),
+    );
+
+    expect(identityRow).toContain('className="min-w-0 flex-1 truncate text-sm font-medium');
+    expect(identityRow).toContain('max-w-[45%] shrink-0');
+    expect(identityRow).toContain('overflow-hidden whitespace-nowrap');
+    expect(identityRow).toContain('<span className="min-w-0 truncate">{gitBranch}</span>');
+  });
+
   it('uses the global new-chat glyph for the matching Chat header action', () => {
     const chat = source('src/renderer/pages/Chat.tsx');
     const newSessionAction = chat.slice(

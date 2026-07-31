@@ -109,10 +109,7 @@ export default function TaskCenter({ isActive, pendingIntent }: Props) {
           (icon + label + collapsible 🔍 search toggle). */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: Thought stream */}
-        <div
-          className="flex flex-col overflow-hidden"
-          style={{ width: '480px' }}
-        >
+        <div className="flex w-[480px] shrink-0 flex-col overflow-hidden">
           <ThoughtPanel
             onDispatchThought={handleDispatch}
             onDiscussThought={handleDiscuss}
@@ -135,7 +132,7 @@ export default function TaskCenter({ isActive, pendingIntent }: Props) {
         <div className="w-px bg-[var(--line-subtle)]" />
 
         {/* Right: Task list */}
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TaskListPanel
             refreshKey={`${refreshKey}:${isActive ? '1' : '0'}`}
             pendingIntent={pendingIntent ?? null}
