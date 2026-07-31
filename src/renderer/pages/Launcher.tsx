@@ -48,6 +48,7 @@ import {
     type OfficialToolId,
 } from '../../shared/official-tools';
 import { apiGetJson } from '@/api/apiFetch';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveLauncherProvider } from '@/utils/optionResolve';
 import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
@@ -225,7 +226,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'codex') { setCodexModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=codex')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('codex', 'system-cli'))
             .then(res => { if (!cancelled && res?.models?.length) setCodexModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -233,7 +234,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'gemini') { setGeminiModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=gemini')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
             .then(res => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };

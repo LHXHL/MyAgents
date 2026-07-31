@@ -393,11 +393,9 @@ pub(super) async fn query_runtime_models_from_sidecar(
     client: &Client,
     port: u16,
     runtime: &str,
+    runtime_source: Option<&str>,
 ) -> Result<Vec<RuntimeModelChoice>, String> {
-    let url = format!(
-        "http://127.0.0.1:{}/api/runtime/models?type={}",
-        port, runtime,
-    );
+    let url = runtime_models_url(port, runtime, runtime_source);
     let resp = client
         .get(&url)
         .send()
@@ -436,6 +434,18 @@ pub(super) async fn query_runtime_models_from_sidecar(
         })
         .unwrap_or_default();
     Ok(models)
+}
+
+fn runtime_models_url(port: u16, runtime: &str, runtime_source: Option<&str>) -> String {
+    let mut url = format!(
+        "http://127.0.0.1:{}/api/runtime/models?type={}",
+        port, runtime,
+    );
+    if runtime == "codex" {
+        url.push_str("&source=");
+        url.push_str(runtime_source.unwrap_or("system-cli"));
+    }
+    url
 }
 
 pub(super) async fn sync_runtime_config_to_sidecars(
@@ -1176,6 +1186,27 @@ pub type ManagedAgents = Arc<Mutex<HashMap<String, AgentInstance>>>;
 /// Create the managed Agent state (called during app setup)
 pub fn create_agent_state() -> ManagedAgents {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_models_url;
+
+    #[test]
+    fn runtime_model_url_preserves_codex_catalog_owner() {
+        assert_eq!(
+            runtime_models_url(9527, "codex", Some("managed-provider")),
+            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=managed-provider",
+        );
+        assert_eq!(
+            runtime_models_url(9527, "codex", None),
+            "http://127.0.0.1:9527/api/runtime/models?type=codex&source=system-cli",
+        );
+        assert_eq!(
+            runtime_models_url(9527, "gemini", Some("managed-provider")),
+            "http://127.0.0.1:9527/api/runtime/models?type=gemini",
+        );
+    }
 }
 
 /// Signal all running agents to shut down (sync, for use in app exit handlers).

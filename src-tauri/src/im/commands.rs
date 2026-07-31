@@ -1769,8 +1769,8 @@ pub async fn cmd_update_agent_config(
 /// Re-read the authoritative Agent record from disk and project the selected
 /// fields into running Agent/IM instances. Shared by the Tauri command and the
 /// loopback Management API used by `myagents agent set`.
-pub(crate) async fn reload_agent_config_from_disk(
-    app_handle: &AppHandle,
+pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
+    app_handle: &AppHandle<R>,
     agent_state: &ManagedAgents,
     sidecar_manager: &ManagedSidecarManager,
     agent_id: String,

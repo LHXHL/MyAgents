@@ -64,8 +64,9 @@ pub use commands::{
 use commands::{persist_bot_config_patch, read_available_providers_from_disk};
 pub(crate) use config_store::read_agent_configs_from_disk;
 use config_store::{
-    missing_configured_channel_status, persist_agent_config_patch, read_im_configs_from_disk,
-    route_agent_heartbeat_once, should_report_missing_configured_channel,
+    missing_configured_channel_status, persist_agent_channel_model, persist_agent_config_patch,
+    read_im_configs_from_disk, route_agent_heartbeat_once,
+    should_report_missing_configured_channel,
 };
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
 pub(crate) use config_store::{resolve_agent_heartbeat_route, AgentHeartbeatRouteResolution};

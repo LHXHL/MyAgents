@@ -68,6 +68,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
@@ -1406,7 +1407,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || currentRuntime !== 'codex') return;
+    if (!multiAgentRuntimeEnabled || managedProviderRuntimeActive || currentRuntime !== 'codex') return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1415,7 +1416,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=codex', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('codex', 'system-cli'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setCodexModels(data.models);
     }).catch(() => {});
@@ -1425,7 +1426,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
     let cancelled = false;
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=gemini', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('gemini'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setGeminiModels(data.models);
     }).catch(() => {});
@@ -1518,7 +1519,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
 
   const runtimeModels = currentRuntime === 'claude-code' ? CC_MODELS
-    : currentRuntime === 'codex' ? codexModels
+    : currentRuntime === 'codex' ? (managedProviderRuntimeActive ? [] : codexModels)
     : currentRuntime === 'gemini' ? geminiModels
     : undefined;
 

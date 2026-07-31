@@ -1,4 +1,5 @@
 use super::*;
+use tauri::Manager;
 
 static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
@@ -1610,6 +1611,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                         if is_external_runtime_type(&current_runtime) {
                             let current_runtime_config = runtime_config_for_loop.read().await.clone();
+                            let current_runtime_source = runtime_config_string(
+                                current_runtime_config.as_ref(),
+                                "source",
+                            );
+                            let managed_codex_runtime = current_runtime == "codex"
+                                && current_runtime_source.as_deref() == Some("managed-provider");
                             let current_display = runtime_config_string(
                                 current_runtime_config.as_ref(),
                                 "model",
@@ -1617,10 +1624,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                             let mut models = fallback_runtime_models(&current_runtime);
                             if models.is_empty() {
-                                let current_runtime_source = runtime_config_string(
-                                    current_runtime_config.as_ref(),
-                                    "source",
-                                );
                                 match ensure_sidecar_port_for_command(
                                     &router_clone,
                                     &session_key,
@@ -1639,6 +1642,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                             &client,
                                             port,
                                             &current_runtime,
+                                            current_runtime_source.as_deref(),
                                         ).await {
                                             Ok(remote_models) => models = remote_models,
                                             Err(e) => {
@@ -1710,40 +1714,94 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                                 match model_id {
                                     Some(id) => {
-                                        let new_config = runtime_config_with_string(
-                                            current_runtime_config,
-                                            "model",
-                                            Some(id.clone()),
-                                        );
-                                        *runtime_config_for_loop.write().await = Some(new_config.clone());
-                                        let sync_config = if id.is_empty() {
-                                            let mut map = new_config.as_object().cloned().unwrap_or_default();
-                                            map.insert("model".to_string(), serde_json::Value::Null);
-                                            serde_json::Value::Object(map)
-                                        } else {
-                                            new_config.clone()
-                                        };
-                                        sync_runtime_config_to_sidecars(
-                                            &router_clone,
-                                            &current_runtime,
-                                            &sync_config,
-                                        ).await;
-
                                         let link = agent_link_for_loop.read().await.clone();
-                                        if let Some(link) = link {
-                                            *link.runtime_config.write().await = Some(new_config.clone());
-                                            let agent_id = link.agent_id.clone();
-                                            let config_for_disk = new_config.clone();
-                                            tokio::task::spawn_blocking(move || {
-                                                let patch = AgentConfigPatch {
-                                                    runtime_config: Some(Some(config_for_disk)),
-                                                    ..Default::default()
+                                        if managed_codex_runtime {
+                                            if let Some(link) = link {
+                                                let agent_id = link.agent_id.clone();
+                                                let channel_id = link.channel_id.clone();
+                                                let model_for_disk = id.clone();
+                                                let persisted = tokio::task::spawn_blocking(move || {
+                                                    persist_agent_channel_model(
+                                                        &agent_id,
+                                                        &channel_id,
+                                                        &model_for_disk,
+                                                    )
+                                                    .map(|patch| (agent_id, patch))
+                                                })
+                                                .await
+                                                .map_err(|error| error.to_string())
+                                                .and_then(|result| result);
+                                                let reload_result = match persisted {
+                                                    Ok((agent_id, patch)) => {
+                                                        match app_clone.try_state::<ManagedAgents>() {
+                                                            Some(agent_state) => reload_agent_config_from_disk(
+                                                                &app_clone,
+                                                                agent_state.inner(),
+                                                                &manager_clone,
+                                                                agent_id,
+                                                                patch,
+                                                            ).await,
+                                                            None => Err("Agent runtime state is unavailable".to_string()),
+                                                        }
+                                                    }
+                                                    Err(error) => Err(error),
                                                 };
-                                                if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
-                                                    ulog_warn!("[im] /model runtime persist failed: {}", e);
+                                                if let Err(error) = reload_result {
+                                                    ulog_warn!("[im] /model managed model update failed: {}", error);
+                                                    if let Err(reply_error) = send_immediate_reply(
+                                                        adapter_for_reply.as_ref(),
+                                                        &msg,
+                                                        &format!("❌ 模型切换失败：{}", error),
+                                                    ).await {
+                                                        ulog_warn!("[im-cmd] send_message (/model managed update failed) failed: {}", reply_error);
+                                                    }
+                                                    continue;
                                                 }
-                                            });
-                                            let _ = app_clone.emit("agent:config-changed", json!({}));
+                                            } else {
+                                                ulog_warn!("[im] /model managed runtime has no Agent owner");
+                                                if let Err(error) = send_immediate_reply(
+                                                    adapter_for_reply.as_ref(),
+                                                    &msg,
+                                                    "❌ 当前 managed Runtime 未绑定 Agent，无法持久化模型",
+                                                ).await {
+                                                    ulog_warn!("[im-cmd] send_message (/model managed owner missing) failed: {}", error);
+                                                }
+                                                continue;
+                                            }
+                                        } else {
+                                            let new_config = runtime_config_with_string(
+                                                current_runtime_config,
+                                                "model",
+                                                Some(id.clone()),
+                                            );
+                                            *runtime_config_for_loop.write().await = Some(new_config.clone());
+                                            let sync_config = if id.is_empty() {
+                                                let mut map = new_config.as_object().cloned().unwrap_or_default();
+                                                map.insert("model".to_string(), serde_json::Value::Null);
+                                                serde_json::Value::Object(map)
+                                            } else {
+                                                new_config.clone()
+                                            };
+                                            sync_runtime_config_to_sidecars(
+                                                &router_clone,
+                                                &current_runtime,
+                                                &sync_config,
+                                            ).await;
+                                            if let Some(link) = link {
+                                                let agent_id = link.agent_id.clone();
+                                                *link.runtime_config.write().await = Some(new_config.clone());
+                                                let config_for_disk = new_config.clone();
+                                                tokio::task::spawn_blocking(move || {
+                                                    let patch = AgentConfigPatch {
+                                                        runtime_config: Some(Some(config_for_disk)),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Err(e) = persist_agent_config_patch(&agent_id, &patch) {
+                                                        ulog_warn!("[im] /model runtime persist failed: {}", e);
+                                                    }
+                                                });
+                                                let _ = app_clone.emit("agent:config-changed", json!({}));
+                                            }
                                         }
                                         let display = if id.is_empty() { "(默认)".to_string() } else { id.clone() };
                                         ulog_info!("[im] /model: set {} runtime model to {}", current_runtime, display);

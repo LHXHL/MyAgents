@@ -22,6 +22,7 @@ import {
 } from '../shared/config-types';
 import {
   agentUsesManagedCodexProvider,
+  isPermissionModeForRuntimeIdentity,
   managedCodexProviderPermissionToRuntimePermission,
 } from '../shared/providerExecution';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
@@ -109,9 +110,11 @@ import {
   type RuntimeModelInfo,
   type RuntimeDetection,
   type RuntimeConfig,
+  type RuntimeSource,
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
+import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
 /**
@@ -3585,7 +3588,22 @@ export async function handleTaskUpdate(
   if (typeof payload.id !== 'string' || payload.id.length === 0) {
     return { success: false, error: 'task id is required' };
   }
-  const validationError = await validateTaskOverrides(payload);
+  let validationPayload = payload;
+  if (hasTaskRuntimeOverride(payload)) {
+    const current = await handleTaskGet({ id: payload.id });
+    if (!current.success) return current;
+    if (!current.data || typeof current.data !== 'object' || Array.isArray(current.data)) {
+      return { success: false, error: `Task '${payload.id}' returned invalid persisted data.` };
+    }
+    validationPayload = {
+      ...(current.data as Record<string, unknown>),
+      ...payload,
+      ...(payload.clearRuntimeOverride === true
+        ? { runtime: undefined, runtimeConfig: undefined }
+        : {}),
+    };
+  }
+  const validationError = await validateTaskOverrides(validationPayload);
   if (validationError) return validationError;
   const resp = await managementApi('/api/task/update', 'POST', payload);
   return wrapMgmtResponse(resp);
@@ -4749,7 +4767,9 @@ export async function handleRuntimeDescribe(payload: {
   // Only query models when the CLI is actually installed — otherwise we'd
   // waste 10+ seconds trying to spawn a binary that doesn't exist.
   const models: RuntimeModelInfo[] = detection.installed
-    ? ((await queryRuntimeModels(runtimeArg)) as RuntimeModelInfo[])
+    ? ((await queryRuntimeModels(runtimeArg, {
+        runtimeSource: runtimeArg === 'codex' ? 'system-cli' : undefined,
+      })) as RuntimeModelInfo[])
     : [];
   const permissionModes = getRuntimePermissionModes(runtimeArg);
   const defaultPermissionMode = getDefaultRuntimePermissionMode(runtimeArg);
@@ -5000,6 +5020,7 @@ function hintForMissingRuntime(runtime: RuntimeType): string {
 /** Fields on a task-create payload that we validate as overrides. */
 interface TaskOverrideFields {
   runtime?: unknown;
+  runtimeConfig?: unknown;
   model?: unknown;
   permissionMode?: unknown;
   /** Workspace path — used to resolve the agent's default runtime when the
@@ -5007,6 +5028,11 @@ interface TaskOverrideFields {
   workspacePath?: unknown;
   /** Workspace id — alternative identifier for the same lookup as workspacePath. */
   workspaceId?: unknown;
+}
+
+function hasTaskRuntimeOverride(payload: Record<string, unknown>): boolean {
+  return ['runtime', 'runtimeConfig', 'model', 'permissionMode', 'clearRuntimeOverride']
+    .some(field => payload[field] !== undefined && payload[field] !== null && payload[field] !== '');
 }
 
 /**
@@ -5026,8 +5052,21 @@ interface TaskOverrideFields {
 async function validateTaskOverrides(
   payload: TaskOverrideFields,
 ): Promise<AdminResponse | null> {
-  // Step 1: resolve the effective runtime that downstream checks should use.
-  let effectiveRuntime: RuntimeType | undefined;
+  const runtimeConfigModel = taskRuntimeConfigField(payload.runtimeConfig, 'model');
+  const rawRuntimeSource = taskRuntimeConfigField(payload.runtimeConfig, 'source');
+  if (
+    rawRuntimeSource !== undefined
+    && rawRuntimeSource !== 'system-cli'
+    && rawRuntimeSource !== 'managed-provider'
+  ) {
+    return {
+      success: false,
+      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: system-cli, managed-provider.`,
+    };
+  }
+  const runtimeConfigSource = rawRuntimeSource as RuntimeSource | undefined;
+  // Step 1: resolve the complete runtime identity that downstream checks use.
+  let effectiveRuntimeIdentity: { runtime: RuntimeType; runtimeSource?: RuntimeSource } | undefined;
   if (payload.runtime !== undefined && payload.runtime !== null && payload.runtime !== '') {
     if (typeof payload.runtime !== 'string' || !isValidRuntimeType(payload.runtime)) {
       return {
@@ -5039,39 +5078,23 @@ async function validateTaskOverrides(
         },
       };
     }
-    effectiveRuntime = payload.runtime;
-    if (effectiveRuntime !== 'builtin' && isRuntimeSupported(effectiveRuntime)) {
-      try {
-        const detection = await getExternalRuntime(effectiveRuntime).detect();
-        if (!detection.installed) {
-          return {
-            success: false,
-            error: `Runtime '${effectiveRuntime}' is not installed on this machine.`,
-            recoveryHint: {
-              recoveryCommand: 'myagents runtime list',
-              message: 'See which runtimes are available + install hints.',
-            },
-          };
-        }
-      } catch {
-        return {
-          success: false,
-          error: `Runtime '${effectiveRuntime}' detection failed.`,
-          recoveryHint: {
-            recoveryCommand: 'myagents runtime list',
-            message: 'See which runtimes are available.',
-          },
-        };
-      }
-    }
+    const runtime = payload.runtime;
+    effectiveRuntimeIdentity = {
+      runtime,
+      ...(runtime === 'codex'
+        ? { runtimeSource: runtimeConfigSource ?? 'system-cli' }
+        : {}),
+    };
   } else if (
     (payload.model !== undefined && payload.model !== null && payload.model !== '')
+    || (runtimeConfigModel !== undefined && runtimeConfigModel !== null && runtimeConfigModel !== '')
+    || runtimeConfigSource !== undefined
     || (payload.permissionMode !== undefined && payload.permissionMode !== null && payload.permissionMode !== '')
   ) {
     // --model / --permissionMode passed without --runtime: try to resolve the
     // workspace's agent default so we can still validate against the correct
     // allowlist. If resolution fails, reject rather than silently trust.
-    const resolved = resolveAgentRuntimeFromWorkspace(payload);
+    const resolved = resolveAgentRuntimeIdentityFromWorkspace(payload);
     if (resolved === undefined) {
       return {
         success: false,
@@ -5084,10 +5107,44 @@ async function validateTaskOverrides(
         },
       };
     }
-    effectiveRuntime = resolved;
+    effectiveRuntimeIdentity = resolved;
   } else {
     // No overrides at all — nothing to validate.
     return null;
+  }
+  const { runtime: effectiveRuntime, runtimeSource: effectiveRuntimeSource } = effectiveRuntimeIdentity;
+  if (runtimeConfigSource === 'managed-provider' && effectiveRuntime !== 'codex') {
+    return {
+      success: false,
+      error: 'runtimeConfig.source=managed-provider requires runtime=codex.',
+    };
+  }
+  if (effectiveRuntime !== 'builtin' && isRuntimeSupported(effectiveRuntime)) {
+    try {
+      const installed = effectiveRuntime === 'codex'
+        && effectiveRuntimeSource === 'managed-provider'
+        ? isManagedCodexRuntimeInstalled()
+        : (await getExternalRuntime(effectiveRuntime).detect()).installed;
+      if (!installed) {
+        return {
+          success: false,
+          error: `Runtime '${effectiveRuntime}' is not installed on this machine.`,
+          recoveryHint: {
+            recoveryCommand: 'myagents runtime list',
+            message: 'See which runtimes are available + install hints.',
+          },
+        };
+      }
+    } catch {
+      return {
+        success: false,
+        error: `Runtime '${effectiveRuntime}' detection failed.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents runtime list',
+          message: 'See which runtimes are available.',
+        },
+      };
+    }
   }
 
   // Step 2: permissionMode is validated against the runtime's allowlist.
@@ -5113,8 +5170,17 @@ async function validateTaskOverrides(
         },
       };
     }
-    const modes = getRuntimePermissionModes(effectiveRuntime);
-    if (modes.length > 0 && !modes.some(m => m.value === payload.permissionMode)) {
+    const modes = getRuntimePermissionModes(effectiveRuntime)
+      .filter(mode => isPermissionModeForRuntimeIdentity(
+        mode.value,
+        effectiveRuntime,
+        effectiveRuntimeSource,
+      ));
+    if (!isPermissionModeForRuntimeIdentity(
+      payload.permissionMode,
+      effectiveRuntime,
+      effectiveRuntimeSource,
+    )) {
       return {
         success: false,
         error: `--permissionMode '${payload.permissionMode}' is not valid for runtime '${effectiveRuntime}'. Valid: ${modes.map(m => m.value).join(', ')}.`,
@@ -5131,16 +5197,19 @@ async function validateTaskOverrides(
   // server to discover them) so an empty list is treated as "can't validate,
   // trust the caller". builtin runtime model ids depend on the active
   // provider — out of scope for this validator.
+  const modelOverride = effectiveRuntime === 'builtin' || runtimeConfigModel === undefined
+    ? payload.model
+    : runtimeConfigModel;
   if (
-    payload.model !== undefined
-    && payload.model !== null
-    && payload.model !== ''
+    modelOverride !== undefined
+    && modelOverride !== null
+    && modelOverride !== ''
     && effectiveRuntime !== 'builtin'
   ) {
-    if (typeof payload.model !== 'string') {
+    if (typeof modelOverride !== 'string') {
       return {
         success: false,
-        error: `--model must be a string (got ${typeof payload.model}).`,
+        error: `--model must be a string (got ${typeof modelOverride}).`,
         recoveryHint: {
           recoveryCommand: `myagents runtime describe ${effectiveRuntime}`,
           message: 'See valid model ids for this runtime.',
@@ -5148,15 +5217,17 @@ async function validateTaskOverrides(
       };
     }
     try {
-      const models = (await queryRuntimeModels(effectiveRuntime)) as RuntimeModelInfo[];
+      const models = (await queryRuntimeModels(effectiveRuntime, {
+        runtimeSource: effectiveRuntimeSource,
+      })) as RuntimeModelInfo[];
       // Empty list means either "runtime is not installed" (handled above)
       // or "discovery failed transiently" — in both cases, don't block the
       // write. The Rust side will surface the real dispatch error if any.
-      if (models.length > 0 && !models.some(m => m.value === payload.model)) {
+      if (models.length > 0 && !models.some(m => m.value === modelOverride)) {
         const examples = models.slice(0, 5).map(m => m.value).filter(Boolean).join(', ');
         return {
           success: false,
-          error: `--model '${payload.model}' is not available for runtime '${effectiveRuntime}'. Examples: ${examples || '(none found)'}.`,
+          error: `--model '${modelOverride}' is not available for runtime '${effectiveRuntime}'. Examples: ${examples || '(none found)'}.`,
           recoveryHint: {
             recoveryCommand: `myagents runtime describe ${effectiveRuntime}`,
             message: 'See the full model list.',
@@ -5185,18 +5256,17 @@ function computeOverriddenFields(payload: Record<string, unknown>): string[] {
 }
 
 /**
- * Look up the workspace's agent from config and return the agent's default
- * runtime (falling back to 'builtin' when unset). Used by `validateTaskOverrides`
- * to decide which runtime's permission-mode / model allowlist to validate
- * against when the caller passes `--model` / `--permissionMode` without
- * `--runtime`.
+ * Look up the workspace's agent and return its effective runtime identity.
+ * Managed Codex is stored in the builtin/provider shape, so model validation
+ * must project that raw config to `codex/managed-provider` before choosing a
+ * catalogue.
  *
  * Returns `undefined` when neither `workspacePath` nor `workspaceId` matches
  * an agent — forces the validator to reject rather than guess.
  */
-function resolveAgentRuntimeFromWorkspace(
+function resolveAgentRuntimeIdentityFromWorkspace(
   payload: { workspacePath?: unknown; workspaceId?: unknown },
-): RuntimeType | undefined {
+): { runtime: RuntimeType; runtimeSource?: RuntimeSource } | undefined {
   const wsPath = typeof payload.workspacePath === 'string' ? payload.workspacePath : undefined;
   const wsId = typeof payload.workspaceId === 'string' ? payload.workspaceId : undefined;
   if (!wsPath && !wsId) return undefined;
@@ -5213,8 +5283,24 @@ function resolveAgentRuntimeFromWorkspace(
   if (!agent) return undefined;
 
   const raw = agent.runtime as unknown;
-  if (typeof raw === 'string' && isValidRuntimeType(raw)) return raw;
-  return 'builtin';
+  const runtime = typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
+  if (agentUsesManagedCodexProvider({
+    providerId: agent.providerId,
+    runtime,
+    runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
+  })) {
+    return { runtime: 'codex', runtimeSource: 'managed-provider' };
+  }
+  return runtime === 'codex'
+    ? { runtime, runtimeSource: 'system-cli' }
+    : { runtime };
+}
+
+function taskRuntimeConfigField(runtimeConfig: unknown, field: string): unknown {
+  if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
+    return undefined;
+  }
+  return (runtimeConfig as Record<string, unknown>)[field];
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,11 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const runtimeModelMocks = vi.hoisted(() => ({
+  queryRuntimeModels: vi.fn(async () => [{ value: 'gpt-5.6-sol' }]),
+  managedInstalled: true,
+}));
+
 const adminConfigBehavior = vi.hoisted(() => ({
   failProjectWrite: false,
   failNextConfigWrite: false,
@@ -87,6 +92,15 @@ vi.mock('./utils/management-api-client', () => ({
   managementApi: managementApiMocks.managementApi,
 }));
 
+vi.mock('./runtimes/external-session', () => ({
+  queryRuntimeModels: runtimeModelMocks.queryRuntimeModels,
+}));
+
+vi.mock('./runtimes/codex-command-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtimes/codex-command-context')>()),
+  isManagedCodexRuntimeInstalled: () => runtimeModelMocks.managedInstalled,
+}));
+
 vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
@@ -123,6 +137,9 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  runtimeModelMocks.queryRuntimeModels.mockClear();
+  runtimeModelMocks.queryRuntimeModels.mockResolvedValue([{ value: 'gpt-5.6-sol' }]);
+  runtimeModelMocks.managedInstalled = true;
   adminConfigBehavior.failProjectWrite = false;
   adminConfigBehavior.failNextConfigWrite = false;
   adminConfigBehavior.delayNextIntent = false;
@@ -566,6 +583,227 @@ describe('admin-api cron create', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Use myagents goal create');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api task runtime model identity', () => {
+  it('rejects managed-provider when the Task runtime is not Codex', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-gemini-pair',
+      runtime: 'gemini',
+      runtimeConfig: { source: 'managed-provider', model: 'gemini-2.5-pro' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('requires runtime=codex');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown Task runtime source values instead of coercing them', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-runtime-source',
+      runtime: 'codex',
+      runtimeConfig: { source: 'mystery-owner', model: 'gpt-5.6-sol' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid runtimeConfig.source');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('validates a Task update against the persisted complete runtime identity', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({
+        ok: true,
+        task: {
+          id: 'task-managed-update',
+          workspacePath: '/tmp/myagents-managed-task-update',
+          runtime: 'codex',
+          runtimeConfig: { source: 'managed-provider', model: 'old-model' },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, taskUpdated: 1, cronUpdated: 0 });
+    const { handleTaskUpdate } = await import('./admin-api');
+
+    const result = await handleTaskUpdate({
+      id: 'task-managed-update',
+      runtimeConfig: { source: 'managed-provider', model: 'gpt-5.6-sol' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      1,
+      '/api/task/get?id=task-managed-update',
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      2,
+      '/api/task/update',
+      'POST',
+      {
+        id: 'task-managed-update',
+        runtimeConfig: { source: 'managed-provider', model: 'gpt-5.6-sol' },
+      },
+    );
+  });
+
+  it('rejects inherited managed source when the workspace runtime is not Codex', async () => {
+    const workspacePath = '/tmp/myagents-gemini-task-source';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-gemini-task-source',
+        name: 'Gemini Task Source',
+        workspacePath,
+        runtime: 'gemini',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-inherited-managed-source',
+      workspacePath,
+      runtimeConfig: { source: 'managed-provider' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('requires runtime=codex');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('validates clearRuntimeOverride against the inherited Agent identity', async () => {
+    const workspacePath = '/tmp/myagents-clear-runtime-override';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-clear-runtime-override',
+        name: 'Clear Runtime Override',
+        workspacePath,
+        runtime: 'builtin',
+      }],
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: {
+        id: 'task-clear-runtime-override',
+        workspacePath,
+        runtime: 'codex',
+        runtimeConfig: { source: 'managed-provider' },
+        permissionMode: 'no-restrictions',
+      },
+    });
+    const { handleTaskUpdate } = await import('./admin-api');
+
+    const result = await handleTaskUpdate({
+      id: 'task-clear-runtime-override',
+      clearRuntimeOverride: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("'no-restrictions' is not valid");
+    expect(managementApiMocks.managementApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the managed Codex catalog when a managed Agent Task only overrides model', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-model';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-model',
+        name: 'Managed Task Model',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'managed-model-override',
+      workspacePath,
+      model: 'gpt-5.6-sol',
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+  });
+
+  it('validates the canonical external model from runtimeConfig', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-runtime-model',
+      runtime: 'codex',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'not-a-managed-model',
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not-a-managed-model');
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects system-only permission values for inherited managed Codex', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-permission';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-permission',
+        name: 'Managed Task Permission',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-permission',
+      workspacePath,
+      permissionMode: 'full-auto',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("'full-auto' is not valid");
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects inherited managed Codex when its runtime is not installed', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-missing-runtime';
+    runtimeModelMocks.managedInstalled = false;
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-missing-runtime',
+        name: 'Managed Task Missing Runtime',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'missing-managed-runtime',
+      workspacePath,
+      model: 'gpt-5.6-sol',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Runtime 'codex' is not installed");
+    expect(runtimeModelMocks.queryRuntimeModels).not.toHaveBeenCalled();
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 });
