@@ -1045,7 +1045,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "44";
+const CLI_VERSION: &str = "45";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1630,7 +1630,7 @@ mod system_skills_tests {
 
     #[test]
     fn v41_updates_system_skill_metadata_and_preserves_existing_contracts() {
-        assert_eq!(CLI_VERSION, "44");
+        assert_eq!(CLI_VERSION, "45");
         assert_eq!(SYSTEM_SKILLS_VERSION, "41");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));

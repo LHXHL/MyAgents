@@ -354,6 +354,7 @@ pub async fn configure_memory_auto_update_task(
                         bot_thread: None,
                         events: Some(vec![]),
                     }),
+                    notification_patch: None,
                     prompt: Some(MANAGED_AUTO_UPDATE_PROMPT.to_string()),
                 })
                 .await?

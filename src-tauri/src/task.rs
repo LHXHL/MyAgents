@@ -233,7 +233,7 @@ pub struct StatusTransition {
     pub source: Option<TransitionSource>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationConfig {
     #[serde(default = "default_true")]
@@ -246,6 +246,94 @@ pub struct NotificationConfig {
     /// `Option<Vec>` so omitted-means-default is distinguishable from explicit empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<String>>,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            desktop: true,
+            bot_channel_id: None,
+            bot_thread: None,
+            events: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NotificationFieldPatch<T> {
+    Unchanged,
+    Clear,
+    Set(T),
+}
+
+impl<T> Default for NotificationFieldPatch<T> {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NotificationFieldPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Clear,
+        })
+    }
+}
+
+/// Task-specific partial notification mutation. Missing fields are unchanged;
+/// explicit null clears the field to its domain default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNotificationPatch {
+    #[serde(default)]
+    desktop: NotificationFieldPatch<bool>,
+    #[serde(default)]
+    bot_channel_id: NotificationFieldPatch<String>,
+    #[serde(default)]
+    bot_thread: NotificationFieldPatch<String>,
+    #[serde(default)]
+    events: NotificationFieldPatch<Vec<String>>,
+}
+
+impl TaskNotificationPatch {
+    fn is_empty(&self) -> bool {
+        matches!(self.desktop, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_channel_id, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_thread, NotificationFieldPatch::Unchanged)
+            && matches!(self.events, NotificationFieldPatch::Unchanged)
+    }
+
+    fn apply(self, existing: Option<NotificationConfig>) -> NotificationConfig {
+        let mut notification = existing.unwrap_or_default();
+        match self.desktop {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.desktop = true,
+            NotificationFieldPatch::Set(value) => notification.desktop = value,
+        }
+        match self.bot_channel_id {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_channel_id = None,
+            NotificationFieldPatch::Set(value) => notification.bot_channel_id = Some(value),
+        }
+        match self.bot_thread {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_thread = None,
+            NotificationFieldPatch::Set(value) => notification.bot_thread = Some(value),
+        }
+        match self.events {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.events = None,
+            NotificationFieldPatch::Set(value) => notification.events = Some(value),
+        }
+        notification
+    }
 }
 
 fn default_true() -> bool {
@@ -809,6 +897,11 @@ pub struct TaskUpdateInput {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub notification: Option<NotificationConfig>,
+    /// Field-level notification update merged under the same Task write lock.
+    /// Kept separate from full `notification` replacement so existing GUI
+    /// callers retain their exact contract.
+    #[serde(default)]
+    pub notification_patch: Option<TaskNotificationPatch>,
     /// When `Some`, the new contents are atomically written to
     /// `~/.myagents/tasks/<id>/task.md` under the same write lock that persists the
     /// JSONL row. Empty string is rejected — prompt must have content.
@@ -2107,6 +2200,11 @@ impl TaskStore {
                 "mcpEnabledServers 与 clearMcpOverride=true 冲突 — 调用方必须二选一".to_string(),
             );
         }
+        if input.notification.is_some() && input.notification_patch.is_some() {
+            return Err(
+                "notification 与 notificationPatch 不能同时设置 — 调用方必须二选一".to_string(),
+            );
+        }
         let mut updated = existing.clone();
         if let Some(v) = input.name {
             validate_task_name(&v)?;
@@ -2200,6 +2298,11 @@ impl TaskStore {
         }
         if let Some(v) = input.notification {
             updated.notification = Some(v);
+        }
+        if let Some(patch) = input.notification_patch {
+            if !patch.is_empty() {
+                updated.notification = Some(patch.apply(updated.notification));
+            }
         }
         // PRD 0.2.9 — Pin runtime='builtin' on the merged state when the
         // post-merge shape has provider_id set without an explicit runtime.
@@ -3791,6 +3894,7 @@ mod tests {
             clear_mcp_override: false,
             tags: None,
             notification: None,
+            notification_patch: None,
             prompt: None,
         }
     }
@@ -4706,11 +4810,116 @@ mod tests {
                 clear_mcp_override: false,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await
             .expect_err("should reject");
         assert!(err.contains("update_rejected_running"));
+    }
+
+    #[tokio::test]
+    async fn notification_patch_preserves_omitted_fields_and_applies_false_and_null() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut create = sample_direct_input(&ws);
+        create.notification = Some(NotificationConfig {
+            desktop: true,
+            bot_channel_id: Some("bot-a".to_string()),
+            bot_thread: Some("thread-a".to_string()),
+            events: Some(vec!["done".to_string()]),
+        });
+        let created = store.create_direct(create).await.unwrap();
+
+        let mut false_patch = empty_update_input(&created.id);
+        false_patch.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let after_false = store.update(false_patch).await.unwrap();
+        let notification = after_false.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-a"));
+        assert_eq!(notification.bot_thread.as_deref(), Some("thread-a"));
+        assert_eq!(notification.events, Some(vec!["done".to_string()]));
+
+        let mut clear_patch = empty_update_input(&created.id);
+        clear_patch.notification_patch = Some(
+            serde_json::from_value(serde_json::json!({
+                "desktop": null,
+                "botChannelId": null,
+                "botThread": null,
+                "events": null
+            }))
+            .unwrap(),
+        );
+        let after_clear = store.update(clear_patch).await.unwrap();
+        assert_eq!(
+            after_clear.notification,
+            Some(NotificationConfig::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_notification_patch_is_an_exact_noop() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        assert!(created.notification.is_none());
+
+        let mut update = empty_update_input(&created.id);
+        update.notification_patch = Some(serde_json::from_value(serde_json::json!({})).unwrap());
+        let updated = store.update(update).await.unwrap();
+
+        assert!(updated.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_notification_patches_preserve_both_writers() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+
+        let mut desktop = empty_update_input(&created.id);
+        desktop.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let mut bot = empty_update_input(&created.id);
+        bot.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "botChannelId": "bot-b" })).unwrap());
+
+        let (desktop_result, bot_result) = tokio::join!(store.update(desktop), store.update(bot));
+        desktop_result.unwrap();
+        bot_result.unwrap();
+        let final_task = store.get(&created.id).await.unwrap();
+        let notification = final_task.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-b"));
+    }
+
+    #[tokio::test]
+    async fn full_notification_and_patch_are_mutually_exclusive() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let mut update = empty_update_input(&created.id);
+        update.notification = Some(NotificationConfig::default());
+        update.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+
+        let error = store.update(update).await.unwrap_err();
+
+        assert!(error.contains("notificationPatch"));
+        assert!(store.get(&created.id).await.unwrap().notification.is_none());
     }
 
     #[tokio::test]
@@ -4845,6 +5054,7 @@ mod tests {
                 clear_mcp_override: true,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await

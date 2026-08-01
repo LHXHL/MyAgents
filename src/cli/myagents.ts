@@ -2284,40 +2284,6 @@ async function main(): Promise<void> {
     const body = buildRequestBody(group, action, restArgs, flags);
     const route = buildRoute(group, action, restArgs);
 
-    // `task update` notification merge (issue #205 cross-review): Rust
-    // `TaskStore::update` REPLACES `notification` wholesale when the field
-    // is present, so a partial CLI patch like `--notificationDesktop false`
-    // would clear an existing `botChannelId`. Read the current notification
-    // and merge the user's flags on top so partial updates are non-
-    // destructive. Limited to the `task update` path — `create-direct`
-    // doesn't need merging since there's nothing to preserve. The fetch
-    // round-trip is unconditional on this path (only fires when a
-    // --notification* flag was actually passed) so it costs nothing in the
-    // common "interval-only" patch case.
-    if (
-      group === 'task'
-      && action === 'update'
-      && body
-      && (body as Record<string, unknown>).notification !== undefined
-    ) {
-      const idForFetch = (body as Record<string, unknown>).id as string | undefined;
-      if (idForFetch) {
-        const fetched = await callApi(`task/get`, { id: idForFetch });
-        if (fetched.success && fetched.data) {
-          const existing =
-            ((fetched.data as Record<string, unknown>).task as Record<string, unknown> | undefined)
-            ?? (fetched.data as Record<string, unknown>);
-          const existingNotif = (existing.notification as Record<string, unknown> | undefined) ?? {};
-          const userNotif = (body as Record<string, unknown>).notification as Record<string, unknown>;
-          // Order matters: spread existing first so user values win.
-          (body as Record<string, unknown>).notification = { ...existingNotif, ...userNotif };
-        }
-        // Best-effort: if the get fails (rare — task ids are local), fall
-        // through with the partial. Rust will surface the real error on the
-        // subsequent update call.
-      }
-    }
-
     if (
       group === 'space' &&
       action === 'issue' &&
@@ -4472,10 +4438,8 @@ export function buildRequestBody(
         body.tags = (flags.tags as string).split(',').map(s => s.trim()).filter(Boolean);
       }
       const notification = buildNotificationFromFlags(flags);
-      // CLI merges with existing notification before sending — see the
-      // notification-merge block in main() so partial patches like
-      // `--notificationDesktop false` don't clobber `botChannelId`.
-      if (notification !== undefined) body.notification = notification;
+      // Rust merges this field-level patch under the authoritative Task lock.
+      if (notification !== undefined) body.notificationPatch = notification;
       if (promptFromTaskMd !== undefined) body.prompt = promptFromTaskMd;
       return body;
     }
@@ -4923,8 +4887,8 @@ function parseMcpEnabledServersFlag(raw: unknown): string[] | undefined {
 
 /**
  * Build a `notification` sub-object from the `--notification*` flags so the
- * Rust `TaskCreateDirectInput.notification` / `TaskUpdateInput.notification`
- * field (`Option<NotificationConfig>`) round-trips cleanly.
+ * Rust create `notification` and update `notificationPatch` fields use the
+ * same flag-to-field mapping. Update merge happens under the Task lock.
  *
  * Returns `undefined` when no notification flag was set — the Rust update
  * path treats `None` as "leave unchanged", and create-direct already defaults

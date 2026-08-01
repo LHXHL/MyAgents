@@ -22,6 +22,30 @@ import {
   rejectUnsupportedSpaceDryRun,
 } from './myagents';
 
+describe('myagents CLI Task notification updates', () => {
+  it('sends only provided notification fields in the single update mutation', () => {
+    expect(buildRequestBody('task', 'update', ['task-1'], {
+      notificationDesktop: 'false',
+      notificationBotChannelId: 'bot-b',
+    })).toEqual({
+      id: 'task-1',
+      notificationPatch: {
+        desktop: false,
+        botChannelId: 'bot-b',
+      },
+    });
+  });
+
+  it('omits notificationPatch when no notification flag was provided', () => {
+    expect(buildRequestBody('task', 'update', ['task-1'], {
+      name: 'renamed',
+    })).toEqual({
+      id: 'task-1',
+      name: 'renamed',
+    });
+  });
+});
+
 describe('myagents CLI Space issue contracts', () => {
   it('advertises the modern Space Issue entry without the stale legacy issue alias', () => {
     expect(TOP_HELP).toContain('space     Discover Cloud Goals and manage Space Issues/attachments');

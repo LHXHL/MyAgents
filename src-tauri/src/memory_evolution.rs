@@ -345,6 +345,7 @@ async fn reconcile_existing_job(
             clear_mcp_override: request.mcp_enabled_servers.is_none(),
             tags: Some(desired_tags),
             notification: None,
+            notification_patch: None,
             prompt: Some(spec.prompt.clone()),
         })
         .await
