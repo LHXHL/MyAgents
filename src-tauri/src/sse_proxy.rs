@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::proxy_spill::{stream_response_body, ProxySpillManager, ResponsePolicy, StreamOutcome};
-use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
+use crate::sidecar::{FrontendSidecarBinding, ManagedSidecarManager, SidecarOwner};
 use crate::{ulog_debug, ulog_info, ulog_warn};
 
 /// Monotonically increasing connection id used to distinguish a "stale" task
@@ -425,21 +425,21 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
     owner: &SidecarOwner,
 ) {
     let mut consecutive_failures = 0_u32;
-    let mut last_base_url: Option<String> = None;
+    let mut last_binding: Option<FrontendSidecarBinding> = None;
 
     while running.load(Ordering::SeqCst) {
         // Hold the std::sync::Mutex only for the authoritative lookup. Never
         // carry it into an HTTP await or retry sleep.
-        let base_url = {
+        let binding = {
             let mut manager = match sidecar_manager.lock() {
                 Ok(manager) => manager,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            manager.resolve_session_sidecar_url_for_frontend_owner(session_id_hint, owner)
+            manager.resolve_session_sidecar_for_frontend_owner(session_id_hint, owner)
         };
 
-        let base_url = match base_url {
-            Ok(base_url) => base_url,
+        let binding = match binding {
+            Ok(binding) => binding,
             Err(reason) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let delay_ms = retry_delay_ms(consecutive_failures);
@@ -457,18 +457,21 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
             }
         };
 
-        if last_base_url.as_deref() != Some(base_url.as_str()) {
+        let base_url = binding.base_url();
+        if last_binding.as_ref() != Some(&binding) {
             ulog_info!(
                 "[sse-proxy] Subscription {} resolved Sidecar endpoint {}",
                 connection_key,
                 base_url
             );
-            last_base_url = Some(base_url.clone());
+            last_binding = Some(binding.clone());
         }
 
         let stream_url = format!("{}/chat/stream", base_url.trim_end_matches('/'));
         let outcome = connect_sse_attempt(
             app,
+            sidecar_manager,
+            &binding,
             state,
             subscription_generation,
             &stream_url,
@@ -550,6 +553,8 @@ fn log_sse_error<R: tauri::Runtime>(app: &AppHandle<R>, message: String) {
 /// supervisor can no longer publish into listeners installed for the same key.
 async fn emit_sse_event_if_current<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     connection_key: &str,
     subscription_generation: u64,
@@ -577,10 +582,30 @@ async fn emit_sse_event_if_current<R: tauri::Runtime>(
             ),
         );
         if let Some(terminal) = crate::notification::completion_terminal_from_sse_data(&data) {
-            let notification_app = app.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                crate::notification::submit_session_completion(&notification_app, terminal);
-            });
+            let claim = sidecar_manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .claim_frontend_session_completion(
+                    sidecar_binding,
+                    &terminal.session_id,
+                    &terminal.turn_id,
+                );
+            if let Some(claim) = claim {
+                let notification_app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::notification::submit_session_completion(
+                        &notification_app,
+                        terminal,
+                        claim,
+                    );
+                });
+            } else {
+                ulog_debug!(
+                    "[sse-proxy] Completion ignored after generation fence or duplicate claim: session={} turn={}",
+                    terminal.session_id,
+                    terminal.turn_id,
+                );
+            }
         }
     }
 
@@ -603,6 +628,8 @@ async fn emit_sse_event_if_current<R: tauri::Runtime>(
 
 async fn connect_sse_attempt<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     subscription_generation: u64,
     url: &str,
@@ -611,6 +638,8 @@ async fn connect_sse_attempt<R: tauri::Runtime>(
 ) -> SseAttemptOutcome {
     connect_sse_attempt_with_read_timeout(
         app,
+        sidecar_manager,
+        sidecar_binding,
         state,
         subscription_generation,
         url,
@@ -660,6 +689,8 @@ fn take_next_sse_event(
 
 async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    sidecar_binding: &FrontendSidecarBinding,
     state: &SseProxyState,
     subscription_generation: u64,
     url: &str,
@@ -801,6 +832,8 @@ async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
                         if let Some((event_name, data)) = parse_sse_event(&event_str) {
                             if !emit_sse_event_if_current(
                                 app,
+                                sidecar_manager,
+                                sidecar_binding,
                                 state,
                                 connection_key,
                                 subscription_generation,
@@ -1284,6 +1317,13 @@ mod tests {
         state
     }
 
+    fn detached_test_completion_authority() -> (ManagedSidecarManager, FrontendSidecarBinding) {
+        (
+            Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new())),
+            FrontendSidecarBinding::detached_test_value(),
+        )
+    }
+
     #[test]
     fn frontend_sse_owner_contract_reuses_existing_owner_variants() {
         assert_eq!(
@@ -1381,6 +1421,7 @@ mod tests {
         let app = tauri::test::mock_app();
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1390,7 +1431,17 @@ mod tests {
             unavailable.local_addr().expect("unavailable address")
         );
         drop(unavailable);
-        match connect_sse_attempt(app.handle(), &state, 1, &unavailable_url, &running, "test").await
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &unavailable_url,
+            &running,
+            "test",
+        )
+        .await
         {
             SseAttemptOutcome::Disconnected { made_progress, .. } => {
                 assert!(!made_progress)
@@ -1405,7 +1456,18 @@ mod tests {
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         )
         .await;
-        match connect_sse_attempt(app.handle(), &state, 1, &status_url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &status_url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1438,8 +1500,20 @@ mod tests {
         .await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
-        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1473,8 +1547,20 @@ mod tests {
         .await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
-        match connect_sse_attempt(app.handle(), &state, 1, &url, &running, "test").await {
+        match connect_sse_attempt(
+            app.handle(),
+            &manager,
+            &binding,
+            &state,
+            1,
+            &url,
+            &running,
+            "test",
+        )
+        .await
+        {
             SseAttemptOutcome::Disconnected {
                 made_progress,
                 reason,
@@ -1496,9 +1582,12 @@ mod tests {
         let url = stalled_loopback_stream().await;
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         match connect_sse_attempt_with_read_timeout(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             1,
             &url,
@@ -1529,6 +1618,7 @@ mod tests {
         let app = tauri::test::mock_app();
         let running = AtomicBool::new(true);
         let state = active_test_state("test", 1).await;
+        let (manager, binding) = detached_test_completion_authority();
         let mut oversized_response =
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
                 .to_vec();
@@ -1537,6 +1627,8 @@ mod tests {
 
         let breached_generation = match connect_sse_attempt_with_read_timeout(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             1,
             &oversized_url,
@@ -1565,6 +1657,8 @@ mod tests {
         .await;
         match connect_sse_attempt_with_read_timeout(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             1,
             &recovered_url,
@@ -1599,9 +1693,12 @@ mod tests {
                 .push(event.payload().to_string());
         });
         let state = active_test_state("fb", 2).await;
+        let (manager, binding) = detached_test_completion_authority();
 
         let emitted = emit_sse_event_if_current(
             app.handle(),
+            &manager,
+            &binding,
             &state,
             "fb",
             1,

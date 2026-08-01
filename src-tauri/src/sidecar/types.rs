@@ -545,6 +545,7 @@ mod lifecycle_contract_tests {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 state,
                 owners: owners(vec![SidecarOwner::Tab("tab-a".to_string())]),
+                completion_claims: HashSet::new(),
                 created_at: std::time::Instant::now(),
                 runtime: None,
                 runtime_source: None,
@@ -579,12 +580,14 @@ mod lifecycle_contract_tests {
 
         let owner = SidecarOwner::Tab("tab-a".to_string());
         let error = manager
-            .resolve_session_sidecar_url_for_frontend_owner("session-a", &owner)
+            .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
             .expect_err("an exact hint with the wrong owner must fail closed");
 
         assert!(error.contains("not owned"));
         assert_eq!(
-            manager.resolve_session_sidecar_url_for_frontend_owner("session-b", &owner),
+            manager
+                .resolve_session_sidecar_for_frontend_owner("session-b", &owner)
+                .map(|binding| binding.base_url()),
             Ok("http://127.0.0.1:31418".to_string())
         );
     }
@@ -597,7 +600,9 @@ mod lifecycle_contract_tests {
 
         assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
         assert_eq!(
-            manager.resolve_session_sidecar_url_for_frontend_owner("pending-tab-a", &owner),
+            manager
+                .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)
+                .map(|binding| binding.base_url()),
             Ok("http://127.0.0.1:31418".to_string())
         );
     }
@@ -616,11 +621,13 @@ mod lifecycle_contract_tests {
         }
 
         assert_eq!(
-            manager.resolve_session_sidecar_url_for_frontend_owner("session-new", &owner),
+            manager
+                .resolve_session_sidecar_for_frontend_owner("session-new", &owner)
+                .map(|binding| binding.base_url()),
             Ok("http://127.0.0.1:31418".to_string())
         );
         let error = manager
-            .resolve_session_sidecar_url_for_frontend_owner("missing-hint", &owner)
+            .resolve_session_sidecar_for_frontend_owner("missing-hint", &owner)
             .expect_err("owner-only fallback must reject multiple matches");
         assert!(error.contains("ambiguously matches"));
         assert!(error.contains("session-new"));
@@ -1150,6 +1157,10 @@ pub struct SessionSidecar {
     pub state: SidecarState,
     /// Set of owners currently using this Sidecar
     pub owners: HashSet<SidecarOwner>,
+    /// Completion identities already consumed by notification delivery for
+    /// this exact Sidecar generation. The manager is the only writer; keeping
+    /// the set on the generation entry makes teardown reclaim it naturally.
+    pub(crate) completion_claims: HashSet<(String, String)>,
     /// Creation timestamp
     /// Reserved for future use (e.g., TTL-based cleanup)
     #[allow(dead_code)]
@@ -1163,6 +1174,20 @@ pub struct SessionSidecar {
     /// MYAGENTS_RUNTIME_SOURCE env var value this Sidecar was spawned with.
     /// Missing external runtime source is treated as system-cli.
     pub runtime_source: Option<String>,
+}
+
+/// Proof that one completion identity was claimed from the authoritative
+/// Sidecar generation. The private field prevents notification callers from
+/// bypassing the manager's generation fence.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SessionCompletionClaim {
+    _private: (),
+}
+
+impl SessionCompletionClaim {
+    pub(super) fn new() -> Self {
+        Self { _private: () }
+    }
 }
 
 impl SessionSidecar {

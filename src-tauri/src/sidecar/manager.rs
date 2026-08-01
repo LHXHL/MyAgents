@@ -67,6 +67,31 @@ pub(super) struct BackgroundPollBinding {
     pub(super) generation: u64,
 }
 
+/// Exact process identity selected for one renderer SSE transport attempt.
+/// The logical Session ID comes from manager ownership resolution rather than
+/// the caller's potentially stale hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrontendSidecarBinding {
+    management_id: String,
+    port: u16,
+    generation: u64,
+}
+
+impl FrontendSidecarBinding {
+    pub(crate) fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn detached_test_value() -> Self {
+        Self {
+            management_id: "detached-test-session".to_string(),
+            port: 1,
+            generation: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BackgroundPollTarget {
     Current(BackgroundPollBinding),
@@ -82,9 +107,12 @@ pub(super) enum BackgroundOwnerAttach {
     Stale,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum BackgroundOwnerRelease {
-    Released { sidecar_stopped: bool },
+    Released {
+        sidecar_stopped: bool,
+        completion_claim: Option<SessionCompletionClaim>,
+    },
     Stale,
     Gone,
 }
@@ -632,16 +660,17 @@ impl SidecarManager {
         })
     }
 
-    /// Resolve the current ready Sidecar URL for a renderer-owned long-lived
-    /// subscription. The Session hint gives an exact match during normal
+    /// Resolve the current ready Sidecar process for a renderer-owned
+    /// long-lived subscription. The Session hint gives an exact match during normal
     /// operation; the stable owner is the fallback after pending -> real key
     /// migration. Both reads stay inside the SidecarManager authority so SSE
     /// retry never caches or reconstructs a second owner -> port map.
-    pub fn resolve_session_sidecar_url_for_frontend_owner(
+    pub(crate) fn resolve_session_sidecar_for_frontend_owner(
         &mut self,
         session_id_hint: &str,
         owner: &SidecarOwner,
-    ) -> Result<String, String> {
+    ) -> Result<FrontendSidecarBinding, String> {
+        let hinted_generation = self.generation_for(session_id_hint);
         if let Some(sidecar) = self.sidecars.get_mut(session_id_hint) {
             if !sidecar.owners.contains(owner) {
                 return Err(format!(
@@ -650,7 +679,13 @@ impl SidecarManager {
                 ));
             }
             return if sidecar.is_ready_for_requests() {
-                Ok(format!("http://127.0.0.1:{}", sidecar.port))
+                hinted_generation
+                    .map(|generation| FrontendSidecarBinding {
+                        management_id: sidecar.management_id.clone(),
+                        port: sidecar.port,
+                        generation,
+                    })
+                    .ok_or_else(|| format!("session hint {} has no generation", session_id_hint))
             } else {
                 Err(format!(
                     "session hint {} sidecar is not ready",
@@ -672,11 +707,23 @@ impl SidecarManager {
             ));
         }
 
-        let mut matches: Vec<(String, Option<u16>)> = Vec::new();
+        let generations = &self.sidecar_generations;
+        let mut matches: Vec<(String, Option<FrontendSidecarBinding>)> = Vec::new();
         for (session_id, sidecar) in &mut self.sidecars {
             if sidecar.owners.contains(owner) {
-                let ready_port = sidecar.is_ready_for_requests().then_some(sidecar.port);
-                matches.push((session_id.clone(), ready_port));
+                let ready_process = if sidecar.is_ready_for_requests() {
+                    generations
+                        .get(session_id)
+                        .copied()
+                        .map(|generation| FrontendSidecarBinding {
+                            management_id: sidecar.management_id.clone(),
+                            port: sidecar.port,
+                            generation,
+                        })
+                } else {
+                    None
+                };
+                matches.push((session_id.clone(), ready_process));
             }
         }
         for (session_id, sidecar) in &self.recovering_sidecars {
@@ -686,7 +733,7 @@ impl SidecarManager {
         }
 
         match matches.as_slice() {
-            [(_session_id, Some(port))] => Ok(format!("http://127.0.0.1:{}", port)),
+            [(_session_id, Some(binding))] => Ok(binding.clone()),
             [(session_id, None)] => Err(format!(
                 "owner {:?} sidecar {} is not ready",
                 owner, session_id
@@ -708,6 +755,54 @@ impl SidecarManager {
                 ))
             }
         }
+    }
+
+    /// Consume one completion identity only while the exact renderer-selected
+    /// process generation remains authoritative.
+    pub(crate) fn claim_frontend_session_completion(
+        &mut self,
+        expected: &FrontendSidecarBinding,
+        completion_session_id: &str,
+        turn_id: &str,
+    ) -> Option<SessionCompletionClaim> {
+        let generations = &self.sidecar_generations;
+        let (session_id, sidecar) = self.sidecars.iter_mut().find(|(session_id, sidecar)| {
+            sidecar.management_id == expected.management_id
+                && sidecar.port == expected.port
+                && generations.get(*session_id).copied() == Some(expected.generation)
+        })?;
+        if session_id.as_str() != completion_session_id
+            || !sidecar
+                .completion_claims
+                .insert((completion_session_id.to_string(), turn_id.to_string()))
+        {
+            return None;
+        }
+        Some(SessionCompletionClaim::new())
+    }
+
+    fn claim_session_completion_if_current(
+        &mut self,
+        session_id: &str,
+        port: u16,
+        generation: u64,
+        completion_session_id: &str,
+        turn_id: &str,
+    ) -> Option<SessionCompletionClaim> {
+        if session_id != completion_session_id
+            || self.generation_for(session_id) != Some(generation)
+        {
+            return None;
+        }
+        let sidecar = self.sidecars.get_mut(session_id)?;
+        if sidecar.port != port
+            || !sidecar
+                .completion_claims
+                .insert((completion_session_id.to_string(), turn_id.to_string()))
+        {
+            return None;
+        }
+        Some(SessionCompletionClaim::new())
     }
 
     #[cfg(test)]
@@ -747,6 +842,7 @@ impl SidecarManager {
                 workspace_path: PathBuf::from("/tmp/sse-supervisor-test"),
                 state: SidecarState::Healthy,
                 owners: std::iter::once(owner).collect(),
+                completion_claims: HashSet::new(),
                 created_at: std::time::Instant::now(),
                 runtime: None,
                 runtime_source: None,
@@ -1274,6 +1370,7 @@ impl SidecarManager {
         session_id: &str,
         owner: &SidecarOwner,
         expected: BackgroundPollBinding,
+        completion_identity: Option<(&str, &str)>,
     ) -> BackgroundOwnerRelease {
         if !self.background_binding_is_current(session_id, owner, expected) {
             return if self.session_has_exact_owner(session_id, owner) {
@@ -1282,8 +1379,20 @@ impl SidecarManager {
                 BackgroundOwnerRelease::Gone
             };
         }
+        let completion_claim = completion_identity.and_then(|(completion_session_id, turn_id)| {
+            self.claim_session_completion_if_current(
+                session_id,
+                expected.port,
+                expected.generation,
+                completion_session_id,
+                turn_id,
+            )
+        });
         let (_, sidecar_stopped) = self.remove_session_owner(session_id, owner);
-        BackgroundOwnerRelease::Released { sidecar_stopped }
+        BackgroundOwnerRelease::Released {
+            sidecar_stopped,
+            completion_claim,
+        }
     }
 
     /// Atomically attach an owner to an already-healthy Session Sidecar and
@@ -1707,6 +1816,137 @@ mod session_identity_upgrade_tests {
         assert!(!manager.upgrade_session_id("pending-1", "session-real"));
         assert!(manager.session_activations.contains_key("session-real"));
         assert!(manager.session_activations.contains_key("pending-1"));
+    }
+}
+
+#[cfg(test)]
+mod completion_claim_tests {
+    use super::*;
+
+    #[test]
+    fn frontend_and_background_paths_consume_one_generation_claim() {
+        let mut manager = SidecarManager::new();
+        let frontend_owner = SidecarOwner::Tab("tab-a".to_string());
+        let background_owner = SidecarOwner::BackgroundCompletion("session-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("session-a", 32001, frontend_owner.clone());
+        assert!(manager.add_session_owner("session-a", background_owner.clone()));
+
+        let frontend_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &frontend_owner)
+            .expect("frontend binding");
+        let background_binding = manager
+            .reusable_session_binding("session-a")
+            .expect("background binding");
+
+        assert!(manager
+            .claim_frontend_session_completion(&frontend_binding, "session-a", "turn-1")
+            .is_some());
+        assert_eq!(
+            manager.release_background_owner_if_current(
+                "session-a",
+                &background_owner,
+                background_binding,
+                Some(("session-a", "turn-1")),
+            ),
+            BackgroundOwnerRelease::Released {
+                sidecar_stopped: false,
+                completion_claim: None,
+            }
+        );
+        assert_eq!(
+            manager
+                .sidecars
+                .get("session-a")
+                .expect("live generation")
+                .completion_claims,
+            HashSet::from([("session-a".to_string(), "turn-1".to_string())])
+        );
+    }
+
+    #[test]
+    fn replacement_rejects_a_late_old_generation_claim() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("session-a", 32001, owner.clone());
+        let old_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+            .expect("old binding");
+        assert!(manager
+            .claim_frontend_session_completion(&old_binding, "session-a", "turn-1")
+            .is_some());
+
+        manager.begin_session_sidecar_replacement("session-a");
+        assert_eq!(
+            manager
+                .recovering_sidecars
+                .get("session-a")
+                .expect("retained old generation")
+                .completion_claims
+                .len(),
+            1
+        );
+        manager.insert_test_ready_frontend_sidecar("session-a", 32002, owner.clone());
+        manager
+            .commit_ready_session_sidecar("session-a")
+            .expect("replacement commit");
+
+        assert!(manager
+            .claim_frontend_session_completion(&old_binding, "session-a", "late-old-turn")
+            .is_none());
+        let new_binding = manager
+            .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+            .expect("new binding");
+        assert!(manager
+            .claim_frontend_session_completion(&new_binding, "session-a", "turn-1")
+            .is_some());
+    }
+
+    #[test]
+    fn pending_to_real_rekey_preserves_the_same_process_claim_authority() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+        manager.insert_test_ready_frontend_sidecar("pending-tab-a", 32001, owner.clone());
+        let binding = manager
+            .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)
+            .expect("pending binding");
+
+        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert!(manager
+            .claim_frontend_session_completion(&binding, "pending-tab-a", "turn-1")
+            .is_none());
+        assert!(manager
+            .claim_frontend_session_completion(&binding, "session-real", "turn-1")
+            .is_some());
+    }
+
+    #[test]
+    fn reclaimed_generations_leave_no_manager_owned_claims() {
+        let mut manager = SidecarManager::new();
+        let owner = SidecarOwner::Tab("tab-a".to_string());
+
+        for index in 0..12 {
+            let port = 32000 + index;
+            manager.insert_test_ready_frontend_sidecar("session-a", port, owner.clone());
+            let binding = manager
+                .resolve_session_sidecar_for_frontend_owner("session-a", &owner)
+                .expect("current binding");
+            assert!(manager
+                .claim_frontend_session_completion(&binding, "session-a", &format!("turn-{index}"),)
+                .is_some());
+            assert_eq!(
+                manager
+                    .sidecars
+                    .values()
+                    .map(|sidecar| sidecar.completion_claims.len())
+                    .sum::<usize>(),
+                1
+            );
+
+            drop(manager.remove_sidecar("session-a"));
+            manager.clear_generation("session-a");
+            assert!(manager.sidecars.is_empty());
+            assert!(manager.recovering_sidecars.is_empty());
+        }
     }
 }
 

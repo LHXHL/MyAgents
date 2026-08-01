@@ -361,20 +361,35 @@ fn poll_background_completion<R: Runtime>(
                 continue;
             }
             Some(snapshot) => {
+                let completion_identity = snapshot
+                    .completion_terminal
+                    .as_ref()
+                    .map(|terminal| (terminal.session_id.as_str(), terminal.turn_id.as_str()));
                 let release = manager.lock().ok().map(|mut manager_guard| {
-                    manager_guard
-                        .release_background_owner_if_current(session_id, &bg_owner, binding)
+                    manager_guard.release_background_owner_if_current(
+                        session_id,
+                        &bg_owner,
+                        binding,
+                        completion_identity,
+                    )
                 });
                 match release {
-                    Some(BackgroundOwnerRelease::Released { sidecar_stopped }) => {
+                    Some(BackgroundOwnerRelease::Released {
+                        sidecar_stopped,
+                        completion_claim,
+                    }) => {
                         ulog_info!(
                             "[bg-completion] Session {} finished on generation {} (state: {})",
                             session_id,
                             binding.generation,
                             snapshot.session_state
                         );
-                        if let Some(terminal) = snapshot.completion_terminal {
-                            crate::notification::submit_session_completion(app_handle, terminal);
+                        if let (Some(terminal), Some(claim)) =
+                            (snapshot.completion_terminal, completion_claim)
+                        {
+                            crate::notification::submit_session_completion(
+                                app_handle, terminal, claim,
+                            );
                         }
                         finish_background_completion(app_handle, session_id, sidecar_stopped);
                         return;
@@ -390,11 +405,14 @@ fn poll_background_completion<R: Runtime>(
                 consecutive_http_failures += 1;
                 if consecutive_http_failures >= MAX_HTTP_FAILURES {
                     let release = manager.lock().ok().map(|mut manager_guard| {
-                        manager_guard
-                            .release_background_owner_if_current(session_id, &bg_owner, binding)
+                        manager_guard.release_background_owner_if_current(
+                            session_id, &bg_owner, binding, None,
+                        )
                     });
                     match release {
-                        Some(BackgroundOwnerRelease::Released { sidecar_stopped }) => {
+                        Some(BackgroundOwnerRelease::Released {
+                            sidecar_stopped, ..
+                        }) => {
                             ulog_warn!(
                                 "[bg-completion] Session {} generation {} HTTP unreachable {} consecutive times, giving up",
                                 session_id, binding.generation, consecutive_http_failures
@@ -612,7 +630,7 @@ mod tests {
 
         let mut guard = manager.lock().expect("manager lock");
         assert_eq!(
-            guard.release_background_owner_if_current("session-a", &owner, old_binding),
+            guard.release_background_owner_if_current("session-a", &owner, old_binding, None),
             BackgroundOwnerRelease::Stale
         );
         assert!(guard.session_has_exact_owner("session-a", &owner));
@@ -623,9 +641,10 @@ mod tests {
         assert_eq!(rebound.generation, new_generation);
         assert_eq!(rebound.port, 32002);
         assert_eq!(
-            guard.release_background_owner_if_current("session-a", &owner, rebound),
+            guard.release_background_owner_if_current("session-a", &owner, rebound, None),
             BackgroundOwnerRelease::Released {
-                sidecar_stopped: false
+                sidecar_stopped: false,
+                completion_claim: None,
             }
         );
     }

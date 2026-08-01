@@ -74,6 +74,7 @@ pub use legacy::{
 };
 #[allow(unused_imports)]
 pub use manager::create_sidecar_manager;
+pub(crate) use manager::FrontendSidecarBinding;
 pub use manager::{
     create_sidecar_state, LegacySidecarConfig, ManagedSidecar, ManagedSidecarManager,
     SidecarManager, SidecarStatus,
@@ -121,6 +122,7 @@ use spawn::{
     is_port_available,
 };
 pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
+pub(crate) use types::SessionCompletionClaim;
 #[allow(unused_imports)]
 pub use types::SidecarInfo;
 use types::{

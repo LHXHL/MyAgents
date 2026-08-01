@@ -1007,6 +1007,7 @@ fn create_new_session_sidecar<R: Runtime>(
         workspace_path: workspace_path.to_path_buf(),
         state: SidecarState::Starting,
         owners,
+        completion_claims: HashSet::new(),
         created_at: std::time::Instant::now(),
         runtime: resolved_identity.runtime_for_env().map(str::to_string),
         runtime_source: resolved_identity

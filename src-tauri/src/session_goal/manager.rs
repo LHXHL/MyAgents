@@ -1594,6 +1594,7 @@ mod tests {
                 workspace_path: PathBuf::from("/tmp/workspace"),
                 state: SidecarState::Healthy,
                 owners: HashSet::from([SidecarOwner::Goal(goal_id.to_string())]),
+                completion_claims: HashSet::new(),
                 created_at: Instant::now(),
                 runtime: None,
                 runtime_source: None,
