@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::sync::Once;
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
+use crate::process_cmd::ChildTree;
 use crate::proxy_config;
 
 pub(crate) mod background;
@@ -44,14 +45,12 @@ pub use background::{
     cmd_start_background_completion, start_background_completion,
     start_headless_background_completion, BackgroundCompletionResult,
 };
+use cleanup::CHILD_CLEANUP_PATTERNS;
 pub use cleanup::{
     cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, init_startup_cleanup_barrier,
     mark_startup_cleanup_done, wait_for_startup_cleanup,
 };
-use cleanup::{
-    remove_global_port_file, write_global_port_file, CHILD_CLEANUP_PATTERNS,
-    STARTUP_CLEANUP_PATTERNS,
-};
+use cleanup::{remove_global_port_file, write_global_port_file, STARTUP_CLEANUP_PATTERNS};
 #[allow(unused_imports)]
 pub use commands::{
     cmd_activate_session, cmd_deactivate_session, cmd_get_session_activation,
@@ -117,7 +116,7 @@ pub use spawn::find_node_executable_pub;
 pub(crate) use spawn::normalize_external_path;
 use spawn::{
     diagnose_immediate_exit, diagnose_node_not_found, find_node_executable, find_server_script,
-    is_port_available, kill_process,
+    is_port_available,
 };
 pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 #[allow(unused_imports)]
@@ -209,8 +208,6 @@ const HTTP_HEALTH_CHECK_TIMEOUT_MS: u64 = 2000;
 // Prevents the monitor from killing a sidecar that's still completing its initial startup
 // (TCP health check, Bun init, Plugin Bridge, etc.), especially on Windows with Defender.
 const STARTUP_GRACE_SECS: u64 = 45;
-#[cfg(unix)]
-const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 // Port range: 500 ports (31415-31914)
 const PORT_RANGE: u16 = 500;
 // Special identifier for global sidecar (used by Settings page)

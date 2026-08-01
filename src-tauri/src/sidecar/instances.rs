@@ -163,15 +163,6 @@ pub fn start_tab_sidecar<R: Runtime>(
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // Windows: CREATE_NO_WINDOW already applied by process_cmd::new()
-
-    // Unix: Make child a process group leader so kill(-PGID) kills the entire tree
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-
     // 关键诊断日志：打印当前可执行文件路径，确认运行的是正确版本
     ulog_info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
 
@@ -184,7 +175,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     );
 
     // Spawn
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = crate::process_cmd::spawn_tree(&mut cmd).map_err(|e| {
         manager_guard.clear_generation(tab_id);
         ulog_error!("[sidecar] Failed to spawn: {}", e);
         format!("Failed to spawn sidecar: {}", e)

@@ -94,7 +94,7 @@ pub fn is_update_shutdown_in_progress() -> bool {
     UPDATE_SHUTDOWN_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Stop all sidecar instances and clean up child processes.
+/// Stop all Sidecar instances through their exact birth-time process-tree authority.
 ///
 /// `reason` is required because this is an application-wide destructive
 /// boundary. Callers must make the owning lifecycle explicit in diagnostics.
@@ -116,11 +116,6 @@ pub fn stop_all_sidecars(manager: &ManagedSidecarManager, reason: &str) -> Resul
     })?;
     manager_guard.stop_all();
     drop(manager_guard);
-
-    // 2. Clean up any orphaned child processes (SDK and MCP)
-    // This is necessary because SDK spawns child processes that don't die
-    // when the parent bun sidecar is killed
-    cleanup_child_processes();
 
     ulog_info!(
         "[sidecar] stop_all action=complete reason={} scope=application",
@@ -149,15 +144,12 @@ fn shutdown_for_update_inner(
 ) -> Result<(), String> {
     ulog_info!("[sidecar] Shutdown for update: stopping all processes...");
 
-    // 1. Stop all sidecar instances (via Drop → kill_process → taskkill /T /F)
+    // 1. Stop all Sidecar instances via their retained process-group / Job authority.
     stop_all_sidecars(manager, "update")?;
 
-    // 2. Actively kill orphan processes that may survive sidecar tree-kill
-    //    (e.g., node.exe from bundled npx — cmd.exe intermediate layers break process tree)
-    #[cfg(windows)]
-    {
-        cleanup_child_processes();
-    }
+    // 2. Preserve the updater's existing residual-recovery pass. This is a
+    //    verified update boundary, not the normal live-owner shutdown path.
+    cleanup_update_residual_processes();
 
     // 3. Wait for all related processes to truly exit. Uses the same
     //    sysinfo-backed process scan as startup cleanup — no PowerShell
@@ -254,28 +246,26 @@ fn shutdown_for_update_inner(
     Ok(())
 }
 
-/// Clean up SDK and MCP child processes at app shutdown.
+/// Clean up SDK and MCP residual processes only for verified update shutdown.
 ///
-/// On Windows, SDK-spawned node/bun processes often survive a direct
-/// parent kill because `cmd.exe` intermediates (npx.cmd / bun.exe wrapper)
-/// break the process-tree linkage that `taskkill /T /F` relies on. This
-/// shutdown cleanup walks descendants by PPID via sysinfo and kills
-/// them all — orphans included — in one pass.
+/// SDK-spawned node/bun processes from a previous containment implementation
+/// may survive until the updater boundary (especially through Windows
+/// `cmd.exe` / `npx.cmd` wrappers). This updater-only cleanup walks descendants
+/// by PPID via sysinfo and kills them all — orphans included — in one pass.
 ///
-/// Uses [`CHILD_CLEANUP_PATTERNS`] (no `SIDECAR_MARKER`) because our own
-/// sidecars are already killed through their `Child` handles in
-/// [`stop_all_sidecars`]. Sweeping by marker here would risk killing a
-/// concurrent MyAgents instance's sidecars during any overlap window.
-fn cleanup_child_processes() {
+/// Normal app exit and debug stop MUST NOT call this function: those paths own
+/// only the live [`ChildTree`] values retained by Sidecar/Bridge owners and may
+/// not infer process ownership from argv.
+fn cleanup_update_residual_processes() {
     let report = crate::process_cleanup::kill_stale_processes(CHILD_CLEANUP_PATTERNS);
     if report.total_targets() == 0 {
         ulog_info!(
-            "[sidecar] Shutdown cleanup: nothing to kill ({:?})",
+            "[sidecar] Update residual cleanup: nothing to kill ({:?})",
             report.elapsed
         );
     } else {
         ulog_info!(
-            "[sidecar] Shutdown cleanup: killed {} (roots={}, descendants={}, residual={}) in {:?}",
+            "[sidecar] Update residual cleanup: killed {} (roots={}, descendants={}, residual={}) in {:?}",
             report.killed,
             report.matched_roots,
             report.descendants,
@@ -486,4 +476,79 @@ fn is_windows_file_lock_error(err: &std::io::Error) -> bool {
         // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_USER_MAPPED_FILE.
         Some(32 | 33 | 1224)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ExternalMatchingProcess {
+        child: std::process::Child,
+    }
+
+    impl ExternalMatchingProcess {
+        fn spawn() -> Self {
+            #[cfg(unix)]
+            let mut command = {
+                use std::os::unix::process::CommandExt;
+                let mut command = crate::process_cmd::new("sh");
+                command.args(["-c", "sleep 60; : # independent @playwright/mcp process"]);
+                command.process_group(0);
+                command
+            };
+
+            #[cfg(target_os = "windows")]
+            let mut command = {
+                let mut command = crate::process_cmd::new("powershell");
+                command.args([
+                    "-NoProfile",
+                    "-Command",
+                    "Start-Sleep -Seconds 60 # independent @playwright/mcp process",
+                ]);
+                command
+            };
+
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = command.spawn().expect("spawn independent matching process");
+            Self { child }
+        }
+
+        fn is_alive(&mut self) -> bool {
+            matches!(self.child.try_wait(), Ok(None))
+        }
+    }
+
+    impl Drop for ExternalMatchingProcess {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+    }
+
+    #[test]
+    fn normal_shutdown_leaves_unowned_matching_process_alive() {
+        let mut external = ExternalMatchingProcess::spawn();
+        assert!(
+            external.is_alive(),
+            "test setup must start an external process"
+        );
+
+        let manager = create_sidecar_state();
+        stop_all_sidecars(&manager, "test-normal-shutdown").expect("normal shutdown");
+
+        assert!(
+            external.is_alive(),
+            "normal shutdown must never infer ownership from a matching argv substring"
+        );
+    }
 }

@@ -24,7 +24,9 @@ pub(super) fn remove_global_port_file() {
 
 // ============= Stale process cleanup =============
 //
-// Two pattern sets, sharing a common `CHILD_CLEANUP_PATTERNS` base:
+// Two updater/startup recovery pattern sets share the same legacy child
+// signatures. Normal shutdown never consumes either set; live process owners
+// terminate only their exact `ChildTree` containment authority.
 //
 // * [`STARTUP_CLEANUP_PATTERNS`] additionally sweeps sidecars by
 //   [`SIDECAR_MARKER`]. Startup cleanup runs only when `acquire_lock`
@@ -32,14 +34,10 @@ pub(super) fn remove_global_port_file() {
 //   already dead (SIGKILL'd by our lock code or crashed), so any matching
 //   sidecar must be an orphan we legitimately own.
 //
-// * [`CHILD_CLEANUP_PATTERNS`] (used by [`cleanup_child_processes`] during
-//   shutdown) deliberately **does not** sweep by `SIDECAR_MARKER`. Our
-//   own sidecars are killed via their `Child` handles in
-//   [`stop_all_sidecars`] — sweeping by marker here would potentially
-//   kill a concurrent MyAgents instance's sidecars during any
-//   hypothetical overlap window (single-instance plugin makes this
-//   extremely rare but not architecturally impossible, e.g. during an
-//   update handoff).
+// * [`CHILD_CLEANUP_PATTERNS`] is updater-only residual recovery and
+//   deliberately **does not** sweep by `SIDECAR_MARKER`. It remains separate
+//   from normal shutdown because update file-lock verification has a distinct
+//   protected-root contract.
 //
 // All forward-slash form — the matcher in `process_cleanup` normalizes
 // `\` → `/` and lowercases both sides before comparison.

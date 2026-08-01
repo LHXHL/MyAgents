@@ -1364,7 +1364,7 @@ mod tests {
     use super::*;
     use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
-    fn spawn_owner_guard_test_child() -> std::process::Child {
+    fn spawn_owner_guard_test_child() -> crate::process_cmd::ChildTree {
         #[cfg(windows)]
         let mut command = {
             let mut command = crate::process_cmd::new("powershell");
@@ -1380,9 +1380,8 @@ mod tests {
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn owner guard test child")
+            .stderr(std::process::Stdio::null());
+        crate::process_cmd::spawn_tree(&mut command).expect("spawn owner guard test child")
     }
 
     fn base_config() -> MemoryAutoUpdateConfig {

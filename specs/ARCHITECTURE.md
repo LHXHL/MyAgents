@@ -86,6 +86,8 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 每个 Sidecar 服务一个 Session。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
 
+Rust 在 Sidecar 出生时同时建立并持有整棵后代进程树的 lifecycle authority：Unix 使用独立 process group，Windows 使用在恢复首线程前完成绑定的 kill-on-close Job Object。Session / Global Sidecar owner 释放只终止这份精确 authority，不按全机 argv 推断“像 MyAgents 的进程”；argv 扫描只属于前实例已死亡后的启动恢复和 updater residual recovery（Windows updater 另有 protected-root / file-lock 校验）。
+
 ---
 
 ## 核心抽象
@@ -450,6 +452,8 @@ Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖�
 ### 7. Plugin Bridge (`src/server/plugin-bridge/`)
 
 独立 Node.js 进程加载 OpenClaw Channel Plugin。MUST 与 Sidecar 保持同等待遇（环境变量注入、日志宏、config 查询范围）。
+
+Bridge lifecycle 也持有与 Sidecar 相同的 birth-time process-group / Job authority；显式 stop 与结构析构都沿该 authority 终止 wrapper 及其后代，不借用 Sidecar argv sweep。
 
 **关键约束：**
 - **入口解析协议**：按 OpenClaw 官方 `package.json["openclaw"].extensions[]` 读取，**不再**信任 `main` / `exports`
@@ -894,7 +898,7 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
 | 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
 | Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
-| 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 是唯一应用清理 owner：停止 Sidecar、IM、终端、浏览器并释放进程锁；普通重启入口使用 `request_restart()` 进入该路径。更新安装保留 verified shutdown 后的 updater `relaunch()` 路径 |
+| 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 是唯一应用清理 owner：通过各 live owner 持有的 process-group / Job authority 精确停止 Sidecar / Plugin Bridge，再清理 IM、终端、浏览器并释放进程锁；不得在正常退出按全机 argv 扫描。普通重启入口使用 `request_restart()` 进入该路径。更新安装保留带 residual / file-lock verification 的 verified shutdown 后 updater `relaunch()` 路径 |
 
 **Owner 释放规则：** 当一个 Session 的所有 Owner 都释放后，Sidecar 才停止。
 

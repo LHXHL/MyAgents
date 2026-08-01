@@ -614,10 +614,13 @@ impl SidecarManager {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
 
+        let process =
+            crate::process_cmd::spawn_tree(&mut process).expect("spawn test sidecar process tree");
+
         self.insert_sidecar(
             session_id,
             SessionSidecar {
-                process: process.spawn().expect("spawn test sidecar process"),
+                process,
                 port,
                 session_id: session_id.to_string(),
                 management_id: session_id.to_string(),

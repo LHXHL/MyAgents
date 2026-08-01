@@ -100,13 +100,13 @@
 <a id="process_cmd"></a>
 ## `process_cmd` (`src-tauri/src/process_cmd.rs`)
 
-**Problem.** Windows 上 GUI 应用（Tauri）启动子进程（node.exe Sidecar / Plugin Bridge / npm install）默认会弹出黑色控制台窗口。每个 spawn 点都需要加 `CREATE_NO_WINDOW` 标志，集中维护成本高。
+**Problem.** Windows 上 GUI 应用（Tauri）启动子进程（node.exe Sidecar / Plugin Bridge / npm install）默认会弹出黑色控制台窗口。长生命周期 Node owner 若只保留直接 `Child`，正常退出又只能按 argv 猜测 SDK / MCP 后代，会误杀同机外部进程；Windows 在 spawn 后再 `taskkill /T` 还存在 wrapper 提前退出与 containment 绑定竞态。
 
-**Surface.** `crate::process_cmd::new(program)` — 返回 `std::process::Command`，已注入 Windows `CREATE_NO_WINDOW` 标志。
+**Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
 
-**Invariants enforced.** 与 `local_http` 相同 pit-of-success 模式：默认安全。
+**Invariants enforced.** `ChildTree` 在 user code 执行前完成 containment：Unix child 出生为独立 process group；Windows child 以 suspended 状态创建、绑定 kill-on-close Job Object 后才 resume。owner 保留 `ChildTree`，显式 stop 与 Drop 都只终止该 exact tree；containment 建立失败时终止 child 并 fail closed，不降级成未受管进程。
 
-**Don't.** 裸 `std::process::Command::new()`。
+**Don't.** 裸 `std::process::Command::new()`；也不要让 Sidecar / Plugin Bridge 直接 `.spawn()`，或在正常 shutdown 用进程名、安装路径、argv substring 扫描整机来补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于 prior instance 已死亡后的 startup recovery 和 updater residual recovery（Windows updater 另有 protected-root / file-lock verification）；不是 live lifecycle API。
 
 **例外（已内联处理或不适用）：**
 - `#[cfg(windows)]` 守卫内的系统工具命令（taskkill / powershell）

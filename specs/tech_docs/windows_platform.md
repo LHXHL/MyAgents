@@ -83,7 +83,12 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 ### 进程清理
 
-**Windows**（当前使用 `sysinfo` 原生枚举 + 进程树清理，避免旧 PowerShell/WMI 冷启动开销）：
+进程清理分成两种不能互换的 authority：
+
+1. **Live lifecycle**：Sidecar / Plugin Bridge 用 `process_cmd::spawn_tree()` 出生。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`，stop / Drop 精确终止 Job 内所有后代。正常退出不得扫描全机 argv。
+2. **Recovery**：只有 prior instance 已确定死亡后的启动恢复，以及 updater 的 residual / protected-root / file-lock 验证，才使用 `sysinfo` 枚举。它处理 crash 后已经没有 live handle 的遗留进程，不是正常 shutdown 的 fallback。
+
+**Windows recovery**（`sysinfo` 原生枚举，避免旧 PowerShell/WMI 冷启动开销）：
 ```rust
 // src-tauri/src/sidecar/cleanup.rs -> src-tauri/src/process_cleanup.rs
 let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTERNS);
@@ -95,7 +100,7 @@ let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTER
 pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport;
 ```
 
-> **关键**：普通子进程 spawn 仍 MUST 使用 `process_cmd::new()`（Windows CREATE_NO_WINDOW）和 `system_binary::find()`（PATH 补充），禁止裸 `std::process::Command::new()`。stale cleanup 是例外：它由 `process_cleanup::kill_stale_processes()` 统一 owner，调用方不要再写 ad-hoc PowerShell / `pgrep`。
+> **关键**：普通短生命周期子进程 spawn 仍 MUST 使用 `process_cmd::new()`（Windows CREATE_NO_WINDOW）；会创建后代的长生命周期进程 MUST 再用 `spawn_tree()`。外部 binary 解析继续走 `system_binary::find()`（PATH 补充）。禁止裸 `std::process::Command::new()`，也禁止把 stale cleanup 扩展到正常退出；recovery 扫描统一由 `process_cleanup::kill_stale_processes()` owner，调用方不要再写 ad-hoc PowerShell / `pgrep`。
 
 ---
 
@@ -244,7 +249,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 
 ### process_cmd (`src-tauri/src/process_cmd.rs`)
 
-所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建。内置 Windows `CREATE_NO_WINDOW` 标志，防止 GUI 应用启动子进程时弹出黑色控制台窗口。
+所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建。内置 Windows `CREATE_NO_WINDOW` 标志，防止 GUI 应用启动子进程时弹出黑色控制台窗口。Sidecar / Plugin Bridge 等会派生后代的长生命周期进程还 MUST 用 `crate::process_cmd::spawn_tree()`，由返回的 `ChildTree` 持有 Unix process group / Windows Job Object authority；不能直接 `.spawn()` 后在退出时用 `taskkill` 或 argv scan 补救。
 
 ### system_binary (`src-tauri/src/system_binary.rs`)
 

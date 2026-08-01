@@ -822,15 +822,6 @@ fn create_new_session_sidecar<R: Runtime>(
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // Windows: CREATE_NO_WINDOW already applied by process_cmd::new()
-
-    // Unix: Make child a process group leader so kill(-PGID) kills the entire tree
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-
     // Spawn
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::SidecarBoot, "spawn_start")
@@ -839,7 +830,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .detail("runtimeSource", &runtime_source_for_trace)
             .detail("owner", format!("{:?}", owner)),
     );
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = crate::process_cmd::spawn_tree(&mut cmd).map_err(|e| {
         manager_guard.clear_generation(session_id);
         ulog_error!("[sidecar] Failed to spawn SessionSidecar: {}", e);
         emit_perf_trace(

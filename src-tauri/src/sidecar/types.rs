@@ -519,7 +519,7 @@ mod lifecycle_contract_tests {
             )));
     }
 
-    fn spawn_test_child() -> Child {
+    fn spawn_test_child() -> ChildTree {
         #[cfg(windows)]
         let mut cmd = {
             let mut cmd = crate::process_cmd::new("powershell");
@@ -536,9 +536,8 @@ mod lifecycle_contract_tests {
 
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn test child")
+            .stderr(Stdio::null());
+        crate::process_cmd::spawn_tree(&mut cmd).expect("spawn test child tree")
     }
 
     fn insert_test_sidecar(manager: &mut SidecarManager, session_id: &str, state: SidecarState) {
@@ -993,8 +992,8 @@ mod lifecycle_contract_tests {
 }
 
 pub struct SessionSidecar {
-    /// The child process handle
-    pub process: Child,
+    /// The child process plus exact descendant-containment authority.
+    pub(crate) process: ChildTree,
     /// Port this instance is running on
     pub port: u16,
     /// Session ID this Sidecar serves
@@ -1099,7 +1098,7 @@ impl Drop for SessionSidecar {
             self.port,
             self.state
         );
-        let _ = kill_process(&mut self.process);
+        let _ = self.process.terminate();
     }
 }
 
@@ -1107,8 +1106,8 @@ impl Drop for SessionSidecar {
 /// Still uses `healthy: bool` since the Global Sidecar is a singleton
 /// without the multi-owner race conditions that motivated `SidecarState`.
 pub struct SidecarInstance {
-    /// The child process handle
-    pub process: Child,
+    /// The child process plus exact descendant-containment authority.
+    pub(crate) process: ChildTree,
     /// Port this instance is running on
     pub port: u16,
     /// Agent directory (None for global sidecar)
@@ -1154,7 +1153,7 @@ impl SidecarInstance {
 impl Drop for SidecarInstance {
     fn drop(&mut self) {
         ulog_info!("[sidecar] Drop: killing process on port {}", self.port);
-        let _ = kill_process(&mut self.process);
+        let _ = self.process.terminate();
 
         // Clean up temp directory for global sidecar
         if self.is_global {
