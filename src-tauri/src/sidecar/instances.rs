@@ -248,6 +248,7 @@ pub fn start_tab_sidecar<R: Runtime>(
         healthy: false,
         is_global,
         session_delete_authority,
+        dispatch_gate: DispatchGate::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -354,10 +355,8 @@ pub fn stop_tab_sidecar(manager: &ManagedSidecarManager, tab_id: &str) -> Result
 }
 
 /// Get the server URL for a specific Tab
-/// This function checks multiple sources:
-/// 1. Direct Tab sidecar instances (Global Sidecar)
-/// 2. Session-centric sidecars via session_activations
-/// 3. Legacy instances for backward compatibility
+/// Direct legacy instances remain addressable, while Session-centric lookup is
+/// resolved from the authoritative Tab owner token.
 pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Result<String, String> {
     let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
 
@@ -368,41 +367,9 @@ pub fn get_tab_server_url(manager: &ManagedSidecarManager, tab_id: &str) -> Resu
         }
     }
 
-    // Priority 2: Check session_activations to find the Session-centric sidecar
-    let activation_session = manager_guard
-        .session_activations
-        .values()
-        .find(|a| a.tab_id.as_deref() == Some(tab_id))
-        .map(|a| (a.session_id.clone(), a.port));
-
-    if let Some((session_id, activation_port)) = activation_session {
-        // The live Sidecar entry owns the physical port. Activation is an
-        // association index, not a second port authority; using its stale port
-        // after a replacement can re-cache a dead URL even though the new
-        // process is healthy.
-        let ready_session_port = manager_guard
-            .sidecars
-            .get_mut(&session_id)
-            .and_then(|sidecar| sidecar.is_ready_for_requests().then_some(sidecar.port));
-        if let Some(port) = ready_session_port {
-            ulog_info!(
-                "[sidecar] Tab {} using session {} sidecar on port {} (via session_activation)",
-                tab_id,
-                session_id,
-                port
-            );
-            return Ok(format!("http://127.0.0.1:{}", port));
-        }
-        if manager_guard
-            .instances
-            .values_mut()
-            .any(|instance| instance.port == activation_port && instance.is_running())
-        {
-            return Ok(format!("http://127.0.0.1:{}", activation_port));
-        }
-    }
-
-    Err(format!("No running sidecar for tab {}", tab_id))
+    manager_guard
+        .resolve_session_sidecar_for_frontend_owner("", &SidecarOwner::Tab(tab_id.to_string()))
+        .map(|binding| binding.base_url())
 }
 
 /// Get status for a Tab's sidecar
@@ -426,29 +393,27 @@ pub fn get_tab_sidecar_status(
         });
     }
 
-    // Priority 2: Check session_activations for Session-centric sidecar
-    let activation_info = manager_guard
-        .session_activations
-        .values()
-        .find(|a| a.tab_id.as_deref() == Some(tab_id))
-        .map(|a| (a.session_id.clone(), a.port, a.workspace_path.clone()));
-
-    if let Some((session_id, port, workspace_path)) = activation_info {
-        // Check if the sidecar is healthy in Session-centric storage
-        let is_running = manager_guard
+    let tab_owner = SidecarOwner::Tab(tab_id.to_string());
+    let mut matching_sessions = manager_guard
+        .sidecars
+        .iter()
+        .filter_map(|(session_id, sidecar)| {
+            sidecar
+                .owners
+                .contains(&tab_owner)
+                .then_some(session_id.clone())
+        })
+        .collect::<Vec<_>>();
+    if matching_sessions.len() == 1 {
+        let session_id = matching_sessions.pop().expect("one matching Session");
+        let sidecar = manager_guard
             .sidecars
             .get_mut(&session_id)
-            .map(|s| s.is_ready_for_requests())
-            .unwrap_or(false)
-            || manager_guard
-                .instances
-                .values_mut()
-                .any(|i| i.port == port && i.is_running());
-
+            .expect("matching Session remains present while manager is locked");
         return Ok(SidecarStatus {
-            running: is_running,
-            port,
-            agent_dir: workspace_path,
+            running: sidecar.is_ready_for_requests(),
+            port: sidecar.port,
+            agent_dir: sidecar.workspace_path.to_string_lossy().into_owned(),
         });
     }
 

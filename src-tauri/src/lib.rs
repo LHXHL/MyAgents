@@ -396,7 +396,9 @@ pub fn run() {
             sse_proxy::start_sse_proxy,
             sse_proxy::stop_sse_proxy,
             sse_proxy::stop_all_sse_proxies,
-            sse_proxy::proxy_http_request,
+            sse_proxy::session_sidecar_http_request,
+            sse_proxy::global_sidecar_http_request,
+            sse_proxy::proxy_analytics_http_request,
             // Updater commands
             updater::check_and_download_update,
             updater::restart_app,
@@ -467,11 +469,7 @@ pub fn run() {
             cron_task::commands::cmd_is_task_executing,
             cron_task::commands::cmd_get_cron_runs,
             cron_task::commands::cmd_update_cron_task_fields,
-            // Session activation commands (for Session singleton)
-            sidecar::commands::cmd_get_session_activation,
-            sidecar::commands::cmd_activate_session,
-            sidecar::commands::cmd_deactivate_session,
-            sidecar::commands::cmd_update_session_tab,
+            // Session owner reconciliation
             sidecar::commands::cmd_reconcile_session_tab_activation,
             // Session Inbox cross-sidecar delivery (PRD 0.2.18)
             crate::inbox::deliver::cmd_inbox_deliver,

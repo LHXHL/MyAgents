@@ -1595,6 +1595,7 @@ mod tests {
                 state: SidecarState::Healthy,
                 owners: HashSet::from([SidecarOwner::Goal(goal_id.to_string())]),
                 completion_claims: HashSet::new(),
+                dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                 created_at: Instant::now(),
                 runtime: None,
                 runtime_source: None,

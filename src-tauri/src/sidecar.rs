@@ -9,7 +9,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::sync::Once;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -53,10 +53,7 @@ pub use cleanup::{
 };
 use cleanup::{remove_global_port_file, write_global_port_file, STARTUP_CLEANUP_PATTERNS};
 #[allow(unused_imports)]
-pub use commands::{
-    cmd_activate_session, cmd_deactivate_session, cmd_get_session_activation,
-    cmd_reconcile_session_tab_activation, cmd_update_session_tab,
-};
+pub use commands::cmd_reconcile_session_tab_activation;
 #[allow(unused_imports)]
 pub use cron_execute::{
     ensure_goal_sidecar_owner, execute_cron_task, execute_goal_turn, CronExecutePayload,
@@ -122,7 +119,6 @@ use spawn::{
     is_port_available,
 };
 pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
-pub(crate) use types::SessionCompletionClaim;
 #[allow(unused_imports)]
 pub use types::SidecarInfo;
 use types::{
@@ -130,10 +126,8 @@ use types::{
     owner_prefers_live_agent_runtime, resolve_runtime_for_owner, sidecar_removal_event_policy,
     ExistingSidecarReuse,
 };
-pub use types::{
-    RuntimeDriftResult, SessionActivation, SessionSidecar, SidecarInstance, SidecarOwner,
-    SidecarState,
-};
+pub(crate) use types::{DispatchGate, DispatchLease, SessionCompletionClaim};
+pub use types::{RuntimeDriftResult, SessionSidecar, SidecarInstance, SidecarOwner, SidecarState};
 
 // Ensure file descriptor limit is increased only once (unix only)
 #[cfg(unix)]

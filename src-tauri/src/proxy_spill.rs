@@ -1,4 +1,4 @@
-//! Bounded large-response spill path for `sse_proxy::proxy_http_request`.
+//! Bounded large-response spill path for renderer HTTP dispatch.
 //!
 //! This module deliberately owns only proxy responses that are currently being
 //! written plus failed-cleanup debt. Successfully committed body/meta pairs are

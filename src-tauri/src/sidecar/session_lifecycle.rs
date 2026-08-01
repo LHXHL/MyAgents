@@ -1008,6 +1008,7 @@ fn create_new_session_sidecar<R: Runtime>(
         state: SidecarState::Starting,
         owners,
         completion_claims: HashSet::new(),
+        dispatch_gate: DispatchGate::new(),
         created_at: std::time::Instant::now(),
         runtime: resolved_identity.runtime_for_env().map(str::to_string),
         runtime_source: resolved_identity
@@ -1493,16 +1494,15 @@ pub async fn cmd_delete_session_if_unowned(
         for tab_id in &releasable_tab_ids {
             manager.release_tab_session(&sessionId, tab_id, false);
         }
-        manager.deactivate_session(&sessionId);
         Ok(result)
     })
     .await
     .map_err(|error| format!("Session deletion task failed: {error:?}"))?
 }
 
-/// Release a Tab owner and update the activation under the Session lifecycle guard.
-/// This prevents a newly-created Goal/Agent owner from landing between a
-/// renderer-side presence check and activation mutation.
+/// Release a Tab owner under the Session lifecycle guard. This prevents a
+/// newly-created Goal/Agent owner from landing between the renderer-side
+/// presence check and owner removal.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_release_tab_session(

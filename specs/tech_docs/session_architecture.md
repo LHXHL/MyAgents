@@ -628,6 +628,14 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 ## 状态同步与新会话机制
 
+### 控制请求由 Rust 按 owner / generation 寻址
+
+桌面 Renderer 的普通 Session / Global HTTP 请求只提交相对 path。Session 请求同时提交 `sessionIdHint + SidecarOwner(Tab/Companion)`；Rust 在 `SidecarManager` 锁内解析当前进程 generation，并从该进程自己的 `DispatchGate` 取得 lease，随后释放 manager 锁再完成 body 发送和 response 消费。进程 replacement / stop 会先关闭 admission，再等待该 generation 已放行的 lease 归零，因此慢的 non-idempotent POST 不会和新 generation 并行，也不会在端口复用后误写其它进程。
+
+`SessionSidecar` owners 是 Tab / Task / Goal 等 association 的唯一 authority；不再维护 Renderer 可写的 `session_activation` 物理副本。`ensureSessionSidecar` 已附加 owner，`reconcile_session_tab_activation` 只验证 exact Tab owner 并释放临时 `BackgroundCompletion` handoff。终端的 `MYAGENTS_PORT` 也由 Rust 按 Session entry 派生，Renderer 不传物理端口。
+
+Global singleton 使用相同的 per-generation lease。外部 analytics 走独立 Tauri command 和 proxy-aware client，不能借 Session / Global control command 传 arbitrary absolute URL。登记的数据面 `/refs/:id`、`/attachment/*` 仍允许 native fetch；这不是普通控制面的例外扩张。
+
 ### SSE 断连 **不是** 取消权威（load-bearing 不变量）
 
 关 Tab / 网络波动导致 `/chat/stream` 断连，**绝不能**用来取消进行中的 turn。turn 的生命周期归 Rust 的 **Sidecar Owner 模型**（Tab / Companion / Task / Goal / BackgroundCompletion / Agent），不归前端 SSE 连接：

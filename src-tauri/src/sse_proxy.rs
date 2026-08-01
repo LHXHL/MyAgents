@@ -57,6 +57,9 @@ const SSE_EVENT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const SSE_EVENT_SEPARATOR_MAX_BYTES: usize = 4;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
+const CONTROL_DISPATCH_RETRY_DELAYS_MS: &[u64] = &[
+    50, 100, 200, 400, 800, 1_500, 2_000, 3_000, 5_000, 5_000, 5_000, 5_000, 5_000,
+];
 
 /// Endpoints that need the long-timeout budget. Keep this list short — most
 /// sidecar work should finish in seconds, not minutes.
@@ -66,55 +69,6 @@ fn proxy_timeout_for(url_path: &str) -> u64 {
     } else {
         HTTP_PROXY_TIMEOUT_SECS
     }
-}
-
-/// Classify whether an absolute URL targets the local loopback (the sidecar) or
-/// an external host.
-///
-/// `proxy_http_request` is the single Rust entry point for **all** renderer HTTP:
-/// the overwhelming majority is `http://127.0.0.1:<port>/...` to the owning
-/// Sidecar (which MUST bypass any system proxy via `local_http`, or Clash/V2Ray
-/// returns 502), but the renderer analytics queue also POSTs to an **external**
-/// endpoint (`https://analytics.myagents.io/api/track`) through this same path.
-///
-/// Routing the external case through the localhost-only `.no_proxy()` client
-/// silently bypasses the user's configured proxy AND reqwest's system-proxy
-/// discovery — so a China/Windows user whose only egress is a Clash/V2Ray HTTP
-/// proxy makes a forced-direct connection that fails, and telemetry is dropped
-/// after 5 silent retries. That biases the platform dashboard toward whoever
-/// happens to have working direct egress. External hosts MUST therefore use the
-/// proxy-aware client (`proxy_config::build_client_with_proxy`), exactly like the
-/// updater / LiteLLM cache. See CLAUDE.md `local_http` red-line + proxy_config.md.
-///
-/// Parse with the SAME parser reqwest uses to actually connect (`reqwest::Url`,
-/// i.e. the WHATWG `url` crate), so the proxy decision can never disagree with
-/// the real destination host. A hand-rolled parser would: e.g. a backslash +
-/// userinfo trick like `http://evil.com\@127.0.0.1/` parses to host `evil.com`
-/// (backslash is a path separator), but a naive "take the last `@`" reader would
-/// see `127.0.0.1` and wrongly bypass the proxy. The parse cost is negligible
-/// next to building a `reqwest::Client` + an HTTP round trip. Anything that does
-/// not parse, or is not a loopback host, is treated as external (fail toward
-/// honoring the proxy; relative URLs are already rejected upstream).
-fn request_target_is_loopback(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    // host_str() brackets IPv6 literals (`[::1]`); strip them before IP parse.
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    // `is_loopback()` covers 127.0.0.0/8 and ::1 exactly — a substring check like
-    // `starts_with("127.")` would wrongly match a host such as `127.0.0.1.evil.com`.
-    host.parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
 }
 
 /// One long-lived SSE subscription for a renderer surface.
@@ -907,6 +861,29 @@ pub struct HttpRequest {
     pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarHttpRequest {
+    pub path: String,
+    pub method: String,
+    pub body: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+impl SidecarHttpRequest {
+    fn resolve(
+        self,
+        dispatch: &crate::sidecar::manager::SidecarHttpDispatch,
+    ) -> Result<HttpRequest, String> {
+        Ok(HttpRequest {
+            url: dispatch.url_for_path(&self.path)?,
+            method: self.method,
+            body: self.body,
+            headers: self.headers,
+        })
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct HttpResponse {
     pub status: u16,
@@ -938,12 +915,108 @@ fn is_binary_content_type(content_type: &str) -> bool {
         || ct.starts_with("application/pdf")
 }
 
-/// Proxy an HTTP request through Rust - completely bypasses WebView CORS
+async fn acquire_session_dispatch_with_wait(
+    manager: &ManagedSidecarManager,
+    session_id_hint: &str,
+    owner: &SidecarOwner,
+) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
+    let total_attempts = CONTROL_DISPATCH_RETRY_DELAYS_MS.len() + 1;
+    for (attempt, delay_ms) in std::iter::once(&0)
+        .chain(CONTROL_DISPATCH_RETRY_DELAYS_MS.iter())
+        .enumerate()
+    {
+        if *delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        }
+        let result = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .acquire_frontend_session_dispatch(session_id_hint, owner);
+        match result {
+            Ok(dispatch) => return Ok(dispatch),
+            Err(error) if attempt + 1 == total_attempts => {
+                return Err(format!(
+                    "Session Sidecar was not ready for owner {:?}: {}",
+                    owner, error
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+    unreachable!("dispatch retry iterator always contains its final attempt")
+}
+
+async fn acquire_global_dispatch_with_wait(
+    manager: &ManagedSidecarManager,
+) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut delay_index = 0_usize;
+    loop {
+        let result = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .acquire_global_dispatch();
+        let last_error = match result {
+            Ok(dispatch) => return Ok(dispatch),
+            Err(error) => error,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("Global Sidecar was not ready: {last_error}"));
+        }
+        let delay_ms = CONTROL_DISPATCH_RETRY_DELAYS_MS
+            [delay_index.min(CONTROL_DISPATCH_RETRY_DELAYS_MS.len() - 1)];
+        delay_index += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+}
+
 #[tauri::command]
-pub async fn proxy_http_request(
+pub async fn session_sidecar_http_request(
+    app: AppHandle,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
+    session_id_hint: String,
+    sidecar_owner_type: String,
+    sidecar_owner_id: String,
+    request: SidecarHttpRequest,
+) -> Result<HttpResponse, String> {
+    let owner = frontend_sidecar_owner(&sidecar_owner_type, sidecar_owner_id)?;
+    let dispatch =
+        acquire_session_dispatch_with_wait(sidecar_manager.inner(), &session_id_hint, &owner)
+            .await?;
+    let request = request.resolve(&dispatch)?;
+    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+}
+
+#[tauri::command]
+pub async fn global_sidecar_http_request(
+    app: AppHandle,
+    sidecar_manager: tauri::State<'_, ManagedSidecarManager>,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
+    request: SidecarHttpRequest,
+) -> Result<HttpResponse, String> {
+    let dispatch = acquire_global_dispatch_with_wait(sidecar_manager.inner()).await?;
+    let request = request.resolve(&dispatch)?;
+    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+}
+
+#[tauri::command]
+pub async fn proxy_analytics_http_request(
     app: AppHandle,
     spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
     request: HttpRequest,
+) -> Result<HttpResponse, String> {
+    if !request.method.eq_ignore_ascii_case("POST") {
+        return Err("Analytics proxy only accepts POST requests".to_string());
+    }
+    execute_http_request(app, spill_manager.inner().clone(), request, false).await
+}
+
+async fn execute_http_request(
+    app: AppHandle,
+    spill_manager: Arc<ProxySpillManager>,
+    request: HttpRequest,
+    target_is_loopback: bool,
 ) -> Result<HttpResponse, String> {
     use crate::logger;
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -990,11 +1063,10 @@ pub async fn proxy_http_request(
             .pool_idle_timeout(std::time::Duration::from_secs(5))
             .pool_max_idle_per_host(2)
     };
-    // Loopback (the Sidecar) MUST bypass the system proxy — Clash/V2Ray would
-    // 502 it. External hosts (the analytics endpoint) MUST honor the user's
-    // proxy config / system-proxy discovery — otherwise telemetry is silently
-    // dropped for proxy-dependent users. See `request_target_is_loopback`.
-    let target_is_loopback = request_target_is_loopback(&request.url);
+    // Control-plane commands select loopback explicitly and MUST bypass the
+    // system proxy. The dedicated analytics command selects the external path
+    // so user-configured/system proxies keep working without exposing a generic
+    // renderer URL proxy for Sidecar control traffic.
     let client = if target_is_loopback {
         tune(crate::local_http::builder()).build().map_err(|e| {
             let err = format!("[proxy] Failed to create client: {}", e);
@@ -1124,7 +1196,7 @@ pub async fn proxy_http_request(
         &request.url,
         response_policy,
         header_says_spill,
-        spill_manager.inner().clone(),
+        spill_manager,
     )
     .await;
 
@@ -1772,65 +1844,5 @@ mod tests {
             .await
             .expect("supervisor stop timeout")
             .expect("supervisor task");
-    }
-
-    #[test]
-    fn loopback_sidecar_urls_bypass_proxy() {
-        // The sidecar is always http://127.0.0.1:<port>/... — these MUST stay on
-        // the no_proxy client or a system proxy 502s every UI request.
-        assert!(request_target_is_loopback(
-            "http://127.0.0.1:31415/api/agents/set"
-        ));
-        assert!(request_target_is_loopback(
-            "http://127.0.0.1:31900/health/ready"
-        ));
-        assert!(request_target_is_loopback(
-            "http://localhost:31415/chat/stream"
-        ));
-        assert!(request_target_is_loopback("http://127.0.0.5:8080/x")); // whole 127.0.0.0/8
-        assert!(request_target_is_loopback("http://[::1]:31415/refs/abc"));
-        assert!(request_target_is_loopback(
-            "http://[0:0:0:0:0:0:0:1]:31415/x"
-        ));
-        // Case-insensitive host.
-        assert!(request_target_is_loopback("http://LOCALHOST:31415/x"));
-        // userinfo prefix on a genuine loopback host is still loopback.
-        assert!(request_target_is_loopback(
-            "http://user:pass@127.0.0.1:31415/x"
-        ));
-        // No path, only query/fragment.
-        assert!(request_target_is_loopback("http://127.0.0.1:31415?x=1"));
-        assert!(request_target_is_loopback("http://127.0.0.1:31415#f"));
-    }
-
-    #[test]
-    fn external_urls_are_not_loopback() {
-        // The analytics endpoint (and any future external POST) MUST route
-        // through the proxy-aware client, so it must NOT classify as loopback.
-        assert!(!request_target_is_loopback(
-            "https://analytics.myagents.io/api/track"
-        ));
-        assert!(!request_target_is_loopback(
-            "https://download.myagents.io/update/x.json"
-        ));
-        // Look-alikes that are NOT loopback hosts.
-        assert!(!request_target_is_loopback("http://127.0.0.1.evil.com/x"));
-        assert!(!request_target_is_loopback("http://localhost.evil.com/x"));
-        assert!(!request_target_is_loopback(
-            "https://user:pass@analytics.myagents.io/track"
-        ));
-        // Parser-disagreement guard: a backslash is a path separator to the real
-        // URL parser, so the true host is `evil.com`, NOT `127.0.0.1`. Must be
-        // external (else a hostile URL would bypass the proxy). This is the case
-        // a hand-rolled "last @ wins" parser gets wrong.
-        assert!(!request_target_is_loopback(
-            "http://evil.com\\@127.0.0.1/path"
-        ));
-        // IPv4-mapped IPv6 is not ::1 loopback.
-        assert!(!request_target_is_loopback(
-            "http://[::ffff:127.0.0.1]:80/x"
-        ));
-        // Not an absolute URL → not loopback (caller already guards relative URLs).
-        assert!(!request_target_is_loopback("/api/something"));
     }
 }

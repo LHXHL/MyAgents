@@ -42,7 +42,7 @@ export function tabContentKind(tab: Tab, isDeferredMount: boolean): TabContentKi
 
 /**
  * Has a restored-tab activation been abandoned partway through? `activateRestoredTab`
- * does async work (validate → ensureSessionSidecar → activateSession); between
+ * does async work (validate → ensureSessionSidecar → reconcile owner); between
  * awaits the user can close the tab, switch it to another session, or a racing
  * call can already activate it. If so, any sidecar owner we acquire must be
  * released rather than left orphaned (Issue #232, codex review).

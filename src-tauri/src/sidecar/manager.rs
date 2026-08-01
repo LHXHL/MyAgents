@@ -92,6 +92,25 @@ impl FrontendSidecarBinding {
     }
 }
 
+/// An admitted control request for one exact process generation. Holding this
+/// value keeps replacement from terminating that process until the response
+/// body has been consumed.
+pub(crate) struct SidecarHttpDispatch {
+    base_url: String,
+    _lease: DispatchLease,
+}
+
+impl SidecarHttpDispatch {
+    pub(crate) fn url_for_path(&self, path: &str) -> Result<String, String> {
+        if !path.starts_with('/') || path.starts_with("//") {
+            return Err(format!(
+                "Sidecar request path must start with one '/': {path}"
+            ));
+        }
+        Ok(format!("{}{}", self.base_url, path))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BackgroundPollTarget {
     Current(BackgroundPollBinding),
@@ -140,8 +159,6 @@ pub struct SidecarManager {
     // ===== Legacy Storage (kept for backward compatibility) =====
     /// Tab ID -> Sidecar Instance (legacy, used for Global Sidecar)
     pub(super) instances: HashMap<String, SidecarInstance>,
-    /// Session ID -> Session Activation (tracks which session is active for Session singleton)
-    pub(super) session_activations: HashMap<String, SessionActivation>,
     /// Port counter for allocation (starts from BASE_PORT)
     pub(super) port_counter: AtomicU16,
     /// Session ID -> generation counter. The generation is the unique instance
@@ -208,7 +225,6 @@ impl SidecarManager {
             sidecars: HashMap::new(),
             recovering_sidecars: HashMap::new(),
             instances: HashMap::new(),
-            session_activations: HashMap::new(),
             port_counter: AtomicU16::new(BASE_PORT),
             sidecar_generations: HashMap::new(),
             // Start at 1 so callers using `0` as an "unknown / not present"
@@ -463,184 +479,26 @@ impl SidecarManager {
         self.sidecars.clear(); // Session-centric Sidecars (Drop kills processes)
         self.recovering_sidecars.clear();
         self.instances.clear(); // Global Sidecar (Drop kills process)
-        self.session_activations.clear();
         self.sidecar_generations.clear();
         // Remove port file so CLI knows the sidecar is down
         remove_global_port_file();
     }
 
-    // ============= Session Activation Methods =============
-
-    /// Get session activation by session ID
-    pub fn get_session_activation(&self, session_id: &str) -> Option<&SessionActivation> {
-        self.session_activations.get(session_id)
-    }
-
-    /// (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness across
-    /// `session_activations`: at most one activation may have a given
-    /// `tab_id == Some(T)` at any time. Called from `activate_session`
-    /// and `update_session_tab` BEFORE writing the new tab_id.
-    ///
-    /// Why: `get_tab_server_url`'s priority-2 fallback iterates
-    /// `session_activations.values().find(|a| a.tab_id == Some(tab_id))`
-    /// and returns the first match. HashMap iteration order is non-
-    /// deterministic, so two activations with the same tab_id mean a
-    /// stop / queue-force / any other tab-keyed lookup may resolve to
-    /// the wrong session's port → wrong Sidecar gets the request →
-    /// wrong session aborted. Issue #169 reported 4 such cross-tab
-    /// stop incidents in one day.
-    ///
-    /// The window where two activations briefly share a tab_id opens
-    /// during tab→session switches: the renderer sequence is
-    /// `update_session_tab(new_session, T)` → ... → `deactivate_session
-    /// (old_session)`. Between those two awaits, both `new_session` and
-    /// `old_session` carry `tab_id == Some(T)`. By proactively clearing
-    /// the old binding here, we close that window unconditionally —
-    /// regardless of whether the renderer remembers to call
-    /// `deactivate_session` afterwards.
-    ///
-    /// Skips the entry whose key matches `keeper_session_id` (the
-    /// caller's own session_id) so we don't clobber the write we're
-    /// about to make.
-    pub(super) fn clear_tab_id_from_other_activations(
-        &mut self,
-        keeper_session_id: &str,
-        tab_id: &str,
-    ) {
-        let stale_session_ids: Vec<String> = self
-            .session_activations
-            .iter()
-            .filter(|(sid, a)| {
-                sid.as_str() != keeper_session_id && a.tab_id.as_deref() == Some(tab_id)
-            })
-            .map(|(sid, _)| sid.clone())
-            .collect();
-        for sid in stale_session_ids {
-            if let Some(activation) = self.session_activations.get_mut(&sid) {
-                ulog_info!(
-                    "[sidecar] Clearing stale tab_id {:?} from session {} (now claimed by session {})",
-                    tab_id, sid, keeper_session_id
-                );
-                activation.tab_id = None;
-            }
-        }
-    }
-
-    /// Activate a session (associate it with a Sidecar)
-    pub fn activate_session(
-        &mut self,
-        session_id: String,
-        tab_id: Option<String>,
-        task_id: Option<String>,
-        port: u16,
-        workspace_path: String,
-        is_cron_task: bool,
-    ) {
-        ulog_info!(
-            "[sidecar] Activating session {} on port {}, tab: {:?}, task: {:?}, cron: {}",
-            session_id,
-            port,
-            tab_id,
-            task_id,
-            is_cron_task
-        );
-        // (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness BEFORE
-        // inserting the new activation, so the new entry's tab_id is the
-        // only match for `find(|a| a.tab_id == Some(tab_id))`.
-        if let Some(ref tid) = tab_id {
-            self.clear_tab_id_from_other_activations(&session_id, tid);
-        }
-        self.session_activations.insert(
-            session_id.clone(),
-            SessionActivation {
-                session_id,
-                tab_id,
-                task_id,
-                port,
-                workspace_path,
-                is_cron_task,
-            },
-        );
-    }
-
-    /// Attach an already-ensured Tab to the latest activation in one manager lock.
-    /// Existing Task identity is preserved; only the Tab projection and current
-    /// process endpoint are refreshed.
+    /// Verify that an already-ensured Tab owns the current Session generation
+    /// and retire the temporary BackgroundCompletion handoff owner.
     pub fn reconcile_session_tab_activation(&mut self, session_id: &str, tab_id: &str) -> bool {
         let tab_owner = SidecarOwner::Tab(tab_id.to_string());
-        let Some((port, workspace_path)) = self.sidecars.get(session_id).and_then(|sidecar| {
-            (sidecar.is_reusable() && sidecar.owners.contains(&tab_owner)).then(|| {
-                (
-                    sidecar.port,
-                    sidecar.workspace_path.to_string_lossy().into_owned(),
-                )
-            })
-        }) else {
+        let owned = self
+            .sidecars
+            .get(session_id)
+            .is_some_and(|sidecar| sidecar.is_reusable() && sidecar.owners.contains(&tab_owner));
+        if !owned {
             return false;
-        };
+        }
 
         let background_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
         self.remove_session_owner(session_id, &background_owner);
-        self.clear_tab_id_from_other_activations(session_id, tab_id);
-
-        if let Some(activation) = self.session_activations.get_mut(session_id) {
-            activation.tab_id = Some(tab_id.to_string());
-            activation.port = port;
-            activation.workspace_path = workspace_path;
-        } else {
-            self.session_activations.insert(
-                session_id.to_string(),
-                SessionActivation {
-                    session_id: session_id.to_string(),
-                    tab_id: Some(tab_id.to_string()),
-                    task_id: None,
-                    port,
-                    workspace_path,
-                    is_cron_task: false,
-                },
-            );
-        }
         true
-    }
-
-    /// Deactivate a session
-    pub fn deactivate_session(&mut self, session_id: &str) -> Option<SessionActivation> {
-        ulog_info!("[sidecar] Deactivating session {}", session_id);
-        self.session_activations.remove(session_id)
-    }
-
-    /// Update session activation's tab_id (e.g., when a Tab connects to headless Sidecar)
-    pub fn update_session_tab(&mut self, session_id: &str, tab_id: Option<String>) {
-        // (v0.2.12 — issue #169 fix) Enforce tab_id uniqueness BEFORE
-        // mutating the target entry, so by the time the read below
-        // finalizes, no other activation carries the same tab_id.
-        // (Skipped when clearing — `tab_id == None` can't collide.)
-        if let Some(ref tid) = tab_id {
-            self.clear_tab_id_from_other_activations(session_id, tid);
-        }
-        if let Some(activation) = self.session_activations.get_mut(session_id) {
-            ulog_info!(
-                "[sidecar] Updating session {} tab: {:?} -> {:?}",
-                session_id,
-                activation.tab_id,
-                tab_id
-            );
-            activation.tab_id = tab_id;
-            // If a tab connects, it's no longer a pure cron task session
-            if activation.tab_id.is_some() {
-                activation.is_cron_task = false;
-            }
-        }
-    }
-
-    /// Get all active sessions for a workspace
-    /// Reserved for future use (e.g., debugging, admin UI)
-    #[allow(dead_code)]
-    pub fn get_workspace_sessions(&self, workspace_path: &str) -> Vec<&SessionActivation> {
-        self.session_activations
-            .values()
-            .filter(|a| a.workspace_path == workspace_path)
-            .collect()
     }
 
     // ============= Session-Centric Sidecar API (v0.1.11) =============
@@ -781,6 +639,53 @@ impl SidecarManager {
         Some(SessionCompletionClaim::new())
     }
 
+    pub(crate) fn acquire_frontend_session_dispatch(
+        &mut self,
+        session_id_hint: &str,
+        owner: &SidecarOwner,
+    ) -> Result<SidecarHttpDispatch, String> {
+        let binding = self.resolve_session_sidecar_for_frontend_owner(session_id_hint, owner)?;
+        let generations = &self.sidecar_generations;
+        let sidecar = self
+            .sidecars
+            .iter_mut()
+            .find(|(session_id, sidecar)| {
+                sidecar.management_id == binding.management_id
+                    && sidecar.port == binding.port
+                    && generations.get(*session_id).copied() == Some(binding.generation)
+            })
+            .map(|(_, sidecar)| sidecar)
+            .ok_or_else(|| {
+                "Resolved Session Sidecar generation is no longer current".to_string()
+            })?;
+        let lease = DispatchGate::try_acquire(&sidecar.dispatch_gate)
+            .ok_or_else(|| "Resolved Session Sidecar generation is draining".to_string())?;
+        Ok(SidecarHttpDispatch {
+            base_url: binding.base_url(),
+            _lease: lease,
+        })
+    }
+
+    pub(crate) fn acquire_global_dispatch(&mut self) -> Result<SidecarHttpDispatch, String> {
+        let generation = self.current_generation(GLOBAL_SIDECAR_ID);
+        if generation == 0 {
+            return Err("Global Sidecar has no current generation".to_string());
+        }
+        let instance = self
+            .instances
+            .get_mut(GLOBAL_SIDECAR_ID)
+            .ok_or_else(|| "Global Sidecar is not running".to_string())?;
+        if !instance.is_running() {
+            return Err("Global Sidecar is not ready".to_string());
+        }
+        let lease = DispatchGate::try_acquire(&instance.dispatch_gate)
+            .ok_or_else(|| "Global Sidecar generation is draining".to_string())?;
+        Ok(SidecarHttpDispatch {
+            base_url: format!("http://127.0.0.1:{}", instance.port),
+            _lease: lease,
+        })
+    }
+
     fn claim_session_completion_if_current(
         &mut self,
         session_id: &str,
@@ -843,6 +748,7 @@ impl SidecarManager {
                 state: SidecarState::Healthy,
                 owners: std::iter::once(owner).collect(),
                 completion_claims: HashSet::new(),
+                dispatch_gate: DispatchGate::new(),
                 created_at: std::time::Instant::now(),
                 runtime: None,
                 runtime_source: None,
@@ -961,6 +867,7 @@ impl SidecarManager {
         let Some(mut displaced) = self.remove_sidecar(session_id) else {
             return;
         };
+        displaced.dispatch_gate.close_and_wait();
         if let Some(recovering) = self.recovering_sidecars.get_mut(session_id) {
             recovering
                 .owners
@@ -1021,10 +928,6 @@ impl SidecarManager {
                 retained.failed_attempts.saturating_add(1),
                 replacement.port
             );
-        }
-        if let Some(activation) = self.session_activations.get_mut(session_id) {
-            activation.port = replacement.port;
-            activation.workspace_path = replacement.workspace_path.to_string_lossy().into_owned();
         }
         Some(ReadySidecarCommit {
             port: replacement.port,
@@ -1193,6 +1096,7 @@ impl SidecarManager {
             return decision;
         }
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {
+            sidecar.dispatch_gate.close_and_wait();
             let _ = sidecar.process.kill();
         }
         // Go through remove_sidecar() so stop_events is broadcast — a runtime
@@ -1451,7 +1355,6 @@ impl SidecarManager {
                     recovery.failed_attempts.saturating_add(1)
                 );
             }
-            self.deactivate_session(session_id);
             self.clear_generation(session_id);
             (true, true)
         } else {
@@ -1463,42 +1366,16 @@ impl SidecarManager {
         &mut self,
         session_id: &str,
         tab_id: &str,
-        has_persisted_scheduler_owner: bool,
+        _has_persisted_scheduler_owner: bool,
     ) -> bool {
         let (owner_removed, sidecar_stopped) =
             self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()));
-        if !owner_removed {
-            // A close can remove the Tab owner while an in-flight renderer
-            // reconcile is still awaiting activate_session. Its compensating
-            // release then arrives with no owner left, but the late activation
-            // still names this exact Tab. Clear only that matching stale
-            // projection; never touch an activation already claimed by a
-            // different Tab.
-            let activation_matches_tab = self
-                .session_activations
-                .get(session_id)
-                .is_some_and(|activation| activation.tab_id.as_deref() == Some(tab_id));
-            if activation_matches_tab {
-                if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
-                    self.update_session_tab(session_id, None);
-                } else {
-                    self.deactivate_session(session_id);
-                }
-            }
-            return false;
-        }
-
-        if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
-            self.update_session_tab(session_id, None);
-        } else if !sidecar_stopped {
-            self.deactivate_session(session_id);
-        }
-        sidecar_stopped
+        owner_removed && sidecar_stopped
     }
 
     /// Upgrade a session ID (e.g., from "pending-xxx" to real session ID)
-    /// This updates the key in both sidecars and session_activations HashMaps
-    /// without stopping the Sidecar.
+    /// This updates the manager-owned Session identity without stopping the
+    /// Sidecar.
     ///
     /// Returns true if the upgrade was successful.
     pub fn upgrade_session_id(&mut self, old_session_id: &str, new_session_id: &str) -> bool {
@@ -1510,13 +1387,13 @@ impl SidecarManager {
 
         if old_session_id == new_session_id {
             return self.sidecars.contains_key(new_session_id)
-                || self.session_activations.contains_key(new_session_id);
+                || self.recovering_sidecars.contains_key(new_session_id);
         }
 
         let old_exists = self.sidecars.contains_key(old_session_id)
-            || self.session_activations.contains_key(old_session_id);
+            || self.recovering_sidecars.contains_key(old_session_id);
         let new_exists = self.sidecars.contains_key(new_session_id)
-            || self.session_activations.contains_key(new_session_id);
+            || self.recovering_sidecars.contains_key(new_session_id);
         match (old_exists, new_exists) {
             (false, true) => {
                 ulog_debug!(
@@ -1582,14 +1459,14 @@ impl SidecarManager {
         // the old router. After all slots terminate, the next ensure_im_consumer
         // call replaces the entry. No leak, no premature cancellation.
 
-        // 3. Upgrade in session_activations HashMap
-        if let Some(mut activation) = self.session_activations.remove(old_session_id) {
-            // Update the session_id field in the activation itself
-            activation.session_id = new_session_id.to_string();
-            self.session_activations
-                .insert(new_session_id.to_string(), activation);
+        // 3. Rekey retained recovery authority when this lower-level helper is
+        // used outside the renderer's stricter healthy-source adoption path.
+        if let Some(mut recovering) = self.recovering_sidecars.remove(old_session_id) {
+            recovering.session_id = new_session_id.to_string();
+            self.recovering_sidecars
+                .insert(new_session_id.to_string(), recovering);
             ulog_info!(
-                "[sidecar] Upgraded session_activations HashMap: {} -> {}",
+                "[sidecar] Upgraded recovering sidecar identity: {} -> {}",
                 old_session_id,
                 new_session_id
             );
@@ -1616,12 +1493,9 @@ impl SidecarManager {
     ) -> bool {
         let owner = SidecarOwner::Tab(tab_id.to_string());
         let old_recovering = self.recovering_sidecars.contains_key(old_session_id);
-        let old_exists = self.sidecars.contains_key(old_session_id)
-            || old_recovering
-            || self.session_activations.contains_key(old_session_id);
+        let old_exists = self.sidecars.contains_key(old_session_id) || old_recovering;
         let new_exists = self.sidecars.contains_key(new_session_id)
-            || self.recovering_sidecars.contains_key(new_session_id)
-            || self.session_activations.contains_key(new_session_id);
+            || self.recovering_sidecars.contains_key(new_session_id);
 
         if old_session_id == new_session_id {
             return new_exists && self.session_has_exact_owner(new_session_id, &owner);
@@ -1645,11 +1519,9 @@ impl SidecarManager {
         tab_id: &str,
     ) -> bool {
         let old_exists = self.sidecars.contains_key(old_session_id)
-            || self.recovering_sidecars.contains_key(old_session_id)
-            || self.session_activations.contains_key(old_session_id);
+            || self.recovering_sidecars.contains_key(old_session_id);
         let new_exists = self.sidecars.contains_key(new_session_id)
-            || self.recovering_sidecars.contains_key(new_session_id)
-            || self.session_activations.contains_key(new_session_id);
+            || self.recovering_sidecars.contains_key(new_session_id);
         !old_exists
             && new_exists
             && self.session_has_exact_owner(new_session_id, &SidecarOwner::Tab(tab_id.to_string()))
@@ -1782,41 +1654,6 @@ pub type ManagedSidecar = ManagedSidecarManager;
 /// Legacy function: create_sidecar_state -> create_sidecar_manager
 pub fn create_sidecar_state() -> ManagedSidecar {
     create_sidecar_manager()
-}
-
-#[cfg(test)]
-mod session_identity_upgrade_tests {
-    use super::*;
-
-    #[test]
-    fn session_identity_upgrade_is_idempotent_and_conflict_safe() {
-        let mut manager = SidecarManager::new();
-        manager.activate_session(
-            "pending-1".to_string(),
-            Some("tab-1".to_string()),
-            Some("goal-1".to_string()),
-            31001,
-            "/tmp/workspace".to_string(),
-            true,
-        );
-
-        assert!(manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.session_activations.contains_key("session-real"));
-        assert!(!manager.session_activations.contains_key("pending-1"));
-
-        manager.activate_session(
-            "pending-1".to_string(),
-            Some("tab-2".to_string()),
-            Some("goal-2".to_string()),
-            31002,
-            "/tmp/workspace".to_string(),
-            true,
-        );
-        assert!(!manager.upgrade_session_id("pending-1", "session-real"));
-        assert!(manager.session_activations.contains_key("session-real"));
-        assert!(manager.session_activations.contains_key("pending-1"));
-    }
 }
 
 #[cfg(test)]

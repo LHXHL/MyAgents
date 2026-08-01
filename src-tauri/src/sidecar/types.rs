@@ -3,6 +3,80 @@ use super::*;
 // ============= Session-Centric Sidecar Architecture =============
 // Sidecar is a service process for Sessions, shared by their live owners.
 
+#[derive(Default)]
+struct DispatchGateState {
+    accepting: bool,
+    in_flight: usize,
+}
+
+/// Per-process admission fence for renderer control requests.
+///
+/// Admission happens while `SidecarManager` still owns endpoint selection;
+/// the returned lease then crosses the network await without retaining the
+/// manager mutex. Process replacement closes the gate and waits for the exact
+/// generation's admitted requests to finish before terminating it.
+pub(crate) struct DispatchGate {
+    state: Mutex<DispatchGateState>,
+    drained: Condvar,
+}
+
+impl DispatchGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(DispatchGateState {
+                accepting: true,
+                in_flight: 0,
+            }),
+            drained: Condvar::new(),
+        })
+    }
+
+    pub(crate) fn try_acquire(gate: &Arc<Self>) -> Option<DispatchLease> {
+        let mut state = gate
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.accepting {
+            return None;
+        }
+        state.in_flight += 1;
+        Some(DispatchLease { gate: gate.clone() })
+    }
+
+    pub(crate) fn close_and_wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.accepting = false;
+        while state.in_flight > 0 {
+            state = self
+                .drained
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+pub(crate) struct DispatchLease {
+    gate: Arc<DispatchGate>,
+}
+
+impl Drop for DispatchLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert!(state.in_flight > 0);
+        state.in_flight = state.in_flight.saturating_sub(1);
+        if state.in_flight == 0 {
+            self.gate.drained.notify_all();
+        }
+    }
+}
+
 /// Owner of a Sidecar.
 /// When all owners release, the Sidecar is stopped.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -186,6 +260,78 @@ mod lifecycle_contract_tests {
 
     fn owners(values: Vec<SidecarOwner>) -> HashSet<SidecarOwner> {
         values.into_iter().collect()
+    }
+
+    #[test]
+    fn dispatch_gate_drains_admitted_request_before_closing_generation() {
+        let gate = DispatchGate::new();
+        let lease = DispatchGate::try_acquire(&gate).expect("first request is admitted");
+        let closing_gate = gate.clone();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            closing_gate.close_and_wait();
+            closed_tx.send(()).expect("report closed gate");
+        });
+
+        assert!(closed_rx.recv_timeout(Duration::from_millis(25)).is_err());
+        drop(lease);
+        closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("closing waits only for the admitted request");
+        assert!(DispatchGate::try_acquire(&gate).is_none());
+    }
+
+    fn assert_dispatch_blocks_generation_close<T>(dispatch: T, gate: Arc<DispatchGate>) {
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            gate.close_and_wait();
+            closed_tx.send(()).expect("report closed generation");
+        });
+        assert!(closed_rx.recv_timeout(Duration::from_millis(25)).is_err());
+        drop(dispatch);
+        closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("generation closes after its request completes");
+    }
+
+    #[test]
+    fn session_and_global_dispatches_hold_their_selected_generation() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let session_gate = manager
+            .sidecars
+            .get("session-a")
+            .expect("Session Sidecar")
+            .dispatch_gate
+            .clone();
+        let session_dispatch = manager
+            .acquire_frontend_session_dispatch("session-a", &SidecarOwner::Tab("tab-a".to_string()))
+            .expect("Session dispatch");
+        assert_dispatch_blocks_generation_close(session_dispatch, session_gate);
+
+        manager.next_generation(GLOBAL_SIDECAR_ID);
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: spawn_test_child(),
+                port: 31419,
+                agent_dir: None,
+                healthy: true,
+                is_global: true,
+                session_delete_authority: None,
+                dispatch_gate: DispatchGate::new(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        let global_gate = manager
+            .instances
+            .get(GLOBAL_SIDECAR_ID)
+            .expect("Global Sidecar")
+            .dispatch_gate
+            .clone();
+        let global_dispatch = manager.acquire_global_dispatch().expect("Global dispatch");
+        assert_dispatch_blocks_generation_close(global_dispatch, global_gate);
     }
 
     #[test]
@@ -424,6 +570,7 @@ mod lifecycle_contract_tests {
                 healthy: true,
                 is_global: true,
                 session_delete_authority: None,
+                dispatch_gate: DispatchGate::new(),
                 created_at: std::time::Instant::now(),
             },
         );
@@ -457,19 +604,10 @@ mod lifecycle_contract_tests {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "pending-recovery", SidecarState::Dead);
         manager.begin_session_sidecar_replacement("pending-recovery");
-        manager.activate_session(
-            "pending-recovery".to_string(),
-            Some("tab-a".to_string()),
-            None,
-            31418,
-            "/tmp/workspace".to_string(),
-            false,
-        );
 
         assert!(!manager.upgrade_session_id_for_tab("pending-recovery", "session-real", "tab-a",));
         assert!(manager.recovering_sidecars.contains_key("pending-recovery"));
-        assert!(manager.session_activations.contains_key("pending-recovery"));
-        assert!(!manager.session_activations.contains_key("session-real"));
+        assert!(!manager.recovering_sidecars.contains_key("session-real"));
     }
 
     #[test]
@@ -485,32 +623,24 @@ mod lifecycle_contract_tests {
         ));
         sidecar.port = 32001;
         sidecar.workspace_path = PathBuf::from("/tmp/revived");
-        manager.activate_session(
-            "session-task".to_string(),
-            None,
-            Some("task-1".to_string()),
-            31418,
-            "/tmp/original".to_string(),
-            true,
-        );
-
         assert!(manager.reconcile_session_tab_activation("session-task", "tab-a",));
 
-        let activation = manager
-            .get_session_activation("session-task")
-            .expect("activation");
-        assert_eq!(activation.tab_id.as_deref(), Some("tab-a"));
-        assert_eq!(activation.task_id.as_deref(), Some("task-1"));
-        assert_eq!(activation.port, 32001);
-        assert_eq!(activation.workspace_path, "/tmp/revived");
-        assert!(activation.is_cron_task);
-        assert!(!manager
+        let sidecar = manager
             .get_session_sidecar_mut("session-task")
-            .expect("session sidecar")
+            .expect("session sidecar");
+        assert_eq!(sidecar.port, 32001);
+        assert_eq!(sidecar.workspace_path, PathBuf::from("/tmp/revived"));
+        assert!(sidecar
             .owners
-            .contains(&SidecarOwner::BackgroundCompletion(
+            .contains(&SidecarOwner::Tab("tab-a".to_string())));
+        assert!(sidecar
+            .owners
+            .contains(&SidecarOwner::Task("task-1".to_string())));
+        assert!(
+            !sidecar.owners.contains(&SidecarOwner::BackgroundCompletion(
                 "session-task".to_string(),
-            )));
+            ))
+        );
     }
 
     fn spawn_test_child() -> ChildTree {
@@ -546,6 +676,7 @@ mod lifecycle_contract_tests {
                 state,
                 owners: owners(vec![SidecarOwner::Tab("tab-a".to_string())]),
                 completion_claims: HashSet::new(),
+                dispatch_gate: DispatchGate::new(),
                 created_at: std::time::Instant::now(),
                 runtime: None,
                 runtime_source: None,
@@ -686,59 +817,32 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
-    fn stale_tab_release_does_not_clear_a_new_tab_activation() {
+    fn stale_tab_release_does_not_clear_a_current_tab_owner() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
-        manager.activate_session(
-            "session-a".to_string(),
-            Some("tab-a".to_string()),
-            None,
-            31418,
-            "/tmp/workspace".to_string(),
-            false,
-        );
 
         assert!(!manager.release_tab_session("session-a", "stale-tab", false));
-        assert_eq!(
-            manager
-                .session_activations
-                .get("session-a")
-                .and_then(|activation| activation.tab_id.as_deref()),
-            Some("tab-a")
+        assert!(
+            manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
         );
         assert!(manager.session_has_frontend_owner("session-a"));
     }
 
     #[test]
-    fn compensating_release_clears_a_late_matching_activation_without_an_owner() {
+    fn stale_release_does_not_disturb_persistent_owners() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
         manager
             .get_session_sidecar_mut("session-a")
             .expect("session sidecar")
             .owners = owners(vec![SidecarOwner::Goal("goal-a".to_string())]);
-        manager.activate_session(
-            "session-a".to_string(),
-            Some("closed-tab".to_string()),
-            None,
-            31418,
-            "/tmp/workspace".to_string(),
-            false,
-        );
 
         assert!(!manager.release_tab_session("session-a", "closed-tab", false));
-        assert_eq!(
-            manager
-                .session_activations
-                .get("session-a")
-                .and_then(|activation| activation.tab_id.as_deref()),
-            None
-        );
         assert!(manager.session_has_persistent_owners("session-a"));
     }
 
     #[test]
-    fn replacement_commit_preserves_all_owners_and_refreshes_activation_coordinates() {
+    fn replacement_commit_preserves_all_owners_and_process_coordinates() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
         manager
@@ -746,14 +850,6 @@ mod lifecycle_contract_tests {
             .expect("dead sidecar")
             .owners
             .insert(SidecarOwner::Goal("goal-a".to_string()));
-        manager.activate_session(
-            "session-a".to_string(),
-            Some("tab-a".to_string()),
-            Some("task-a".to_string()),
-            31418,
-            "/tmp/old-workspace".to_string(),
-            false,
-        );
 
         manager.begin_session_sidecar_replacement("session-a");
         assert!(!manager.sidecars.contains_key("session-a"));
@@ -786,15 +882,6 @@ mod lifecycle_contract_tests {
             .owners
             .contains(&SidecarOwner::Task("task-a".to_string())));
         assert!(!manager.recovering_sidecars.contains_key("session-a"));
-
-        let activation = manager
-            .session_activations
-            .get("session-a")
-            .expect("activation");
-        assert_eq!(activation.port, 32002);
-        assert_eq!(activation.workspace_path, "/tmp/new-workspace");
-        assert_eq!(activation.task_id.as_deref(), Some("task-a"));
-        assert_eq!(activation.tab_id.as_deref(), Some("tab-a"));
     }
 
     #[test]
@@ -931,23 +1018,10 @@ mod lifecycle_contract_tests {
             .expect("session sidecar")
             .owners
             .insert(SidecarOwner::BackgroundCompletion("session-a".to_string()));
-        manager.activate_session(
-            "session-a".to_string(),
-            Some("tab-a".to_string()),
-            None,
-            31418,
-            "/tmp/workspace".to_string(),
-            false,
-        );
-
         assert!(!manager.release_tab_session("session-a", "tab-a", false));
         assert!(manager.session_has_persistent_owners("session-a"));
-        assert_eq!(
-            manager
-                .session_activations
-                .get("session-a")
-                .and_then(|activation| activation.tab_id.as_deref()),
-            None
+        assert!(
+            !manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
         );
     }
 
@@ -994,21 +1068,11 @@ mod lifecycle_contract_tests {
             .get_session_sidecar_mut("session-a")
             .expect("session sidecar")
             .owners = owners(vec![SidecarOwner::Goal("goal-a".to_string())]);
-        manager.activate_session(
-            "session-a".to_string(),
-            None,
-            None,
-            31418,
-            "/tmp/workspace".to_string(),
-            false,
-        );
-
         assert_eq!(
             manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string())),
             (true, true)
         );
         assert!(!manager.sidecars.contains_key("session-a"));
-        assert!(!manager.session_activations.contains_key("session-a"));
         assert_eq!(manager.current_generation("session-a"), 0);
     }
 
@@ -1161,6 +1225,8 @@ pub struct SessionSidecar {
     /// this exact Sidecar generation. The manager is the only writer; keeping
     /// the set on the generation entry makes teardown reclaim it naturally.
     pub(crate) completion_claims: HashSet<(String, String)>,
+    /// Admission fence for control requests bound to this process generation.
+    pub(crate) dispatch_gate: Arc<DispatchGate>,
     /// Creation timestamp
     /// Reserved for future use (e.g., TTL-based cleanup)
     #[allow(dead_code)]
@@ -1257,6 +1323,7 @@ impl SessionSidecar {
 /// Ensure Sidecar process is killed when SessionSidecar is dropped
 impl Drop for SessionSidecar {
     fn drop(&mut self) {
+        self.dispatch_gate.close_and_wait();
         ulog_info!(
             "[sidecar] Drop: killing SessionSidecar for session {} on port {} (state: {:?})",
             self.session_id,
@@ -1284,6 +1351,8 @@ pub struct SidecarInstance {
     /// Per-process capability proving a Session DELETE request came from the
     /// Rust lifecycle owner after it fenced every live/durable owner.
     pub session_delete_authority: Option<String>,
+    /// Admission fence for control requests bound to this process generation.
+    pub(crate) dispatch_gate: Arc<DispatchGate>,
     /// When this instance was created — used by health monitor to apply startup grace period.
     /// During the grace window the monitor skips health checks, preventing false "unhealthy"
     /// verdicts while the sidecar is still initialising (TCP check, Bun startup, Plugin Bridge…).
@@ -1317,6 +1386,7 @@ impl SidecarInstance {
 /// Ensure Node.js process is killed when SidecarInstance is dropped
 impl Drop for SidecarInstance {
     fn drop(&mut self) {
+        self.dispatch_gate.close_and_wait();
         ulog_info!("[sidecar] Drop: killing process on port {}", self.port);
         let _ = self.process.terminate();
 
@@ -1328,24 +1398,6 @@ impl Drop for SidecarInstance {
             }
         }
     }
-}
-
-/// Session activation record
-/// Tracks which Sidecar is currently "activating" a Session
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionActivation {
-    /// Session ID being activated
-    pub session_id: String,
-    /// Tab ID that owns this activation (None for headless cron tasks)
-    pub tab_id: Option<String>,
-    /// Cron task ID if activated by cron task
-    pub task_id: Option<String>,
-    /// Port of the Sidecar handling this session
-    pub port: u16,
-    /// Workspace path
-    pub workspace_path: String,
-    /// Whether this is a cron task activation
-    pub is_cron_task: bool,
 }
 
 /// Sidecar info for external queries

@@ -69,7 +69,7 @@ import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
-import { getTabServerUrl, proxyFetch, isTauri, getSessionPort, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
+import { getTabServerUrl, sessionSidecarFetch, isTauri, getSessionPort, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
 import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { isResetSessionBirth, shouldDegradedLoad, shouldReuseSseSubscriptionForSessionChange } from '@/utils/optionResolve';
@@ -454,7 +454,7 @@ function mergeAttachmentsByPendingId(
     });
 }
 
-async function getBaseUrl(tabId: string, sessionId?: string | null): Promise<string> {
+async function getDataPlaneBaseUrl(tabId: string, sessionId?: string | null): Promise<string> {
     // Session-centric: try to get a ready port from sessionId first.
     if (sessionId) {
         const port = await getSessionPort(sessionId);
@@ -471,7 +471,7 @@ interface TabApiCallOptions {
     /**
      * Pass an AbortSignal to cancel the request from the renderer side. The
      * underlying Tauri invoke can't truly be cancelled, but if the signal is
-     * aborted before / during the call, proxyFetch silently throws AbortError
+     * aborted before / during the call, the control dispatcher throws AbortError
      * instead of logging a "Sidecar gone" warning. The classic use case is a
      * useEffect cleanup that fires when the tab is closing — without this,
      * every tab close emits noisy lifecycle warnings for in-flight prewarm /
@@ -495,9 +495,7 @@ function tabCorrelationHeaders(tabId: string, sessionId?: string | null): Record
 function createPostJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, body?: unknown, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -517,9 +515,7 @@ function createPostJson(tabId: string, sessionIdRef: React.MutableRefObject<stri
 function createApiGetJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             headers: tabCorrelationHeaders(tabId, sessionId),
             signal: opts?.signal,
         });
@@ -534,9 +530,7 @@ function createApiGetJson(tabId: string, sessionIdRef: React.MutableRefObject<st
 function createApiPutJson(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, body?: unknown, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json',
@@ -556,9 +550,7 @@ function createApiPutJson(tabId: string, sessionIdRef: React.MutableRefObject<st
 function createApiDelete(tabId: string, sessionIdRef: React.MutableRefObject<string | null>) {
     return async <T,>(path: string, opts?: TabApiCallOptions): Promise<T> => {
         const sessionId = sessionIdRef.current;
-        const baseUrl = await getBaseUrl(tabId, sessionId);
-        const url = `${baseUrl}${path}`;
-        const response = await proxyFetch(url, {
+        const response = await sessionSidecarFetch(sessionId ?? '', { type: 'tab', id: tabId }, path, {
             method: 'DELETE',
             headers: tabCorrelationHeaders(tabId, sessionId),
             signal: opts?.signal,
@@ -2479,7 +2471,7 @@ export default function TabProvider({
                 }
                 if (toolId && inputRef) {
                     const targetSessionId = currentSessionIdRef.current;
-                    void getBaseUrl(tabId, targetSessionId)
+                    void getDataPlaneBaseUrl(tabId, targetSessionId)
                         .then((baseUrl) => fetchJsonLargeValueRef(
                             baseUrl,
                             inputRef,
@@ -3131,7 +3123,7 @@ export default function TabProvider({
                 };
                 if (payload.inputRef) {
                     const targetSessionId = currentSessionIdRef.current;
-                    void getBaseUrl(tabId, targetSessionId)
+                    void getDataPlaneBaseUrl(tabId, targetSessionId)
                         .then((baseUrl) => fetchJsonLargeValueRef(
                             baseUrl,
                             payload.inputRef,

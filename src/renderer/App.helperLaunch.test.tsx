@@ -341,7 +341,7 @@ vi.mock('@/utils/browserMock', () => ({
 
 vi.mock('@/utils/frontendLogger', () => ({
   forceFlushLogs: vi.fn(async () => undefined),
-  setLogServerUrl: vi.fn(),
+  setLogServerReady: vi.fn(),
   clearLogServerUrl: vi.fn(),
   setAppActiveTabId: mocks.setAppActiveTabId,
 }));
@@ -1592,7 +1592,7 @@ describe('App helper launch', () => {
     }));
   });
 
-  it('releases the fork tab owner when fork tab activation fails', async () => {
+  it('releases the fork tab owner when owner reconciliation fails', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
@@ -1614,7 +1614,7 @@ describe('App helper launch', () => {
         expect(mocks.chatProps.some((props) => typeof props.onForkSession === 'function')).toBe(true);
       });
 
-      mocks.activateSession.mockRejectedValueOnce(new Error('activate failed'));
+      mocks.reconcileSessionTabActivation.mockResolvedValueOnce(false);
       const chatProps = [...mocks.chatProps]
         .reverse()
         .find((props) => typeof props.onForkSession === 'function') as {

@@ -16,7 +16,7 @@ import {
   hashAgentNameSync,
 } from '@/analytics';
 import type { AssistantEntry, EntryIntent, HistoryEntrySource, PendingSessionBirthContext, Surface } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, ensureSessionSidecar, releaseTabSession, activateSession, reconcileSessionTabActivation, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, ensureSessionSidecar, releaseTabSession, reconcileSessionTabActivation, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import CustomTitleBar from '@/components/CustomTitleBar';
@@ -76,7 +76,7 @@ import { createSession, getSessions, updateSession } from '@/api/sessionClient';
 import { dismissTopmost } from '@/utils/closeLayer';
 import { dispatchAppShortcut } from '@/utils/appShortcuts';
 import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
-import { forceFlushLogs, setLogServerUrl, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
+import { forceFlushLogs, setLogServerReady, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
 import { normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
 import {
@@ -947,14 +947,8 @@ export default function App() {
       markGlobalSidecarReady();
       retryCountRef.current = 0; // Reset on success
 
-      // Set log server URL to global sidecar for unified logging
-      try {
-        const globalUrl = await getGlobalServerUrl();
-        setLogServerUrl(globalUrl);
-        console.log('[App] Global sidecar started, log URL set:', globalUrl);
-      } catch (e) {
-        console.warn('[App] Failed to set log server URL:', e);
-      }
+      setLogServerReady();
+      console.log('[App] Global sidecar started; unified log sink ready');
     } catch (error) {
       if (!mountedRef.current) return;
 
@@ -1165,12 +1159,10 @@ export default function App() {
       }, listenerAc.signal);
 
       // Listen for Global Sidecar auto-restart by Rust health monitor
-      void listenWithCleanup<string>('global-sidecar:restarted', (event) => {
+      void listenWithCleanup<string>('global-sidecar:restarted', () => {
         if (!mountedRef.current) return;
-        const newUrl = event.payload;
-        console.log('[App] Global sidecar auto-restarted by health monitor:', newUrl);
-        updateGlobalServerUrl(newUrl);
-        setLogServerUrl(newUrl);
+        console.log('[App] Global sidecar auto-restarted by health monitor');
+        setLogServerReady();
         // Safety net: if the initial startGlobalSidecar() invoke is still blocked
         // (e.g., monitor killed the first sidecar during its TCP health check),
         // the ready promise would never resolve. Resolve it here so that components
@@ -1408,7 +1400,7 @@ export default function App() {
     try {
       console.log(`[App] Tab ${tabId} sessionId updating: ${oldSessionId} -> ${newSessionId}`);
 
-      // Upgrade the session ID in Rust HashMap (sidecars + session_activations)
+      // Upgrade the manager-owned Session identity in Rust.
       // This is a no-op if oldSessionId is null or same as newSessionId
       if (oldSessionId && oldSessionId !== newSessionId) {
         const upgraded = await upgradeSessionId(oldSessionId, newSessionId, tabId);
@@ -1880,11 +1872,10 @@ export default function App() {
 
       const result = await ensureSessionSidecar(effectiveSessionId, project.path, 'tab', targetTabId);
       perfMark('launch_ensured', { tabId: targetTabId });
-      console.log(`[App] Session Sidecar ensured: port=${result.port}, isNew=${result.isNew}`);
-
-      // Activate session with Tab (for Session singleton tracking and fallback port lookup)
-      // Always use effectiveSessionId to ensure session_activations has entry for this Tab
-      await activateSession(effectiveSessionId, targetTabId, null, result.port, project.path, false);
+      console.log(`[App] Session Sidecar ensured: isNew=${result.isNew}`);
+      if (!await reconcileSessionTabActivation(effectiveSessionId, targetTabId)) {
+        throw new Error(`Rust refused owner reconcile for session ${effectiveSessionId} and tab ${targetTabId}`);
+      }
 
       // Rust decides whether this owner joined a concurrently-created process.
       const resolved: SidecarConfigDisposition = result.isNew ? 'push' : 'adopt';
@@ -2011,14 +2002,16 @@ export default function App() {
 
     let ownerAcquired = false;
     try {
-      const result = await ensureSessionSidecar(newSessionId, forkAgentDir, 'tab', newTab.id);
+      await ensureSessionSidecar(newSessionId, forkAgentDir, 'tab', newTab.id);
       ownerAcquired = true;
-      console.log(`[App] Fork tab ${newTab.id} sidecar ensured: port=${result.port}`);
+      console.log(`[App] Fork tab ${newTab.id} sidecar ensured`);
       if (!tabsRef.current.some(t => t.id === newTab.id)) {
         await releaseTabSession(newSessionId, newTab.id).catch(() => {});
         return false;
       }
-      await activateSession(newSessionId, newTab.id, null, result.port, forkAgentDir, false);
+      if (!await reconcileSessionTabActivation(newSessionId, newTab.id)) {
+        throw new Error(`Rust refused owner reconcile for session ${newSessionId} and tab ${newTab.id}`);
+      }
       setActiveTabId(newTab.id);
       return true;
     } catch (error) {
@@ -2037,11 +2030,11 @@ export default function App() {
   /**
    * Reconcile one existing Session with the exact Tab that displays it.
    *
-   * This is the single App-owned ensure/activation path for history opens and
-   * cold restored Tabs. Rust atomically reconciles activation after ensure so
+   * This is the single App-owned ensure/owner path for history opens and cold
+   * restored Tabs. Rust atomically verifies the Tab owner after ensure so
    * a Task claim racing the cold start cannot be overwritten by Renderer.
    * Every await boundary is followed by a Tab identity check so a close/rebind
-   * cannot leave a phantom owner or activation behind.
+   * cannot leave a phantom owner behind.
    */
   const reconcileExistingSessionTabOwner = useCallback(async (
     tabId: string,
@@ -2066,12 +2059,12 @@ export default function App() {
         tabId,
       );
       if (!reconciled) {
-        throw new Error(`Rust refused activation reconcile for session ${sessionId} and tab ${tabId}`);
+        throw new Error(`Rust refused owner reconcile for session ${sessionId} and tab ${tabId}`);
       }
 
       if (!tabStillTargetsSession()) {
-        // releaseTabSession also clears a matching late activation when the
-        // close raced ahead and already removed the owner.
+        // releaseTabSession is idempotent when the close already removed the
+        // owner.
         await releaseTabSession(sessionId, tabId).catch(() => {});
         ownerAcquired = false;
         return null;
@@ -2145,7 +2138,7 @@ export default function App() {
           : (remainingTabs.at(-1)?.id ?? null);
         setActiveTabId(fallbackTabId, remainingTabs);
       }
-      // Release the Tab owner we acquired so a failed activation can't leak a
+      // Release the Tab owner we acquired so a failed reconcile can't leak a
       // phantom owner that keeps the (possibly otherwise-ownerless) sidecar
       // alive forever.
       return false;
@@ -2287,8 +2280,10 @@ export default function App() {
 
       // Create new pending session with new Sidecar
       const pendingSessionId = createPendingSessionId(tabId);
-      const result = await ensureSessionSidecar(pendingSessionId, currentTab.agentDir, 'tab', tabId);
-      await activateSession(pendingSessionId, tabId, null, result.port, currentTab.agentDir, false);
+      await ensureSessionSidecar(pendingSessionId, currentTab.agentDir, 'tab', tabId);
+      if (!await reconcileSessionTabActivation(pendingSessionId, tabId)) {
+        throw new Error(`Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`);
+      }
 
       // Update tab state → TabProvider will detect sessionId change and reconnect
       // Fresh sidecar for the new session → 'push' (overwrites any stale disposition)
@@ -2304,7 +2299,7 @@ export default function App() {
       if (fbResult.migrated) {
         console.log(`[App] Floating ball session binding migrated to pending session: ${oldSessionId} -> ${pendingSessionId}, notified=${fbResult.notified}`);
       }
-      console.log(`[App] handleNewSession: Created new Sidecar for pending session ${pendingSessionId} on port ${result.port}`);
+      console.log(`[App] handleNewSession: Created new Sidecar for pending session ${pendingSessionId}`);
       return true;
     } catch (error) {
       console.error('[App] handleNewSession failed:', error);
