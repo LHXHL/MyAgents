@@ -456,13 +456,7 @@ mod lifecycle_contract_tests {
     fn tab_scoped_identity_upgrade_rejects_a_recovering_source() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "pending-recovery", SidecarState::Dead);
-        let recovering = manager
-            .sidecars
-            .remove("pending-recovery")
-            .expect("recovering sidecar");
-        manager
-            .recovering_sidecars
-            .insert("pending-recovery".to_string(), recovering);
+        manager.begin_session_sidecar_replacement("pending-recovery");
         manager.activate_session(
             "pending-recovery".to_string(),
             Some("tab-a".to_string()),
@@ -763,13 +757,15 @@ mod lifecycle_contract_tests {
             .get_session_sidecar_mut("session-a")
             .expect("replacement sidecar");
         replacement.port = 32002;
+        replacement.workspace_path = PathBuf::from("/tmp/new-workspace");
         replacement.owners = owners(vec![SidecarOwner::Task("task-a".to_string())]);
+        let replacement_generation = manager.current_generation("session-a");
 
-        assert!(manager.finish_session_sidecar_replacement(
-            "session-a",
-            32002,
-            std::path::Path::new("/tmp/new-workspace"),
-        ));
+        let commit = manager
+            .commit_ready_session_sidecar("session-a")
+            .expect("replacement commit");
+        assert_eq!(commit.generation, replacement_generation);
+        assert_eq!(commit.port, 32002);
         let replacement = manager
             .get_session_sidecar_mut("session-a")
             .expect("committed replacement");
@@ -792,6 +788,131 @@ mod lifecycle_contract_tests {
         assert_eq!(activation.workspace_path, "/tmp/new-workspace");
         assert_eq!(activation.task_id.as_deref(), Some("task-a"));
         assert_eq!(activation.tab_id.as_deref(), Some("tab-a"));
+    }
+
+    #[test]
+    fn recovery_epoch_survives_generation_reserve_and_readiness_failures() {
+        let mut manager = SidecarManager::new();
+        let mut terminal_events = manager.subscribe_terminal_events();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+        let dead_generation = manager.current_generation("session-a");
+        manager.begin_session_sidecar_replacement("session-a");
+        let epoch = manager
+            .recovering_sidecars
+            .get("session-a")
+            .expect("recovery")
+            .epoch;
+        assert!(manager
+            .record_session_recovery_failure(
+                "session-a",
+                Some(epoch.saturating_add(1)),
+                std::time::Instant::now(),
+            )
+            .is_none());
+        assert_eq!(
+            manager
+                .recovering_sidecars
+                .get("session-a")
+                .expect("same recovery")
+                .failed_attempts,
+            0
+        );
+
+        // Candidate generation was reserved but spawn failed before insertion.
+        let reserved_generation = manager.next_generation("session-a");
+        manager.clear_generation("session-a");
+        let now = std::time::Instant::now();
+        let reserve_failure = manager
+            .record_session_recovery_failure("session-a", Some(epoch), now)
+            .expect("reserve failure");
+        assert_eq!(reserve_failure.epoch, epoch);
+        assert_eq!(reserve_failure.dead_generation, dead_generation);
+        assert_eq!(
+            reserve_failure.candidate_generation,
+            Some(reserved_generation)
+        );
+
+        // A later candidate reached active/Starting but failed readiness.
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Starting);
+        let readiness_generation = manager.current_generation("session-a");
+        manager.remove_sidecar("session-a");
+        let readiness_failure = manager
+            .record_session_recovery_failure(
+                "session-a",
+                Some(epoch),
+                now + reserve_failure.retry_after,
+            )
+            .expect("readiness failure");
+        assert_eq!(readiness_failure.epoch, epoch);
+        assert_eq!(readiness_failure.dead_generation, dead_generation);
+        assert_eq!(
+            readiness_failure.candidate_generation,
+            Some(readiness_generation)
+        );
+        assert!(manager.recovering_sidecars.contains_key("session-a"));
+        assert!(matches!(
+            terminal_events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn recovery_fast_retries_transition_to_bounded_slow_retries() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+        manager.begin_session_sidecar_replacement("session-a");
+        let epoch = manager
+            .recovering_sidecars
+            .get("session-a")
+            .expect("recovery")
+            .epoch;
+        let mut now = std::time::Instant::now();
+        let expected_delays = [15, 15, 15, 15, 60, 120, 240, 300, 300];
+
+        for (index, expected_secs) in expected_delays.into_iter().enumerate() {
+            let failure = manager
+                .record_session_recovery_failure("session-a", Some(epoch), now)
+                .expect("scheduled retry");
+            assert_eq!(failure.failed_attempts, index as u32 + 1);
+            assert_eq!(failure.retry_after, Duration::from_secs(expected_secs));
+            assert!(manager.due_session_recoveries(now).is_empty());
+            now += failure.retry_after;
+            assert_eq!(
+                manager.due_session_recoveries(now),
+                vec!["session-a".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn ready_independent_candidate_settles_recovery_epoch_and_retains_mixed_owners() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("dead sidecar")
+            .owners
+            .extend([
+                SidecarOwner::Task("task-a".to_string()),
+                SidecarOwner::Goal("goal-a".to_string()),
+            ]);
+        manager.begin_session_sidecar_replacement("session-a");
+
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        let generation = manager.current_generation("session-a");
+        let commit = manager
+            .commit_ready_session_sidecar("session-a")
+            .expect("independent candidate wins");
+        assert_eq!(commit.generation, generation);
+        assert_eq!(commit.port, 31418);
+        assert!(!manager.has_session_recovery("session-a"));
+        let owners = &manager
+            .get_session_sidecar("session-a")
+            .expect("committed sidecar")
+            .owners;
+        assert!(owners.contains(&SidecarOwner::Tab("tab-a".to_string())));
+        assert!(owners.contains(&SidecarOwner::Task("task-a".to_string())));
+        assert!(owners.contains(&SidecarOwner::Goal("goal-a".to_string())));
     }
 
     #[test]
@@ -846,10 +967,7 @@ mod lifecycle_contract_tests {
             .owners = owners(vec![SidecarOwner::BackgroundCompletion(
             "recovering".to_string(),
         )]);
-        let recovering = manager.remove_sidecar("recovering").expect("dead sidecar");
-        manager
-            .recovering_sidecars
-            .insert("recovering".to_string(), recovering);
+        manager.begin_session_sidecar_replacement("recovering");
 
         assert_eq!(
             manager.persistent_owner_session_ids(),
@@ -899,16 +1017,19 @@ mod lifecycle_contract_tests {
     #[test]
     fn owner_release_during_restart_updates_recovery_authority() {
         let mut manager = SidecarManager::new();
+        let mut terminal_events = manager.subscribe_terminal_events();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
         manager
             .get_session_sidecar_mut("session-a")
             .expect("dead sidecar")
             .owners
             .insert(SidecarOwner::Goal("goal-a".to_string()));
-        let dead = manager.remove_sidecar("session-a").expect("dead sidecar");
-        manager
+        manager.begin_session_sidecar_replacement("session-a");
+        let recovery_epoch = manager
             .recovering_sidecars
-            .insert("session-a".to_string(), dead);
+            .get("session-a")
+            .expect("recovery")
+            .epoch;
 
         // The monitor's replacement initially owns only the owner chosen to
         // start it; the retained dead object still carries every owner.
@@ -917,8 +1038,27 @@ mod lifecycle_contract_tests {
             manager.remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),),
             (true, false),
         );
+        assert!(!manager.recovery_attempt_is_authorized(
+            "session-a",
+            recovery_epoch,
+            &SidecarOwner::Tab("tab-a".to_string())
+        ));
+        assert!(manager.recovery_attempt_is_authorized(
+            "session-a",
+            recovery_epoch,
+            &SidecarOwner::Goal("goal-a".to_string())
+        ));
         assert!(manager.sidecars.contains_key("session-a"));
         assert!(manager.session_has_persistent_owners("session-a"));
+
+        // The selected candidate owner left, so the failed candidate now has
+        // an empty local owner set. Retained Goal authority still makes this a
+        // recoverable failure, not an ownerless terminal.
+        manager.remove_sidecar("session-a");
+        assert!(matches!(
+            terminal_events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
 
         assert_eq!(
             manager.remove_session_owner("session-a", &SidecarOwner::Goal("goal-a".to_string()),),

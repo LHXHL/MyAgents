@@ -88,6 +88,8 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 Rust 在 Sidecar 出生时同时建立并持有整棵后代进程树的 lifecycle authority：Unix 使用独立 process group，Windows 使用在恢复首线程前完成绑定的 kill-on-close Job Object。Session / Global Sidecar owner 释放只终止这份精确 authority，不按全机 argv 推断“像 MyAgents 的进程”；argv 扫描只属于前实例已死亡后的启动恢复和 updater residual recovery（Windows updater 另有 protected-root / file-lock 校验）。
 
+Session 进程崩溃后，跨进程存活的逻辑工作仍归 Rust `SidecarManager`：`recovering_sidecars` 的单个 recovery entry 同时持有 retained owners、独立 recovery epoch / dead generation、当前 candidate generation 和 retry clock。Candidate reserve、spawn或readiness失败只结束该次进程 generation，不丢失recovery epoch；monitor只做dispatch，update quiesce只暂停而不清空工作。`BackgroundCompletion` poller只持有logical Session和expected generation，每次HTTP前后都经manager重新解析/校验；replacement gap等待ready commit，旧generation迟到的running/terminal/error响应不得释放current owner。
+
 ---
 
 ## 核心抽象

@@ -941,7 +941,66 @@ pub async fn forward_terminal_events_to_renderer(
 }
 
 /// Monitor all session sidecars and auto-restart dead ones that still have owners.
-/// Mirrors the `monitor_global_sidecar()` pattern with backoff tracking.
+/// Recovery identity, retained owners, and retry clock all remain manager-owned;
+/// this task is only a periodic dispatcher.
+fn recovery_dispatch_candidates(
+    manager: &mut SidecarManager,
+    now: std::time::Instant,
+    update_quiesced: bool,
+) -> Vec<String> {
+    if update_quiesced {
+        Vec::new()
+    } else {
+        manager.due_session_recoveries(now)
+    }
+}
+
+#[cfg(test)]
+mod session_recovery_dispatch_tests {
+    use super::recovery_dispatch_candidates;
+    use crate::sidecar::{SidecarManager, SidecarOwner, SidecarState};
+
+    #[test]
+    fn update_quiesce_pauses_without_losing_active_or_recovering_work() {
+        let mut manager = SidecarManager::new();
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("sidecar")
+            .state = SidecarState::Dead;
+        let now = std::time::Instant::now();
+
+        assert!(recovery_dispatch_candidates(&mut manager, now, true).is_empty());
+        assert!(manager.sidecars.contains_key("session-a"));
+        assert!(!manager.has_session_recovery("session-a"));
+
+        assert_eq!(
+            recovery_dispatch_candidates(&mut manager, now, false),
+            vec!["session-a".to_string()]
+        );
+        let epoch = manager
+            .recovering_sidecars
+            .get("session-a")
+            .expect("manager-owned recovery")
+            .epoch;
+        let failure = manager
+            .record_session_recovery_failure("session-a", Some(epoch), now)
+            .expect("retry state");
+        let retry_at = now + failure.retry_after;
+
+        assert!(recovery_dispatch_candidates(&mut manager, retry_at, true).is_empty());
+        assert!(manager.has_session_recovery("session-a"));
+        assert_eq!(
+            recovery_dispatch_candidates(&mut manager, retry_at, false),
+            vec!["session-a".to_string()]
+        );
+    }
+}
+
 pub async fn monitor_session_sidecars(
     app_handle: AppHandle,
     manager: ManagedSidecarManager,
@@ -950,75 +1009,28 @@ pub async fn monitor_session_sidecars(
     use std::sync::atomic::Ordering::Relaxed;
 
     const CHECK_INTERVAL_SECS: u64 = 15;
-    const MAX_RESTART_FAILURES: u32 = 5;
 
     // Initial delay: let app fully start before monitoring
     tokio::time::sleep(Duration::from_secs(20)).await;
     ulog_info!("[sidecar] Session sidecar health monitor started");
-
-    // This map tracks retry counts only. The dead SessionSidecar itself stays
-    // manager-owned so there is no parallel owner snapshot.
-    let mut recovery: HashMap<String, u32> = HashMap::new();
 
     loop {
         tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
         if shutdown.load(Relaxed) {
             break;
         }
-        if is_update_shutdown_in_progress() {
-            recovery.clear();
-            continue;
-        }
-
-        // Phase 1: Scan sidecars for newly dead sessions, merge into recovery queue
-        {
-            let mut guard = match manager.lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            for (sid, sc) in guard.sidecars.iter_mut() {
-                if sc.is_dead() && !sc.owners.is_empty() && !recovery.contains_key(sid) {
-                    recovery.insert(sid.clone(), 0);
-                }
+        let update_quiesced = is_update_shutdown_in_progress();
+        let session_ids = match manager.lock() {
+            Ok(mut guard) => {
+                recovery_dispatch_candidates(&mut guard, std::time::Instant::now(), update_quiesced)
             }
-        }
-
-        // Remove entries that recovered, lost all owners, or were removed by a
-        // legitimate lifecycle transition.
-        recovery.retain(|sid, _| {
-            manager
-                .lock()
-                .map(|mut g| {
-                    let dead_in_active_map = g
-                        .sidecars
-                        .get_mut(sid)
-                        .map(|sc| sc.is_dead() && !sc.owners.is_empty())
-                        .unwrap_or(false);
-                    let retained_for_restart = g
-                        .recovering_sidecars
-                        .get(sid)
-                        .is_some_and(|sc| !sc.owners.is_empty());
-                    dead_in_active_map || retained_for_restart
-                })
-                .unwrap_or(false)
-        });
-
-        if recovery.is_empty() {
-            continue;
-        }
-
-        // Phase 2: Attempt restart for each entry in recovery queue
-        let session_ids: Vec<String> = recovery.keys().cloned().collect();
+            Err(_) => continue,
+        };
         for session_id in session_ids {
             if shutdown.load(Relaxed) {
                 break;
             }
-
-            if recovery
-                .get(&session_id)
-                .map(|failures| *failures >= MAX_RESTART_FAILURES)
-                .unwrap_or(true)
-            {
+            if is_update_shutdown_in_progress() {
                 continue;
             }
 
@@ -1027,51 +1039,33 @@ pub async fn monitor_session_sidecars(
             // delete can observe the deliberate manager gap.
             let _lifecycle = acquire_session_lifecycle(&[&session_id]).await;
 
-            // Move the dead process object into manager-owned recovery state.
-            // It remains the owner authority while the replacement starts, so
-            // synchronous release paths can still remove owners during the
-            // readiness wait.
             let restart_identity = {
-                let mut guard = match manager.lock() {
+                let guard = match manager.lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                if !guard.recovering_sidecars.contains_key(&session_id) {
-                    let should_restart = guard
-                        .sidecars
-                        .get_mut(&session_id)
-                        .map(|sidecar| sidecar.is_dead() && !sidecar.owners.is_empty())
-                        .unwrap_or(false);
-                    if should_restart {
-                        guard.begin_session_sidecar_replacement(&session_id);
-                    }
-                }
-                guard
-                    .recovering_sidecars
-                    .get(&session_id)
-                    .and_then(|sidecar| {
-                        sidecar.owners.iter().next().cloned().map(|first_owner| {
-                            (
-                                first_owner,
-                                sidecar.workspace_path.clone(),
-                                sidecar.runtime.clone(),
-                                sidecar.runtime_source.clone(),
-                            )
-                        })
-                    })
+                guard.recovery_restart_identity(&session_id, std::time::Instant::now())
             };
-            let Some((first_owner, workspace, pinned_runtime, pinned_runtime_source)) =
-                restart_identity
-            else {
-                recovery.remove(&session_id);
+            let Some(restart_identity) = restart_identity else {
                 continue;
             };
+            ulog_info!(
+                "[sidecar-recovery] action=dispatch session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms=0",
+                session_id,
+                restart_identity.epoch,
+                restart_identity.dead_generation,
+                restart_identity.prior_candidate_generation,
+                restart_identity.attempt
+            );
             // Pin the restart to the same runtime the dead sidecar was running
-            // with. `ensure_session_sidecar` would otherwise re-resolve runtime
-            // via an owner-type branch (Agent → agent config; Tab/Cron → session
-            // meta → agent fallback), and since `owners[0]` is picked from a
-            // HashSet the owner type is non-deterministic when a session has
-            // mixed owners. See cross-review Codex #2.
+            // with. Owner iteration order cannot change the process identity.
+            let recovery_epoch = restart_identity.epoch;
+            let dead_generation = restart_identity.dead_generation;
+            let attempt = restart_identity.attempt;
+            let first_owner = restart_identity.owner;
+            let workspace = restart_identity.workspace_path;
+            let pinned_runtime = restart_identity.runtime;
+            let pinned_runtime_source = restart_identity.runtime_source;
             let mgr = manager.clone();
             let app = app_handle.clone();
             let sid = session_id.clone();
@@ -1085,29 +1079,27 @@ pub async fn monitor_session_sidecars(
                     first_owner,
                     pinned_runtime,
                     pinned_runtime_source,
+                    Some(recovery_epoch),
                 )
             })
             .await;
 
             match restart {
                 Ok(Ok(result)) => {
-                    // The shared ensure kernel commits retained owners and the
-                    // activation port before returning. The monitor only
-                    // verifies that exact replacement is still current before
-                    // publishing its process epoch.
                     let installed = manager.lock().ok().is_some_and(|guard| {
-                        guard
-                            .sidecars
-                            .get(&session_id)
-                            .is_some_and(|replacement| replacement.port == result.port)
+                        guard.is_live(&session_id, result.generation)
+                            && !guard.has_session_recovery(&session_id)
                     });
                     if !installed {
                         continue;
                     }
-                    recovery.remove(&session_id);
                     ulog_info!(
-                        "[sidecar] Session {} auto-restarted on port {}",
+                        "[sidecar-recovery] action=settled session={} epoch={} dead_generation={} candidate_generation={} attempt={} port={}",
                         session_id,
+                        recovery_epoch,
+                        dead_generation,
+                        result.generation,
+                        attempt,
                         result.port
                     );
                     let _ = app_handle.emit(
@@ -1119,22 +1111,27 @@ pub async fn monitor_session_sidecars(
                     );
                 }
                 Ok(Err(e)) => {
-                    if let Some(failures) = recovery.get_mut(&session_id) {
-                        *failures += 1;
-                    }
                     ulog_error!(
-                        "[sidecar] Failed to auto-restart session {}: {}",
-                        session_id,
-                        e
+                        "[sidecar-recovery] action=attempt-failed session={} epoch={} dead_generation={} attempt={} error={}",
+                        session_id, recovery_epoch, dead_generation, attempt, e
                     );
                 }
                 Err(e) => {
-                    if let Some(failures) = recovery.get_mut(&session_id) {
-                        *failures += 1;
-                    }
+                    let failure = manager.lock().ok().and_then(|mut guard| {
+                        guard.record_session_recovery_failure(
+                            &session_id,
+                            Some(recovery_epoch),
+                            std::time::Instant::now(),
+                        )
+                    });
                     ulog_error!(
-                        "[sidecar] spawn_blocking failed for session {}: {}",
+                        "[sidecar-recovery] action=worker-failed session={} epoch={} dead_generation={} candidate_generation={:?} attempt={} next_retry_ms={:?} error={}",
                         session_id,
+                        recovery_epoch,
+                        dead_generation,
+                        failure.and_then(|value| value.candidate_generation),
+                        attempt,
+                        failure.map(|value| value.retry_after.as_millis()),
                         e
                     );
                 }
