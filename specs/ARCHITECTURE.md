@@ -347,6 +347,7 @@ Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPos
 - App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
 - 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
 - 删除 Session 必须回到 `App` 的统一 deletion capability，因为只有 App 拥有全部 mounted Tab：同一 App-owned admission map 先互斥目标 Session 的 open/switch、fork attach、pending→real identity adoption、TabProvider recovery、mounted Tab turn submission 与 delete，实时非 Tab owner 预检通过后，再由 Rust 将运行中 turn 接管为 `BackgroundCompletion` 或权威确认 idle；只有明确 idle 才把全部匹配 Chat Tab ids 交给 Rust，由 Rust 在同一 lifecycle fence 内以 `SessionEngine.isBusy()` 复核已接纳队列、完成最终 owner 裁决、存储删除与这些 Tab owner 的释放，成功后 App 才清退 UI 与 SSE。任何拒绝都必须原样保留 mounted Tab，不建立 renderer rollback。Floating companion 使用独立 `Companion` owner；headless Inbox 的 healthy reuse 与 dead resume 都在同一 fence 内用 transient `Agent` owner 覆盖投递到 `BackgroundCompletion` 接管，不能伪装成 App 可释放的 Tab。删除专用 strict handoff 不吞 transport / activity-check 错误；运行中或状态查询不可用都保留 mounted Tab 与 transcript，并返回结构化拒绝，不能拿 renderer `isGenerating` 投影当删除许可。GlobalSidebar、搜索覆盖层、Chat 菜单和历史下拉只消费这项 capability；不得各自猜当前 Tab、直接删存储或把 UI 快照当最终 authority。
+- `session start --agent` 的 fresh headless birth 复用现有 lifecycle：source 只提交已解析的 Agent/workspace 与 prompt，Rust 生成 Session/request identity 并持 transient `Agent` owner ensure 目标 workspace Sidecar；target 在写 metadata 前重新解析 Agent/Project lifecycle，并核对当前 Sidecar 的 Session/workspace。通过后按目标侧当前配置与实际 Runtime 创建 owned `prepared` snapshot，在 `SessionEngine` 的既有 dispatch guard 提交可见。明确拒绝按 request identity 回滚；dispatch ACK 后的 runtime 错误仍是已接纳 terminal，ACK 不明保留 ID 且不自动重试。Rust 只复用既有 `BackgroundCompletion` handoff，不为 fresh start 新增 durable token、恢复状态机、配置 fingerprint 或跨文件事务。成功 receipt 只证明 admission，不证明 terminal。
 - 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
 - Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
 - “技能与工具”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
@@ -425,12 +426,14 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 
 ```
 Project (工作区)
-  = Basic Agent（被动型，用户在客户端主动交互）
-  + 可选的「主动 Agent」模式 → AgentConfig（24h 感知与行动）
-    └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
+  = 必备的 stable Agent identity → AgentConfig（workspace 地址与执行默认）
+    └── enabled=true 时可开启主动能力（24h 感知与行动）
+        └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
 **模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
+
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）必须与同 workspace 的一个 stable Agent 1:1 对应；`enabled` 只控制主动 Channel/heartbeat，不控制显式 addressability。Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在既有 `agent-config-intent.lock` 下按 Agent→Project link 顺序提交；中断后由相同 resolver 幂等收敛，不建立跨文件补偿事务。重复 Project workspace、重复 Agent ID 或一个 workspace 命中多个 Agent 时 fail closed。无 Project backing 的 legacy Agent 不参与 discovery，也不由读取路径删除。`agent list` 只投影 user-visible lifecycle，并用当前 Sidecar workspace 唯一计算 `isCurrent`。
 
 Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖：`src-tauri/src/im/memory_update.rs` 在执行自动更新流程时会确保工作区根目录 `UPDATE_MEMORY.md` 存在，缺失则从 `src/shared/default-update-memory.md` 初始化；已有文件始终是用户内容权威。
 

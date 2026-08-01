@@ -310,7 +310,7 @@ Commands:
   vision    Official image-understanding CLI tool
   tool      Manage registered CLI tools (Lab-gated; enable in Settings first)
   model     Manage model providers
-  agent     Manage agents & channels (+ 'agent show <id>' for effective defaults)
+  agent     Discover stable Workspace Agents and manage proactive channels
   runtime   Inspect Agent Runtimes (list installed + describe models/modes)
   skill     Manage skills (install from URL, list, enable/disable, sync)
   cron      Manage scheduled tasks (list/add/runs/exit ...)
@@ -319,7 +319,7 @@ Commands:
   thought   Manage Task Center thoughts (list/create)
   space     Discover Cloud Goals and manage Space Issues/attachments
   im        IM runtime actions for current chat (send-media)
-  session   Session-to-session messaging (send prompts, watch completion/result events)
+  session   Discover, start, message, and observe Agent execution contexts
   widget    Generative UI widget design guidelines (readme)
   plugin    Manage OpenClaw channel plugins (IM npm-packaged adapters)
   cc-plugin Manage Claude plugins (PRD 0.2.17 — Anthropic plugin protocol)
@@ -362,7 +362,9 @@ Examples:
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
   myagents diagnose runtime codex             # alias for runtime diagnose
   myagents agent list --archived              # archived Agent workspaces
-  myagents agent show <agent-id>              # effective defaults for a workspace
+  myagents agent show <agentId>                # identity + effective defaults
+  myagents session list --agent <agentId>      # recent reusable contexts
+  myagents session start --agent <agentId> -p "review this" # fresh context
   myagents agent archive <agent-id>
   myagents agent unarchive <agent-id>
   myagents task list
@@ -461,10 +463,16 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
         console.error('  This command appears to be running inside the Codex sandbox.');
         console.error('  If MyAgents is running on localhost, switch Codex to no-restrictions or run the command from your normal terminal.');
       }
-      process.exit(3);
+      process.exit(sessionTransportExitCode(route));
     }
     throw err;
   }
+}
+
+export function sessionTransportExitCode(route: string): 2 | 3 {
+  return route === 'session/start' || route === 'session/send' || route === 'session/watch'
+    ? 2
+    : 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +494,14 @@ export function printResult(
 
   if (!result.success) {
     console.error(`Error: ${result.error}`);
+    if (group === 'session' && action === 'start' && result.sessionId && result.messageId) {
+      console.error(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
+      console.error(`  session: ${String(result.sessionId)}`);
+      console.error(`  request: ${String(result.messageId)}`);
+      if (result.accepted === null || result.unconfirmed === true) {
+        console.error('  state:   admission unconfirmed; do not automatically resend.');
+      }
+    }
     const hasSuggestion = typeof result.suggestion === 'string' && result.suggestion.trim();
     if (hasSuggestion) {
       console.error(`Suggestion: ${result.suggestion}`);
@@ -727,6 +743,25 @@ export function printResult(
   }
   if (group === 'agent' && action === 'show') {
     printAgentShow(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'session' && action === 'list') {
+    printSessionList(result.data as Array<Record<string, unknown>>, result);
+    return;
+  }
+  if (group === 'session' && action === 'start') {
+    console.log('✓ fresh Session request accepted');
+    console.log(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
+    console.log(`  session: ${String(result.sessionId ?? '(unknown)')}`);
+    console.log(`  request: ${String(result.messageId ?? '(unknown)')}`);
+    console.log('  state:   accepted; target is running asynchronously');
+    if (result.replyBack === false) {
+      console.log('  result:  one-way; MyAgents will not push the target turn result back here.');
+    } else {
+      console.log('  result:  MyAgents will push the target turn result back as a <myagents-session-event type="send.result"> block.');
+    }
+    console.log(`  follow-up: myagents session send ${String(result.sessionId ?? '<sessionId>')} -p "<prompt>"`);
+    console.log(`             myagents session watch ${String(result.sessionId ?? '<sessionId>')}`);
     return;
   }
   if (group === 'runtime' && action === 'list') {
@@ -1236,8 +1271,11 @@ function printAgentShow(data: Record<string, unknown>): void {
     return;
   }
   console.log(`Agent:       ${String(data.name ?? '')}`);
-  console.log(`  id:        ${String(data.id ?? '')}`);
-  console.log(`  enabled:   ${data.enabled ? 'yes' : 'no'}`);
+  console.log(`  agentId:   ${String(data.agentId ?? '')}`);
+  console.log(`  projectId: ${String(data.projectId ?? '')}`);
+  console.log(`  current:   ${data.isCurrent ? 'yes' : 'no'}`);
+  console.log(`  lifecycle: ${data.archived ? 'archived' : 'active'}`);
+  console.log(`  proactive: ${data.enabled ? 'enabled' : 'disabled'}`);
   if (data.workspacePath) console.log(`  workspace: ${String(data.workspacePath)}`);
   const channelCount = data.channelCount;
   if (typeof channelCount === 'number') console.log(`  channels:  ${channelCount}`);
@@ -1250,12 +1288,16 @@ function printAgentShow(data: Record<string, unknown>): void {
     return String(v);
   };
   console.log(`  runtime:        ${fmt(defaults.runtime)}`);
+  if (defaults.runtimeSource) console.log(`  runtimeSource:  ${fmt(defaults.runtimeSource)}`);
   console.log(`  model:          ${fmt(defaults.model)}`);
   console.log(`  permissionMode: ${fmt(defaults.permissionMode)}`);
   console.log(`  providerId:     ${fmt(defaults.providerId)}`);
   if (defaults.runtimeConfig) {
     console.log(`  runtimeConfig:  ${JSON.stringify(defaults.runtimeConfig)}`);
   }
+  console.log(`  MCP servers:    ${fmt(defaults.mcpEnabledServers)}`);
+  console.log(`  Claude plugins: ${fmt(defaults.enabledPluginIds)}`);
+  console.log(`  official tools: ${fmt(defaults.enabledOfficialToolIds)}`);
   console.log('');
   console.log('Describe this runtime:  myagents runtime describe <runtime>');
 }
@@ -1485,10 +1527,43 @@ function printAgentList(agents: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('ID', 38) + pad('Status', 11) + pad('Channels', 10) + 'Name');
+  console.log(pad('', 3) + pad('Agent ID', 38) + pad('Lifecycle', 11) + pad('Proactive', 11) + pad('Channels', 10) + 'Name');
   for (const a of agents) {
-    const status = a.archived ? 'archived' : (a.enabled ? 'enabled' : 'disabled');
-    console.log(pad(String(a.id).slice(0, 36), 38) + pad(status, 11) + pad(String(a.channelCount), 10) + String(a.name));
+    const current = a.isCurrent ? '* ' : '  ';
+    const lifecycle = a.archived ? 'archived' : 'active';
+    const proactive = a.enabled ? 'enabled' : 'disabled';
+    console.log(
+      pad(current, 3)
+      + pad(String(a.agentId).slice(0, 36), 38)
+      + pad(lifecycle, 11)
+      + pad(proactive, 11)
+      + pad(String(a.channelCount), 10)
+      + String(a.name),
+    );
+  }
+  console.log('\n* current Agent for this CLI caller');
+}
+
+function printSessionList(
+  sessions: Array<Record<string, unknown>>,
+  envelope: Record<string, unknown>,
+): void {
+  if (!sessions || sessions.length === 0) {
+    console.log(`No recent Sessions for Agent ${String(envelope.agentId ?? '')}.`);
+    return;
+  }
+  const pad = (value: string, width: number) => value.padEnd(width);
+  console.log(pad('Session ID', 38) + pad('Last active', 26) + pad('Runtime', 14) + 'Title');
+  for (const session of sessions) {
+    console.log(
+      pad(String(session.sessionId ?? '').slice(0, 36), 38)
+      + pad(String(session.lastActiveAt ?? ''), 26)
+      + pad(String(session.runtime ?? 'builtin'), 14)
+      + String(session.title ?? 'New Chat'),
+    );
+    if (session.lastMessagePreview) {
+      console.log(`  ${String(session.lastMessagePreview)}`);
+    }
   }
 }
 
@@ -2301,13 +2376,19 @@ async function main(): Promise<void> {
   //   0 = delivered, 1 = sessionId not found, 2 = delivery failed/rejected,
   //   3 = arg error (already handled in buildRequestBody).
   // Cross-review CC flagged the generic exit(1) override loses CLI exit contract.
-  if (result && !result.success && group === 'session' && (action === 'send' || action === 'watch')) {
+  if (result && !result.success && group === 'session' && (action === 'start' || action === 'send' || action === 'watch')) {
     const errorBody = result.error ?? result;
     const code = typeof errorBody === 'object' && errorBody && 'code' in errorBody
       ? (errorBody as { code?: string }).code
       : (result as { code?: string }).code;
-    if (code === 'session_not_found') process.exit(1);
-    if (code === 'rejected' || code === 'delivery_failed' || code === 'watch_failed') process.exit(2);
+    if (code === 'session_not_found' || code === 'agent_not_found' || code === 'agent_archived') process.exit(1);
+    if (
+      code === 'rejected'
+      || code === 'delivery_failed'
+      || code === 'admission_unconfirmed'
+      || code === 'caller_session_required'
+      || code === 'watch_failed'
+    ) process.exit(2);
     process.exit(1); // fallback
   }
 
@@ -2696,12 +2777,12 @@ function readLocalTextFile(path: string, basePath = process.cwd()): string {
   return readGuardedTextFile(path, { kind: 'local', basePath });
 }
 
-function readTextFileFlag(path: string, flagName: string): string {
+function readTextFileFlag(path: string, flagName: string, exitCode = 1): string {
   try {
     return readLocalTextFile(path);
   } catch (err) {
     console.error(`Error: failed to read --${flagName} "${path}": ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
+    process.exit(exitCode);
   }
 }
 
@@ -3305,6 +3386,59 @@ async function completeSpaceIssueWithLocalFollowup(
       : 'Issue completed.',
     nextAction: taskId ? 'Do not update the attached Task status again.' : undefined,
   };
+}
+
+function resolveSessionPromptText(
+  flags: Record<string, unknown>,
+  action: 'send' | 'start',
+): string {
+  if (flags.prompt !== undefined && typeof flags.prompt !== 'string') {
+    console.error('Error: -p / --prompt requires a value');
+    process.exit(3);
+  }
+  if (flags.promptFile !== undefined && typeof flags.promptFile !== 'string') {
+    console.error('Error: --prompt-file requires a file path value');
+    process.exit(3);
+  }
+  let promptText = flags.prompt as string | undefined;
+  const promptFile = typeof flags.promptFile === 'string' ? flags.promptFile : undefined;
+  const MAX_PROMPT_BYTES = 4 * 1024;
+
+  if (promptFile) {
+    if (promptText !== undefined) {
+      console.error('Error: --prompt-file and -p/--prompt are mutually exclusive');
+      process.exit(3);
+    }
+    promptText = readTextFileFlag(promptFile, 'prompt-file', 3);
+  }
+
+  if (!promptText || promptText.length === 0) {
+    console.error(`Error: session ${action} requires --prompt "<text>" or --prompt-file <path>`);
+    console.error(`  → Tip: see \`myagents session ${action} --help\` for usage examples`);
+    process.exit(3);
+  }
+
+  if (!promptFile) {
+    if (promptText.includes('\n')) {
+      console.error('Error: -p / --prompt content contains newlines (\\n) — Windows cmd.exe truncates flags after \\n,');
+      console.error('       which would drop subsequent flags. Write the content to a file and use --prompt-file instead:');
+      console.error(action === 'send'
+        ? '         myagents session send <sessionId> --prompt-file <path>'
+        : '         myagents session start --agent <agentId> --prompt-file <path>');
+      process.exit(3);
+    }
+    const promptBytes = Buffer.byteLength(promptText, 'utf8');
+    if (promptBytes > MAX_PROMPT_BYTES) {
+      console.error(`Error: -p / --prompt content is ${promptBytes} bytes, exceeds ${MAX_PROMPT_BYTES} (4 KB) limit.`);
+      console.error('       Write the content to a file and use --prompt-file instead:');
+      console.error(action === 'send'
+        ? '         myagents session send <sessionId> --prompt-file <path>'
+        : '         myagents session start --agent <agentId> --prompt-file <path>');
+      process.exit(3);
+    }
+  }
+
+  return promptText;
 }
 
 export function buildRequestBody(
@@ -3974,11 +4108,18 @@ export function buildRequestBody(
         throw new Error('agent list accepts only one lifecycle filter: use --active or --archived, not both.');
       }
       return {
-        lifecycle: flags.archived ? 'archived' : flags.active ? 'active' : 'all',
+        lifecycle: flags.archived ? 'archived' : 'active',
       };
     }
     if (action === 'enable' || action === 'disable' || action === 'archive' || action === 'unarchive') return { id: rest[0] || flags.id };
-    if (action === 'show') return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'agent-id', 'agent show', 'id') };
+    if (action === 'show') return {
+      agentId: requirePositional(
+        rest[0] ?? (flags.agentId as string | undefined) ?? (flags.id as string | undefined),
+        'agentId',
+        'agent show',
+        'agent',
+      ),
+    };
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {
       const channelAction = rest[0] || 'list'; // list | add | remove
@@ -4429,8 +4570,51 @@ export function buildRequestBody(
     return {};
   }
 
-  // ===== Session events (PRD 0.2.37) — `myagents session send/watch` =====
+  // ===== Agent / Session collaboration (PRD 0.4.3) =====
   if (group === 'session') {
+    if (action === 'list') {
+      const agentId = typeof flags.agent === 'string' && flags.agent.trim()
+        ? flags.agent.trim()
+        : typeof flags.agentId === 'string' && flags.agentId.trim()
+          ? flags.agentId.trim()
+          : '';
+      if (!agentId) {
+        console.error('Error: session list requires --agent <agentId>.');
+        console.error('  → Run: myagents agent list');
+        process.exit(3);
+      }
+      const limit = flags.limit === undefined ? 5 : Number(flags.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+        console.error('Error: session list --limit must be an integer from 1 to 50.');
+        process.exit(3);
+      }
+      if (rest.length > 0) {
+        console.error('Error: session list accepts Agent identity only through --agent <agentId>.');
+        process.exit(3);
+      }
+      return { agentId, limit };
+    }
+    if (action === 'start') {
+      const agentId = typeof flags.agent === 'string' && flags.agent.trim()
+        ? flags.agent.trim()
+        : typeof flags.agentId === 'string' && flags.agentId.trim()
+          ? flags.agentId.trim()
+          : '';
+      if (!agentId) {
+        console.error('Error: session start requires --agent <agentId>.');
+        console.error('  → Run: myagents agent list');
+        process.exit(3);
+      }
+      if (rest.length > 0) {
+        console.error('Error: session start accepts Agent identity only through --agent <agentId>.');
+        process.exit(3);
+      }
+      return {
+        agentId,
+        prompt: resolveSessionPromptText(flags, 'start'),
+        replyBack: !flags.noReply,
+      };
+    }
     if (action === 'send') {
       // Positional: <sessionId>
       // Flags: -p / --prompt | --prompt-file (mutually exclusive), --no-reply
@@ -4441,63 +4625,9 @@ export function buildRequestBody(
         'toSessionId',
       );
 
-      // -p (short) is now mapped to --prompt by parseArgs shortFlagAliases.
-      let promptText = flags.prompt as string | undefined;
-      const MAX_PROMPT_BYTES = 4 * 1024;
-
-      if (flags.promptFile && typeof flags.promptFile === 'string') {
-        if (promptText !== undefined) {
-          console.error('Error: --prompt-file and -p/--prompt are mutually exclusive');
-          process.exit(3);
-        }
-        try {
-          const fs = require('fs') as typeof import('fs');
-          const MAX_FILE_BYTES = 1024 * 1024; // 1 MB safety cap (mirror cron add)
-          const stat = fs.statSync(flags.promptFile);
-          if (stat.size > MAX_FILE_BYTES) {
-            console.error(`Error: --prompt-file "${flags.promptFile}" is ${stat.size} bytes, exceeds ${MAX_FILE_BYTES} (1 MB) limit`);
-            process.exit(1);
-          }
-          const raw = fs.readFileSync(flags.promptFile, 'utf-8');
-          if (raw.includes('\0')) {
-            console.error(`Error: --prompt-file "${flags.promptFile}" contains NUL bytes (is this a binary file?)`);
-            process.exit(1);
-          }
-          promptText = raw;
-        } catch (err) {
-          console.error(`Error: failed to read --prompt-file "${flags.promptFile}": ${err instanceof Error ? err.message : String(err)}`);
-          process.exit(1);
-        }
-      }
-
-      if (!promptText || promptText.length === 0) {
-        console.error('Error: session send requires --prompt "<text>" or --prompt-file <path>');
-        console.error('  → Tip: see `myagents session send --help` for usage examples');
-        process.exit(3);
-      }
-
-      // Fail-fast guard: inline -p with newlines or >4KB will be truncated on
-      // Windows by cmd.exe (\\n treated as command boundary). Always require
-      // --prompt-file for those cases — uniform behavior across platforms,
-      // forces good habits. Exit 3 = arg validation error.
-      if (!flags.promptFile) {
-        if (promptText.includes('\n')) {
-          console.error('Error: -p / --prompt content contains newlines (\\n) — Windows cmd.exe truncates flags after \\n,');
-          console.error('       which would drop subsequent flags. Write the content to a file and use --prompt-file instead:');
-          console.error('         myagents session send <sid> --prompt-file <path>');
-          process.exit(3);
-        }
-        if (promptText.length > MAX_PROMPT_BYTES) {
-          console.error(`Error: -p / --prompt content is ${promptText.length} bytes, exceeds ${MAX_PROMPT_BYTES} (4 KB) limit.`);
-          console.error('       Write the content to a file and use --prompt-file instead:');
-          console.error('         myagents session send <sid> --prompt-file <path>');
-          process.exit(3);
-        }
-      }
-
       return {
         toSessionId,
-        prompt: promptText,
+        prompt: resolveSessionPromptText(flags, 'send'),
         replyBack: !flags.noReply,
       };
     }

@@ -237,6 +237,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         )
         // Session Inbox cross-sidecar delivery (PRD 0.2.18)
         .route("/api/inbox/deliver", post(inbox_deliver_handler))
+        .route(
+            "/api/inbox/start-session",
+            post(inbox_start_session_handler),
+        )
         // Session Event watch registration (PRD 0.2.37)
         .route("/api/session/watch", post(session_watch_handler))
         // Secret-bearing internal route. Identity is validated against the
@@ -3736,6 +3740,27 @@ async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<ser
         "ok": true,
         "outcome": outcome,
     }))
+}
+
+/// `POST /api/inbox/start-session` — mint a fresh Session identity and admit
+/// its first Inbox request under the target Agent's own runtime/config.
+async fn inbox_start_session_handler(
+    Json(req): Json<crate::inbox::deliver::FreshSessionStartRequest>,
+) -> Json<serde_json::Value> {
+    let Some(manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "sidecar manager not initialized"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "global AppHandle not initialized — cannot start inbox Session"
+        }));
+    };
+    let outcome = crate::inbox::deliver::start_fresh_session(app_handle, manager, req).await;
+    Json(serde_json::json!({ "ok": true, "outcome": outcome }))
 }
 
 /// `POST /api/session/watch` — register a one-shot cross-session watch.

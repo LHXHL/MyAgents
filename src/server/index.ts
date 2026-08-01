@@ -238,7 +238,15 @@ import { isPendingSessionId } from '../shared/constants';
 import { parseAgentFrontmatter, parseFullAgentContent, serializeAgentContent } from '../shared/agentCommands';
 import { scanAgents, readWorkspaceConfig, writeWorkspaceConfig, loadEnabledAgents, readAgentMeta, writeAgentMeta, findAgent } from './agents/agent-loader';
 import type { AgentFrontmatter, AgentMeta, AgentWorkspaceConfig } from '../shared/agentTypes';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, type McpServerDefinition, type BackgroundAgentPermissionMode } from '../shared/config-types';
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+  isProjectArchived,
+  isProjectVisibleToUser,
+  type McpServerDefinition,
+  type BackgroundAgentPermissionMode,
+} from '../shared/config-types';
+import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync, ensureDir, isDirEntry } from './utils/fs-utils';
 import {
   setCronTaskContext,
@@ -1666,8 +1674,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
 
   // Agent commands
-  if (route === 'agent/list') return api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
-  if (route === 'agent/show') return api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
+  if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
   if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
@@ -1796,6 +1804,21 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/attachment-inspect') return await api.handleSpaceAttachmentInspect(payload as Parameters<typeof api.handleSpaceAttachmentInspect>[0]);
 
   // Session Inbox (PRD 0.2.18) — `myagents session send`
+  if (route === 'session/list') {
+    return await api.handleSessionList(payload as Parameters<typeof api.handleSessionList>[0]);
+  }
+  if (route === 'session/start') {
+    const { handleAdminSessionStart } = await import('./inbox/start-admin-handler');
+    const result = await handleAdminSessionStart(getRuntimeSessionIdForRequest(), payload);
+    return result.status >= 200 && result.status < 300
+      ? { success: true, ...(result.response as Record<string, unknown>) }
+      : {
+          ...(result.response as Record<string, unknown>),
+          success: false,
+          error: result.response.error?.message ?? 'fresh Session admission failed',
+          code: result.response.error?.code,
+        };
+  }
   if (route === 'session/send') {
     const { handleAdminInbox } = await import('./inbox/admin-handler');
     const sessionRequest = {
@@ -9234,6 +9257,78 @@ description: >
       //
       // /api/inbox/drain remains as the internal sidecar-to-sidecar endpoint
       // that Rust `cmd_inbox_deliver` POSTs to.
+
+      // POST /api/inbox/start — Fresh Session admission. Unlike ordinary
+      // drain, this waits only for Runtime dispatch acceptance so prepared
+      // metadata can commit/rollback atomically without waiting for terminal.
+      if (pathname === '/api/inbox/start' && request.method === 'POST') {
+        try {
+          const body = (await request.json().catch(() => null)) as {
+            agentId?: unknown;
+            message?: unknown;
+          } | null;
+          const agentId = typeof body?.agentId === 'string' ? body.agentId : '';
+          const message = body?.message as import('./inbox/types').PendingInboxMessage | undefined;
+          if (!agentId || !message) {
+            return jsonResponse({ accepted: false, reason: 'invalid body' }, 400);
+          }
+
+          // The target is the authority after Rust starts its Sidecar. Resolve
+          // the Agent once here and verify this process owns that workspace.
+          const { resolvePersistedAgentWorkspaceRegistry } = await import('./utils/agent-workspace-identity');
+          const registry = await resolvePersistedAgentWorkspaceRegistry();
+          const identity = registry.identities.find(item => item.agentId === agentId);
+          if (
+            !identity
+            || !isProjectVisibleToUser(identity.project)
+            || isProjectArchived(identity.project)
+          ) {
+            return jsonResponse({ accepted: false, reason: 'target Agent is unavailable' }, 409);
+          }
+          const engine = getSessionEngine();
+          const runtimeIdentity = engine.getRuntimeIdentity();
+          const currentSessionContext = engine.getCurrentSessionContext();
+          const currentWorkspacePath = currentSessionContext.workspacePath ?? currentAgentDir;
+          if (
+            currentSessionContext.sessionId !== message.toSessionId
+            || !currentWorkspacePath
+            || !workspacePathsEqual(currentWorkspacePath, identity.workspacePath)
+          ) {
+            return jsonResponse({ accepted: false, reason: 'target Sidecar identity mismatch' }, 409);
+          }
+
+          const { handleFreshSessionStart } = await import('./inbox/start-handler');
+          const result = await handleFreshSessionStart(
+            message,
+            {
+              sessionId: message.toSessionId,
+              workspacePath: identity.workspacePath,
+              agent: identity.agent as unknown as AgentConfig,
+              runtime: runtimeIdentity.runtime,
+              runtimeSource: runtimeIdentity.runtimeSource,
+              managedCodexProviderReady: isManagedCodexProviderReady(registry.config),
+            },
+            (text, options) => engine.enqueueInboxMessage({
+              text,
+              sessionId: message.toSessionId,
+              workspacePath: identity.workspacePath,
+              scenario: { type: 'desktop' },
+              inboxMeta: options.inboxMeta,
+              analyticsOrigin: { kind: 'session-inbox', surface: 'session_send' },
+              birthOrigin: { kind: 'session-inbox', surface: 'session_send' },
+              queueId: options.queueId,
+              beforeDispatch: options.beforeDispatch,
+            }),
+          );
+          return jsonResponse(result, result.accepted === false ? 409 : 200);
+        } catch (error) {
+          console.error('[inbox/start] Error:', error);
+          return jsonResponse(
+            { accepted: false, reason: error instanceof Error ? error.message : String(error) },
+            500,
+          );
+        }
+      }
 
       // POST /api/inbox/drain — Internal endpoint: Rust pushes
       // PendingInboxMessage[] here after queuing in target sidecar's vec.

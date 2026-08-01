@@ -111,6 +111,17 @@ export type InboxMessageRequest = {
   allowLazySessionMaterialization?: boolean;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
+  /** Stable request/turn identity used by guarded fresh-session admission. */
+  queueId?: string;
+  /** Final prepared-session claim at the Runtime dispatch boundary. */
+  beforeDispatch?: DispatchGuard;
+};
+
+export type InboxAdmissionResult = {
+  queued: boolean;
+  error?: string;
+  terminationUnconfirmed?: boolean;
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type BackgroundMessageRequest = {
@@ -321,7 +332,7 @@ export interface SessionEngine {
   enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult>;
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
-  enqueueInboxMessage(request: InboxMessageRequest): Promise<{ queued: boolean; error?: string }>;
+  enqueueInboxMessage(request: InboxMessageRequest): Promise<InboxAdmissionResult>;
   ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
   stopTurn(options?: { preserveQueue?: boolean }): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;

@@ -437,36 +437,60 @@ myagents im readme                                      # 拉 IM 工具完整文
 - `--file` 必须是绝对路径，且路径白名单：必须落在 workspace / `/tmp` / MyAgents scratch 目录之一——这是为了防 prompt injection 把 `~/.ssh/id_rsa` 之类发给聊天对方
 - 不在 IM session 内调用会返回 "No IM context"，正常——这命令本来就是 session-scoped
 
-### Session 间通信（session, PRD 0.2.37）
+### Agent 身份与 Session 协作（agent / session, PRD 0.4.3）
+
+每个 user-visible Workspace 都有一个稳定 Agent identity。Agent 是工作区
+及其执行默认的长期地址；`enabled=false` 只关闭 channel / heartbeat 等主动
+能力，不会取消身份，也不妨碍显式发起 Session。一个 Agent 可以拥有多个
+相互隔离的 Session。
 
 ```bash
-# 让另一个 session 做新工作或接收通知；从 shell/Bash 工具调用
+# 先发现 Agent，并确认哪个是当前 CLI 调用方
+myagents agent list
+myagents agent show <agentId>
+
+# 查看某 Agent 最近可复用的历史上下文（只读，不唤醒）
+myagents session list --agent <agentId> [--limit 10]
+
+# 在目标 Agent 下开启干净的新上下文
+myagents session start --agent <agentId> -p "<prompt>"
+myagents session start --agent <agentId> --prompt-file <abs-path>
+
+# 在已知 Session 的既有上下文里继续做新工作
 myagents session send <sessionId> -p "<prompt>"
 myagents session send <sessionId> --prompt-file <abs-path>   # 多行/长文本(>4KB)必用,跨平台稳定
 
-# 默认: 目标 turn 结束后,MyAgents 会把结果推回当前 session
-# 仅通知:不需要结果回流时加 --no-reply
-myagents session send <sessionId> -p "<prompt>" --no-reply
+# start / send 默认在目标 turn 结束后把结果推回当前 Session
+# 仅通知、不需要结果回流时加 --no-reply
+myagents session start --agent <agentId> -p "<prompt>" --no-reply
 
-# 监听另一个 session 当前正在进行的工作；不创建新工作
+# 只观察另一个 Session；不注入新工作
 myagents session watch <sessionId>
+myagents agent --help                                        # Agent identity 完整契约
 myagents session --help                                      # 完整用法 / EXIT CODES / 示例
 ```
 
 **何时用:**
+- 使用 `agent list/show`: 发现目标 Agent、当前调用方身份和目标执行默认
+- 使用 `session list --agent`: 判断最近上下文是否值得复用；它不证明目标正在运行
+- 使用 `start`: 需要目标 Agent 在全新隔离上下文中执行
 - 使用 `send`: 另一个 session 需要做新工作、接收通知、澄清或后续指令
 - 使用 `watch`: 当前任务依赖另一个 session 的工作,或用户明确希望你监听另一个 session 的当前/最新结果
-- 用户在对话里直接给了你一个 sessionId,让你与其交互或监听
+- `start` 创建 fresh context；`send` 保留现有 context；`watch` 不注入工作
 - **不要用**于答复当前用户(直接回复就行);不要用于给 IM peer 发消息(用 `im send-media`)
 - AI 身份(from label)系统会自动从你所在 session 元数据推导——你不需要也不应该手动指定
+- 只使用 discovery 命令返回的 ID，不猜 ID，也不用 workspace path 充当 selector
 
 **异步语义(关键):**
-- `send` CLI 立即返回投递结果,**不等待**对方处理
-- 默认期待结果推回:对方处理完后,你将在新 turn 收到 `<myagents-session-event type="send.result">`
+- `start` / `send` CLI 成功只表示首条请求已接纳，**不表示工作完成**
+- `start` 必须从真实 MyAgents Session 发起；目标按自己的 runtime/model/permission/MCP/plugin/tool 配置执行，不接受调用方覆盖
+- `start` receipt 返回新的 `sessionId`、`messageId`；`messageId` 对应稍后 `send.result.requestEventId`
+- 默认期待结果推回：对方处理完后，你将在新 turn 收到 `<myagents-session-event type="send.result">`
 - `--no-reply`:仅通知,reply 不回流(对方按自己呈现路径输出)
-- target session idle/dead 不影响投递——系统会自动唤起
+- `send` 的 target session idle/dead 不影响投递——系统会自动唤起
 - `watch` 只观察目标 session 当前工作；目标已经 idle 时,CLI 会直接返回 `<myagents-session-event type="watch.already_idle">` 和最近结果
 - `watch` 不会向目标 session 注入新 prompt；需要新工作时用 `send`
+- 若 `start` 返回 admission unconfirmed，保留 receipt IDs，用 `session list --agent` 辅助观察，**不要自动重试**
 
 **Windows 安全:**
 - `-p` 内容含 `\n` 或 > 4KB → CLI 立即 fail-fast(exit 3),提示切到 `--prompt-file`

@@ -15,6 +15,8 @@ import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
+  isProjectArchived,
+  isProjectVisibleToUser,
   splitProviderModelInput,
   type McpServerDefinition,
   type PermissionMode,
@@ -74,6 +76,12 @@ import { readLoopbackJson } from './utils/loopback-response';
 import { ADMIN_LOOPBACK_TIMEOUT_MS, managementApi } from './utils/management-api-client';
 import { getCuseDiagnostics } from './utils/cuse-diagnostics';
 import { getSessionEngine } from './session-engine';
+import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
+import {
+  agentWorkspaceIdentityFailure,
+  resolvePersistedAgentWorkspaceRegistry,
+  type PersistedAgentWorkspaceIdentity,
+} from './utils/agent-workspace-identity';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -1176,7 +1184,7 @@ function isProjectArchivedSlim(project: { archivedAt?: unknown } | null | undefi
 
 function normalizeAgentLifecycleFilter(value: unknown): 'all' | 'active' | 'archived' {
   if (value === 'active' || value === 'archived') return value;
-  return 'all';
+  return value === 'all' ? 'all' : 'active';
 }
 
 function getArchivedProjectForAgent(agent: AgentConfigSlim): ProjectSlim | undefined {
@@ -1184,38 +1192,50 @@ function getArchivedProjectForAgent(agent: AgentConfigSlim): ProjectSlim | undef
   return isProjectArchivedSlim(project) ? project : undefined;
 }
 
-export function handleAgentList(payload: { lifecycle?: string } = {}): AdminResponse {
-  const config = loadConfig();
-  const projects = loadProjects();
-  const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
-  const agents = (config.agents ?? [])
-    .map(a => {
-      const projectEntry = findProjectForAgent(projects, a);
-      const project = projectEntry?.project;
-      const archived = isProjectArchivedSlim(project);
-      return {
-        id: a.id,
-        name: a.name,
-        enabled: a.enabled,
-        archived,
-        archivedAt: archived ? project?.archivedAt : undefined,
-        workspacePath: a.workspacePath,
-        projectId: project?.id,
-        channelCount: (a.channels ?? []).length,
-        channels: (a.channels ?? []).map(ch => ({
-          id: ch.id,
-          type: ch.type,
-          name: ch.name,
-          enabled: ch.enabled,
+function isCurrentAgentIdentity(
+  identity: PersistedAgentWorkspaceIdentity,
+  currentWorkspacePath: string | undefined,
+): boolean {
+  return !!currentWorkspacePath && workspacePathsEqual(identity.workspacePath, currentWorkspacePath);
+}
+
+export async function handleAgentList(payload: { lifecycle?: string } = {}): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
+    const currentWorkspacePath = getCurrentWorkspacePath();
+    const agents = registry.identities
+      .filter(identity => isProjectVisibleToUser(identity.project))
+      .filter(identity => {
+        const archived = isProjectArchived(identity.project);
+        if (lifecycle === 'active') return !archived;
+        if (lifecycle === 'archived') return archived;
+        return true;
+      })
+      .map(({ agent, project, workspacePath }) => ({
+        agentId: agent.id,
+        name: agent.name,
+        projectId: project.id,
+        workspacePath,
+        enabled: agent.enabled === true,
+        archived: isProjectArchived(project),
+        archivedAt: isProjectArchived(project) ? project.archivedAt ?? null : null,
+        isCurrent: isCurrentAgentIdentity(
+          { agent, project, agentId: agent.id, projectId: project.id, workspacePath },
+          currentWorkspacePath,
+        ),
+        channelCount: (agent.channels ?? []).length,
+        channels: (agent.channels ?? []).map(channel => ({
+          id: channel.id,
+          type: channel.type,
+          name: channel.name,
+          enabled: channel.enabled,
         })),
-      };
-    })
-    .filter(agent => {
-      if (lifecycle === 'active') return !agent.archived;
-      if (lifecycle === 'archived') return agent.archived;
-      return true;
-    });
-  return { success: true, data: agents };
+      }));
+    return { success: true, data: agents };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
 }
 
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
@@ -2865,11 +2885,18 @@ Commands:
                              top-level form is provided so AI guesses route
                              to a real handler (issue #194).`,
 
-  agent: `myagents agent — Manage agents & channels
+  agent: `myagents agent — Discover stable Workspace Agent identities
 
-Commands:
-  list [--active|--archived]      List all agents
-  show <id>                       Show an agent's effective runtime/model/permissionMode defaults
+Every user-visible Workspace has one stable Agent identity. The Agent is its
+long-lived CLI address and owns execution defaults. enabled=false only pauses
+proactive capabilities such as channels and heartbeat; it does not remove the
+identity or prevent an explicit Session start/send.
+
+Discovery:
+  list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
+  show <agentId>                  Inspect identity and effective birth defaults
+
+Management:
   enable <id>                     Enable an agent
   disable <id>                    Disable an agent
   archive <id>                    Archive an Agent workspace and pause proactive channels
@@ -2887,97 +2914,223 @@ Options for 'channel add':
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
 
-Managed Codex Agent permissionMode accepts product values only
-(auto | plan | fullAgency); 'show' reports the effective Codex value.
-Codex 'full-auto' is rejected because product storage cannot distinguish its
-workspace-write sandbox from unrestricted danger-full-access.
+Visibility: default list shows user-visible, non-archived Project-backed Agents.
+Hidden/internal workspaces and orphan/conflicting identities fail closed.
 
-Typical flow (AI preparing a task override):
-  1. myagents agent show <id>          — learn current defaults
-  2. myagents runtime describe <rt>    — see valid model + permission values
-  3. myagents task create-direct ... --runtime <rt> --model <m>`,
+Collaboration flow:
+  myagents agent list
+  myagents agent show <agentId>
+  myagents session list --agent <agentId>
+  myagents session start --agent <agentId> -p "<prompt>"
 
-  session: `myagents session — 跨 session 推送与监听 (PRD 0.2.37)
+See also: myagents session --help`,
 
-USAGE
-  myagents session send <sessionId> -p "<prompt>" [OPTIONS]
-  myagents session send <sessionId> --prompt-file <path> [OPTIONS]
-  myagents session watch <sessionId>
+  'agent/list': `myagents agent list — Discover addressable Workspace Agents
 
-DESCRIPTION
-  MyAgents 提供跨 session 系统推送能力。所有返回到 AI 上下文里的跨
-  session 事件都使用 <myagents-session-event> 协议块。
+WHEN TO CALL
+  Before choosing a collaboration target, or to identify this Session's Agent.
 
-  send:
-    把一条消息异步投送给另一个 session。CLI 立即返回投递结果,不等待
-    目标处理。默认情况下,目标 session 本轮完成后,MyAgents 会把最终
-    结果自动推送回当前 session,事件类型为 send.result。
-
-    --no-reply 表示 one-way delivery:目标会收到请求或通知,但当前
-    session 不会自动收到目标本轮结果。
-
-  watch:
-    监听另一个 session 当前/最近的工作结果。watch 不向目标 session
-    注入新任务。目标正在运行时会注册 watcher,完成后推送 watch.completed;
-    目标注册时已经 idle 时会立即返回 watch.already_idle 和最近结果。
-
-WHEN TO USE
-  ✓ 用户希望另一个 session 做新工作、收到通知、补充验证 → send
-  ✓ 当前任务依赖另一个 session 的工作,或用户让你监听它 → watch
-  ✓ 用户在对话里给了你一个 sessionId,让你与其交互或监听
-  ✗ 想答复当前用户——直接回复就行,不要用这个工具
-  ✗ 想给 IM peer 发消息——用 \`myagents im send-media\`,不是这个
+EFFECT
+  Read-only. Lists Project-backed Agent identities; does not start a Sidecar.
 
 OPTIONS
-  send <sessionId>       目标 session 的 ID(必填)
-  -p, --prompt TEXT      send 的消息内容(与 --prompt-file 二选一)
-  --prompt-file PATH     send 的消息内容文件路径(适合多行 / 长文本)
-  --no-reply             send 单向投递,不把目标结果推回当前 session
-  watch <sessionId>      监听目标 session;不接受 prompt / then 参数
+  --active      Visible, non-archived Agents (default)
+  --archived    Visible archived Agents; mutually exclusive with --active
+  --json        Machine-readable records
 
-ABOUT IDENTITY
-  系统会自动用 session 元数据作为对方看到的 label。不要手动指定身份。
+OUTPUT
+  agentId, name, projectId, workspacePath, enabled, archived, archivedAt,
+  isCurrent, channelCount, channels. Human output marks the current Agent with *.
 
-PLATFORM NOTE
-  Windows 上 cmd.exe 会把 -p 文本中的换行符当成命令边界截断,导致后续
-  flag 全部丢失。本 CLI 在 -p 模式下检测到内容含 \\n 或长度 > 4KB 时
-  会立即 fail-fast(exit 3),提示你切到 --prompt-file。所有平台行为
-  一致——养成统一习惯,长 / 多行内容写到临时文件再传路径。
-
-EXIT CODES
-  0   投递成功
-  1   sessionId 不存在 / 业务错误
-  2   投递失败(目标 sidecar 不可达 / Rust 路由错误等)
-  3   参数错误(包括 -p 含 \\n 或超长时的 fail-fast)
+IDENTITY / PERMISSIONS
+  Use agentId from this command; never guess IDs or use workspace paths as
+  selectors. enabled controls proactive behavior, not explicit addressability.
 
 EXAMPLES
-  # 让目标 session 处理一件事并把结果推回来(最常见,短文本)
-  myagents session send sess_abc123 -p "用户希望加上 deepseek 也跑一遍"
+  myagents agent list
+  myagents agent list --archived --json
 
-  # 仅通知,不期待回应
-  myagents session send sess_xyz789 -p "任务已完成,无需回应" --no-reply
+RECOVERY
+  No current marker is valid from Global/terminal contexts or when the caller
+  is filtered out. Identity conflicts are reported instead of guessed.`,
 
-  # 多行 / 长文本(必须用 --prompt-file,跨平台稳定)
-  myagents session send sess_abc123 --prompt-file /tmp/inbox_msg.txt
+  'agent/show': `myagents agent show <agentId> — Inspect one Agent identity
 
-  # 当前任务依赖另一个 session 的结果
-  myagents session watch sess_abc123
+WHEN TO CALL
+  After agent list, when you need the target Workspace or Session birth defaults.
 
-SESSION EVENT NOTES
-  你可能在当前 turn 的命令输出或后续系统推送中看到:
+EFFECT
+  Read-only. Resolves current effective defaults without starting a Session.
 
-    <myagents-session-event type="send.result" ...>
-    ...
-    </myagents-session-event>
+OPTIONS
+  <agentId>     Required stable Agent ID
+  --json        Machine-readable record
 
-  或:
+OUTPUT
+  Identity, lifecycle, isCurrent, channel summary, and effectiveDefaults:
+  runtime/source, model, permissionMode, provider, runtimeConfig, MCP, plugins,
+  and official tools. Secret and environment values are never returned.
 
-    <myagents-session-event type="watch.completed" ...>
-    ...
-    </myagents-session-event>
+IDENTITY / PERMISSIONS
+  Defaults belong to the target Agent. A later session start uses them and does
+  not accept caller overrides.
 
-SEE ALSO
-  myagents im send-media     给 IM peer 发消息(不是给 session)`,
+EXAMPLE
+  myagents agent show <agentId>
+
+RECOVERY
+  Run myagents agent list (or agent list --archived) to obtain a visible Agent
+  ID. Archived Agents remain inspectable; hidden/orphan identities do not.`,
+
+  session: `myagents session — Discover and collaborate across Agent Sessions
+
+An Agent owns many isolated Sessions. Choose by context intent:
+  Fresh context:       session start --agent <agentId> -p "<prompt>"
+  Reuse known context: session send <sessionId> -p "<prompt>"
+  Observe only:        session watch <sessionId>
+
+Discover before choosing:
+  myagents agent list
+  myagents session list --agent <agentId>
+
+start and send are asynchronous admission requests: success means the target
+accepted the request, not that work completed. By default the final target turn
+is pushed back as a <myagents-session-event type="send.result"> block. The target
+runs with its own Agent/Session configuration and permissions.
+
+Run exact leaf help for flags, output, exit codes, and recovery:
+  myagents session list --help
+  myagents session start --help
+  myagents session send --help
+  myagents session watch --help`,
+
+  'session/list': `myagents session list --agent <agentId> — Recent reusable contexts
+
+WHEN TO CALL
+  After agent list, when deciding whether prior context should be preserved.
+
+EFFECT
+  Read-only persisted-history lookup. Does not wake Sessions, probe live state,
+  or read transcripts.
+
+OPTIONS
+  --agent <agentId>    Required; Agent ID from agent list
+  --limit <1..50>      Maximum records (default 5)
+  --json               Machine-readable envelope and records
+
+OUTPUT
+  History-visible Sessions ordered by persisted lastActiveAt: sessionId, title,
+  existing lastMessagePreview, runtime/source, model, and origin. This is not
+  proof that a Session is currently running.
+
+IDENTITY / PERMISSIONS
+  Agent IDs are selectors; workspace paths are not. Listing never changes or
+  adopts the target Session's configuration.
+
+EXAMPLE
+  myagents session list --agent <agentId> --limit 10
+
+RECOVERY
+  Run myagents agent list (or agent list --archived) for a valid Agent ID.
+  Archived Agent history remains readable; hidden targets are rejected and
+  identity conflicts fail closed with diagnostics.`,
+
+  'session/start': `myagents session start --agent <agentId> — Start clean work
+
+WHEN TO CALL
+  When the target Agent should work in a brand-new isolated context. Use send
+  instead when an existing Session's context matters.
+
+EFFECT
+  Atomically creates a fresh Session and admits its first prompt. Returns
+  immediately after admission; it does not wait for completion.
+
+OPTIONS
+  --agent <agentId>    Required target from agent list
+  -p, --prompt TEXT    Short single-line prompt; exclusive with --prompt-file
+  --prompt-file PATH   Prompt file for multiline/long text (maximum 1 MB)
+  --no-reply           Do not push the target turn result back
+  --json               Machine-readable receipt
+
+OUTPUT
+  accepted asynchronous receipt with agentId, new sessionId, messageId,
+  replyBack, and (when replyBack=true) resultDelivery=send.result. messageId
+  correlates with the later send.result requestEventId. No completion is implied.
+
+IDENTITY / PERMISSIONS
+  Must be called from a real MyAgents Session. The target Agent owns runtime,
+  model, permission, provider, MCP, plugin, and tool defaults; caller overrides
+  are rejected.
+
+EXAMPLES
+  myagents session start --agent <agentId> -p "Review this change"
+  myagents session start --agent <agentId> --prompt-file request.txt --no-reply
+
+RECOVERY
+  Exit 1: Agent/lifecycle rejection. Exit 2: delivery rejection, transport
+  failure, or admission unconfirmed. Exit 3: local argument error. On an
+  unconfirmed receipt, keep its IDs, run session list --agent <agentId>, and do
+  not automatically resend. Inline newline or >4 KB input must use a file.`,
+
+  'session/send': `myagents session send <sessionId> — Assign work in existing context
+
+WHEN TO CALL
+  When a known Session should do new work and retain its existing context.
+
+EFFECT
+  Asynchronously injects one prompt into the target Session and returns after
+  delivery, not completion. An idle/dead target can be awakened.
+
+OPTIONS
+  <sessionId>           Required target Session ID
+  -p, --prompt TEXT     Short single-line prompt; exclusive with --prompt-file
+  --prompt-file PATH    Prompt file for multiline/long text (maximum 1 MB)
+  --no-reply            One-way delivery; suppress automatic result push
+  --json                Machine-readable receipt
+
+OUTPUT
+  Delivery receipt with message ID. By default a later send.result event is
+  pushed to the caller Session.
+
+IDENTITY / PERMISSIONS
+  Caller label is derived from Session metadata. The target keeps its own
+  runtime, configuration, context, and permissions.
+
+EXAMPLES
+  myagents session send <sessionId> -p "Run the focused tests"
+  myagents session send <sessionId> --prompt-file request.txt --no-reply
+
+RECOVERY
+  Exit 1: Session not found/business error. Exit 2: delivery failure/rejection.
+  Exit 3: argument error. Inline newline or >4 KB input must use a file.`,
+
+  'session/watch': `myagents session watch <sessionId> — Observe without assigning work
+
+WHEN TO CALL
+  When current work depends on another Session's current/latest result and no
+  new instruction should be injected.
+
+EFFECT
+  Registers observation only. A running target later pushes watch.completed;
+  an already-idle target returns watch.already_idle with its recent result.
+
+OPTIONS
+  <sessionId>    Required target Session ID
+  --json         Machine-readable registration/result
+  Prompt and then flags are rejected; use session send for new work.
+
+OUTPUT
+  Watch registration or a system-delivered <myagents-session-event> block.
+
+IDENTITY / PERMISSIONS
+  watch never changes target context, configuration, or permissions.
+
+EXAMPLE
+  myagents session watch <sessionId>
+
+RECOVERY
+  Exit 1: Session not found/business error. Exit 2: watch delivery failure.
+  Discover Sessions with session list --agent <agentId>.`,
 };
 
 export function handleHelp(payload: { path?: string[] }): AdminResponse {
@@ -4901,8 +5054,8 @@ export async function handleRuntimeDiagnose(payload: {
  * Show one agent's effective defaults so the AI can decide whether a given
  * task override is a no-op (same as workspace default) or meaningful.
  */
-export function handleAgentShow(payload: { id?: string }): AdminResponse {
-  const id = payload.id;
+export async function handleAgentShow(payload: { id?: string; agentId?: string }): Promise<AdminResponse> {
+  const id = payload.agentId ?? payload.id;
   if (!id) {
     return {
       success: false,
@@ -4913,9 +5066,14 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       },
     };
   }
-  const config = loadConfig();
-  const agent = (config.agents ?? []).find(a => a.id === id);
-  if (!agent) {
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const identity = registry.identities.find(item => item.agentId === id);
+  if (!identity || !isProjectVisibleToUser(identity.project)) {
     return {
       success: false,
       error: `Agent '${id}' not found.`,
@@ -4925,6 +5083,7 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       },
     };
   }
+  const { agent, project, workspacePath } = identity;
 
   // AgentConfigSlim is intentionally permissive (`[key: string]: unknown`) —
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
@@ -4968,20 +5127,94 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   return {
     success: true,
     data: {
-      id: agent.id,
+      agentId: agent.id,
       name: agent.name,
       enabled: agent.enabled,
-      workspacePath: agent.workspacePath,
+      projectId: project.id,
+      workspacePath,
+      archived: isProjectArchived(project),
+      archivedAt: isProjectArchived(project) ? project.archivedAt ?? null : null,
+      isCurrent: isCurrentAgentIdentity(identity, getCurrentWorkspacePath()),
       effectiveDefaults: {
         runtime,
-        ...(usesManagedCodex ? { runtimeSource: 'managed-provider' } : {}),
+        ...(runtime !== 'builtin'
+          ? { runtimeSource: usesManagedCodex ? 'managed-provider' : 'system-cli' }
+          : {}),
         model: effectiveModel || null,
         permissionMode: effectivePermissionMode || null,
         providerId: agent.providerId ?? null,
-        runtimeConfig: runtimeConfig ?? null,
+        runtimeConfig: runtimeConfig ?? {},
+        mcpEnabledServers: Array.isArray(agent.mcpEnabledServers) ? agent.mcpEnabledServers : [],
+        enabledPluginIds: Array.isArray(agent.enabledPluginIds) ? agent.enabledPluginIds : [],
+        enabledOfficialToolIds: Array.isArray(agent.enabledOfficialToolIds)
+          ? agent.enabledOfficialToolIds
+          : [],
       },
       channelCount: (agent.channels ?? []).length,
     },
+  };
+}
+
+export async function handleSessionList(payload: {
+  agentId?: unknown;
+  limit?: unknown;
+}): Promise<AdminResponse> {
+  const agentId = typeof payload.agentId === 'string' ? payload.agentId.trim() : '';
+  if (!agentId) {
+    return {
+      success: false,
+      error: 'Missing required option: --agent <agentId>',
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'Discover a stable Agent id first.',
+      },
+    };
+  }
+  const limit = payload.limit === undefined ? 5 : Number(payload.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    return { success: false, error: '--limit must be an integer from 1 to 50.' };
+  }
+
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const identity = registry.identities.find(item => item.agentId === agentId);
+  if (!identity || !isProjectVisibleToUser(identity.project)) {
+    return {
+      success: false,
+      error: `Agent '${agentId}' not found.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'See visible active Agent ids; use --archived for archived workspaces.',
+      },
+    };
+  }
+
+  const sessions = getSessionsByAgentDir(identity.workspacePath)
+    .filter(isHistoryVisibleSession)
+    .slice(0, limit)
+    .map(session => ({
+      sessionId: session.id,
+      title: session.title,
+      lastActiveAt: session.lastActiveAt,
+      lastMessagePreview: session.lastMessagePreview ?? null,
+      runtime: session.runtime ?? 'builtin',
+      runtimeSource: session.runtime && session.runtime !== 'builtin'
+        ? session.runtimeSource ?? 'system-cli'
+        : null,
+      model: session.model ?? null,
+      origin: session.origin ?? null,
+    }));
+  return {
+    success: true,
+    data: sessions,
+    agentId,
+    projectId: identity.projectId,
+    workspacePath: identity.workspacePath,
+    limit,
   };
 }
 

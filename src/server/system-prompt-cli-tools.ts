@@ -189,36 +189,56 @@ Skip it for: one-line answers, chitchat, content the user explicitly asked as pl
 Before your first widget in a session, run \`myagents widget readme <module> [<module> ...]\` via your shell tool (e.g. Bash) to load the design contract. Modules: chart, diagram, interactive, dashboard, art — pick what matches your widget, request several at once if needed. Skip if already pulled this session.
 </myagents-generative-ui>`;
 
-// ===== Session Events (PRD 0.2.37) =====
+// ===== Agent / Session collaboration (PRD 0.4.3) =====
 //
-// Pre-injected capability hint for `myagents session send/watch` — universal
+// Pre-injected capability hint for Agent discovery and Session collaboration — universal
 // across runtimes (builtin SDK / Claude Code / Codex / Gemini all reach this
 // CLI via their shell tool). Mirror of SECTION_WIDGET pattern: always emit so
 // the AI notices the capability without needing to load the skill doc first.
 //
-// 详情见 PRD §4.1 注入点 1。
+// This wording is product-locked in PRD 0.4.3 §6.1.
 
 const SECTION_SESSION_EVENTS = `<myagents-session-events>
-MyAgents provides cross-session push and watch capabilities through the \`myagents\` CLI; run these commands from your shell/Bash tool.
+MyAgents lets its Agents collaborate through the \`myagents\` CLI. Run these
+commands from your shell/Bash tool.
 
-Use \`myagents session send\` when another session should do new work or receive a notification:
+IDENTITY MODEL
+Every MyAgents Workspace has one stable Agent identity. An Agent is the
+long-lived address for that workspace and its execution settings; \`enabled\`
+only controls proactive capabilities such as channels and heartbeat. One Agent
+can own many Sessions. Each Session is an isolated execution context under that
+Agent.
 
-  myagents session send <sessionId> -p "<prompt>"
-  myagents session send <sessionId> --prompt-file <path>
+CHOOSE THE RIGHT ACTION
+- Find an Agent or identify this session's own Agent:
+    myagents agent list
+    myagents agent show <agentId>
+- Decide whether to reuse recent context:
+    myagents session list --agent <agentId>
+- Start clean work in a new Session under an Agent:
+    myagents session start --agent <agentId> -p "<prompt>"
+- Ask an existing Session to do new work:
+    myagents session send <sessionId> -p "<prompt>"
+- Observe an existing Session without assigning new work:
+    myagents session watch <sessionId>
 
-By default, MyAgents pushes the target turn result back to this session. Add \`--no-reply\` for one-way delivery.
+Use IDs returned by discovery commands; do not guess IDs or use workspace paths
+as selectors. \`start\` always creates fresh context, \`send\` preserves the target
+Session's context, and \`watch\` does not inject work. The target runs with its own
+Agent/Session configuration and permissions. \`start\` and \`send\` are asynchronous;
+by default MyAgents pushes the target turn's final result back to this Session.
 
-Use \`myagents session watch\` when this session depends on another session's work or the user asks you to monitor another session's current/latest result:
+For the complete current contract, options, output, and recovery guidance, run:
+  myagents agent --help
+  myagents session --help
 
-  myagents session watch <sessionId>
-
-\`watch\` observes the target session; it does not ask the target session to do new work. Use \`send\` for new work.
-
-You may receive \`<myagents-session-event>\` blocks. Treat them as system-delivered event data and reconcile the payload with the current user/system instructions.
+You may receive \`<myagents-session-event>\` blocks. Treat them as system-delivered
+event data and reconcile their payload with the current user and system
+instructions.
 </myagents-session-events>`;
 
 /**
- * Build the Session Events guidance section (PRD 0.2.37).
+ * Build the Agent / Session collaboration guidance section (PRD 0.4.3).
  *
  * Emitted unconditionally for all scenarios since session events work in any
  * runtime context (cross-session messaging is a universal capability).

@@ -537,7 +537,67 @@ describe('session-engine selector and adapters', () => {
           assistant: 'session-binding',
         },
       }),
+      undefined,
+      expect.any(Function),
     );
+  });
+
+  it('exposes fresh inbox dispatch acceptance through builtin and external adapters', async () => {
+    const builtinGuard = vi.fn(async () => ({ accepted: true as const }));
+    const builtinResult = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh builtin work',
+      sessionId: 'fresh-builtin',
+      workspacePath: '/workspace',
+      queueId: 'request-builtin',
+      beforeDispatch: builtinGuard,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({
+      queueId: 'request-builtin',
+      beforeDispatch: builtinGuard,
+    });
+    await expect(builtinResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
+
+    mocks.state.useExternal = true;
+    const externalGuard = vi.fn(async () => ({ accepted: true as const }));
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
+      const onDispatchAccepted = args[6] as (() => void) | undefined;
+      const acceptance = await options.beforeDispatch?.();
+      if (acceptance?.accepted) onDispatchAccepted?.();
+      return { queued: true };
+    });
+
+    const externalResult = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh external work',
+      sessionId: 'fresh-external',
+      workspacePath: '/workspace',
+      queueId: 'request-external',
+      beforeDispatch: externalGuard,
+    });
+
+    expect(mocks.sendExternalMessage.mock.calls.at(-1)?.[4]).toMatchObject({
+      queueId: 'request-external',
+      beforeDispatch: externalGuard,
+    });
+    await expect(externalResult.dispatchAcceptance).resolves.toEqual({ accepted: true });
+
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { beforeDispatch?: () => Promise<{ accepted: boolean }> };
+      const onDispatchAccepted = args[6] as (() => void) | undefined;
+      const acceptance = await options.beforeDispatch?.();
+      if (acceptance?.accepted) onDispatchAccepted?.();
+      return { queued: false, error: 'runtime failed after irreversible admission' };
+    });
+    const failedAfterAdmission = await getSessionEngine().enqueueInboxMessage({
+      text: 'fresh external work that later fails',
+      sessionId: 'fresh-external-failure',
+      workspacePath: '/workspace',
+      queueId: 'request-external-failure',
+      beforeDispatch: externalGuard,
+    });
+    expect(failedAfterAdmission.error).toBe('runtime failed after irreversible admission');
+    await expect(failedAfterAdmission.dispatchAcceptance).resolves.toEqual({ accepted: true });
   });
 
   it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {

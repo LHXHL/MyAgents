@@ -349,9 +349,7 @@ fn poll_background_completion<R: Runtime>(
         }
 
         match snapshot {
-            Some(ref snapshot)
-                if snapshot.session_state == "running" || snapshot.session_state == "starting" =>
-            {
+            Some(ref snapshot) if snapshot.is_busy() => {
                 consecutive_http_failures = 0;
                 ulog_debug!(
                     "[bg-completion] Session {} still active (state: {}), continuing poll",

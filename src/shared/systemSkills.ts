@@ -1,5 +1,5 @@
 /** Version shared with Rust's SYSTEM_SKILLS_VERSION contract. */
-export const SYSTEM_SKILLS_VERSION = '40';
+export const SYSTEM_SKILLS_VERSION = '41';
 
 /**
  * Product-owned skills that are part of MyAgents' always-available runtime

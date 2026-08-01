@@ -162,6 +162,34 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('provides exact Agent and Session leaf help instead of group fallback', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['agent', 'list'],
+      ['agent', 'show'],
+      ['session', 'list'],
+      ['session', 'start'],
+      ['session', 'send'],
+      ['session', 'watch'],
+    ];
+    for (const path of leaves) {
+      const result = handleHelp({ path });
+      const text = String((result.data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('IDENTITY / PERMISSIONS');
+      expect(text).toContain('EXAMPLE');
+      expect(text).toContain('RECOVERY');
+    }
+    const sessionGroup = String((handleHelp({ path: ['session'] }).data as { text?: string })?.text ?? '');
+    expect(sessionGroup).toContain('Fresh context');
+    expect(sessionGroup).toContain('Reuse known context');
+    expect(sessionGroup).toContain('Observe only');
+  });
+
   it('keeps im send-media leaf help aligned with the executable file flag contract', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -1362,9 +1390,15 @@ describe('admin-api agent set configuration intent', () => {
         permissionMode: 'fullAgency',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-show',
+      name: 'Managed Show',
+      path: '/tmp/myagents-agent-managed-show',
+      agentId: 'agent-managed-show',
+    }]);
     const { handleAgentShow } = await import('./admin-api');
 
-    const result = handleAgentShow({ id: 'agent-managed-show' });
+    const result = await handleAgentShow({ id: 'agent-managed-show' });
 
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
@@ -1960,6 +1994,95 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
   });
 });
 
+describe('admin-api Agent / Session discovery', () => {
+  it('returns only visible active Project-backed Agents and marks the CLI caller', async () => {
+    agentSessionMocks.agentDir = '/tmp/current-workspace';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [
+        { id: 'agent-current', name: 'Current', enabled: false, workspacePath: '/tmp/current-workspace', channels: [] },
+        { id: 'agent-other', name: 'Other', enabled: true, workspacePath: '/tmp/other-workspace', channels: [] },
+        { id: 'agent-orphan', name: 'Orphan', enabled: true, workspacePath: '/tmp/orphan', channels: [] },
+      ],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      { id: 'project-current', name: 'Current', path: '/tmp/current-workspace', agentId: 'agent-current' },
+      { id: 'project-other', name: 'Other', path: '/tmp/other-workspace', agentId: 'agent-other' },
+      { id: 'project-hidden', name: 'Hidden', path: '/tmp/hidden', hidden: true },
+    ]);
+    const { handleAgentList, handleAgentShow } = await import('./admin-api');
+
+    const listed = await handleAgentList();
+    expect(listed.success).toBe(true);
+    expect(listed.data).toEqual([
+      expect.objectContaining({ agentId: 'agent-current', enabled: false, isCurrent: true }),
+      expect.objectContaining({ agentId: 'agent-other', enabled: true, isCurrent: false }),
+    ]);
+    expect((listed.data as Array<Record<string, unknown>>).filter(item => item.isCurrent)).toHaveLength(1);
+
+    const shown = await handleAgentShow({ agentId: 'agent-current' });
+    expect(shown.data).toMatchObject({
+      agentId: 'agent-current',
+      projectId: 'project-current',
+      isCurrent: true,
+      effectiveDefaults: {
+        runtime: 'builtin',
+        mcpEnabledServers: [],
+        enabledPluginIds: [],
+        enabledOfficialToolIds: [],
+      },
+    });
+    expect(shown.data).not.toHaveProperty('id');
+  });
+
+  it('lists persisted history only, newest first, without exposing prepared Sessions', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-1', name: 'Workspace', enabled: true, workspacePath: '/tmp/workspace', channels: [] }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1', name: 'Workspace', path: '/tmp/workspace', agentId: 'agent-1',
+    }]);
+    writeJson(join(scratch, '.myagents', 'sessions.json'), [
+      {
+        id: 'session-old', agentDir: '/tmp/workspace', title: 'Old',
+        createdAt: '2026-07-01T00:00:00.000Z', lastActiveAt: '2026-07-01T00:00:00.000Z',
+        lastMessagePreview: 'existing preview', runtime: 'builtin',
+      },
+      {
+        id: 'session-new', agentDir: '/tmp/workspace', title: 'New',
+        createdAt: '2026-08-01T00:00:00.000Z', lastActiveAt: '2026-08-01T00:00:00.000Z',
+        runtime: 'codex', runtimeSource: 'system-cli', model: 'gpt-5',
+      },
+      {
+        id: 'session-prepared', agentDir: '/tmp/workspace', title: 'Prepared',
+        createdAt: '2026-08-02T00:00:00.000Z', lastActiveAt: '2026-08-02T00:00:00.000Z',
+        materializationState: 'prepared',
+      },
+    ]);
+    const { handleSessionList } = await import('./admin-api');
+
+    const result = await handleSessionList({ agentId: 'agent-1', limit: 2 });
+
+    expect(result).toMatchObject({
+      success: true,
+      agentId: 'agent-1',
+      projectId: 'project-1',
+      limit: 2,
+    });
+    expect(result.data).toEqual([
+      expect.objectContaining({
+        sessionId: 'session-new',
+        lastMessagePreview: null,
+        runtime: 'codex',
+        runtimeSource: 'system-cli',
+      }),
+      expect.objectContaining({
+        sessionId: 'session-old',
+        lastMessagePreview: 'existing preview',
+      }),
+    ]);
+  });
+});
+
 describe('admin-api Agent workspace archive', () => {
   it('archives a linked agent workspace and pauses proactive agent state', async () => {
     const { handleAgentArchive, handleAgentList } = await import('./admin-api');
@@ -1997,9 +2120,9 @@ describe('admin-api Agent workspace archive', () => {
       expect.any(Object),
     );
 
-    const archivedList = handleAgentList({ lifecycle: 'archived' });
+    const archivedList = await handleAgentList({ lifecycle: 'archived' });
     expect((archivedList.data as Array<Record<string, unknown>>)[0]).toMatchObject({
-      id: 'agent-1',
+      agentId: 'agent-1',
       archived: true,
       projectId: 'project-1',
     });

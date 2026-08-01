@@ -53,14 +53,14 @@ import {
     touchProject as touchProjectService,
 } from './services/projectService';
 import {
-    addAgentConfig,
-    buildAgentForProject,
     configureMemoryAutoUpdateTaskForAgent,
     configureMemoryEvolutionTasksForAgent,
-    ensureAllProjectsHaveAgent,
     migrateImBotConfigsToAgents,
     persistAgents,
+    reconcilePersistedAgentWorkspaceIdentities,
+    reconcilePersistedAgentWorkspaceIdentitiesLocked,
 } from './services/agentConfigService';
+import { withAgentConfigIntentLock } from './services/configStore';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -515,11 +515,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
             // Ensure every project has a linked AgentConfig (basicAgent).
             // Runs after IM migration + normalize so all existing agents are already in place.
-            const basicAgentResult = ensureAllProjectsHaveAgent(loadedConfig, loadedProjects, loadedConfig.defaultPermissionMode);
-            if (basicAgentResult.changed) {
-                await persistAgents(loadedConfig.agents!);
-                await saveProjects(loadedProjects);
-                console.log('[ConfigProvider] Created basicAgent(s) for projects without AgentConfig');
+            const identityResult = await reconcilePersistedAgentWorkspaceIdentities();
+            if (identityResult.changed) {
+                console.log('[ConfigProvider] Reconciled required Agent identities for all projects');
             }
 
             const snapshot = await commitConfigDiskSnapshot();
@@ -840,58 +838,61 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     // --- Projects ---
 
     const addProject = useCallback(async (path: string, options: AddProjectOptions = {}) => {
-        let project = await addProjectService(path);
+        let project!: Project;
+        let identityResult!: Awaited<ReturnType<typeof reconcilePersistedAgentWorkspaceIdentitiesLocked>>;
+        await withAgentConfigIntentLock(async () => {
+            project = await addProjectService(path);
 
-        const metadataPatch: Partial<Omit<Project, 'id'>> = {};
-        if (options.icon) metadataPatch.icon = options.icon;
-        if (options.displayName) metadataPatch.displayName = options.displayName;
-        if (options.templateId) metadataPatch.templateId = options.templateId;
-        if (options.templateSource) metadataPatch.templateSource = options.templateSource;
-        if (project.hidden) {
-            metadataPatch.hidden = false;
-            metadataPatch.hiddenAt = undefined;
-        }
-        if (Object.keys(metadataPatch).length > 0) {
-            const updated = await patchProjectService(project.id, metadataPatch);
-            if (updated) project = updated;
-        }
+            const metadataPatch: Partial<Omit<Project, 'id'>> = {};
+            if (options.icon) metadataPatch.icon = options.icon;
+            if (options.displayName) metadataPatch.displayName = options.displayName;
+            if (options.templateId) metadataPatch.templateId = options.templateId;
+            if (options.templateSource) metadataPatch.templateSource = options.templateSource;
+            if (project.hidden) {
+                metadataPatch.hidden = false;
+                metadataPatch.hiddenAt = undefined;
+            }
+            if (Object.keys(metadataPatch).length > 0) {
+                project = await patchProjectService(project.id, metadataPatch) ?? project;
+            }
 
-        // Auto-create basicAgent for new projects (or re-opened projects without agentId)
-        if (!project.agentId) {
-            const basicAgent = buildAgentForProject(project, {
-                defaultPermissionMode: config.defaultPermissionMode,
-                agentDefaults: options.agentDefaults,
+            identityResult = await reconcilePersistedAgentWorkspaceIdentitiesLocked({
+                agentDefaultsByProjectId: options.agentDefaults
+                    ? new Map([[project.id, options.agentDefaults]])
+                    : undefined,
             });
-            await addAgentConfig(basicAgent);
-            const updated = await patchProjectService(project.id, {
-                agentId: basicAgent.id,
-                ...(basicAgent.enabled ? { isAgent: true } : {}),
-            });
-            project = updated ?? { ...project, agentId: basicAgent.id, ...(basicAgent.enabled ? { isAgent: true } : {}) };
-            if (basicAgent.memoryEvolution?.enabled) {
+            project = identityResult.projects.find(item => item.id === project.id) ?? project;
+        });
+
+        for (const createdAgent of identityResult.createdAgents) {
+            if (createdAgent.memoryAutoUpdate?.enabled) {
                 try {
-                    await configureMemoryEvolutionTasksForAgent(basicAgent, project.id, true);
+                    await configureMemoryAutoUpdateTaskForAgent(createdAgent);
+                } catch (err) {
+                    console.warn(`[ConfigProvider] Memory auto-update task provisioning deferred for ${createdAgent.id}:`, err);
+                }
+            }
+            if (createdAgent.memoryEvolution?.enabled) {
+                try {
+                    await configureMemoryEvolutionTasksForAgent(createdAgent, project.id, true);
                 } catch (err) {
                     console.warn(
-                        `[ConfigProvider] Memory evolution task provisioning failed for agent ${basicAgent.id}:`,
+                        `[ConfigProvider] Memory evolution task provisioning failed for agent ${createdAgent.id}:`,
                         err,
                     );
                 }
             }
-            // Update config state so agent is immediately available
-            if (acceptLocalDiskWrite()) {
-                setConfig(prev => ({ ...prev, agents: [...(prev.agents ?? []), basicAgent] }));
-            }
         }
 
         if (acceptLocalDiskWrite()) {
-            setProjects((prev) => {
-                const filtered = prev.filter((p) => p.id !== project.id);
-                return [project, ...filtered];
-            });
+            setConfig(identityResult.config);
+            setProjects([
+                project,
+                ...identityResult.projects.filter((item) => item.id !== project.id),
+            ]);
         }
         return project;
-    }, [acceptLocalDiskWrite, config.defaultPermissionMode]);
+    }, [acceptLocalDiskWrite]);
 
     const updateProject = useCallback(async (project: Project) => {
         await updateProjectService(project);

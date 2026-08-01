@@ -463,8 +463,17 @@ export function createExternalSessionEngine(): SessionEngine {
       return { success: true, queued: result.queued };
     },
 
-    enqueueInboxMessage(request) {
-      return sendExternalMessage(
+    async enqueueInboxMessage(request) {
+      let resolveDispatch!: (value: { accepted: boolean; error?: string }) => void;
+      let dispatchSettled = false;
+      const dispatchAcceptance = new Promise<{ accepted: boolean; error?: string }>((resolve) => {
+        resolveDispatch = value => {
+          if (dispatchSettled) return;
+          dispatchSettled = true;
+          resolve(value);
+        };
+      });
+      const result = await sendExternalMessage(
         request.text,
         undefined,
         undefined,
@@ -477,9 +486,17 @@ export function createExternalSessionEngine(): SessionEngine {
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
           birthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
+        undefined,
+        () => resolveDispatch({ accepted: true }),
       );
+      if (result.error || !result.queued) {
+        resolveDispatch({ accepted: false, error: result.error ?? 'external runtime rejected inbox message' });
+      }
+      return { ...result, dispatchAcceptance };
     },
 
     async ensureGoalSessionConfig() {

@@ -461,6 +461,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );

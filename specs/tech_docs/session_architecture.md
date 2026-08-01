@@ -116,9 +116,20 @@ querySession = query({
 message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume`。这类恢复
 是内部一致性降级：保留日志用于排障，但不向用户 toast / Agent Error。
 
-### Session 间事件协议（send / watch）
+### Agent / Session 协作与事件协议（list / start / send / watch）
 
-`myagents session send` / `watch` 不是普通文本拼接，而是结构化的 session event
+`myagents session list --agent` 只读取 history-visible Session metadata，不读取
+transcript、不探测 live state，也不唤醒 Sidecar。`myagents session start --agent`
+由 source 只解析目标 Agent/workspace，Rust 在 per-Session lifecycle fence 内生成新 ID、
+ensure 目标 Agent workspace 的 Sidecar。target 在任何 metadata 写入前重新解析 Agent/Project
+lifecycle，并核对当前 Sidecar 的 Session/workspace；随后以 hidden
+`materializationState:'prepared'` 写入目标侧当前配置与实际 Runtime 的 owned snapshot。builtin/external
+都在 `SessionEngine.enqueueInboxMessage()` 的既有 Runtime dispatch guard claim。claim 赢后 Session 可见，之后的 runtime
+error 是已接纳 terminal；明确 rejection 用 source message ID typed rollback。ACK 不明保留
+ID、不自动重试。Rust 复用既有 `BackgroundCompletion` handoff；不新增 fresh-start durable
+token、恢复状态机、配置 fingerprint 或跨文件事务。
+
+`myagents session start` / `send` / `watch` 不是普通文本拼接，而是结构化的 session event
 协议。CLI 经 `/api/admin/session/*` 进入当前 Sidecar，事件统一渲染为
 `<myagents-session-event ...>` prompt，正文 payload 先经过结构标签 neutralize，
 避免被跨 session 内容伪造协议边界。

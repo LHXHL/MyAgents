@@ -200,6 +200,13 @@ export interface ProjectSlim {
   path: string;
   agentId?: string;
   archivedAt?: string;
+  hidden?: boolean;
+  internal?: boolean;
+  displayName?: string;
+  icon?: string;
+  isAgent?: boolean;
+  templateId?: string;
+  templateSource?: 'builtin' | 'user';
   archivedAgentEnabledBeforeArchive?: boolean;
   pinnedAt?: string;
   mcpEnabledServers?: string[];

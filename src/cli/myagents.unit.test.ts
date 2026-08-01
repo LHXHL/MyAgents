@@ -17,6 +17,7 @@ import {
   printModelList,
   printGoalResult,
   printResult,
+  sessionTransportExitCode,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
 } from './myagents';
@@ -608,6 +609,140 @@ describe('myagents CLI Space issue contracts', () => {
       log.mockRestore();
       error.mockRestore();
       exit.mockRestore();
+    }
+  });
+});
+
+describe('myagents CLI Agent / Session collaboration contracts', () => {
+  it('advertises Agent discovery and fresh Session collaboration at top level', () => {
+    expect(TOP_HELP).toContain('agent     Discover stable Workspace Agents');
+    expect(TOP_HELP).toContain('session   Discover, start, message, and observe');
+    expect(TOP_HELP).toContain('myagents session start --agent <agentId>');
+  });
+
+  it('builds explicit Agent discovery and Session list requests', () => {
+    expect(buildRequestBody('agent', 'list', [], {})).toEqual({ lifecycle: 'active' });
+    expect(buildRequestBody('agent', 'list', [], { archived: true })).toEqual({ lifecycle: 'archived' });
+    expect(buildRequestBody('agent', 'show', ['agent-1'], {})).toEqual({ agentId: 'agent-1' });
+    expect(buildRequestBody('session', 'list', [], { agent: 'agent-1' })).toEqual({
+      agentId: 'agent-1',
+      limit: 5,
+    });
+    expect(buildRequestBody('session', 'list', [], { agentId: 'agent-1', limit: '10' })).toEqual({
+      agentId: 'agent-1',
+      limit: 10,
+    });
+  });
+
+  it('builds fresh Session start with the same prompt contract as send', () => {
+    expect(buildRequestBody('session', 'start', [], {
+      agent: 'agent-1',
+      prompt: 'Review this change',
+    })).toEqual({
+      agentId: 'agent-1',
+      prompt: 'Review this change',
+      replyBack: true,
+    });
+    expect(buildRequestBody('session', 'start', [], {
+      agentId: 'agent-1',
+      prompt: 'Notify only',
+      noReply: true,
+    })).toEqual({
+      agentId: 'agent-1',
+      prompt: 'Notify only',
+      replyBack: false,
+    });
+  });
+
+  it('rejects invalid Session discovery/start inputs with exit 3', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => buildRequestBody('session', 'list', [], {})).toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'list', [], { agent: 'agent-1', limit: 51 }))
+        .toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'start', [], { prompt: 'work' }))
+        .toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'start', [], {
+        agent: 'agent-1',
+        prompt: 'line one\nline two',
+      })).toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'start', [], {
+        agent: 'agent-1',
+        prompt: '界'.repeat(3_000),
+      })).toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'start', [], {
+        agent: 'agent-1',
+        prompt: 'inline',
+        promptFile: true,
+      })).toThrow('process.exit(3)');
+      expect(() => buildRequestBody('session', 'start', [], {
+        agent: 'agent-1',
+        promptFile: '/definitely/missing/myagents-prompt.txt',
+      })).toThrow('process.exit(3)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('maps Session delivery transport failures to exit 2', () => {
+    expect(sessionTransportExitCode('session/start')).toBe(2);
+    expect(sessionTransportExitCode('session/send')).toBe(2);
+    expect(sessionTransportExitCode('session/watch')).toBe(2);
+    expect(sessionTransportExitCode('session/list')).toBe(3);
+  });
+
+  it('prints an accepted receipt without implying completion', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('session', 'start', {
+        success: true,
+        accepted: true,
+        asynchronous: true,
+        agentId: 'agent-1',
+        sessionId: 'session-new',
+        messageId: 'message-1',
+        replyBack: true,
+        resultDelivery: 'send.result',
+      }, false);
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).toContain('fresh Session request accepted');
+      expect(output).toContain('session-new');
+      expect(output).toContain('message-1');
+      expect(output).toContain('running asynchronously');
+      expect(output).toContain('send.result');
+      expect(output).not.toContain('completed');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints retained receipt IDs and no-retry guidance for unconfirmed admission', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      printResult('session', 'start', {
+        success: false,
+        accepted: null,
+        unconfirmed: true,
+        error: 'admission acknowledgement was not confirmed',
+        agentId: 'agent-1',
+        sessionId: 'session-new',
+        messageId: 'message-1',
+        recoveryHint: {
+          recoveryCommand: 'myagents session list --agent agent-1',
+          message: 'Check whether the new Session materialized; do not automatically resend.',
+        },
+      }, false);
+      const output = error.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).toContain('session-new');
+      expect(output).toContain('message-1');
+      expect(output).toContain('do not automatically resend');
+      expect(output).toContain('myagents session list --agent agent-1');
+    } finally {
+      error.mockRestore();
     }
   });
 });

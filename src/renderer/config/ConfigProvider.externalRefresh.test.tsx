@@ -60,13 +60,14 @@ vi.mock('./services/projectService', () => ({
 }));
 
 vi.mock('./services/agentConfigService', () => ({
-  addAgentConfig: vi.fn(),
-  buildAgentForProject: vi.fn(),
   configureMemoryAutoUpdateTaskForAgent: vi.fn(),
   configureMemoryEvolutionTasksForAgent: vi.fn(),
-  ensureAllProjectsHaveAgent: vi.fn(() => ({ changed: false })),
   migrateImBotConfigsToAgents: vi.fn((config: AppConfig) => config),
   persistAgents: vi.fn(async () => {}),
+  reconcilePersistedAgentWorkspaceIdentities: vi.fn(async () => ({
+    config: {}, projects: [], changed: false, createdAgents: [],
+  })),
+  reconcilePersistedAgentWorkspaceIdentitiesLocked: vi.fn(),
 }));
 
 function provider(id: string): Provider {
