@@ -90,6 +90,8 @@ Rust 在 Sidecar 出生时同时建立并持有整棵后代进程树的 lifecycl
 
 Session 进程崩溃后，跨进程存活的逻辑工作仍归 Rust `SidecarManager`：`recovering_sidecars` 的单个 recovery entry 同时持有 retained owners、独立 recovery epoch / dead generation、当前 candidate generation 和 retry clock。Candidate reserve、spawn或readiness失败只结束该次进程 generation，不丢失recovery epoch；monitor只做dispatch，update quiesce只暂停而不清空工作。`BackgroundCompletion` poller只持有logical Session和expected generation，每次HTTP前后都经manager重新解析/校验；首次 busy probe 若撞上 replacement，或 current active 已经死亡但 monitor 尚未迁移，都必须在 manager 锁内先完成 dead→recovery，再把 owner 原子附到 current process 或 recovery epoch，不能把 `Stale` 当作工作消失。replacement gap等待ready commit，旧generation迟到的running/terminal/error响应不得释放current owner。
 
+Global Sidecar 遵守同一条“逻辑需求不随候选失败消失”的不变量，但不伪装成 Session owner：`SidecarManager` 以进程内 `Stopped | DesiredRunning` standing intent 表示应用是否仍要求 canonical Global 常驻，`instances[GLOBAL_SIDECAR_ID]` 与 generation 只表示当前进程候选。候选 reserve、spawn 或 readiness 失败只清候选；monitor 看到 `DesiredRunning + missing` 必须按既有封顶退避继续恢复。只有 canonical Global explicit stop、`stop_all`、update shutdown 或 app exit 清除 intent。CLI 的 `~/.myagents/sidecar.port` 只是当前健康 generation 的派生投影：旧代际退休即删除，新候选 readiness 成功后才重写；不能从该文件反推 lifecycle intent。
+
 ---
 
 ## 核心抽象
@@ -104,6 +106,7 @@ Session 进程崩溃后，跨进程存活的逻辑工作仍归 Rust `SidecarMana
 | **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应 |
 | **后端优先，前端辅助** | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab |
 | **Owner 模型** | Tab、Companion、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
+| **Global standing intent** | Global 没有 Session owner 集；Rust manager 用 `Stopped | DesiredRunning` 独立表达应用常驻需求，候选失败不清除需求 |
 
 ```rust
 pub enum SidecarOwner {
@@ -280,7 +283,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 
 | Owner module | 职责 |
 |------|------|
-| `manager.rs` / `types.rs` | `ManagedSidecarManager`、owner model、端口分配、runtime drift 判定 |
+| `manager.rs` / `types.rs` | `ManagedSidecarManager`、Session owner model、Global standing intent / monitor snapshot、端口分配、runtime drift 判定 |
 | `session_lifecycle.rs` | `ensure_session_sidecar` / release / upgrade / activation lifecycle |
 | `instances.rs` | global/tab sidecar spawn、monitor、wake lock、terminal event forward |
 | `spawn.rs` | Node/script 定位、`normalize_external_path`、spawn diagnostic、kill helper |

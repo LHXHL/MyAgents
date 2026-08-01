@@ -136,6 +136,31 @@ pub(super) enum BackgroundOwnerRelease {
     Gone,
 }
 
+/// Process-local standing demand for the canonical Global Sidecar.
+///
+/// This is deliberately independent from `instances`: a failed process
+/// candidate may disappear while the application still requires the Global
+/// service to be restored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum GlobalSidecarIntent {
+    #[default]
+    Stopped,
+    DesiredRunning,
+}
+
+/// Atomic manager snapshot consumed by the single Global health monitor.
+/// `DesiredMissing` is recoverable work, not an idle/never-started state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GlobalMonitorSnapshot {
+    Stopped,
+    DesiredMissing,
+    Present {
+        port: u16,
+        process_alive: bool,
+        created_at: std::time::Instant,
+    },
+}
+
 /// Multi-instance Sidecar Manager
 /// Manages multiple Sidecar processes with Session singleton support
 ///
@@ -159,6 +184,9 @@ pub struct SidecarManager {
     // ===== Legacy Storage (kept for backward compatibility) =====
     /// Tab ID -> Sidecar Instance (legacy, used for Global Sidecar)
     pub(super) instances: HashMap<String, SidecarInstance>,
+    /// Standing lifecycle demand for the canonical Global Sidecar. Candidate
+    /// insertion/removal must not mutate this authority.
+    global_sidecar_intent: GlobalSidecarIntent,
     /// Port counter for allocation (starts from BASE_PORT)
     pub(super) port_counter: AtomicU16,
     /// Session ID -> generation counter. The generation is the unique instance
@@ -225,6 +253,7 @@ impl SidecarManager {
             sidecars: HashMap::new(),
             recovering_sidecars: HashMap::new(),
             instances: HashMap::new(),
+            global_sidecar_intent: GlobalSidecarIntent::Stopped,
             port_counter: AtomicU16::new(BASE_PORT),
             sidecar_generations: HashMap::new(),
             // Start at 1 so callers using `0` as an "unknown / not present"
@@ -397,6 +426,50 @@ impl SidecarManager {
         self.instances.insert(tab_id, instance);
     }
 
+    /// Express application demand for the canonical Global Sidecar. Callers
+    /// must acquire lifecycle birth admission before invoking this method.
+    pub(super) fn request_global_sidecar_running(&mut self, source: &str) {
+        let previous = self.global_sidecar_intent;
+        self.global_sidecar_intent = GlobalSidecarIntent::DesiredRunning;
+        ulog_info!(
+            "[sidecar-global] action=intent-running source={} previous={:?}",
+            source,
+            previous
+        );
+    }
+
+    /// End standing Global demand at an explicit lifecycle stop boundary.
+    pub(super) fn request_global_sidecar_stopped(&mut self, reason: &str) {
+        let previous = self.global_sidecar_intent;
+        self.global_sidecar_intent = GlobalSidecarIntent::Stopped;
+        ulog_info!(
+            "[sidecar-global] action=intent-stopped reason={} previous={:?}",
+            reason,
+            previous
+        );
+    }
+
+    pub(super) fn global_sidecar_is_desired(&self) -> bool {
+        self.global_sidecar_intent == GlobalSidecarIntent::DesiredRunning
+    }
+
+    /// Read standing demand and the current process candidate under one
+    /// manager lock, so the monitor never infers intent from `Option` alone.
+    pub(super) fn global_monitor_snapshot(&mut self) -> GlobalMonitorSnapshot {
+        if !self.global_sidecar_is_desired() {
+            return GlobalMonitorSnapshot::Stopped;
+        }
+
+        match self.instances.get_mut(GLOBAL_SIDECAR_ID) {
+            Some(instance) => GlobalMonitorSnapshot::Present {
+                port: instance.port,
+                process_alive: instance.is_running(),
+                created_at: instance.created_at,
+            },
+            None => GlobalMonitorSnapshot::DesiredMissing,
+        }
+    }
+
     /// Remove and return an instance (will be dropped, killing the process)
     pub fn remove_instance(&mut self, tab_id: &str) -> Option<SidecarInstance> {
         let removed = self.instances.remove(tab_id);
@@ -476,6 +549,7 @@ impl SidecarManager {
             // mid-session is a real path and the listener is alive there.)
             let _ = self.terminal_events.send(ev.clone());
         }
+        self.request_global_sidecar_stopped("stop-all");
         self.sidecars.clear(); // Session-centric Sidecars (Drop kills processes)
         self.recovering_sidecars.clear();
         self.instances.clear(); // Global Sidecar (Drop kills process)

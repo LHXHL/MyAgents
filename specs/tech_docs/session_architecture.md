@@ -634,7 +634,9 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 `SessionSidecar` owners 是 Tab / Task / Goal 等 association 的唯一 authority；不再维护 Renderer 可写的 `session_activation` 物理副本。`ensureSessionSidecar` 已附加 owner，`reconcile_session_tab_activation` 只验证 exact Tab owner 并释放临时 `BackgroundCompletion` handoff。终端的 `MYAGENTS_PORT` 也由 Rust 按 Session entry 派生，Renderer 不传物理端口。
 
-Global singleton 使用相同的 per-generation lease。外部 analytics 走独立 Tauri command 和 proxy-aware client，不能借 Session / Global control command 传 arbitrary absolute URL。登记的数据面 `/refs/:id`、`/attachment/*` 仍允许 native fetch；这不是普通控制面的例外扩张。
+Global singleton 使用相同的 per-generation lease。它的 lifecycle demand 由 Rust `SidecarManager` 的进程内 standing intent 唯一持有，而不是从 `instances`、port file 或 Renderer 页面状态推断：合法 start 在 lifecycle birth admission 后先表达 `DesiredRunning`，candidate reserve/spawn/readiness 失败只删除该 candidate 与 generation；monitor 的原子 snapshot 将此状态明确表示为 `DesiredMissing` 并沿既有封顶退避继续恢复。canonical explicit stop、`stop_all`、update shutdown 与 app exit 才把 intent 置回 `Stopped`。`~/.myagents/sidecar.port` 只投影健康 current generation，replacement 删除旧 generation 时立即移除，ready commit 后才发布新端口。
+
+外部 analytics 走独立 Tauri command 和 proxy-aware client，不能借 Session / Global control command 传 arbitrary absolute URL。登记的数据面 `/refs/:id`、`/attachment/*` 仍允许 native fetch；这不是普通控制面的例外扩张。
 
 ### SSE 断连 **不是** 取消权威（load-bearing 不变量）
 
@@ -825,6 +827,7 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在归置裁决前触发）。
 - 已有 Session 的用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者和 cold Tab 激活都调用同一个 `reconcileExistingSessionTabOwner` 对精确 Tab owner 执行幂等 ensure，再由 Rust 单锁原子 reconcile activation（保留最新 Task identity），禁止 Renderer read / branch / write activation，也禁止 `hasSessionSidecar → ensure` 的 TOCTOU 双阶段判断。
 - replacement / recovery commit 属于 Rust ensure authority：旧进程进入 `recovering_sidecars` 后，同一manager-owned entry保留完整 owner 集合、独立`recovery_epoch`、`dead_generation`、candidate generation、attempt与next-retry clock。owner release 在 readiness 窗口仍同时更新active candidate与retained authority；candidate的generation reserve、spawn、TCP/ready失败都不settle recovery epoch。快速重试用尽后转为有频率上限的慢重试；update quiesce只禁止dispatch，解除后active+recovering会重新进入扫描。只有ready candidate（包括独立ensure的同等winner）原子接管剩余owners并刷新activation coordinates、owners归零或Session deletion才结束该epoch；recovery failure不冒充“无owner terminal”。Renderer 不复制该 owner、端口或retry queue。
+- Global recovery 复用上述逻辑需求/candidate 分离的不变量，但状态模型更小：manager-owned `DesiredRunning` standing intent 跨候选失败保留，当前 `instances` / generation 与 CLI port file 都不是恢复 authority。单一 Global monitor 原子读取 `Stopped | DesiredMissing | Present`；`DesiredMissing` 直接进入与 unhealthy replacement 相同的 attempt settlement，失败只推进既有有界 backoff，成功才发布健康 generation 与 restarted event。不得把 Global 塞进 `recovering_sidecars`，也不得让 Renderer、请求 replay 或 port file 建立第二 recovery owner。
 - `BackgroundCompletion` 是logical Session owner，poller状态只保存Session与expected process generation，不长期持有port。首次 activity probe 后的 owner attach 也属于 manager authority：若 probe 期间发生 replacement，单锁把 owner 绑定到 current reusable process，或保留在 recovery entry 等待 ready commit；若 current active 已死但 monitor 尚未迁移，attach 自己先在同一 manager 锁内完成 dead→recovery。任何一种情况都不能返回 `Stale` 后丢掉 poller。每轮poll都从manager解析current `(port, generation)`，HTTP返回后再校验同一binding；terminal提交和owner release仍在manager锁内做exact-generation commit。Recovery entry仍持有该owner或candidate尚未ready commit时，poller进入明确wait/rebind；旧generation的idle/running/HTTP failure响应一律丢弃，不能终止或释放新generation。用户reconnect/cancel则按logical owner同时覆盖active/recovering gap。
 - Rust 是 Sidecar process epoch 的唯一 authority；共享 ensure authority 每次实际创建进程都发 `session-sidecar:restarted`。TabProvider 只处理当前绑定 Session，既能在 replacement 时重置 live revision baseline，也不会让无绑定消费者为首次创建建立第二套状态。
 

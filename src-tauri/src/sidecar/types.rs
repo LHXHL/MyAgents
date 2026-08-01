@@ -256,6 +256,7 @@ pub(super) fn resolve_runtime_for_owner(
 #[cfg(test)]
 mod lifecycle_contract_tests {
     use super::*;
+    use crate::sidecar::manager::GlobalMonitorSnapshot;
     use std::collections::HashSet;
 
     fn owners(values: Vec<SidecarOwner>) -> HashSet<SidecarOwner> {
@@ -332,6 +333,79 @@ mod lifecycle_contract_tests {
             .clone();
         let global_dispatch = manager.acquire_global_dispatch().expect("Global dispatch");
         assert_dispatch_blocks_generation_close(global_dispatch, global_gate);
+    }
+
+    #[test]
+    fn global_standing_intent_survives_candidate_failure_until_explicit_stop() {
+        let mut manager = SidecarManager::new();
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::Stopped
+        ));
+
+        manager.request_global_sidecar_running("test-start");
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::DesiredMissing
+        ));
+
+        let failed_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: spawn_test_child(),
+                port: 31419,
+                agent_dir: None,
+                healthy: false,
+                is_global: true,
+                session_delete_authority: None,
+                dispatch_gate: DispatchGate::new(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::Present { port: 31419, .. }
+        ));
+
+        manager.remove_instance(GLOBAL_SIDECAR_ID);
+        assert_eq!(manager.current_generation(GLOBAL_SIDECAR_ID), 0);
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::DesiredMissing
+        ));
+
+        let ready_generation = manager.next_generation(GLOBAL_SIDECAR_ID);
+        assert!(ready_generation > failed_generation);
+        manager.insert_instance(
+            GLOBAL_SIDECAR_ID.to_string(),
+            SidecarInstance {
+                process: spawn_test_child(),
+                port: 31420,
+                agent_dir: None,
+                healthy: true,
+                is_global: true,
+                session_delete_authority: None,
+                dispatch_gate: DispatchGate::new(),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        assert!(manager.acquire_global_dispatch().is_ok());
+        assert!(manager.global_sidecar_is_desired());
+
+        manager.request_global_sidecar_stopped("test-explicit-stop");
+        manager.remove_instance(GLOBAL_SIDECAR_ID);
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::Stopped
+        ));
+
+        manager.request_global_sidecar_running("test-stop-all");
+        manager.stop_all();
+        assert!(matches!(
+            manager.global_monitor_snapshot(),
+            GlobalMonitorSnapshot::Stopped
+        ));
     }
 
     #[test]
