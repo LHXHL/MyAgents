@@ -258,12 +258,16 @@ pub async fn configure_memory_auto_update_task(
                     duplicate.id, error
                 )
             })?;
-        store.delete(&duplicate.id).await.map_err(|error| {
-            format!(
-                "failed to delete duplicate managed Task {}: {}",
-                duplicate.id, error
-            )
-        })?;
+        crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?
+            .delete_internal(&duplicate.id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to delete duplicate managed Task {}: {}",
+                    duplicate.id, error
+                )
+            })?;
     }
 
     let Some(mut config) = request
@@ -439,8 +443,11 @@ async fn arm_managed_task(
             })
             .await?;
     }
-    crate::management_api::run_task_by_id(&task.id)
+    crate::task_application::TaskApplication::from_globals()
+        .map_err(|error| error.to_string())?
+        .run(&task.id)
         .await
+        .map_err(|error| error.to_string())
         .map(|_| ())
 }
 

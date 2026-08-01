@@ -480,8 +480,12 @@ async fn arm_task_for_scheduler(
             .await?;
     }
 
-    let task = crate::management_api::run_task_by_id(&task.id).await?;
-    Ok(task.id)
+    let result = crate::task_application::TaskApplication::from_globals()
+        .map_err(|error| error.to_string())?
+        .run(&task.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(result.task.id)
 }
 
 fn first_start_at(

@@ -3318,10 +3318,8 @@ pub fn get_task_store() -> Option<&'static Arc<TaskStore>> {
 // Server-side callers (scheduler, CLI → Admin API) use the richer internal
 // `TaskStore::update_status` API and supply their own trusted actor/source.
 //
-// Coordination with `ThoughtStore` (link / unlink `convertedTaskIds`) also lives
-// in the command layer: it keeps `TaskStore` single-responsibility and lets us
-// add SSE broadcast / notification dispatch here in later phases without
-// touching the store.
+// Cross-store/scheduler policy lives in `task_application`; commands only
+// stamp trusted caller fields and adapt Tauri DTOs/errors.
 
 pub type ManagedTaskStore = Arc<TaskStore>;
 
@@ -3331,18 +3329,13 @@ pub async fn cmd_task_create_direct(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateDirectInput,
 ) -> Result<Task, String> {
-    let source_thought_id = input.source_thought_id.clone();
-    let created = task_state.create_direct(input).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_direct(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3351,22 +3344,13 @@ pub async fn cmd_task_create_from_alignment(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateFromAlignmentInput,
 ) -> Result<Task, String> {
-    let created = task_state.create_from_alignment(input).await?;
-    // Resolve thought↔task linkage from the CREATED task, not the raw input
-    // (cross-review fix): source_thought_id may have been auto-inherited from
-    // alignment metadata.json inside create_from_alignment, in which case the
-    // input never carried it. Reading from `created` covers both code paths
-    // uniformly and matches the HTTP handler in management_api.rs.
-    if let Some(thought_id) = created.source_thought_id.clone() {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_from_alignment(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3374,7 +3358,10 @@ pub async fn cmd_task_create_attached(
     task_state: tauri::State<'_, ManagedTaskStore>,
     input: TaskCreateAttachedInput,
 ) -> Result<Task, String> {
-    task_state.create_attached(input).await
+    crate::task_application::TaskApplication::new(task_state.inner().as_ref(), None)
+        .create_attached(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3424,8 +3411,10 @@ pub async fn cmd_task_update(
     state: tauri::State<'_, ManagedTaskStore>,
     input: TaskUpdateInput,
 ) -> Result<Task, String> {
-    state.get_ordinary(&input.id).await?;
-    state.update(input).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_ordinary(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3433,30 +3422,20 @@ pub async fn cmd_task_update_status(
     state: tauri::State<'_, ManagedTaskStore>,
     input: UiTaskUpdateStatusInput,
 ) -> Result<Task, String> {
-    let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
-    let current = state.get_ordinary(&input.id).await?;
-    if is_terminal_execution_stop_request(current.status, input.status) {
-        crate::task_scheduler::get_task_scheduler()
-            .stop_with_control_held(&current.id, &task_control)
-            .await?;
-        return Ok(current);
-    }
     // Trust boundary: UI callers are stamped as user/ui here. The internal
     // `update_status` API remains available for scheduler / watchdog / crash /
     // endCondition / rerun paths with their own actor/source context.
-    state
-        .update_status_with_task_control_held(
-            TaskUpdateStatusInput {
-                id: input.id,
-                status: input.status,
-                message: input.message,
-                actor: TransitionActor::User,
-                source: Some(TransitionSource::Ui),
-            },
-            &task_control,
-        )
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_status_ordinary(TaskUpdateStatusInput {
+            id: input.id,
+            status: input.status,
+            message: input.message,
+            actor: TransitionActor::User,
+            source: Some(TransitionSource::Ui),
+        })
         .await
-        .map(|(t, _)| t)
+        .map(|result| result.task)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3465,8 +3444,10 @@ pub async fn cmd_task_append_session(
     id: String,
     session_id: String,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.append_session(&id, &session_id).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .append_session_ordinary(&id, &session_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Persist alignment-session sidecar metadata to
@@ -3519,8 +3500,10 @@ pub async fn cmd_task_archive(
     id: String,
     message: Option<String>,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.archive(&id, message).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .archive_ordinary(&id, message)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3529,19 +3512,13 @@ pub async fn cmd_task_delete(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     id: String,
 ) -> Result<(), String> {
-    // Capture source_thought_id before delete so we can unlink after.
-    let source_thought_id = task_state.get_ordinary(&id).await?.source_thought_id;
-    task_state.delete(&id).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.unlink_task(&thought_id, &id).await {
-            ulog_warn!(
-                "[task] deleted {} but thought unlink_task failed: {}",
-                id,
-                e
-            );
-        }
-    }
-    Ok(())
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .delete_ordinary(&id)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Read one of the markdown documents attached to a Task.

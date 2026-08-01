@@ -48,6 +48,7 @@ mod space_cloud_mock;
 mod sse_proxy;
 pub mod system_binary;
 pub mod task;
+pub mod task_application;
 pub mod task_execution;
 pub mod task_scheduler;
 pub mod terminal;
