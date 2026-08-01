@@ -186,6 +186,8 @@ Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投�
 
 Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。WebView 不得直连普通 API。仅大载荷**数据面**端点（当前为 `/refs/:id`、`/attachment/*`）允许原生 fetch，以避免二进制 / spill payload 再穿 IPC JSON；这些端点必须同时满足 CORS、CSP、大小限制与路径安全约束。该例外不得扩展成第二套控制面。
 
+Rust HTTP proxy 只允许 loopback 响应 spill 到共享 ref store：单响应上限 512MiB；external 响应上限 8MiB 且只在内存中返回，不能生成指向外部 origin 的本地 `/refs` URL。`ProxySpillManager` 只拥有 Rust proxy 的在途预留与清理失败债务（合计 1GiB）；完整 body/meta pair 提交后即交回既有 `/refs` TTL 生命周期。它不是附件或所有 ref 的全局 quota owner。
+
 所有连接本地 Sidecar（`127.0.0.1`）的 reqwest 客户端 MUST 通过 `crate::local_http::*` 创建，内置 `.no_proxy()` 防止系统代理拦截 → 502。
 
 详见 `tech_docs/pit_of_success.md` 的 `local_http` 节。

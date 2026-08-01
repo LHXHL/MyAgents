@@ -311,11 +311,13 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Problem.** 大 payload（图片、长 tool result、巨型 HTTP 响应）直接走 SSE/IPC JSON channel，OOM、UI 线程被 base64 阻塞、慢 client 无界排队拖死 sidecar。
 
 **Surface.**
-- Node `maybeSpill(value, { mimetype, sessionId, ownerTag })` (`src/server/utils/large-value-store.ts`) —— ≤256KB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, ttlMs }`（1h TTL，8KB head preview）
+- Node `maybeSpill(value, { mimetype, sessionId })` (`src/server/utils/large-value-store.ts`) —— ≤256KiB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, expiresAt }`（1h TTL，8KiB head preview）
 - `fetchRef(id)` / `getRefStreamPath(id)` —— 消费方拉回
-- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate，id 限 `^[a-f0-9]{8,32}$`
-- `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动
-- Rust `sse_proxy.rs` 的 `should_stream_spill`：边读边决定（>1MiB 或 explicit Content-Length 超阈值即 spill 到 ref），不再依赖 Content-Length 必填
+- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate；新 writer 生成 32 位小写 hex，reader 保留 `^[a-f0-9]{8,32}$` 读取窗口
+- Node / Rust writer 共用 no-clobber 提交协议：独占 `<id>.part` → flush/sync body → hard-link expose body → 独占 `<id>.meta.json.part` → flush/sync meta → hard-link expose meta；reader 只消费 body + meta 完整 pair
+- `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动；GC 同时回收陈旧 `.part`、`.meta.json.part` 与 body-without-meta
+- Rust `proxy_spill.rs` 边读边决定：loopback >1MiB spill、单响应最多 512MiB；external 单响应最多 8MiB、只在内存中返回，不创建本地 ref
+- Rust `ProxySpillManager` 只核算 proxy 在途写入与删除失败债务（合计 1GiB）；提交成功后所有权回到既有 ref TTL。债务只在下一次真实 spill 请求时有界重试，不运行 quota daemon
 - SSE 三档优先级（`src/server/sse.ts`）：
   - **critical**（errors / status / message-stopped 等）
   - **coalescible**（chunk / delta，同类合并替换）
@@ -323,15 +325,18 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
   - per-client 软上限 1000、硬上限 10×；critical 突破硬上限强制断开慢 client
 
 **Invariants enforced.**
-- 大 payload 不进 SSE / IPC base64，全部走 ref
+- Node tool/result 超过 256KiB、loopback proxy response 超过 1MiB 时不进入 SSE / IPC base64，改走 ref 数据面
+- ref writer 不能截断或覆盖已有 body/meta/temp target；碰撞换 128-bit id，有界重试
+- `Content-Length` 只做提前拒绝，实际 chunk 累计仍必须执行同一响应上限；external origin 永远不能收到本地 `/refs/<id>` URL
 - 用户从文件系统拖入 / 桌面文件选择的图片不走 `/chat/send` inline base64：≤10MB 由 `cmd_prepare_user_image_attachments` staged 到 `~/.myagents/attachments/<session>/` 后发送 `attachment_ref`，>10MB 走 `cmd_workspace_copy_paths` 进入 `myagents_files/` 并插入 `@path`。无绝对路径的剪贴板 / 浏览器 `File` 超过 10MB 必须拒绝并提示用户用文件路径入口，禁止为了“自动转文件”把它 base64 塞进 IPC。
 - Bridge tool result 经 `maybeSpill` 再交给 SDK，超阈值替换为 `@ref:<id>` marker
 - OpenAI bridge / `/chat/stream` 用 pull-driven `ReadableStream`，consumer pace 决定 pull 节奏（避免 controller 内部 queue 无界增长）
 - Renderer 检到 `ref_url` 直接 fetch ref 跳过 `atob`
 
 **Don't.**
-- 任何超 256KB 的值直接 `JSON.stringify` 进 SSE / IPC
+- 把应经过 Node `maybeSpill` 的超 256KiB 值直接 `JSON.stringify` 进 SSE / IPC
 - 自己手写 base64 round-trip
+- 为 proxy spill 再建持久化 reservation journal、全局 attachment/ref quota 或永久后台清理器；当前 owner 只覆盖在途写入与已知清理债务
 - 新加 `controller.enqueue` 不过 priority gate
 - 新增 SSE 事件只注册一处。两处都要：renderer `SseConnection.ts::JSON_EVENTS`（否则前端静默丢弃）+ server `sse.ts::SSE_EVENT_PRIORITIES`（否则回落 `critical` → 永不 coalesce + 每进程一次性 `[sse] missing from SSE_EVENT_PRIORITIES` warn）。latest-wins 快照类（如 `chat:context-usage`）选 `coalescible`
 

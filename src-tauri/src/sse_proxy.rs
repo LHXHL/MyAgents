@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
+use crate::proxy_spill::{stream_response_body, ProxySpillManager, ResponsePolicy, StreamOutcome};
 use crate::sidecar::{ManagedSidecarManager, SidecarOwner};
 use crate::{ulog_debug, ulog_info, ulog_warn};
 
@@ -795,9 +796,8 @@ pub struct HttpResponse {
     pub headers: std::collections::HashMap<String, String>,
     /// True if body is base64 encoded (for binary responses)
     pub is_base64: bool,
-    /// Pattern 2 §2.3.4: when set, the response body was spilled to disk by the
-    /// sidecar's large-value-store and the renderer should fetch it from this
-    /// URL (a `/refs/<id>` endpoint on the same sidecar) instead of decoding
+    /// When set, the loopback response body was spilled to the shared ref store
+    /// and the renderer should fetch it from this URL instead of decoding
     /// `body`. `body` is empty in that case; `is_base64` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_url: Option<String>,
@@ -809,13 +809,6 @@ pub struct HttpResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_size_bytes: Option<u64>,
 }
-
-/// Pattern 2 §2.3.4: stream-to-disk threshold. Bodies larger than this are
-/// written to `~/.myagents/refs/<id>` instead of being base64-encoded /
-/// returned inline. 1 MiB matches the sidecar-side `inlineMaxBytes` default
-/// but is intentionally a separate constant — Rust proxy and sidecar can
-/// drift independently without breaking the protocol.
-const PROXY_STREAM_THRESHOLD_BYTES: u64 = 1024 * 1024;
 
 /// Check if content type indicates binary data
 fn is_binary_content_type(content_type: &str) -> bool {
@@ -831,6 +824,7 @@ fn is_binary_content_type(content_type: &str) -> bool {
 #[tauri::command]
 pub async fn proxy_http_request(
     app: AppHandle,
+    spill_manager: tauri::State<'_, Arc<ProxySpillManager>>,
     request: HttpRequest,
 ) -> Result<HttpResponse, String> {
     use crate::logger;
@@ -882,7 +876,8 @@ pub async fn proxy_http_request(
     // 502 it. External hosts (the analytics endpoint) MUST honor the user's
     // proxy config / system-proxy discovery — otherwise telemetry is silently
     // dropped for proxy-dependent users. See `request_target_is_loopback`.
-    let client = if request_target_is_loopback(&request.url) {
+    let target_is_loopback = request_target_is_loopback(&request.url);
+    let client = if target_is_loopback {
         tune(crate::local_http::builder()).build().map_err(|e| {
             let err = format!("[proxy] Failed to create client: {}", e);
             logger::error(&app, &err);
@@ -993,36 +988,25 @@ pub async fn proxy_http_request(
 
     let is_binary = is_binary_content_type(content_type);
 
-    // Pattern 2 §2.3.4: stream-to-disk path for large responses.
-    //
-    // Strategy: always read upstream as a stream and decide while reading.
-    // - Buffer in memory up to PROXY_STREAM_THRESHOLD_BYTES (1 MiB). If the
-    //   response completes inside that, fall through to the in-memory
-    //   base64/text path (no fs hit, no extra RTT).
-    // - If the buffer would exceed the threshold, switch to spill: open
-    //   ~/.myagents/refs/<id>, dump the buffered bytes, then continue
-    //   piping incoming chunks straight to disk.
-    //
-    // This catches chunked responses (no Content-Length header) — exactly
-    // the case where the old header-only check fell back to a fully-buffered
-    // `response.bytes()` / `response.text()`.
-    //
-    // Content-Length is still useful as an early-decision fast path: if
-    // the upstream advertises >threshold up front, we go straight to spill
-    // without a wasted memory buffer.
     let content_length_hint: Option<u64> = resp_headers
         .get("content-length")
         .and_then(|s| s.parse::<u64>().ok());
+    let response_policy = ResponsePolicy::for_target(target_is_loopback);
+    if let Err(error) = response_policy.check_content_length(content_length_hint) {
+        logger::warn(&app, &error);
+        return Err(error);
+    }
     let header_says_spill = content_length_hint
-        .map(|len| len > PROXY_STREAM_THRESHOLD_BYTES)
+        .map(|len| response_policy.allow_spill && len > response_policy.spill_threshold_bytes)
         .unwrap_or(false);
 
-    let stream_outcome = stream_or_spill_response_body(
-        &app,
+    let stream_outcome = stream_response_body(
         response,
         content_type,
         &request.url,
+        response_policy,
         header_says_spill,
+        spill_manager.inner().clone(),
     )
     .await;
 
@@ -1067,13 +1051,7 @@ pub async fn proxy_http_request(
             }
         }
         StreamOutcome::Failed(err) => {
-            // Don't re-log here — `stream_or_spill_response_body` already
-            // emitted the fine-grained `[proxy] upstream stream error: …`
-            // at the appropriate level (warn for transient stream tear-down
-            // when the Sidecar is killed mid-response, which is the common
-            // case during Tab close / cron task end). A duplicate log line
-            // at ERROR was creating "WARN+ERROR same event" pairs that
-            // ate space and made real issues harder to find.
+            logger::warn(&app, &err);
             return Err(err);
         }
     };
@@ -1117,249 +1095,6 @@ pub async fn proxy_http_request(
         ref_mimetype: None,
         ref_size_bytes: None,
     })
-}
-
-struct SpilledBody {
-    ref_url: String,
-    mimetype: String,
-    size_bytes: u64,
-}
-
-enum StreamOutcome {
-    /// Body fit inside PROXY_STREAM_THRESHOLD_BYTES — caller handles encoding.
-    Buffered(Vec<u8>),
-    /// Body exceeded the threshold; written to ~/.myagents/refs/<id>.
-    Spilled(SpilledBody),
-    /// Upstream stream error or fs error after partial read. Caller surfaces
-    /// to the renderer; partial spill files are cleaned up before returning.
-    Failed(String),
-}
-
-/// Read the response body as a stream. Buffer up to PROXY_STREAM_THRESHOLD_BYTES
-/// in memory; if the threshold is exceeded, transparently switch to spill mode
-/// and write the buffered bytes plus all subsequent chunks to disk.
-///
-/// `force_spill` short-circuits the buffering phase when Content-Length already
-/// said the body is large — we open the spill file immediately rather than
-/// buffer 1 MiB just to throw it on disk.
-async fn stream_or_spill_response_body(
-    app: &AppHandle,
-    response: reqwest::Response,
-    content_type: &str,
-    request_url: &str,
-    force_spill: bool,
-) -> StreamOutcome {
-    use crate::logger;
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-    use futures_util::StreamExt;
-    use std::path::PathBuf;
-    use tokio::fs::{create_dir_all, File};
-    use tokio::io::AsyncWriteExt;
-
-    let threshold = PROXY_STREAM_THRESHOLD_BYTES as usize;
-    let preview_cap: usize = 8 * 1024; // matches sidecar default previewBytes
-
-    // Lazy-initialised spill state. None until we either decide to spill
-    // (force_spill) or the in-memory buffer crosses the threshold.
-    struct SpillState {
-        file: File,
-        body_path: PathBuf,
-        meta_path: PathBuf,
-        id: String,
-        refs_dir: PathBuf,
-    }
-    let mut spill: Option<SpillState> = None;
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut size_bytes: u64 = 0;
-    let mut preview_buf: Vec<u8> = Vec::new();
-
-    // Helper: open the spill file lazily. Returns Err string on fs failure.
-    async fn init_spill(app: &AppHandle) -> Result<SpillState, String> {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => {
-                let err = "[proxy] dirs::home_dir() returned None — cannot spill".to_string();
-                logger::warn(app, &err);
-                return Err(err);
-            }
-        };
-        let refs_dir: PathBuf = home.join(".myagents").join("refs");
-        if let Err(e) = create_dir_all(&refs_dir).await {
-            let err = format!("[proxy] failed to mkdir refs dir: {}", e);
-            logger::warn(app, &err);
-            return Err(err);
-        }
-        let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let body_path = refs_dir.join(&id);
-        let meta_path = refs_dir.join(format!("{}.meta.json", id));
-        let file = match File::create(&body_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                let err = format!("[proxy] failed to create ref body file: {}", e);
-                logger::warn(app, &err);
-                return Err(err);
-            }
-        };
-        Ok(SpillState {
-            file,
-            body_path,
-            meta_path,
-            id,
-            refs_dir,
-        })
-    }
-
-    if force_spill {
-        match init_spill(app).await {
-            Ok(s) => spill = Some(s),
-            Err(e) => return StreamOutcome::Failed(e),
-        }
-    }
-
-    let mut stream = response.bytes_stream();
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = match chunk_res {
-            Ok(c) => c,
-            Err(e) => {
-                let err = format!("[proxy] upstream stream error: {}", e);
-                logger::warn(app, &err);
-                if let Some(s) = &spill {
-                    let _ = tokio::fs::remove_file(&s.body_path).await;
-                }
-                return StreamOutcome::Failed(err);
-            }
-        };
-
-        size_bytes += chunk.len() as u64;
-        if preview_buf.len() < preview_cap {
-            let take = preview_cap
-                .saturating_sub(preview_buf.len())
-                .min(chunk.len());
-            preview_buf.extend_from_slice(&chunk[..take]);
-        }
-
-        if let Some(s) = &mut spill {
-            // Already spilling — write straight to disk.
-            if let Err(e) = s.file.write_all(&chunk).await {
-                let err = format!("[proxy] failed to write spill chunk: {}", e);
-                logger::warn(app, &err);
-                let _ = tokio::fs::remove_file(&s.body_path).await;
-                return StreamOutcome::Failed(err);
-            }
-        } else if buffer.len() + chunk.len() > threshold {
-            // Crossing the threshold for the first time — open the spill
-            // file, dump what we've buffered so far, then continue with the
-            // current chunk.
-            let mut s = match init_spill(app).await {
-                Ok(s) => s,
-                Err(e) => return StreamOutcome::Failed(e),
-            };
-            if !buffer.is_empty() {
-                if let Err(e) = s.file.write_all(&buffer).await {
-                    let err = format!("[proxy] failed to flush buffer to spill: {}", e);
-                    logger::warn(app, &err);
-                    let _ = tokio::fs::remove_file(&s.body_path).await;
-                    return StreamOutcome::Failed(err);
-                }
-                buffer.clear();
-                buffer.shrink_to_fit();
-            }
-            if let Err(e) = s.file.write_all(&chunk).await {
-                let err = format!("[proxy] failed to write spill chunk: {}", e);
-                logger::warn(app, &err);
-                let _ = tokio::fs::remove_file(&s.body_path).await;
-                return StreamOutcome::Failed(err);
-            }
-            spill = Some(s);
-        } else {
-            buffer.extend_from_slice(&chunk);
-        }
-    }
-
-    let Some(mut s) = spill else {
-        // Stayed under the threshold — return the in-memory buffer.
-        return StreamOutcome::Buffered(buffer);
-    };
-
-    // Spill path: finalise file and write meta.json.
-    if let Err(e) = s.file.flush().await {
-        let err = format!("[proxy] failed to flush spill body: {}", e);
-        logger::warn(app, &err);
-        let _ = tokio::fs::remove_file(&s.body_path).await;
-        return StreamOutcome::Failed(err);
-    }
-    drop(s.file);
-
-    // Build preview as base64 of head bytes — the sidecar treats binary
-    // mimetypes as base64 previews, and base64 is safe to embed in JSON for
-    // text mimetypes too. The renderer doesn't currently consume preview;
-    // this is purely for log / SSE diagnostics.
-    let preview = BASE64.encode(&preview_buf);
-
-    let mimetype = if content_type.is_empty() {
-        "application/octet-stream".to_string()
-    } else {
-        content_type.to_string()
-    };
-
-    // TTL = 1 hour, matching sidecar default.
-    let expires_at_ms = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0))
-    .saturating_add(60 * 60 * 1000);
-
-    let meta_json = serde_json::json!({
-        "kind": "ref",
-        "id": s.id,
-        "sizeBytes": size_bytes,
-        "mimetype": mimetype,
-        "preview": preview,
-        "expiresAt": expires_at_ms,
-    });
-    if let Err(e) = tokio::fs::write(
-        &s.meta_path,
-        serde_json::to_vec(&meta_json).unwrap_or_default(),
-    )
-    .await
-    {
-        let err = format!("[proxy] failed to write ref meta: {}", e);
-        logger::warn(app, &err);
-        let _ = tokio::fs::remove_file(&s.body_path).await;
-        return StreamOutcome::Failed(err);
-    }
-    // refs_dir kept on the struct so future cleanup paths can reach it; not
-    // used here.
-    let _ = &s.refs_dir;
-
-    // Compose ref URL on the same origin as the original request — that's
-    // the sidecar that owns this ref's filesystem (refs dir is shared, but
-    // each sidecar exposes /refs/:id on its own port). For the typical
-    // `http://127.0.0.1:<port>/...` case we just substitute the path-and-query
-    // tail with `/refs/<id>`. Avoids a `url` crate dep (transitive only).
-    let ref_url = origin_of(request_url)
-        .map(|origin| format!("{}/refs/{}", origin, s.id))
-        .unwrap_or_else(|| format!("http://127.0.0.1/refs/{}", s.id));
-
-    StreamOutcome::Spilled(SpilledBody {
-        ref_url,
-        mimetype,
-        size_bytes,
-    })
-}
-
-/// Extract the `scheme://host[:port]` portion of an absolute http(s) URL.
-/// Returns None on parse failure. Manual parser to avoid pulling the `url`
-/// crate into the direct dependency list.
-fn origin_of(absolute_url: &str) -> Option<String> {
-    let scheme_end = absolute_url.find("://")?;
-    let after = &absolute_url[scheme_end + 3..];
-    // Authority ends at the first '/', '?' or '#'.
-    let auth_end = after
-        .find(|c: char| c == '/' || c == '?' || c == '#')
-        .unwrap_or(after.len());
-    let authority = &after[..auth_end];
-    Some(format!("{}://{}", &absolute_url[..scheme_end], authority))
 }
 
 #[cfg(test)]

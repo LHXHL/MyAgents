@@ -36,6 +36,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+mod proxy_spill;
 pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
@@ -288,6 +289,7 @@ pub fn run() {
 
     // Create SSE proxy state
     let sse_proxy_state = Arc::new(sse_proxy::SseProxyState::default());
+    let proxy_spill_state = Arc::new(proxy_spill::ProxySpillManager::new(data_dir.join("refs")));
 
     // Build the app first, then run with event handler
     // This allows us to handle RunEvent::ExitRequested for Cmd+Q and Dock quit
@@ -356,6 +358,7 @@ pub fn run() {
     let app = builder
         .manage(sidecar_state)
         .manage(sse_proxy_state)
+        .manage(proxy_spill_state)
         .manage(im_bot_state)
         .manage(agent_state)
         .manage(terminal_state)
@@ -901,6 +904,14 @@ pub fn run() {
             // this lock handles the "build script killed + macOS restarted" case via PID.
             let lock_state = app_dirs::acquire_lock();
             let had_prior_instance = lock_state.had_prior_instance();
+            let spill_manager = app.state::<Arc<proxy_spill::ProxySpillManager>>();
+            match spill_manager.recover_startup_orphans() {
+                Ok(removed) if removed > 0 => {
+                    ulog_info!("[proxy] Removed {} incomplete ref files at startup", removed)
+                }
+                Ok(_) => {}
+                Err(error) => ulog_warn!("{}", error),
+            }
 
             // Stale sidecar cleanup:
             //   1. Run the fast preamble (remove stale port file) synchronously
