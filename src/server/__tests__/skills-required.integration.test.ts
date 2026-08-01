@@ -143,6 +143,30 @@ describe('required system skill API contract', () => {
     try {
       await waitForReady(baseUrl, () => output);
 
+      // AUTH-02: this is a real Global process, not a synthetic Session shell.
+      // Wrong-role turn routes fail before parsing their body, while one-shot
+      // SDK utility routes remain mounted (the empty payload is rejected by
+      // the real provider handler rather than by the role gate).
+      expect(output).not.toContain('[startup] initializeAgent done');
+      const wrongRoleTurn = await fetch(`${baseUrl}/chat/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(wrongRoleTurn.status).toBe(404);
+      const providerUtility = await fetch(`${baseUrl}/api/provider/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(providerUtility.status).toBe(400);
+      const oauthUtility = await fetch(`${baseUrl}/api/mcp/oauth/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(oauthUtility.status).toBe(400);
+
       const userResponse = await fetch(`${baseUrl}/api/skills?scope=user`);
       expect(userResponse.ok).toBe(true);
       const userBody = await userResponse.json() as SkillsListResponse;

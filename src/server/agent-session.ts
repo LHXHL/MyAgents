@@ -7505,7 +7505,7 @@ export async function initializeAgent(
 ): Promise<void> {
   if (options?.preWarmDisabled) {
     setPreWarmDisabled(true);
-    console.log('[agent] pre-warm disabled via --no-pre-warm (Global Sidecar)');
+    console.log('[agent] pre-warm disabled via --no-pre-warm');
   }
   agentDir = nextAgentDir;
   hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());

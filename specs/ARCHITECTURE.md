@@ -303,7 +303,6 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
 | `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：App 先互斥同 Session 的所有 open/switch/delete transition，并提交自己拥有的 exact `Tab` owner ids；Rust 在同一 lifecycle fence 内拒绝 Task/Goal、持久 IM peer binding、Companion/Agent/BackgroundCompletion 或未授权 Tab，完成 Node 存储删除后才释放获授权 Tab。因此任何拒绝都原样保留 owner/UI，不需要 renderer rollback。删除保护快照只做 UI 投影。IM binding 同时读取 live router 与仍在配置中的 Channel health state，覆盖显式停止和 replacement 暂时 detach 的窗口；router 预检遵守 router → lifecycle 既有锁序，锁内以 live `Agent` owner 关闭新绑定竞态。通过后用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
-| `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
 | `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后的 activation authority；在 Rust manager 单锁内保留最新 Task identity，并原子写入精确 Tab owner / port / workspace |
 | `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认 surface migration）；old/new 任一 identity 被持久 owner 占用时拒绝 rename，历史导航不得调用 |
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
@@ -314,6 +313,10 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 #### Sidecar process role 与 MCP OAuth credential owner
 
 Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`--no-pre-warm` 只控制启动行为，不能再被用来推断进程职责。两条 Session spawn path（Tab/global path 的非 global 分支与 `session_lifecycle.rs`）都传 `session`，应用级 Global Sidecar 传 `global`。Global 身份只由 canonical `GLOBAL_SIDECAR_ID` 定义：Global ID 必须没有 `agent_dir`，其它 ID 必须带 `agent_dir`；spawn 边界在产生任何副作用前拒绝两种错配，防止绕过 manager singleton 创建第二个 Global owner。
+
+Node 在 `sidecar-composition.ts` 的唯一生产组合点消费这份 birth role。请求先按真实 owner 归为 `common / global / session`，未知或错误 role 在进入现有 handler、解析 body 或执行业务副作用前返回 404；这里是生产 gate，不另维护只供测试读取的镜像 route registry。Global 保留 Settings、Session Store、Provider/OAuth one-shot utility和应用级管理 surface，但不运行 `initializeAgent()`、不恢复 Runtime、也不拥有 Chat/Task/Goal/IM/Inbox/current-runtime mutation。Session 拥有当前 Session runtime与上述 turn surface，且不运行应用级 retention/migration timer。health、refs、Runtime model catalogue、历史 Session read以及经 caller audit 证明两边都需要的 Agent/Skill/Plugin/Admin capability是共享 surface；Admin API不能机械设成 Global-only，current-session Admin route仍明确属于 Session。
+
+`product-session-binding.ts` 导入时保持 unbound；只有 Session bootstrap或adapter显式 reset才能生成/发布 `MYAGENTS_SESSION_ID`，共享 SDK utility import 不是 Session birth authority。Browser/Vite 开发仍需单进程 union surface，但必须由 `start_dev.sh --dev-union`显式选择；它不是第三个 production role，省略 role仍按 fail-safe Session 处理。
 
 自定义 MCP 的 OAuth state 是应用级共享事实，持久化在 `~/.myagents/mcp_oauth_state.json`：
 

@@ -40,15 +40,14 @@
 
 **`honoServe` 立即绑定 127.0.0.1:port** → Rust health check 几十 ms 就通过。
 
-**listen 后由 IIFE 跑重活：**
-- cleanup（log rotation + Playwright stale profile lock）
-- skill seed
-- socks bridge
-- `initializeAgent`
-- external runtime restore
-- boot banner
+**listen 后由 IIFE 经唯一 role composition 跑重活：**
+- Global：应用级 retention / migration cleanup、OAuth proactive scheduler
+- Common：skill seed、plugin dir setup、socks bridge
+- Session：OAuth revision observer、`initializeAgent`、external runtime restore、boot banner
 
-`globalThis.__myagentsDeferredInit` 作为路由级 readiness gate：除 `/health` 外所有 route 在处理前 `await` 它；稳定态下是亚微秒 no-op。
+因此 Global 不再为 Settings/Provider one-shot utility 铸造 synthetic current Session，也不会进入 persistent Query / Runtime restore；每个 Session 不再重复应用级 retention timer与migration scan。skill seed仍是幂等 common initialization：Session可能是更新后第一个被启动的进程，必须在接纳 turn 前看见 required bundled skills，不能把它变成依赖另一进程完成时序的隐式前置。
+
+`globalThis.__myagentsDeferredInit` 作为路由级 readiness gate：role composition先在任何handler/body副作用前拒绝未知或错误owner route；允许的route中，除 `/health`、`/refs/:id` 外再经过deferred-init gate。稳定态下两层检查都是纯内存判断。Browser/Vite单进程模式由`start_dev.sh --dev-union`显式组合两侧能力；生产仍只有Rust传入的`global|session`。
 
 > 注：v0.2.0 后期已迁移到 `DeferredInitState` 状态机 + 三分 readiness endpoints，详见 `pit_of_success.md` 的「DeferredInitState」节。
 

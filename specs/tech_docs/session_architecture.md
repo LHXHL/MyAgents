@@ -332,6 +332,10 @@ freeze/publish 不属于任一 Runtime。它们由
 共享同一个 durable marker，commit 只在 adapter 完成本 Runtime 的 process teardown 后
 发布新 product Session binding。Builtin SDK UUID 与 external thread/session id 仍分别归各自
 Runtime owner；adapter 不得借用另一 Runtime 的 reset、materializer 或 session id 作为 fallback。
+模块导入本身不生成 product Session id，也不写 `MYAGENTS_SESSION_ID`：Global Sidecar同样会
+加载 one-shot SDK utility与共享类型，但它没有 Session birth authority。只有Session bootstrap
+的 `initializeAgent()` 或 adapter显式 reset/select 才建立当前binding；生产role gate保证Global
+无法通过Chat/IM/Inbox/current-runtime route间接触发该过程。
 
 `src/server/agent-session.ts` 是 builtin SDK 会话的 public facade：`SessionEngine` adapter、legacy callers、route-facing code 仍从这里 import。Phase6 后，facade 后面的核心 mutable state 分给 `src/server/builtin-session/` owner；Phase7 后，turn terminal 与 transcript persistence 这两类最重行为也拆到明确 owner：
 

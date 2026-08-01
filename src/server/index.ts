@@ -69,7 +69,12 @@ import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { CrashDiagnostics } from './crash-diagnostics';
 import { fetchWithGeneralProxy } from './utils/cancellation';
 import { startOAuthMaintenanceForSidecarRole } from './mcp-oauth';
-import { parseSidecarRole, type SidecarRole } from './sidecar-role';
+import {
+  composeSidecarRequestHandler,
+  resolveSidecarComposition,
+  runSidecarBootstrap,
+  type SidecarComposition,
+} from './sidecar-composition';
 import {
   aggregateGlobalUsageStats,
   buildSessionDetailedUsageStats,
@@ -993,7 +998,7 @@ function parseArgs(argv: string[]): {
   port: number;
   sessionId?: string;
   noPreWarm?: boolean;
-  sidecarRole: SidecarRole;
+  sidecarComposition: SidecarComposition;
 } {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
@@ -1009,7 +1014,10 @@ function parseArgs(argv: string[]): {
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
   const noPreWarm = args.includes('--no-pre-warm');
-  const sidecarRole = parseSidecarRole(getArgValue('--sidecar-role'));
+  const sidecarComposition = resolveSidecarComposition(
+    getArgValue('--sidecar-role'),
+    args.includes('--dev-union'),
+  );
 
   if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
@@ -1021,7 +1029,7 @@ function parseArgs(argv: string[]): {
     port: Number.isNaN(port) ? 3000 : port,
     sessionId,
     noPreWarm,
-    sidecarRole,
+    sidecarComposition,
   };
 }
 
@@ -1995,11 +2003,15 @@ async function main() {
     port,
     sessionId: initialSessionId,
     noPreWarm,
-    sidecarRole,
+    sidecarComposition,
   } = parseArgs(process.argv);
-  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRole;
+  const sidecarRole = sidecarComposition.role;
+  const sidecarRoleLabel = sidecarComposition.mode === 'development-union'
+    ? 'development-union'
+    : sidecarRole;
+  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRoleLabel;
   const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, role=${sidecarRole}, agentDir=${dirDisplay}`);
+  startupBeacon(`args parsed, port=${port}, role=${sidecarRoleLabel}, agentDir=${dirDisplay}`);
 
   let currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
@@ -2146,6 +2158,8 @@ async function main() {
 
   console.log(`[startup] HTTP server binding to 127.0.0.1:${port}...`);
 
+  const dispatchRequest = composeSidecarRequestHandler(sidecarComposition, handleRequest);
+
   honoServe({
     // Explicit 127.0.0.1 for Rust proxy compatibility (IPv4).
     port,
@@ -2161,7 +2175,7 @@ async function main() {
       const requestId = incomingRequestId ?? randomUUIDv4Short();
       const sessionId = request.headers.get('x-myagents-session-id') ?? undefined;
       const tabId = request.headers.get('x-myagents-tab-id') ?? undefined;
-      return withLogContext({ requestId, sessionId, tabId }, () => handleRequest(request));
+      return withLogContext({ requestId, sessionId, tabId }, () => dispatchRequest(request));
     },
   } as Parameters<typeof honoServe>[0]);
 
@@ -9513,105 +9527,115 @@ description: >
   });
   (async () => {
     try {
-      currentInitPhase = 'cleanup';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      // Unified retention sweep (#121) — replaces v0.2.7's split between
-      // cleanupOldLogs (per-session) + cleanupOldUnifiedLogs (unified). One
-      // policy module covers age cutoff, byte budget, and the recent-data
-      // floor across all sources. Per-session logs gained a byte budget
-      // here for the first time.
-      //
-      // The active-file set protects BOTH the unified log we're appending
-      // to AND the per-session log file (if AgentLogger has one open) from
-      // budget eviction — without this, a long-lived session log past the
-      // 7-day floor could be unlinked while the WriteStream is still open.
-      const collectActivePaths = (): ReadonlySet<string> => {
-        const paths = new Set<string>();
-        const u = getActiveUnifiedLogPath();
-        if (u) paths.add(u);
-        const s = getActiveSessionLogPath();
-        if (s) paths.add(s);
-        return paths;
-      };
-      runLogRetentionSweep({ activeFilePaths: collectActivePaths() });
-      // Hourly background sweep — bounds gradual growth without waiting
-      // for the next 50MB rotation event. Active-file getter is invoked
-      // at each sweep so day-rollovers are reflected.
-      startPeriodicSweep(collectActivePaths);
-      cleanupStalePlaywrightProfile();
+      await runSidecarBootstrap(sidecarComposition, [
+        {
+          capability: 'global',
+          run: async () => {
+            currentInitPhase = 'cleanup';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            // Retention, stale-profile cleanup and the one-time config scrub
+            // are app-wide maintenance. Running them in every Session process
+            // multiplied I/O and timers without adding authority.
+            const collectActivePaths = (): ReadonlySet<string> => {
+              const paths = new Set<string>();
+              const u = getActiveUnifiedLogPath();
+              if (u) paths.add(u);
+              const s = getActiveSessionLogPath();
+              if (s) paths.add(s);
+              return paths;
+            };
+            runLogRetentionSweep({ activeFilePaths: collectActivePaths() });
+            startPeriodicSweep(collectActivePaths);
+            cleanupStalePlaywrightProfile();
 
-      // Issue #194 follow-up — one-time scrub for stale agent.runtimeConfig
-      // fields from before buildRuntimeChangePatch existed. Idempotent via
-      // per-agent `_runtimeConfigScrubV1` marker; subsequent boots short-
-      // circuit per agent. See doc comment in the migration module.
-      try {
-        const { scrubStaleRuntimeConfig } = await import('./migrations/scrub-stale-runtime-config');
-        const result = await scrubStaleRuntimeConfig();
-        if (result.scannedAgents > 0) {
-          console.log(`[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`);
-          for (const d of result.details) {
-            console.log(`[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`);
-          }
-        }
-      } catch (err) {
-        console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
-      }
-      emitDeferredPhaseDone('cleanup');
+            try {
+              const { scrubStaleRuntimeConfig } = await import('./migrations/scrub-stale-runtime-config');
+              const result = await scrubStaleRuntimeConfig();
+              if (result.scannedAgents > 0) {
+                console.log(`[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`);
+                for (const d of result.details) {
+                  console.log(`[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`);
+                }
+              }
+            } catch (err) {
+              console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
+            }
+            emitDeferredPhaseDone('cleanup');
+          },
+        },
+        {
+          capability: 'common',
+          run: () => {
+            currentInitPhase = 'skill-seed';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            // Keep seed/dir setup common: a Session may be the first process
+            // after an app update and must see required bundled skills before
+            // accepting a turn. These operations are idempotent initialization,
+            // not recurring singleton maintenance.
+            seedBundledSkills();
+            console.log('[startup] seedBundledSkills done');
+            ensurePluginsDirs();
+            emitDeferredPhaseDone('skill-seed');
+          },
+        },
+        {
+          capability: 'common',
+          run: async () => {
+            currentInitPhase = 'socks-bridge';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            await initSocksBridgeFromEnv();
+            emitDeferredPhaseDone('socks-bridge');
+          },
+        },
+        {
+          capability: 'global',
+          run: () => {
+            startOAuthMaintenanceForSidecarRole('global');
+          },
+        },
+        {
+          capability: 'session',
+          run: async () => {
+            // Session processes observe app-global OAuth revisions but never
+            // run the proactive singleton refresh scheduler.
+            startOAuthMaintenanceForSidecarRole('session');
 
-      currentInitPhase = 'skill-seed';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      seedBundledSkills();
-      console.log('[startup] seedBundledSkills done');
+            // Install the title hook immediately before the only boot path
+            // capable of completing a turn.
+            installAutoTitleHook();
 
-      // #296 — install the backend auto-title trigger into the turn-hooks slot
-      // BEFORE any turn can complete (initializeAgent / pre-warm run below).
-      installAutoTitleHook();
+            currentInitPhase = 'sdk-init';
+            setDeferredInitPhase(currentInitPhase);
+            initPhaseStarted = nowMs();
+            await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
+            console.log('[startup] initializeAgent done');
+            emitDeferredPhaseDone('sdk-init');
 
-      ensurePluginsDirs();
-      emitDeferredPhaseDone('skill-seed');
+            if (initialSessionId) {
+              const startupEngine = getSessionEngine();
+              if (startupEngine.kind === 'external') {
+                currentInitPhase = 'external-runtime-restore';
+                setDeferredInitPhase(currentInitPhase);
+                initPhaseStarted = nowMs();
+                startupEngine.restoreInitialSession(initialSessionId, currentAgentDir);
+                emitDeferredPhaseDone('external-runtime-restore');
+              }
+            }
 
-      currentInitPhase = 'socks-bridge';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      await initSocksBridgeFromEnv();
-      emitDeferredPhaseDone('socks-bridge');
-
-      startOAuthMaintenanceForSidecarRole(sidecarRole);
-
-      currentInitPhase = 'sdk-init';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
-      console.log('[startup] initializeAgent done');
-      emitDeferredPhaseDone('sdk-init');
-
-      if (initialSessionId) {
-        const startupEngine = getSessionEngine();
-        if (startupEngine.kind === 'external') {
-          currentInitPhase = 'external-runtime-restore';
-          setDeferredInitPhase(currentInitPhase);
-          initPhaseStarted = nowMs();
-          startupEngine.restoreInitialSession(initialSessionId, currentAgentDir);
-          emitDeferredPhaseDone('external-runtime-restore');
-        }
-      }
-
-      // ── Sidecar Boot Banner: single-line for AI grep ──
-      {
-        const model = getSessionModel() || '?';
-        const mcpList = getMcpServers();
-        const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
-        const bridge = hasActiveBridge() ? 'yes' : 'no';
-        // Health signal: confirm builtin-mcp-meta.ts's side-effect registration
-        // actually fired. An empty list here is a red flag — the META file was
-        // not imported by agent-session.ts, which means lazy MCP lookup will
-        // return undefined for every builtin.
-        const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
-        const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
-        console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
-      }
+            // ── Sidecar Boot Banner: single-line for AI grep ──
+            const model = getSessionModel() || '?';
+            const mcpList = getMcpServers();
+            const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
+            const bridge = hasActiveBridge() ? 'yes' : 'no';
+            const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
+            const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
+            console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
+          },
+        },
+      ]);
 
       markDeferredInitReady();
       resolveDeferredInit();

@@ -38,7 +38,11 @@ export type ProductSessionMaterializationResult = {
   status?: number;
 };
 
-export let currentProductSessionId: string = randomUUID();
+// Importing the SessionEngine facade is not Session birth authority. Global
+// Sidecars load shared SDK utilities too, so the binding stays empty until the
+// Session bootstrap (initializeAgent) or an explicit adapter reset selects an
+// identity.
+export let currentProductSessionId = '';
 let allowLazySessionMaterialization = true;
 let pendingDesktopMaterialization: PendingProductSessionMaterialization | null = null;
 let currentProductSessionContext = {
@@ -118,7 +122,11 @@ export function resetProductSessionMaterializationState(options?: {
 }
 
 function publishCurrentProductSessionEnv(): void {
-  process.env.MYAGENTS_SESSION_ID = currentProductSessionId;
+  if (currentProductSessionId) {
+    process.env.MYAGENTS_SESSION_ID = currentProductSessionId;
+  } else {
+    delete process.env.MYAGENTS_SESSION_ID;
+  }
 }
 
 function preparedMaterializationOwnsMetadata(
