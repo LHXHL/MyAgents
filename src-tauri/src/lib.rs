@@ -905,7 +905,7 @@ pub fn run() {
             let lock_state = app_dirs::acquire_lock();
             let had_prior_instance = lock_state.had_prior_instance();
             let spill_manager = app.state::<Arc<proxy_spill::ProxySpillManager>>();
-            match spill_manager.recover_startup_orphans() {
+            match tauri::async_runtime::block_on(spill_manager.recover_startup_orphans()) {
                 Ok(removed) if removed > 0 => {
                     ulog_info!("[proxy] Removed {} incomplete ref files at startup", removed)
                 }
@@ -1397,6 +1397,7 @@ pub fn run() {
                             false
                         }
                     };
+                    process_cmd::settle_pending_tree_terminations();
                     // Clean up terminal PTY sessions
                     let ts = terminal_state_for_exit.clone();
                     tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));
@@ -1568,6 +1569,7 @@ mod nav_guard_tests {
             .expect("app exit handler source");
         assert!(exit_handler.contains("stop_all_sidecars("));
         assert!(exit_handler.contains("&sidecar_state_for_exit"));
+        assert!(exit_handler.contains("process_cmd::settle_pending_tree_terminations()"));
         assert!(exit_handler.contains("app_dirs::release_lock()"));
 
         let updater = include_str!("updater.rs");

@@ -132,8 +132,10 @@ pub fn start_background_completion<R: Runtime>(
         return Ok(BackgroundCompletionResult::new(session_id, false));
     }
 
-    // Phase 3: Attach only if the same generation is still current.
-    let binding = {
+    // Phase 3: Prefer the probed generation. If replacement won while the
+    // HTTP call was in flight, attach to the logical Session under the manager
+    // lock so the current process or recovery epoch retains the work.
+    let poll_generation = {
         let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
         let bg_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
         match manager_guard.attach_background_owner_if_current(session_id, bg_owner, binding) {
@@ -144,23 +146,29 @@ pub fn start_background_completion<R: Runtime>(
                 );
                 return Ok(BackgroundCompletionResult::new(session_id, true));
             }
-            BackgroundOwnerAttach::Attached(binding) => binding,
+            BackgroundOwnerAttach::Attached(current) => Some(current.generation),
+            BackgroundOwnerAttach::Recovering => Some(binding.generation),
             BackgroundOwnerAttach::Stale => {
-                ulog_warn!(
-                    "[bg-completion] Sidecar generation changed during state check for session {}",
-                    session_id
-                );
-                return Err(format!(
-                    "Sidecar disappeared during activity check for {session_id}"
-                ));
+                let owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
+                match manager_guard.attach_background_owner_to_logical_session(session_id, owner) {
+                    Some(BackgroundOwnerAttach::AlreadyOwned) => {
+                        return Ok(BackgroundCompletionResult::new(session_id, true));
+                    }
+                    Some(BackgroundOwnerAttach::Attached(current)) => Some(current.generation),
+                    Some(BackgroundOwnerAttach::Recovering) => Some(binding.generation),
+                    Some(BackgroundOwnerAttach::Stale) | None => {
+                        return Err(format!(
+                            "Sidecar disappeared during activity check for {session_id}"
+                        ));
+                    }
+                }
             }
         }
     };
     ulog_info!(
-        "[bg-completion] Added BackgroundCompletion owner to session {} (generation {}, port {})",
+        "[bg-completion] Added BackgroundCompletion owner to logical session {} (observed generation {:?})",
         session_id,
-        binding.generation,
-        binding.port
+        poll_generation
     );
 
     // Phase 4: Spawn polling thread
@@ -173,7 +181,7 @@ pub fn start_background_completion<R: Runtime>(
             &app_handle_clone,
             &manager_clone,
             &session_id_clone,
-            binding.generation,
+            poll_generation,
         );
     });
 
@@ -192,11 +200,11 @@ pub fn start_headless_background_completion<R: Runtime>(
     manager: &ManagedSidecarManager,
     session_id: &str,
 ) -> Result<BackgroundCompletionResult, String> {
-    let binding = {
+    let poll_generation = {
         let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
         let bg_owner = SidecarOwner::BackgroundCompletion(session_id.to_string());
         let Some(attach) =
-            manager_guard.attach_background_owner_to_reusable_session(session_id, bg_owner)
+            manager_guard.attach_background_owner_to_logical_session(session_id, bg_owner)
         else {
             ulog_debug!(
                 "[bg-completion] No running sidecar for headless session {}",
@@ -205,7 +213,8 @@ pub fn start_headless_background_completion<R: Runtime>(
             return Ok(BackgroundCompletionResult::new(session_id, false));
         };
         match attach {
-            BackgroundOwnerAttach::Attached(binding) => binding,
+            BackgroundOwnerAttach::Attached(binding) => Some(binding.generation),
+            BackgroundOwnerAttach::Recovering => None,
             BackgroundOwnerAttach::AlreadyOwned => {
                 ulog_info!(
                     "[bg-completion] Session {} already has a BackgroundCompletion owner",
@@ -219,10 +228,9 @@ pub fn start_headless_background_completion<R: Runtime>(
         }
     };
     ulog_info!(
-        "[bg-completion] Added headless BackgroundCompletion owner to session {} (generation {}, port {})",
+        "[bg-completion] Added headless BackgroundCompletion owner to logical session {} (observed generation {:?})",
         session_id,
-        binding.generation,
-        binding.port
+        poll_generation
     );
 
     let manager_clone = Arc::clone(manager);
@@ -233,7 +241,7 @@ pub fn start_headless_background_completion<R: Runtime>(
             &app_handle_clone,
             &manager_clone,
             &session_id_clone,
-            binding.generation,
+            poll_generation,
         );
     });
 
@@ -247,10 +255,10 @@ fn poll_background_completion<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
     session_id: &str,
-    initial_generation: u64,
+    initial_generation: Option<u64>,
 ) {
     ulog_info!(
-        "[bg-completion] Starting polling for session {} at generation {}",
+        "[bg-completion] Starting polling for session {} at generation {:?}",
         session_id,
         initial_generation
     );
@@ -311,15 +319,15 @@ fn poll_background_completion<R: Runtime>(
                 }
             }
         };
-        if binding.generation != expected_generation {
+        if expected_generation != Some(binding.generation) {
             ulog_info!(
-                "[bg-completion] Rebound session {} from generation {} to {} (port {})",
+                "[bg-completion] Rebound session {} from generation {:?} to {} (port {})",
                 session_id,
                 expected_generation,
                 binding.generation,
                 binding.port
             );
-            expected_generation = binding.generation;
+            expected_generation = Some(binding.generation);
             consecutive_http_failures = 0;
         }
 
@@ -468,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_busy_probe_cannot_attach_owner_to_a_replacement_generation() {
+    fn initial_busy_probe_rebinds_owner_to_the_current_logical_session() {
         let mut manager = SidecarManager::new();
         manager.insert_test_ready_frontend_sidecar(
             "session-a",
@@ -494,7 +502,39 @@ mod tests {
             manager.attach_background_owner_if_current("session-a", owner.clone(), observed),
             BackgroundOwnerAttach::Stale
         );
-        assert!(!manager.session_has_exact_owner("session-a", &owner));
+        assert!(matches!(
+            manager.attach_background_owner_to_logical_session("session-a", owner.clone()),
+            Some(BackgroundOwnerAttach::Attached(binding)) if binding.port == 32002
+        ));
+        assert!(manager.session_has_exact_owner("session-a", &owner));
+    }
+
+    #[test]
+    fn initial_busy_probe_retains_owner_through_a_replacement_gap() {
+        let mut manager = SidecarManager::new();
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        let observed = manager
+            .reusable_session_binding("session-a")
+            .expect("initial binding");
+        manager.begin_session_sidecar_replacement("session-a");
+
+        let owner = SidecarOwner::BackgroundCompletion("session-a".to_string());
+        assert_eq!(
+            manager.attach_background_owner_if_current("session-a", owner.clone(), observed),
+            BackgroundOwnerAttach::Stale
+        );
+        assert_eq!(
+            manager.attach_background_owner_to_logical_session("session-a", owner.clone()),
+            Some(BackgroundOwnerAttach::Recovering)
+        );
+        assert_eq!(
+            manager.background_poll_target("session-a", &owner),
+            BackgroundPollTarget::Recovering
+        );
     }
 
     #[test]

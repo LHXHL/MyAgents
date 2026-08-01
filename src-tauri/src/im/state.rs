@@ -1209,34 +1209,35 @@ mod tests {
     }
 }
 
-/// Signal all running agents to shut down (sync, for use in app exit handlers).
+/// Signal all running agents and release their process owners (sync, app exit only).
 pub fn signal_all_agents_shutdown(agent_state: &ManagedAgents) {
-    if let Ok(agents) = agent_state.try_lock() {
-        for (agent_id, instance) in agents.iter() {
-            ulog_info!("[agent] Signaling shutdown for agent {}", agent_id);
-            for (channel_id, ch) in &instance.channels {
-                ulog_info!(
-                    "[agent] Shutting down channel {} of agent {}",
-                    channel_id,
-                    agent_id
-                );
-                let _ = ch.bot_instance.shutdown_tx.send(true);
-                ch.bot_instance.poll_handle.abort();
-                ch.bot_instance.process_handle.abort();
-                ch.bot_instance.approval_handle.abort();
-                ch.bot_instance.question_handle.abort();
-                ch.bot_instance.health_handle.abort();
-                if let Some(ref h) = ch.bot_instance.heartbeat_handle {
-                    h.abort();
-                }
-            }
-            if let Some(ref h) = instance.heartbeat_handle {
+    let mut agents = agent_state.blocking_lock();
+    for (agent_id, instance) in agents.iter() {
+        ulog_info!("[agent] Signaling shutdown for agent {}", agent_id);
+        for (channel_id, ch) in &instance.channels {
+            ulog_info!(
+                "[agent] Shutting down channel {} of agent {}",
+                channel_id,
+                agent_id
+            );
+            let _ = ch.bot_instance.shutdown_tx.send(true);
+            ch.bot_instance.poll_handle.abort();
+            ch.bot_instance.process_handle.abort();
+            ch.bot_instance.approval_handle.abort();
+            ch.bot_instance.question_handle.abort();
+            ch.bot_instance.health_handle.abort();
+            if let Some(ref h) = ch.bot_instance.heartbeat_handle {
                 h.abort();
             }
         }
-    } else {
-        ulog_warn!("[agent] Could not acquire lock for shutdown signal, agents may linger");
+        if let Some(ref h) = instance.heartbeat_handle {
+            h.abort();
+        }
     }
+    // ExitRequested is terminal for this app instance. Dropping the map also
+    // drops every retained Plugin Bridge ChildTree, initiating exact tree
+    // termination before the process-exit settlement barrier.
+    agents.clear();
 }
 
 /// Create the managed IM Bot state (called during app setup)
@@ -1244,23 +1245,20 @@ pub fn create_im_bot_state() -> ManagedImBots {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Signal all running IM bots to shut down (sync, for use in app exit handlers).
-/// Best-effort: uses try_lock to avoid blocking if mutex is held.
+/// Signal all running IM bots and release their process owners (app exit only).
 pub fn signal_all_bots_shutdown(im_state: &ManagedImBots) {
-    if let Ok(bots) = im_state.try_lock() {
-        for (bot_id, instance) in bots.iter() {
-            ulog_info!("[im] Signaling shutdown for bot {}", bot_id);
-            let _ = instance.shutdown_tx.send(true);
-            instance.poll_handle.abort();
-            instance.process_handle.abort();
-            instance.approval_handle.abort();
-            instance.question_handle.abort();
-            instance.health_handle.abort();
-            if let Some(ref h) = instance.heartbeat_handle {
-                h.abort();
-            }
+    let mut bots = im_state.blocking_lock();
+    for (bot_id, instance) in bots.iter() {
+        ulog_info!("[im] Signaling shutdown for bot {}", bot_id);
+        let _ = instance.shutdown_tx.send(true);
+        instance.poll_handle.abort();
+        instance.process_handle.abort();
+        instance.approval_handle.abort();
+        instance.question_handle.abort();
+        instance.health_handle.abort();
+        if let Some(ref h) = instance.heartbeat_handle {
+            h.abort();
         }
-    } else {
-        ulog_warn!("[im] Could not acquire lock for shutdown signal, IM bots may linger");
     }
+    bots.clear();
 }

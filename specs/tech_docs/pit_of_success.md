@@ -104,7 +104,7 @@
 
 **Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
 
-**Invariants enforced.** `ChildTree` 在 user code 执行前完成 containment：Unix child 出生为独立 process group；Windows child 以 suspended 状态创建、绑定 kill-on-close Job Object 后才 resume。owner 保留 `ChildTree`，显式 stop 与 Drop 都只终止该 exact tree；containment 建立失败时终止 child 并 fail closed，不降级成未受管进程。
+**Invariants enforced.** `ChildTree` 在 user code 执行前完成 containment：Unix child 出生为独立 process group；Windows child 以 suspended 状态创建、绑定 kill-on-close Job Object 后才 resume。owner 保留 `ChildTree`，显式 stop 与 Drop 都只终止该 exact tree；app exit 先释放 Sidecar / Plugin Bridge owner，再等待 Unix 的 bounded SIGTERM→SIGKILL worker settle，不能让 Rust 进程先于 escalation thread 退出。Windows GUI child 没有可靠 console signal，stop 直接终止 retained Job Object。containment 建立失败时终止 child 并 fail closed，不降级成未受管进程。
 
 **Don't.** 裸 `std::process::Command::new()`；也不要让 Sidecar / Plugin Bridge 直接 `.spawn()`，或在正常 shutdown 用进程名、安装路径、argv substring 扫描整机来补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于 prior instance 已死亡后的 startup recovery 和 updater residual recovery（Windows updater 另有 protected-root / file-lock verification）；不是 live lifecycle API。
 
@@ -313,11 +313,11 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Surface.**
 - Node `maybeSpill(value, { mimetype, sessionId })` (`src/server/utils/large-value-store.ts`) —— ≤256KiB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, expiresAt }`（1h TTL，8KiB head preview）
 - `fetchRef(id)` / `getRefStreamPath(id)` —— 消费方拉回
-- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate；新 writer 生成 32 位小写 hex，reader 保留 `^[a-f0-9]{8,32}$` 读取窗口
+- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate；新 writer 生成 32 个小写 hex 字符，reader 保留 `^[a-f0-9]{8,32}$` 读取窗口
 - Node / Rust writer 共用 no-clobber 提交协议：独占 `<id>.part` → flush/sync body → hard-link expose body → 独占 `<id>.meta.json.part` → flush/sync meta → hard-link expose meta；reader 只消费 body + meta 完整 pair
 - `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动；GC 同时回收陈旧 `.part`、`.meta.json.part` 与 body-without-meta
 - Rust `proxy_spill.rs` 边读边决定：loopback >1MiB spill、单响应最多 512MiB；external 单响应最多 8MiB、只在内存中返回，不创建本地 ref
-- Rust `ProxySpillManager` 只核算 proxy 在途写入与删除失败债务（合计 1GiB）；提交成功后所有权回到既有 ref TTL。债务只在下一次真实 spill 请求时有界重试，不运行 quota daemon
+- Rust `ProxySpillManager` 只核算 proxy 在途写入与删除失败债务（合计 1GiB）；提交成功后所有权回到既有 ref TTL。启动清点失败会令本次运行的 Rust spill admission fail closed；已知债务只在下一次真实 spill 请求到达且 next-retry clock 到期时重试，每次最多处理固定数量，不运行 quota daemon
 - SSE 三档优先级（`src/server/sse.ts`）：
   - **critical**（errors / status / message-stopped 等）
   - **coalescible**（chunk / delta，同类合并替换）

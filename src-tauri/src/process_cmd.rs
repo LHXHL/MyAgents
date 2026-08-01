@@ -25,6 +25,8 @@
 use std::ffi::OsStr;
 use std::ops::{Deref, DerefMut};
 use std::process::{Child, Command};
+#[cfg(unix)]
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
@@ -61,9 +63,11 @@ pub fn new<S: AsRef<OsStr>>(program: S) -> Command {
 ///   Object, then resumed. This closes the spawn-before-assign race and keeps
 ///   descendants contained even when `cmd.exe` / `npx.cmd` exits early.
 ///
-/// Dropping the owner starts the same bounded graceful → force shutdown used
-/// by Sidecars. Call [`ChildTree::kill`] when the owning workflow requires an
-/// immediate force stop.
+/// Dropping the owner starts bounded exact-tree termination. Unix sends
+/// SIGTERM before bounded SIGKILL escalation; Windows terminates the retained
+/// Job Object because GUI children have no reliable console signal channel.
+/// Call [`ChildTree::kill`] when the owning workflow requires an immediate
+/// force stop.
 pub(crate) struct ChildTree {
     child: Child,
     #[cfg(target_os = "windows")]
@@ -72,8 +76,8 @@ pub(crate) struct ChildTree {
 }
 
 impl ChildTree {
-    /// Start a bounded graceful → force shutdown for the exact owned tree.
-    /// The call is non-blocking so it is safe from synchronous Drop paths.
+    /// Start bounded shutdown for the exact owned tree. The call is
+    /// non-blocking so it is safe from synchronous Drop paths.
     pub(crate) fn terminate(&mut self) -> std::io::Result<()> {
         if self.termination_started {
             return Ok(());
@@ -109,6 +113,27 @@ impl ChildTree {
             self.termination_started = true;
         }
         result
+    }
+}
+
+/// Wait until every Unix graceful-termination worker has either observed the
+/// exact process group exit or dispatched its bounded SIGKILL escalation.
+/// The app exit owner calls this after dropping all long-lived process owners,
+/// so the Rust process cannot disappear before an escalation worker runs.
+pub(crate) fn settle_pending_tree_terminations() {
+    #[cfg(unix)]
+    {
+        let barrier = termination_barrier();
+        let mut pending = barrier
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while *pending > 0 {
+            pending = barrier
+                .settled
+                .wait(pending)
+                .unwrap_or_else(|error| error.into_inner());
+        }
     }
 }
 
@@ -182,25 +207,30 @@ fn terminate_unix_group(pid: u32, force: bool) -> std::io::Result<()> {
     }
 
     if !force {
+        let barrier = termination_barrier();
+        {
+            let mut pending = barrier
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *pending += 1;
+        }
         std::thread::spawn(move || {
+            let _settlement = TerminationSettlement;
             let started = std::time::Instant::now();
+            let mut root_exited_at = None;
             loop {
                 let mut status = 0;
                 let wait = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
-                if wait > 0 {
-                    std::thread::sleep(Duration::from_millis(500));
-                    unsafe {
-                        libc::kill(pgid, libc::SIGKILL);
-                    }
+                if wait != 0 && root_exited_at.is_none() {
+                    root_exited_at = Some(std::time::Instant::now());
+                }
+                if !unix_group_exists(pgid) {
                     return;
                 }
-                if wait < 0 {
-                    unsafe {
-                        libc::kill(pgid, libc::SIGKILL);
-                    }
-                    return;
-                }
-                if started.elapsed() >= GRACEFUL_TREE_SHUTDOWN_TIMEOUT {
+                let wrapper_grace_elapsed = root_exited_at
+                    .is_some_and(|exited| exited.elapsed() >= Duration::from_millis(500));
+                if wrapper_grace_elapsed || started.elapsed() >= GRACEFUL_TREE_SHUTDOWN_TIMEOUT {
                     unsafe {
                         libc::kill(pgid, libc::SIGKILL);
                     }
@@ -212,6 +242,46 @@ fn terminate_unix_group(pid: u32, force: bool) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+struct TerminationBarrier {
+    pending: Mutex<usize>,
+    settled: Condvar,
+}
+
+#[cfg(unix)]
+fn termination_barrier() -> &'static TerminationBarrier {
+    static BARRIER: OnceLock<TerminationBarrier> = OnceLock::new();
+    BARRIER.get_or_init(|| TerminationBarrier {
+        pending: Mutex::new(0),
+        settled: Condvar::new(),
+    })
+}
+
+#[cfg(unix)]
+struct TerminationSettlement;
+
+#[cfg(unix)]
+impl Drop for TerminationSettlement {
+    fn drop(&mut self) {
+        let barrier = termination_barrier();
+        let mut pending = barrier
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *pending = pending.saturating_sub(1);
+        barrier.settled.notify_all();
+    }
+}
+
+#[cfg(unix)]
+fn unix_group_exists(pgid: i32) -> bool {
+    let result = unsafe { libc::kill(pgid, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 #[cfg(target_os = "windows")]
@@ -381,10 +451,41 @@ mod tests {
 
         tree.terminate().expect("terminate owned process group");
         drop(tree);
+        settle_pending_tree_terminations();
 
         assert!(
-            wait_until_processes_exit(&[parent_pid, child_pid], Duration::from_secs(7)),
+            wait_until_processes_exit(&[parent_pid, child_pid], Duration::from_secs(2)),
             "dropping the owner must terminate the direct child and its descendant"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_settlement_dispatches_force_for_sigterm_resistant_tree() {
+        let mut command = new("sh");
+        command
+            .args(["-c", "trap '' TERM; sleep 60 & child=$!; echo $child; wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut tree = spawn_tree(&mut command).expect("spawn resistant process tree");
+        let parent_pid = tree.id();
+        let child_pid = {
+            let stdout = tree.stdout.take().expect("child pid stdout");
+            let mut line = String::new();
+            BufReader::new(stdout)
+                .read_line(&mut line)
+                .expect("read child pid");
+            line.trim().parse::<u32>().expect("parse child pid")
+        };
+
+        tree.terminate().expect("start bounded termination");
+        drop(tree);
+        settle_pending_tree_terminations();
+
+        assert!(
+            wait_until_processes_exit(&[parent_pid, child_pid], Duration::from_secs(2)),
+            "app-exit settlement must not return before SIGKILL is dispatched"
         );
     }
 

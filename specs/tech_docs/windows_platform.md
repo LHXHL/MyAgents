@@ -85,7 +85,7 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 进程清理分成两种不能互换的 authority：
 
-1. **Live lifecycle**：Sidecar / Plugin Bridge 用 `process_cmd::spawn_tree()` 出生。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`，stop / Drop 精确终止 Job 内所有后代。正常退出不得扫描全机 argv。
+1. **Live lifecycle**：Sidecar / Plugin Bridge 用 `process_cmd::spawn_tree()` 出生。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`，app exit 先释放 IM / Agent state 中的 Bridge owner，stop / Drop 直接终止 Job 内所有后代。`CREATE_NO_WINDOW` child 没有可靠 console graceful signal，不能加一个无作用的等待冒充 graceful shutdown。正常退出不得扫描全机 argv。
 2. **Recovery**：只有 prior instance 已确定死亡后的启动恢复，以及 updater 的 residual / protected-root / file-lock 验证，才使用 `sysinfo` 枚举。它处理 crash 后已经没有 live handle 的遗留进程，不是正常 shutdown 的 fallback。
 
 **Windows recovery**（`sysinfo` 原生枚举，避免旧 PowerShell/WMI 冷启动开销）：

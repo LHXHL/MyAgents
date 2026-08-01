@@ -9,12 +9,15 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::StreamExt;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+
+use crate::ulog_warn;
 
 pub(crate) const PROXY_STREAM_THRESHOLD_BYTES: u64 = 1024 * 1024;
 pub(crate) const LOOPBACK_RESPONSE_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -23,6 +26,7 @@ const PROXY_SPILL_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 const REF_COMMIT_MAX_ATTEMPTS: usize = 8;
 const PREVIEW_BYTES: usize = 8 * 1024;
 const ORPHAN_RETRIES_PER_SPILL: usize = 16;
+const ORPHAN_RETRY_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy)]
 pub(crate) struct ResponsePolicy {
@@ -76,6 +80,20 @@ pub(crate) enum StreamOutcome {
 struct OrphanGroup {
     paths: Vec<PathBuf>,
     bytes: u64,
+    failed_attempts: u32,
+    next_retry_at: Instant,
+}
+
+impl OrphanGroup {
+    fn after_failed_delete(paths: Vec<PathBuf>, bytes: u64) -> Self {
+        let failed_attempts = 1;
+        Self {
+            paths,
+            bytes,
+            failed_attempts,
+            next_retry_at: Instant::now() + orphan_retry_delay(failed_attempts),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -83,6 +101,7 @@ struct BudgetState {
     active_bytes: u64,
     orphan_debt_bytes: u64,
     orphans: VecDeque<OrphanGroup>,
+    inventory_complete: bool,
 }
 
 /// App-lifetime owner for proxy spill reservations and known cleanup debt.
@@ -107,13 +126,29 @@ impl ProxySpillManager {
 
     /// Run after the single-instance lock is acquired, before renderer
     /// requests can create new proxy spills.
-    pub(crate) fn recover_startup_orphans(&self) -> Result<usize, String> {
+    pub(crate) async fn recover_startup_orphans(&self) -> Result<usize, String> {
+        let mut state = self.state.lock().await;
+        if state.inventory_complete {
+            return Ok(0);
+        }
         let entries = match std::fs::read_dir(&self.refs_dir) {
             Ok(entries) => entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+                .map(|entry| {
+                    entry
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .map_err(|error| {
+                            format!(
+                                "[proxy] failed to enumerate refs directory {}: {}",
+                                self.refs_dir.display(),
+                                error
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                state.inventory_complete = true;
+                return Ok(0);
+            }
             Err(error) => {
                 return Err(format!(
                     "[proxy] failed to scan refs directory {}: {}",
@@ -138,27 +173,35 @@ impl ProxySpillManager {
             }
 
             let path = self.refs_dir.join(name);
-            let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            let bytes = std::fs::metadata(&path)
+                .map_err(|error| {
+                    format!(
+                        "[proxy] failed to measure incomplete ref {}: {}",
+                        path.display(),
+                        error
+                    )
+                })?
+                .len();
             match std::fs::remove_file(&path) {
                 Ok(()) => removed += 1,
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(_) => unresolved.push(OrphanGroup {
-                    paths: vec![path],
-                    bytes,
-                }),
+                Err(error) => {
+                    ulog_warn!(
+                        "[proxy] orphan cleanup failed bytes={} attempt=1 retry_ms={} error={}",
+                        bytes,
+                        orphan_retry_delay(1).as_millis(),
+                        error
+                    );
+                    unresolved.push(OrphanGroup::after_failed_delete(vec![path], bytes));
+                }
             }
         }
 
-        if !unresolved.is_empty() {
-            let mut state = self
-                .state
-                .try_lock()
-                .map_err(|_| "[proxy] spill manager busy during startup recovery".to_string())?;
-            for orphan in unresolved {
-                state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_add(orphan.bytes);
-                state.orphans.push_back(orphan);
-            }
+        for orphan in unresolved {
+            state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_add(orphan.bytes);
+            state.orphans.push_back(orphan);
         }
+        state.inventory_complete = true;
         Ok(removed)
     }
 
@@ -166,6 +209,11 @@ impl ProxySpillManager {
         tokio::fs::create_dir_all(&self.refs_dir)
             .await
             .map_err(|error| format!("[proxy] failed to create refs directory: {error}"))?;
+        if !self.state.lock().await.inventory_complete {
+            return Err(
+                "[proxy] startup ref inventory is incomplete; refusing new spill".to_string(),
+            );
+        }
         self.retry_orphans().await;
         Ok(())
     }
@@ -176,22 +224,36 @@ impl ProxySpillManager {
     async fn retry_orphans(&self) {
         let mut state = self.state.lock().await;
         let attempts = state.orphans.len().min(ORPHAN_RETRIES_PER_SPILL);
+        let now = Instant::now();
         for _ in 0..attempts {
             let Some(mut orphan) = state.orphans.pop_front() else {
                 break;
             };
-            let mut remaining = Vec::new();
-            for path in orphan.paths {
-                match tokio::fs::remove_file(&path).await {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(_) => remaining.push(path),
-                }
+            if orphan.next_retry_at > now {
+                state.orphans.push_back(orphan);
+                continue;
             }
+            let old_bytes = orphan.bytes;
+            let (remaining, remaining_bytes) = remove_paths(orphan.paths, old_bytes).await;
             if remaining.is_empty() {
-                state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_sub(orphan.bytes);
+                state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_sub(old_bytes);
             } else {
                 orphan.paths = remaining;
+                orphan.bytes = remaining_bytes;
+                orphan.failed_attempts = orphan.failed_attempts.saturating_add(1);
+                let delay = orphan_retry_delay(orphan.failed_attempts);
+                orphan.next_retry_at = now + delay;
+                state.orphan_debt_bytes = state
+                    .orphan_debt_bytes
+                    .saturating_sub(old_bytes)
+                    .saturating_add(remaining_bytes);
+                ulog_warn!(
+                    "[proxy] orphan cleanup still blocked paths={} bytes={} attempt={} retry_ms={}",
+                    orphan.paths.len(),
+                    orphan.bytes,
+                    orphan.failed_attempts,
+                    delay.as_millis()
+                );
                 state.orphans.push_back(orphan);
             }
         }
@@ -221,6 +283,16 @@ impl ProxySpillManager {
         debug_assert!(state.active_bytes >= reserved_bytes);
         state.active_bytes = state.active_bytes.saturating_sub(reserved_bytes);
         if let Some(orphan) = orphan {
+            ulog_warn!(
+                "[proxy] spill cleanup became debt paths={} bytes={} attempt={} retry_ms={}",
+                orphan.paths.len(),
+                orphan.bytes,
+                orphan.failed_attempts,
+                orphan
+                    .next_retry_at
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+            );
             state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_add(orphan.bytes);
             state.orphans.push_back(orphan);
         }
@@ -235,6 +307,19 @@ impl ProxySpillManager {
             state.orphans.len(),
         )
     }
+
+    #[cfg(test)]
+    async fn make_orphans_due(&self) {
+        let mut state = self.state.lock().await;
+        for orphan in &mut state.orphans {
+            orphan.next_retry_at = Instant::now();
+        }
+    }
+}
+
+fn orphan_retry_delay(failed_attempts: u32) -> Duration {
+    let exponent = failed_attempts.saturating_sub(1).min(9);
+    Duration::from_secs(1_u64 << exponent).min(ORPHAN_RETRY_MAX_DELAY)
 }
 
 struct SpillState {
@@ -367,16 +452,31 @@ async fn write_reserved(
         .map_err(|error| format!("[proxy] failed to write spill body: {error}"))
 }
 
-async fn remove_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+async fn remove_paths(paths: Vec<PathBuf>, fallback_bytes: u64) -> (Vec<PathBuf>, u64) {
     let mut remaining = Vec::new();
+    let mut remaining_bytes = 0_u64;
+    let mut fully_measured = true;
     for path in paths {
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(_) => remaining.push(path),
+            Err(_) => {
+                match tokio::fs::metadata(&path).await {
+                    Ok(metadata) => {
+                        remaining_bytes = remaining_bytes.saturating_add(metadata.len())
+                    }
+                    Err(_) => fully_measured = false,
+                }
+                remaining.push(path);
+            }
         }
     }
-    remaining
+    let debt_bytes = if fully_measured {
+        remaining_bytes
+    } else {
+        fallback_bytes
+    };
+    (remaining, debt_bytes)
 }
 
 async fn fail_spill(
@@ -385,11 +485,10 @@ async fn fail_spill(
     error: String,
 ) -> StreamOutcome {
     drop(spill.file.take());
-    let remaining = remove_paths(spill.cleanup_paths).await;
-    let orphan = (!remaining.is_empty()).then_some(OrphanGroup {
-        paths: remaining,
-        bytes: spill.reserved_bytes,
-    });
+    let (remaining, remaining_bytes) =
+        remove_paths(spill.cleanup_paths, spill.reserved_bytes).await;
+    let orphan = (!remaining.is_empty())
+        .then(|| OrphanGroup::after_failed_delete(remaining, remaining_bytes));
     manager.finish(spill.reserved_bytes, orphan).await;
     StreamOutcome::Failed(error)
 }
@@ -526,10 +625,10 @@ async fn finish_spill(
     // Meta is the reader-visible commit marker. Keep the final pair and remove
     // only the hard-link aliases. If unlink is blocked, the existing stale-part
     // GC can retry; aliases do not consume additional file blocks or budget.
-    let _ = remove_paths(vec![
-        spill.body_part_path.clone(),
-        spill.meta_part_path.clone(),
-    ])
+    let _ = remove_paths(
+        vec![spill.body_part_path.clone(), spill.meta_part_path.clone()],
+        0,
+    )
     .await;
     manager.finish(spill.reserved_bytes, None).await;
 
@@ -698,13 +797,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservation_cap_is_atomic_across_concurrent_requests() {
+    async fn reservation_cap_is_atomic_across_three_concurrent_requests() {
         let root = tempfile::tempdir().expect("temp refs");
-        let manager = Arc::new(ProxySpillManager::with_limit(root.path().to_path_buf(), 10));
+        let manager = Arc::new(ProxySpillManager::with_limit(root.path().to_path_buf(), 14));
 
-        let (first, second) = tokio::join!(manager.reserve(7), manager.reserve(7));
-        assert_ne!(first.is_ok(), second.is_ok());
-        assert_eq!(manager.budget_snapshot().await.0, 7);
+        let (first, second, third) =
+            tokio::join!(manager.reserve(7), manager.reserve(7), manager.reserve(7));
+        assert_eq!(
+            [first, second, third]
+                .into_iter()
+                .filter(Result::is_ok)
+                .count(),
+            2
+        );
+        assert_eq!(manager.budget_snapshot().await.0, 14);
+    }
+
+    #[test]
+    fn orphan_retry_backoff_is_exponential_and_capped() {
+        assert_eq!(orphan_retry_delay(1), Duration::from_secs(1));
+        assert_eq!(orphan_retry_delay(2), Duration::from_secs(2));
+        assert_eq!(orphan_retry_delay(20), Duration::from_secs(5 * 60));
     }
 
     #[tokio::test]
@@ -721,19 +834,39 @@ mod tests {
                 Some(OrphanGroup {
                     paths: vec![undeletable.clone()],
                     bytes: 8,
+                    failed_attempts: 1,
+                    next_retry_at: Instant::now(),
                 }),
             )
             .await;
         manager.retry_orphans().await;
         assert!(manager.reserve(3).await.is_err());
         std::fs::remove_dir(&undeletable).expect("remove test blocker");
+        manager.make_orphans_due().await;
         manager.retry_orphans().await;
         assert_eq!(manager.budget_snapshot().await, (0, 0, 0));
         manager.reserve(10).await.expect("debt released");
     }
 
-    #[test]
-    fn startup_recovery_only_removes_protocol_orphans() {
+    #[tokio::test]
+    async fn partial_cleanup_charges_only_the_paths_that_remain() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let removed = root.path().join("removed.part");
+        let blocked = root.path().join("blocked.meta.json.part");
+        std::fs::write(&removed, vec![1_u8; 100]).expect("removable body");
+        std::fs::create_dir(&blocked).expect("directory makes remove_file fail");
+        let blocked_bytes = std::fs::metadata(&blocked).expect("blocked metadata").len();
+
+        let (remaining, debt_bytes) =
+            remove_paths(vec![removed.clone(), blocked.clone()], 100).await;
+
+        assert_eq!(remaining, vec![blocked]);
+        assert_eq!(debt_bytes, blocked_bytes);
+        assert!(!removed.exists());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_only_removes_protocol_orphans() {
         let root = tempfile::tempdir().expect("temp refs");
         let complete = "1".repeat(32);
         std::fs::write(root.path().join(&complete), b"body").expect("complete body");
@@ -747,13 +880,56 @@ mod tests {
         }
         let manager = ProxySpillManager::with_limit(root.path().to_path_buf(), 100);
 
-        assert_eq!(manager.recover_startup_orphans().expect("recover"), 3);
+        assert_eq!(manager.recover_startup_orphans().await.expect("recover"), 3);
         assert!(root.path().join(&complete).exists());
         assert!(root.path().join(format!("{complete}.meta.json")).exists());
         assert!(root.path().join("unrelated-file").exists());
         assert!(!root.path().join(orphan).exists());
         assert!(!root.path().join(body_part).exists());
         assert!(!root.path().join(meta_part).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn incomplete_startup_inventory_fails_closed_until_rescan_succeeds() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let dangling = root.path().join(format!("{}.part", "5".repeat(32)));
+        std::os::unix::fs::symlink(root.path().join("missing-target"), &dangling)
+            .expect("dangling protocol path");
+
+        let manager = Arc::new(ProxySpillManager::with_limit(
+            root.path().to_path_buf(),
+            100,
+        ));
+        assert!(manager.recover_startup_orphans().await.is_err());
+        assert!(init_spill(&manager).await.is_err());
+
+        std::fs::remove_file(&dangling).expect("remove scan blocker");
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("explicit startup retry");
+        let spill = init_spill(&manager).await.expect("rescan then admit");
+        let _ = fail_spill(&manager, spill, "test cleanup".to_string()).await;
+    }
+
+    #[tokio::test]
+    async fn persistent_startup_orphan_is_counted_again_after_restart() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let undeletable = root.path().join(format!("{}.part", "6".repeat(32)));
+        std::fs::create_dir(&undeletable).expect("directory makes remove_file fail");
+
+        for _ in 0..2 {
+            let manager = ProxySpillManager::with_limit(root.path().to_path_buf(), 1);
+            manager
+                .recover_startup_orphans()
+                .await
+                .expect("complete inventory with known orphan");
+            let (_, debt, groups) = manager.budget_snapshot().await;
+            assert!(debt > 0);
+            assert_eq!(groups, 1);
+            assert!(manager.reserve(1).await.is_err());
+        }
     }
 
     #[tokio::test]
@@ -764,6 +940,10 @@ mod tests {
                 root.path().to_path_buf(),
                 1024,
             ));
+            manager
+                .recover_startup_orphans()
+                .await
+                .expect("startup inventory");
             let collision = "a".repeat(32);
             let committed = "b".repeat(32);
             let collision_path = root.path().join(format!("{collision}{suffix}"));
@@ -781,6 +961,69 @@ mod tests {
             );
             let _ = fail_spill(&manager, spill, "test cleanup".to_string()).await;
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_writers_with_the_same_first_id_keep_body_meta_paired() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let manager = Arc::new(ProxySpillManager::with_limit(
+            root.path().to_path_buf(),
+            1024,
+        ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
+        let collision = "c".repeat(32);
+        let first_retry = "d".repeat(32);
+        let second_retry = "e".repeat(32);
+        let mut first_ids = vec![collision.clone(), first_retry].into_iter();
+        let mut second_ids = vec![collision, second_retry].into_iter();
+
+        let (first, second) = tokio::join!(
+            init_spill_with(&manager, || first_ids.next().expect("first candidate")),
+            init_spill_with(&manager, || second_ids.next().expect("second candidate"))
+        );
+        let mut first = first.expect("first claim");
+        let mut second = second.expect("second claim");
+        assert_ne!(first.id, second.id);
+
+        write_reserved(&manager, &mut first, b"first-body")
+            .await
+            .expect("first write");
+        write_reserved(&manager, &mut second, b"second-body")
+            .await
+            .expect("second write");
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        let (first_outcome, second_outcome) = tokio::join!(
+            finish_spill(
+                &manager,
+                first,
+                "text/plain",
+                "http://127.0.0.1:1/api/test",
+                10,
+                b"first-body"
+            ),
+            finish_spill(
+                &manager,
+                second,
+                "text/plain",
+                "http://127.0.0.1:1/api/test",
+                11,
+                b"second-body"
+            )
+        );
+        assert!(matches!(first_outcome, StreamOutcome::Spilled(_)));
+        assert!(matches!(second_outcome, StreamOutcome::Spilled(_)));
+        assert_eq!(
+            std::fs::read(root.path().join(first_id)).expect("first body"),
+            b"first-body"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(second_id)).expect("second body"),
+            b"second-body"
+        );
     }
 
     #[test]
@@ -803,6 +1046,10 @@ mod tests {
             root.path().to_path_buf(),
             1024,
         ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
         let body = vec![7_u8; 32];
         let (response, url) = response_with_body(body.clone(), Some(body.len() as u64)).await;
         let policy = ResponsePolicy {
@@ -844,6 +1091,10 @@ mod tests {
             root.path().to_path_buf(),
             1024,
         ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
         let body = vec![8_u8; 32];
         let (response, url) = response_with_body(body.clone(), None).await;
         let policy = ResponsePolicy {
@@ -879,6 +1130,10 @@ mod tests {
             root.path().to_path_buf(),
             1024,
         ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
         let (response, url) = response_with_body(vec![9_u8; 17], None).await;
         let policy = ResponsePolicy {
             max_bytes: 16,

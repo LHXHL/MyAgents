@@ -131,6 +131,38 @@ describe("maybeSpill", () => {
       );
     },
   );
+
+  it("keeps concurrent writers with the same first UUID correctly paired", async () => {
+    const collisionId = "c".repeat(32);
+    const retryId = "d".repeat(32);
+    randomUUIDMock
+      .mockImplementationOnce(() => uuidFromHex(collisionId))
+      .mockImplementationOnce(() => uuidFromHex(collisionId))
+      .mockImplementationOnce(() => uuidFromHex(retryId));
+
+    const firstValue = "first-writer:" + "A".repeat(2048);
+    const secondValue = "second-writer:" + "B".repeat(2048);
+    const [first, second] = (await Promise.all([
+      maybeSpill(firstValue, {
+        inlineMaxBytes: 256,
+        mimetype: "text/plain",
+      }),
+      maybeSpill(secondValue, {
+        inlineMaxBytes: 256,
+        mimetype: "text/plain",
+      }),
+    ])) as [LargeValueRef, LargeValueRef];
+
+    expect(new Set([first.id, second.id])).toEqual(
+      new Set([collisionId, retryId]),
+    );
+    expect(Buffer.from((await fetchRef(first.id))!.data).toString("utf-8")).toBe(
+      firstValue,
+    );
+    expect(
+      Buffer.from((await fetchRef(second.id))!.data).toString("utf-8"),
+    ).toBe(secondValue);
+  });
 });
 
 describe("fetchRef", () => {
@@ -188,6 +220,28 @@ describe("fetchRef", () => {
 
     const fetched = await fetchRef(id);
     expect(Buffer.from(fetched!.data)).toEqual(body);
+  });
+
+  it("reads a complete 32-hex pair written with the Rust metadata shape", async () => {
+    const id = "abcdef0123456789abcdef0123456789";
+    const body = Buffer.from([0, 1, 2, 3, 254, 255]);
+    writeFileSync(join(scratch, id), body);
+    writeFileSync(
+      join(scratch, `${id}.meta.json`),
+      JSON.stringify({
+        kind: "ref",
+        id,
+        sizeBytes: body.byteLength,
+        mimetype: "application/octet-stream",
+        preview: body.toString("base64"),
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+
+    const fetched = await fetchRef(id);
+    expect(fetched).not.toBeNull();
+    expect(Buffer.from(fetched!.data)).toEqual(body);
+    expect(fetched!.mimetype).toBe("application/octet-stream");
   });
 
   it("rejects incomplete or mismatched ref pairs", async () => {

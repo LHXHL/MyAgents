@@ -77,6 +77,7 @@ pub(super) enum BackgroundPollTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BackgroundOwnerAttach {
     Attached(BackgroundPollBinding),
+    Recovering,
     AlreadyOwned,
     Stale,
 }
@@ -1179,13 +1180,26 @@ impl SidecarManager {
         BackgroundOwnerAttach::Attached(expected)
     }
 
-    pub(super) fn attach_background_owner_to_reusable_session(
+    /// Attach a BackgroundCompletion owner to the logical Session after a
+    /// lock-free activity probe raced with replacement. The manager lock is
+    /// the authority boundary: attach to the current reusable process, or
+    /// retain the owner on the in-flight recovery epoch until it commits.
+    pub(super) fn attach_background_owner_to_logical_session(
         &mut self,
         session_id: &str,
         owner: SidecarOwner,
     ) -> Option<BackgroundOwnerAttach> {
-        let binding = self.reusable_session_binding(session_id)?;
-        Some(self.attach_background_owner_if_current(session_id, owner, binding))
+        if self.session_has_exact_owner(session_id, &owner) {
+            return Some(BackgroundOwnerAttach::AlreadyOwned);
+        }
+
+        if let Some(binding) = self.reusable_session_binding(session_id) {
+            return Some(self.attach_background_owner_if_current(session_id, owner, binding));
+        }
+
+        let recovering = self.recovering_sidecars.get_mut(session_id)?;
+        recovering.add_owner(owner);
+        Some(BackgroundOwnerAttach::Recovering)
     }
 
     /// Resolve a logical BackgroundCompletion owner to the current process.
