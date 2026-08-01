@@ -1,14 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
-  freezeCurrentSessionMetadataForImDetach,
-  getAgentState,
-  getSessionId,
-  materializeCurrentSessionMetadataForPublishedReset,
-  materializePendingDesktopSession as materializeBuiltinPendingDesktopSession,
-  resetSession,
-} from '../agent-session';
-import {
   cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
@@ -21,6 +13,7 @@ import {
   getActiveRuntimeType,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
+  getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
@@ -65,7 +58,11 @@ import type {
 } from './types';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
-import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
+import {
+  findAgentByWorkspacePath,
+  getEffectiveOfficialToolIdsForSession,
+  loadConfig as loadAdminConfig,
+} from '../utils/admin-config';
 import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
@@ -83,7 +80,7 @@ import {
   isPermissionModeForRuntimeIdentity,
   type RuntimeBackedProviderIdentity,
 } from '../../shared/providerExecution';
-import type { SessionMessage } from '../types/session';
+import type { SessionMessage, SessionMetadata } from '../types/session';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import {
   DESKTOP_CHANNEL_DELIVERY,
@@ -91,6 +88,19 @@ import {
   SESSION_BOUND_CHANNEL_DELIVERY,
   injectedTurnChannelDelivery,
 } from '../session-core/channel-delivery';
+import type { AgentConfig } from '../../shared/types/agent';
+import { createMaterializedSessionMetadata, isLiveFollowScenario } from '../utils/session-materialization';
+import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
+import {
+  commitPendingProductSession,
+  freezeCurrentProductSessionMetadata,
+  getCurrentProductSessionId,
+  getCurrentProductSessionContext,
+  preparePendingProductSession,
+  publishCurrentProductSessionMetadata,
+  resetProductSessionBinding,
+  rollbackPendingProductSession,
+} from './product-session-binding';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -144,7 +154,7 @@ async function stopExternalTarget(): Promise<boolean> {
 }
 
 function getRuntimeSessionId(): string {
-  return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
+  return getExternalSessionId() || getCurrentBoundSessionId() || getCurrentProductSessionId();
 }
 
 function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineReplayMessage {
@@ -155,7 +165,7 @@ function sessionMessageToReplayMessage(message: SessionMessage): SessionEngineRe
 }
 
 function getRuntimeWorkspacePath(): string {
-  return getExternalSessionWorkspacePath() || getAgentState().agentDir || '';
+  return getExternalSessionWorkspacePath() || getCurrentProductSessionContext().workspacePath;
 }
 
 function getLatestExternalResult(): string {
@@ -170,9 +180,7 @@ function getLatestExternalResult(): string {
   return latestResult.trim() || NO_TEXT_RESPONSE;
 }
 
-type ExternalFreezeSnapshotPatch = NonNullable<
-  Parameters<typeof freezeCurrentSessionMetadataForImDetach>[0]
->;
+type ExternalFreezeSnapshotPatch = Partial<SessionMetadata> & Pick<SessionMetadata, 'configSnapshotAt'>;
 
 function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   const runtime = getActiveRuntimeType();
@@ -182,6 +190,7 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   const reasoningEffort = getExternalSessionReasoningEffort() ?? undefined;
   const patch: ExternalFreezeSnapshotPatch = {
     runtime,
+    configSnapshotAt: new Date().toISOString(),
   };
   if (runtime !== 'builtin' && runtimeSource) patch.runtimeSource = runtimeSource;
   if (model) patch.model = model;
@@ -197,6 +206,35 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
     };
   }
   return patch;
+}
+
+function createExternalProductSessionMetadata(
+  sessionId: string,
+  workspacePath: string,
+  scenario: 'desktop' | 'agent-channel',
+  origin?: import('../../shared/session-origin').SessionOrigin,
+): { metadata: SessionMetadata; snapshotKind: string } {
+  const agent = findAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
+  const runtime = getActiveRuntimeType();
+  const runtimeSource = getActiveRuntimeSource();
+  const metadata = createMaterializedSessionMetadata({
+    agentDir: workspacePath,
+    sessionId,
+    scenario,
+    agent,
+    runtimeOverride: runtime,
+    runtimeSourceOverride: runtimeSource,
+    managedCodexProviderReady: isManagedCodexProviderReady(loadAdminConfig()),
+    fallbackRuntime: runtime,
+    title: 'New Chat',
+    origin,
+  });
+  return {
+    metadata,
+    snapshotKind: agent
+      ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned')
+      : `runtime:${runtime}`,
+  };
 }
 
 export function createExternalSessionEngine(): SessionEngine {
@@ -239,9 +277,14 @@ export function createExternalSessionEngine(): SessionEngine {
       const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
       const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
       const systemInitPayload = getExternalSystemInitPayload();
+      const productContext = getCurrentProductSessionContext();
       return {
         sessionId,
-        initState: { ...getAgentState(), sessionState: getExternalSessionState() },
+        initState: {
+          agentDir: productContext.workspacePath,
+          sessionState: getExternalSessionState(),
+          hasInitialPrompt: productContext.hasInitialPrompt,
+        },
         replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
@@ -710,38 +753,62 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async materializePendingDesktopSession(request) {
-      const runtimeSessionIdBefore = getExternalSessionId() || undefined;
-      if (request.phase === 'commit' || request.phase === undefined) {
-        await awaitExternalSessionStarting();
-        if (hasExternalRuntimeProcess()) {
-          await stopExternalSession();
-        }
+      const phase = request.phase ?? 'commit';
+      if (phase === 'rollback') {
+        return rollbackPendingProductSession(request.preparedSessionId);
       }
-      const result = await materializeBuiltinPendingDesktopSession({
-        phase: request.phase,
+      if (phase === 'prepare') {
+        return preparePendingProductSession(
+          { snapshotPatch: request.snapshotPatch, origin: request.origin },
+          {
+            hasActiveWork: isExternalSessionBusy() || getExternalQueueStatus().length > 0,
+            createPreparedMetadata() {
+              const targetSessionId = randomUUID();
+              const created = createExternalProductSessionMetadata(
+                targetSessionId,
+                request.workspacePath,
+                'desktop',
+                request.origin,
+              );
+              return {
+                targetSessionId,
+                reusingNativeSession: false,
+                snapshotKind: created.snapshotKind,
+                metadata: created.metadata,
+              };
+            },
+          },
+        );
+      }
+      if (phase !== 'commit') {
+        return { success: false, error: `Unsupported materialize phase: ${phase}`, status: 400 };
+      }
+
+      await awaitExternalSessionStarting();
+      const nativeSessionId = getExternalNativeSessionId() || undefined;
+      return commitPendingProductSession({
         preparedSessionId: request.preparedSessionId,
-        snapshotPatch: request.snapshotPatch,
-        origin: request.origin,
-      });
-      if ((request.phase === 'commit' || request.phase === undefined) && result.success && result.sessionId) {
-        if (runtimeSessionIdBefore && runtimeSessionIdBefore !== result.sessionId) {
-          const updated = await updateSessionMetadata(result.sessionId, { runtimeSessionId: runtimeSessionIdBefore });
-          if (!updated) {
-            console.warn(`[session-engine] external materialize: failed to preserve runtimeSessionId for ${result.sessionId}`);
+        async beforeBind() {
+          if (hasExternalRuntimeProcess()) await stopExternalSession();
+        },
+        async afterBind(_prepared, metadata) {
+          if (nativeSessionId && metadata.runtimeSessionId !== nativeSessionId) {
+            const updated = await updateSessionMetadata(metadata.id, { runtimeSessionId: nativeSessionId });
+            if (!updated) {
+              console.warn(`[session-engine] external materialize: failed to preserve runtimeSessionId for ${metadata.id}`);
+            }
           }
-        }
-        restoreExternalSessionState(result.sessionId, request.workspacePath, { type: 'desktop' });
-      }
-      return result;
+          restoreExternalSessionState(metadata.id, request.workspacePath, { type: 'desktop' });
+        },
+      });
     },
 
     freezeCurrentSessionForImDetach(options) {
-      return freezeCurrentSessionMetadataForImDetach(
-        buildExternalFreezeSnapshotPatch(),
-        {
-          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-        },
-      );
+      return freezeCurrentProductSessionMetadata({
+        workspacePath: getRuntimeWorkspacePath(),
+        snapshotPatch: buildExternalFreezeSnapshotPatch(),
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
+      });
     },
 
     updateRuntimeConfig(patch, options) {
@@ -811,34 +878,30 @@ export function createExternalSessionEngine(): SessionEngine {
       if (hasExternalRuntimeProcess()) {
         await stopExternalSession();
       }
-      await resetSession();
-      const newSessionId = getSessionId();
-      if (newSessionId) {
-        restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-      }
+      const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+      broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+      restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
       return { success: true, sessionId: newSessionId };
     },
 
     async resetForNewImSession(workspacePath, options) {
       await awaitExternalSessionStarting();
-      const freeze = await freezeCurrentSessionMetadataForImDetach(
-        buildExternalFreezeSnapshotPatch(),
-        {
-          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-        },
-      );
+      const freeze = await freezeCurrentProductSessionMetadata({
+        workspacePath,
+        snapshotPatch: buildExternalFreezeSnapshotPatch(),
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
+      });
       if (!freeze.success) {
         return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
       }
       if (hasExternalRuntimeProcess()) {
         await stopExternalSession();
       }
-      await resetSession();
-      await materializeCurrentSessionMetadataForPublishedReset();
-      const newSessionId = getSessionId();
-      if (newSessionId) {
-        restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-      }
+      const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+      await publishCurrentProductSessionMetadata(sessionId =>
+        createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
+      broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+      restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
       return { success: true, sessionId: newSessionId };
     },
   };

@@ -2004,6 +2004,10 @@ export function getExternalSessionId(): string {
   return getExternalLifecycleSessionId();
 }
 
+export function getExternalNativeSessionId(): string {
+  return getExternalRuntimeSessionId();
+}
+
 export function isExternalSessionStateRestoredFor(sessionId: string): boolean {
   if (getExternalLifecycleSessionId() !== sessionId) return false;
   if (getExternalTranscriptSessionId() !== sessionId) return false;

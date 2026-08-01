@@ -46,6 +46,12 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 
 `SessionEngine` 是 Sidecar route 面向“当前会话运行时”的统一门面。Route handler 只负责 HTTP payload shaping、validation 与 response mapping；runtime 选择由 `selector.ts` 通过 `shouldUseExternalRuntime()` 统一完成。
 
+`product-session-binding.ts` 是 facade 内唯一的 product Session identity transaction：
+current/transitioning Session id、pending materialization 以及 metadata freeze/publish 在这里
+提交；Builtin/External adapter 只提供自己的 native process teardown/bind 动作。Runtime-native
+SDK UUID、Codex thread id 等不进入该 owner，也不能用 builtin `getSessionId()` 给 external
+路径兜底。
+
 核心职责：
 
 - `sendDesktopMessage()`：保持 `/chat/send` 的 admission 语义；external runtime 继续立即返回并后台串行 dispatch，避免 Rust proxy 120s 上限。

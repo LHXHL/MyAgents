@@ -85,6 +85,14 @@ describe('SessionEngine runtime boundary', () => {
     expect(violations).toEqual([]);
   });
 
+  it('keeps external product binding independent from builtin lifecycle operations', () => {
+    const source = readFileSync(join(repoRoot, 'src/server/session-engine/external-adapter.ts'), 'utf8');
+    const builtinImport = source.match(/import\s*{([\s\S]*?)}\s*from '\.\.\/agent-session';/)?.[1] ?? '';
+
+    expect(builtinImport).not.toMatch(/\b(?:resetSession|getSessionId|materializePendingDesktopSession|materializeCurrentSessionMetadataForPublishedReset|freezeCurrentSessionMetadataForImDetach)\b/);
+    expect(source).toContain("from './product-session-binding'");
+  });
+
   it('keeps builtin owner modules independent from routes and SessionEngine', () => {
     const ownerFiles = listSourceFiles('src/server/builtin-session');
 

@@ -15,9 +15,9 @@ vi.mock('../SessionStore', async (importOriginal) => {
 
 import { claimPreparedSessionForTurnAdmission, deleteSession, getSessionMetadata, migratePendingSessionIdentity, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
 import {
-  resetSessionMaterializationState,
-  setPendingDesktopMaterialization,
-} from '../builtin-session/materialization';
+  resetProductSessionMaterializationState as resetSessionMaterializationState,
+  setPendingProductSessionMaterialization as setPendingDesktopMaterialization,
+} from '../session-engine/product-session-binding';
 import { claimPreparedMaterializationForTurnAdmission, ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession } from '../agent-session';
 import type { SessionMetadata } from '../types/session';
 
@@ -56,7 +56,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     mockedGetSessionMetadata.mockReturnValue({
@@ -85,7 +85,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     mockedGetSessionMetadata.mockReturnValue({
@@ -115,7 +115,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({
@@ -142,7 +142,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     mockedClaimPreparedSessionForTurnAdmission.mockResolvedValue({ status: 'not-found' });
@@ -155,7 +155,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     mockedGetSessionMetadata.mockReturnValue({
@@ -185,7 +185,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: false,
+      reusingNativeSession: false,
       snapshotKind: 'owned',
     });
     const preparedMeta = {
@@ -330,7 +330,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     setPendingDesktopMaterialization({
       priorSessionId: 'pending-source',
       targetSessionId: 'prepared-target',
-      reusingLiveSdkSession: true,
+      reusingNativeSession: true,
       snapshotKind: 'owned',
     });
     const preparedMeta = {

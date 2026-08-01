@@ -326,6 +326,13 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 ### Builtin Session Owner Split（Phase6 / Phase7）
 
+Product Session 的 current identity、pending desktop materialization 与 metadata
+freeze/publish 不属于任一 Runtime。它们由
+`src/server/session-engine/product-session-binding.ts` 线性化：prepare/commit/rollback
+共享同一个 durable marker，commit 只在 adapter 完成本 Runtime 的 process teardown 后
+发布新 product Session binding。Builtin SDK UUID 与 external thread/session id 仍分别归各自
+Runtime owner；adapter 不得借用另一 Runtime 的 reset、materializer 或 session id 作为 fallback。
+
 `src/server/agent-session.ts` 是 builtin SDK 会话的 public facade：`SessionEngine` adapter、legacy callers、route-facing code 仍从这里 import。Phase6 后，facade 后面的核心 mutable state 分给 `src/server/builtin-session/` owner；Phase7 后，turn terminal 与 transcript persistence 这两类最重行为也拆到明确 owner：
 
 | Owner | 拥有内容 | 典型写入 / 行为入口 |
