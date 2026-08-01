@@ -50,6 +50,11 @@ fn next_transport_generation() -> u64 {
 const SSE_READ_TIMEOUT_SECS: u64 = 60;
 const SSE_RETRY_BASE_DELAY_MS: u64 = 250;
 const SSE_RETRY_MAX_DELAY_MS: u64 = 5_000;
+/// A legal SSE stream may run indefinitely, but one event must remain bounded.
+/// Normal tool/result payloads spill to `/refs` far below this threshold, so
+/// this is a protocol boundary rather than a product payload limit.
+const SSE_EVENT_MAX_BYTES: usize = 8 * 1024 * 1024;
+const SSE_EVENT_SEPARATOR_MAX_BYTES: usize = 4;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
 const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
 
@@ -374,6 +379,11 @@ enum SseAttemptOutcome {
         transport_generation: Option<u64>,
         reason: String,
     },
+    ProtocolBudgetBreach {
+        transport_generation: u64,
+        observed_event_bytes: usize,
+        limit_bytes: usize,
+    },
 }
 
 fn retry_delay_ms(consecutive_failures: u32) -> u64 {
@@ -388,6 +398,19 @@ fn next_retry_failure_count(previous: u32, made_progress: bool) -> u32 {
         1
     } else {
         previous.saturating_add(1)
+    }
+}
+
+fn next_retry_failure_count_for_outcome(previous: u32, outcome: &SseAttemptOutcome) -> u32 {
+    match outcome {
+        SseAttemptOutcome::Disconnected { made_progress, .. } => {
+            next_retry_failure_count(previous, *made_progress)
+        }
+        // Receiving bytes is not progress when the peer never produces a
+        // protocol-valid bounded event. Otherwise the same broken Sidecar can
+        // force a reconnect/allocation loop at the 250 ms base delay.
+        SseAttemptOutcome::ProtocolBudgetBreach { .. } => previous.saturating_add(1),
+        SseAttemptOutcome::Stopped => previous,
     }
 }
 
@@ -444,7 +467,7 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
         }
 
         let stream_url = format!("{}/chat/stream", base_url.trim_end_matches('/'));
-        match connect_sse_attempt(
+        let outcome = connect_sse_attempt(
             app,
             state,
             subscription_generation,
@@ -452,16 +475,15 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
             running,
             connection_key,
         )
-        .await
-        {
+        .await;
+        consecutive_failures = next_retry_failure_count_for_outcome(consecutive_failures, &outcome);
+        match outcome {
             SseAttemptOutcome::Stopped => break,
             SseAttemptOutcome::Disconnected {
-                made_progress,
                 transport_generation,
                 reason,
+                ..
             } => {
-                consecutive_failures =
-                    next_retry_failure_count(consecutive_failures, made_progress);
                 let delay_ms = retry_delay_ms(consecutive_failures);
                 if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
                     ulog_warn!(
@@ -471,6 +493,28 @@ async fn run_sse_supervisor<R: tauri::Runtime>(
                         consecutive_failures,
                         delay_ms,
                         reason
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach {
+                transport_generation,
+                observed_event_bytes,
+                limit_bytes,
+            } => {
+                let delay_ms = retry_delay_ms(consecutive_failures);
+                // Log only bounded diagnostics, never the offending payload.
+                // The same first/every-tenth cadence as other disconnects
+                // prevents a broken generation from flooding unified logs.
+                if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
+                    ulog_warn!(
+                        "[sse-proxy] Subscription {} protocol event budget exceeded (transport_generation={}, observed_bytes={}, limit_bytes={}, attempt={}, retry_delay_ms={})",
+                        connection_key,
+                        transport_generation,
+                        observed_event_bytes,
+                        limit_bytes,
+                        consecutive_failures,
+                        delay_ms
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -573,8 +617,45 @@ async fn connect_sse_attempt<R: tauri::Runtime>(
         running,
         connection_key,
         std::time::Duration::from_secs(SSE_READ_TIMEOUT_SECS),
+        SSE_EVENT_MAX_BYTES,
     )
     .await
+}
+
+fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    // Returns (position_of_event_end, separator_length). Prefer the earliest
+    // boundary so another event is never swallowed into the current one.
+    let lf = buf.windows(2).position(|window| window == b"\n\n");
+    let crlf = buf.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if lf <= crlf => Some((lf, 2)),
+        (Some(_), Some(crlf)) => Some((crlf, 4)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+/// Drain at most one complete event while enforcing a budget on the bytes
+/// before its delimiter. At exactly the limit, the delimiter may arrive in a
+/// later network chunk without turning a legal frame into a false breach.
+fn take_next_sse_event(
+    buffer: &mut Vec<u8>,
+    max_event_bytes: usize,
+) -> Result<Option<String>, usize> {
+    if let Some((position, separator_len)) = find_event_boundary(buffer) {
+        if position > max_event_bytes {
+            return Err(position);
+        }
+        let event = String::from_utf8_lossy(&buffer[..position]).to_string();
+        buffer.drain(..position + separator_len);
+        return Ok(Some(event));
+    }
+
+    if buffer.len() > max_event_bytes {
+        return Err(buffer.len());
+    }
+    Ok(None)
 }
 
 async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
@@ -585,6 +666,7 @@ async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
     running: &AtomicBool,
     connection_key: &str,
     read_timeout: std::time::Duration,
+    max_event_bytes: usize,
 ) -> SseAttemptOutcome {
     use futures_util::StreamExt;
 
@@ -672,61 +754,64 @@ async fn connect_sse_attempt_with_read_timeout<R: tauri::Runtime>(
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk_count: u64 = 0;
 
-    fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
-        // Returns (position_of_event_end, separator_length).
-        // Prefer the EARLIEST boundary so we don't accidentally swallow
-        // another event into the current one if both kinds appear.
-        let lf = buf.windows(2).position(|w| w == b"\n\n");
-        let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n");
-        match (lf, crlf) {
-            (Some(l), Some(c)) => {
-                if l <= c {
-                    Some((l, 2))
-                } else {
-                    Some((c, 4))
-                }
-            }
-            (Some(l), None) => Some((l, 2)),
-            (None, Some(c)) => Some((c, 4)),
-            (None, None) => None,
-        }
-    }
-
     while running.load(Ordering::SeqCst) {
         match stream.next().await {
             Some(Ok(chunk)) => {
                 chunk_count += 1;
-                buffer.extend_from_slice(&chunk);
-
-                // Process complete SSE events (end with \n\n or \r\n\r\n)
-                while let Some((pos, sep_len)) = find_event_boundary(&buffer) {
-                    // Decode the complete event region as UTF-8 (lossy is
-                    // fine HERE — by the time we have a full event boundary,
-                    // any multi-byte sequence has its final byte present).
-                    let event_str = String::from_utf8_lossy(&buffer[..pos]).to_string();
-                    // O(1) amortised drain.
-                    buffer.drain(..pos + sep_len);
-
-                    // Fast local cancellation check before the authoritative
-                    // generation fence below.
-                    if !running.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    // Parse and emit with the renderer-surface prefix.
-                    if let Some((event_name, data)) = parse_sse_event(&event_str) {
-                        if !emit_sse_event_if_current(
-                            app,
-                            state,
-                            connection_key,
-                            subscription_generation,
+                let mut chunk_offset = 0;
+                while chunk_offset < chunk.len() {
+                    // Never copy an arbitrarily large network chunk into the
+                    // parser buffer. Four bytes beyond the event budget are
+                    // sufficient to recognize either legal SSE delimiter.
+                    let buffer_limit =
+                        max_event_bytes.saturating_add(SSE_EVENT_SEPARATOR_MAX_BYTES);
+                    let available = buffer_limit.saturating_sub(buffer.len());
+                    if available == 0 {
+                        return SseAttemptOutcome::ProtocolBudgetBreach {
                             transport_generation,
-                            event_name,
-                            data,
-                        )
-                        .await
-                        {
+                            observed_event_bytes: buffer.len(),
+                            limit_bytes: max_event_bytes,
+                        };
+                    }
+                    let append_len = available.min(chunk.len() - chunk_offset);
+                    buffer.extend_from_slice(&chunk[chunk_offset..chunk_offset + append_len]);
+                    chunk_offset += append_len;
+
+                    // Process complete SSE events (end with \n\n or \r\n\r\n)
+                    loop {
+                        let event_str = match take_next_sse_event(&mut buffer, max_event_bytes) {
+                            Ok(Some(event)) => event,
+                            Ok(None) => break,
+                            Err(observed_event_bytes) => {
+                                return SseAttemptOutcome::ProtocolBudgetBreach {
+                                    transport_generation,
+                                    observed_event_bytes,
+                                    limit_bytes: max_event_bytes,
+                                };
+                            }
+                        };
+
+                        // Fast local cancellation check before the authoritative
+                        // generation fence below.
+                        if !running.load(Ordering::SeqCst) {
                             return SseAttemptOutcome::Stopped;
+                        }
+
+                        // Parse and emit with the renderer-surface prefix.
+                        if let Some((event_name, data)) = parse_sse_event(&event_str) {
+                            if !emit_sse_event_if_current(
+                                app,
+                                state,
+                                connection_key,
+                                subscription_generation,
+                                transport_generation,
+                                event_name,
+                                data,
+                            )
+                            .await
+                            {
+                                return SseAttemptOutcome::Stopped;
+                            }
                         }
                     }
                 }
@@ -1123,6 +1208,24 @@ mod tests {
         format!("http://{}/chat/stream", address)
     }
 
+    async fn loopback_owned_response(raw_response: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback server");
+        let address = listener.local_addr().expect("loopback address");
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(&raw_response)
+                .await
+                .expect("write test response");
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{}/chat/stream", address)
+    }
+
     async fn loopback_port_with_request_signal(
         raw_response: &'static [u8],
     ) -> (u16, tokio::sync::oneshot::Receiver<()>) {
@@ -1213,6 +1316,48 @@ mod tests {
     }
 
     #[test]
+    fn protocol_budget_breach_never_resets_retry_backoff() {
+        let breach = SseAttemptOutcome::ProtocolBudgetBreach {
+            transport_generation: 4,
+            observed_event_bytes: 33,
+            limit_bytes: 32,
+        };
+        let after_first = next_retry_failure_count_for_outcome(7, &breach);
+        let after_second = next_retry_failure_count_for_outcome(after_first, &breach);
+
+        assert_eq!(after_first, 8);
+        assert_eq!(after_second, 9);
+        assert_eq!(retry_delay_ms(after_second), SSE_RETRY_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn event_budget_is_per_frame_and_accepts_a_split_delimiter_at_the_limit() {
+        let mut buffer = vec![b'x'; 16];
+        assert_eq!(take_next_sse_event(&mut buffer, 16), Ok(None));
+
+        buffer.extend_from_slice(b"\n\nsmall\n\n");
+        assert_eq!(
+            take_next_sse_event(&mut buffer, 16),
+            Ok(Some("x".repeat(16)))
+        );
+        assert_eq!(
+            take_next_sse_event(&mut buffer, 16),
+            Ok(Some("small".to_string()))
+        );
+        assert_eq!(take_next_sse_event(&mut buffer, 16), Ok(None));
+    }
+
+    #[test]
+    fn event_budget_rejects_terminated_and_unterminated_frames_over_the_limit() {
+        let mut unterminated = vec![b'x'; 17];
+        assert_eq!(take_next_sse_event(&mut unterminated, 16), Err(17));
+
+        let mut terminated = vec![b'x'; 17];
+        terminated.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(take_next_sse_event(&mut terminated, 16), Err(17));
+    }
+
+    #[test]
     fn tauri_sse_envelope_exposes_transport_generation_without_changing_data() {
         let envelope = TauriSseEnvelope {
             transport_generation: 42,
@@ -1250,6 +1395,9 @@ mod tests {
             SseAttemptOutcome::Disconnected { made_progress, .. } => {
                 assert!(!made_progress)
             }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("connect failure is not a protocol breach")
+            }
             SseAttemptOutcome::Stopped => panic!("connect failure must be retryable"),
         }
 
@@ -1265,6 +1413,9 @@ mod tests {
             } => {
                 assert!(!made_progress);
                 assert!(reason.contains("503"));
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("HTTP status is not a protocol breach")
             }
             SseAttemptOutcome::Stopped => panic!("HTTP status must be retryable"),
         }
@@ -1296,6 +1447,9 @@ mod tests {
             } => {
                 assert!(made_progress);
                 assert!(reason.contains("stream ended"));
+            }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("bounded events must not breach")
             }
             SseAttemptOutcome::Stopped => panic!("EOF must be retryable"),
         }
@@ -1329,6 +1483,9 @@ mod tests {
                 assert!(made_progress);
                 assert!(reason.contains("stream error"));
             }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("bounded event must not breach")
+            }
             SseAttemptOutcome::Stopped => panic!("body error must be retryable"),
         }
     }
@@ -1348,6 +1505,7 @@ mod tests {
             &running,
             "test",
             std::time::Duration::from_millis(25),
+            SSE_EVENT_MAX_BYTES,
         )
         .await
         {
@@ -1359,7 +1517,73 @@ mod tests {
                 assert!(!made_progress);
                 assert!(reason.contains("stream error"));
             }
+            SseAttemptOutcome::ProtocolBudgetBreach { .. } => {
+                panic!("read timeout is not a protocol breach")
+            }
             SseAttemptOutcome::Stopped => panic!("read timeout must be retryable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_budget_breach_is_attempt_local_and_next_transport_recovers() {
+        let app = tauri::test::mock_app();
+        let running = AtomicBool::new(true);
+        let state = active_test_state("test", 1).await;
+        let mut oversized_response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                .to_vec();
+        oversized_response.extend_from_slice(&vec![b'x'; 33]);
+        let oversized_url = loopback_owned_response(oversized_response).await;
+
+        let breached_generation = match connect_sse_attempt_with_read_timeout(
+            app.handle(),
+            &state,
+            1,
+            &oversized_url,
+            &running,
+            "test",
+            std::time::Duration::from_secs(1),
+            32,
+        )
+        .await
+        {
+            SseAttemptOutcome::ProtocolBudgetBreach {
+                transport_generation,
+                observed_event_bytes,
+                limit_bytes,
+            } => {
+                assert_eq!(observed_event_bytes, 33);
+                assert_eq!(limit_bytes, 32);
+                transport_generation
+            }
+            _ => panic!("unterminated oversized event must be a protocol breach"),
+        };
+
+        let recovered_url = loopback_response(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: recovered\n\n",
+        )
+        .await;
+        match connect_sse_attempt_with_read_timeout(
+            app.handle(),
+            &state,
+            1,
+            &recovered_url,
+            &running,
+            "test",
+            std::time::Duration::from_secs(1),
+            32,
+        )
+        .await
+        {
+            SseAttemptOutcome::Disconnected {
+                made_progress,
+                transport_generation: Some(recovered_generation),
+                ..
+            } => {
+                assert!(made_progress);
+                assert!(recovered_generation > breached_generation);
+            }
+            _ => panic!("the next bounded transport must recover normally"),
         }
     }
 

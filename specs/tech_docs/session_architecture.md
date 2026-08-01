@@ -638,7 +638,7 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 历史教训：`390d38ee`（4-25）曾给 `/chat/stream` 加 last-consumer grace interrupt，把"关 Tab"误当"杀 turn"，regress 了 BackgroundCompletion 与 cron/session-send（turn 被 interrupt → `[ERROR turn_failed]` 投回飞书）。最终修法是**彻底删除该 interrupt**；`index.ts` 留有 load-bearing 注释禁止复活。改 SSE 断连相关逻辑前 MUST 理解这条。
 
-Tauri 的 `/chat/stream` 由 Rust per-`connectionKey` supervisor 维护：每个 attempt 都通过 `SidecarManager` 的 `sessionIdHint + SidecarOwner` 解析当前 ready 端口，connect error、非 2xx、body error、read timeout、EOF 统一 capped backoff。Renderer 不缓存 SSE URL、不监听一次性 error 来重建 proxy；`start_sse_proxy` ack 只表示 subscription active。subscription replacement generation 防旧 task 清理/发往新订阅，Rust process-global transport generation 随每条 `{ transportGeneration, data }` envelope 转发，供 Renderer 识别物理断线边界。普通 Tab 与 Floating Ball 共用这条 transport；后者只恢复后续实时事件，不拥有普通 Chat 的完整 snapshot hydration 状态机。
+Tauri 的 `/chat/stream` 由 Rust per-`connectionKey` supervisor 维护：每个 attempt 都通过 `SidecarManager` 的 `sessionIdHint + SidecarOwner` 解析当前 ready 端口，connect error、非 2xx、body error、read timeout、EOF 统一 capped backoff。合法流可以无限持续，但单个delimiter前event最多8MiB；超限是独立protocol breach，不算transport progress、不把backoff重置到250ms，诊断只记录字节数而不记录payload，下一transport generation仍可正常恢复。Renderer 不缓存 SSE URL、不监听一次性 error 来重建 proxy；`start_sse_proxy` ack 只表示 subscription active。subscription replacement generation 防旧 task 清理/发往新订阅，Rust process-global transport generation 随每条 `{ transportGeneration, data }` envelope 转发，供 Renderer 识别物理断线边界。普通 Tab 与 Floating Ball 共用这条 transport；后者只恢复后续实时事件，不拥有普通 Chat 的完整 snapshot hydration 状态机。
 
 ### 问题场景
 
