@@ -460,7 +460,6 @@ pub fn run() {
             cron_task::commands::cmd_get_workspace_cron_tasks,
             session_metadata::cmd_list_session_metadata,
             cron_task::commands::cmd_get_session_cron_task,
-            cron_task::commands::cmd_update_cron_task_session,
             session_goal::commands::cmd_create_session_goal,
             session_goal::commands::cmd_get_session_goal,
             session_goal::commands::cmd_pause_session_goal,

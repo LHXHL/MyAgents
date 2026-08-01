@@ -232,15 +232,6 @@ impl CronTaskManager {
         Ok(task_to_cron(&task))
     }
 
-    pub async fn update_task_session(
-        &self,
-        id: &str,
-        session_id: String,
-    ) -> Result<CronTask, String> {
-        let task = task_store()?.set_execution_session(id, session_id).await?;
-        Ok(task_to_cron(&task))
-    }
-
     pub async fn trigger_now(&self, id: &str) -> Result<TriggerNowInfo, String> {
         let session_id = crate::task_scheduler::get_task_scheduler()
             .trigger_now(id)

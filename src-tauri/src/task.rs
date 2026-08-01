@@ -1268,6 +1268,7 @@ impl TaskStore {
         // Validate workspace_path + name up front so we don't half-write.
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
+        validate_new_task_session_binding(input.run_mode, input.preselected_session_id.as_deref())?;
         // PRD 0.2.9 — Pin runtime='builtin' when provider_id is set with no
         // explicit runtime (closes the "Agent runtime later flips to
         // external" cross-talk hole). Idempotent.
@@ -1574,6 +1575,7 @@ impl TaskStore {
     ) -> Result<Task, String> {
         validate_task_name(&input.name)?;
         validate_safe_id(&input.alignment_session_id, "alignmentSessionId")?;
+        validate_new_task_session_binding(input.run_mode, None)?;
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
@@ -2545,37 +2547,6 @@ impl TaskStore {
         Ok(updated)
     }
 
-    pub async fn set_execution_session(
-        &self,
-        id: &str,
-        session_id: String,
-    ) -> Result<Task, String> {
-        self.ensure_writable()?;
-        let projected_session_id = session_id.clone();
-        let (mut inner, session_lifecycle) = self
-            .lock_for_session_protection(id, move |task| {
-                let mut projected = task.clone();
-                projected.preselected_session_id = Some(projected_session_id.clone());
-                if !projected
-                    .session_ids
-                    .iter()
-                    .any(|value| value == &projected_session_id)
-                {
-                    projected.session_ids.push(projected_session_id.clone());
-                }
-                task_protected_session_ids(&projected)
-            })
-            .await?;
-        let result = self.set_execution_session_locked(&mut inner, id, &session_id);
-        drop(inner);
-        drop(session_lifecycle);
-        let (updated, appended) = result?;
-        if appended {
-            Self::emit_session_appended(&updated, &session_id);
-        }
-        Ok(updated)
-    }
-
     fn set_execution_session_locked(
         &self,
         inner: &mut HashMap<String, Task>,
@@ -2887,6 +2858,27 @@ fn validate_task_name(name: &str) -> Result<(), String> {
     // PRD §3.2 says "短，<60 字符" — enforce char count (not bytes).
     if trimmed.chars().count() > 120 {
         return Err("task name exceeds 120 chars".to_string());
+    }
+    Ok(())
+}
+
+fn validate_new_task_session_binding(
+    run_mode: Option<TaskRunMode>,
+    preselected_session_id: Option<&str>,
+) -> Result<(), String> {
+    if run_mode != Some(TaskRunMode::SingleSession) {
+        return Ok(());
+    }
+    let session_id = preselected_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "single-session Task creation requires a materialized preselectedSessionId".to_string()
+        })?;
+    if session_id.starts_with("pending-") {
+        return Err(
+            "single-session Task creation requires a materialized preselectedSessionId".to_string(),
+        );
     }
     Ok(())
 }
@@ -3955,6 +3947,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_session_create_requires_a_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for preselected_session_id in [None, Some("   "), Some("pending-tab-1")] {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = preselected_session_id.map(str::to_string);
+            let error = store
+                .create_direct(input)
+                .await
+                .expect_err("pending or empty single-session binding must not commit a Task");
+            assert_eq!(
+                error,
+                "single-session Task creation requires a materialized preselectedSessionId"
+            );
+        }
+
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multiple_single_session_tasks_can_share_one_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for _ in 0..2 {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = Some("session-real".to_string());
+            let created = store.create_direct(input).await.unwrap();
+            assert_eq!(
+                created.preselected_session_id.as_deref(),
+                Some("session-real")
+            );
+        }
+
+        assert_eq!(store.list(TaskListFilter::default()).await.len(), 2);
+    }
+
+    #[tokio::test]
     async fn corrupt_store_is_all_or_nothing_and_read_only() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -4388,41 +4427,6 @@ mod tests {
             .session_ids
             .iter()
             .any(|id| id == "appended-session"));
-    }
-
-    #[tokio::test]
-    async fn set_execution_session_waits_before_rebinding_a_protected_task() {
-        ensure_test_docs_root();
-        let dir = tempdir().unwrap();
-        let ws = dir.path().join("workspace");
-        std::fs::create_dir_all(&ws).unwrap();
-        let store = Arc::new(TaskStore::new(dir.path().join("data")));
-        let mut input = sample_direct_input(&ws);
-        input.run_mode = Some(TaskRunMode::SingleSession);
-        input.preselected_session_id = Some("primary-session".to_string());
-        let created = store.create_direct(input).await.unwrap();
-        store
-            .update_status(status_input(
-                &created.id,
-                TaskStatus::Running,
-                TransitionActor::System,
-                Some(TransitionSource::Scheduler),
-            ))
-            .await
-            .unwrap();
-
-        let store_for_rebind = Arc::clone(&store);
-        let task_id = created.id.clone();
-        let updated = assert_waits_for_session_lifecycle("replacement-session", async move {
-            store_for_rebind
-                .set_execution_session(&task_id, "replacement-session".to_string())
-                .await
-        })
-        .await;
-        assert_eq!(
-            updated.preselected_session_id.as_deref(),
-            Some("replacement-session")
-        );
     }
 
     #[tokio::test]

@@ -1957,34 +1957,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     return () => clearTimeout(t);
   }, [showStartupOverlay]);
 
-  // Cron task management hook
-  const {
-    state: cronState,
-    enableCronMode,
-    disableCronMode,
-    updateConfig: _updateCronConfig,
-    updateRunningConfig,
-    setExecutionState: setCronExecutionState,
-    startTask: startCronTask,
-    stop: stopCronTask,
-    restoreFromTask: restoreCronTask,
-    updateSessionId: updateCronTaskSessionId,
-  } = useCronTask({
-    workspacePath: agentDir,
-    sessionId: sessionId ?? '',
-    onComplete: (task, reason) => {
-      console.log('[Chat] Cron task completed:', task.id, reason);
-    },
-    onExecutionComplete: (task, success) => {
-      // TabProvider owns exact-Session refresh from the same Tauri completion
-      // event. Chat only clears its local execution projection here.
-      const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
-      setIsLoading(false);
-    },
-  });
-
-  const materializeGoalOwner = useCallback(async () => {
+  const materializeScheduledOwner = useCallback(async () => {
     if (!sessionId) throw new Error('Goal requires a session identity.');
     if (!isPendingSessionId(sessionId)) return { sessionId, workspacePath: agentDir };
     if (!agentDir) throw new Error('Cannot materialize Goal without workspace path.');
@@ -2003,6 +1976,33 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setSessionMeta(result.metadata);
     return { sessionId: result.sessionId, workspacePath: agentDir };
   }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+
+  // Cron task management hook
+  const {
+    state: cronState,
+    enableCronMode,
+    disableCronMode,
+    updateConfig: _updateCronConfig,
+    updateRunningConfig,
+    setExecutionState: setCronExecutionState,
+    startTask: startCronTask,
+    stop: stopCronTask,
+    restoreFromTask: restoreCronTask,
+  } = useCronTask({
+    workspacePath: agentDir,
+    sessionId: sessionId ?? '',
+    materializeOwner: materializeScheduledOwner,
+    onComplete: (task, reason) => {
+      console.log('[Chat] Cron task completed:', task.id, reason);
+    },
+    onExecutionComplete: (task, success) => {
+      // TabProvider owns exact-Session refresh from the same Tauri completion
+      // event. Chat only clears its local execution projection here.
+      const effectiveSessionId = task.internalSessionId || task.sessionId;
+      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      setIsLoading(false);
+    },
+  });
   const {
     state: sessionGoalState,
     start: startGoal,
@@ -2014,7 +2014,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   } = useSessionGoal({
     workspacePath: agentDir,
     sessionId: sessionId ?? '',
-    materializeOwner: materializeGoalOwner,
+    materializeOwner: materializeScheduledOwner,
   });
 
   // PERFORMANCE: Ref-stabilize cronState for handleSendMessage
@@ -2095,28 +2095,6 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setGoalCancelConfirmOpen(false);
     setGoalDraftConfig(null);
   }, [sessionId]);
-
-  // Sync cron task's sessionId when session is created after task creation
-  // This handles two cases:
-  // 1. Task has empty sessionId (legacy) - needs to be updated
-  // 2. Task has pending sessionId (pending-xxx) and real sessionId is now available
-  const sessionIdSyncedRef = useRef<string | null>(null);
-  useEffect(() => {
-    const task = cronState.task;
-    if (!task || !sessionId) return;
-
-    // Skip if sessionId is still pending (no real session ID yet)
-    if (isPendingSessionId(sessionId)) return;
-
-    // If task has empty or pending sessionId but we now have a real sessionId, update the task
-    // Use ref to prevent duplicate updates for the same sessionId
-    const taskNeedsUpdate = task.sessionId === '' || isPendingSessionId(task.sessionId);
-    if (taskNeedsUpdate && sessionIdSyncedRef.current !== sessionId) {
-      sessionIdSyncedRef.current = sessionId;
-      console.log(`[Chat] Syncing cron task sessionId: taskId=${task.id}, oldSessionId=${task.sessionId}, newSessionId=${sessionId}`);
-      void updateCronTaskSessionId(sessionId);
-    }
-  }, [cronState.task, sessionId, updateCronTaskSessionId]);
 
   // File drop zone for chat area (HTML5 drag-drop for non-Tauri/development)
   const handleFileDrop = useCallback((files: File[]) => {
