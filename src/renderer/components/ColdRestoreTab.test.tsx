@@ -4,7 +4,7 @@
 // main regression risk. We render the real MemoizedTabContent with TabProvider
 // (and the heavy page components) mocked, and assert the cold tab renders a
 // placeholder while a live chat tab mounts TabProvider.
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,7 +21,13 @@ vi.mock('@/context/TabProvider', () => ({
 }));
 
 // Stub the heavy page subtrees so importing App stays cheap and side-effect free.
-vi.mock('@/pages/Chat', () => ({ default: () => <div data-testid="chat" /> }));
+const chatRenderSpy = vi.hoisted(() => vi.fn());
+vi.mock('@/pages/Chat', () => ({
+  default: ({ isWindowFocused }: { isWindowFocused: boolean }) => {
+    chatRenderSpy(isWindowFocused);
+    return <div data-testid="chat" />;
+  },
+}));
 vi.mock('@/pages/Launcher', () => ({ default: () => <div data-testid="launcher" /> }));
 vi.mock('@/pages/Settings', () => ({
   default: function MockSettings({ mode = 'settings' }: { mode?: 'settings' | 'capabilities' }) {
@@ -56,6 +62,7 @@ function coldTab(over: Partial<Tab> = {}): Tab {
 }
 
 const noopProps = {
+  isWindowFocused: true,
   isLoading: false,
   error: null,
   isDeferredMount: false,
@@ -116,6 +123,36 @@ describe('cold restored tab', () => {
     // Chat is route-split (React.lazy + Suspense, P1), so it resolves one
     // microtask after mount — await it rather than asserting synchronously.
     expect(await screen.findByTestId('chat')).not.toBeNull();
+  });
+
+  it('projects desktop focus only through the active Chat slot', async () => {
+    chatRenderSpy.mockClear();
+    const liveTab = coldTab({ restoreState: undefined });
+    const view = render(
+      <MemoizedTabContent tab={liveTab} isActive={false} {...noopProps} />,
+    );
+    await screen.findByTestId('chat');
+    const inactiveRenderCount = chatRenderSpy.mock.calls.length;
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive={false}
+        {...noopProps}
+        isWindowFocused={false}
+      />,
+    );
+    expect(chatRenderSpy).toHaveBeenCalledTimes(inactiveRenderCount);
+
+    view.rerender(
+      <MemoizedTabContent
+        tab={liveTab}
+        isActive
+        {...noopProps}
+        isWindowFocused={false}
+      />,
+    );
+    await waitFor(() => expect(chatRenderSpy).toHaveBeenLastCalledWith(false));
   });
 
   it('keeps Settings and Capabilities UI state in their own mounted Tab slots', async () => {

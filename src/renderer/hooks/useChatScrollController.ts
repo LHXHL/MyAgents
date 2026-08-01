@@ -38,7 +38,21 @@ export interface ChatScrollController {
 export interface UseChatScrollControllerOptions {
   messages: readonly MessageType[];
   isActive: boolean;
+  isWindowFocused?: boolean;
+  sessionId?: string | null;
   rootRef?: RefObject<HTMLElement | null>;
+}
+
+interface WindowFocusScrollSnapshot {
+  sessionId: string | null;
+  follow: boolean;
+  anchor: ScrollAnchorSnapshot | null;
+}
+
+interface PendingAnchorRestore {
+  anchor: ScrollAnchorSnapshot;
+  options?: RestoreAnchorOptions;
+  pending: boolean;
 }
 
 const MESSAGE_SCOPE_SELECTOR = '[data-chat-search-scope][data-message-id]';
@@ -89,6 +103,8 @@ function getToolHostMessageId(messages: readonly MessageType[], toolId: string):
 export function useChatScrollController({
   messages,
   isActive,
+  isWindowFocused = true,
+  sessionId,
   rootRef,
 }: UseChatScrollControllerOptions): ChatScrollController {
   const {
@@ -107,13 +123,23 @@ export function useChatScrollController({
   const isActiveRef = useRef(isActive);
   // eslint-disable-next-line react-hooks/refs
   isActiveRef.current = isActive;
+  const geometryActive = isActive && isWindowFocused;
+  const geometryActiveRef = useRef(geometryActive);
+  // eslint-disable-next-line react-hooks/refs
+  geometryActiveRef.current = geometryActive;
+  const sessionIdRef = useRef(sessionId ?? null);
+  // eslint-disable-next-line react-hooks/refs
+  sessionIdRef.current = sessionId ?? null;
   const rootRefRef = useRef(rootRef);
   // eslint-disable-next-line react-hooks/refs
   rootRefRef.current = rootRef;
-  const pendingAnchorRef = useRef<{ anchor: ScrollAnchorSnapshot; options?: RestoreAnchorOptions } | null>(null);
+  const pendingAnchorRef = useRef<PendingAnchorRestore | null>(null);
   const [anchorRestoreTick, setAnchorRestoreTick] = useState(0);
   const pendingBottomPinRef = useRef(false);
   const [bottomPinTick, setBottomPinTick] = useState(0);
+  const windowFocusSnapshotRef = useRef<WindowFocusScrollSnapshot | null>(null);
+  const previousWindowFocusedRef = useRef(isWindowFocused);
+  const previousIsActiveRef = useRef(isActive);
 
   const messageIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -141,13 +167,32 @@ export function useChatScrollController({
     };
   }, [scrollerRef]);
 
-  const restoreAnchor = useCallback((anchor: ScrollAnchorSnapshot, options?: RestoreAnchorOptions) => {
+  const restoreAnchor = useCallback((
+    anchor: ScrollAnchorSnapshot,
+    options: RestoreAnchorOptions | undefined,
+    restoreIntent: PendingAnchorRestore,
+  ) => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    const restoreSessionId = sessionIdRef.current;
     const index = messageIndexByIdRef.current.get(anchor.messageId);
-    if (index === undefined) return;
+    if (index === undefined) {
+      if (import.meta.env.DEV) {
+        console.debug('[chat-scroll] Skipping deleted focus anchor', {
+          sessionId: restoreSessionId,
+          messageId: anchor.messageId,
+          label: anchor.label,
+        });
+      }
+      return;
+    }
 
     const adjustOffset = () => {
+      if (
+        !geometryActiveRef.current
+        || sessionIdRef.current !== restoreSessionId
+        || pendingAnchorRef.current !== restoreIntent
+      ) return;
       const scope = findMessageScope(scroller, anchor.messageId);
       if (!scope) return;
       const scrollerTop = getScrollerRect(scroller).top;
@@ -173,15 +218,64 @@ export function useChatScrollController({
   }, [scrollerRef, virtuosoRef]);
 
   const restoreAnchorAfterNextCommit = useCallback((anchor: ScrollAnchorSnapshot, options?: RestoreAnchorOptions) => {
-    pendingAnchorRef.current = { anchor, options };
+    pendingAnchorRef.current = { anchor, options, pending: true };
     setAnchorRestoreTick(tick => tick + 1);
   }, []);
 
   useLayoutEffect(() => {
+    const wasWindowFocused = previousWindowFocusedRef.current;
+    const wasActive = previousIsActiveRef.current;
+    previousWindowFocusedRef.current = isWindowFocused;
+    previousIsActiveRef.current = isActive;
+
+    // A window-focus snapshot only belongs to the Chat that was active at blur.
+    // Internal Tab switching has its own recovery path in MessageList.
+    if (!isActive) {
+      pendingAnchorRef.current = null;
+      windowFocusSnapshotRef.current = null;
+      return;
+    }
+
+    if (wasWindowFocused && !isWindowFocused && wasActive) {
+      // Drop commands prepared against the pre-blur commit. The focus snapshot
+      // below is the sole recovery intent for this geometry boundary.
+      pendingAnchorRef.current = null;
+      pendingBottomPinRef.current = false;
+      const follow = followEnabledRef.current !== false;
+      windowFocusSnapshotRef.current = {
+        sessionId: sessionId ?? null,
+        follow,
+        anchor: follow ? null : captureAnchor('window-blur'),
+      };
+      return;
+    }
+
+    if (!wasWindowFocused && isWindowFocused) {
+      const snapshot = windowFocusSnapshotRef.current;
+      windowFocusSnapshotRef.current = null;
+      if (!snapshot || snapshot.sessionId !== (sessionId ?? null)) return;
+      if (snapshot.follow) {
+        scrollToBottom('auto');
+        return;
+      }
+      // Stale background callbacks may have changed the live ref. The blur
+      // snapshot is authoritative for this recovery.
+      followEnabledRef.current = false;
+      if (snapshot.anchor) {
+        restoreAnchorAfterNextCommit(snapshot.anchor, { behavior: 'auto' });
+      }
+    }
+  }, [captureAnchor, followEnabledRef, isActive, isWindowFocused, restoreAnchorAfterNextCommit, scrollToBottom, sessionId]);
+
+  useLayoutEffect(() => {
     const pending = pendingAnchorRef.current;
-    if (!pending) return;
-    pendingAnchorRef.current = null;
-    restoreAnchor(pending.anchor, pending.options);
+    if (!pending?.pending) return;
+    if (!geometryActiveRef.current) {
+      pendingAnchorRef.current = null;
+      return;
+    }
+    pending.pending = false;
+    restoreAnchor(pending.anchor, pending.options, pending);
   }, [anchorRestoreTick, restoreAnchor]);
 
   const pinBottomAfterNextCommit = useCallback(() => {
@@ -192,9 +286,9 @@ export function useChatScrollController({
   useLayoutEffect(() => {
     if (!pendingBottomPinRef.current) return;
     pendingBottomPinRef.current = false;
-    if (!isActiveRef.current || !followEnabledRef.current) return;
+    if (!geometryActiveRef.current || !followEnabledRef.current) return;
     scrollToBottom('auto');
-  }, [bottomPinTick, followEnabledRef, scrollToBottom]);
+  }, [bottomPinTick, geometryActive, followEnabledRef, scrollToBottom]);
 
   const scrollToMessage = useCallback((messageId: string, options: ScrollToMessageOptions = {}) => {
     const index = messageIndexByIdRef.current.get(messageId);
@@ -226,7 +320,7 @@ export function useChatScrollController({
   }, [scrollerRef, scrollToMessage]);
 
   const onRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
-    if (!isActiveRef.current) return;
+    if (!geometryActiveRef.current) return;
     if (reason === 'tool-complete' && followEnabledRef.current) {
       scrollToBottom('auto');
       return;

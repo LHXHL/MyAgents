@@ -422,6 +422,8 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
+  /** Native desktop-window focus projection; independent from internal Tab activity. */
+  isWindowFocused: boolean;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
@@ -455,7 +457,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -3167,6 +3169,8 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   const chatScrollController = useChatScrollController({
     messages: chatScrollModel.data,
     isActive,
+    isWindowFocused,
+    sessionId,
     rootRef: chatContentRef,
   });
   const {
@@ -5161,6 +5165,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
               isLoading={isLoading}
               sessionId={sessionId}
               isActive={isActive}
+              isWindowFocused={isWindowFocused}
               virtuosoRef={virtuosoRef}
               onScrollerRef={attachScroller}
               followEnabledRef={followEnabledRef}

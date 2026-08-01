@@ -228,6 +228,7 @@ export interface LaunchProjectAnalyticsContext {
 interface TabContentProps {
   tab: Tab;
   isActive: boolean;
+  isWindowFocused: boolean;
   isLoading: boolean;
   error: string | null;
   /**
@@ -282,7 +283,7 @@ interface TabContentProps {
 // Exported for the cold-restore behavior test (Issue #232) — asserts a cold
 // tab renders a placeholder and never mounts TabProvider.
 export const MemoizedTabContent = memo(function TabContent({
-  tab, isActive, isLoading, error, isDeferredMount,
+  tab, isActive, isWindowFocused, isLoading, error, isDeferredMount,
   onLaunchProject, onOpenHistorySession, onNewSession,
   onUpdateGenerating, onUpdateTitle, onUpdateUnread, onRenameSession, onForkSession, onUpdateSessionId, onClearInitialMessage,
   claimSessionOpeningTransition,
@@ -388,6 +389,7 @@ export const MemoizedTabContent = memo(function TabContent({
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
+              isWindowFocused={isWindowFocused}
               onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
@@ -413,6 +415,9 @@ export const MemoizedTabContent = memo(function TabContent({
   return (
     prev.tab === next.tab &&
     prev.isActive === next.isActive &&
+    // Desktop focus only affects the active Chat's geometry boundary. Keep
+    // inactive heavy Tab subtrees out of every app-switch render.
+    (next.tab.view !== 'chat' || !next.isActive || prev.isWindowFocused === next.isWindowFocused) &&
     prev.isLoading === next.isLoading &&
     prev.error === next.error &&
     // Drives the deferred-mount → real-content transition for new tabs.
@@ -458,6 +463,7 @@ export default function App() {
   const { config, isLoading: configLoading, providers: appProviders, apiKeys: appApiKeys, providerVerifyStatus: appProviderVerifyStatus, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable = spaceBuildCapability.available && config.teamSpaceEnabled === true;
+  const [isWindowFocused, setIsWindowFocused] = useState(isRendererForegrounded);
 
   // Helper Agent's persisted model defaults — used by BugReportOverlay for
   // initial picker selection + persist on pick. The LAUNCH_BUG_REPORT handler
@@ -3199,6 +3205,7 @@ export default function App() {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
     },
+    onWindowFocusChanged: setIsWindowFocused,
     onWindowFocused: handleWindowFocused,
     onExitRequested: async () => {
       // User-owned scheduler lifecycle is authoritative here. Ordinary Cron
@@ -3330,6 +3337,7 @@ export default function App() {
             key={tab.id}
             tab={tab}
             isActive={tab.id === activeTabId}
+            isWindowFocused={isWindowFocused}
             isLoading={loadingTabs[tab.id] ?? false}
             error={tabErrors[tab.id] ?? null}
             isDeferredMount={deferredMountTabIds.has(tab.id)}

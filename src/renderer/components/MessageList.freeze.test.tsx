@@ -19,11 +19,35 @@ import type { VirtuosoHandle } from 'react-virtuoso';
 import type { Message as MessageType } from '@/types/chat';
 
 // ── Capture the props handed to Virtuoso on every render ──
-type Recorded = { data: MessageType[]; firstItemIndex: number | undefined; heightEstimates: number[] | undefined };
+type Recorded = {
+  data: MessageType[];
+  firstItemIndex: number | undefined;
+  heightEstimates: number[] | undefined;
+  components?: unknown;
+  atBottomStateChange?: (atBottom: boolean) => void;
+  followOutput?: (isAtBottom: boolean) => false | 'smooth';
+  startReached?: () => void;
+};
 const recorded: Recorded[] = [];
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: (props: { data: MessageType[]; firstItemIndex?: number; heightEstimates?: number[] }) => {
-    recorded.push({ data: props.data, firstItemIndex: props.firstItemIndex, heightEstimates: props.heightEstimates });
+  Virtuoso: (props: {
+    data: MessageType[];
+    firstItemIndex?: number;
+    heightEstimates?: number[];
+    components?: unknown;
+    atBottomStateChange?: (atBottom: boolean) => void;
+    followOutput?: (isAtBottom: boolean) => false | 'smooth';
+    startReached?: () => void;
+  }) => {
+    recorded.push({
+      data: props.data,
+      firstItemIndex: props.firstItemIndex,
+      heightEstimates: props.heightEstimates,
+      components: props.components,
+      atBottomStateChange: props.atBottomStateChange,
+      followOutput: props.followOutput,
+      startReached: props.startReached,
+    });
     return <div data-testid="virtuoso" data-count={props.data.length} />;
   },
 }));
@@ -54,6 +78,7 @@ function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>
     isLoading: false,
     sessionId: 's1',
     isActive: true,
+    isWindowFocused: true,
     firstItemIndex: 1_000_000,
     virtuosoRef: { current: null },
     ...createFollowProps(),
@@ -182,6 +207,84 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(streamingText(lastData())).toBe('abcdefghi');
   });
 
+  it('freezes all Virtuoso inputs and geometry callbacks while the active Tab window is unfocused', () => {
+    const history = [msg('h1', 'hello', 'user'), msg('h2', 'hi there')];
+    const handleAtBottomChange = vi.fn();
+    const onLoadOlder = vi.fn();
+    const scrollToBottom = vi.fn();
+    const followProps = createFollowProps();
+    const { rerender } = renderList({
+      messages: [...history, msg('stream', 'a')],
+      streamingMessage: msg('stream', 'a'),
+      isLoading: true,
+      isActive: true,
+      isWindowFocused: true,
+      firstItemIndex: 1_000_000,
+      heightEstimateSeed: [120, 240, 360],
+      onLoadOlder,
+      handleAtBottomChange,
+      scrollToBottom,
+      ...followProps,
+    });
+    const focusedComponents = lastData().components;
+    scrollToBottom.mockClear();
+
+    rerender(
+      <MessageList
+        messages={[...history, msg('assistant-final', 'final hidden result')]}
+        streamingMessage={null}
+        isLoading={false}
+        isActive
+        isWindowFocused={false}
+        firstItemIndex={999_995}
+        heightEstimateSeed={[150, 270, 900]}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        {...followProps}
+        scrollToBottom={scrollToBottom}
+        handleAtBottomChange={handleAtBottomChange}
+        onLoadOlder={onLoadOlder}
+      />,
+    );
+
+    const unfocused = lastData();
+    expect(streamingText(unfocused)).toBe('a');
+    expect(unfocused.firstItemIndex).toBe(1_000_000);
+    expect(unfocused.heightEstimates).toEqual([120, 240, 360]);
+    expect(unfocused.components).toBe(focusedComponents);
+
+    unfocused.atBottomStateChange?.(false);
+    expect(handleAtBottomChange).not.toHaveBeenCalled();
+    expect(unfocused.followOutput?.(true)).toBe(false);
+    unfocused.startReached?.();
+    expect(onLoadOlder).not.toHaveBeenCalled();
+    expect(scrollToBottom).not.toHaveBeenCalled();
+
+    rerender(
+      <MessageList
+        messages={[...history, msg('assistant-final', 'final hidden result')]}
+        streamingMessage={null}
+        isLoading={false}
+        isActive
+        isWindowFocused
+        firstItemIndex={999_995}
+        heightEstimateSeed={[150, 270, 900]}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        {...followProps}
+        scrollToBottom={scrollToBottom}
+        handleAtBottomChange={handleAtBottomChange}
+        onLoadOlder={onLoadOlder}
+      />,
+    );
+
+    expect(lastData().data.at(-1)?.id).toBe('assistant-final');
+    expect(lastData().firstItemIndex).toBe(999_995);
+    expect(lastData().heightEstimates).toEqual([150, 270, 900]);
+    expect(lastData().components).not.toBe(focusedComponents);
+    expect(scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('does NOT carry a stale "scrolled-up" follow snapshot across a session switch made while hidden', () => {
     // Repro: user scrolls up in session s1, switches tab away (snapshot=false@s1),
     // the tab's session is switched to s2 while hidden, then user returns. The old
@@ -228,6 +331,33 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     // The stale s1 "false" must have been dropped: s2 ends up following, not disabled.
     expect(followRef.current).not.toBe(false);
+  });
+
+  it('defers internal Tab recovery until the desktop window is focused', () => {
+    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
+    const scrollToBottom = vi.fn();
+    const history = [msg('h1', 'x', 'user'), msg('h2', 'y')];
+    const baseProps = {
+      messages: history,
+      streamingMessage: null,
+      isLoading: false,
+      firstItemIndex: 1_000_000,
+      sessionId: 's1',
+      virtuosoRef: { current: null },
+      followEnabledRef: followRef,
+      scrollToBottom,
+      handleAtBottomChange: vi.fn(),
+    };
+    const { rerender } = renderList({ ...baseProps, isActive: true, isWindowFocused: true });
+    scrollToBottom.mockClear();
+
+    rerender(<MessageList {...baseProps} isActive={false} isWindowFocused={false} />);
+    rerender(<MessageList {...baseProps} isActive isWindowFocused={false} />);
+    expect(scrollToBottom).not.toHaveBeenCalled();
+
+    rerender(<MessageList {...baseProps} isActive isWindowFocused />);
+    expect(scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToBottom).toHaveBeenCalledWith('auto');
   });
 
   it('freezes firstItemIndex while inactive (no prepend anchor drift mid-hide)', () => {

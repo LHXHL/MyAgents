@@ -41,6 +41,8 @@ interface MessageListProps {
    * if we were following before the tab went hidden.
    */
   isActive?: boolean;
+  /** Whether the native desktop window is focused and its WebView geometry is trustworthy. */
+  isWindowFocused?: boolean;
   // Pagination: Virtuoso maintains the visible scroll position across
   // prepended items by the absolute index of data[0]. Default 0 = no pagination.
   firstItemIndex?: number;
@@ -224,6 +226,7 @@ const MessageList = memo(function MessageList({
   isLoading,
   sessionId,
   isActive = true,
+  isWindowFocused = true,
   firstItemIndex,
   heightEstimateSeed,
   layoutByMessageId,
@@ -253,6 +256,9 @@ const MessageList = memo(function MessageList({
   bottomSpacerPx,
 }: MessageListProps) {
   const { t } = useTranslation('chat');
+  const geometryActive = isActive && isWindowFocused;
+  const committedWindowFocusedRef = useRef(isWindowFocused);
+  const isWindowFocusReturn = isWindowFocused && !committedWindowFocusedRef.current;
   const liveHeightEstimateSeed = heightEstimateSeed?.length === messages.length ? heightEstimateSeed : undefined;
 
   const streamingStatusMessage = useMemo(
@@ -305,12 +311,12 @@ const MessageList = memo(function MessageList({
     // same cache-poisoning class as the data freeze below). If the session changed
     // while inactive, defer the pin: leaving lastScrolledSessionRef unset means this
     // effect re-fires and pins once isActive flips true.
-    if (!isActive) return;
+    if (!geometryActive) return;
     if (!sessionId || sessionId === lastScrolledSessionRef.current) return;
     if (messages.length === 0) return;
     lastScrolledSessionRef.current = sessionId;
     scrollToBottom('auto');
-  }, [isActive, sessionId, messages.length, scrollToBottom]);
+  }, [geometryActive, sessionId, messages.length, scrollToBottom]);
 
   // Tab inactive ↔ active follow-state preservation.
   //
@@ -346,6 +352,10 @@ const MessageList = memo(function MessageList({
       }
       return;
     }
+    // An internal Tab can become active while the desktop window is still
+    // blurred (for example through a notification route). Keep the snapshot
+    // pending until geometry is trustworthy instead of scrolling in background.
+    if (!isWindowFocused) return;
     const snap = inactiveSnapshotRef.current;
     const snapSession = inactiveSnapshotSessionRef.current;
     if (snap === null) return; // initial mount or no inactive transition recorded
@@ -369,7 +379,7 @@ const MessageList = memo(function MessageList({
     if (messages.length > 0) {
       scrollToBottom('auto');
     }
-  }, [isActive, messages.length, scrollToBottom, sessionId, followEnabledRef]);
+  }, [isActive, isWindowFocused, messages.length, scrollToBottom, sessionId, followEnabledRef]);
 
   // Gate Virtuoso's atBottomStateChange while the tab is hidden.
   // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
@@ -377,9 +387,9 @@ const MessageList = memo(function MessageList({
   // "user scrolled away" and flip followEnabledRef.current to false — losing
   // bottom-pinning permanently for this stream.
   const guardedAtBottomChange = useCallback((atBottom: boolean) => {
-    if (!isActive) return;
+    if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     handleAtBottomChange(atBottom);
-  }, [isActive, handleAtBottomChange]);
+  }, [geometryActive, isWindowFocusReturn, handleAtBottomChange]);
 
   // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
@@ -402,9 +412,12 @@ const MessageList = memo(function MessageList({
     // Skip while hidden — scrolling against a content-visibility:hidden scroller
     // can compute against stale geometry. The re-pin layout effect above restores
     // position on re-activation.
-    if (!isActive) return;
+    if (!geometryActive) return;
+    // Window-focus recovery belongs to ChatScrollController. A focus-only
+    // geometry transition must not create a second LAST/end command here.
+    if (isWindowFocusReturn) return;
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [streamingMessage, isLoading, isActive, followEnabledRef, virtuosoRef]);
+  }, [streamingMessage, isLoading, geometryActive, isWindowFocusReturn, followEnabledRef, virtuosoRef]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
   // At turn end the data-layer reveal drains the remaining text and the message moves to
@@ -416,10 +429,17 @@ const MessageList = memo(function MessageList({
   useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
-    if (was && !isLoading && isActive && followEnabledRef.current) {
+    if (was && !isLoading && geometryActive && !isWindowFocusReturn && followEnabledRef.current) {
       scrollToBottom('auto');
     }
-  }, [isLoading, isActive, followEnabledRef, scrollToBottom]);
+  }, [isLoading, geometryActive, isWindowFocusReturn, followEnabledRef, scrollToBottom]);
+
+  // Mark the focus commit trustworthy only after Virtuoso's child layout
+  // effects have run. During that commit callbacks and local pins stay gated;
+  // the parent ChatScrollController then executes the sole recovery intent.
+  useLayoutEffect(() => {
+    committedWindowFocusedRef.current = isWindowFocused;
+  }, [isWindowFocused]);
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);
@@ -440,7 +460,7 @@ const MessageList = memo(function MessageList({
   layoutByMessageIdRef.current = layoutByMessageId;
   const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
   onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
-  // followOutput / startReached capture `isActive` DIRECTLY (not via a ref). Under
+  // followOutput / startReached capture `geometryActive` DIRECTLY (not via a ref). Under
   // React 19's child-before-parent layout-effect ordering, a ref updated in our parent
   // layout effect could still read a stale value when Virtuoso's child effects fire
   // these callbacks first on the active→hidden commit. Capturing the prop means the
@@ -451,22 +471,22 @@ const MessageList = memo(function MessageList({
     () => (isAtBottom: boolean) => {
       // Hidden tab (content-visibility:hidden): never drive follow-scroll against
       // skipped/stale geometry (same cache-poisoning class as the data freeze below).
-      if (!isActive) return false;
+      if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return false;
       const mode = followEnabledRef.current;
       if (!mode) return false;
       if (mode === 'force') return 'smooth' as const;
       return isAtBottom ? 'smooth' as const : false;
     },
-    [followEnabledRef, isActive]
+    [followEnabledRef, geometryActive, isWindowFocusReturn]
   );
 
   // Pagination guard: don't load an older page off stale range math while hidden —
   // Virtuoso can fire startReached from corrupted offsets when our subtree's layout
   // was skipped (content-visibility:hidden), and a prepend in that state compounds the desync.
   const guardedLoadOlder = useCallback(() => {
-    if (!isActive) return;
+    if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     onLoadOlder?.();
-  }, [onLoadOlder, isActive]);
+  }, [onLoadOlder, geometryActive, isWindowFocusReturn]);
 
   const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
   const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
@@ -539,10 +559,10 @@ const MessageList = memo(function MessageList({
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);
 
-  // ── Freeze the data fed to Virtuoso while the tab is inactive ──────────────
-  // When isActive=false the host (App.tsx) wraps this subtree in
-  // `content-visibility: hidden`, so WebKit skips its layout. Any data/height change
-  // Virtuoso processes in that state is measured against skipped / zero / stale
+  // ── Freeze the data fed to Virtuoso while its geometry is untrusted ─────────
+  // An inactive internal Tab is wrapped in `content-visibility: hidden`; a blurred
+  // desktop WebView can likewise defer ResizeObserver/layout work. Any data/height
+  // change Virtuoso processes in either state is measured against skipped / stale
   // geometry, which poisons its internal offset+range cache → PHANTOM REPEATED ROWS,
   // then a BLANK viewport once the user scrolls back — recoverable only by remount
   // (close+reopen rebuilds the cache).
@@ -562,19 +582,26 @@ const MessageList = memo(function MessageList({
   // snapshot under React 19 concurrency, which a later hidden render could then hand
   // to Virtuoso — exactly the post-hide measurement we're preventing. A committed
   // layout effect guarantees the snapshot is always a real, measured-while-visible state.
-  const frozenDataRef = useRef<{ data: readonly MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
+  const frozenDataRef = useRef<{
+    data: readonly MessageType[];
+    firstItemIndex: number | undefined;
+    heightEstimateSeed?: number[];
+    components: typeof components;
+  }>({
     data: messages,
     firstItemIndex,
     heightEstimateSeed: liveHeightEstimateSeed,
+    components,
   });
   useLayoutEffect(() => {
-    if (isActive) {
-      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
+    if (geometryActive) {
+      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed, components };
     }
-  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed]);
-  const virtuosoData = isActive ? messages : frozenDataRef.current.data;
-  const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
-  const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  }, [geometryActive, messages, firstItemIndex, liveHeightEstimateSeed, components]);
+  const virtuosoData = geometryActive ? messages : frozenDataRef.current.data;
+  const virtuosoFirstItemIndex = geometryActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
+  const virtuosoHeightEstimateSeed = geometryActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  const virtuosoComponents = geometryActive ? components : frozenDataRef.current.components;
   const debugProbe = useChatScrollDebugProbe({
     sessionId,
     scroller: debugScroller,
@@ -633,7 +660,7 @@ const MessageList = memo(function MessageList({
         skipAnimationFrameInResizeObserver
         className="h-full"
         style={{ overscrollBehavior: 'none', scrollbarGutter: 'stable', overflowAnchor: 'none' }}
-        components={components}
+        components={virtuosoComponents}
         itemContent={renderItem}
       />
     </div>
