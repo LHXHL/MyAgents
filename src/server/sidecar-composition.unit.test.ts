@@ -55,6 +55,8 @@ describe('Sidecar production composition', () => {
 
   it.each([
     ['global', 'POST', '/chat/send'],
+    ['global', 'POST', '/cron/execute-sync'],
+    ['global', 'POST', '/goal/execute-sync'],
     ['global', 'POST', '/api/im/enqueue'],
     ['global', 'POST', '/api/inbox/drain'],
     ['session', 'POST', '/api/provider/verify'],
@@ -77,6 +79,8 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/api/provider/verify'],
     ['global', 'POST', '/api/mcp/oauth/start'],
     ['session', 'POST', '/chat/send'],
+    ['session', 'POST', '/cron/execute-sync'],
+    ['session', 'POST', '/goal/execute-sync'],
     ['session', 'POST', '/api/im/enqueue'],
     ['session', 'POST', '/api/inbox/drain'],
   ] as const)('%s dispatches real-role %s %s', async (role, method, path) => {

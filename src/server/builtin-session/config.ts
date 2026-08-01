@@ -13,7 +13,8 @@ import {
   type RuntimeConfigPolicySource,
   type SnapshotConfigField,
 } from '../session-core/runtime-config-policy';
-import type { BuiltinConfigSnapshot, BuiltinRestartReason, PermissionMode, ProviderEnv } from './types';
+import type { ProviderEnv } from '../provider-types';
+import type { BuiltinConfigSnapshot, BuiltinRestartReason, PermissionMode } from './types';
 
 const pendingConfigRestart = new Set<BuiltinRestartReason>();
 let currentMcpServers: McpServerDefinition[] | null = null;

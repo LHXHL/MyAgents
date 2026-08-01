@@ -32,9 +32,8 @@ import {
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionBusy,
+  isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
-  popLastUserMessageForRetry,
-  prewarmExternalSession,
   respondExternalAskUserQuestion,
   respondExternalPermission,
   restoreExternalSessionState,
@@ -43,7 +42,6 @@ import {
   setExternalPermissionMode,
   setExternalReasoningEffort,
   stopExternalSession,
-  updateExternalRuntimeConfig,
   waitForExternalSessionIdle,
 } from '../runtimes/external-session';
 import type {
@@ -53,6 +51,7 @@ import type {
   ImMessageRequest,
   InjectedTurnRequest,
   InjectedTurnResult,
+  ScheduledTurnPreparationResult,
   SessionEngine,
   SessionEngineReplayMessage,
 } from './types';
@@ -67,6 +66,7 @@ import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
   getSessionData,
+  getSessionMetadata,
   updateSessionMetadata,
 } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -91,6 +91,7 @@ import {
 import type { AgentConfig } from '../../shared/types/agent';
 import { createMaterializedSessionMetadata, isLiveFollowScenario } from '../utils/session-materialization';
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
+import { managedCodexNotReadyMessage } from '../utils/managed-codex-readiness';
 import {
   commitPendingProductSession,
   freezeCurrentProductSessionMetadata,
@@ -101,6 +102,13 @@ import {
   resetProductSessionBinding,
   rollbackPendingProductSession,
 } from './product-session-binding';
+import { resolveSessionConfig } from '../utils/resolve-session-config';
+import { resolveScheduledTurnPermissionMode } from '../../shared/types/runtime';
+import {
+  createScheduledDispatchGuard,
+  runtimeConfigModel,
+  runtimeConfigSource,
+} from './scheduled-turn-preparation';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -542,8 +550,108 @@ export function createExternalSessionEngine(): SessionEngine {
       return { ...result, dispatchAcceptance };
     },
 
-    async ensureGoalSessionConfig() {
-      return { success: true };
+    async prepareScheduledTurn(request): Promise<ScheduledTurnPreparationResult> {
+      await awaitExternalSessionStarting();
+      const metadata = getSessionMetadata(request.sessionId);
+      if (!metadata) {
+        return { success: false, code: 'session_bind_failed', status: 409 };
+      }
+      const currentSessionId = getCurrentBoundSessionId() || getExternalSessionId();
+      if (currentSessionId !== request.sessionId) {
+        if (hasExternalRuntimeProcess() && !await stopExternalSession()) {
+          return {
+            success: false,
+            code: 'session_bind_failed',
+            status: 503,
+            error: 'External runtime process did not stop',
+          };
+        }
+        resetProductSessionBinding({
+          sessionId: request.sessionId,
+          workspacePath: request.workspacePath,
+          hasInitialPrompt: true,
+          allowLazySessionMaterialization: false,
+        });
+      } else if (getCurrentProductSessionId() !== request.sessionId) {
+        // Runtime lifecycle and product identity are separate owners. Repair
+        // the product binding without restarting an already-correct native
+        // Session when only the former projection is stale.
+        resetProductSessionBinding({
+          sessionId: request.sessionId,
+          workspacePath: request.workspacePath,
+          hasInitialPrompt: true,
+          allowLazySessionMaterialization: false,
+        });
+      }
+      // Do not reload persisted transcript/config over a coherently bound live
+      // Session. A scheduled turn may queue behind an in-flight desktop turn;
+      // restoring here would replace that turn's unpersisted in-memory tail.
+      // The runtime owner already exposes the exact restored-state predicate,
+      // so only stale/new bindings need disk rehydration.
+      if (!isExternalSessionStateRestoredFor(request.sessionId)) {
+        restoreExternalSessionState(request.sessionId, request.workspacePath, request.scenario);
+      }
+
+      const runtime = getActiveRuntimeType();
+      if (request.operation.kind === 'goal') {
+        return {
+          success: true,
+          sessionId: request.sessionId,
+          permissionMode: resolveScheduledTurnPermissionMode(
+            'goal',
+            request.operation.permissionMode,
+            undefined,
+            runtime,
+          ),
+        };
+      }
+
+      const operation = request.operation;
+      const managedCodexReady = isManagedCodexProviderReady(loadAdminConfig());
+      const agent = findAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
+      let runtimeConfig = operation.runtimeConfig;
+      if (metadata && agent) {
+        const resolved = resolveSessionConfig(metadata, agent, undefined, 'owned', {
+          managedCodexProviderReady: managedCodexReady,
+        });
+        runtimeConfig = {
+          ...(operation.runtimeConfig ?? {}),
+          source: operation.runtimeConfig?.source ?? resolved.runtimeSource ?? runtimeConfig?.source,
+          model: operation.runtimeConfig?.model ?? resolved.model,
+          permissionMode: operation.runtimeConfig?.permissionMode
+            ?? operation.permissionMode
+            ?? resolved.permissionMode,
+        };
+      }
+      if (operation.permissionMode) {
+        runtimeConfig = { ...(runtimeConfig ?? {}), permissionMode: operation.permissionMode };
+      }
+      if (runtimeConfigSource(runtimeConfig) === 'managed-provider' && !managedCodexReady) {
+        return {
+          success: false,
+          code: 'configuration_failed',
+          status: 400,
+          error: managedCodexNotReadyMessage('cron task execution'),
+        };
+      }
+
+      return {
+        success: true,
+        sessionId: request.sessionId,
+        permissionMode: resolveScheduledTurnPermissionMode(
+          'cron',
+          operation.permissionMode,
+          runtimeConfig?.permissionMode,
+          runtime,
+        ),
+        model: runtimeConfigModel(runtimeConfig, runtime),
+        runtimeConfig: runtimeConfig ?? null,
+        beforeDispatch: createScheduledDispatchGuard({
+          preceding: operation.beforeDispatch,
+          workspacePath: request.workspacePath,
+          requiredSystemSkill: operation.requiredSystemSkill,
+        }),
+      };
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
@@ -811,24 +919,6 @@ export function createExternalSessionEngine(): SessionEngine {
       });
     },
 
-    updateRuntimeConfig(patch, options) {
-      return updateExternalRuntimeConfig(patch, { source: options?.source ?? 'runtime-config' });
-    },
-
-    async prewarm(options) {
-      return prewarmExternalSession({
-        sessionId: options.sessionId,
-        workspacePath: options.workspacePath,
-        scenario: { type: 'desktop' },
-        model: options.model,
-      });
-    },
-
-    restoreInitialSession(sessionId, workspacePath) {
-      restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
-      return true;
-    },
-
     async respondPermission(requestId, decision, reason) {
       return respondExternalPermission(requestId, decision, reason);
     },
@@ -843,10 +933,6 @@ export function createExternalSessionEngine(): SessionEngine {
         status: 400,
         error: 'Rewind is not supported for external runtimes (CC/Codex)',
       };
-    },
-
-    retryLastExternalUserMessage(userMessageId) {
-      return popLastUserMessageForRetry(userMessageId);
     },
 
     async forkAtAssistantMessage() {

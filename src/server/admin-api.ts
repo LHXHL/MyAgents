@@ -2770,7 +2770,8 @@ Options for 'update' <taskId>:
     --clearMcpOverride        Reset MCP override to follow Agent
   Update is rejected when the task is Running/Verifying.
   Notification semantics: --notification* flags MERGE with the existing
-  config (CLI reads current state, overlays your values, then writes). So
+  config (CLI sends only provided fields; the Task owner merges them under
+  its authoritative write lock). So
   '--notificationDesktop false' preserves botChannelId / botThread / events.
   To clear bot routing entirely, recreate the task — empty values are
   rejected at the CLI boundary to catch typos.

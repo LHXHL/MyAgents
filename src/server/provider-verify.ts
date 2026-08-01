@@ -9,7 +9,8 @@ import { basename, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { execFileSync, execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort, type ProviderEnv } from './agent-session';
+import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort } from './agent-session';
+import type { ProviderEnv } from './provider-types';
 import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
@@ -400,7 +401,7 @@ export async function verifyProviderViaSdk(
   // resolver returns a static snapshot — verify's config doesn't change
   // mid-call. Released in finally so the registry stays clean even on
   // throw / timeout.
-  const providerEnv: import('./agent-session').ProviderEnv = {
+  const providerEnv: ProviderEnv = {
     providerId,
     baseUrl,
     apiKey,

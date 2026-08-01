@@ -85,7 +85,7 @@ import { onOAuthCredentialChange, resolveAuthHeaders } from './mcp-oauth';
 // Side-effect imports: each registers itself in the builtin MCP registry
 // gemini-image / edge-tts registered in builtin-mcp-meta.ts.
 
-import type { ToolInput } from '../renderer/types/chat';
+import type { ToolInput } from '../shared/types/tool-input';
 import {
   buildFilePatchDisplayDescriptor,
 } from '../shared/toolDisplay/filePatch';
@@ -162,8 +162,10 @@ import {
   resolveChatQueueResponseMode,
   shouldClearAdmissionTicketOnAbort,
   shouldStartTurnBoundaryItem,
+  type DesktopDeliveryMode,
   type DispatchGuardResult,
   type QueueAdmissionAction,
+  type QueueCancelResult,
   type TurnIdentity,
   type TurnOwner,
   type TurnTerminalObserver,
@@ -213,15 +215,14 @@ import type {
   ContentBlock,
   MessageWire,
   PermissionMode,
-  ProviderEnv,
   ToolUseState,
 } from './builtin-session/types';
 export type {
   ContentBlock,
   MessageWire,
   PermissionMode,
-  ProviderEnv,
 } from './builtin-session/types';
+import type { ProviderEnv } from './provider-types';
 export { stripPlaywrightResults } from './builtin-session/transcript-persistence';
 import {
   clearQueryMcpPrewarmOwner,
@@ -431,7 +432,6 @@ import type {
   DeferredUserSurface,
   InFlightMetadata,
   MessageQueueItem,
-  QueueDeliveryMode,
   TurnBoundaryQueueItem,
   TurnProviderAnalytics,
 } from './builtin-session/types';
@@ -2641,37 +2641,8 @@ export async function initSocksBridgeFromEnv(): Promise<void> {
 }
 
 /**
- * Critical-section mutex for cron task dispatch (PRD 0.2.4 §需求 4 — cross-
- * review B2 / B5 / B6 / B7). Wraps the ENTIRE cron handler body — session
- * switch, context setup, MCP apply, enqueue, wait-for-idle — so two
- * concurrent cron ticks within a single sidecar can't interleave on any
- * shared global state (configState.currentMcpServers, sessionId, cronTaskContext,
- * interactionScenario). Each waiter chains onto the previous promise so
- * callers see a strictly serial execution order.
- */
-let cronDispatchQueue: Promise<unknown> = Promise.resolve();
-
-/**
- * Run `fn()` under the cron-dispatch mutex. Used by `/cron/execute-sync`
- * to atomically execute a cron tick — session switch, MCP reconcile,
- * prompt enqueue, idle wait — without interleaving with another tick.
- */
-export async function withScheduledTurnDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
-  const next = cronDispatchQueue.catch(() => undefined).then(() => fn());
-  // Track the chain as `Promise<unknown>` so the queue type stays uniform
-  // across heterogeneous T's; the typed result still flows back via `next`.
-  // `.catch` on the stored chain prevents a rejected turn from poisoning
-  // subsequent waiters.
-  cronDispatchQueue = next.then(
-    () => undefined,
-    () => undefined,
-  );
-  return next;
-}
-
-/**
  * Apply an MCP set synchronously and ensure a fresh SDK session is live —
- * used inside `withScheduledTurnDispatchLock` when a scheduled path needs to switch
+ * used inside the SessionEngine scheduled-turn lock when a scheduled path needs to switch
  * MCP for this task (or reconcile back to workspace defaults from a prior
  * task's override).
  *
@@ -2700,7 +2671,7 @@ export async function withScheduledTurnDispatchLock<T>(fn: () => Promise<T>): Pr
  *   - When no session was running, leaves the stored config in place and
  *     lets the next `enqueueUserMessage` start a session as usual.
  *
- * Caller MUST hold `withScheduledTurnDispatchLock` — this helper does not
+ * Caller MUST hold the SessionEngine scheduled-turn lock — this helper does not
  * serialise itself; concurrent calls would race on `lifecycleState.query`.
  */
 export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition[]): Promise<void> {
@@ -8007,7 +7978,7 @@ export type EnqueueResult = {
    * before the SSE `queue:added` round-trip completes.
    */
   isInFlight?: boolean;
-  deliveryMode?: QueueDeliveryMode;
+  deliveryMode?: DesktopDeliveryMode;
   error?: string;    // present when queue is full or other rejection
   dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
@@ -8916,7 +8887,7 @@ export async function enqueueUserMessage(
         hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
           && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
     }));
-    const queueDeliveryMode: QueueDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
+    const queueDeliveryMode: DesktopDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
     if (admissionTicket?.canceled) {
       return { queued: false, error: 'Queue item was cancelled before dispatch' };
     }
@@ -9550,10 +9521,6 @@ export async function cancelImRequest(
   // honestly rather than a false success.
   return { aborted: false, mode: 'unknown' };
 }
-
-export type QueueCancelResult =
-  | { status: 'cancelled'; cancelledText: string }
-  | { status: 'not_found' | 'not_cancelled' | 'unavailable' | 'error' };
 
 /**
  * Cancel a queued message by its queueId.

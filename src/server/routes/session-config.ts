@@ -1,7 +1,8 @@
 import type { McpServerDefinition } from '../../shared/config-types';
 import { normalizeOfficialToolIds } from '../../shared/official-tools';
 import { getSessionEngine } from '../session-engine';
-import type { ProviderEnv, SessionEngineSnapshotMaterializePatch } from '../session-engine/types';
+import type { ProviderEnv } from '../provider-types';
+import type { SessionEngineSnapshotMaterializePatch } from '../session-engine/types';
 import type { InteractionScenario } from '../system-prompt';
 import { isPermissionModeForRuntimeIdentity } from '../../shared/providerExecution';
 

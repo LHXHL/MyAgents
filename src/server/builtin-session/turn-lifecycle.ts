@@ -17,7 +17,8 @@ import {
 } from '../session-core/turn-result-policy';
 import { isSdkMissingResumeMessageError } from '../session-core/resume-error-recovery';
 import { decideInFlightActionOnResult } from '../utils/inflight-terminal';
-import type { InFlightMetadata, ProviderEnv, TurnProviderAnalytics } from './types';
+import type { ProviderEnv } from '../provider-types';
+import type { InFlightMetadata, TurnProviderAnalytics } from './types';
 import {
   getCurrentTurnText,
   getCurrentTurnInboxMeta,

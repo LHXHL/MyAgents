@@ -6,18 +6,19 @@ const mocks = vi.hoisted(() => ({
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, content: 'removed' }),
     ),
-    retryLastExternalUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
-      async () => ({ success: true, content: 'retry text' }),
-    ),
     forkAtAssistantMessage: vi.fn<(messageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, newSessionId: 'forked' }),
     ),
     resetForNewImSession: vi.fn(async () => ({ success: true, sessionId: 'im-new' })),
   },
+  retryLastExternalUserMessageAtSelector: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
+    async () => ({ success: true, content: 'retry text' }),
+  ),
 }));
 
 vi.mock('../session-engine', () => ({
   getSessionEngine: () => mocks.engine,
+  retryLastExternalUserMessageAtSelector: mocks.retryLastExternalUserMessageAtSelector,
 }));
 
 import { handleSessionOperationRoute } from './session-operations';
@@ -31,7 +32,7 @@ describe('handleSessionOperationRoute', () => {
     vi.clearAllMocks();
     mocks.engine.resetForNewDesktopSession.mockResolvedValue({ success: true, sessionId: 'new-desktop' });
     mocks.engine.rewindToUserMessage.mockResolvedValue({ success: true, content: 'removed' });
-    mocks.engine.retryLastExternalUserMessage.mockResolvedValue({ success: true, content: 'retry text' });
+    mocks.retryLastExternalUserMessageAtSelector.mockResolvedValue({ success: true, content: 'retry text' });
     mocks.engine.forkAtAssistantMessage.mockResolvedValue({ success: true, newSessionId: 'forked' });
     mocks.engine.resetForNewImSession.mockResolvedValue({ success: true, sessionId: 'im-new' });
   });
@@ -101,7 +102,7 @@ describe('handleSessionOperationRoute', () => {
     expect(await readJson(retry as Response)).toEqual({ success: true, content: 'retry text' });
     expect(await readJson(fork as Response)).toEqual({ success: true, newSessionId: 'forked' });
     expect(mocks.engine.rewindToUserMessage).toHaveBeenCalledWith('user-1');
-    expect(mocks.engine.retryLastExternalUserMessage).toHaveBeenCalledWith('user-2');
+    expect(mocks.retryLastExternalUserMessageAtSelector).toHaveBeenCalledWith('user-2');
     expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('assistant-1');
   });
 

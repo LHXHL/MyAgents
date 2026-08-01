@@ -1,11 +1,8 @@
 import {
   getPermissionResponseEngine,
-  getSessionEngine,
-  getSessionEngineKind,
-  getSessionRuntimeType,
-  type SessionEngine,
+  prewarmExternalRuntimeAtSelector,
+  updateExternalRuntimeConfigAtSelector,
 } from '../session-engine';
-import { isPermissionModeForRuntimeIdentity } from '../../shared/providerExecution';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -18,26 +15,6 @@ export type SessionEngineRuntimeRouteDeps = {
   workspacePath: string;
   resolvePrewarmSessionId(requestedSessionId: string | undefined): string;
 };
-
-type RuntimeConfigSource = Exclude<
-  NonNullable<Parameters<SessionEngine['updateRuntimeConfig']>[1]>['source'],
-  undefined
->;
-
-const RUNTIME_CONFIG_SOURCES = new Set<RuntimeConfigSource>([
-  'runtime-config',
-  'message-snapshot',
-  'desktop',
-  'im-sync',
-  'cron-sync',
-  'adopt-sync',
-]);
-
-function parseRuntimeConfigSource(value: unknown): RuntimeConfigSource {
-  return typeof value === 'string' && RUNTIME_CONFIG_SOURCES.has(value as RuntimeConfigSource)
-    ? value as RuntimeConfigSource
-    : 'runtime-config';
-}
 
 export async function handleSessionEngineRuntimeRoute(
   pathname: string,
@@ -54,63 +31,28 @@ export async function handleSessionEngineRuntimeRoute(
       } | null;
       source?: unknown;
     };
-    const activeRuntime = getSessionRuntimeType();
-    if (getSessionEngineKind() === 'builtin') {
-      return jsonResponse({ success: false, error: 'Runtime config endpoint is only for external runtimes' }, 400);
-    }
-    if (body.runtime && body.runtime !== activeRuntime) {
-      return jsonResponse({ success: false, error: `Runtime mismatch: sidecar=${activeRuntime}, payload=${body.runtime}` }, 400);
-    }
-
     const runtimeConfig = body.runtimeConfig ?? {};
-    const requestedPermissionMode = runtimeConfig.permissionMode;
-    if (requestedPermissionMode !== undefined && requestedPermissionMode !== null
-        && typeof requestedPermissionMode !== 'string') {
-      return jsonResponse({ success: false, error: 'permissionMode must be a string or null' }, 400);
-    }
-    if (typeof requestedPermissionMode === 'string' && requestedPermissionMode.trim()) {
-      const identity = getSessionEngine().getRuntimeIdentity();
-      const valid = isPermissionModeForRuntimeIdentity(
-        requestedPermissionMode,
-        activeRuntime,
-        identity.runtimeSource,
-      );
-      if (!valid) {
-        return jsonResponse({
-          success: false,
-          error: `Invalid permissionMode '${requestedPermissionMode}' for ${identity.runtimeSource ?? activeRuntime}`,
-        }, 400);
-      }
-    }
-    const source = parseRuntimeConfigSource(body.source);
-    const result = await getSessionEngine().updateRuntimeConfig({
-      ...('model' in runtimeConfig ? { model: runtimeConfig.model ?? '' } : {}),
-      ...('permissionMode' in runtimeConfig ? { permissionMode: runtimeConfig.permissionMode ?? '' } : {}),
-      ...('reasoningEffort' in runtimeConfig ? { reasoningEffort: runtimeConfig.reasoningEffort ?? '' } : {}),
-    }, { source });
-
-    return jsonResponse(result, result.success ? 200 : 500);
+    const result = await updateExternalRuntimeConfigAtSelector({
+      runtime: body.runtime,
+      runtimeConfig,
+      source: body.source,
+    });
+    return jsonResponse(result.body, result.httpStatus);
   }
 
   if (pathname === '/api/runtime/prewarm' && request.method === 'POST') {
-    if (getSessionEngineKind() === 'builtin') {
-      return jsonResponse({ success: false, error: 'Pre-warm is only for external runtimes' }, 400);
-    }
     const body = (await request.json().catch(() => ({}))) as {
       sessionId?: string;
       model?: string;
     };
     const sessionId = deps.resolvePrewarmSessionId(body.sessionId);
-    if (!sessionId) {
-      return jsonResponse({ success: false, error: 'No sessionId available' }, 400);
-    }
     try {
-      const result = await getSessionEngine().prewarm({
+      const result = await prewarmExternalRuntimeAtSelector({
         sessionId,
         workspacePath: deps.workspacePath,
         model: body.model,
       });
-      return jsonResponse({ success: true, ...result });
+      return jsonResponse(result.body, result.httpStatus);
     } catch (error) {
       return jsonResponse(
         { success: false, error: error instanceof Error ? error.message : 'Unknown error' },

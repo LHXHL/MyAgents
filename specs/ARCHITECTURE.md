@@ -512,8 +512,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `selector.ts` | `shouldUseExternalRuntime()` 的 route 分流 owner；选择 builtin/external `SessionEngine` |
 | `builtin-adapter.ts` | 委托 `agent-session.ts`，保持内置 Claude Agent SDK 会话语义 |
 | `external-adapter.ts` | 委托 `external-session.ts`，保持 Claude Code / Codex / Gemini 会话语义 |
-| `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
-| `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
+| `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、scheduled preparation、queue、session read/config/operation 等 route-facing 能力 |
+| `scheduled-turn-lock.ts`、`task-turn-orchestrator.ts`、`goal-orchestrator.ts` | Scheduled Turn 的中性串行边界与 Task/Goal domain lifecycle；`routes/scheduled-turns.ts` 只做 payload/response shaping，真实 handler/operation tests 固化 HTTP 与 owner 契约 |
 
 `src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、显式 user/assistant channel-delivery owner、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 MyAgents-owned MCP 的统一 soft pre-warm budget / status 分类。
 

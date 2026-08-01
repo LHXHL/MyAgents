@@ -713,12 +713,26 @@ describe('turn-lifecycle owner', () => {
   it('drains deferred restart ownership after accepted setup fails before SDK dispatch', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
+    setCurrentTurnSourceItem({
+      id: 'admitted-persist-failure',
+      requestId: 'request-persist-failure',
+      message: { role: 'user', content: 'persist me' },
+      messageText: 'persist me',
+      wasQueued: false,
+      resolve: vi.fn(),
+      channelDelivery: NO_CHANNEL_DELIVERY,
+    });
 
     lifecycle.failAdmittedTurnSetup('metadata setup failed');
 
     await waitForCurrentTurnTerminalObserver();
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
     expect(deps.applyDeferredRestartIfNeeded).toHaveBeenCalledOnce();
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: 'localized:metadata setup failed', isError: true }],
+    });
+    expect(deps.persistTranscript).toHaveBeenCalledOnce();
+    expect(deps.setSessionState).toHaveBeenCalledWith('idle');
   });
 
   it('surfaces forced in-flight items but preserves natural completions for SDK replay', () => {

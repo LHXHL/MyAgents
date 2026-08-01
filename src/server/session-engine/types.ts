@@ -2,20 +2,22 @@ import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
-import type { EnqueueResult, ProviderEnv, QueueCancelResult } from '../agent-session';
+import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { SessionMessage } from '../types/session';
-import type { ExternalRuntimeConfigPatch, ImagePayload } from '../runtimes/types';
-import type { ExternalConfigSource } from '../runtimes/external-session';
+import type { ImagePayload } from '../runtimes/types';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { RegisteredAgentSessionOrigin, SessionOrigin } from '../../shared/session-origin';
 import type { SessionCompletionTerminal } from '../../shared/sessionCompletion';
+import type { RequiredSystemSkill } from '../../shared/systemSkills';
 import type {
   DispatchGuard,
+  DesktopDeliveryMode,
+  QueueCancelResult,
   TurnIdentity,
   TurnOwner,
   TurnTerminalObserver,
@@ -24,9 +26,7 @@ import type { AssistantChannelDelivery } from '../session-core/channel-delivery'
 
 export type SessionEngineKind = 'builtin' | 'external';
 
-export type RuntimeConfigPatch = ExternalRuntimeConfigPatch;
-
-export type { PermissionMode, ProviderEnv } from '../agent-session';
+export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
   text: string;
@@ -57,7 +57,7 @@ export type DesktopAdmissionResult = {
   queued?: boolean;
   queueId?: string;
   isInFlight?: boolean;
-  deliveryMode?: EnqueueResult['deliveryMode'];
+  deliveryMode?: DesktopDeliveryMode;
   canCancel?: boolean;
   canForceExecute?: boolean;
   error?: string;
@@ -177,6 +177,45 @@ export type InjectedTurnResult = {
   assistantMessagePresent?: boolean;
   text?: string;
   error?: string;
+  status?: number;
+};
+
+export type ScheduledTaskPreparation = {
+  kind: 'task';
+  initializeSession: boolean;
+  model?: string;
+  providerId?: string;
+  permissionMode?: string;
+  runtimeConfig?: RuntimeConfig;
+  mcpEnabledServers?: string[];
+  requiredSystemSkill?: RequiredSystemSkill;
+  beforeDispatch: DispatchGuard;
+};
+
+export type ScheduledGoalPreparation = {
+  kind: 'goal';
+  permissionMode?: string;
+};
+
+export type ScheduledTurnPreparationRequest = {
+  sessionId: string;
+  workspacePath: string;
+  scenario: InteractionScenario;
+  operation: ScheduledTaskPreparation | ScheduledGoalPreparation;
+};
+
+export type ScheduledTurnPreparationResult = {
+  success: boolean;
+  sessionId?: string;
+  permissionMode?: string;
+  model?: string;
+  providerEnv?: ProviderEnv | 'subscription';
+  providerRoute?: ProviderRoute;
+  runtimeConfig?: RuntimeConfig | null;
+  beforeDispatch?: DispatchGuard;
+  release?: () => void | Promise<void>;
+  error?: string;
+  code?: 'session_bind_failed' | 'configuration_failed' | 'scenario_failed';
   status?: number;
 };
 
@@ -333,7 +372,7 @@ export interface SessionEngine {
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
   enqueueInboxMessage(request: InboxMessageRequest): Promise<InboxAdmissionResult>;
-  ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
+  prepareScheduledTurn(request: ScheduledTurnPreparationRequest): Promise<ScheduledTurnPreparationResult>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
   stopTurn(options?: { preserveQueue?: boolean }): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
@@ -362,16 +401,6 @@ export interface SessionEngine {
     metadata?: unknown;
     error?: string;
   }>;
-  updateRuntimeConfig(
-    patch: RuntimeConfigPatch,
-    options?: { source?: ExternalConfigSource },
-  ): Promise<{ success: boolean; error?: string; skipped?: string }>;
-  prewarm(options: {
-    sessionId: string;
-    workspacePath: string;
-    model?: string;
-  }): Promise<Record<string, unknown>>;
-  restoreInitialSession(sessionId: string, workspacePath: string): boolean;
   respondPermission(
     requestId: string,
     decision: 'deny' | 'allow_once' | 'always_allow',
@@ -379,7 +408,6 @@ export interface SessionEngine {
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
-  retryLastExternalUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
   forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;

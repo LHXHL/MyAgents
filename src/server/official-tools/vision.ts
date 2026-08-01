@@ -16,8 +16,8 @@ import {
   buildClaudeSessionEnv,
   resolveClaudeCodeCli,
   startOneShotBridge,
-  type ProviderEnv,
 } from '../agent-session';
+import type { ProviderEnv } from '../provider-types';
 import {
   findEffectiveProvider,
   getAllEffectiveProviders,

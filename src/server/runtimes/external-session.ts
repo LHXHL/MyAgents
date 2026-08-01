@@ -381,7 +381,6 @@ import type {
   ExternalTurnUsage,
   PendingExternalSessionBirth,
 } from './external-session/types';
-
 export type {
   ExternalAssistantSnapshotState,
   ExternalConfigApplyResult,
@@ -6040,7 +6039,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // Issue #194: surface warn/error to the renderer so the user sees them
       // in the chat log panel rather than only the unified log. Info-level is
       // log-only — it's high-volume runtime noise (turn/tool lifecycle).
-      // Shape MUST match LogEntry (src/renderer/types/log.ts) — the renderer's
+      // Shape MUST match LogEntry (src/shared/types/log.ts) — the shared
       // `chat:log` handler discriminates on `source in data` and drops anything
       // without it. `source: 'bun'` is correct: the sidecar is the writer.
       if (event.level === 'warn' || event.level === 'error') {

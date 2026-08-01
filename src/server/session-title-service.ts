@@ -23,7 +23,7 @@
  */
 
 import type { RuntimeType } from '../shared/types/runtime';
-import type { ProviderEnv } from './agent-session';
+import type { ProviderEnv } from './provider-types';
 import { getSessionData, getSessionMetadata, updateSessionMetadata } from './SessionStore';
 import { broadcast } from './sse';
 import { setPostTurnTitleHook } from './turn-hooks';
