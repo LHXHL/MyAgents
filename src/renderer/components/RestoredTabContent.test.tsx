@@ -1,9 +1,6 @@
-// Behavior test for Issue #232 cold-tab restore — codex flagged "a cold
-// restored tab must NOT mount TabProvider (which is what connects SSE / calls
-// ensureSessionSidecar / starts recovery timers) until first activation" as the
-// main regression risk. We render the real MemoizedTabContent with TabProvider
-// (and the heavy page components) mocked, and assert the cold tab renders a
-// placeholder while a live chat tab mounts TabProvider.
+// Focused behavior tests for App's content slots. Restored persisted Sessions
+// are normal live Chat Tabs: active and inactive slots both mount TabProvider,
+// while only visibility/focus projection changes when the user switches tabs.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -48,14 +45,13 @@ vi.mock('@/components/ChatBootOverlay', () => ({
 
 import { MemoizedTabContent } from '@/App';
 
-function coldTab(over: Partial<Tab> = {}): Tab {
+function restoredTab(over: Partial<Tab> = {}): Tab {
   return {
     id: 'restored-1',
     agentDir: '/ws/a',
     sessionId: '11111111-2222-3333-4444-555555555555',
     view: 'chat',
     title: 'Restored',
-    restoreState: 'cold',
     sidecarConfigDisposition: 'pending',
     ...over,
   };
@@ -97,37 +93,26 @@ const noopProps = {
   taskCenterPendingIntent: null,
 };
 
-describe('cold restored tab', () => {
-  it('does NOT mount TabProvider before activation', () => {
+describe('restored live chat tab', () => {
+  it('mounts TabProvider immediately for the active restored tab', async () => {
     tabProviderSpy.mockClear();
-    render(<MemoizedTabContent tab={coldTab()} isActive {...noopProps} />);
-    expect(tabProviderSpy).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('tab-provider')).toBeNull();
-    expect(screen.queryByTestId('chat')).toBeNull();
-    expect(screen.getByTestId('chat-boot-overlay')).toBeInTheDocument();
-  });
-
-  it('keeps inactive cold tabs side-effect-free without mounting a visible loading shell', () => {
-    tabProviderSpy.mockClear();
-    render(<MemoizedTabContent tab={coldTab()} isActive={false} {...noopProps} />);
-    expect(tabProviderSpy).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('chat-boot-overlay')).toBeNull();
-  });
-
-  it('mounts TabProvider once restoreState is cleared (activated)', async () => {
-    tabProviderSpy.mockClear();
-    render(<MemoizedTabContent tab={coldTab({ restoreState: undefined })} isActive {...noopProps} />);
-    // TabProvider (not lazy) mounts synchronously — it's the SSE/sidecar side-effect gate.
+    render(<MemoizedTabContent tab={restoredTab()} isActive {...noopProps} />);
     expect(tabProviderSpy).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId('tab-provider')).not.toBeNull();
-    // Chat is route-split (React.lazy + Suspense, P1), so it resolves one
-    // microtask after mount — await it rather than asserting synchronously.
-    expect(await screen.findByTestId('chat')).not.toBeNull();
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat')).toBeInTheDocument();
+  });
+
+  it('mounts TabProvider immediately for an inactive restored tab too', async () => {
+    tabProviderSpy.mockClear();
+    render(<MemoizedTabContent tab={restoredTab()} isActive={false} {...noopProps} />);
+    expect(tabProviderSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId('chat')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-provider').parentElement).toHaveClass('invisible');
   });
 
   it('projects desktop focus only through the active Chat slot', async () => {
     chatRenderSpy.mockClear();
-    const liveTab = coldTab({ restoreState: undefined });
+    const liveTab = restoredTab();
     const view = render(
       <MemoizedTabContent tab={liveTab} isActive={false} {...noopProps} />,
     );

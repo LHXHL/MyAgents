@@ -143,13 +143,6 @@ export interface Tab {
     // Sidecar lifecycle is now managed by SidecarManager's Owner model.
     // Use getSessionPort(sessionId) to get the ready port when needed.
     sidecarConfigDisposition: SidecarConfigDisposition;  // push | adopt | pending — see type doc
-    /** Runtime-only (never persisted). 'cold' = restored from a previous
-     *  session on startup but not yet activated: App renders it as lightweight
-     *  tab chrome WITHOUT mounting TabProvider — so no SSE connect, no
-     *  ensureSessionSidecar, no recovery timers fire — until the user (or the
-     *  initial active-tab activation) opens it. Cleared by
-     *  App.activateRestoredTab once its sidecar is ensured. See PRD 0.2.25. */
-    restoreState?: 'cold';
     /** Runtime-only (never persisted). Set by floating-ball path actions to
      *  ask the target Chat tab to open a workspace file in its preview surface. */
     pendingFilePreview?: FilePreviewIntent;

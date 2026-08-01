@@ -816,7 +816,7 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - **`adopt`** — 采纳已在跑的 sidecar 的现有配置、**不推**（接管 IM / Task / Goal / background 占用的 sidecar）。
 - **`pending`** — 还不知道：tab 在 sidecar ensure **之前**就 instant-flip 到了 chat（即时进入）。此态下 Chat **既不推也不采纳**，等裁决。
 
-**唯一裁决者**：`ensureSessionSidecar` 返回的 `result.isNew`（在 Rust manager 锁内决定）是 `pending → push|adopt` 的**唯一**来源。新 Session 由 `handleLaunchProject` 创建；已有 Session 的用户导航只经 `handleOpenTargetSession`，cold Tab 激活与导航共同复用 `reconcileExistingSessionTabOwner`。任何路径都不得用端口探测预测配置方向。
+**唯一裁决者**：`ensureSessionSidecar` 返回的 `result.isNew`（在 Rust manager 锁内决定）是 `pending → push|adopt` 的**唯一**来源。新 Session 由 `handleLaunchProject` 创建；已有 Session 的单目标导航只经 `handleOpenTargetSession`，顶部批量恢复与普通导航共同复用 `materializeExistingSessionTab`，并最终由 `reconcileExistingSessionTabOwner` 裁决 exact Tab owner。任何路径都不得用端口探测预测配置方向。
 
 **为什么是三态（#300/#301 实战）**：旧的 `joinedExistingSidecar?: boolean` 有个表达不出的第三态（`undefined → ?? false → push`），instant-flip 时被迫用 `getSessionPort` 预测 → 并发 Rust creator（Task / Goal / IM / 崩溃重启）在"检查"与"ensure"之间起了 sidecar → ensure 接管活的 sidecar，而 Chat 把配置推上去 → **config-stomp + MCP 指纹 abort + 30s 重启循环**（TOCTOU）。三态把"还没定"变成一等公民。
 
@@ -825,7 +825,7 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - **依赖不对称**：推送 effect 依赖布尔 `configPending`（`pending→push` 重跑，`adopt→push` 不重放）；采纳 effect 依赖 `isAdopt`（`pending→adopt` 触发一次）。写反 = 漏推或重复采纳。
 - 用户**主动**改配置（`persistTabConfigChange`）走 **defer-while-pending**（仅 `pending` 时延迟推送、磁盘照写；`push`/`adopt` 都推——用户意图）。
 - `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在归置裁决前触发）。
-- 已有 Session 的用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者和 cold Tab 激活都调用同一个 `reconcileExistingSessionTabOwner` 对精确 Tab owner 执行幂等 ensure，再由 Rust 单锁原子 reconcile activation（保留最新 Task identity），禁止 Renderer read / branch / write activation，也禁止 `hasSessionSidecar → ensure` 的 TOCTOU 双阶段判断。
+- 已有 Session 的单目标用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者都调用 `materializeExistingSessionTab`。顶部恢复按钮只批量编排既有 persisted targets：先校验，再一次提交最终 live Chat Tabs / active correlation，然后为每个 surviving Tab 独立调用同一 materialization。该 helper 统一经 `reconcileExistingSessionTabOwner` 对精确 Tab owner 执行幂等 ensure，再由 Rust 单锁原子 reconcile activation（保留最新 Task identity）；禁止恢复依赖首次切换才挂载 `TabProvider` 的空壳 Tab，禁止 Renderer read / branch / write activation，也禁止 `hasSessionSidecar → ensure` 的 TOCTOU 双阶段判断。
 - replacement / recovery commit 属于 Rust ensure authority：旧进程进入 `recovering_sidecars` 后，同一manager-owned entry保留完整 owner 集合、独立`recovery_epoch`、`dead_generation`、candidate generation、attempt与next-retry clock。owner release 在 readiness 窗口仍同时更新active candidate与retained authority；candidate的generation reserve、spawn、TCP/ready失败都不settle recovery epoch。快速重试用尽后转为有频率上限的慢重试；update quiesce只禁止dispatch，解除后active+recovering会重新进入扫描。只有ready candidate（包括独立ensure的同等winner）原子接管剩余owners并刷新activation coordinates、owners归零或Session deletion才结束该epoch；recovery failure不冒充“无owner terminal”。Renderer 不复制该 owner、端口或retry queue。
 - Global recovery 复用上述逻辑需求/candidate 分离的不变量，但状态模型更小：manager-owned `DesiredRunning` standing intent 跨候选失败保留，当前 `instances` / generation 与 CLI port file 都不是恢复 authority。单一 Global monitor 原子读取 `Stopped | DesiredMissing | Present`；`DesiredMissing` 直接进入与 unhealthy replacement 相同的 attempt settlement，失败只推进既有有界 backoff，成功才发布健康 generation 与 restarted event。不得把 Global 塞进 `recovering_sidecars`，也不得让 Renderer、请求 replay 或 port file 建立第二 recovery owner。
 - `BackgroundCompletion` 是logical Session owner，poller状态只保存Session与expected process generation，不长期持有port。首次 activity probe 后的 owner attach 也属于 manager authority：若 probe 期间发生 replacement，单锁把 owner 绑定到 current reusable process，或保留在 recovery entry 等待 ready commit；若 current active 已死但 monitor 尚未迁移，attach 自己先在同一 manager 锁内完成 dead→recovery。任何一种情况都不能返回 `Stale` 后丢掉 poller。每轮poll都从manager解析current `(port, generation)`，HTTP返回后再校验同一binding；terminal提交和owner release仍在manager锁内做exact-generation commit。Recovery entry仍持有该owner或candidate尚未ready commit时，poller进入明确wait/rebind；旧generation的idle/running/HTTP failure响应一律丢弃，不能终止或释放新generation。用户reconnect/cancel则按logical owner同时覆盖active/recovering gap。
@@ -876,7 +876,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 | 文件 | 职责 |
 |------|------|
 | `src/renderer/types/tab.ts` | `Tab.sidecarConfigDisposition` 三态 + `buildChatFlipPatch`（必填 disposition） |
-| `src/renderer/App.tsx` | `handleLaunchProject`（只创建新 Session）、`handleOpenTargetSession`（已有 Session 导航 owner）、`reconcileExistingSessionTabOwner`（导航 / cold restore 共用 owner 编排）、各 Tab 构造点 disposition 映射 |
+| `src/renderer/App.tsx` | `handleLaunchProject`（只创建新 Session）、`handleOpenTargetSession`（已有 Session 单目标导航 owner）、`materializeExistingSessionTab`（导航 / 批量恢复共用 live materialization）、`reconcileExistingSessionTabOwner`（exact owner 编排）、各 Tab 构造点 disposition 映射 |
 | `src/renderer/pages/Chat.tsx` | 9 个 disposition 门控的配置同步 effect + `persistTabConfigChange` defer-while-pending |
 | `src/renderer/components/ChatBootOverlay.tsx` | "AI 启动中"蒙层 + 淡出过渡 |
 | `src/server/types/session.ts` | `SessionMetadata` 类型定义、`createSessionMetadata()` |
