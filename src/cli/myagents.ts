@@ -488,7 +488,15 @@ export function printResult(
   rest: string[] = [],
 ): void {
   if (jsonMode) {
-    console.log(JSON.stringify(result, null, 2));
+    let output = result;
+    if (group === 'task' && (action === 'run' || action === 'rerun') && result.data) {
+      const data = { ...(result.data as Record<string, unknown>) };
+      // attemptOrdinal is an internal accepted-mutation receipt consumed by
+      // analytics. Keep the established CLI JSON response shape unchanged.
+      delete data.attemptOrdinal;
+      output = { ...result, data };
+    }
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
 

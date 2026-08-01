@@ -217,6 +217,8 @@ Task center:
 - `task_delete`
 - `task_align_discuss`
 
+`task_run.run_count` 是 Task execution owner 接受 run/rerun mutation 后返回的一基 `attemptOrdinal`。它不由 `sessionIds` 数量推算；dispatch/admission 前失败不会产生该事件。Desktop 与 CLI 使用同一 mutation result，因此 Session 复用与 new-session 路径的统计语义一致。
+
 Launcher and thoughts:
 
 - `launcher_mode_switch`

@@ -234,11 +234,11 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   const handleRun = useCallback(
     (task: Task) =>
       runAction(task.id, t('tasks.actions.run'), async () => {
+        const result = await taskRun(task.id);
         track('task_run', {
           source: 'desktop',
-          run_count: task.sessionIds.length + 1,
+          run_count: result.attemptOrdinal,
         });
-        await taskRun(task.id);
       }),
     [runAction, t],
   );
@@ -253,11 +253,11 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   const handleRerun = useCallback(
     (task: Task) =>
       runAction(task.id, t('tasks.actions.rerun'), async () => {
+        const result = await taskRerun(task.id);
         track('task_run', {
           source: 'desktop',
-          run_count: task.sessionIds.length + 1,
+          run_count: result.attemptOrdinal,
         });
-        await taskRerun(task.id);
       }),
     [runAction, t],
   );

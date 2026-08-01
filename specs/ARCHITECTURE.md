@@ -408,6 +408,7 @@ type InteractionScenario =
 0.3.0 起，Task 是所有新定时自动化的唯一持久权威：
 
 - `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
+- `task_application.rs`：create/link、status、delete/unlink、run/rerun 的唯一应用层 policy；Management/Tauri/Cron/Memory 只通过该 owner 进入 Task mutation。
 - `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
 - `task_execution.rs`：Session 选择、`SidecarOwner::Task`、Task prompt 与同步执行 use case。
 - `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
@@ -694,6 +695,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
+- Task mutation policy 由窄 `TaskApplication` 统一编排；current-session Task 在 durable create 前完成真实 Session materialization，notification patch 在 TaskStore 写锁内按字段合并，run/rerun 的 accepted `attemptOrdinal` 由同一 mutation 返回给 GUI/CLI analytics
 - Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
 - 同一 Task 的 status、timer、execution claim 与 stop side effect 由 keyed Task-control lifecycle 串行化；stop 使用现有 `queueId` 精确停止当前 Turn。持久 `Running/Stopped` 只表达 scheduler intent，具体 Turn 以非持久 `running/stopping/stop_failed` 投影；stop 未确认时禁止 rerun。Attached Space Task 的终态不能 generic rerun，必须由新的 claim/reopen 创建新 Attached Task
 - AI 讨论路径：想法卡 →「AI 讨论」打开新 Tab + 注入 `task-alignment` Skill → 完成后 `myagents task create-from-alignment`
@@ -899,7 +901,7 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
 | 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
-| 定时 Task 启动 | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController` |
+| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController` |
 | Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
 | Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
 | Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
@@ -910,8 +912,8 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | 终端关闭 / Tab 关闭 | `cmd_terminal_close(terminalId)` |
 | 浏览器打开 | `cmd_browser_create(tabId, url, x, y, width, height)` |
 | 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
-| 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
-| Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
+| 任务立即执行 / 重新派发 | `TaskApplication::run*` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
+| Task 软删除 | `TaskApplication::delete_ordinary` → `TaskStore` 写 `→ deleted` 伪状态 + 联动清理 thought |
 | 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 是唯一应用清理 owner：通过各 live owner 持有的 process-group / Job authority 精确停止 Sidecar / Plugin Bridge，再清理 IM、终端、浏览器并释放进程锁；不得在正常退出按全机 argv 扫描。普通重启入口使用 `request_restart()` 进入该路径。更新安装保留带 residual / file-lock verification 的 verified shutdown 后 updater `relaunch()` 路径 |
 
 **Owner 释放规则：** 当一个 Session 的所有 Owner 都释放后，Sidecar 才停止。

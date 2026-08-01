@@ -46,6 +46,30 @@ describe('myagents CLI Task notification updates', () => {
   });
 });
 
+describe('myagents CLI Task dispatch output', () => {
+  it.each(['run', 'rerun'])('keeps the public %s JSON shape free of the analytics receipt', (action) => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printResult('task', action, {
+        success: true,
+        data: {
+          task: { id: 'task-1', status: 'running' },
+          attemptOrdinal: 4,
+        },
+      }, true);
+
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+        success: true,
+        data: {
+          task: { id: 'task-1', status: 'running' },
+        },
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
 describe('myagents CLI Space issue contracts', () => {
   it('advertises the modern Space Issue entry without the stale legacy issue alias', () => {
     expect(TOP_HELP).toContain('space     Discover Cloud Goals and manage Space Issues/attachments');

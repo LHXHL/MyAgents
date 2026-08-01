@@ -3598,49 +3598,27 @@ export async function handleTaskCreateAttached(
   return enriched;
 }
 
-/**
- * Read the task's `sessionIds.length` from Rust before kicking off a run.
- * Returns `null` if the read fails — analytics call sites then fall back to
- * `null` for `run_count` so we don't fabricate a count. Best-effort: a
- * failed pre-fetch does NOT abort the run itself.
- */
-async function fetchTaskSessionCount(id: string): Promise<number | null> {
-  try {
-    const resp = await managementApi(`/api/task/get${qsFrom({ id })}`);
-    if (!resp.ok) return null;
-    const task = (resp as Record<string, unknown>).task as Record<string, unknown> | undefined;
-    const sessions = task?.sessionIds;
-    return Array.isArray(sessions) ? sessions.length : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function handleTaskRun(payload: { id: string }): Promise<AdminResponse> {
-  // Fetch run count BEFORE the run so the analytics value matches the GUI's
-  // `task.sessionIds.length + 1` semantic (i.e. "if this run succeeds, it'll
-  // be the Nth"). Doing it after would over-count by 1 since the run
-  // appends a new sessionId.
-  const priorCount = await fetchTaskSessionCount(payload.id);
   const resp = await managementApi('/api/task/run', 'POST', payload);
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
+    const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
       source: cliSource(),
-      run_count: priorCount !== null ? priorCount + 1 : null,
+      run_count: attemptOrdinal,
     });
   }
   return wrapped;
 }
 
 export async function handleTaskRerun(payload: { id: string }): Promise<AdminResponse> {
-  const priorCount = await fetchTaskSessionCount(payload.id);
   const resp = await managementApi('/api/task/rerun', 'POST', payload);
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
+    const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
       source: cliSource(),
-      run_count: priorCount !== null ? priorCount + 1 : null,
+      run_count: attemptOrdinal,
     });
   }
   return wrapped;

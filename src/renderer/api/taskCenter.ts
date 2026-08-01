@@ -256,6 +256,12 @@ interface AdminResponse<T = unknown> {
   error?: string;
 }
 
+export interface TaskRunResult {
+  task: Task;
+  /** One-based ordinal assigned by the Task execution owner after admission. */
+  attemptOrdinal: number;
+}
+
 async function postAdmin<T = unknown>(
   path: string,
   body: Record<string, unknown>,
@@ -269,12 +275,12 @@ async function postAdmin<T = unknown>(
 }
 
 /** Dispatch task execution (PRD §11.1 unified primitive). */
-export function taskRun(id: string): Promise<unknown> {
+export function taskRun(id: string): Promise<TaskRunResult> {
   return postAdmin('/api/admin/task/run', { id });
 }
 
 /** Reset status → todo, then dispatch (PRD §10.2.2 row "rerun"). */
-export function taskRerun(id: string): Promise<unknown> {
+export function taskRerun(id: string): Promise<TaskRunResult> {
   return postAdmin('/api/admin/task/rerun', { id });
 }
 

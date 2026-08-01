@@ -17,6 +17,10 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const analyticsMocks = vi.hoisted(() => ({
+  trackServer: vi.fn(),
+}));
+
 const runtimeModelMocks = vi.hoisted(() => ({
   queryRuntimeModels: vi.fn(async () => [{ value: 'gpt-5.6-sol' }]),
   managedInstalled: true,
@@ -92,6 +96,10 @@ vi.mock('./utils/management-api-client', () => ({
   managementApi: managementApiMocks.managementApi,
 }));
 
+vi.mock('./analytics', () => ({
+  trackServer: analyticsMocks.trackServer,
+}));
+
 vi.mock('./runtimes/external-session', () => ({
   queryRuntimeModels: runtimeModelMocks.queryRuntimeModels,
 }));
@@ -137,6 +145,7 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  analyticsMocks.trackServer.mockClear();
   runtimeModelMocks.queryRuntimeModels.mockClear();
   runtimeModelMocks.queryRuntimeModels.mockResolvedValue([{ value: 'gpt-5.6-sol' }]);
   runtimeModelMocks.managedInstalled = true;
@@ -612,6 +621,74 @@ describe('admin-api cron create', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Use myagents goal create');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api accepted task attempt analytics', () => {
+  it('reports the run ordinal returned by the accepted mutation without a task prefetch', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
+      attemptOrdinal: 4,
+    });
+    const { handleTaskRun } = await import('./admin-api');
+
+    const result = await handleTaskRun({ id: 'task-run-accepted' });
+
+    expect(result).toEqual({
+      success: true,
+      data: {
+        task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
+        attemptOrdinal: 4,
+      },
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/run',
+      'POST',
+      { id: 'task-run-accepted' },
+    );
+    expect(analyticsMocks.trackServer).toHaveBeenCalledWith('task_run', {
+      source: 'cli',
+      run_count: 4,
+    });
+  });
+
+  it('does not report an attempt when run admission is rejected', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      error: 'task is busy',
+    });
+    const { handleTaskRun } = await import('./admin-api');
+
+    const result = await handleTaskRun({ id: 'task-run-rejected' });
+
+    expect(result).toEqual({ success: false, error: 'task is busy' });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(analyticsMocks.trackServer).not.toHaveBeenCalled();
+  });
+
+  it('uses the same accepted ordinal contract for rerun', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-rerun-accepted', sessionIds: ['reused-session'] },
+      attemptOrdinal: 7,
+    });
+    const { handleTaskRerun } = await import('./admin-api');
+
+    const result = await handleTaskRerun({ id: 'task-rerun-accepted' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/rerun',
+      'POST',
+      { id: 'task-rerun-accepted' },
+    );
+    expect(analyticsMocks.trackServer).toHaveBeenCalledWith('task_run', {
+      source: 'cli',
+      run_count: 7,
+    });
   });
 });
 

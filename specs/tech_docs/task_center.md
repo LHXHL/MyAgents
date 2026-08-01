@@ -13,6 +13,8 @@
 
 `TaskStore` 是 Task 的唯一真相。不存在 `Task.cronTaskId`、关联 `CronTask` 副本、schedule 双写或启动时反向修补。
 
+`TaskApplication` 是 create/link、status、delete/unlink、run/rerun 的窄应用层 owner：它在 Task-control 与 Store 已有事务上编排 policy，不保存第二份状态。Management API 与 Tauri command 只负责 DTO、caller 身份和响应映射；Cron 兼容入口与 Memory managed job 直接调用同一个 application owner，不能反向依赖 transport handler。
+
 Task 的核心职责：
 
 - 用户可见身份、文档、状态机与审计链。
@@ -41,7 +43,7 @@ any allowed state -> Deleted (soft delete)
 - 一个 `taskId -> { queueId, canceled, sessionId, pendingSessionBirth?, state, error }` 的瞬时 execution map：复用 SessionEngine 普通 turn identity，原子拒绝重叠、撤销未 dispatch turn，并把 stop 与结果提交线性化；`pendingSessionBirth` 只在 metadata 尚未出生时持有该 exact generation 的 lifecycle capability，它不是持久 TaskRun。
 - 启动时从 `TaskStore` 的 Running Task 重建 timer。
 
-启动 Task 只有一个事务入口：`run_task_by_id()` 先校验 schedule、提交 `Running`，再 arm timer；arm 失败则提交 `Blocked`。同一 `taskId` 的 run/rerun、terminal transition、timer 替换、soft delete、stop、outcome/history/UI event/delivery side effect 共用 keyed Task-control lifecycle；完整锁序是 `Task control → Session lifecycle → TaskStore`，锁持有期间使用显式 held-guard 入口，禁止二次 acquire。这样旧 stop 或旧 queue 的迟到结果不可能越过新一轮 birth。
+启动 Task 只有一个应用入口：`TaskApplication::run*` 先校验 schedule、提交 `Running`，再 arm timer；arm 失败则提交 `Blocked`。同一 mutation 在 scheduler admission 成功后返回一基的 `attemptOrdinal = executionCount + 1`；Renderer/CLI 只消费该结果上报 `task_run.run_count`，不按 Session history 预测，也不为 admission 失败计数。同一 `taskId` 的 run/rerun、terminal transition、timer 替换、soft delete、stop、outcome/history/UI event/delivery side effect 共用 keyed Task-control lifecycle；完整锁序是 `Task control → Session lifecycle → TaskStore`，锁持有期间使用显式 held-guard 入口，禁止二次 acquire。这样旧 stop 或旧 queue 的迟到结果不可能越过新一轮 birth。
 
 timer handle 只负责“何时触发”。真正的 AI Turn 是独立执行作业；Stop 先撤销该次 queue authority，再携带精确 `queueId` 请求 SessionEngine stop。只有精确 stop 得到业务确认才清除 execution、释放 Task owner 并发出 stopped confirmation；失败保留 `stop_failed` 投影与 Session 保护，用户只能重试 stop，不能 rerun/edit/delete。对 `blocked | stopped | done | archived` 再发 stop 只重试 transient turn，保留原终态原因，不追加伪状态迁移。`queueId` 已是执行 generation，禁止再维护冗余 generation counter。worker 异常退出由 RAII claim guard 收敛成可见的 `stop_failed`，不留下不可见的永久 owner。
 
@@ -63,6 +65,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 
 - 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
+- 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 的持久化边界拒绝空值与 `pending-*` binding。materialize 失败、取消或 Tab 已卸载都不会留下半绑定 Task。new-session 的 scheduler birth reservation 不变。
 - Session metadata creator 由 scheduler reservation 在 per-Session lifecycle 内按权威 `SessionStore` 是否存在决定，**与 Sidecar `EnsureSidecarResult.isNew` 无关**。已有 Tab/owner 保活进程不等于 metadata 已出生。
 - scheduler reservation 从发布 Session identity 到 metadata birth 只获取一次 per-Session lifecycle authority。Sidecar ensure 必须共享这次 held lease；禁止在 dispatch 下层改走会再次 acquire 同 key 的通用 wrapper，否则新 Session 的 metadata birth 与 ensure 会闭环等待。未 materialize 时，lease 的 fail-closed owner 是 exact `ActiveTaskExecution(taskId + queueId)`，不是可能被 abort/panic 的 worker future；observer 只负责在 metadata 出生后清空该 generation 的 lease，不能成为唯一 owner。
 - single-session 的持久 binding 若已没有 Session metadata，执行前换成新 UUID 并原子重绑，绝不复活被用户删除的 Session id；`task:session-rebound` 提示 UI。`AttachedSession` 终态不能 generic rerun，后续工作必须重新 claim/reopen 并创建新的 Attached Task。
@@ -122,6 +125,8 @@ TaskStore write lock
 
 `tasks.jsonl` 解析是 all-or-nothing；任一 malformed/duplicate row 使 Store 保持只读。写盘使用 tmp + `sync_all` + rename + parent fsync。Task id/path 入口统一经过 `validate_safe_id` 与 `task_docs_dir()` containment 校验。
 
+Task notification 的局部更新也在上述同一写事务内合并：字段缺失表示 unchanged，`false` 是精确值，`null` 只清除对应可选字段（desktop 恢复领域默认 `true`）。CLI 只发送用户实际指定的 patch，不先 GET 后拼出完整对象；完整 replacement 输入仍保留，但不得与 patch 同时出现。
+
 Task 对 Session identity 的保护同时覆盖 durable 与 transient 两层：Running direct single-session Task 保护其固定 Session；`AttachedSession` Task 在 Todo/Running/Verifying/Blocked/Stopped 生命周期保护 Cloud claim 绑定的 Session；一次实际执行从 claim 发布 Session id 到 Sidecar `Task` owner 附着前，由 scheduler active-execution map 保护。任何 durable mutation 只要让 Task 进入上述受保护集合，或给已受保护 Task 新增 `preselectedSessionId/sessionIds` binding，都必须与 Session 删除取得同一个 per-Session lifecycle guard，统一使用 `lifecycle → TaskStore` 锁序；scheduler reservation 已持 guard 时使用显式的 held-guard commit 入口，禁止非重入二次 acquire。
 
 startup legacy migration 也是 durable writer：`create_migrated_with_id` 与 `import_legacy_execution_state` 必须走同一 lifecycle policy，不能以“仅启动期”为由裸拿 TaskStore lock。`create_attached` 在取得 lifecycle 后还要复核 Session metadata；若删除先赢，拒绝创建本地 Attached Task。
@@ -141,7 +146,7 @@ Goal 是 Session 状态，不是 Task execution mode：
 
 ## 8. 主要入口
 
-- Rust：`src-tauri/src/task.rs`、`task_scheduler.rs`、`task_execution.rs`
+- Rust：`src-tauri/src/task.rs`、`task_application.rs`、`task_scheduler.rs`、`task_execution.rs`
 - Legacy compatibility：`src-tauri/src/cron_task/*`、`legacy_upgrade.rs`
 - Management API：`/api/task/*` 与兼容 `/api/cron/*`
 - CLI：`myagents task ...`、兼容 `myagents cron ...`
