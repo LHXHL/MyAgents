@@ -207,12 +207,14 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(streamingText(lastData())).toBe('abcdefghi');
   });
 
-  it('freezes all Virtuoso inputs and geometry callbacks while the active Tab window is unfocused', () => {
+  it('keeps Virtuoso live while the active Tab remains visible but the window is unfocused', () => {
     const history = [msg('h1', 'hello', 'user'), msg('h2', 'hi there')];
-    const handleAtBottomChange = vi.fn();
     const onLoadOlder = vi.fn();
     const scrollToBottom = vi.fn();
     const followProps = createFollowProps();
+    const handleAtBottomChange = vi.fn((atBottom: boolean) => {
+      followProps.followEnabledRef.current = atBottom;
+    });
     const { rerender } = renderList({
       messages: [...history, msg('stream', 'a')],
       streamingMessage: msg('stream', 'a'),
@@ -248,17 +250,25 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     );
 
     const unfocused = lastData();
-    expect(streamingText(unfocused)).toBe('a');
-    expect(unfocused.firstItemIndex).toBe(1_000_000);
-    expect(unfocused.heightEstimates).toEqual([120, 240, 360]);
-    expect(unfocused.components).toBe(focusedComponents);
+    expect(unfocused.data.at(-1)?.id).toBe('assistant-final');
+    expect(unfocused.firstItemIndex).toBe(999_995);
+    expect(unfocused.heightEstimates).toEqual([150, 270, 900]);
+    expect(unfocused.components).not.toBe(focusedComponents);
 
     unfocused.atBottomStateChange?.(false);
     expect(handleAtBottomChange).not.toHaveBeenCalled();
+    expect(followProps.followEnabledRef.current).toBe(true);
+    expect(unfocused.followOutput?.(true)).toBe('smooth');
+    followProps.followEnabledRef.current = false;
+    unfocused.atBottomStateChange?.(true);
+    expect(handleAtBottomChange).not.toHaveBeenCalled();
+    expect(followProps.followEnabledRef.current).toBe(false);
     expect(unfocused.followOutput?.(true)).toBe(false);
+    followProps.followEnabledRef.current = true;
     unfocused.startReached?.();
-    expect(onLoadOlder).not.toHaveBeenCalled();
-    expect(scrollToBottom).not.toHaveBeenCalled();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    expect(scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToBottom).toHaveBeenCalledWith('auto');
 
     rerender(
       <MessageList
@@ -282,7 +292,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().firstItemIndex).toBe(999_995);
     expect(lastData().heightEstimates).toEqual([150, 270, 900]);
     expect(lastData().components).not.toBe(focusedComponents);
-    expect(scrollToBottom).not.toHaveBeenCalled();
+    expect(scrollToBottom).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT carry a stale "scrolled-up" follow snapshot across a session switch made while hidden', () => {
@@ -333,7 +343,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(followRef.current).not.toBe(false);
   });
 
-  it('defers internal Tab recovery until the desktop window is focused', () => {
+  it('restores an internal Tab as soon as it becomes active even while the window is unfocused', () => {
     const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
     const scrollToBottom = vi.fn();
     const history = [msg('h1', 'x', 'user'), msg('h2', 'y')];
@@ -353,11 +363,11 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     rerender(<MessageList {...baseProps} isActive={false} isWindowFocused={false} />);
     rerender(<MessageList {...baseProps} isActive isWindowFocused={false} />);
-    expect(scrollToBottom).not.toHaveBeenCalled();
+    expect(scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToBottom).toHaveBeenCalledWith('auto');
 
     rerender(<MessageList {...baseProps} isActive isWindowFocused />);
     expect(scrollToBottom).toHaveBeenCalledTimes(1);
-    expect(scrollToBottom).toHaveBeenCalledWith('auto');
   });
 
   it('freezes firstItemIndex while inactive (no prepend anchor drift mid-hide)', () => {

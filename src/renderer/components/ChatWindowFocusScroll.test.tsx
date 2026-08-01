@@ -63,17 +63,22 @@ function Harness({ focused, streamingContent }: { focused: boolean; streamingCon
 }
 
 describe('Chat window focus scroll composition', () => {
-  it('issues exactly one bottom command when a followed stream resumes on focus', () => {
+  it('keeps a visible followed stream live while blurred and restores once on focus', () => {
     const view = render(<Harness focused streamingContent="a" />);
     virtuoso.scrollToIndex.mockClear();
 
     view.rerender(<Harness focused={false} streamingContent="background output" />);
-    expect(virtuoso.scrollToIndex).not.toHaveBeenCalled();
+    expect(virtuoso.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(virtuoso.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'auto',
+    });
 
     view.rerender(<Harness focused streamingContent="latest output" />);
 
-    expect(virtuoso.scrollToIndex).toHaveBeenCalledTimes(1);
-    expect(virtuoso.scrollToIndex).toHaveBeenCalledWith({
+    expect(virtuoso.scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(virtuoso.scrollToIndex).toHaveBeenLastCalledWith({
       index: 'LAST',
       align: 'end',
       behavior: 'auto',

@@ -280,7 +280,7 @@ describe('useChatScrollController', () => {
     expect(controls.followEnabledRef.current).toBe(false);
   });
 
-  it('ignores row layout changes while window geometry is inactive', () => {
+  it('handles row layout changes while the active Chat window is unfocused', () => {
     controls.followEnabledRef.current = true;
     const { result } = renderHook(() => useChatScrollController({
       messages: [msg('m1')],
@@ -291,11 +291,10 @@ describe('useChatScrollController', () => {
 
     act(() => {
       result.current.onRowLayoutChanged('m1', 'tool-complete');
-      result.current.onRowLayoutChanged('m1', 'attachment-settle');
-      result.current.onRowLayoutChanged('m1', 'widget-resize');
     });
 
-    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+    expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
     expect(controls.scrollBy).not.toHaveBeenCalled();
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
   });

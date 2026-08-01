@@ -123,10 +123,6 @@ export function useChatScrollController({
   const isActiveRef = useRef(isActive);
   // eslint-disable-next-line react-hooks/refs
   isActiveRef.current = isActive;
-  const geometryActive = isActive && isWindowFocused;
-  const geometryActiveRef = useRef(geometryActive);
-  // eslint-disable-next-line react-hooks/refs
-  geometryActiveRef.current = geometryActive;
   const sessionIdRef = useRef(sessionId ?? null);
   // eslint-disable-next-line react-hooks/refs
   sessionIdRef.current = sessionId ?? null;
@@ -189,7 +185,7 @@ export function useChatScrollController({
 
     const adjustOffset = () => {
       if (
-        !geometryActiveRef.current
+        !isActiveRef.current
         || sessionIdRef.current !== restoreSessionId
         || pendingAnchorRef.current !== restoreIntent
       ) return;
@@ -270,7 +266,7 @@ export function useChatScrollController({
   useLayoutEffect(() => {
     const pending = pendingAnchorRef.current;
     if (!pending?.pending) return;
-    if (!geometryActiveRef.current) {
+    if (!isActiveRef.current) {
       pendingAnchorRef.current = null;
       return;
     }
@@ -286,9 +282,9 @@ export function useChatScrollController({
   useLayoutEffect(() => {
     if (!pendingBottomPinRef.current) return;
     pendingBottomPinRef.current = false;
-    if (!geometryActiveRef.current || !followEnabledRef.current) return;
+    if (!isActiveRef.current || !followEnabledRef.current) return;
     scrollToBottom('auto');
-  }, [bottomPinTick, geometryActive, followEnabledRef, scrollToBottom]);
+  }, [bottomPinTick, followEnabledRef, scrollToBottom]);
 
   const scrollToMessage = useCallback((messageId: string, options: ScrollToMessageOptions = {}) => {
     const index = messageIndexByIdRef.current.get(messageId);
@@ -320,7 +316,7 @@ export function useChatScrollController({
   }, [scrollerRef, scrollToMessage]);
 
   const onRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
-    if (!geometryActiveRef.current) return;
+    if (!isActiveRef.current) return;
     if (reason === 'tool-complete' && followEnabledRef.current) {
       scrollToBottom('auto');
       return;

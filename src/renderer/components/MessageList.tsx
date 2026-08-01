@@ -41,7 +41,7 @@ interface MessageListProps {
    * if we were following before the tab went hidden.
    */
   isActive?: boolean;
-  /** Whether the native desktop window is focused and its WebView geometry is trustworthy. */
+  /** Native focus projection, used to preserve blur-time follow intent and fence focus recovery. */
   isWindowFocused?: boolean;
   // Pagination: Virtuoso maintains the visible scroll position across
   // prepended items by the absolute index of data[0]. Default 0 = no pagination.
@@ -256,7 +256,6 @@ const MessageList = memo(function MessageList({
   bottomSpacerPx,
 }: MessageListProps) {
   const { t } = useTranslation('chat');
-  const geometryActive = isActive && isWindowFocused;
   const committedWindowFocusedRef = useRef(isWindowFocused);
   const isWindowFocusReturn = isWindowFocused && !committedWindowFocusedRef.current;
   const liveHeightEstimateSeed = heightEstimateSeed?.length === messages.length ? heightEstimateSeed : undefined;
@@ -311,12 +310,12 @@ const MessageList = memo(function MessageList({
     // same cache-poisoning class as the data freeze below). If the session changed
     // while inactive, defer the pin: leaving lastScrolledSessionRef unset means this
     // effect re-fires and pins once isActive flips true.
-    if (!geometryActive) return;
+    if (!isActive) return;
     if (!sessionId || sessionId === lastScrolledSessionRef.current) return;
     if (messages.length === 0) return;
     lastScrolledSessionRef.current = sessionId;
     scrollToBottom('auto');
-  }, [geometryActive, sessionId, messages.length, scrollToBottom]);
+  }, [isActive, sessionId, messages.length, scrollToBottom]);
 
   // Tab inactive ↔ active follow-state preservation.
   //
@@ -352,10 +351,6 @@ const MessageList = memo(function MessageList({
       }
       return;
     }
-    // An internal Tab can become active while the desktop window is still
-    // blurred (for example through a notification route). Keep the snapshot
-    // pending until geometry is trustworthy instead of scrolling in background.
-    if (!isWindowFocused) return;
     const snap = inactiveSnapshotRef.current;
     const snapSession = inactiveSnapshotSessionRef.current;
     if (snap === null) return; // initial mount or no inactive transition recorded
@@ -379,17 +374,15 @@ const MessageList = memo(function MessageList({
     if (messages.length > 0) {
       scrollToBottom('auto');
     }
-  }, [isActive, isWindowFocused, messages.length, scrollToBottom, sessionId, followEnabledRef]);
+  }, [isActive, messages.length, scrollToBottom, sessionId, followEnabledRef]);
 
-  // Gate Virtuoso's atBottomStateChange while the tab is hidden.
-  // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
-  // with zero/stale dimensions, which would otherwise be interpreted as
-  // "user scrolled away" and flip followEnabledRef.current to false — losing
-  // bottom-pinning permanently for this stream.
+  // Keep the follow intent captured at blur authoritative until focus returns.
+  // Layout-driven atBottom changes may still arrive while the visible window is
+  // unfocused; rendering stays live, but those callbacks are not user intent.
   const guardedAtBottomChange = useCallback((atBottom: boolean) => {
-    if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
+    if (!isActive || !isWindowFocused || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     handleAtBottomChange(atBottom);
-  }, [geometryActive, isWindowFocusReturn, handleAtBottomChange]);
+  }, [isActive, isWindowFocused, isWindowFocusReturn, handleAtBottomChange]);
 
   // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
@@ -409,15 +402,16 @@ const MessageList = memo(function MessageList({
   // must NOT keep auto-scroll alive once the turn has completed.
   useLayoutEffect(() => {
     if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while hidden — scrolling against a content-visibility:hidden scroller
+    // Skip while the internal Tab is hidden — scrolling against a
+    // content-visibility:hidden scroller
     // can compute against stale geometry. The re-pin layout effect above restores
     // position on re-activation.
-    if (!geometryActive) return;
+    if (!isActive) return;
     // Window-focus recovery belongs to ChatScrollController. A focus-only
     // geometry transition must not create a second LAST/end command here.
     if (isWindowFocusReturn) return;
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [streamingMessage, isLoading, geometryActive, isWindowFocusReturn, followEnabledRef, virtuosoRef]);
+  }, [streamingMessage, isLoading, isActive, isWindowFocusReturn, followEnabledRef, virtuosoRef]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
   // At turn end the data-layer reveal drains the remaining text and the message moves to
@@ -429,10 +423,10 @@ const MessageList = memo(function MessageList({
   useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
-    if (was && !isLoading && geometryActive && !isWindowFocusReturn && followEnabledRef.current) {
+    if (was && !isLoading && isActive && !isWindowFocusReturn && followEnabledRef.current) {
       scrollToBottom('auto');
     }
-  }, [isLoading, geometryActive, isWindowFocusReturn, followEnabledRef, scrollToBottom]);
+  }, [isLoading, isActive, isWindowFocusReturn, followEnabledRef, scrollToBottom]);
 
   // Mark the focus commit trustworthy only after Virtuoso's child layout
   // effects have run. During that commit callbacks and local pins stay gated;
@@ -460,7 +454,7 @@ const MessageList = memo(function MessageList({
   layoutByMessageIdRef.current = layoutByMessageId;
   const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
   onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
-  // followOutput / startReached capture `geometryActive` DIRECTLY (not via a ref). Under
+  // followOutput / startReached capture `isActive` DIRECTLY (not via a ref). Under
   // React 19's child-before-parent layout-effect ordering, a ref updated in our parent
   // layout effect could still read a stale value when Virtuoso's child effects fire
   // these callbacks first on the active→hidden commit. Capturing the prop means the
@@ -471,22 +465,22 @@ const MessageList = memo(function MessageList({
     () => (isAtBottom: boolean) => {
       // Hidden tab (content-visibility:hidden): never drive follow-scroll against
       // skipped/stale geometry (same cache-poisoning class as the data freeze below).
-      if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return false;
+      if (!isActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return false;
       const mode = followEnabledRef.current;
       if (!mode) return false;
       if (mode === 'force') return 'smooth' as const;
       return isAtBottom ? 'smooth' as const : false;
     },
-    [followEnabledRef, geometryActive, isWindowFocusReturn]
+    [followEnabledRef, isActive, isWindowFocusReturn]
   );
 
   // Pagination guard: don't load an older page off stale range math while hidden —
   // Virtuoso can fire startReached from corrupted offsets when our subtree's layout
   // was skipped (content-visibility:hidden), and a prepend in that state compounds the desync.
   const guardedLoadOlder = useCallback(() => {
-    if (!geometryActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
+    if (!isActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     onLoadOlder?.();
-  }, [onLoadOlder, geometryActive, isWindowFocusReturn]);
+  }, [onLoadOlder, isActive, isWindowFocusReturn]);
 
   const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
   const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
@@ -559,10 +553,9 @@ const MessageList = memo(function MessageList({
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);
 
-  // ── Freeze the data fed to Virtuoso while its geometry is untrusted ─────────
-  // An inactive internal Tab is wrapped in `content-visibility: hidden`; a blurred
-  // desktop WebView can likewise defer ResizeObserver/layout work. Any data/height
-  // change Virtuoso processes in either state is measured against skipped / stale
+  // ── Freeze the data fed to Virtuoso while the internal Tab is inactive ──────
+  // An inactive internal Tab is wrapped in `content-visibility: hidden`, so any
+  // data/height change Virtuoso processes is measured against skipped / stale
   // geometry, which poisons its internal offset+range cache → PHANTOM REPEATED ROWS,
   // then a BLANK viewport once the user scrolls back — recoverable only by remount
   // (close+reopen rebuilds the cache).
@@ -594,14 +587,14 @@ const MessageList = memo(function MessageList({
     components,
   });
   useLayoutEffect(() => {
-    if (geometryActive) {
+    if (isActive) {
       frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed, components };
     }
-  }, [geometryActive, messages, firstItemIndex, liveHeightEstimateSeed, components]);
-  const virtuosoData = geometryActive ? messages : frozenDataRef.current.data;
-  const virtuosoFirstItemIndex = geometryActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
-  const virtuosoHeightEstimateSeed = geometryActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
-  const virtuosoComponents = geometryActive ? components : frozenDataRef.current.components;
+  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed, components]);
+  const virtuosoData = isActive ? messages : frozenDataRef.current.data;
+  const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
+  const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  const virtuosoComponents = isActive ? components : frozenDataRef.current.components;
   const debugProbe = useChatScrollDebugProbe({
     sessionId,
     scroller: debugScroller,
