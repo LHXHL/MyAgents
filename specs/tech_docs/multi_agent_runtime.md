@@ -524,19 +524,19 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `types.ts` | facade/owner 共享类型：`PersistContentBlock`、`ExternalSendContext`、config result、queue operation、turn snapshot 等 |
 | `lifecycle.ts` | active process/runtime、`startingPromise` guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；config coercion 与 snapshot/source guard integration |
-| `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
+| `operation-queue.ts` | direct/queued message operation及其 user-message projection、turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、success-gated batch commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
-Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 channel-delivery admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
+Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 channel-delivery admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。每个 direct/queued message operation 同时拥有自己的用户消息以及 surfaced / in-transcript / persisted / retracted 投影事实；Desktop、IM、Inbox、Background、Injected 与 realtime fallback 共用既有 direct-send tail / queue generation，facade 不再保留 process-scope early-message singleton。`external-session.ts` 仍可保留 watchdog、trace、pending birth 等真正 orchestration-local state。
 
 ### 测试护栏
 
 External runtime 的维护入口是 `SessionEngine`，测试也必须沿这条边界验证。`src/server/runtimes/external-session-mock.integration.test.ts` 通过 Vitest mock `runtimes/factory.ts` 注入 test-only fake runtime，fake runtime 的 `type` 使用真实 `RuntimeType`（当前为 `codex`），不在生产 `RuntimeType`、config 或 UI 中新增 `mock` 分支。
 
-这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；渠道投递还覆盖 fresh/queued/realtime Desktop、Session Inbox 隐藏输入只投 assistant、已关闭 text block 后失败/停止仍不投递、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序、user mirror 失败不抑制 assistant、Builtin result-only 回退与 per-yield owner 隔离，以及 IM-origin / caller-owned turn 保持单路回复。
+这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、Desktop/IM 并发 operation 的消息 identity 隔离、pre-accept reject 与持久化失败的精确 bubble retraction、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；渠道投递还覆盖 fresh/queued/realtime Desktop、Session Inbox 隐藏输入只投 assistant、已关闭 text block 后失败/停止仍不投递、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序、user mirror 失败不抑制 assistant、Builtin result-only 回退与 per-yield owner 隔离，以及 IM-origin / caller-owned turn 保持单路回复。
 
 ### 三路消息发送
 
@@ -669,6 +669,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 **Session Complete 特判**: terminal 分类归 `external-session/turn-lifecycle.ts::markExternalSessionComplete()`。`!turnCompleted && currentTurnStartTime === 0` 判为 pre-warm exit(进程 spawn 后、首轮 turn 开始前崩溃),静默吞掉错误 — 下一条用户消息会走正常启动路径重试；idle death、intentional user stop、success finalization 也由该 owner 返回 plan，`external-session.ts` facade 只落地 broadcast / persistence / cleanup。
 
 ### 并发与序列化
+
+所有 external ingress 在进入 Case 1/2/3 前先形成一个 message operation。operation 自己持有 user `SessionMessage` 与其 projection state；direct send 通过既有 promise tail 串行 claim，turn-boundary queue 继续由同一 generation/drain reservation 管理，realtime steer 也携带同一 operation 直到 runtime user echo。未持久化的 loser 只撤回自己的 message id；已经持久化或 transport termination 未确认的 turn 不做猜测性撤回。该结构保留原有 optimistic bubble、`queue:added` / `queue:started` 时序、queue generation 与 exact Stop 语义。
 
 `sendExternalMessage` 在分派 Case 1/2/3 之前有四道 gate:
 

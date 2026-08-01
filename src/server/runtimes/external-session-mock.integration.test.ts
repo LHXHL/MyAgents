@@ -942,7 +942,7 @@ describe('external SessionEngine with fake runtime', () => {
       expect(payload.inputRef).toMatchObject({ kind: 'ref', preview: '' });
       expect(JSON.stringify(payload).length).toBeLessThan(16 * 1024);
       const refId = payload.inputRef?.id;
-      expect(refId).toMatch(/^[a-f0-9]{8}$/);
+      expect(refId).toMatch(/^[a-f0-9]{32}$/);
       expect(JSON.parse(readFileSync(join(harness.home, '.myagents', 'refs', refId!), 'utf-8')))
         .toEqual(finalInput);
     }
@@ -992,6 +992,19 @@ describe('external SessionEngine with fake runtime', () => {
     });
     expect(harness.runtime.sentMessages).toEqual([]);
     expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    const replay = broadcastEvents.find((item) => (
+      item.event === 'chat:message-replay'
+        && (item.data as { message?: { content?: string } }).message?.content === 'must not dispatch'
+    ));
+    const replayId = (replay?.data as { message?: { id?: string } } | undefined)?.message?.id;
+    expect(replayId).toBeDefined();
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:messages-retracted',
+      data: {
+        messageIds: [replayId],
+        retractedStreamingTail: false,
+      },
+    });
   });
 
   it('settles an admitted fresh turn when its user transcript persist fails', async () => {
@@ -1020,6 +1033,20 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.startSessionInitialMessages).toEqual([]);
     expect(harness.runtime.sentMessages).toEqual([]);
     expect(harness.externalSession.getExternalCurrentTurnIdentity()).toBeNull();
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    const replay = broadcastEvents.find((item) => (
+      item.event === 'chat:message-replay'
+        && (item.data as { message?: { content?: string } }).message?.content === 'must persist before transport'
+    ));
+    const replayId = (replay?.data as { message?: { id?: string } } | undefined)?.message?.id;
+    expect(replayId).toBeDefined();
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:messages-retracted',
+      data: {
+        messageIds: [replayId],
+        retractedStreamingTail: false,
+      },
+    });
   });
 
   it('keeps maintenance-only external turns out of session recency', async () => {
@@ -2379,6 +2406,62 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.sentMessages).toEqual([
       'first simultaneous IM',
       'second simultaneous IM',
+    ]);
+  });
+
+  it('keeps simultaneous desktop and IM user projections bound to their own operations', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'desktop answer', completeDelayMs: 80 },
+      { kind: 'success', text: 'IM answer' },
+    ], { deferStart: true });
+    const sessionId = 'session-mixed-operation-projection';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'desktop operation'),
+    );
+    const im = await harness.engine.enqueueImMessage({
+      message: 'IM operation',
+      requestId: 'req-mixed-operation',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      permissionMode: 'full-auto',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    });
+
+    expect(im).toMatchObject({ success: true, queued: true });
+    expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual([
+      'IM operation',
+    ]);
+    harness.runtime.releaseStart();
+
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(im.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const desktopReplay = broadcastEvents.find((item) => (
+      item.event === 'chat:message-replay'
+        && (item.data as { message?: { content?: string } }).message?.content === 'desktop operation'
+    ));
+    const imStarted = broadcastEvents.find((item) => (
+      item.event === 'queue:started'
+        && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'IM operation'
+    ));
+    const desktopId = (desktopReplay?.data as { message?: { id?: string } } | undefined)?.message?.id;
+    const imId = (imStarted?.data as { userMessage?: { id?: string } } | undefined)?.userMessage?.id;
+    expect(desktopId).toBeDefined();
+    expect(imId).toBeDefined();
+    expect(desktopId).not.toBe(imId);
+
+    const persistedUsers = harness.sessionStore.getSessionData(sessionId)?.messages.filter(
+      message => message.role === 'user',
+    ) ?? [];
+    expect(persistedUsers.map(message => ({ id: message.id, content: message.content }))).toEqual([
+      { id: desktopId, content: 'desktop operation' },
+      { id: imId, content: 'IM operation' },
     ]);
   });
 
