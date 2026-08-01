@@ -1197,6 +1197,21 @@ impl SidecarManager {
             return Some(self.attach_background_owner_if_current(session_id, owner, binding));
         }
 
+        // The activity probe can observe busy immediately before the current
+        // process exits. Do not wait for the periodic health monitor to move
+        // that dead entry into recovery: the Tab/Agent owner may be released
+        // first. This manager lock is the logical Session authority, so make
+        // the dead -> recovering transition here and retain Background work
+        // on the same recovery epoch.
+        if !self.recovering_sidecars.contains_key(session_id)
+            && self
+                .sidecars
+                .get_mut(session_id)
+                .is_some_and(SessionSidecar::is_dead)
+        {
+            self.begin_session_sidecar_replacement(session_id);
+        }
+
         let recovering = self.recovering_sidecars.get_mut(session_id)?;
         recovering.add_owner(owner);
         Some(BackgroundOwnerAttach::Recovering)

@@ -461,6 +461,45 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn terminating_owned_tree_preserves_unrelated_same_argv_process() {
+        let mut unrelated = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn unrelated same-argv process");
+        let unrelated_pid = unrelated.id();
+
+        let mut command = new("sleep");
+        command
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut owned = spawn_tree(&mut command).expect("spawn owned same-argv process");
+        let owned_pid = owned.id();
+
+        owned.terminate().expect("terminate exact owned tree");
+        drop(owned);
+        settle_pending_tree_terminations();
+
+        assert!(
+            wait_until_processes_exit(&[owned_pid], Duration::from_secs(2)),
+            "owned process must terminate"
+        );
+        assert_eq!(
+            crate::process_cleanup::find_live_processes_by_pid(&[unrelated_pid]).len(),
+            1,
+            "same argv is not process ownership"
+        );
+
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn exit_settlement_dispatches_force_for_sigterm_resistant_tree() {
         let mut command = new("sh");
         command

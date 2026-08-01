@@ -1246,12 +1246,14 @@ pub async fn cmd_start_agent_channel(
     });
 
     // Create bot instance directly (no transit through ManagedImBots)
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (bot_instance, bot_status) = create_bot_instance(
         &app_handle,
         &sidecarManager,
         channelId.clone(),
         im_config,
         Some(agentId.clone()),
+        &creation_permit,
     )
     .await?;
 

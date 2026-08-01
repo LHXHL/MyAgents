@@ -38,7 +38,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     let process_role = resolve_sidecar_process_role(tab_id, agent_dir.is_some())?;
     let is_global = process_role == SidecarProcessRole::Global;
 
-    let _update_spawn_permit = begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
 
@@ -47,7 +47,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     // common case this returns immediately (cleanup finishes in ~50 ms).
     // 15 s is a generous upper bound; the new sysinfo-based cleanup is
     // bounded internally at ~3 s even with laggy processes.
-    wait_for_startup_cleanup(Duration::from_secs(15));
+    wait_for_startup_cleanup(Duration::from_secs(15))?;
 
     let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
 

@@ -2,92 +2,146 @@ use super::*;
 
 static UPDATE_SHUTDOWN_IN_PROGRESS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-static UPDATE_QUIESCE: std::sync::LazyLock<UpdateQuiesce> =
-    std::sync::LazyLock::new(UpdateQuiesce::default);
+static LIFECYCLE_QUIESCE: std::sync::LazyLock<Arc<LifecycleQuiesce>> =
+    std::sync::LazyLock::new(|| Arc::new(LifecycleQuiesce::default()));
 
 #[derive(Default)]
-struct UpdateQuiesce {
-    state: std::sync::Mutex<UpdateQuiesceState>,
+struct LifecycleQuiesce {
+    state: std::sync::Mutex<LifecycleQuiesceState>,
     idle: std::sync::Condvar,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum CreationAdmission {
+    #[default]
+    Open,
+    UpdateShutdown,
+    AppExit,
+}
+
 #[derive(Default)]
-struct UpdateQuiesceState {
-    update_requested: bool,
+struct LifecycleQuiesceState {
+    admission: CreationAdmission,
     active_creations: usize,
 }
 
 pub struct UpdateShutdownGuard {
+    gate: Arc<LifecycleQuiesce>,
     active: bool,
 }
 
-pub struct UpdateSpawnPermit {
+pub struct LifecycleSpawnPermit {
+    gate: Arc<LifecycleQuiesce>,
     active: bool,
 }
 
 impl Drop for UpdateShutdownGuard {
     fn drop(&mut self) {
         if self.active {
-            if let Ok(mut state) = UPDATE_QUIESCE.state.lock() {
-                state.update_requested = false;
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
-                UPDATE_QUIESCE.idle.notify_all();
-            } else {
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut state) = self.gate.state.lock() {
+                // App exit is terminal. An update guard that happens to drop
+                // after ExitRequested must not reopen process/resource birth.
+                if state.admission == CreationAdmission::UpdateShutdown {
+                    state.admission = CreationAdmission::Open;
+                    UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.gate.idle.notify_all();
+                    ulog_info!("[sidecar] Update shutdown gate released");
+                }
             }
-            ulog_info!("[sidecar] Update shutdown gate released");
         }
     }
 }
 
-impl Drop for UpdateSpawnPermit {
+impl Drop for LifecycleSpawnPermit {
     fn drop(&mut self) {
         if !self.active {
             return;
         }
-        if let Ok(mut state) = UPDATE_QUIESCE.state.lock() {
+        if let Ok(mut state) = self.gate.state.lock() {
             state.active_creations = state.active_creations.saturating_sub(1);
             if state.active_creations == 0 {
-                UPDATE_QUIESCE.idle.notify_all();
+                self.gate.idle.notify_all();
             }
         }
     }
 }
 
-pub fn begin_update_spawn_permit() -> Result<UpdateSpawnPermit, String> {
-    let mut state = UPDATE_QUIESCE.state.lock().map_err(|e| e.to_string())?;
-    if state.update_requested {
-        return Err("UPDATE_SHUTDOWN_IN_PROGRESS".to_string());
+impl LifecycleQuiesce {
+    fn begin_spawn(self: &Arc<Self>) -> Result<LifecycleSpawnPermit, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if state.admission != CreationAdmission::Open {
+            return Err("UPDATE_SHUTDOWN_IN_PROGRESS".to_string());
+        }
+        state.active_creations += 1;
+        Ok(LifecycleSpawnPermit {
+            gate: Arc::clone(self),
+            active: true,
+        })
     }
-    state.active_creations += 1;
-    Ok(UpdateSpawnPermit { active: true })
+
+    fn begin_update(self: &Arc<Self>) -> Result<UpdateShutdownGuard, String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        if state.admission != CreationAdmission::Open {
+            return Err("UPDATE_SHUTDOWN_ALREADY_IN_PROGRESS".to_string());
+        }
+        state.admission = CreationAdmission::UpdateShutdown;
+        UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
+        while state.active_creations > 0 {
+            ulog_info!(
+                "[sidecar] Waiting for {} owner creation(s) before update shutdown",
+                state.active_creations
+            );
+            state = match self.idle.wait(state) {
+                Ok(state) => state,
+                Err(error) => {
+                    let mut state = error.into_inner();
+                    state.admission = CreationAdmission::Open;
+                    UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+                    self.idle.notify_all();
+                    return Err("UPDATE_SHUTDOWN_GATE_POISONED".to_string());
+                }
+            };
+        }
+        ulog_info!("[sidecar] Update shutdown gate acquired");
+        Ok(UpdateShutdownGuard {
+            gate: Arc::clone(self),
+            active: true,
+        })
+    }
+
+    fn begin_app_exit(&self) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        state.admission = CreationAdmission::AppExit;
+        UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
+        while state.active_creations > 0 {
+            ulog_info!(
+                "[sidecar] Waiting for {} owner creation(s) before app exit",
+                state.active_creations
+            );
+            state = self
+                .idle
+                .wait(state)
+                .map_err(|_| "APP_EXIT_CREATION_GATE_POISONED".to_string())?;
+        }
+        ulog_info!("[sidecar] App-exit creation gate acquired");
+        Ok(())
+    }
+}
+
+pub fn begin_lifecycle_spawn_permit() -> Result<LifecycleSpawnPermit, String> {
+    LIFECYCLE_QUIESCE.begin_spawn()
 }
 
 pub fn begin_update_shutdown() -> Result<UpdateShutdownGuard, String> {
-    let mut state = UPDATE_QUIESCE.state.lock().map_err(|e| e.to_string())?;
-    if state.update_requested {
-        return Err("UPDATE_SHUTDOWN_ALREADY_IN_PROGRESS".to_string());
-    }
-    state.update_requested = true;
-    UPDATE_SHUTDOWN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::SeqCst);
-    while state.active_creations > 0 {
-        ulog_info!(
-            "[sidecar] Waiting for {} owner creation(s) before update shutdown",
-            state.active_creations
-        );
-        state = match UPDATE_QUIESCE.idle.wait(state) {
-            Ok(state) => state,
-            Err(err) => {
-                let mut state = err.into_inner();
-                state.update_requested = false;
-                UPDATE_SHUTDOWN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
-                UPDATE_QUIESCE.idle.notify_all();
-                return Err("UPDATE_SHUTDOWN_GATE_POISONED".to_string());
-            }
-        };
-    }
-    ulog_info!("[sidecar] Update shutdown gate acquired");
-    Ok(UpdateShutdownGuard { active: true })
+    LIFECYCLE_QUIESCE.begin_update()
+}
+
+/// Permanently close process/resource birth for this app instance and wait
+/// until every already-admitted creation has either registered its owner or
+/// dropped the newly created resource. Unlike update quiesce, this gate never
+/// reopens because Tauri's exit path terminates the Rust process.
+pub fn begin_app_exit_shutdown() -> Result<(), String> {
+    LIFECYCLE_QUIESCE.begin_app_exit()
 }
 
 pub fn is_update_shutdown_in_progress() -> bool {
@@ -303,6 +357,52 @@ fn describe_process_matches(matches: &[crate::process_cleanup::ProcessMatch]) ->
         })
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+#[cfg(test)]
+mod lifecycle_quiesce_tests {
+    use super::*;
+
+    #[test]
+    fn app_exit_closes_admission_and_waits_for_inflight_creation() {
+        let gate = Arc::new(LifecycleQuiesce::default());
+        let permit = gate.begin_spawn().expect("admit creation");
+        let exit_gate = Arc::clone(&gate);
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed_after_wait = Arc::clone(&completed);
+        let waiter = std::thread::spawn(move || {
+            exit_gate.begin_app_exit().expect("app exit gate");
+            completed_after_wait.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while gate.state.lock().expect("gate state").admission != CreationAdmission::AppExit {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exit did not close admission"
+            );
+            std::thread::yield_now();
+        }
+        assert!(gate.begin_spawn().is_err());
+        assert!(!completed.load(std::sync::atomic::Ordering::SeqCst));
+
+        drop(permit);
+        waiter.join().expect("join app exit waiter");
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            gate.begin_spawn().is_err(),
+            "app-exit admission is terminal"
+        );
+    }
+
+    #[test]
+    fn app_exit_cannot_be_reopened_by_a_late_update_guard_drop() {
+        let gate = Arc::new(LifecycleQuiesce::default());
+        let update = gate.begin_update().expect("update gate");
+        gate.begin_app_exit().expect("upgrade to app exit");
+        drop(update);
+        assert!(gate.begin_spawn().is_err());
+    }
 }
 
 #[cfg(target_os = "windows")]

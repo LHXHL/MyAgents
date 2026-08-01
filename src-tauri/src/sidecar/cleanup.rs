@@ -68,12 +68,12 @@ pub(super) const STARTUP_CLEANUP_PATTERNS: &[crate::process_cleanup::ProcessPatt
 
 // ===== Startup cleanup synchronization =====
 //
-// `cleanup_stale_sidecars` is now hoisted off the main thread (see
+// `cleanup_stale_sidecars` is hoisted off the main thread (see
 // `lib.rs::setup`). Any sidecar start path MUST wait on this barrier before
-// spawning to avoid port collisions with stale processes that are still
-// being killed. The barrier is set up once at app start and, in the vast
-// majority of cases, is already signaled by the time the first sidecar
-// spawn is requested (cleanup is ~50 ms when there's nothing to kill).
+// spawning. The barrier covers both prior-process termination and the single
+// startup ref inventory, so a new writer cannot race that inventory. It is set
+// up once at app start and, in the vast majority of cases, is already signaled
+// by the time the first sidecar spawn is requested.
 
 pub(crate) struct StartupCleanupBarrier {
     done: std::sync::atomic::AtomicBool,
@@ -103,9 +103,9 @@ pub fn mark_startup_cleanup_done() {
     }
 }
 
-/// Block the current (sync) thread until the startup cleanup pass has
-/// finished, or until `timeout` elapses. Logs a warning on timeout but
-/// does not fail — callers should proceed with best-effort spawn.
+/// Block the current (sync) thread until prior writers are quiescent and the
+/// startup ref inventory has finished. A timeout rejects this spawn rather
+/// than letting a new writer race the still-running inventory.
 ///
 /// Implementation note: pure `AtomicBool` polling with a 25 ms sleep —
 /// deliberately **not** using `tokio::sync::Notify` + `block_on`. This
@@ -116,22 +116,21 @@ pub fn mark_startup_cleanup_done() {
 /// cheap enough here: the common case is the barrier is already
 /// signaled before the first sidecar spawn is requested, so we exit on
 /// the first atomic-load without ever sleeping.
-pub fn wait_for_startup_cleanup(timeout: Duration) {
+pub fn wait_for_startup_cleanup(timeout: Duration) -> Result<(), String> {
     let Some(barrier) = STARTUP_CLEANUP_BARRIER.get() else {
-        return;
+        return Ok(());
     };
     if barrier.done.load(std::sync::atomic::Ordering::Acquire) {
-        return;
+        return Ok(());
     }
     let start = std::time::Instant::now();
     let poll = Duration::from_millis(25);
     while !barrier.done.load(std::sync::atomic::Ordering::Acquire) {
         if start.elapsed() >= timeout {
-            ulog_warn!(
-                "[sidecar] Startup cleanup barrier timed out after {:?}; proceeding anyway",
+            return Err(format!(
+                "STARTUP_CLEANUP_IN_PROGRESS: timed out after {:?}",
                 start.elapsed()
-            );
-            return;
+            ));
         }
         thread::sleep(poll);
     }
@@ -142,6 +141,7 @@ pub fn wait_for_startup_cleanup(timeout: Duration) {
             elapsed
         );
     }
+    Ok(())
 }
 
 /// Fast synchronous preamble — safe to run on the main thread before the
@@ -162,13 +162,12 @@ pub fn cleanup_stale_sidecars_preamble() {
 /// When `had_prior_instance` is `false` (true first launch / post-uninstall),
 /// the scan is skipped entirely — there cannot be any orphans to kill,
 /// so the PID enumeration overhead is pure waste.
-pub fn cleanup_stale_sidecars(had_prior_instance: bool) {
+pub fn cleanup_stale_sidecars(had_prior_instance: bool) -> bool {
     if !had_prior_instance {
         ulog_info!(
             "[sidecar] True first launch (no prior lock file) — skipping stale process scan"
         );
-        mark_startup_cleanup_done();
-        return;
+        return true;
     }
 
     let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTERNS);
@@ -193,5 +192,48 @@ pub fn cleanup_stale_sidecars(had_prior_instance: bool) {
             );
         }
     }
-    mark_startup_cleanup_done();
+    report.residual == 0
+}
+
+/// Inventory proxy spill residue only after prior Sidecar/Bridge writers are
+/// confirmed stopped. Residual or panicked cleanup leaves the manager's
+/// `inventory_complete` fact false, so Rust spill admission remains closed for
+/// this run without a live-directory rescan.
+pub async fn recover_proxy_spills_after_startup_cleanup(
+    spill_manager: &crate::proxy_spill::ProxySpillManager,
+    writers_quiesced: bool,
+) -> Result<usize, String> {
+    if !writers_quiesced {
+        return Err(
+            "[proxy] prior ref writers did not quiesce; startup inventory remains incomplete"
+                .to_string(),
+        );
+    }
+    spill_manager.recover_startup_orphans().await
+}
+
+#[cfg(test)]
+mod startup_inventory_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ref_inventory_stays_closed_until_prior_writers_quiesce() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let orphan = root.path().join(format!("{}.part", "a".repeat(32)));
+        std::fs::write(&orphan, b"in-flight").expect("write orphan");
+        let manager = crate::proxy_spill::ProxySpillManager::new(root.path().to_path_buf());
+
+        assert!(recover_proxy_spills_after_startup_cleanup(&manager, false)
+            .await
+            .is_err());
+        assert!(orphan.exists(), "inventory must not touch a live writer");
+
+        assert_eq!(
+            recover_proxy_spills_after_startup_cleanup(&manager, true)
+                .await
+                .expect("quiesced inventory"),
+            1
+        );
+        assert!(!orphan.exists());
+    }
 }

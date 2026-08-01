@@ -2669,12 +2669,24 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_config.id
                 );
                 // Create bot instance directly (no transit through ManagedImBots)
+                let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        ulog_warn!(
+                            "[agent] Auto-start admission closed for channel {}: {}",
+                            bot_id,
+                            error
+                        );
+                        continue;
+                    }
+                };
                 match create_bot_instance(
                     &app_handle,
                     &sidecar_manager,
                     bot_id.clone(),
                     im_config,
                     Some(agent_config.id.clone()),
+                    &creation_permit,
                 )
                 .await
                 {
@@ -3182,12 +3194,24 @@ pub async fn monitor_agent_channels(
                 );
             }
 
+            let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    ulog_warn!(
+                        "[agent-monitor] Restart admission closed for channel {}: {}",
+                        channel_id,
+                        error
+                    );
+                    continue;
+                }
+            };
             match create_bot_instance(
                 &app_handle,
                 &sidecar_manager,
                 channel_id.clone(),
                 im_config,
                 Some(agent_id.clone()),
+                &creation_permit,
             )
             .await
             {

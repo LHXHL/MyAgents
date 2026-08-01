@@ -538,6 +538,44 @@ mod tests {
     }
 
     #[test]
+    fn initial_busy_probe_moves_a_dead_active_generation_into_recovery() {
+        let mut manager = SidecarManager::new();
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        let observed = manager
+            .reusable_session_binding("session-a")
+            .expect("initial binding");
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("active sidecar")
+            .state = super::super::SidecarState::Dead;
+
+        let owner = SidecarOwner::BackgroundCompletion("session-a".to_string());
+        assert_eq!(
+            manager.attach_background_owner_if_current("session-a", owner.clone(), observed),
+            BackgroundOwnerAttach::Stale
+        );
+        assert_eq!(
+            manager.attach_background_owner_to_logical_session("session-a", owner.clone()),
+            Some(BackgroundOwnerAttach::Recovering)
+        );
+
+        assert!(
+            manager
+                .remove_session_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()),)
+                .0
+        );
+        assert_eq!(
+            manager.background_poll_target("session-a", &owner),
+            BackgroundPollTarget::Recovering
+        );
+        assert!(manager.session_has_exact_owner("session-a", &owner));
+    }
+
+    #[test]
     fn stale_idle_running_and_http_failure_responses_cannot_release_new_owner() {
         let owner = SidecarOwner::BackgroundCompletion("session-a".to_string());
         let mut manager = SidecarManager::new();

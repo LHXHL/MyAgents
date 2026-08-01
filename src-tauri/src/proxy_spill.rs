@@ -161,8 +161,8 @@ impl ProxySpillManager {
             .iter()
             .cloned()
             .collect::<std::collections::HashSet<_>>();
-        let mut unresolved = Vec::new();
-        let mut removed = 0;
+        let mut candidates = Vec::new();
+        let mut fallback_bytes = 0_u64;
 
         for name in entries {
             let is_body_orphan = is_ref_id(&name) && !names.contains(&format!("{name}.meta.json"));
@@ -182,22 +182,21 @@ impl ProxySpillManager {
                     )
                 })?
                 .len();
-            match std::fs::remove_file(&path) {
-                Ok(()) => removed += 1,
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => {
-                    ulog_warn!(
-                        "[proxy] orphan cleanup failed bytes={} attempt=1 retry_ms={} error={}",
-                        bytes,
-                        orphan_retry_delay(1).as_millis(),
-                        error
-                    );
-                    unresolved.push(OrphanGroup::after_failed_delete(vec![path], bytes));
-                }
-            }
+            fallback_bytes = fallback_bytes.saturating_add(bytes);
+            candidates.push(path);
         }
 
-        for orphan in unresolved {
+        let candidate_count = candidates.len();
+        let (remaining, remaining_bytes) = remove_paths(candidates, fallback_bytes).await;
+        let removed = candidate_count.saturating_sub(remaining.len());
+        if !remaining.is_empty() {
+            let orphan = OrphanGroup::after_failed_delete(remaining, remaining_bytes);
+            ulog_warn!(
+                "[proxy] startup orphan cleanup blocked paths={} bytes={} attempt=1 retry_ms={}",
+                orphan.paths.len(),
+                orphan.bytes,
+                orphan_retry_delay(1).as_millis()
+            );
             state.orphan_debt_bytes = state.orphan_debt_bytes.saturating_add(orphan.bytes);
             state.orphans.push_back(orphan);
         }
@@ -452,30 +451,91 @@ async fn write_reserved(
         .map_err(|error| format!("[proxy] failed to write spill body: {error}"))
 }
 
+/// Measure unique content still retained by protocol orphan paths.
+///
+/// Body/meta commit uses hard links, so pathname count is not byte identity.
+/// A leftover `.part` that aliases a complete final pair retains no additional
+/// blocks beyond the TTL-owned pair and is tracked only for deletion retry.
+fn measure_remaining_debt(paths: &[PathBuf]) -> Option<u64> {
+    struct IdentityGroup {
+        handle: same_file::Handle,
+        bytes: u64,
+        owned_by_committed_pair: bool,
+    }
+
+    fn path_exists(path: &Path) -> std::io::Result<bool> {
+        match std::fs::metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn aliases_committed_pair(path: &Path) -> std::io::Result<bool> {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Ok(false);
+        };
+        let Some(parent) = path.parent() else {
+            return Ok(false);
+        };
+
+        let (target, companion) = if let Some(id) = name.strip_suffix(".meta.json.part") {
+            if !is_ref_id(id) {
+                return Ok(false);
+            }
+            (parent.join(format!("{id}.meta.json")), parent.join(id))
+        } else if let Some(id) = name.strip_suffix(".part") {
+            if !is_ref_id(id) {
+                return Ok(false);
+            }
+            (parent.join(id), parent.join(format!("{id}.meta.json")))
+        } else {
+            return Ok(false);
+        };
+
+        if !path_exists(&target)? || !path_exists(&companion)? {
+            return Ok(false);
+        }
+        same_file::is_same_file(path, target)
+    }
+
+    let mut groups: Vec<IdentityGroup> = Vec::new();
+    for path in paths {
+        let metadata = std::fs::metadata(path).ok()?;
+        let handle = same_file::Handle::from_path(path).ok()?;
+        let owned_by_committed_pair = aliases_committed_pair(path).ok()?;
+        if let Some(group) = groups.iter_mut().find(|group| group.handle == handle) {
+            group.bytes = group.bytes.max(metadata.len());
+            group.owned_by_committed_pair |= owned_by_committed_pair;
+        } else {
+            groups.push(IdentityGroup {
+                handle,
+                bytes: metadata.len(),
+                owned_by_committed_pair,
+            });
+        }
+    }
+
+    Some(
+        groups
+            .into_iter()
+            .filter(|group| !group.owned_by_committed_pair)
+            .fold(0_u64, |total, group| total.saturating_add(group.bytes)),
+    )
+}
+
 async fn remove_paths(paths: Vec<PathBuf>, fallback_bytes: u64) -> (Vec<PathBuf>, u64) {
     let mut remaining = Vec::new();
-    let mut remaining_bytes = 0_u64;
-    let mut fully_measured = true;
     for path in paths {
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(_) => {
-                match tokio::fs::metadata(&path).await {
-                    Ok(metadata) => {
-                        remaining_bytes = remaining_bytes.saturating_add(metadata.len())
-                    }
-                    Err(_) => fully_measured = false,
-                }
                 remaining.push(path);
             }
         }
     }
-    let debt_bytes = if fully_measured {
-        remaining_bytes
-    } else {
-        fallback_bytes
-    };
+    let debt_bytes = measure_remaining_debt(&remaining).unwrap_or(fallback_bytes);
     (remaining, debt_bytes)
 }
 
@@ -759,6 +819,7 @@ fn origin_of(absolute_url: &str) -> Option<String> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::oneshot;
 
     async fn response_with_body(
         body: Vec<u8>,
@@ -796,6 +857,93 @@ mod tests {
         (response, url)
     }
 
+    async fn held_chunked_response(
+        body: Vec<u8>,
+        misleading_content_length: Option<u64>,
+    ) -> (
+        reqwest::Response,
+        String,
+        oneshot::Receiver<()>,
+        oneshot::Sender<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind chunked response server");
+        let address = listener.local_addr().expect("response server address");
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let length_header = misleading_content_length
+                .map(|length| format!("Content-Length: {length}\r\n"))
+                .unwrap_or_default();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n{length_header}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write headers");
+            socket
+                .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+                .await
+                .expect("write chunk length");
+            socket.write_all(&body).await.expect("write chunk body");
+            socket.write_all(b"\r\n").await.expect("finish chunk");
+            socket.flush().await.expect("flush held chunk");
+            let _ = ready_tx.send(());
+            let _ = release_rx.await;
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            let _ = socket.shutdown().await;
+        });
+        let url = format!("http://{address}/api/test");
+        let response = crate::local_http::builder()
+            .build()
+            .expect("test client")
+            .get(&url)
+            .send()
+            .await
+            .expect("test response");
+        (response, url, ready_rx, release_tx)
+    }
+
+    async fn interrupted_chunked_response(body: Vec<u8>) -> (reqwest::Response, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind interrupted response server");
+        let address = listener.local_addr().expect("response server address");
+        tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write headers");
+            socket
+                .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+                .await
+                .expect("write chunk length");
+            socket.write_all(&body).await.expect("write partial body");
+            socket.write_all(b"\r\n").await.expect("finish chunk");
+            socket.flush().await.expect("flush partial stream");
+            // Drop without the terminating zero-length chunk.
+        });
+        let url = format!("http://{address}/api/test");
+        let response = crate::local_http::builder()
+            .build()
+            .expect("test client")
+            .get(&url)
+            .send()
+            .await
+            .expect("test response");
+        (response, url)
+    }
+
     #[tokio::test]
     async fn reservation_cap_is_atomic_across_three_concurrent_requests() {
         let root = tempfile::tempdir().expect("temp refs");
@@ -811,6 +959,104 @@ mod tests {
             2
         );
         assert_eq!(manager.budget_snapshot().await.0, 14);
+    }
+
+    #[tokio::test]
+    async fn three_live_response_streams_share_one_atomic_disk_budget() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let manager = Arc::new(ProxySpillManager::with_limit(
+            root.path().to_path_buf(),
+            85_000,
+        ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
+        let (first_response, first_url, first_ready, first_release) =
+            held_chunked_response(vec![1_u8; 30_000], None).await;
+        let (second_response, second_url, second_ready, second_release) =
+            held_chunked_response(vec![2_u8; 30_000], None).await;
+        let (third_response, third_url, third_ready, third_release) =
+            held_chunked_response(vec![3_u8; 30_000], None).await;
+        let policy = ResponsePolicy {
+            max_bytes: 35_000,
+            spill_threshold_bytes: 1,
+            allow_spill: true,
+        };
+
+        let first_manager = Arc::clone(&manager);
+        let first_task = tokio::spawn(async move {
+            stream_response_body(
+                first_response,
+                "application/octet-stream",
+                &first_url,
+                policy,
+                true,
+                first_manager,
+            )
+            .await
+        });
+        let second_manager = Arc::clone(&manager);
+        let second_task = tokio::spawn(async move {
+            stream_response_body(
+                second_response,
+                "application/octet-stream",
+                &second_url,
+                policy,
+                true,
+                second_manager,
+            )
+            .await
+        });
+        let third_manager = Arc::clone(&manager);
+        let third_task = tokio::spawn(async move {
+            stream_response_body(
+                third_response,
+                "application/octet-stream",
+                &third_url,
+                policy,
+                true,
+                third_manager,
+            )
+            .await
+        });
+        let _ = tokio::join!(first_ready, second_ready, third_ready);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.budget_snapshot().await.0 == 60_000 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("two streams must hold the budget while the third is rejected");
+
+        let _ = first_release.send(());
+        let _ = second_release.send(());
+        let _ = third_release.send(());
+        let outcomes = tokio::join!(first_task, second_task, third_task);
+        let outcomes = [
+            outcomes.0.expect("first stream task"),
+            outcomes.1.expect("second stream task"),
+            outcomes.2.expect("third stream task"),
+        ];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, StreamOutcome::Spilled(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, StreamOutcome::Failed(_)))
+                .count(),
+            1
+        );
+        assert_eq!(manager.budget_snapshot().await, (0, 0, 0));
     }
 
     #[test]
@@ -863,6 +1109,52 @@ mod tests {
         assert_eq!(remaining, vec![blocked]);
         assert_eq!(debt_bytes, blocked_bytes);
         assert!(!removed.exists());
+    }
+
+    #[test]
+    fn hard_link_aliases_are_charged_as_one_file_identity() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let body_part = root.path().join(format!("{}.part", "7".repeat(32)));
+        let body = root.path().join("7".repeat(32));
+        std::fs::write(&body_part, vec![1_u8; 100]).expect("body part");
+        std::fs::hard_link(&body_part, &body).expect("body hard link");
+
+        assert_eq!(
+            measure_remaining_debt(&[body_part, body]),
+            Some(100),
+            "two names for one allocation must consume one budget share"
+        );
+    }
+
+    #[test]
+    fn committed_pair_aliases_remain_retryable_without_extra_debt() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let id = "8".repeat(32);
+        let body_part = root.path().join(format!("{id}.part"));
+        let body = root.path().join(&id);
+        let meta_part = root.path().join(format!("{id}.meta.json.part"));
+        let meta = root.path().join(format!("{id}.meta.json"));
+        std::fs::write(&body_part, vec![1_u8; 100]).expect("body part");
+        std::fs::hard_link(&body_part, &body).expect("body hard link");
+        std::fs::write(&meta_part, b"{}").expect("meta part");
+        std::fs::hard_link(&meta_part, &meta).expect("meta hard link");
+
+        assert_eq!(
+            measure_remaining_debt(&[body_part, meta_part]),
+            Some(0),
+            "aliases of a complete TTL-owned pair add no file content"
+        );
+
+        std::fs::remove_file(&body).expect("remove final body");
+        std::fs::remove_file(&meta).expect("remove final meta");
+        assert_eq!(
+            measure_remaining_debt(&[
+                root.path().join(format!("{id}.part")),
+                root.path().join(format!("{id}.meta.json.part")),
+            ]),
+            Some(102),
+            "once the committed pair is gone, the aliases retain the allocations"
+        );
     }
 
     #[tokio::test]
@@ -1148,6 +1440,80 @@ mod tests {
             policy,
             false,
             manager.clone(),
+        )
+        .await;
+
+        assert!(matches!(outcome, StreamOutcome::Failed(_)));
+        assert_eq!(manager.budget_snapshot().await, (0, 0, 0));
+        assert!(std::fs::read_dir(root.path())
+            .expect("refs dir")
+            .next()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn misleading_length_and_unterminated_chunking_cannot_bypass_actual_size_cap() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let manager = Arc::new(ProxySpillManager::with_limit(
+            root.path().to_path_buf(),
+            1024,
+        ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
+        let (response, url, ready, release) = held_chunked_response(vec![9_u8; 17], Some(1)).await;
+        let policy = ResponsePolicy {
+            max_bytes: 16,
+            spill_threshold_bytes: 8,
+            allow_spill: true,
+        };
+        let _ = ready.await;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            stream_response_body(
+                response,
+                "application/octet-stream",
+                &url,
+                policy,
+                false,
+                Arc::clone(&manager),
+            ),
+        )
+        .await
+        .expect("size breach must cancel without waiting for stream termination");
+        let _ = release.send(());
+
+        assert!(matches!(outcome, StreamOutcome::Failed(_)));
+        assert_eq!(manager.budget_snapshot().await, (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn interrupted_live_spill_releases_its_reservation_and_temp_files() {
+        let root = tempfile::tempdir().expect("temp refs");
+        let manager = Arc::new(ProxySpillManager::with_limit(
+            root.path().to_path_buf(),
+            1024,
+        ));
+        manager
+            .recover_startup_orphans()
+            .await
+            .expect("startup inventory");
+        let (response, url) = interrupted_chunked_response(vec![4_u8; 12]).await;
+        let policy = ResponsePolicy {
+            max_bytes: 16,
+            spill_threshold_bytes: 8,
+            allow_spill: true,
+        };
+
+        let outcome = stream_response_body(
+            response,
+            "application/octet-stream",
+            &url,
+            policy,
+            false,
+            Arc::clone(&manager),
         )
         .await;
 

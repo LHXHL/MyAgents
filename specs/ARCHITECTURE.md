@@ -86,9 +86,9 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 每个 Sidecar 服务一个 Session。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
 
-Rust 在 Sidecar 出生时同时建立并持有整棵后代进程树的 lifecycle authority：Unix 使用独立 process group，Windows 使用在恢复首线程前完成绑定的 kill-on-close Job Object。Session / Global Sidecar owner 释放只终止这份精确 authority，不按全机 argv 推断“像 MyAgents 的进程”；app exit 会先释放 IM / Agent state 中的 Plugin Bridge owner，并等待所有 Unix SIGTERM→SIGKILL escalation worker settle 后才退出 Rust 进程。Windows GUI child 没有可靠 console signal，直接终止 retained Job Object。argv 扫描只属于前实例已死亡后的启动恢复和 updater residual recovery（Windows updater 另有 protected-root / file-lock 校验）。
+Rust 在 Sidecar 出生时同时建立并持有整棵后代进程树的 lifecycle authority：Unix 使用独立 process group，Windows 使用在恢复首线程前完成绑定的 kill-on-close Job Object。Session / Global Sidecar owner 释放只终止这份精确 authority，不按全机 argv 推断“像 MyAgents 的进程”；app exit 先关闭统一 creation admission，并等待已经获准的 Sidecar / Browser / Terminal / IM / Plugin Bridge creation 从资源出生走到 managed-state 注册或显式释放，再释放 owner registry、等待所有 Unix SIGTERM→SIGKILL escalation worker settle，最后退出 Rust 进程。Windows GUI child 没有可靠 console signal，直接终止 retained Job Object。argv 扫描只属于前实例已死亡后的启动恢复和 updater residual recovery（Windows updater 另有 protected-root / file-lock 校验）。
 
-Session 进程崩溃后，跨进程存活的逻辑工作仍归 Rust `SidecarManager`：`recovering_sidecars` 的单个 recovery entry 同时持有 retained owners、独立 recovery epoch / dead generation、当前 candidate generation 和 retry clock。Candidate reserve、spawn或readiness失败只结束该次进程 generation，不丢失recovery epoch；monitor只做dispatch，update quiesce只暂停而不清空工作。`BackgroundCompletion` poller只持有logical Session和expected generation，每次HTTP前后都经manager重新解析/校验；首次 busy probe 若撞上 replacement，也必须在 manager 锁内把 owner 原子附到 current process 或 recovery epoch，不能把 `Stale` 当作工作消失。replacement gap等待ready commit，旧generation迟到的running/terminal/error响应不得释放current owner。
+Session 进程崩溃后，跨进程存活的逻辑工作仍归 Rust `SidecarManager`：`recovering_sidecars` 的单个 recovery entry 同时持有 retained owners、独立 recovery epoch / dead generation、当前 candidate generation 和 retry clock。Candidate reserve、spawn或readiness失败只结束该次进程 generation，不丢失recovery epoch；monitor只做dispatch，update quiesce只暂停而不清空工作。`BackgroundCompletion` poller只持有logical Session和expected generation，每次HTTP前后都经manager重新解析/校验；首次 busy probe 若撞上 replacement，或 current active 已经死亡但 monitor 尚未迁移，都必须在 manager 锁内先完成 dead→recovery，再把 owner 原子附到 current process 或 recovery epoch，不能把 `Stale` 当作工作消失。replacement gap等待ready commit，旧generation迟到的running/terminal/error响应不得释放current owner。
 
 ---
 
@@ -186,7 +186,7 @@ Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投�
 
 Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。WebView 不得直连普通 API。仅大载荷**数据面**端点（当前为 `/refs/:id`、`/attachment/*`）允许原生 fetch，以避免二进制 / spill payload 再穿 IPC JSON；这些端点必须同时满足 CORS、CSP、大小限制与路径安全约束。该例外不得扩展成第二套控制面。
 
-Rust HTTP proxy 只允许 loopback 响应 spill 到共享 ref store：单响应上限 512MiB；external 响应上限 8MiB 且只在内存中返回，不能生成指向外部 origin 的本地 `/refs` URL。`ProxySpillManager` 只拥有 Rust proxy 的在途预留与清理失败债务（合计 1GiB）；完整 body/meta pair 提交后即交回既有 `/refs` TTL 生命周期。启动清点无法完整度量时，本次运行拒绝新增 Rust spill；已知删除债务只随真实 spill demand 按 next-retry clock 有界重试，不建后台 daemon。它不是附件或所有 ref 的全局 quota owner。
+Rust HTTP proxy 只允许 loopback 响应 spill 到共享 ref store：单响应上限 512MiB；external 响应上限 8MiB 且只在内存中返回，不能生成指向外部 origin 的本地 `/refs` URL。`ProxySpillManager` 只拥有 Rust proxy 的在途预留与清理失败债务（合计 1GiB）；完整 body/meta pair 提交后即交回既有 `/refs` TTL 生命周期。唯一一次启动清点必须在 prior-instance Sidecar / Bridge writer 确认静止后执行；清理残留、panic 或清点失败会让本次运行拒绝新增 Rust spill，不得运行期重扫共享目录。债务按唯一物理文件身份计量，hard-link alias 不重复收费；已知删除债务只随真实 spill demand 按 next-retry clock 有界重试，不建后台 daemon。它不是附件或所有 ref 的全局 quota owner。
 
 所有连接本地 Sidecar（`127.0.0.1`）的 reqwest 客户端 MUST 通过 `crate::local_http::*` 创建，内置 `.no_proxy()` 防止系统代理拦截 → 502。
 

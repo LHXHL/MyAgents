@@ -70,7 +70,7 @@ pub(crate) fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     runtime_source_override: Option<String>,
     expected_recovery_epoch: Option<u64>,
 ) -> Result<EnsureSidecarResult, String> {
-    let _update_spawn_permit = begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = begin_lifecycle_spawn_permit()?;
     let attempt_result = ensure_session_sidecar_attempt(
         app_handle,
         manager,
@@ -375,7 +375,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     // a new session sidecar that races with the stale-process sweep (the very
     // case db58545 set out to prevent). In the common case this returns
     // immediately (AtomicBool load; cleanup completes in ~50 ms).
-    wait_for_startup_cleanup(Duration::from_secs(15));
+    wait_for_startup_cleanup(Duration::from_secs(15))?;
 
     ulog_debug!("[sidecar] Acquiring manager lock...");
     let mut manager_guard = manager.lock().map_err(|e| {

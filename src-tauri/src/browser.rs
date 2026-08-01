@@ -217,7 +217,7 @@ pub async fn cmd_browser_create(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let label = format!("browser-{}", tab_id);
 
     ulog_info!(

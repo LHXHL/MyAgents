@@ -60,8 +60,9 @@ pub mod workspace_files;
 mod workspace_path;
 
 use sidecar::{
-    cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, create_sidecar_state,
-    init_startup_cleanup_barrier, stop_all_sidecars,
+    begin_app_exit_shutdown, cleanup_stale_sidecars, cleanup_stale_sidecars_preamble,
+    create_sidecar_state, init_startup_cleanup_barrier, recover_proxy_spills_after_startup_cleanup,
+    stop_all_sidecars,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -904,14 +905,10 @@ pub fn run() {
             // this lock handles the "build script killed + macOS restarted" case via PID.
             let lock_state = app_dirs::acquire_lock();
             let had_prior_instance = lock_state.had_prior_instance();
-            let spill_manager = app.state::<Arc<proxy_spill::ProxySpillManager>>();
-            match tauri::async_runtime::block_on(spill_manager.recover_startup_orphans()) {
-                Ok(removed) if removed > 0 => {
-                    ulog_info!("[proxy] Removed {} incomplete ref files at startup", removed)
-                }
-                Ok(_) => {}
-                Err(error) => ulog_warn!("{}", error),
-            }
+            let spill_manager = app
+                .state::<Arc<proxy_spill::ProxySpillManager>>()
+                .inner()
+                .clone();
 
             // Stale sidecar cleanup:
             //   1. Run the fast preamble (remove stale port file) synchronously
@@ -923,36 +920,62 @@ pub fn run() {
             //      "frontend freezes on first launch" user report. The new
             //      `process_cleanup` module uses native `sysinfo` (no
             //      subprocess spawn) and completes in ~10–200 ms.
-            //   3. `start_tab_sidecar` waits on the barrier before
-            //      spawning, so port allocation still serializes with
-            //      cleanup — no correctness regression.
+            //   3. Only after every prior writer is confirmed stopped, run
+            //      the one startup ref inventory. Sidecar birth waits on the
+            //      same barrier, so a new Node writer cannot race the scan.
+            //   4. Cleanup residual/panic leaves proxy inventory incomplete
+            //      and Rust spill fail-closed for this run. No runtime rescan
+            //      is allowed because it could delete a live Node `.part`.
             init_startup_cleanup_barrier();
             cleanup_stale_sidecars_preamble();
-            tauri::async_runtime::spawn_blocking(move || {
-                // Panic-safe: if cleanup panics (sysinfo crash, etc.) we
-                // still MUST mark the barrier done, otherwise every future
-                // sidecar spawn will wait the full 15 s timeout. The outer
-                // guard fires regardless of whether the inner closure
-                // returned normally or unwound.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    cleanup_stale_sidecars(had_prior_instance);
-                }));
-                // Always mark done — cleanup_stale_sidecars normally marks
-                // internally on success, but we cover both the panic path
-                // and any early-return paths we might add in the future.
-                sidecar::mark_startup_cleanup_done();
-                if let Err(panic) = result {
-                    // Try to log something useful about the panic.
-                    let msg = panic
-                        .downcast_ref::<&'static str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "<non-string panic payload>".to_string());
-                    ulog_error!(
-                        "[sidecar] cleanup_stale_sidecars panicked: {} — barrier released so startup can proceed",
-                        msg
-                    );
+            tauri::async_runtime::spawn(async move {
+                let cleanup_result = tauri::async_runtime::spawn_blocking(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        cleanup_stale_sidecars(had_prior_instance)
+                    }))
+                })
+                .await;
+
+                let writers_quiesced = match cleanup_result {
+                    Ok(Ok(writers_quiesced)) => writers_quiesced,
+                    Ok(Err(panic)) => {
+                        let msg = panic
+                            .downcast_ref::<&'static str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                        ulog_error!(
+                            "[sidecar] cleanup_stale_sidecars panicked: {} — proxy spill remains fail-closed",
+                            msg
+                        );
+                        false
+                    }
+                    Err(error) => {
+                        ulog_error!(
+                            "[sidecar] cleanup_stale_sidecars worker failed: {} — proxy spill remains fail-closed",
+                            error
+                        );
+                        false
+                    }
+                };
+
+                match recover_proxy_spills_after_startup_cleanup(
+                    spill_manager.as_ref(),
+                    writers_quiesced,
+                )
+                .await
+                {
+                    Ok(removed) if removed > 0 => {
+                        ulog_info!("[proxy] Removed {} incomplete ref files at startup", removed)
+                    }
+                    Ok(_) => {}
+                    Err(error) => ulog_warn!("{}", error),
                 }
+
+                // The process-start barrier is always released. On failure,
+                // the separate proxy inventory fact remains false, so only
+                // Rust spill admission is denied for this run.
+                sidecar::mark_startup_cleanup_done();
             });
 
             // ── Boot Banner: single-line consolidated diagnostics for AI grep ──
@@ -1372,6 +1395,22 @@ pub fn run() {
                         code,
                         shutdown_reason
                     );
+                    // Close birth admission before draining owner registries.
+                    // Every admitted creation lease spans process/resource
+                    // birth through managed-state registration, so this wait
+                    // prevents a late ChildTree from appearing after the
+                    // termination settlement barrier.
+                    let creation_gate_ok = match begin_app_exit_shutdown() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            ulog_error!(
+                                "[App] app_lifecycle cleanup=creation_gate status=error reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                            false
+                        }
+                    };
                     // Record a deliberate-quit marker so the next boot starts
                     // fresh instead of restoring the session (Issue #309), UNLESS
                     // this is an update-restart. Both update paths — plugin
@@ -1406,8 +1445,9 @@ pub fn run() {
                     tauri::async_runtime::block_on(browser::close_all_browsers(&bs, _app_handle));
                     app_dirs::release_lock();
                     ulog_info!(
-                        "[App] app_lifecycle event=cleanup_complete reason={} sidecars_ok={}",
+                        "[App] app_lifecycle event=cleanup_complete reason={} creation_gate_ok={} sidecars_ok={}",
                         shutdown_reason,
+                        creation_gate_ok,
                         sidecar_cleanup_ok
                     );
                 }
@@ -1569,6 +1609,7 @@ mod nav_guard_tests {
             .expect("app exit handler source");
         assert!(exit_handler.contains("stop_all_sidecars("));
         assert!(exit_handler.contains("&sidecar_state_for_exit"));
+        assert!(exit_handler.contains("begin_app_exit_shutdown()"));
         assert!(exit_handler.contains("process_cmd::settle_pending_tree_terminations()"));
         assert!(exit_handler.contains("app_dirs::release_lock()"));
 

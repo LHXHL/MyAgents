@@ -71,7 +71,7 @@ pub async fn cmd_terminal_create(
     sidecar_port: Option<u16>,
     terminal_id: Option<String>,
 ) -> Result<String, String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
+    let _lifecycle_spawn_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     // Use frontend-provided ID if given (allows pre-registering listeners before creation),
     // otherwise generate one server-side.
     let id = terminal_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());

@@ -48,7 +48,8 @@ pub use background::{
 use cleanup::CHILD_CLEANUP_PATTERNS;
 pub use cleanup::{
     cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, init_startup_cleanup_barrier,
-    mark_startup_cleanup_done, wait_for_startup_cleanup,
+    mark_startup_cleanup_done, recover_proxy_spills_after_startup_cleanup,
+    wait_for_startup_cleanup,
 };
 use cleanup::{remove_global_port_file, write_global_port_file, STARTUP_CLEANUP_PATTERNS};
 #[allow(unused_imports)]
@@ -109,8 +110,9 @@ pub use session_lifecycle::{
     EnsureSidecarResult,
 };
 pub use shutdown::{
-    begin_update_shutdown, begin_update_spawn_permit, is_update_shutdown_in_progress,
-    shutdown_for_update_verified, stop_all_sidecars,
+    begin_app_exit_shutdown, begin_lifecycle_spawn_permit, begin_update_shutdown,
+    is_update_shutdown_in_progress, shutdown_for_update_verified, stop_all_sidecars,
+    LifecycleSpawnPermit,
 };
 pub use spawn::find_node_executable_pub;
 pub(crate) use spawn::normalize_external_path;

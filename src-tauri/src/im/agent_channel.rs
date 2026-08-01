@@ -469,6 +469,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
             err
         );
     }
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (new_instance, _) = create_bot_instance_with_pending_cron_events(
         app_handle,
         sidecar_manager,
@@ -476,6 +477,7 @@ pub(super) async fn restart_agent_channel_instance<R: Runtime>(
         config,
         Some(agent_id.to_string()),
         Some(pending_cron_events),
+        &creation_permit,
     )
     .await?;
 
@@ -526,6 +528,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     bot_id: String,
     config: ImConfig,
     agent_id: Option<String>,
+    creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
     create_bot_instance_with_pending_cron_events(
         app_handle,
@@ -534,6 +537,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         config,
         agent_id,
         None,
+        creation_permit,
     )
     .await
 }
@@ -545,8 +549,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     config: ImConfig,
     agent_id: Option<String>,
     carried_pending_cron_events: Option<Arc<Mutex<Vec<types::PendingCronEvent>>>>,
+    creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
-    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
     ulog_info!(
         "[im] Starting IM Bot {} (configured workspace: {:?})",
         bot_id,
@@ -708,6 +712,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                 rust_port,
                 &bot_id,
                 config.openclaw_plugin_config.as_ref(),
+                creation_permit,
             )
             .await?;
 
@@ -3545,6 +3550,7 @@ pub async fn start_im_bot<R: Runtime>(
         let _ = shutdown_bot_instance(instance, sidecar_manager, &bot_id).await;
     }
 
+    let creation_permit = crate::sidecar::begin_lifecycle_spawn_permit()?;
     let (instance, status) = create_bot_instance_with_pending_cron_events(
         app_handle,
         sidecar_manager,
@@ -3552,6 +3558,7 @@ pub async fn start_im_bot<R: Runtime>(
         config,
         None,
         carried_pending_cron_events,
+        &creation_permit,
     )
     .await?;
 
