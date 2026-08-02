@@ -123,7 +123,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { canonicalizeManagedProviderEnv, findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
 import { participatesInLiveRestore } from '../shared/liveRevision';
@@ -4795,7 +4795,7 @@ function createMetadataForSessionId(
   scenario: SessionMaterializationScenario,
   origin?: SessionOrigin,
 ) {
-  const agent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
+  const agent = findProjectAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
   const meta = createMaterializedSessionMetadata({
     agentDir,
     sessionId: targetSessionId,
@@ -10513,7 +10513,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // tool can build live-resolve cron tasks. The agent lookup is local
       // and synchronous; failure (e.g. no agent for this workspace) just
       // leaves providerId undefined and the legacy providerEnv path runs.
-      const agentForProvider = findAgentByWorkspacePath(agentDir);
+      const agentForProvider = findProjectAgentByWorkspacePath(agentDir);
       const sessionProviderId = (agentForProvider?.providerId as string | undefined) ?? undefined;
       setSessionCronContext({
         sessionId: sessionId,

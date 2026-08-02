@@ -585,6 +585,9 @@ describe('admin-api cron create', () => {
         runtime: 'builtin',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-codex', path: workspacePath, agentId: 'agent-managed-codex',
+    }]);
     const { handleCronCreate } = await import('./admin-api');
 
     const result = await handleCronCreate({
@@ -769,6 +772,9 @@ describe('admin-api task runtime model identity', () => {
         runtime: 'gemini',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-gemini-task-source', path: workspacePath, agentId: 'agent-gemini-task-source',
+    }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
@@ -792,6 +798,9 @@ describe('admin-api task runtime model identity', () => {
         runtime: 'builtin',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-clear-runtime-override', path: workspacePath, agentId: 'agent-clear-runtime-override',
+    }]);
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: true,
       task: {
@@ -826,6 +835,9 @@ describe('admin-api task runtime model identity', () => {
         runtime: 'builtin',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-task-model', path: workspacePath, agentId: 'agent-managed-task-model',
+    }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
@@ -872,6 +884,9 @@ describe('admin-api task runtime model identity', () => {
         runtime: 'builtin',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-task-permission', path: workspacePath, agentId: 'agent-managed-task-permission',
+    }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
@@ -898,6 +913,9 @@ describe('admin-api task runtime model identity', () => {
         runtime: 'builtin',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-task-missing-runtime', path: workspacePath, agentId: 'agent-managed-task-missing-runtime',
+    }]);
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
@@ -1613,6 +1631,349 @@ describe('admin-api model add', () => {
   });
 });
 
+describe('admin-api MCP connectivity test', () => {
+  it('rejects a configured stdio command that exists but exits before MCP initialize', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'broken-stdio',
+        name: 'Broken stdio fixture',
+        type: 'stdio',
+        command: process.execPath,
+        args: ['-e', "process.stderr.write('fixture package version missing\\n'); process.exit(1)"],
+        isBuiltin: false,
+      }],
+    });
+
+    const { handleMcpTest } = await import('./admin-api');
+    const result = await handleMcpTest({ id: 'broken-stdio' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('fixture package version missing');
+  });
+
+  it('handshakes with the merged stdio args and env used by persisted MCP config', async () => {
+    const serverCode = [
+      "import { Server } from '@modelcontextprotocol/sdk/server/index.js';",
+      "import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';",
+      "if (process.argv[1] !== 'legacy-extra' || process.env.MCP_TEST_TOKEN !== 'from-override') {",
+      "  process.stderr.write('merged stdio config missing\\n');",
+      '  process.exit(1);',
+      '}',
+      "const server = new Server({ name: 'issue-504-fixture', version: '1.0.0' }, { capabilities: {} });",
+      'await server.connect(new StdioServerTransport());',
+    ].join('\n');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'merged-stdio',
+        name: 'Merged stdio fixture',
+        type: 'stdio',
+        command: process.execPath,
+        args: ['--input-type=module', '-e', serverCode],
+        env: { MCP_TEST_TOKEN: 'stale-inline' },
+        isBuiltin: false,
+      }],
+      mcpServerArgs: { 'merged-stdio': ['legacy-extra'] },
+      mcpServerEnv: { 'merged-stdio': { MCP_TEST_TOKEN: 'from-override' } },
+    });
+
+    const { handleMcpTest } = await import('./admin-api');
+    const result = await handleMcpTest({ id: 'merged-stdio' });
+
+    expect(result.success).toBe(true);
+    expect(result.hint).toContain('MCP initialize succeeded');
+    expect(result.data).toEqual(expect.objectContaining({
+      id: 'merged-stdio',
+      type: 'stdio',
+      serverName: 'issue-504-fixture',
+      serverVersion: '1.0.0',
+    }));
+  });
+
+  it('redacts even short configured MCP environment values from stdio handshake diagnostics', async () => {
+    const secret = 'z9';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'redacted-stdio',
+        name: 'Redacted stdio fixture',
+        type: 'stdio',
+        command: process.execPath,
+        args: ['-e', "process.stderr.write(process.env.MCP_TEST_SECRET || 'missing'); process.exit(1)"],
+        env: { MCP_TEST_SECRET: secret },
+        isBuiltin: false,
+      }],
+    });
+
+    const { handleMcpTest } = await import('./admin-api');
+    const result = await handleMcpTest({ id: 'redacted-stdio' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Server stderr:\n****');
+    expect(result.error).not.toContain(secret);
+  });
+
+  it.each(['http', 'sse'] as const)(
+    'rejects a 200 response that does not complete an MCP initialize handshake for %s',
+    async (type) => {
+      writeJson(join(scratch, '.myagents', 'config.json'), {
+        mcpServers: [{
+          id: `invalid-${type}`,
+          name: `Invalid ${type} fixture`,
+          type,
+          url: `https://mcp.invalid/${type}`,
+          isBuiltin: false,
+        }],
+      });
+      const cancellation = await import('./utils/cancellation');
+      cancellation._setGeneralFetchTransportForTests(async () => new Response('not an MCP response', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+      try {
+        const { handleMcpTest } = await import('./admin-api');
+        const result = await handleMcpTest({ id: `invalid-${type}` });
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('MCP initialize failed');
+      } finally {
+        cancellation._setGeneralFetchTransportForTests();
+      }
+    },
+  );
+
+  it('handshakes with resolved HTTP URL placeholders and configured headers', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'resolved-http',
+        name: 'Resolved HTTP fixture',
+        type: 'http',
+        url: 'https://mcp.invalid/{{MCP_PATH}}',
+        env: { MCP_PATH: 'stale-path' },
+        headers: { 'X-MCP-Test': 'configured-header' },
+        isBuiltin: false,
+      }],
+      mcpServerEnv: { 'resolved-http': { MCP_PATH: 'resolved-path' } },
+    });
+    const cancellation = await import('./utils/cancellation');
+    let observedUrl = '';
+    let observedHeader = '';
+    cancellation._setGeneralFetchTransportForTests(async (url, init) => {
+      observedUrl = String(url);
+      observedHeader = new Headers(init?.headers as HeadersInit | undefined).get('X-MCP-Test') ?? '';
+      if (init?.method === 'GET') return new Response(null, { status: 405 });
+      const body = typeof init?.body === 'string'
+        ? JSON.parse(init.body) as { id?: string | number; method?: string; params?: { protocolVersion?: string } }
+        : {};
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: body.params?.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'issue-504-http-fixture', version: '2.0.0' },
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 202 });
+    });
+
+    try {
+      const { handleMcpTest } = await import('./admin-api');
+      const result = await handleMcpTest({ id: 'resolved-http' });
+      expect(result.success).toBe(true);
+      expect(result.hint).toContain('MCP initialize succeeded');
+      expect(result.data).toEqual(expect.objectContaining({
+        serverName: 'issue-504-http-fixture',
+        serverVersion: '2.0.0',
+      }));
+      expect(observedUrl).toBe('https://mcp.invalid/resolved-path');
+      expect(observedHeader).toBe('configured-header');
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('completes the endpoint and initialize exchange for an SSE server', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'valid-sse',
+        name: 'Valid SSE fixture',
+        type: 'sse',
+        url: 'https://mcp.invalid/events',
+        isBuiltin: false,
+      }],
+    });
+    const cancellation = await import('./utils/cancellation');
+    const encoder = new TextEncoder();
+    let events: ReadableStreamDefaultController<Uint8Array> | undefined;
+    cancellation._setGeneralFetchTransportForTests(async (_url, init) => {
+      if (init?.method === 'POST') {
+        const request = JSON.parse(String(init.body)) as {
+          id?: string | number;
+          method?: string;
+          params?: { protocolVersion?: string };
+        };
+        if (request.method === 'initialize') {
+          queueMicrotask(() => events?.enqueue(encoder.encode([
+            'data: ' + JSON.stringify({
+              jsonrpc: '2.0',
+              id: request.id,
+              result: {
+                protocolVersion: request.params?.protocolVersion,
+                capabilities: {},
+                serverInfo: { name: 'issue-504-sse-fixture', version: '3.0.0' },
+              },
+            }),
+            '',
+            '',
+          ].join('\n'))));
+        }
+        return new Response(null, { status: 202 });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          events = controller;
+          controller.enqueue(encoder.encode('event: endpoint\ndata: /messages\n\n'));
+          init?.signal?.addEventListener('abort', () => {
+            try {
+              controller.close();
+            } catch {
+              // The client may already have closed the stream.
+            }
+          }, { once: true });
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+
+    try {
+      const { handleMcpTest } = await import('./admin-api');
+      const result = await handleMcpTest({ id: 'valid-sse' });
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(expect.objectContaining({
+        type: 'sse',
+        serverName: 'issue-504-sse-fixture',
+        serverVersion: '3.0.0',
+      }));
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+    }
+  });
+
+  it('matches Session OAuth precedence when a canonical configured header is empty', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'oauth-http',
+        name: 'OAuth HTTP fixture',
+        type: 'http',
+        url: 'https://mcp.invalid/oauth',
+        headers: { Authorization: '' },
+        isBuiltin: false,
+      }],
+    });
+    const resolveAuthHeaders = vi.fn(async () => ({ Authorization: 'Bearer persisted-token' }));
+    vi.doMock('./mcp-oauth', () => ({ resolveAuthHeaders }));
+    const cancellation = await import('./utils/cancellation');
+    let observedAuthorization = '';
+    cancellation._setGeneralFetchTransportForTests(async (_url, init) => {
+      observedAuthorization = new Headers(init?.headers as HeadersInit | undefined).get('Authorization') ?? '';
+      if (init?.method === 'GET') return new Response(null, { status: 405 });
+      const request = JSON.parse(String(init?.body)) as {
+        id?: string | number;
+        method?: string;
+        params?: { protocolVersion?: string };
+      };
+      if (request.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            protocolVersion: request.params?.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'oauth-http-fixture', version: '1.0.0' },
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 202 });
+    });
+
+    try {
+      const { handleMcpTest } = await import('./admin-api');
+      const result = await handleMcpTest({ id: 'oauth-http' });
+      expect(result.success).toBe(true);
+      expect(resolveAuthHeaders).toHaveBeenCalledWith('oauth-http');
+      expect(observedAuthorization).toBe('Bearer persisted-token');
+    } finally {
+      cancellation._setGeneralFetchTransportForTests();
+      vi.doUnmock('./mcp-oauth');
+    }
+  });
+
+  it('bounds stored OAuth resolution within the overall 15 second test deadline', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'stalled-oauth-http',
+        name: 'Stalled OAuth fixture',
+        type: 'http',
+        url: 'https://mcp.invalid/stalled-oauth',
+        isBuiltin: false,
+      }],
+    });
+    let markAuthStarted: (() => void) | undefined;
+    const authStarted = new Promise<void>(resolve => {
+      markAuthStarted = resolve;
+    });
+    vi.doMock('./mcp-oauth', () => ({
+      resolveAuthHeaders: vi.fn(() => {
+        markAuthStarted?.();
+        return new Promise<Record<string, string>>(() => {});
+      }),
+    }));
+    vi.useFakeTimers();
+
+    try {
+      const { handleMcpTest } = await import('./admin-api');
+      const resultPromise = handleMcpTest({ id: 'stalled-oauth-http' });
+      await authStarted;
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(resultPromise).resolves.toMatchObject({
+        success: false,
+        error: 'MCP initialize failed: Connection timed out (15s)',
+      });
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock('./mcp-oauth');
+    }
+  });
+
+  it('rejects an unknown persisted transport type instead of falling through to valid', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [{
+        id: 'unknown-transport',
+        name: 'Unknown transport fixture',
+        type: 'websocket',
+        url: 'ws://mcp.invalid',
+        isBuiltin: false,
+      }],
+    });
+
+    const { handleMcpTest } = await import('./admin-api');
+    const result = await handleMcpTest({ id: 'unknown-transport' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("unsupported transport type 'websocket'");
+  });
+});
+
 describe('admin-api MCP project scope', () => {
   it('fails project-only enable when the current workspace is not registered', async () => {
     const { handleMcpEnable } = await import('./admin-api');
@@ -2072,7 +2433,7 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
 });
 
 describe('admin-api Agent / Session discovery', () => {
-  it('returns only visible active Project-backed Agents and marks the CLI caller', async () => {
+  it('returns visible Project-backed and legacy orphan Agents while marking only the selected Project Agent current', async () => {
     agentSessionMocks.agentDir = '/tmp/current-workspace';
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [
@@ -2093,6 +2454,12 @@ describe('admin-api Agent / Session discovery', () => {
     expect(listed.data).toEqual([
       expect.objectContaining({ agentId: 'agent-current', enabled: false, isCurrent: true }),
       expect.objectContaining({ agentId: 'agent-other', enabled: true, isCurrent: false }),
+      expect.objectContaining({
+        agentId: 'agent-orphan',
+        projectId: null,
+        association: 'legacy-orphan',
+        isCurrent: false,
+      }),
     ]);
     expect((listed.data as Array<Record<string, unknown>>).filter(item => item.isCurrent)).toHaveLength(1);
 

@@ -56,7 +56,7 @@ vi.mock('@/config/useConfigData', () => ({
 }));
 
 vi.mock('@/config/services/agentConfigService', () => ({
-  getAgentByWorkspacePath: () => undefined,
+  getProjectAgent: () => undefined,
 }));
 
 vi.mock('@/config/services/appConfigService', () => ({

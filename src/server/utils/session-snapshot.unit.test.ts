@@ -12,7 +12,6 @@ function makeAgent(overrides: Partial<AgentConfig>): AgentConfig {
     id: 'a1',
     name: 'A',
     enabled: true,
-    workspacePath: '/tmp/ws',
     permissionMode: 'auto',
     channels: [],
     ...overrides,

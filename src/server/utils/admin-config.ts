@@ -73,6 +73,7 @@ import {
 import { resolveSessionConfig } from './resolve-session-config';
 import { normalizeThemeConfigRecord } from '../../shared/theme';
 import { buildAvailableProvidersJson } from '../../shared/availableProvidersProjection';
+import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -168,7 +169,6 @@ export interface AgentConfigSlim {
   id: string;
   name: string;
   enabled: boolean;
-  workspacePath?: string;
   providerId?: string;
   model?: string;
   permissionMode?: string;
@@ -641,13 +641,12 @@ export function getDefaultEnabledOfficialToolIdsForWorkspace(
 ): OfficialToolId[] {
   if (!agentDir) return [];
   const c = config ?? loadConfig();
-  const agents = (c.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
-  );
-  const project = loadProjects().find(p =>
+  const projects = loadProjects();
+  const matchingProjects = projects.filter(p =>
     typeof p.path === 'string' && workspacePathsEqual(p.path, agentDir)
   );
+  const project = matchingProjects.length === 1 ? matchingProjects[0] : undefined;
+  const agent = findRuntimeAgentForWorkspace(c, projects, agentDir);
   return filterEffectiveOfficialToolIds(
     c,
     agent?.enabledOfficialToolIds ?? project?.enabledOfficialToolIds,
@@ -1118,24 +1117,40 @@ function resolveOwnedBuiltinProviderRoute(args: {
 // ---------------------------------------------------------------------------
 
 /**
- * Find the Agent whose workspacePath matches `agentDir` (cross-platform path normalization).
+ * Find the exact Agent selected by the Project whose path matches `agentDir`.
  * Used by session-snapshot helpers to capture the AgentConfig at session creation time (v0.1.69).
  *
  * Returns the raw on-disk shape — callers cast to AgentConfig at use sites (the session snapshot
  * helpers only read `runtime`/`providerId`/`providerEnvJson`/`model`/`permissionMode`/
  * `mcpEnabledServers`, all of which are documented optional/required on AgentConfig).
  */
-export function findAgentByWorkspacePath(agentDir: string): AgentConfigSlim | undefined {
-  const config = loadConfig();
-  const agents = (config.agents ?? []) as AgentConfigSlim[];
-  // #320 family: slash-only folding missed drive-letter case + trailing-slash
-  // differences (C:\Users vs c:/users/), so the v0.1.69 session-snapshot lookup
-  // could silently miss the Agent on Windows — the session then fell back to
-  // live-follow and stayed exposed to the #327 config-stomp this snapshot
-  // exists to prevent. Use the canonical workspace-path identity.
-  return agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
-  );
+function findRuntimeAgentForWorkspace(
+  config: AdminAppConfig,
+  projects: ProjectSlim[],
+  agentDir: string,
+): AgentConfigSlim | undefined {
+  const matchingProjects = projects.filter(project => workspacePathsEqual(project.path, agentDir));
+  if (matchingProjects.length === 1) {
+    const project = matchingProjects[0];
+    if (project.agentId) {
+      return (config.agents ?? []).find(agent => agent.id === project.agentId);
+    }
+    return resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+      .find(projection => projection.projectId === project.id)?.agent;
+  }
+  if (matchingProjects.length > 1) return undefined;
+  return resolveAgentWorkspaceProjections(projects, config.agents ?? []).agentProjections
+    .find(projection => projection.association === 'legacy-orphan'
+      && workspacePathsEqual(projection.workspacePath, agentDir))?.agent;
+}
+
+/**
+ * Select runtime config for a workspace. Project-backed paths are exact-ID
+ * only; the legacy path adapter is consulted solely for an unlinked Project
+ * or a true orphan that has no Project backing.
+ */
+export function findProjectAgentByWorkspacePath(agentDir: string): AgentConfigSlim | undefined {
+  return findRuntimeAgentForWorkspace(loadConfig(), loadProjects(), agentDir);
 }
 
 export type ImProviderRoutingResult =
@@ -1176,10 +1191,7 @@ function findImAgentAndChannel(
   agentDir: string,
   channelId: string | undefined,
 ): { agent?: AgentConfigSlim; channel?: ChannelConfigSlim } {
-  const agents = (config.agents ?? []) as AgentConfigSlim[];
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
-  );
+  const agent = findRuntimeAgentForWorkspace(config, loadProjects(), agentDir);
   if (!agent) return {};
   const channel = channelId
     ? ((agent.channels ?? []) as ChannelConfigSlim[]).find(ch => ch.id === channelId)
@@ -1460,14 +1472,10 @@ export function resolveWorkspaceConfig(
   // can short-circuit via `{ includeMcp: false }` to skip it entirely.
   const includeMcp = options?.includeMcp !== false;
 
-  // Find matching agent by workspace path
-  const agents = (config.agents ?? []) as Array<Record<string, unknown>>;
-  const agent = agents.find(a =>
-    typeof a.workspacePath === 'string' && workspacePathsEqual(a.workspacePath, agentDir)
-  );
-  const project = loadProjects().find(p =>
-    typeof p.path === 'string' && workspacePathsEqual(p.path, agentDir)
-  );
+  const projects = loadProjects();
+  const matchingProjects = projects.filter(p => workspacePathsEqual(p.path, agentDir));
+  const project = matchingProjects.length === 1 ? matchingProjects[0] : undefined;
+  const agent = findRuntimeAgentForWorkspace(config, projects, agentDir);
 
   // --- Resolve MCP ---
   // Session snapshot first (PRD §6 D2/D9): if the session captured its own enabled

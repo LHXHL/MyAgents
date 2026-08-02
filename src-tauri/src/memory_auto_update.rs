@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -785,60 +784,26 @@ fn apply_heartbeat_timezone_fallback(
 }
 
 fn load_disk_memory_auto_update_agents() -> Result<Vec<DiskMemoryAutoUpdateAgent>, String> {
-    let Some(data_dir) = crate::app_dirs::myagents_data_dir() else {
-        return Ok(Vec::new());
-    };
-    let config_path = data_dir.join("config.json");
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("read config.json: {}", error)),
-    };
-    let config: Value =
-        serde_json::from_str(strip_bom(&content)).map_err(|e| format!("parse config: {}", e))?;
-    Ok(collect_disk_memory_auto_update_agents(&config))
+    Ok(collect_disk_memory_auto_update_agents(
+        crate::im::read_agent_configs_from_disk(),
+    ))
 }
 
-fn collect_disk_memory_auto_update_agents(config: &Value) -> Vec<DiskMemoryAutoUpdateAgent> {
-    let Some(agents) = config.get("agents").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-
+fn collect_disk_memory_auto_update_agents(
+    agents: Vec<crate::im::types::AgentConfigRust>,
+) -> Vec<DiskMemoryAutoUpdateAgent> {
     let mut result = Vec::new();
     for agent in agents {
-        let Some(agent_id) = agent.get("id").and_then(Value::as_str) else {
+        let Some(memory_auto_update) = agent.memory_auto_update else {
             continue;
         };
-        let Some(workspace_path) = agent.get("workspacePath").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(mau_value) = agent.get("memoryAutoUpdate") else {
-            continue;
-        };
-        let memory_auto_update = match serde_json::from_value::<MemoryAutoUpdateConfig>(
-            mau_value.clone(),
-        ) {
-            Ok(config) => Some(config),
-            Err(error) => {
-                ulog_warn!(
-                    "[memory-auto-update] skipping startup reconcile for agent {}: invalid memoryAutoUpdate config: {}",
-                    agent_id,
-                    error
-                );
-                continue;
-            }
-        };
-        let heartbeat = agent
-            .get("heartbeat")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok());
 
         result.push(DiskMemoryAutoUpdateAgent {
             request: ConfigureMemoryAutoUpdateTaskRequest {
-                agent_id: agent_id.to_string(),
-                workspace_path: workspace_path.to_string(),
-                memory_auto_update,
-                heartbeat,
+                agent_id: agent.id,
+                workspace_path: agent.resolved_workspace_path,
+                memory_auto_update: Some(memory_auto_update),
+                heartbeat: agent.heartbeat,
             },
         });
     }
@@ -1208,44 +1173,18 @@ async fn update_successful_completion<R: Runtime>(
 fn load_enabled_memory_auto_update_agent_for_workspace(
     workspace_path: &str,
 ) -> Result<Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)>, String> {
-    let Some(data_dir) = crate::app_dirs::myagents_data_dir() else {
-        return Ok(None);
-    };
-    let config_path = data_dir.join("config.json");
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("read config.json: {}", error)),
-    };
-    let config: Value =
-        serde_json::from_str(strip_bom(&content)).map_err(|e| format!("parse config: {}", e))?;
-    let Some(agents) = config.get("agents").and_then(Value::as_array) else {
-        return Ok(None);
-    };
     let normalized_workspace = normalize_path(workspace_path);
-    for agent in agents {
-        let Some(agent_workspace) = agent.get("workspacePath").and_then(Value::as_str) else {
-            continue;
-        };
-        if normalize_path(agent_workspace) != normalized_workspace {
+    for agent in crate::im::read_agent_configs_from_disk() {
+        if normalize_path(&agent.resolved_workspace_path) != normalized_workspace {
             continue;
         }
-        let Some(mau_value) = agent.get("memoryAutoUpdate") else {
+        let Some(mau) = agent.memory_auto_update else {
             continue;
         };
-        if mau_value.get("enabled").and_then(Value::as_bool) != Some(true) {
+        if !mau.enabled {
             continue;
         }
-        let Some(agent_id) = agent.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let mau: MemoryAutoUpdateConfig = serde_json::from_value(mau_value.clone())
-            .map_err(|e| format!("parse memoryAutoUpdate: {}", e))?;
-        let heartbeat = agent
-            .get("heartbeat")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok());
-        return Ok(Some((agent_id.to_string(), mau, heartbeat)));
+        return Ok(Some((agent.id, mau, agent.heartbeat)));
     }
     Ok(None)
 }
@@ -1370,6 +1309,20 @@ fn is_human_user_message(message: &MessageLine, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runtime_agent(
+        id: &str,
+        workspace: &str,
+        memory_auto_update: Option<MemoryAutoUpdateConfig>,
+    ) -> crate::im::types::AgentConfigRust {
+        let mut agent = serde_json::from_value::<crate::im::types::AgentConfigRust>(
+            serde_json::json!({ "id": id, "name": "Agent", "enabled": true }),
+        )
+        .expect("valid runtime Agent fixture");
+        agent.resolved_workspace_path = workspace.to_string();
+        agent.memory_auto_update = memory_auto_update;
+        agent
+    }
     use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
     fn spawn_owner_guard_test_child() -> crate::process_cmd::ChildTree {
@@ -1842,79 +1795,44 @@ mod tests {
 
     #[test]
     fn disk_reconcile_only_uses_explicit_memory_auto_update_config() {
-        let config = serde_json::json!({
-            "agents": [
-                {
-                    "id": "missing",
-                    "workspacePath": "/tmp/missing"
-                },
-                {
-                    "id": "enabled",
-                    "workspacePath": "/tmp/enabled",
-                    "memoryAutoUpdate": {
-                        "enabled": true,
-                        "intervalHours": 24,
-                        "queryThreshold": 3,
-                        "updateWindowStart": "00:00",
-                        "updateWindowEnd": "07:00",
-                        "updateWindowTimezone": "Asia/Shanghai"
-                    }
-                },
-                {
-                    "id": "disabled",
-                    "workspacePath": "/tmp/disabled",
-                    "memoryAutoUpdate": {
-                        "enabled": false,
-                        "intervalHours": 24,
-                        "queryThreshold": 3,
-                        "updateWindowStart": "00:00",
-                        "updateWindowEnd": "07:00",
-                        "updateWindowTimezone": "Asia/Shanghai"
-                    }
-                }
-            ]
-        });
-
-        let agents = collect_disk_memory_auto_update_agents(&config);
+        let mut disabled = base_config();
+        disabled.enabled = false;
+        let agents = collect_disk_memory_auto_update_agents(vec![
+            runtime_agent("missing", "/tmp/missing", None),
+            runtime_agent("enabled", "/tmp/enabled", Some(base_config())),
+            runtime_agent("disabled", "/tmp/disabled", Some(disabled)),
+        ]);
 
         assert_eq!(agents.len(), 2);
         assert_eq!(agents[0].request.agent_id, "enabled");
-        assert_eq!(
+        assert!(
             agents[0]
                 .request
                 .memory_auto_update
                 .as_ref()
                 .unwrap()
-                .enabled,
-            true
+                .enabled
         );
         assert_eq!(agents[1].request.agent_id, "disabled");
-        assert_eq!(
-            agents[1]
+        assert!(
+            !agents[1]
                 .request
                 .memory_auto_update
                 .as_ref()
                 .unwrap()
-                .enabled,
-            false
+                .enabled
         );
     }
 
     #[test]
     fn configure_request_uses_latest_disk_authority_not_arrival_order() {
-        let disabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
-            "agents": [{
-                "id": "agent-current",
-                "workspacePath": "/tmp/workspace",
-                "memoryAutoUpdate": {
-                    "enabled": false,
-                    "intervalHours": 24,
-                    "queryThreshold": 3,
-                    "updateWindowStart": "00:00",
-                    "updateWindowEnd": "07:00"
-                }
-            }]
-        }));
+        let mut disabled = base_config();
+        disabled.enabled = false;
+        let disabled_disk = collect_disk_memory_auto_update_agents(vec![runtime_agent(
+            "agent-current",
+            "/tmp/workspace",
+            Some(disabled),
+        )]);
         let stale_enable = ConfigureMemoryAutoUpdateTaskRequest {
             agent_id: "agent-stale".to_string(),
             workspace_path: "/tmp/workspace".to_string(),
@@ -1927,19 +1845,11 @@ mod tests {
         assert_eq!(resolved.agent_id, "agent-current");
         assert!(!resolved.memory_auto_update.unwrap().enabled);
 
-        let enabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
-            "agents": [{
-                "id": "agent-current",
-                "workspacePath": "/tmp/workspace",
-                "memoryAutoUpdate": {
-                    "enabled": true,
-                    "intervalHours": 24,
-                    "queryThreshold": 3,
-                    "updateWindowStart": "00:00",
-                    "updateWindowEnd": "07:00"
-                }
-            }]
-        }));
+        let enabled_disk = collect_disk_memory_auto_update_agents(vec![runtime_agent(
+            "agent-current",
+            "/tmp/workspace",
+            Some(base_config()),
+        )]);
         let stale_disable = ConfigureMemoryAutoUpdateTaskRequest {
             agent_id: "agent-stale".to_string(),
             workspace_path: "/tmp/workspace".to_string(),

@@ -212,6 +212,14 @@ pub async fn start_fresh_session(
         reason,
     };
 
+    let runtime_identity =
+        crate::sidecar::resolve_agent_runtime_identity_by_id_from_config(&request.agent_id);
+    let runtime_override = runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let runtime_source_override = runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.runtime_source.clone());
     let ensure =
         crate::sidecar::ensure_session_sidecar_with_runtime_identity_override_lifecycle_held(
             lifecycle.clone(),
@@ -220,8 +228,8 @@ pub async fn start_fresh_session(
             session_id.clone(),
             std::path::PathBuf::from(&request.workspace_path),
             transient_owner.clone(),
-            None,
-            None,
+            runtime_override,
+            runtime_source_override,
         )
         .await;
     let port = match ensure {

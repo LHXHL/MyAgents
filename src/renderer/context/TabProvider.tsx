@@ -23,7 +23,7 @@ import {
 } from '@/analytics';
 import type { PendingSessionBirthContext } from '@/analytics';
 import { useConfigData } from '@/config/useConfigData';
-import { getAgentByWorkspacePath } from '@/config/services/agentConfigService';
+import { getProjectAgent } from '@/config/services/agentConfigService';
 import { notifyConfigChanged } from '@/config/services/appConfigService';
 import { normalizeRuntime, resolveEffectiveRuntime } from '@/utils/sessionOpenPlan';
 import type { RuntimeDiagnostics, RuntimeSource, RuntimeType } from '@/../shared/types/runtime';
@@ -596,7 +596,7 @@ export default function TabProvider({
     // Reads through config to look up the agent bound to this tab's agentDir;
     // returns ('unknown' / null) when no agent is bound, which is itself a
     // useful signal (means launcher / no-agent session).
-    const { config: appConfig } = useConfigData();
+    const { config: appConfig, projects: configProjects } = useConfigData();
     // sendMessage is a useCallback keyed only on [tabId] (exhaustive-deps off), so
     // reading appConfig directly inside it would capture a stale render. Mirror it
     // into a ref (updated every render) so the per-send background-agent policy echo
@@ -745,7 +745,7 @@ export default function TabProvider({
     // session_new / message_send / message_complete would diverge from
     // ai_turn_complete after a user changes an agent's runtime (cross-review C1).
     useEffect(() => {
-        const agent = agentDir ? getAgentByWorkspacePath(appConfig, agentDir) : undefined;
+        const agent = agentDir ? getProjectAgent(appConfig, configProjects, agentDir) : undefined;
         const runtime: RuntimeType = sessionRuntime
             ? normalizeRuntime(sessionRuntime)
             : resolveEffectiveRuntime(agent?.runtime, !!appConfig.multiAgentRuntime);
@@ -754,7 +754,7 @@ export default function TabProvider({
             : analyticsRuntimeSource(runtime, agent?.runtimeConfig?.source);
         const agentHash = hashAgentNameSync(agent?.name ?? null);
         analyticsMetaRef.current = { runtime, runtimeSource, agentHash };
-    }, [appConfig, agentDir, sessionRuntime, sessionRuntimeSource]);
+    }, [appConfig, configProjects, agentDir, sessionRuntime, sessionRuntimeSource]);
     const [sessionMeta, setSessionMeta] = useState<SessionMetadata | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);

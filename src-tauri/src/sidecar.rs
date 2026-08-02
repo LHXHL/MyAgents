@@ -80,6 +80,7 @@ pub use manager::{
 pub use proxy::cmd_propagate_proxy;
 #[allow(unused_imports)]
 pub use runtime_identity::cmd_can_restore_session;
+pub(crate) use runtime_identity::resolve_agent_runtime_identity_by_id_from_config;
 #[cfg(test)]
 use runtime_identity::resolve_session_runtime_identity_from_json;
 #[allow(unused_imports)]

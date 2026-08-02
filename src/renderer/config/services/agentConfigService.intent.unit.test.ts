@@ -78,7 +78,6 @@ function initialConfig(): AppConfig {
     agents: [{
       id: 'agent-1',
       name: 'Agent',
-      workspacePath: '/tmp/agent',
       enabled: true,
       providerId: 'anthropic-sub',
       model: 'claude-sonnet-4-6',
@@ -119,6 +118,17 @@ describe('Agent/Project configuration intent ownership', () => {
     ]);
     expect(state.config.agents?.[0].model).toBe('claude-opus-4-6');
     expect(state.project.model).toBe('claude-opus-4-6');
+  });
+
+  it('preserves an old raw workspacePath while patching another Agent field', async () => {
+    Object.assign(state.config.agents?.[0] ?? {}, { workspacePath: '/legacy/location' });
+
+    await patchAgentConfig('agent-1', { model: 'claude-opus-4-6' });
+
+    expect(state.config.agents?.[0]).toMatchObject({
+      model: 'claude-opus-4-6',
+      workspacePath: '/legacy/location',
+    });
   });
 
   it('commits both disk stores before releasing the intent lock and hot-reloading', async () => {

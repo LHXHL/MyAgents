@@ -62,7 +62,7 @@ import type { CancelReason } from '../utils/cancellation';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
 import {
   decodeProviderEnvSnapshot,
-  findAgentByWorkspacePath,
+  findProjectAgentByWorkspacePath,
   getAllMcpServers,
   getEffectiveMcpServers,
   getEffectiveOfficialToolIdsForSession,
@@ -552,7 +552,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       try {
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
         const metadata = getSessionMetadata(request.sessionId);
-        const agent = findAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
+        const agent = findProjectAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
         let model = operation.model;
         let providerEnv: ProviderEnv | 'subscription' | undefined;
         let providerRoute: ProviderRoute | undefined;
@@ -563,7 +563,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           if (operation.model) {
             providerRoute = createConcreteProviderRoute(operation.providerId, operation.model);
           }
-        } else if (metadata && agent) {
+        } else if (metadata) {
           const resolved = resolveSessionConfig(metadata, agent, undefined, 'owned', {
             managedCodexProviderReady: managedCodexReady,
           });

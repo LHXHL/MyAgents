@@ -52,7 +52,6 @@ describe('agentConfigService template Agent defaults', () => {
     expect(agent).toMatchObject({
       id: 'agent-1',
       name: 'workspace',
-      workspacePath: '/tmp/workspace',
       enabled: false,
       channels: [],
       permissionMode: 'auto',
@@ -178,7 +177,6 @@ describe('agentConfigService template Agent defaults', () => {
         id: 'existing-agent',
         name: 'Existing',
         enabled: false,
-        workspacePath: '/tmp/workspace',
         permissionMode: 'plan',
         channels: [],
       }],
@@ -191,10 +189,10 @@ describe('agentConfigService template Agent defaults', () => {
 
     const result = ensureAllProjectsHaveAgent(cfg, projects, cfg.defaultPermissionMode);
 
-    expect(result.changed).toBe(true);
+    expect(result.changed).toBe(false);
     expect(cfg.agents![0].enabled).toBe(false);
     expect(cfg.agents![0].heartbeat).toBeUndefined();
-    expect(projects[0].isAgent).toBe(true);
+    expect(projects[0].isAgent).toBeUndefined();
   });
 });
 
@@ -257,7 +255,7 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
 });
 
 describe('migrateImBotConfigsToAgents', () => {
-  it('groups legacy IM bots by canonical Windows workspace identity without rewriting the persisted path', () => {
+  it('migrates only Project-backed IM groups into a pathless Agent and preserves unmatched bots', () => {
     const winPath = 'C:\\Users\\Me\\Project';
     const cfg = {
       defaultPermissionMode: 'auto',
@@ -310,11 +308,10 @@ describe('migrateImBotConfigsToAgents', () => {
 
     const migrated = migrateImBotConfigsToAgents(cfg, projects);
 
-    expect(migrated.agents).toHaveLength(2);
-    expect(migrated.agents![0].workspacePath).toBe(winPath);
+    expect(migrated.agents).toHaveLength(1);
+    expect(migrated.agents![0]).not.toHaveProperty('workspacePath');
     expect(migrated.agents![0].channels).toHaveLength(2);
-    expect(migrated.agents![1].workspacePath).toBe('');
-    expect(migrated.agents![1].channels).toHaveLength(1);
+    expect(migrated.imBotConfigs?.map(bot => bot.id)).toEqual(['bot-default']);
     expect(projects[0]).toMatchObject({
       isAgent: true,
       agentId: migrated.agents![0].id,

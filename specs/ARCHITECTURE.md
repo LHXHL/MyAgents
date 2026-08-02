@@ -432,14 +432,16 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 
 ```
 Project (工作区)
-  = 必备的 stable Agent identity → AgentConfig（workspace 地址与执行默认）
+  = path 权威 + stable agentId ──exact ID──> AgentConfig（执行默认）
     └── enabled=true 时可开启主动能力（24h 感知与行动）
         └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
 **模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
 
-**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）必须与同 workspace 的一个 stable Agent 1:1 对应；`enabled` 只控制主动 Channel/heartbeat，不控制显式 addressability。Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在既有 `agent-config-intent.lock` 下按 Agent→Project link 顺序提交；中断后由相同 resolver 幂等收敛，不建立跨文件补偿事务。重复 Project workspace、重复 Agent ID 或一个 workspace 命中多个 Agent 时 fail closed。无 Project backing 的 legacy Agent 不参与 discovery，也不由读取路径删除。`agent list` 只投影 user-visible lifecycle，并用当前 Sidecar workspace 唯一计算 `isCurrent`。
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。`enabled` 只控制主动 Channel/heartbeat，不控制显式 addressability。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+
+Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure policy，并在既有 `agent-config-intent.lock` 下先提交 `Project.agentId`、再以同一 ID 幂等补建 pathless Agent；中断后复用 stale ID，不建立 repair journal 或跨文件补偿事务。重复 Project workspace、重复 Agent ID 仍是硬冲突；多个历史 Agent 命中同 workspace 时按持久化顺序只为缺失链接选择第一个，不覆盖有效链接。一个 Agent 被多个 Project 显式 claim 时只隔离相关目标，健康 Project 继续工作。历史 extra/orphan Agent 继续按 exact ID discovery/config/start，只有 exact `Project.agentId` claim 才能代表 Project 做 archive/unarchive/remove；`agent list` 只把 Project 选中的 Agent 标为 `isCurrent`。
 
 Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖：`src-tauri/src/im/memory_update.rs` 在执行自动更新流程时会确保工作区根目录 `UPDATE_MEMORY.md` 存在，缺失则从 `src/shared/default-update-memory.md` 初始化；已有文件始终是用户内容权威。
 

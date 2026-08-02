@@ -132,8 +132,11 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // permission / MCP via their own CLI flags.
   const workspaceAgent = useMemo(() => {
     if (!workspacePath) return null;
-    return config?.agents?.find((a) => workspacePathsEqual(a.workspacePath, workspacePath)) ?? null;
-  }, [workspacePath, config]);
+    const project = projects.find(candidate => workspacePathsEqual(candidate.path, workspacePath));
+    return project?.agentId
+      ? config?.agents?.find(agent => agent.id === project.agentId) ?? null
+      : null;
+  }, [workspacePath, config, projects]);
 
   // Multi-Agent Runtime feature gate (Settings → 实验室) gates user-managed
   // external runtimes only. Managed Codex Provider tasks carry

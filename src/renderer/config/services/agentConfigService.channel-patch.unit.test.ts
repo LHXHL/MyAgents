@@ -30,7 +30,6 @@ function initialConfig(): AppConfig {
     agents: [{
       id: 'agent-1',
       name: 'Agent',
-      workspacePath: '/tmp/agent',
       enabled: true,
       permissionMode: 'auto',
       channels: [{

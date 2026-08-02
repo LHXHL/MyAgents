@@ -352,7 +352,7 @@ fn task_input_from_cron_config(
     let workspace_id = crate::im::read_agent_configs_from_disk()
         .into_iter()
         .find(|agent| {
-            normalize_path(&agent.workspace_path) == normalize_path(&config.workspace_path)
+            normalize_path(&agent.resolved_workspace_path) == normalize_path(&config.workspace_path)
         })
         .map(|agent| agent.id)
         .unwrap_or_else(|| normalize_path(&config.workspace_path));

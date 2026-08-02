@@ -549,8 +549,6 @@ pub fn run() {
             im::commands::cmd_agent_status,
             im::commands::cmd_all_agents_status,
             im::commands::cmd_update_agent_config,
-            im::commands::cmd_create_agent,
-            im::commands::cmd_delete_agent,
             // Session ↔ channel surface handover (PRD 0.2.14)
             im::handover::cmd_session_new_with_surface_migration,
             im::handover::cmd_handover_session_to_channel,

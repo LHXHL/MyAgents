@@ -104,7 +104,7 @@ import { normalizeOfficialToolIds, type OfficialToolId } from '../shared/officia
 import { workspacePathsEqual } from '../shared/workspacePath';
 import type { CapabilityInitialSelect } from '../shared/skillsTypes';
 import { ensureSelfAwarenessWorkspace, resolveBuiltinSelection, pairBuiltinSelection, isProviderAvailable } from '@/config/configService';
-import { getAgentByWorkspacePath, getAgentById } from '@/config/services/agentConfigService';
+import { getProjectAgent, getAgentById } from '@/config/services/agentConfigService';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import {
@@ -810,7 +810,7 @@ export default function App() {
   ) => {
     void (async () => {
       const cfg = configRef.current;
-      const agent = getAgentByWorkspacePath(cfg, agentDir);
+      const agent = getProjectAgent(cfg, configProjects, agentDir);
       const runtimeIdentity = await resolveSessionRuntimeIdentityForOpen(
         sessionId,
         normalizeRuntime(agent?.runtime),
@@ -828,7 +828,7 @@ export default function App() {
     })().catch((error) => {
       console.warn(`[App] Failed to track history_open for session ${sessionId}:`, error);
     });
-  }, [resolveSessionOriginFieldsForAnalytics]);
+  }, [configProjects, resolveSessionOriginFieldsForAnalytics]);
 
   // Toast (ref-stabilized per CLAUDE.md rules)
   const toast = useToast();
@@ -1599,7 +1599,7 @@ export default function App() {
     }
     launchingTabRef.current = activeTabId;
 
-    // Resolve agent meta for analytics. `getAgentByWorkspacePath` may return
+    // Resolve agent meta for analytics. `getProjectAgent` may return
     // undefined when the workspace isn't bound to any agent (rare — happens
     // for ad-hoc paths) — in that case agent_hash=null + runtime='builtin'
     // as the natural fallback.
@@ -1628,7 +1628,7 @@ export default function App() {
       session_id: null;
     } = (() => {
       const cfg = configRef.current;
-      const agent = getAgentByWorkspacePath(cfg, project.path);
+      const agent = getProjectAgent(cfg, configProjects, project.path);
       return {
         surface: pendingSurfaceForLaunch.surface,
         agent_hash: hashAgentNameSync(agent?.name ?? null),
@@ -1688,7 +1688,7 @@ export default function App() {
 
       const configForLaunchBirth = configRef.current;
       const agentForLaunchBirth = configForLaunchBirth
-        ? getAgentByWorkspacePath(configForLaunchBirth, project.path)
+        ? getProjectAgent(configForLaunchBirth, configProjects, project.path)
         : undefined;
       const initialMessageHasExecutionSelection = Boolean(
         initialMessage?.providerExecutionIdentity
@@ -1899,7 +1899,7 @@ export default function App() {
       launchingTabRef.current = null;
       setLoadingTabs((prev) => ({ ...prev, [activeTabId]: false, [targetTabId]: false }));
     }
-  }, [setActiveTabId, t]);
+  }, [configProjects, setActiveTabId, t]);
 
   // Clear initialMessage from a tab after it has been consumed by Chat
   const clearInitialMessage = useCallback((tabId: string) => {

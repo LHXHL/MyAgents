@@ -38,6 +38,7 @@
 - [legacy Cron startup migration](#legacy-cron-migration) — 后端启动期幂等迁移
 - [workspace_files 路径解析双轨](#workspace-files) — 写侧 lexical / 读侧 canonical
 - [`workspacePath` 工作区路径标识比较](#workspace-path-identity) — 跨存储路径相等判定（防 Win 斜杠/盘符误判）
+- [Project / Agent workspace authority](#project-agent-workspace-authority) — ID 选配置、Project 选路径、旧字段仅兼容读取
 - [Client-action 斜杠命令](#client-action-slash) — 渲染层 UI 动作命令，名字保留、勿进文本插入 builtin 清单
 - [Theme package 与 Tailwind bridge](#theme-tailwind-bridge) — runtime Theme 值与编译期 utility 映射分离
 - [System-skill 同步完整性门控](#system-skill-sync) — 验源完整再清目标 + 全落地才写版本戳
@@ -598,6 +599,19 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Invariants enforced.** 是 Rust `normalize_path` 的逐行 TS 端口：Windows 式路径分隔符归一 + 去尾斜杠（保留根）+ Windows 盘符/UNC 小写；POSIX 大小写敏感、反斜杠当字面字符。于是渲染层"哪个 Project 拥有这个路径"与 Rust 对 cron 的分组**按构造一致**，不靠各调用点记得归一。
 
 **Don't.** 比较工作区路径（`Project.path` ↔ `CronTask`/`Task`.workspacePath / session `agentDir` / config `defaultWorkspacePath`）禁止 raw `===` 或 inline `.replace(/\\/g,'/')`。需要分组时用 `normalizeWorkspacePathIdentity` 作为 Map/Set key；若分组结果要写回配置，仍保留用户原始路径作为 persisted value。已知**有意留白**：同源 within-tree 的 `node.path` 比较；React.memo prop 相等。
+
+---
+
+<a id="project-agent-workspace-authority"></a>
+## Project / Agent workspace authority (`src/shared/agentWorkspaceIdentity.ts`)
+
+**Problem.** 历史 `Agent.workspacePath` 与 `Project.path` 会因移动目录、旧版本重复 Agent 或跨平台路径形态而分叉。用 path 同时选择 AgentConfig 和工作目录会形成双 authority：严格检查会卡住旧用户，宽松 `.find()` 又会静默选错数组中的 Agent。
+
+**Surface.** Project-backed 调用方先定位唯一 Project，再用 `Project.agentId` exact lookup AgentConfig；工作目录始终取 `Project.path`。Renderer/Node 的修复与 historical extra/orphan 投影统一走 shared policy。Rust 只做等价的只读 runtime projection。旧 `Agent.workspacePath` 只能由 `src/shared/legacyAgentWorkspace.ts` 与 Rust `im/config_store.rs` 的 raw adapter 读取。
+
+**Invariants enforced.** 有效 ID 优先于任何旧 path；缺失/失效 ID 才按 canonical path 选择持久化顺序中的第一个旧 Agent。新 birth 在 `agent-config-intent.lock` 内先写 Project ID、再创建同 ID 的 pathless Agent，重试复用 stale ID。已有 Session 不参与 live 修复。历史 extra/orphan 保留 exact-ID addressability 与 Rust auto-start；legacy Project association 没有 Project lifecycle mutation 权限。
+
+**Don't.** 不要恢复 `getAgentByWorkspacePath` / `findAgentByWorkspacePath`，不要在正常 `AgentConfig`、Tauri command payload 或 UI props 中重新加入 workspace 字段，不要把旧 path mismatch 当权限检查，也不要从 Agent 删除反推或级联删除 Project。源码护栏 `agentWorkspaceAuthority.guard.unit.test.ts` 固化这些边界。
 
 ---
 

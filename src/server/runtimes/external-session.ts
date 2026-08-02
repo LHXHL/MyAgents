@@ -72,7 +72,7 @@ import {
   type SessionMaterializationScenario,
 } from '../utils/session-materialization';
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
-import { findAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
+import { findProjectAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
 import type { AgentConfig } from '../../shared/types/agent';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
@@ -1310,7 +1310,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
     );
   }
 
-  const agent = findAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
+  const agent = findProjectAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
   const title = deriveSessionTitle(messageText.trim(), 40) || 'New Chat';
   const meta = createMaterializedSessionMetadata({
     agentDir: workspacePath,

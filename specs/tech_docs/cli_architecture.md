@@ -171,13 +171,16 @@ Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-i
 保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把
 跨进程 intent lock，两个文件各自的原子锁只负责单文件 read-modify-write。
 
-Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：每个 Project
-必须恰好解析到同 workspace 的一个 stable Agent，`enabled=false` 只关闭 Channel/
-heartbeat 等 proactive 能力。Renderer birth/remove/repair 与 Node discovery 都复用
-`src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在 `agent-config-intent.lock`
-内提交 `config.json + projects.json`；重复 workspace、重复 ID 或多 Agent 命中同
-workspace 时 fail closed，不猜测。无 Project backing 的遗留 Agent 不进入 discovery，
-也不被读取路径隐式删除。
+Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：
+`Project.agentId → AgentConfig.id` 是配置 selector，`Project.path` 是 Project-backed
+当前工作区，`enabled=false` 只关闭 Channel/heartbeat 等 proactive 能力。Renderer
+birth/repair 与 Node discovery 都复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure
+policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：先落
+`Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按
+旧 path 重新选择；缺失/失效 ID 才由 legacy adapter 按持久化数组顺序取第一个
+canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/config/start，
+但只有 exact Project claim 能做 Project lifecycle mutation。重复 Project path/Agent ID
+仍是硬冲突；多 Project claim 同一 Agent 只隔离相关目标，不拖垮健康 discovery。
 
 ### Goal Mode 命令（0.3.0）
 
@@ -376,14 +379,14 @@ session 选择、结构化事件生成与投递确认。
 
 | 子命令 | 事件 | 关键不变量 |
 |--------|------|------------|
-| `myagents agent list/show` | 无 | Project-backed stable identity 是 selector；list 明确 `isCurrent`；`enabled` 不决定显式 addressability；hidden/orphan/conflict fail closed |
+| `myagents agent list/show` | 无 | exact Agent ID 是 selector；Project-backed 与历史 extra/orphan 均可发现；只有 Project 选中的 Agent 可为 `isCurrent`；目标 claim conflict 局部失败 |
 | `myagents session list --agent` | 无 | 只读 `sessions.json` 的 history-visible metadata，按 `lastActiveAt` 倒序；不唤醒、不探测 live、不读 transcript |
 | `myagents session start --agent` | `send.request` / 可选 `send.result` | Rust 生成 Session/request ID，目标 Sidecar 按 Agent 当前有效配置创建 owned snapshot；Runtime dispatch acceptance 是成功点，CLI receipt 不等待 terminal |
 | `myagents session send` | `send.request` / 可选 `send.result` | 目标 session 收到 `<myagents-session-event type="send.request">`；若需要回执，目标 turn terminal 后自动把 `send.result` 推回源 session |
 | `myagents session watch` | `watch.already_idle` / `watch.completed` / `watch.error` | Rust Management API 先确认目标 live state；目标忙时在目标 Sidecar 注册 pending watch，完成事件确认送达后才 ack 清理；目标已 idle 时调用方立即收到最近结果 |
 
 `start` 不是“先建空 Session，再 best-effort send”的两步写入。source 只解析目标
-Agent/workspace 并提交 prompt；Rust Management API `/api/inbox/start-session` 获取 target
+AgentConfig 与已解析 workspace 并提交 prompt；Project-backed workspace 来自 `Project.path`，真 orphan 才使用 legacy fallback。Rust Management API `/api/inbox/start-session` 获取 target
 workspace lifecycle + transient Agent owner并确保目标 Sidecar。target 在任何 metadata 写入前
 重新解析 Agent/Project lifecycle，并核对当前 Sidecar 的 Session/workspace。随后目标按自己的
 当前 Agent 配置和实际 Runtime 写

@@ -21,6 +21,10 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => true }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => {}) }));
 vi.mock('@/api/apiFetch', () => ({ apiGetJson: vi.fn(async () => ({ models: [] })) }));
+vi.mock('./services/configStore', () => ({
+    withAgentConfigIntentLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
+    withProjectsLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
+}));
 
 vi.mock('./services/appConfigService', () => ({
     loadAppConfig: mocks.loadAppConfig,

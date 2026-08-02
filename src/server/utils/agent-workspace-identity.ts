@@ -2,6 +2,9 @@ import {
   AgentWorkspaceIdentityError,
   buildAgentForProject,
   reconcileAgentWorkspaceIdentities,
+  resolveAgentWorkspaceProjections,
+  type AgentWorkspaceIdentityDiagnostic,
+  type ResolvedAgentWorkspaceProjection,
   type ResolvedAgentWorkspaceIdentity,
 } from '../../shared/agentWorkspaceIdentity';
 import { type PermissionMode, type Project } from '../../shared/config-types';
@@ -10,6 +13,8 @@ import { broadcast } from '../sse';
 import {
   atomicModifyConfig,
   atomicModifyProjects,
+  loadConfig,
+  loadProjects,
   withAgentConfigIntentLock,
   type AdminAppConfig,
   type AgentConfigSlim,
@@ -20,14 +25,61 @@ export type PersistedAgentWorkspaceIdentity = ResolvedAgentWorkspaceIdentity<
   ProjectSlim,
   AgentConfigSlim
 >;
+export type PersistedAgentWorkspaceProjection = ResolvedAgentWorkspaceProjection<
+  ProjectSlim,
+  AgentConfigSlim
+>;
 
 export interface PersistedAgentWorkspaceRegistry {
   config: AdminAppConfig;
   projects: ProjectSlim[];
   identities: PersistedAgentWorkspaceIdentity[];
+  agentProjections: PersistedAgentWorkspaceProjection[];
+  diagnostics: AgentWorkspaceIdentityDiagnostic[];
   repaired: boolean;
+  repairDeferred: boolean;
   createdAgentIds: string[];
   relinkedProjectIds: string[];
+}
+
+function projectBuildOptions(config: AdminAppConfig) {
+  return {
+    buildAgent: (project: ProjectSlim, requestedAgentId?: string) => buildAgentForProject(
+      asProjectBuildSource(project),
+      {
+        agentId: requestedAgentId,
+        defaultPermissionMode: config.defaultPermissionMode,
+      },
+    ) as AgentConfig as AgentConfigSlim,
+  };
+}
+
+function registryFromPersistedSnapshot(
+  config: AdminAppConfig,
+  projects: ProjectSlim[],
+  repairDeferred: boolean,
+): PersistedAgentWorkspaceRegistry {
+  const projection = resolveAgentWorkspaceProjections(projects, config.agents ?? []);
+  const identities = projection.agentProjections
+    .filter(item => item.association === 'project-linked' && item.project)
+    .map(item => ({
+      projectId: item.projectId!,
+      agentId: item.agentId,
+      workspacePath: item.workspacePath,
+      project: item.project!,
+      agent: item.agent,
+    }));
+  return {
+    config,
+    projects,
+    identities,
+    agentProjections: projection.agentProjections,
+    diagnostics: projection.diagnostics,
+    repaired: false,
+    repairDeferred,
+    createdAgentIds: [],
+    relinkedProjectIds: [],
+  };
 }
 
 function asProjectBuildSource(project: ProjectSlim): Project {
@@ -46,36 +98,90 @@ function asProjectBuildSource(project: ProjectSlim): Project {
 
 /**
  * Resolve the disk authorities to the required Agent↔Workspace domain.
- * Repairs are serialized by the existing cross-process intent lock; conflicts
- * throw AgentWorkspaceIdentityError and leave both files untouched.
+ * Repairs are serialized by the existing cross-process intent lock. Project
+ * links commit before newly-created pathless Agents so a retry can rebuild the
+ * same stale ID after an interruption.
  */
 export async function resolvePersistedAgentWorkspaceRegistry(): Promise<PersistedAgentWorkspaceRegistry> {
   return withAgentConfigIntentLock(async () => {
-    let registry: PersistedAgentWorkspaceRegistry | undefined;
-    await atomicModifyProjects(async projects => {
-      let result: ReturnType<typeof reconcileAgentWorkspaceIdentities<ProjectSlim, AgentConfigSlim>> | undefined;
-      const config = await atomicModifyConfig(current => {
-        result = reconcileAgentWorkspaceIdentities(projects, current.agents ?? [], {
-          buildAgent: project => buildAgentForProject(asProjectBuildSource(project), {
-            defaultPermissionMode: current.defaultPermissionMode,
-          }) as AgentConfig as AgentConfigSlim,
-        });
-        return result.changed ? { ...current, agents: result.agents } : current;
+    let projectResult: ReturnType<
+      typeof reconcileAgentWorkspaceIdentities<ProjectSlim, AgentConfigSlim>
+    > | undefined;
+    let projects: ProjectSlim[];
+    try {
+      projects = await atomicModifyProjects(currentProjects => {
+      const currentConfig = loadConfig();
+      projectResult = reconcileAgentWorkspaceIdentities(
+        currentProjects,
+        currentConfig.agents ?? [],
+        projectBuildOptions(currentConfig),
+      );
+      return projectResult.projects;
       });
-      if (!result) throw new Error('Agent identity reconciliation did not produce a result.');
-      registry = {
-        config,
-        projects: result.projects,
-        identities: result.identities,
-        repaired: result.changed,
-        createdAgentIds: result.createdAgentIds,
-        relinkedProjectIds: result.relinkedProjectIds,
+    } catch (error) {
+      const fallbackConfig = loadConfig();
+      const fallback = reconcileAgentWorkspaceIdentities(
+        loadProjects(),
+        fallbackConfig.agents ?? [],
+        projectBuildOptions(fallbackConfig),
+      );
+      if (fallback.createdAgentIds.length > 0) throw error;
+      console.warn('[agent-identity] code=IDENTITY_REPAIR_DEFERRED operation=project-link');
+      return {
+        ...registryFromPersistedSnapshot(fallbackConfig, fallback.projects, true),
+        identities: fallback.identities,
+        agentProjections: fallback.agentProjections,
+        diagnostics: fallback.diagnostics,
+        relinkedProjectIds: fallback.relinkedProjectIds,
       };
-      // Agent is committed before this Project writer returns. If this second
-      // atomic write is interrupted, the next call finds the Agent by path.
-      return result.projects;
-    });
-    if (!registry) throw new Error('Agent identity reconciliation did not produce a registry.');
+    }
+
+    if (!projectResult) {
+      throw new Error('Agent identity reconciliation did not produce a registry.');
+    }
+    if (projectResult.createdAgentIds.length === 0) {
+      const config = loadConfig();
+      return {
+        ...registryFromPersistedSnapshot(config, projects, false),
+        identities: projectResult.identities,
+        agentProjections: projectResult.agentProjections,
+        diagnostics: projectResult.diagnostics,
+        repaired: projectResult.changed,
+        relinkedProjectIds: projectResult.relinkedProjectIds,
+      };
+    }
+
+    let configResult: ReturnType<
+      typeof reconcileAgentWorkspaceIdentities<ProjectSlim, AgentConfigSlim>
+    > | undefined;
+    let config: AdminAppConfig;
+    try {
+      config = await atomicModifyConfig(current => {
+        configResult = reconcileAgentWorkspaceIdentities(
+          projects,
+          current.agents ?? [],
+          projectBuildOptions(current),
+        );
+        return configResult.changed ? { ...current, agents: configResult.agents } : current;
+      });
+    } catch {
+      console.warn('[agent-identity] code=AGENT_MATERIALIZATION_DEFERRED operation=agent-birth');
+      return registryFromPersistedSnapshot(loadConfig(), loadProjects(), true);
+    }
+    if (!projectResult || !configResult) {
+      throw new Error('Agent identity reconciliation did not produce a registry.');
+    }
+    const registry: PersistedAgentWorkspaceRegistry = {
+      config,
+      projects: configResult.projects,
+      identities: configResult.identities,
+      agentProjections: configResult.agentProjections,
+      diagnostics: configResult.diagnostics,
+      repaired: projectResult.changed || configResult.changed,
+      repairDeferred: false,
+      createdAgentIds: configResult.createdAgentIds,
+      relinkedProjectIds: projectResult.relinkedProjectIds,
+    };
     if (registry.repaired) {
       broadcast('config:changed', {
         section: 'agent-identity',
