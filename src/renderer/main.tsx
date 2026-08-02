@@ -15,7 +15,6 @@ import {
 } from './theme';
 import { initFrontendLogger, setLogServerReady, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
-import { installOverlayScrollbarActivity, isWindowsRendererPlatform } from './utils/overlayScrollbarActivity';
 import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
 
 import './i18n';
@@ -69,19 +68,6 @@ try {
 // document-level capture handler is attached when the first input fires.
 installMacFunctionKeyGuard();
 installTextCorrectionPolicy();
-
-function installPlatformClass(): void {
-  const platform = navigator.platform || '';
-  const userAgent = navigator.userAgent || '';
-  const platformText = `${platform} ${userAgent}`.toLowerCase();
-  const html = document.documentElement;
-  html.classList.toggle('platform-windows', isWindowsRendererPlatform(platform, userAgent));
-  html.classList.toggle('platform-macos', platformText.includes('mac'));
-  html.classList.toggle('platform-linux', platformText.includes('linux') || platformText.includes('x11'));
-}
-
-installPlatformClass();
-installOverlayScrollbarActivity();
 
 // Block native "Reload / Inspect Element" context menu in production.
 // Keep native menu for: input fields, text selection, contenteditable, links, images, media.

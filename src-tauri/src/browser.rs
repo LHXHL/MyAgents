@@ -267,6 +267,7 @@ pub async fn cmd_browser_create(
     let label_new_win = label.clone();
 
     let builder = WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed_url.clone()))
+        .scroll_bar_style(crate::webview_policy::scroll_bar_style())
         .user_agent(BROWSER_USER_AGENT)
         .initialization_script(BROWSER_INIT_SCRIPT)
         .on_navigation(move |nav_url| {

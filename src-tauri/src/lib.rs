@@ -57,6 +57,7 @@ mod tray;
 mod updater;
 pub mod utils;
 pub mod wake_lock;
+mod webview_policy;
 pub mod workspace_files;
 mod workspace_path;
 
@@ -782,6 +783,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::default(),
             )
+            .scroll_bar_style(crate::webview_policy::scroll_bar_style())
             .title("MyAgents")
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)

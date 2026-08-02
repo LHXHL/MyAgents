@@ -942,10 +942,12 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 |------|-------|---------|-------|
 | 字体渲染 | 更平滑 | 更锐利 | 介于之间 |
 | 窗口控制 | 左上红绿灯 | 右上三按钮 | 取决于桌面环境 |
-| 滚动条 | 自动隐藏 | WebView2 经典滚动条（renderer 用活动态隐藏 thumb） | 取决于桌面环境 |
+| 滚动条 | 系统 Default（服从系统显示偏好） | WebView2 Fluent Overlay（Runtime ≥ 125；旧 Runtime 原生回退） | 系统 Default |
 | Shell | zsh | PowerShell / cmd | bash |
 | Console window 抑制 | — | `process_cmd::new()` 注入 `CREATE_NO_WINDOW` | — |
 | 系统 PATH 查找 | `system_binary::find()`（Finder 启动 PATH 缺失） | — | — |
+
+滚动条外观与输入态属于 WebView / OS authority，不属于 Renderer Theme。`src-tauri/src/webview_policy.rs` 是原生 style 的唯一解析入口：Windows 返回 `ScrollBarStyle::FluentOverlay`，macOS / Linux 返回 `Default`；主窗口、Browser child WebView、浮球、Shield 与 Companion 的每个 builder 都必须调用该 policy，因为 WebView2 要求共享同一 data directory 的 WebView 使用相同 style。Renderer 不得用全局 `::-webkit-scrollbar`、透明 thumb、滚动计时 class 或 pointer proximity 监听复制原生行为；Theme 只通过根节点 `color-scheme` 为原生控件提供明暗语义。内容滚动、Virtuoso 虚拟化与 `scrollbar-gutter: stable` 的 classic fallback 布局保护仍由各既有 scroll container 拥有。
 
 ### 跨平台环境变量 (`src/server/utils/platform.ts`)
 

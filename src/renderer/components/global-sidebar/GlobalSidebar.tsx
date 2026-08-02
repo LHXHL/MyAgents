@@ -1465,7 +1465,11 @@ function WorkspaceTree({
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="tree">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3"
+        role="tree"
+        style={{ scrollbarGutter: 'stable' }}
+      >
         {projectsLoading ? (
           <div className="space-y-2 px-1 py-2" aria-label={t('common.loading')}>
             {[0, 1, 2].map((item) => (
@@ -1715,7 +1719,11 @@ function WorkspaceRow({
           {displayName}
         </span>
       </button>
-      <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
+      {/* The scroll owner supplies 8px; this local 8px keeps controls outside Fluent's 16px overlay hit region. */}
+      <div
+        className={`flex shrink-0 items-center pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        data-global-sidebar-workspace-actions
+      >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
           <button
             ref={menuRef}
@@ -1852,7 +1860,7 @@ function SessionRow({
         </span>
       </button>
       <div
-        className={`absolute inset-y-0 right-1 flex w-9 items-center justify-end transition-opacity ${
+        className={`absolute inset-y-0 right-2 flex w-9 items-center justify-end transition-opacity ${
           menuOpen
             ? 'pointer-events-auto opacity-100'
             : 'pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100'
