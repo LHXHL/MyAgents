@@ -668,7 +668,7 @@ async function projectLiveAgentConfigPatch(
     // Live projection deliberately happens after every disk-intent lock has
     // been released. Runtime rotation/network waits are not persistence work.
     await syncAgentRuntime(agentId, result.effectivePatch, result.resolvedMcpJson);
-    if ('memoryAutoUpdate' in patch) {
+    if ('memoryAutoUpdate' in patch || 'enabled' in patch) {
       try {
         const projection = await resolvePersistedAgentWorkspace(result.updated.id);
         await configureMemoryAutoUpdateTaskForAgent(result.updated, projection.workspacePath);

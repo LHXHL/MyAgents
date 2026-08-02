@@ -82,7 +82,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 
 memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。
 
-managed job 不再创建 managed CronTask 旁路。memory auto-update 的 configure 以规范化 workspace identity 串行；进入锁后重新读取 `config.json`，磁盘上的最新 Agent 配置是 enable/disable、schedule 与参数的唯一权威，renderer 到达顺序不能覆盖它。
+managed job 不再创建 managed CronTask 旁路。memory auto-update 的 configure 以 exact Agent ID 串行，并以 managed Task 的 `workspace_id` 持久化该 identity；进入锁后重新读取 `config.json`，只有 `Agent.enabled && memoryAutoUpdate.enabled` 才具备主动执行资格，关闭顶层主动能力不改写 Memory 子配置。磁盘上的 exact Agent 配置是 enable/disable、schedule 与参数的唯一权威，renderer 到达顺序和同路径 Agent 的持久化顺序都不能覆盖它。Project projection 解析出的 workspace 只负责当前执行目录与 workspace 级文件 IO 互斥，不参与 AgentConfig 选择或 Task 去重。
 
 ## 5. Legacy Cron 迁移
 

@@ -131,6 +131,17 @@ describe('Agent/Project configuration intent ownership', () => {
     });
   });
 
+  it('reconciles the proactive Memory task when the Agent master switch changes', async () => {
+    await patchAgentConfig('agent-1', { enabled: false });
+
+    expect(invokeMock).toHaveBeenCalledWith('cmd_configure_memory_auto_update_task', {
+      request: expect.objectContaining({
+        agentId: 'agent-1',
+        workspacePath: '/tmp/agent',
+      }),
+    });
+  });
+
   it('commits both disk stores before releasing the intent lock and hot-reloading', async () => {
     await patchAgentProjectConfig(
       'agent-1',
