@@ -62,6 +62,14 @@ function shouldPinBottomAfterNextCommit(reason: RowLayoutChangeReason): boolean 
   return reason === 'attachment-settle' || reason === 'widget-resize';
 }
 
+function isDirectRowToggle(reason: RowLayoutChangeReason): boolean {
+  return reason === 'process-row-expand'
+    || reason === 'process-row-collapse'
+    || reason === 'user-message-expand'
+    || reason === 'block-group-expand'
+    || reason === 'expandable-container-expand';
+}
+
 function escapeCssIdentifier(value: string): string {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
     return CSS.escape(value);
@@ -317,6 +325,14 @@ export function useChatScrollController({
 
   const onRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
     if (!isActiveRef.current) return;
+    // A click-driven disclosure must grow or shrink from the clicked row in normal
+    // document flow. Restoring the first fully visible *message* is the wrong owner:
+    // when the clicked row belongs to a message whose top is already above the
+    // viewport, that anchor is a later message below the click. Preserving it makes
+    // the disclosure expand upward and can leave WebKit's paint and hit-test geometry
+    // on different scroll offsets. Virtuoso owns the row-size update; do not add a
+    // second scroll correction for direct toggles.
+    if (isDirectRowToggle(reason)) return;
     if (reason === 'tool-complete' && followEnabledRef.current) {
       scrollToBottom('auto');
       return;

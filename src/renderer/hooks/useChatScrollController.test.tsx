@@ -190,6 +190,38 @@ describe('useChatScrollController', () => {
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'process-row-expand',
+    'process-row-collapse',
+    'user-message-expand',
+    'block-group-expand',
+    'expandable-container-expand',
+  ] as const)('leaves %s in natural document flow instead of restoring a later message anchor', (reason) => {
+    const scroller = document.createElement('div');
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    scroller.appendChild(row);
+    setRect(scroller, { top: 10, bottom: 410 });
+    setRect(row, { top: 30, bottom: 100 });
+    controls.scrollerRef.current = scroller;
+
+    const { result } = renderHook(() => useChatScrollController({
+      messages: [msg('m1')],
+      isActive: true,
+    }));
+
+    act(() => {
+      result.current.onRowLayoutChanged('m1', reason);
+      // Emulate the same React commit growing or shrinking the virtualized row.
+      setRect(row, { top: 80, bottom: 150 });
+    });
+
+    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(controls.scrollToIndex).not.toHaveBeenCalled();
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('captures and restores an anchor with one offset correction', () => {
     const scroller = document.createElement('div');
     const row = document.createElement('div');

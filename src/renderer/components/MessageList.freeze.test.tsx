@@ -11,10 +11,10 @@
 // This test pins that invariant at the Virtuoso boundary: it captures the `data`
 // / `firstItemIndex` props Virtuoso receives and asserts they stay frozen while
 // inactive and resume live on re-activation.
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import type { VirtuosoHandle } from 'react-virtuoso';
+import type { SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 
 import type { Message as MessageType } from '@/types/chat';
 
@@ -27,6 +27,8 @@ type Recorded = {
   atBottomStateChange?: (atBottom: boolean) => void;
   followOutput?: (isAtBottom: boolean) => false | 'smooth';
   startReached?: () => void;
+  skipAnimationFrameInResizeObserver?: boolean;
+  itemSize?: SizeFunction;
 };
 const recorded: Recorded[] = [];
 vi.mock('react-virtuoso', () => ({
@@ -38,6 +40,9 @@ vi.mock('react-virtuoso', () => ({
     atBottomStateChange?: (atBottom: boolean) => void;
     followOutput?: (isAtBottom: boolean) => false | 'smooth';
     startReached?: () => void;
+    skipAnimationFrameInResizeObserver?: boolean;
+    itemSize?: SizeFunction;
+    itemContent?: (index: number, message: MessageType) => React.ReactNode;
   }) => {
     recorded.push({
       data: props.data,
@@ -47,8 +52,18 @@ vi.mock('react-virtuoso', () => ({
       atBottomStateChange: props.atBottomStateChange,
       followOutput: props.followOutput,
       startReached: props.startReached,
+      skipAnimationFrameInResizeObserver: props.skipAnimationFrameInResizeObserver,
+      itemSize: props.itemSize,
     });
-    return <div data-testid="virtuoso" data-count={props.data.length} />;
+    return (
+      <div data-testid="virtuoso" data-count={props.data.length}>
+        {props.data.map((message, index) => (
+          <React.Fragment key={message.id}>
+            {props.itemContent?.(index, message)}
+          </React.Fragment>
+        ))}
+      </div>
+    );
   },
 }));
 
@@ -57,6 +72,29 @@ vi.mock('@/components/Message', () => ({ default: () => <div data-testid="msg" /
 vi.mock('@/components/PermissionPrompt', () => ({ PermissionPrompt: () => null }));
 vi.mock('@/components/AskUserQuestionPrompt', () => ({ AskUserQuestionPrompt: () => null }));
 vi.mock('@/components/ExitPlanModePrompt', () => ({ ExitPlanModePrompt: () => null }));
+vi.mock('@/context/ChatRowLayoutContext', () => ({
+  ChatRowLayoutProvider: ({
+    messageId,
+    onRowLayoutChanged,
+    children,
+  }: {
+    messageId: string;
+    onRowLayoutChanged: (messageId: string, reason: string) => void;
+    children: React.ReactNode;
+  }) => (
+    <div>
+      {['process-row-collapse', 'user-message-collapse-measured', 'process-row-expand'].map(reason => (
+        <button
+          key={reason}
+          type="button"
+          data-testid={`${reason}-${messageId}`}
+          onClick={() => onRowLayoutChanged(messageId, reason)}
+        />
+      ))}
+      {children}
+    </div>
+  ),
+}));
 
 import MessageList from './MessageList';
 
@@ -142,6 +180,141 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     });
 
     expect(container.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
+
+  it.each(['process-row-collapse', 'user-message-collapse-measured'])(
+    'defers Virtuoso measurement only while %s settles',
+    (reason) => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
+
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+
+      fireEvent.click(screen.getByTestId(`${reason}-tool-row`));
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+
+      act(() => frames.shift()?.(1_001));
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+
+      act(() => frames.shift()?.(1_002));
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+    },
+  );
+
+  it('keeps synchronous Virtuoso measurement for row expansion', () => {
+    renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
+
+    fireEvent.click(screen.getByTestId('process-row-expand-tool-row'));
+
+    expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+  });
+
+  it.each(['before shrink measurement', 'while shrink settles'])(
+    'lets expansion preempt a pending shrink %s',
+    (timing) => {
+      let nextFrameId = 1;
+      const frames = new Map<number, FrameRequestCallback>();
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+        const id = nextFrameId++;
+        frames.set(id, callback);
+        return id;
+      });
+      vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+        frames.delete(id);
+      });
+      renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
+
+      fireEvent.click(screen.getByTestId('process-row-collapse-tool-row'));
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+
+      if (timing === 'while shrink settles') {
+        const [id, frame] = frames.entries().next().value as [number, FrameRequestCallback];
+        frames.delete(id);
+        act(() => frame(1_001));
+        expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+      }
+
+      fireEvent.click(screen.getByTestId('process-row-expand-tool-row'));
+
+      expect(frames.size).toBe(0);
+      expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+    },
+  );
+
+  it('coalesces overlapping large shrinks into one bounded measurement transaction', () => {
+    let nextFrameId = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = nextFrameId++;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      frames.delete(id);
+    });
+    renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
+
+    fireEvent.click(screen.getByTestId('process-row-collapse-tool-row'));
+    fireEvent.click(screen.getByTestId('user-message-collapse-measured-tool-row'));
+
+    expect(frames.size).toBe(1);
+    expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+
+    const [measureId, measure] = frames.entries().next().value as [number, FrameRequestCallback];
+    frames.delete(measureId);
+    act(() => measure(1_001));
+    const [settleId, settle] = frames.entries().next().value as [number, FrameRequestCallback];
+    frames.delete(settleId);
+    act(() => settle(1_002));
+
+    expect(frames.size).toBe(0);
+    expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+  });
+
+  it('cancels shrink settlement and rejects hidden geometry when the Tab becomes inactive', () => {
+    let nextFrameId = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = nextFrameId++;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      frames.delete(id);
+    });
+    const messages = [msg('tool-row', 'variable-height tool output')];
+    const { rerender } = renderList({ messages });
+
+    fireEvent.click(screen.getByTestId('process-row-collapse-tool-row'));
+    expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
+    const queuedItemMeasurement = lastData().itemSize;
+
+    rerender(
+      <MessageList
+        messages={messages}
+        streamingMessage={null}
+        isLoading={false}
+        isActive={false}
+        firstItemIndex={1_000_000}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        {...createFollowProps()}
+        scrollToBottom={vi.fn()}
+        handleAtBottomChange={vi.fn()}
+      />,
+    );
+
+    expect(frames.size).toBe(0);
+    expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
+
+    const hiddenItem = document.createElement('div');
+    hiddenItem.dataset.knownSize = '321';
+    vi.spyOn(hiddenItem, 'getBoundingClientRect').mockReturnValue({ height: 0 } as DOMRect);
+    expect(queuedItemMeasurement?.(hiddenItem, 'offsetHeight')).toBe(321);
   });
 
   it('does NOT forward streaming growth to Virtuoso while inactive, and resumes live on re-activation', () => {
