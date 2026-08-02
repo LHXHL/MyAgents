@@ -258,12 +258,16 @@ pub async fn configure_memory_auto_update_task(
                     duplicate.id, error
                 )
             })?;
-        store.delete(&duplicate.id).await.map_err(|error| {
-            format!(
-                "failed to delete duplicate managed Task {}: {}",
-                duplicate.id, error
-            )
-        })?;
+        crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?
+            .delete_internal(&duplicate.id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to delete duplicate managed Task {}: {}",
+                    duplicate.id, error
+                )
+            })?;
     }
 
     let Some(mut config) = request
@@ -350,6 +354,7 @@ pub async fn configure_memory_auto_update_task(
                         bot_thread: None,
                         events: Some(vec![]),
                     }),
+                    notification_patch: None,
                     prompt: Some(MANAGED_AUTO_UPDATE_PROMPT.to_string()),
                 })
                 .await?
@@ -439,8 +444,11 @@ async fn arm_managed_task(
             })
             .await?;
     }
-    crate::management_api::run_task_by_id(&task.id)
+    crate::task_application::TaskApplication::from_globals()
+        .map_err(|error| error.to_string())?
+        .run(&task.id)
         .await
+        .map_err(|error| error.to_string())
         .map(|_| ())
 }
 
@@ -1364,7 +1372,7 @@ mod tests {
     use super::*;
     use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
-    fn spawn_owner_guard_test_child() -> std::process::Child {
+    fn spawn_owner_guard_test_child() -> crate::process_cmd::ChildTree {
         #[cfg(windows)]
         let mut command = {
             let mut command = crate::process_cmd::new("powershell");
@@ -1380,9 +1388,8 @@ mod tests {
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn owner guard test child")
+            .stderr(std::process::Stdio::null());
+        crate::process_cmd::spawn_tree(&mut command).expect("spawn owner guard test child")
     }
 
     fn base_config() -> MemoryAutoUpdateConfig {
@@ -1615,6 +1622,8 @@ mod tests {
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([tab_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,
@@ -1666,6 +1675,8 @@ mod tests {
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([task_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,
@@ -1710,6 +1721,8 @@ mod tests {
                     workspace_path: PathBuf::from("/tmp/workspace"),
                     state: crate::sidecar::SidecarState::Healthy,
                     owners: HashSet::from([task_owner.clone()]),
+                    completion_claims: HashSet::new(),
+                    dispatch_gate: crate::sidecar::types::DispatchGate::new(),
                     created_at: std::time::Instant::now(),
                     runtime: None,
                     runtime_source: None,

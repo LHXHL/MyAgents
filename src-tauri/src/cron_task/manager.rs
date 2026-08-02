@@ -61,12 +61,19 @@ impl CronTaskManager {
     }
 
     pub async fn create_task(&self, config: CronTaskConfig) -> Result<CronTask, String> {
-        let store = task_store()?;
         let input = task_input_from_cron_config(config)?;
+        let application = crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?;
         let task = if input.managed_kind.is_some() {
-            store.create_system_managed_direct(input).await?
+            application
+                .create_system_managed_direct(input)
+                .await
+                .map_err(|error| error.to_string())?
         } else {
-            store.create_direct(input).await?
+            application
+                .create_direct(input)
+                .await
+                .map_err(|error| error.to_string())?
         };
         Ok(task_to_cron(&task))
     }
@@ -117,50 +124,11 @@ impl CronTaskManager {
     }
 
     pub async fn start_task(&self, id: &str) -> Result<CronTask, String> {
-        let task_control = crate::task_scheduler::acquire_task_control(id).await;
-        let store = task_store()?;
-        let mut task = store
-            .get(id)
+        let task = crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?
+            .start_scheduled_task(id)
             .await
-            .ok_or_else(|| format!("Task not found: {id}"))?;
-        if task.status == crate::task::TaskStatus::Running {
-            if let Err(error) = crate::task_scheduler::get_task_scheduler()
-                .start_with_control_held(id, &task_control)
-                .await
-            {
-                let _ = store
-                    .update_status_with_task_control_held(
-                        crate::task::TaskUpdateStatusInput {
-                            id: id.to_string(),
-                            status: crate::task::TaskStatus::Blocked,
-                            message: Some(format!("scheduler start failed: {error}")),
-                            actor: crate::task::TransitionActor::System,
-                            source: Some(crate::task::TransitionSource::Scheduler),
-                        },
-                        &task_control,
-                    )
-                    .await;
-                return Err(error);
-            }
-            return Ok(task_to_cron(&task));
-        }
-        if task.status != crate::task::TaskStatus::Todo {
-            task = store
-                .update_status_with_task_control_held(
-                    crate::task::TaskUpdateStatusInput {
-                        id: id.to_string(),
-                        status: crate::task::TaskStatus::Todo,
-                        message: Some("scheduled task restarted".to_string()),
-                        actor: crate::task::TransitionActor::System,
-                        source: Some(crate::task::TransitionSource::Scheduler),
-                    },
-                    &task_control,
-                )
-                .await?
-                .0;
-        }
-        let task =
-            crate::management_api::run_task_by_id_with_control(&task.id, &task_control).await?;
+            .map_err(|error| error.to_string())?;
         Ok(task_to_cron(&task))
     }
 
@@ -199,7 +167,11 @@ impl CronTaskManager {
     }
 
     pub async fn delete_task(&self, id: &str) -> Result<(), String> {
-        task_store()?.delete(id).await
+        crate::task_application::TaskApplication::from_globals()
+            .map_err(|error| error.to_string())?
+            .delete_internal(id)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn update_task_fields(
@@ -249,18 +221,14 @@ impl CronTaskManager {
                 )
                 .await?
                 .0;
-            let _ = crate::management_api::run_task_by_id_with_control(id, &task_control).await?;
+            let application = crate::task_application::TaskApplication::from_globals()
+                .map_err(|error| error.to_string())?;
+            let _ = application
+                .run_with_control(id, &task_control)
+                .await
+                .map_err(|error| error.to_string())?;
             task = store.get(id).await.unwrap_or(task);
         }
-        Ok(task_to_cron(&task))
-    }
-
-    pub async fn update_task_session(
-        &self,
-        id: &str,
-        session_id: String,
-    ) -> Result<CronTask, String> {
-        let task = task_store()?.set_execution_session(id, session_id).await?;
         Ok(task_to_cron(&task))
     }
 

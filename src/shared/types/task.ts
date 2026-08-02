@@ -110,6 +110,15 @@ export interface NotificationConfig {
   events?: Array<'done' | 'blocked' | 'stopped' | 'verifying' | 'endCondition'>;
 }
 
+/** Field-level Task notification mutation. Omitted values stay unchanged;
+ * `null` restores that field's default/absence. */
+export interface TaskNotificationPatch {
+  desktop?: boolean | null;
+  botChannelId?: string | null;
+  botThread?: string | null;
+  events?: NotificationConfig['events'] | null;
+}
+
 /** Runtime-scoped config snapshot captured at dispatch. */
 export interface RuntimeConfigSnapshot {
   model?: string;
@@ -376,6 +385,7 @@ export interface TaskUpdateInput {
   clearMcpOverride?: boolean;
   tags?: string[];
   notification?: NotificationConfig;
+  notificationPatch?: TaskNotificationPatch;
   /**
    * When provided, the new markdown body is atomically written to
    * `.task/<id>/task.md` under the same write lock that persists the JSONL

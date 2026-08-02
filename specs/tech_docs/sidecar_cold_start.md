@@ -1,7 +1,7 @@
 # Sidecar 冷启动性能架构
 
-> 多轮性能优化后的 Sidecar 冷启动路径，Tab 打开端到端从 5-7s 降到 ~2-3s。
-> 核心思路：**listen 尽快 → 重活延后 → MCP 按需**。
+> 本文记录 Sidecar 冷启动的当前执行顺序和性能约束。具体耗时受机器、Runtime 与 MCP 配置影响，应以启动日志中的计时点为准，不把历史本机数据作为性能合同。
+> 核心思路：**尽快开始监听 → 延后非必要初始化 → MCP 按需加载**。
 
 ## 总览
 
@@ -11,12 +11,6 @@
 2. **Node `main()` 重排序** — listen 前只做极轻量操作，重活在 listen 后跑
 3. **Tab fast-path** — Tab session 跳过 MCP 磁盘扫描
 4. **Tier 2 懒加载** — Settings UI / OpenAI bridge / 大模块按需 import
-
-实测数据（不含 Node 本身冷启动 ~1.5s）：
-- META 注册总耗时: ~0ms（只存函数引用）
-- 首次 builtin factory: ~124ms（历史基准；SDK+zod+schema 一次性）
-- 再次同 MCP: 0ms（命中缓存）
-- 其他 MCP（SDK 已缓存）: ~10ms（纯 zod schema 构造）
 
 ## Rust 侧启动时序 (`src-tauri/src/sidecar/*`)
 
@@ -32,23 +26,22 @@
 
 ## Node Sidecar `main()` 重排序 (`src/server/index.ts`)
 
-**listen 前只做极轻量操作：**
+**监听端口前只做轻量操作：**
 - `ensureAgentDir`
 - `initLogger`
 - `setSidecarPort`
 - `createBridgeHandler`
 
-**`honoServe` 立即绑定 127.0.0.1:port** → Rust health check 几十 ms 就通过。
+**`honoServe` 随后绑定 `127.0.0.1:port`**，让 Rust 尽早完成 health check。
 
-**listen 后由 IIFE 跑重活：**
-- cleanup（log rotation + Playwright stale profile lock）
-- skill seed
-- socks bridge
-- `initializeAgent`
-- external runtime restore
-- boot banner
+**监听端口后，再根据进程角色执行延迟初始化：**
+- Global：应用级 retention / migration cleanup、OAuth proactive scheduler
+- Common：skill seed、plugin dir setup、socks bridge
+- Session：OAuth revision observer、`initializeAgent`、external runtime restore、boot banner
 
-`globalThis.__myagentsDeferredInit` 作为路由级 readiness gate：除 `/health` 外所有 route 在处理前 `await` 它；稳定态下是亚微秒 no-op。
+因此 Global 不会为了 Settings 或 Provider 一次性操作创建虚假的当前 Session，也不会启动持久 Query 或恢复 Runtime；Session 进程也不会重复运行应用级 retention timer 和 migration scan。Skill seed 仍是可重复执行的共享初始化：更新后第一个启动的进程可能是 Session，它在接收 turn 前必须能够看到必需的 bundled skills，不能依赖另一个进程已经完成初始化。
+
+`globalThis.__myagentsDeferredInit` 是路由级就绪检查：`sidecar-composition.ts` 会在调用 handler 或解析请求体前拒绝未知路由和角色不匹配的路由；其余允许的路由除 `/health`、`/refs/:id` 外，还要等待延迟初始化完成。稳定运行后，两次检查都只是内存判断。Browser/Vite 的单进程开发模式由 `start_dev.sh --dev-union` 显式启用；生产环境只有 Rust 传入的 `global|session` 两种角色。
 
 > 注：v0.2.0 后期已迁移到 `DeferredInitState` 状态机 + 三分 readiness endpoints，详见 `pit_of_success.md` 的「DeferredInitState」节。
 
@@ -109,11 +102,11 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 
 ### 大模块改为 `await import()`
 
-| 模块 | 大小 | 触发条件 |
-|------|------|---------|
-| `admin-api` | ~2900 行，40+ handler | 用户点 Settings |
-| `openai-bridge` | 2664 行 | 用户用 OpenAI 兼容 provider |
-| `adm-zip` | — | 用户上传 zip skill |
+| 模块 | 触发条件 |
+|------|---------|
+| `admin-api` | 首次处理 `/api/admin/*` 请求 |
+| `openai-bridge` | 首次使用 OpenAI 兼容 Provider |
+| `adm-zip` | 首次执行需要 ZIP 读写的操作 |
 
 只在用户真正触发对应功能时才 parse。
 

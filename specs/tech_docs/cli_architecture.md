@@ -100,7 +100,7 @@ Groups:
   task      管理任务中心任务（list/get/create-direct/create-from-alignment/run/rerun/...）
   thought   管理任务中心想法（list/create）
   im        IM runtime actions（send-media）
-  session   Session 间事件通信（send/watch）
+  session   Agent Session 发现与协作（list/start/send/watch）
   diagnose  Runtime / 系统自诊断（runtime <type>）— `runtime diagnose <type>` 的别名糖
   widget    Generative UI widget 说明（readme）
   plugin    管理 OpenClaw 社区插件（list/install/remove）
@@ -153,22 +153,31 @@ AI 在调用写操作前通常需要先「问清楚选项」。以下三条命�
 ```bash
 myagents runtime list                             # 看哪些 runtime 装了、未装的给出安装提示
 myagents runtime describe <runtime>               # 看某 runtime 的 model + permissionMode 枚举
-myagents agent show <agent-id>                    # 看某 Agent 的 effective 默认（按 runtime 正确解析）
-myagents agent list --active|--archived           # 按工作区归档状态筛选 Agent
+myagents agent list --active|--archived           # 找 stable Agent ID；human/JSON 标记当前调用方
+myagents agent show <agent-id>                    # 看 identity + effective Session birth 默认
+myagents session list --agent <agent-id>          # 看最近可复用的 persisted Session context
 ```
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
 `agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
 必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
-Agent/IM Channel。Managed Codex 的 runtime permission 词汇会在写入时规范化为
-产品 permission（`suggest→plan`、`auto-edit→auto`、`no-restrictions→fullAgency`），
-`agent show` 再投影为 effective Codex runtime/permission。`full-auto` 保留
-workspace-write sandbox，无法无损存入现有产品 enum，因此必须拒绝而不是升级成
+Agent/IM Channel。Managed Codex 的 Agent 配置只接受产品 permission
+（`auto | plan | fullAgency`）；`agent show` 再精确投影为 effective Codex
+runtime permission。Native 值属于 Session 执行快照，不能写入 Agent 的产品字段。
+`full-auto` 保留 workspace-write sandbox，不能当作 `fullAgency` 或升级为
 `no-restrictions`。任何单字段更新不得重置未涉及的 provider/model/permission 字段。
 Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-intent.lock`
 保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把
 跨进程 intent lock，两个文件各自的原子锁只负责单文件 read-modify-write。
+
+Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：每个 Project
+必须恰好解析到同 workspace 的一个 stable Agent，`enabled=false` 只关闭 Channel/
+heartbeat 等 proactive 能力。Renderer birth/remove/repair 与 Node discovery 都复用
+`src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在 `agent-config-intent.lock`
+内提交 `config.json + projects.json`；重复 workspace、重复 ID 或多 Agent 命中同
+workspace 时 fail closed，不猜测。无 Project backing 的遗留 Agent 不进入 discovery，
+也不被读取路径隐式删除。
 
 ### Goal Mode 命令（0.3.0）
 
@@ -326,7 +335,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 |---------|------|
 | `/api/admin/mcp/*` | MCP 服务器 CRUD、启用/禁用、环境变量管理、连通性测试、OAuth 流程 |
 | `/api/admin/model/*` | Provider CRUD、API Key 设置、模型验证、默认供应商切换 |
-| `/api/admin/agent/*` | Agent 启用/禁用/归档/取消归档/属性设置/**show**、Channel CRUD、runtime 状态查询 |
+| `/api/admin/agent/*` | stable Agent identity `list/show`、启用/禁用/归档/取消归档/属性设置、Channel CRUD、runtime 状态查询 |
 | `/api/admin/runtime/*` | 跨 runtime 发现：`list` / `describe` |
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
@@ -337,7 +346,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/vision/*` | 官方图片理解 CLI 工具：`readme` / `analyze` |
 | `/api/admin/plugin/*` | OpenClaw 插件安装/卸载/列表 |
 | `/api/admin/im/*` | IM runtime actions（send-media） |
-| `/api/admin/session/*` | Session 间事件通信：`send` 投递新工作/通知，`watch` 监听目标当前工作完成 |
+| `/api/admin/session/*` | Agent Session `list/start` discovery/fresh admission，以及 `send/watch` 既有上下文通信 |
 | `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee/Goal discovery、Issue create/read/metadata update、comment/top attachment、claim/complete/download |
 | `/api/admin/widget/*` | Generative UI widget 资料 |
 | `/api/admin/config/*` | 通用配置读写 |
@@ -359,7 +368,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 - top help 不承诺全局 preview。所有 Space write-like command 携带 `--dry-run` 时，CLI 在端口发现、HTTP 与本地文件 IO 前返回 `DRY_RUN_UNSUPPORTED`；只读命令不会把无关 flag 描述成 preview。真正支持 dry-run 的配置类命令以各自精确 leaf help 为准。
 - repeatable `--attachment`/`--file` 只传路径；Rust 一次 bounded/no-follow 读取后同时拥有 multipart bytes 与 complete idempotency hash，Node 不读取附件内容。
 
-### Session send/watch 协议边界
+### Agent / Session discovery 与协作协议边界
 
 `/api/admin/session/*` 是 CLI 暴露的 session 间通信入口，但协议 owner 不在 CLI
 进程。CLI 只负责解析参数、把调用发给当前 Sidecar；Sidecar / Management API 负责
@@ -367,8 +376,29 @@ session 选择、结构化事件生成与投递确认。
 
 | 子命令 | 事件 | 关键不变量 |
 |--------|------|------------|
+| `myagents agent list/show` | 无 | Project-backed stable identity 是 selector；list 明确 `isCurrent`；`enabled` 不决定显式 addressability；hidden/orphan/conflict fail closed |
+| `myagents session list --agent` | 无 | 只读 `sessions.json` 的 history-visible metadata，按 `lastActiveAt` 倒序；不唤醒、不探测 live、不读 transcript |
+| `myagents session start --agent` | `send.request` / 可选 `send.result` | Rust 生成 Session/request ID，目标 Sidecar 按 Agent 当前有效配置创建 owned snapshot；Runtime dispatch acceptance 是成功点，CLI receipt 不等待 terminal |
 | `myagents session send` | `send.request` / 可选 `send.result` | 目标 session 收到 `<myagents-session-event type="send.request">`；若需要回执，目标 turn terminal 后自动把 `send.result` 推回源 session |
 | `myagents session watch` | `watch.already_idle` / `watch.completed` / `watch.error` | Rust Management API 先确认目标 live state；目标忙时在目标 Sidecar 注册 pending watch，完成事件确认送达后才 ack 清理；目标已 idle 时调用方立即收到最近结果 |
+
+`start` 不是“先建空 Session，再 best-effort send”的两步写入。source 只解析目标
+Agent/workspace 并提交 prompt；Rust Management API `/api/inbox/start-session` 获取 target
+workspace lifecycle + transient Agent owner并确保目标 Sidecar。target 在任何 metadata 写入前
+重新解析 Agent/Project lifecycle，并核对当前 Sidecar 的 Session/workspace。随后目标按自己的
+当前 Agent 配置和实际 Runtime 写
+`materializationState=prepared` 的隐藏 metadata，再通过 `SessionEngine.enqueueInboxMessage()`
+把同一个 typed dispatch guard 交给 builtin/external adapter。guard 赢得
+Runtime dispatch acceptance 时提交可见 Session。明确
+rejection 按 source request ID 回滚；guard 之后的 runtime error 是已接纳 turn 的 terminal error。
+ACK 丢失返回 unconfirmed receipt 并保留 ID、不自动重试。Rust 复用既有
+`BackgroundCompletion` handoff 后释放 transient owner；不新增 fresh-start durable token、恢复
+状态机、配置 fingerprint 或跨文件事务。
+
+调用方只能提交 `agentId + prompt + replyBack`，且必须来自有真实 sessionId 的 MyAgents
+Session。目标 Agent 是 runtime/model/permission/provider/MCP/plugin/tool birth authority；
+Admin API 对调用方同名 override fail closed。默认 terminal 结果复用既有 `send.result` 回投，
+receipt 的 `messageId` 对应后续 `requestEventId`。
 
 事件 prompt 统一由 `src/server/inbox/session-event.ts` 渲染，标签形态为
 `<myagents-session-event ...>`，payload 内部会 neutralize 协议结构标签。新增

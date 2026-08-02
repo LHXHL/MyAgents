@@ -1,13 +1,13 @@
 /**
  * Unified API fetch utility that works in both browser and Tauri modes.
  * - Browser mode: Uses native fetch with relative URLs (Vite proxy)
- * - Tauri mode: Uses proxyFetch with full URLs through Rust proxy
+ * - Tauri mode: Uses the owner-addressed Global Sidecar command through Rust
  * 
- * For Tauri mode, this now uses the global Sidecar URL, which is suitable
+ * For Tauri mode, this uses the Global Sidecar owner, which is suitable
  * for global operations like API key verification in Settings.
  */
 
-import { getGlobalServerUrlWithWait, proxyFetch } from './tauriClient';
+import { globalSidecarFetch } from './tauriClient';
 import { isTauriEnvironment } from '@/utils/browserMock';
 
 /**
@@ -19,10 +19,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
  */
 export async function apiFetch(endpoint: string, options?: RequestInit): Promise<Response> {
     if (isTauriEnvironment()) {
-        // Tauri mode: use global Sidecar URL (waits for sidecar to be ready)
-        const baseUrl = await getGlobalServerUrlWithWait();
-        const url = `${baseUrl}${endpoint}`;
-        return proxyFetch(url, options);
+        return globalSidecarFetch(endpoint, options);
     } else {
         // Browser mode: use relative URL (Vite proxy handles it)
         return fetch(endpoint, options);
@@ -74,13 +71,13 @@ export async function apiGetJson<T>(endpoint: string): Promise<T> {
 /**
  * POST FormData to API endpoint (for file uploads)
  * 
- * WARNING: FormData uploads don't work in Tauri mode through proxyFetch.
+ * WARNING: FormData uploads don't work through the Tauri JSON command.
  * This function only works in browser development mode.
  * For Tauri mode file uploads, use Tauri's native file dialog APIs.
  */
 export async function apiPostFormData<T>(endpoint: string, formData: FormData): Promise<T> {
     if (isTauriEnvironment()) {
-        // FormData doesn't serialize properly through Tauri's proxyFetch
+        // FormData doesn't serialize properly through the Tauri JSON command
         // Need to use Tauri's native file APIs for file uploads in desktop mode
         throw new Error(
             'FormData uploads are not supported in desktop mode. ' +

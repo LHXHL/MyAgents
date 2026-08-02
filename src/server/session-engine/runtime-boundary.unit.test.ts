@@ -85,6 +85,14 @@ describe('SessionEngine runtime boundary', () => {
     expect(violations).toEqual([]);
   });
 
+  it('keeps external product binding independent from builtin lifecycle operations', () => {
+    const source = readFileSync(join(repoRoot, 'src/server/session-engine/external-adapter.ts'), 'utf8');
+    const builtinImport = source.match(/import\s*{([\s\S]*?)}\s*from '\.\.\/agent-session';/)?.[1] ?? '';
+
+    expect(builtinImport).not.toMatch(/\b(?:resetSession|getSessionId|materializePendingDesktopSession|materializeCurrentSessionMetadataForPublishedReset|freezeCurrentSessionMetadataForImDetach)\b/);
+    expect(source).toContain("from './product-session-binding'");
+  });
+
   it('keeps builtin owner modules independent from routes and SessionEngine', () => {
     const ownerFiles = listSourceFiles('src/server/builtin-session');
 
@@ -257,59 +265,6 @@ describe('SessionEngine runtime boundary', () => {
     expect(transcriptPersistence).toContain('saveForkTranscript');
     expect(transcriptPersistence).toContain('scheduleTranscriptPersist');
     expect(transcriptPersistence).toContain('loadTranscriptFromSessionMessages');
-  });
-
-  it('fails closed when builtin admission cannot persist the user message', () => {
-    const source = sourceWithoutCommentLines(join(repoRoot, 'src/server/agent-session.ts'));
-    const turnBoundaryStart = source
-      .split('function startNextTurnQueuedItem')[1]
-      ?.split('function schedulePostTerminalQueueDrain')[0];
-    const admissionPersistence = source
-      .split('if (item.deferredUserSurface) {')[1]
-      ?.split("} else if (getSessionMetadata(sessionId)?.materializationState === 'prepared')")[0];
-
-    expect(turnBoundaryStart).toContain('sourceItem.deferredUserSurface = surface');
-    expect(turnBoundaryStart).not.toContain("void surfaceBuiltinUserMessage(surface, 'pre-admission')");
-    expect(source).toContain("action: 'dispatch_blocked'");
-    expect(source).toContain('reportBuiltinAdmissionPersistenceFailure(queueId, requestId, error)');
-    expect(admissionPersistence).toContain('reportBuiltinAdmissionPersistenceFailure(');
-    expect(admissionPersistence).toContain('rollbackFailedBuiltinUserSurface(');
-    expect(admissionPersistence).toContain('finalizeImRequest(');
-    expect(admissionPersistence).toContain("buildImErrorPayload(terminalError)");
-    expect(admissionPersistence).toContain('builtinTurnLifecycle.failAdmittedTurnSetup(');
-    expect(admissionPersistence).toMatch(/item\.resolve\(\);\s*continue;/);
-    expect(admissionPersistence).not.toContain('continuing runtime dispatch');
-  });
-
-  it('rolls back an ordinary direct user row when pre-admission persistence fails', () => {
-    const source = sourceWithoutCommentLines(join(repoRoot, 'src/server/agent-session.ts'));
-    const rollbackHelper = source
-      .split('async function rollbackFailedBuiltinUserSurface')[1]
-      ?.split('type SurfaceInFlightOptions')[0];
-    const directPersistence = source
-      .split("await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');")[1]
-      ?.split('if (admissionTicket?.canceled)')[0];
-
-    expect(directPersistence).toContain('rollbackFailedBuiltinUserSurface(userMessage.id)');
-    expect(rollbackHelper).toContain('applyTranscriptRetractionToPersistence(new Set([messageId]))');
-    expect(rollbackHelper).toContain("broadcast('chat:messages-retracted'");
-    expect(rollbackHelper).toContain("'skip'");
-    expect(rollbackHelper).toContain('true');
-    expect(directPersistence).toContain('setSessionState(');
-    expect(directPersistence).toContain('throw error');
-  });
-
-  it('targets cancellation at an admitted builtin request before SDK yield', () => {
-    const source = sourceWithoutCommentLines(join(repoRoot, 'src/server/agent-session.ts'));
-    const cancelPath = source
-      .split('export async function cancelImRequest')[1]
-      ?.split('export type QueueCancelResult')[0];
-
-    expect(cancelPath).toContain('getCurrentTurnSourceItem()');
-    expect(cancelPath).toContain('hasPendingOutputOwnerByQueueId(activeSource.id)');
-    expect(cancelPath).toContain("'cancelled'");
-    expect(cancelPath).toContain('buildImCancelledPayload()');
-    expect(cancelPath).toContain('await interruptCurrentResponse(reason)');
   });
 
   it('keeps session-core pure and side-effect free', () => {

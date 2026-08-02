@@ -1,25 +1,46 @@
 // Agent config service — CRUD helpers, migration from ImBotConfigs
-import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, WorkspaceTemplateAgentDefaults } from '../types';
-import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
-import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
+import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplateAgentDefaults } from '../types';
+import { getEffectiveModelAliases, isProjectArchived } from '../types';
+import {
+  agentChannelUsesManagedCodexProvider,
+  resolveAgentChannelRuntime,
+  type AgentConfig,
+  type ChannelConfig,
+  type ChannelOverrides,
+} from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/config-types';
 import {
+  agentUsesManagedCodexProvider,
   createRuntimeBackedProviderIdentity,
-  runtimeBackedProviderPermissionMode,
+  projectManagedCodexPermissionToRuntime,
   runtimeConfigForRuntimeBackedProvider,
 } from '../../../shared/providerExecution';
-import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
+import { isRuntimePermissionMode, type RuntimeConfig, type RuntimeType } from '../../../shared/types/runtime';
 import {
   atomicModifyConfig,
   loadAppConfig,
   notifyConfigChanged,
   type ConfigChangeNotification,
 } from './appConfigService';
-import { loadProjects, patchProject } from './projectService';
-import { withAgentConfigIntentLock } from './configStore';
+import {
+  loadProjects,
+  patchProject,
+  saveProjects,
+} from './projectService';
+import { withAgentConfigIntentLock, withProjectsLock } from './configStore';
 import { getAllMcpServersFromConfig } from './mcpService';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../../shared/workspacePath';
+import {
+  buildAgentForProject,
+  reconcileAgentWorkspaceIdentities,
+} from '../../../shared/agentWorkspaceIdentity';
+
+export {
+  buildAgentForProject,
+  resolveAgentDefaultsForProject,
+  type BuildAgentForProjectOptions,
+} from '../../../shared/agentWorkspaceIdentity';
 
 // ============= Query Helpers =============
 
@@ -89,61 +110,6 @@ export async function assertAgentWorkspaceNotArchived(
 }
 
 // ============= Agent Creation Helpers =============
-
-export interface BuildAgentForProjectOptions {
-  agentId?: string;
-  defaultPermissionMode?: string;
-  agentDefaults?: WorkspaceTemplateAgentDefaults;
-  templates?: readonly WorkspaceTemplate[];
-}
-
-function cloneHeartbeatConfig(defaults: WorkspaceTemplateAgentDefaults['heartbeat']) {
-  if (!defaults) return undefined;
-  return {
-    ...defaults,
-    activeHours: defaults.activeHours ? { ...defaults.activeHours } : undefined,
-  };
-}
-
-function cloneMemoryAutoUpdateConfig(defaults: WorkspaceTemplateAgentDefaults['memoryAutoUpdate']) {
-  if (!defaults) return undefined;
-  return { ...defaults };
-}
-
-function cloneMemoryEvolutionConfig(defaults: WorkspaceTemplateAgentDefaults['memoryEvolution']) {
-  if (!defaults) return undefined;
-  return { ...defaults };
-}
-
-export function resolveAgentDefaultsForProject(
-  project: Project,
-  templates: readonly WorkspaceTemplate[] = PRESET_TEMPLATES,
-): WorkspaceTemplateAgentDefaults | undefined {
-  if (project.templateSource !== 'builtin' || !project.templateId) return undefined;
-  return templates.find(t => t.isBuiltin && t.id === project.templateId)?.agentDefaults;
-}
-
-export function buildAgentForProject(
-  project: Project,
-  options: BuildAgentForProjectOptions = {},
-): AgentConfig {
-  const agentDefaults = options.agentDefaults ?? resolveAgentDefaultsForProject(project, options.templates);
-  return {
-    id: options.agentId ?? crypto.randomUUID(),
-    name: project.displayName || project.name,
-    icon: project.icon,
-    workspacePath: project.path,
-    enabled: agentDefaults?.enabled ?? false,
-    channels: [],
-    providerId: project.providerId ?? undefined,
-    model: project.model ?? undefined,
-    permissionMode: project.permissionMode || options.defaultPermissionMode || 'plan',
-    mcpEnabledServers: project.mcpEnabledServers,
-    heartbeat: cloneHeartbeatConfig(agentDefaults?.heartbeat),
-    memoryAutoUpdate: cloneMemoryAutoUpdateConfig(agentDefaults?.memoryAutoUpdate),
-    memoryEvolution: cloneMemoryEvolutionConfig(agentDefaults?.memoryEvolution),
-  };
-}
 
 // ============= Migration: ImBotConfigs → Agents =============
 
@@ -288,48 +254,76 @@ export function ensureAllProjectsHaveAgent(
   projects: Project[],
   defaultPermissionMode?: string,
 ): { changed: boolean } {
-  const agents = config.agents ?? [];
-  const agentMap = new Map(agents.map(a => [a.id, a]));
-  let changed = false;
-  let createdCount = 0;
+  const result = reconcileAgentWorkspaceIdentities(projects, config.agents ?? [], {
+    buildAgent: project => buildAgentForProject(project, { defaultPermissionMode }),
+  });
+  if (!result.changed) return { changed: false };
 
-  for (const project of projects) {
-    // Skip if already linked to a valid agent
-    if (project.agentId && agentMap.has(project.agentId)) {
-      continue;
+  config.agents = result.agents;
+  projects.splice(0, projects.length, ...result.projects);
+  console.log(
+    `[agentConfigService] ensureAllProjectsHaveAgent: created ${result.createdAgentIds.length} basicAgent(s), total agents: ${result.agents.length}`,
+  );
+  return { changed: true };
+}
+
+export interface PersistedAgentWorkspaceIdentityResult {
+  config: AppConfig;
+  projects: Project[];
+  changed: boolean;
+  createdAgents: AgentConfig[];
+}
+
+interface PersistedAgentWorkspaceIdentityOptions {
+  agentDefaultsByProjectId?: ReadonlyMap<string, WorkspaceTemplateAgentDefaults>;
+}
+
+/**
+ * Renderer I/O adapter for the shared Project↔Agent resolver. The caller must
+ * already hold agent-config-intent.lock so Project birth/repair shares the
+ * same persistence boundary as Agent-facing discovery.
+ */
+export async function reconcilePersistedAgentWorkspaceIdentitiesLocked(
+  options: PersistedAgentWorkspaceIdentityOptions = {},
+): Promise<PersistedAgentWorkspaceIdentityResult> {
+  return withProjectsLock(async () => {
+    const projects = await loadProjects();
+    let resolution: ReturnType<typeof reconcileAgentWorkspaceIdentities<Project, AgentConfig>> | undefined;
+    const config = await atomicModifyConfig(current => {
+      resolution = reconcileAgentWorkspaceIdentities(projects, current.agents ?? [], {
+        buildAgent: project => buildAgentForProject(project, {
+          defaultPermissionMode: current.defaultPermissionMode,
+          agentDefaults: options.agentDefaultsByProjectId?.get(project.id),
+        }),
+      });
+      return resolution.changed
+        ? { ...current, agents: resolution.agents }
+        : current;
+    }, { notification: 'deferred' });
+
+    if (!resolution) throw new Error('Agent identity reconciliation did not produce a result.');
+    if (!resolution.changed) {
+      return { config, projects: resolution.projects, changed: false, createdAgents: [] };
     }
 
-    // Also check by workspacePath (agent exists but project.agentId is stale/missing)
-    const existingByPath = agents.find(a => workspacePathsEqual(a.workspacePath, project.path));
-    if (existingByPath) {
-      // Fix orphaned reference
-      project.agentId = existingByPath.id;
-      if (existingByPath.enabled) {
-        project.isAgent = true;
-      }
-      changed = true;
-      continue;
-    }
+    // Agent is persisted first. If the Project write is interrupted, a retry
+    // finds the same Agent by workspace and completes the link.
+    await saveProjects(resolution.projects);
+    notifyConfigChanged('reconcilePersistedAgentWorkspaceIdentities');
+    const created = new Set(resolution.createdAgentIds);
+    return {
+      config,
+      projects: resolution.projects,
+      changed: true,
+      createdAgents: resolution.agents.filter(agent => created.has(agent.id)),
+    };
+  });
+}
 
-    // Create basicAgent — AI fields from Project (fallback to defaults)
-    const basicAgent = buildAgentForProject(project, { defaultPermissionMode });
-
-    agents.push(basicAgent);
-    agentMap.set(basicAgent.id, basicAgent);
-    project.agentId = basicAgent.id;
-    if (basicAgent.enabled) {
-      project.isAgent = true;
-    }
-    changed = true;
-    createdCount++;
-  }
-
-  if (changed) {
-    config.agents = agents;
-    console.log(`[agentConfigService] ensureAllProjectsHaveAgent: created ${createdCount} basicAgent(s), total agents: ${agents.length}`);
-  }
-
-  return { changed };
+export async function reconcilePersistedAgentWorkspaceIdentities(
+  options: PersistedAgentWorkspaceIdentityOptions = {},
+): Promise<PersistedAgentWorkspaceIdentityResult> {
+  return withAgentConfigIntentLock(() => reconcilePersistedAgentWorkspaceIdentitiesLocked(options));
 }
 
 // ============= Persistence Helpers =============
@@ -781,7 +775,25 @@ async function modifyAgentChannelConfig(
     const channelIndex = channels.findIndex(channel => channel.id === channelId);
     if (channelIndex < 0) return config;
 
-    updatedChannel = modify(channels[channelIndex]);
+    const currentChannel = channels[channelIndex];
+    updatedChannel = modify(currentChannel);
+    const currentPermission = currentChannel.overrides?.permissionMode;
+    const updatedPermission = updatedChannel.overrides?.permissionMode;
+    const identityChanged = resolveAgentChannelRuntime(agents[agentIndex], currentChannel)
+      !== resolveAgentChannelRuntime(agents[agentIndex], updatedChannel)
+      || agentChannelUsesManagedCodexProvider(agents[agentIndex], currentChannel)
+        !== agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel);
+    if (updatedPermission !== undefined && (updatedPermission !== currentPermission || identityChanged)) {
+      const valid = agentChannelUsesManagedCodexProvider(agents[agentIndex], updatedChannel)
+        ? updatedPermission === 'auto' || updatedPermission === 'plan' || updatedPermission === 'fullAgency'
+        : isRuntimePermissionMode(
+          updatedPermission,
+          resolveAgentChannelRuntime(agents[agentIndex], updatedChannel),
+        );
+      if (!valid) {
+        throw new Error(`Invalid Channel permissionMode '${updatedPermission}' for its Runtime identity.`);
+      }
+    }
     channels[channelIndex] = updatedChannel;
     authoritativeChannels = channels;
     agents[agentIndex] = { ...agents[agentIndex], channels };
@@ -1018,14 +1030,15 @@ export function projectMemoryEvolutionTaskRuntimeForAgent(
   agent: Pick<AgentConfig, 'providerId' | 'model' | 'permissionMode' | 'runtime' | 'runtimeConfig'>,
 ): { runtime?: RuntimeType; runtimeConfig?: RuntimeConfig } {
   const model = typeof agent.model === 'string' ? agent.model.trim() : '';
-  if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && model) {
+  if (agentUsesManagedCodexProvider(agent) && model) {
     const identity = createRuntimeBackedProviderIdentity({
       providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
       model,
     });
     const runtimeConfig = runtimeConfigForRuntimeBackedProvider(identity, agent.runtimeConfig);
-    const permissionMode = agent.runtimeConfig?.permissionMode
-      ?? runtimeBackedProviderPermissionMode(identity, agent.permissionMode);
+    const permissionMode = projectManagedCodexPermissionToRuntime(
+      agent.permissionMode ?? agent.runtimeConfig?.permissionMode,
+    ) ?? 'auto-edit';
     return {
       runtime: identity.runtime,
       runtimeConfig: {

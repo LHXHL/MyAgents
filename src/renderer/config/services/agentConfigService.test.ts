@@ -41,7 +41,10 @@ function project(overrides: Partial<Project> = {}): Project {
 
 describe('agentConfigService template Agent defaults', () => {
   it('builds ordinary projects as disabled basic Agents', () => {
-    const agent = buildAgentForProject(project(), {
+    const agent = buildAgentForProject(project({
+      enabledPluginIds: ['plugin-one'],
+      enabledOfficialToolIds: ['image-understanding'],
+    }), {
       agentId: 'agent-1',
       defaultPermissionMode: 'auto',
     });
@@ -53,6 +56,8 @@ describe('agentConfigService template Agent defaults', () => {
       enabled: false,
       channels: [],
       permissionMode: 'auto',
+      enabledPluginIds: ['plugin-one'],
+      enabledOfficialToolIds: ['image-understanding'],
     });
     expect(agent.heartbeat).toBeUndefined();
     expect(agent.memoryAutoUpdate).toBeUndefined();
@@ -159,7 +164,7 @@ describe('agentConfigService template Agent defaults', () => {
     });
   });
 
-  it('does not overwrite a project that is already linked to an Agent', () => {
+  it('preserves an existing linked Agent while normalizing the required identity mirror', () => {
     const cfg: AppConfig = {
       defaultPermissionMode: 'auto',
       themeId: 'myagents-default',
@@ -186,10 +191,10 @@ describe('agentConfigService template Agent defaults', () => {
 
     const result = ensureAllProjectsHaveAgent(cfg, projects, cfg.defaultPermissionMode);
 
-    expect(result.changed).toBe(false);
+    expect(result.changed).toBe(true);
     expect(cfg.agents![0].enabled).toBe(false);
     expect(cfg.agents![0].heartbeat).toBeUndefined();
-    expect(projects[0].isAgent).toBeUndefined();
+    expect(projects[0].isAgent).toBe(true);
   });
 });
 
@@ -226,6 +231,27 @@ describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
     })).toEqual({
       runtime: 'builtin',
       runtimeConfig: { envPolicy: { proxy: 'myagents' } },
+    });
+  });
+
+  it('does not reroute memory evolution through a dormant managed provider', () => {
+    expect(projectMemoryEvolutionTaskRuntimeForAgent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.5',
+      permissionMode: 'fullAgency',
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
+    })).toEqual({
+      runtime: 'gemini',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gemini-3.1-pro-preview',
+        permissionMode: 'yolo',
+      },
     });
   });
 });

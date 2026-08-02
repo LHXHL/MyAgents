@@ -383,12 +383,10 @@ export interface TaskRunParams {
   source: Source;
   /**
    * 第几次执行 — 1 = 首次派发；>1 = 重新派发（rerun）。
-   * 取值来自任务的 `sessionIds.length + 1`，即"如果这次执行成功，将是第几次"。
-   *
-   * `null` 仅出现在 CLI 路径上，且当且仅当预读任务记录失败时（罕见 — 例如
-   * Rust Mgmt API 临时不可达）。前端永远填实数。
+   * 由 Task execution owner 在接受 run/rerun mutation 后返回；Session
+   * history 数量不参与计算，admission 失败也不会产生事件。
    */
-  run_count: number | null;
+  run_count: number;
 }
 
 /**

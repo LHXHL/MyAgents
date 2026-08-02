@@ -1,7 +1,7 @@
 import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
 import React, { memo, useCallback, useMemo, useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import type { VirtuosoHandle } from 'react-virtuoso';
+import type { SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
@@ -41,6 +41,8 @@ interface MessageListProps {
    * if we were following before the tab went hidden.
    */
   isActive?: boolean;
+  /** Native focus projection, used to preserve blur-time follow intent and fence focus recovery. */
+  isWindowFocused?: boolean;
   // Pagination: Virtuoso maintains the visible scroll position across
   // prepended items by the absolute index of data[0]. Default 0 = no pagination.
   firstItemIndex?: number;
@@ -83,6 +85,17 @@ interface MessageListProps {
 const STREAMING_MESSAGE_COUNT = 20;
 const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
 const STATUS_ROW_HEIGHT_PX = 30;
+
+function isLargeRowShrink(reason: RowLayoutChangeReason): boolean {
+  return reason === 'process-row-collapse' || reason === 'user-message-collapse-measured';
+}
+
+function isRowExpansion(reason: RowLayoutChangeReason): boolean {
+  return reason === 'process-row-expand'
+    || reason === 'user-message-expand'
+    || reason === 'block-group-expand'
+    || reason === 'expandable-container-expand';
+}
 
 /** Resolve dynamic system status keys (e.g., api_retry:2:5 → human-readable) */
 function resolveSystemStatus(status: string, t: TFunction<'chat'>): string {
@@ -224,6 +237,7 @@ const MessageList = memo(function MessageList({
   isLoading,
   sessionId,
   isActive = true,
+  isWindowFocused = true,
   firstItemIndex,
   heightEstimateSeed,
   layoutByMessageId,
@@ -253,6 +267,8 @@ const MessageList = memo(function MessageList({
   bottomSpacerPx,
 }: MessageListProps) {
   const { t } = useTranslation('chat');
+  const committedWindowFocusedRef = useRef(isWindowFocused);
+  const isWindowFocusReturn = isWindowFocused && !committedWindowFocusedRef.current;
   const liveHeightEstimateSeed = heightEstimateSeed?.length === messages.length ? heightEstimateSeed : undefined;
 
   const streamingStatusMessage = useMemo(
@@ -371,15 +387,13 @@ const MessageList = memo(function MessageList({
     }
   }, [isActive, messages.length, scrollToBottom, sessionId, followEnabledRef]);
 
-  // Gate Virtuoso's atBottomStateChange while the tab is hidden.
-  // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
-  // with zero/stale dimensions, which would otherwise be interpreted as
-  // "user scrolled away" and flip followEnabledRef.current to false — losing
-  // bottom-pinning permanently for this stream.
+  // Keep the follow intent captured at blur authoritative until focus returns.
+  // Layout-driven atBottom changes may still arrive while the visible window is
+  // unfocused; rendering stays live, but those callbacks are not user intent.
   const guardedAtBottomChange = useCallback((atBottom: boolean) => {
-    if (!isActive) return;
+    if (!isActive || !isWindowFocused || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     handleAtBottomChange(atBottom);
-  }, [isActive, handleAtBottomChange]);
+  }, [isActive, isWindowFocused, isWindowFocusReturn, handleAtBottomChange]);
 
   // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
@@ -399,12 +413,16 @@ const MessageList = memo(function MessageList({
   // must NOT keep auto-scroll alive once the turn has completed.
   useLayoutEffect(() => {
     if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while hidden — scrolling against a content-visibility:hidden scroller
+    // Skip while the internal Tab is hidden — scrolling against a
+    // content-visibility:hidden scroller
     // can compute against stale geometry. The re-pin layout effect above restores
     // position on re-activation.
     if (!isActive) return;
+    // Window-focus recovery belongs to ChatScrollController. A focus-only
+    // geometry transition must not create a second LAST/end command here.
+    if (isWindowFocusReturn) return;
     virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [streamingMessage, isLoading, isActive, followEnabledRef, virtuosoRef]);
+  }, [streamingMessage, isLoading, isActive, isWindowFocusReturn, followEnabledRef, virtuosoRef]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
   // At turn end the data-layer reveal drains the remaining text and the message moves to
@@ -416,10 +434,17 @@ const MessageList = memo(function MessageList({
   useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
-    if (was && !isLoading && isActive && followEnabledRef.current) {
+    if (was && !isLoading && isActive && !isWindowFocusReturn && followEnabledRef.current) {
       scrollToBottom('auto');
     }
-  }, [isLoading, isActive, followEnabledRef, scrollToBottom]);
+  }, [isLoading, isActive, isWindowFocusReturn, followEnabledRef, scrollToBottom]);
+
+  // Mark the focus commit trustworthy only after Virtuoso's child layout
+  // effects have run. During that commit callbacks and local pins stay gated;
+  // the parent ChatScrollController then executes the sole recovery intent.
+  useLayoutEffect(() => {
+    committedWindowFocusedRef.current = isWindowFocused;
+  }, [isWindowFocused]);
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);
@@ -440,6 +465,64 @@ const MessageList = memo(function MessageList({
   layoutByMessageIdRef.current = layoutByMessageId;
   const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
   onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
+  const isItemMeasurementActiveRef = useRef(isActive);
+  isItemMeasurementActiveRef.current = isActive;
+  const measureVisibleItemSize = useCallback<SizeFunction>((element, field) => {
+    if (!isItemMeasurementActiveRef.current) {
+      const knownSize = Number(element.dataset.knownSize);
+      if (Number.isFinite(knownSize)) return knownSize;
+    }
+    const rectField = field === 'offsetWidth' ? 'width' : 'height';
+    return Math.round(element.getBoundingClientRect()[rectField]);
+  }, []);
+  const [isLargeRowShrinking, setIsLargeRowShrinking] = useState(false);
+  const collapseMeasureFrameRef = useRef<number | null>(null);
+  const collapseSettleFrameRef = useRef<number | null>(null);
+  const cancelPendingLargeRowShrink = useCallback(() => {
+    if (collapseMeasureFrameRef.current !== null) {
+      cancelAnimationFrame(collapseMeasureFrameRef.current);
+      collapseMeasureFrameRef.current = null;
+    }
+    if (collapseSettleFrameRef.current !== null) {
+      cancelAnimationFrame(collapseSettleFrameRef.current);
+      collapseSettleFrameRef.current = null;
+    }
+  }, []);
+  const handleRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
+    if (isLargeRowShrink(reason)) {
+      cancelPendingLargeRowShrink();
+      // Keep the normal synchronous measurement path for expansion: it prevents
+      // Virtuoso from correcting the viewport one frame after the user clicks.
+      // A large shrink is the inverse WebKit hazard, so hold the rAF-delayed path
+      // through React's commit and Virtuoso's following measurement commit, then
+      // restore the fast path. This is a bounded geometry transaction, not a retry.
+      setIsLargeRowShrinking(true);
+      collapseMeasureFrameRef.current = requestAnimationFrame(() => {
+        collapseMeasureFrameRef.current = null;
+        collapseSettleFrameRef.current = requestAnimationFrame(() => {
+          collapseSettleFrameRef.current = null;
+          setIsLargeRowShrinking(false);
+        });
+      });
+    } else if (isRowExpansion(reason)) {
+      // A rapid re-open (or another row's expand) takes precedence over a pending
+      // shrink settlement. Restore synchronous measurement in the same React
+      // batch as the expansion so the clicked content never jumps out of view.
+      cancelPendingLargeRowShrink();
+      setIsLargeRowShrinking(false);
+    }
+    onRowLayoutChangedRef.current(messageId, reason);
+  }, [cancelPendingLargeRowShrink]);
+  useLayoutEffect(() => {
+    if (isActive) return;
+    // A delayed ResizeObserver callback may already be queued when the host hides
+    // this Tab with content-visibility. Cancel our transaction before the next
+    // frame; measureVisibleItemSize also fences any already-queued Virtuoso callback
+    // to its last known size so hidden geometry cannot poison the size cache.
+    cancelPendingLargeRowShrink();
+    setIsLargeRowShrinking(false);
+  }, [cancelPendingLargeRowShrink, isActive]);
+  useEffect(() => cancelPendingLargeRowShrink, [cancelPendingLargeRowShrink]);
   // followOutput / startReached capture `isActive` DIRECTLY (not via a ref). Under
   // React 19's child-before-parent layout-effect ordering, a ref updated in our parent
   // layout effect could still read a stale value when Virtuoso's child effects fire
@@ -451,22 +534,22 @@ const MessageList = memo(function MessageList({
     () => (isAtBottom: boolean) => {
       // Hidden tab (content-visibility:hidden): never drive follow-scroll against
       // skipped/stale geometry (same cache-poisoning class as the data freeze below).
-      if (!isActive) return false;
+      if (!isActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return false;
       const mode = followEnabledRef.current;
       if (!mode) return false;
       if (mode === 'force') return 'smooth' as const;
       return isAtBottom ? 'smooth' as const : false;
     },
-    [followEnabledRef, isActive]
+    [followEnabledRef, isActive, isWindowFocusReturn]
   );
 
   // Pagination guard: don't load an older page off stale range math while hidden —
   // Virtuoso can fire startReached from corrupted offsets when our subtree's layout
   // was skipped (content-visibility:hidden), and a prepend in that state compounds the desync.
   const guardedLoadOlder = useCallback(() => {
-    if (!isActive) return;
+    if (!isActive || (isWindowFocusReturn && !committedWindowFocusedRef.current)) return;
     onLoadOlder?.();
-  }, [onLoadOlder, isActive]);
+  }, [onLoadOlder, isActive, isWindowFocusReturn]);
 
   const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
   const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
@@ -497,7 +580,7 @@ const MessageList = memo(function MessageList({
       >
         <ChatRowLayoutProvider
           messageId={message.id}
-          onRowLayoutChanged={onRowLayoutChangedRef.current}
+          onRowLayoutChanged={handleRowLayoutChanged}
         >
           <Message
             message={message}
@@ -511,7 +594,7 @@ const MessageList = memo(function MessageList({
         </ChatRowLayoutProvider>
       </div>
     );
-  }, []);
+  }, [handleRowLayoutChanged]);
 
   // ── Stable computeItemKey ──
   const computeItemKey = useMemo(() => (_i: number, m: MessageType) => m.id, []);
@@ -539,10 +622,9 @@ const MessageList = memo(function MessageList({
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);
 
-  // ── Freeze the data fed to Virtuoso while the tab is inactive ──────────────
-  // When isActive=false the host (App.tsx) wraps this subtree in
-  // `content-visibility: hidden`, so WebKit skips its layout. Any data/height change
-  // Virtuoso processes in that state is measured against skipped / zero / stale
+  // ── Freeze the data fed to Virtuoso while the internal Tab is inactive ──────
+  // An inactive internal Tab is wrapped in `content-visibility: hidden`, so any
+  // data/height change Virtuoso processes is measured against skipped / stale
   // geometry, which poisons its internal offset+range cache → PHANTOM REPEATED ROWS,
   // then a BLANK viewport once the user scrolls back — recoverable only by remount
   // (close+reopen rebuilds the cache).
@@ -562,19 +644,26 @@ const MessageList = memo(function MessageList({
   // snapshot under React 19 concurrency, which a later hidden render could then hand
   // to Virtuoso — exactly the post-hide measurement we're preventing. A committed
   // layout effect guarantees the snapshot is always a real, measured-while-visible state.
-  const frozenDataRef = useRef<{ data: readonly MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
+  const frozenDataRef = useRef<{
+    data: readonly MessageType[];
+    firstItemIndex: number | undefined;
+    heightEstimateSeed?: number[];
+    components: typeof components;
+  }>({
     data: messages,
     firstItemIndex,
     heightEstimateSeed: liveHeightEstimateSeed,
+    components,
   });
   useLayoutEffect(() => {
     if (isActive) {
-      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
+      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed, components };
     }
-  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed]);
+  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed, components]);
   const virtuosoData = isActive ? messages : frozenDataRef.current.data;
   const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
   const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  const virtuosoComponents = isActive ? components : frozenDataRef.current.components;
   const debugProbe = useChatScrollDebugProbe({
     sessionId,
     scroller: debugScroller,
@@ -610,9 +699,10 @@ const MessageList = memo(function MessageList({
 
         The extra top viewport and item-count overscan bias reverse scrolling
         toward pre-measuring tall Markdown/code rows before they enter view.
-        `skipAnimationFrameInResizeObserver` reduces the one-frame measurement
-        delay that can otherwise show up as flicker in WebKit; `overflowAnchor`
-        leaves scroll anchoring to Virtuoso instead of the browser.
+        Synchronous ResizeObserver delivery keeps expansions visually anchored,
+        but a large one-commit collapse needs the normal animation-frame boundary
+        so WebKit can publish the shorter overflow and hit-test geometry together.
+        `overflowAnchor` leaves scroll anchoring to Virtuoso instead of the browser.
       */}
       <Virtuoso
         ref={virtuosoRef}
@@ -627,13 +717,14 @@ const MessageList = memo(function MessageList({
         rangeChanged={debugProbe?.handleRangeChanged}
         itemsRendered={debugProbe?.handleItemsRendered}
         atBottomThreshold={50}
+        itemSize={measureVisibleItemSize}
         defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}
         minOverscanItemCount={{ top: 3, bottom: 1 }}
-        skipAnimationFrameInResizeObserver
+        skipAnimationFrameInResizeObserver={!isActive || !isLargeRowShrinking}
         className="h-full"
         style={{ overscrollBehavior: 'none', scrollbarGutter: 'stable', overflowAnchor: 'none' }}
-        components={components}
+        components={virtuosoComponents}
         itemContent={renderItem}
       />
     </div>

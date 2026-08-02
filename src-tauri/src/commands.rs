@@ -1045,7 +1045,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "43";
+const CLI_VERSION: &str = "46";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1207,7 +1207,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "40";
+const SYSTEM_SKILLS_VERSION: &str = "41";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1629,9 +1629,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v40_updates_system_skill_metadata_and_preserves_existing_contracts() {
-        assert_eq!(CLI_VERSION, "43");
-        assert_eq!(SYSTEM_SKILLS_VERSION, "40");
+    fn v41_updates_system_skill_metadata_and_preserves_existing_contracts() {
+        assert_eq!(CLI_VERSION, "46");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "41");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));

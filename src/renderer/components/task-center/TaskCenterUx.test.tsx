@@ -7,6 +7,7 @@ import type { Task } from '@/../shared/types/task';
 import { DispatchTaskDialog } from './DispatchTaskDialog';
 import { TaskSessionsList } from './TaskSessionsList';
 import { TaskStatusBadge } from './TaskStatusBadge';
+import { TaskListPanel } from './TaskListPanel';
 import { TaskCardItem } from './views/TaskCardItem';
 import { TaskItemActions } from './views/TaskItemActions';
 
@@ -14,8 +15,14 @@ const taskApiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
   taskGetRunStats: vi.fn(),
   taskCreateDirect: vi.fn(),
+  taskList: vi.fn(),
   taskRun: vi.fn(),
+  taskRerun: vi.fn(),
   taskWriteDoc: vi.fn(),
+}));
+
+const analyticsMocks = vi.hoisted(() => ({
+  track: vi.fn(),
 }));
 
 vi.mock('@/api/sessionClient', async (importOriginal) => {
@@ -32,10 +39,16 @@ vi.mock('@/api/taskCenter', async (importOriginal) => {
     ...actual,
     taskGetRunStats: taskApiMocks.taskGetRunStats,
     taskCreateDirect: taskApiMocks.taskCreateDirect,
+    taskList: taskApiMocks.taskList,
     taskRun: taskApiMocks.taskRun,
+    taskRerun: taskApiMocks.taskRerun,
     taskWriteDoc: taskApiMocks.taskWriteDoc,
   };
 });
+
+vi.mock('@/analytics', () => ({
+  track: analyticsMocks.track,
+}));
 
 vi.mock('@/hooks/useConfig', () => ({
   useConfig: () => ({
@@ -65,6 +78,27 @@ vi.mock('./editors/TaskAdvancedConfigEditor', () => ({
 }));
 vi.mock('@/components/task-center/NotificationConfigEditor', () => ({
   default: () => <div>任务通知配置</div>,
+}));
+vi.mock('./views/TaskListRow', () => ({
+  TaskListRow: ({
+    task,
+    onRun,
+    onRerun,
+  }: {
+    task?: Task;
+    onRun?: () => void;
+    onRerun?: () => void;
+  }) => (
+    <div>
+      <span>{task?.name}</span>
+      <button type="button" title="更多操作">更多操作</button>
+      {task?.status === 'todo' ? (
+        <button type="button" onClick={onRun}>立即执行</button>
+      ) : (
+        <button type="button" onClick={onRerun}>重新派发</button>
+      )}
+    </div>
+  ),
 }));
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -102,7 +136,78 @@ function expectedTaskSessionTimestamp(iso: string): string {
 describe('Task Center UX refinements', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.setItem('myagents:task-center:view', 'list');
     taskApiMocks.taskGetRunStats.mockResolvedValue({ executionCount: 0 });
+    taskApiMocks.taskList.mockResolvedValue([]);
+  });
+
+  it('tracks a run only after using the ordinal accepted by the Task owner', async () => {
+    const accepted = task({
+      status: 'running',
+      executionMode: 'once',
+      sessionIds: ['shared-session'],
+    });
+    taskApiMocks.taskList.mockResolvedValueOnce([
+      task({
+        status: 'todo',
+        executionMode: 'once',
+        sessionIds: [],
+      }),
+    ]);
+    taskApiMocks.taskRun.mockResolvedValueOnce({ task: accepted, attemptOrdinal: 6 });
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('立即执行'));
+
+    await waitFor(() => expect(taskApiMocks.taskRun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).toHaveBeenCalledWith('task_run', {
+      source: 'desktop',
+      run_count: 6,
+    });
+  });
+
+  it('does not track a run rejected before admission', async () => {
+    taskApiMocks.taskList.mockResolvedValueOnce([
+      task({ status: 'todo', executionMode: 'once' }),
+    ]);
+    taskApiMocks.taskRun.mockRejectedValueOnce(new Error('task is busy'));
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('立即执行'));
+
+    await waitFor(() => expect(taskApiMocks.taskRun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).not.toHaveBeenCalled();
+  });
+
+  it('tracks rerun with the same accepted ordinal contract', async () => {
+    const stopped = task({
+      status: 'stopped',
+      executionMode: 'once',
+      sessionIds: [],
+    });
+    taskApiMocks.taskList.mockResolvedValueOnce([stopped]);
+    taskApiMocks.taskRerun.mockResolvedValueOnce({
+      task: { ...stopped, status: 'running' },
+      attemptOrdinal: 5,
+    });
+
+    render(<TaskListPanel />);
+
+    await screen.findByText('每日 AI 行业新闻与暴论');
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    fireEvent.click(screen.getByText('重新派发'));
+
+    await waitFor(() => expect(taskApiMocks.taskRerun).toHaveBeenCalledWith('task-1'));
+    expect(analyticsMocks.track).toHaveBeenCalledWith('task_run', {
+      source: 'desktop',
+      run_count: 5,
+    });
   });
 
   it('does not render latest status messages on task cards', () => {

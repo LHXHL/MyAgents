@@ -6,11 +6,13 @@
 //! Tauri `setup()` on the main thread for 5–15 s on first launch, which
 //! directly caused the "frontend freeze" user reports.
 //!
-//! Pit-of-success property: callers pass a list of [`ProcessPattern`] and
-//! get back a [`CleanupReport`]. No ad-hoc shell invocations. No forgotten
-//! process-tree edge cases — matches are closed under descendants-by-PPID,
-//! which catches the orphaned-child case that Windows `taskkill /T /F`
-//! misses when an intermediate `cmd.exe` breaks the tree linkage.
+//! Recovery-only pit-of-success property: after the previous process owner is
+//! known to be dead, callers pass a list of [`ProcessPattern`] and get back a
+//! [`CleanupReport`]. No ad-hoc shell invocations. Matches are closed under
+//! descendants-by-PPID, which catches crash residuals behind an intermediate
+//! `cmd.exe`. Live Sidecar / Plugin Bridge shutdown must instead retain and
+//! terminate the exact birth-time [`crate::process_cmd::ChildTree`] authority;
+//! it must never infer ownership from a whole-machine argv match.
 //!
 //! Performance: on a clean first launch (zero matches), the single
 //! `sysinfo` enumeration completes in ~10–50 ms vs ~5–15 s for the old

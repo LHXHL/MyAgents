@@ -13,7 +13,7 @@ import {
   FloatingThemeRuntime,
   primeThemeRuntimeFromBootstrap,
 } from './theme';
-import { initFrontendLogger, setLogServerUrl, setRendererLogLabel } from './utils/frontendLogger';
+import { initFrontendLogger, setLogServerReady, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installOverlayScrollbarActivity, isWindowsRendererPlatform } from './utils/overlayScrollbarActivity';
 import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
@@ -109,25 +109,21 @@ function BootCommitMarker() {
 function bootstrapFloatingWindowLogSink(label: string): void {
   console.info(`[${label}] window boot`);
   void import('./api/tauriClient')
-    .then(async ({ getGlobalServerUrlWithWait, updateGlobalServerUrl }) => {
+    .then(async ({ waitForGlobalSidecar }) => {
       void import('./utils/tauriListen')
         .then(({ listenWithCleanup }) => {
           const ac = new AbortController();
-          void listenWithCleanup<string>('global-sidecar:restarted', (event) => {
-            const url = event.payload;
-            if (!url) return;
-            updateGlobalServerUrl(url);
-            setLogServerUrl(url);
-            console.info(`[${label}] unified log sink rebound after global restart: ${url}`);
+          void listenWithCleanup<string>('global-sidecar:restarted', () => {
+            setLogServerReady();
+            console.info(`[${label}] unified log sink rebound after global restart`);
           }, ac.signal);
         })
         .catch((err) => {
           console.warn(`[${label}] global sidecar restart listener unavailable:`, err);
         });
-      const url = await getGlobalServerUrlWithWait();
-      if (!url) return;
-      setLogServerUrl(url);
-      console.info(`[${label}] unified log sink ready: ${url}`);
+      await waitForGlobalSidecar();
+      setLogServerReady();
+      console.info(`[${label}] unified log sink ready`);
     })
     .catch((err) => {
       console.warn(`[${label}] unified log sink unavailable:`, err);

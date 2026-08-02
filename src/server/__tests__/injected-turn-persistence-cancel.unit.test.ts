@@ -1,23 +1,54 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const sdkMocks = vi.hoisted(() => ({
+  query: vi.fn(),
+}));
+
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
+  return {
+    ...actual,
+    query: (...args: unknown[]) => sdkMocks.query(...args),
+  };
+});
+
+vi.mock('../sse', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sse')>();
+  return {
+    ...actual,
+    broadcast: vi.fn(),
+    broadcastLive: vi.fn(),
+  };
+});
+
 vi.mock('../SessionStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../SessionStore')>();
   return {
     ...actual,
     commitPreparedSessionForFirstUserTurn: vi.fn(),
     saveSessionMetadata: vi.fn(async () => undefined),
+    saveSessionMessages: vi.fn(async () => ({
+      ok: true as const,
+      action: 'appended' as const,
+      count: 0,
+      totalCount: 0,
+    })),
   };
 });
 
 import {
   commitPreparedSessionForFirstUserTurn,
+  saveSessionMessages,
   saveSessionMetadata,
 } from '../SessionStore';
+import { broadcast, broadcastLive } from '../sse';
 import {
+  cancelImRequest,
   cancelQueueItem,
   cancelQueuedTurnsByOwner,
   enqueueUserMessage,
   getDispatchedTurnIdentity,
+  getMessages,
   initializeAgent,
   interruptCurrentResponse,
 } from '../agent-session';
@@ -27,9 +58,37 @@ import {
   setCommittingTurnAdmissionQueueId,
 } from '../builtin-session/queue';
 import { isAbortRequested } from '../builtin-session/lifecycle';
+import { peekPendingOutputOwner } from '../builtin-session/turn';
 import type { MessageQueueItem } from '../builtin-session/types';
 import type { DispatchGuard } from '../session-core/turn-queue';
 import { NO_CHANNEL_DELIVERY } from '../session-core/channel-delivery';
+import { imRequestRegistry } from '../utils/im-request-registry';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function createPromptDrainingQuery(options: { prompt: AsyncIterable<unknown> }) {
+  const prompt = options.prompt[Symbol.asyncIterator]();
+  const iterator = (async function* () {
+    while (true) {
+      const next = await prompt.next();
+      if (next.done) return;
+      yield* [];
+    }
+  })();
+  return Object.assign(iterator, {
+    initializationResult: vi.fn(async () => ({ commands: [] })),
+    interrupt: vi.fn(async () => undefined),
+    close: vi.fn(),
+    mcpServerStatus: vi.fn(async () => []),
+    setModel: vi.fn(async () => undefined),
+    setPermissionMode: vi.fn(async () => undefined),
+    setMcpServers: vi.fn(async () => undefined),
+  });
+}
 
 describe('injected-turn cancellation before user persistence', () => {
   afterEach(() => {
@@ -39,10 +98,108 @@ describe('injected-turn cancellation before user persistence', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    sdkMocks.query.mockImplementation(createPromptDrainingQuery);
+    vi.mocked(saveSessionMessages).mockResolvedValue({
+      ok: true,
+      action: 'appended',
+      count: 0,
+      totalCount: 0,
+    });
     resetQueueForTest();
     await initializeAgent('/tmp/myagents-mcp-readiness-cancel', null, undefined, {
       preWarmDisabled: true,
     });
+  });
+
+  it('rejects and retracts an ordinary user row when transcript persistence fails', async () => {
+    vi.mocked(saveSessionMessages)
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: 'write-error',
+        count: 1,
+        error: 'disk full',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        action: 'rewritten',
+        count: 0,
+        totalCount: 0,
+      });
+
+    await expect(enqueueUserMessage(
+      'must not survive a failed write',
+      [], undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined,
+      { channelDelivery: NO_CHANNEL_DELIVERY },
+    )).rejects.toThrow('failed to persist transcript');
+
+    expect(getMessages()).not.toContainEqual(expect.objectContaining({
+      role: 'user',
+      content: 'must not survive a failed write',
+    }));
+    expect(vi.mocked(saveSessionMessages)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(saveSessionMessages).mock.calls[1]?.[2]).toEqual({ forceRewrite: true });
+    const retractionEvents = [
+      ...vi.mocked(broadcast).mock.calls,
+      ...vi.mocked(broadcastLive).mock.calls,
+    ].filter(([event]) => event === 'chat:messages-retracted');
+    expect(retractionEvents).toContainEqual([
+      'chat:messages-retracted',
+      expect.objectContaining({ retractedStreamingTail: false }),
+      expect.anything(),
+    ]);
+    expect(sdkMocks.query).not.toHaveBeenCalled();
+  });
+
+  it('cancels an admitted IM request while its user row is persisting before SDK yield', async () => {
+    vi.useFakeTimers();
+    const persistenceStarted = deferred<void>();
+    const releasePersistence = deferred<{
+      ok: true;
+      action: 'appended';
+      count: number;
+      totalCount: number;
+    }>();
+    vi.mocked(saveSessionMessages).mockImplementationOnce(async () => {
+      persistenceStarted.resolve();
+      return releasePersistence.promise;
+    });
+    const beforeDispatch: DispatchGuard = Object.assign(
+      vi.fn(async () => ({ accepted: true })),
+      { cancel: vi.fn() },
+    );
+    imRequestRegistry.register('request-admission-persist', null);
+
+    const admission = await enqueueUserMessage(
+      'cancel during admission persistence',
+      [], undefined, undefined, undefined, undefined, undefined,
+      'request-admission-persist', undefined, undefined, undefined,
+      {
+        queueId: 'queue-admission-persist',
+        turnOwner: { kind: 'task', id: 'task-admission-persist' },
+        queueResponseModeOverride: 'turn',
+        beforeDispatch,
+        channelDelivery: NO_CHANNEL_DELIVERY,
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    await persistenceStarted.promise;
+    await expect(admission.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(peekPendingOutputOwner()).toBeNull();
+
+    const cancellation = cancelImRequest('request-admission-persist', 'user');
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect(cancellation).resolves.toEqual({ aborted: true, mode: 'running' });
+    expect(imRequestRegistry.get('request-admission-persist')).toBeUndefined();
+
+    releasePersistence.resolve({
+      ok: true,
+      action: 'appended',
+      count: 1,
+      totalCount: 1,
+    });
+    await vi.runAllTicks();
   });
 
   it('aborts the pending infrastructure gate and writes no session metadata', async () => {

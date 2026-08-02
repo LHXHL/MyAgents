@@ -1044,6 +1044,10 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 滚动: 自动滚动到底部（用户手动滚动时暂停）
 ```
 
+- 切到其他桌面应用不暂停 AI、SSE、消息保存或当前 active Chat 的可见刷新；窗口仍在双屏/分屏中展示时，即使失焦也继续实时渲染。只有 MyAgents 内部未展示、由 host 设为 `content-visibility:hidden` 的 inactive Tab 冻结虚拟列表输入。
+- 若切走前仍在自动跟随，失焦期间继续显示当前最新输出并自动跟随；回到 MyAgents 时只允许一次无动画位置校正。
+- 若切走前已主动上滑阅读历史，回到 MyAgents 时应保持同一消息及其相对视口位置；新输出只续在下方，不抢回底部。
+
 #### 已有 Session 恢复
 
 - 从 active cold Tab 尚未挂载 `TabProvider` 开始，到 REST 历史完成采用同一个稳定的 `ChatBootOverlay`；inactive cold Tab 仍保持廉价 paper placeholder。遮罩允许在同一 Chat 挂载周期内即时重新启用，只在退出时做轻量淡出。

@@ -451,9 +451,9 @@ export interface Project {
   icon?: string;
   /** Custom display name, defaults to folder name extracted from path */
   displayName?: string;
-  /** Whether this workspace has been upgraded to an Agent (v0.1.41) */
+  /** Legacy mirror indicating this workspace has its required Agent identity. */
   isAgent?: boolean;
-  /** Associated Agent ID when isAgent=true (v0.1.41) */
+  /** Associated stable Agent ID. Optional only for reading legacy disk state. */
   agentId?: string;
   /** Source template ID used when this workspace was created from a template. */
   templateId?: string;

@@ -1,4 +1,4 @@
-import { getSessionEngine } from '../session-engine';
+import { getSessionEngine, retryLastExternalUserMessageAtSelector } from '../session-engine';
 import type { CapabilityOperationResult } from '../session-engine/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -55,7 +55,7 @@ export async function handleSessionOperationRoute(
     if (!userMessageId) {
       return jsonResponse({ success: false, error: 'Missing userMessageId' }, 400);
     }
-    const result = await getSessionEngine().retryLastExternalUserMessage(userMessageId);
+    const result = await retryLastExternalUserMessageAtSelector(userMessageId);
     return operationResponse(result);
   }
 

@@ -80,7 +80,12 @@ vi.mock('@/utils/frontendLogger', () => ({
 
 vi.mock('@/api/tauriClient', () => ({
   getTabServerUrl: vi.fn(async () => 'http://127.0.0.1:1234'),
-  proxyFetch: tauriHarness.proxyFetch,
+  sessionSidecarFetch: vi.fn(async (
+    _sessionId: string,
+    _owner: { type: 'tab'; id: string },
+    path: string,
+    init?: RequestInit,
+  ) => tauriHarness.proxyFetch(`http://127.0.0.1:1234${path}`, init)),
   isTauri: () => false,
   getSessionActivation: vi.fn(async () => null),
   getSessionPort: vi.fn(async () => null),

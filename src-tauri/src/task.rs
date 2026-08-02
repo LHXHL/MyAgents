@@ -233,7 +233,7 @@ pub struct StatusTransition {
     pub source: Option<TransitionSource>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationConfig {
     #[serde(default = "default_true")]
@@ -246,6 +246,94 @@ pub struct NotificationConfig {
     /// `Option<Vec>` so omitted-means-default is distinguishable from explicit empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<String>>,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            desktop: true,
+            bot_channel_id: None,
+            bot_thread: None,
+            events: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NotificationFieldPatch<T> {
+    Unchanged,
+    Clear,
+    Set(T),
+}
+
+impl<T> Default for NotificationFieldPatch<T> {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NotificationFieldPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Clear,
+        })
+    }
+}
+
+/// Task-specific partial notification mutation. Missing fields are unchanged;
+/// explicit null clears the field to its domain default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNotificationPatch {
+    #[serde(default)]
+    desktop: NotificationFieldPatch<bool>,
+    #[serde(default)]
+    bot_channel_id: NotificationFieldPatch<String>,
+    #[serde(default)]
+    bot_thread: NotificationFieldPatch<String>,
+    #[serde(default)]
+    events: NotificationFieldPatch<Vec<String>>,
+}
+
+impl TaskNotificationPatch {
+    fn is_empty(&self) -> bool {
+        matches!(self.desktop, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_channel_id, NotificationFieldPatch::Unchanged)
+            && matches!(self.bot_thread, NotificationFieldPatch::Unchanged)
+            && matches!(self.events, NotificationFieldPatch::Unchanged)
+    }
+
+    fn apply(self, existing: Option<NotificationConfig>) -> NotificationConfig {
+        let mut notification = existing.unwrap_or_default();
+        match self.desktop {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.desktop = true,
+            NotificationFieldPatch::Set(value) => notification.desktop = value,
+        }
+        match self.bot_channel_id {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_channel_id = None,
+            NotificationFieldPatch::Set(value) => notification.bot_channel_id = Some(value),
+        }
+        match self.bot_thread {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.bot_thread = None,
+            NotificationFieldPatch::Set(value) => notification.bot_thread = Some(value),
+        }
+        match self.events {
+            NotificationFieldPatch::Unchanged => {}
+            NotificationFieldPatch::Clear => notification.events = None,
+            NotificationFieldPatch::Set(value) => notification.events = Some(value),
+        }
+        notification
+    }
 }
 
 fn default_true() -> bool {
@@ -809,6 +897,11 @@ pub struct TaskUpdateInput {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub notification: Option<NotificationConfig>,
+    /// Field-level notification update merged under the same Task write lock.
+    /// Kept separate from full `notification` replacement so existing GUI
+    /// callers retain their exact contract.
+    #[serde(default)]
+    pub notification_patch: Option<TaskNotificationPatch>,
     /// When `Some`, the new contents are atomically written to
     /// `~/.myagents/tasks/<id>/task.md` under the same write lock that persists the
     /// JSONL row. Empty string is rejected — prompt must have content.
@@ -1268,6 +1361,7 @@ impl TaskStore {
         // Validate workspace_path + name up front so we don't half-write.
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
+        validate_new_task_session_binding(input.run_mode, input.preselected_session_id.as_deref())?;
         // PRD 0.2.9 — Pin runtime='builtin' when provider_id is set with no
         // explicit runtime (closes the "Agent runtime later flips to
         // external" cross-talk hole). Idempotent.
@@ -1574,6 +1668,7 @@ impl TaskStore {
     ) -> Result<Task, String> {
         validate_task_name(&input.name)?;
         validate_safe_id(&input.alignment_session_id, "alignmentSessionId")?;
+        validate_new_task_session_binding(input.run_mode, None)?;
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
@@ -2105,6 +2200,11 @@ impl TaskStore {
                 "mcpEnabledServers 与 clearMcpOverride=true 冲突 — 调用方必须二选一".to_string(),
             );
         }
+        if input.notification.is_some() && input.notification_patch.is_some() {
+            return Err(
+                "notification 与 notificationPatch 不能同时设置 — 调用方必须二选一".to_string(),
+            );
+        }
         let mut updated = existing.clone();
         if let Some(v) = input.name {
             validate_task_name(&v)?;
@@ -2198,6 +2298,11 @@ impl TaskStore {
         }
         if let Some(v) = input.notification {
             updated.notification = Some(v);
+        }
+        if let Some(patch) = input.notification_patch {
+            if !patch.is_empty() {
+                updated.notification = Some(patch.apply(updated.notification));
+            }
         }
         // PRD 0.2.9 — Pin runtime='builtin' on the merged state when the
         // post-merge shape has provider_id set without an explicit runtime.
@@ -2545,37 +2650,6 @@ impl TaskStore {
         Ok(updated)
     }
 
-    pub async fn set_execution_session(
-        &self,
-        id: &str,
-        session_id: String,
-    ) -> Result<Task, String> {
-        self.ensure_writable()?;
-        let projected_session_id = session_id.clone();
-        let (mut inner, session_lifecycle) = self
-            .lock_for_session_protection(id, move |task| {
-                let mut projected = task.clone();
-                projected.preselected_session_id = Some(projected_session_id.clone());
-                if !projected
-                    .session_ids
-                    .iter()
-                    .any(|value| value == &projected_session_id)
-                {
-                    projected.session_ids.push(projected_session_id.clone());
-                }
-                task_protected_session_ids(&projected)
-            })
-            .await?;
-        let result = self.set_execution_session_locked(&mut inner, id, &session_id);
-        drop(inner);
-        drop(session_lifecycle);
-        let (updated, appended) = result?;
-        if appended {
-            Self::emit_session_appended(&updated, &session_id);
-        }
-        Ok(updated)
-    }
-
     fn set_execution_session_locked(
         &self,
         inner: &mut HashMap<String, Task>,
@@ -2887,6 +2961,27 @@ fn validate_task_name(name: &str) -> Result<(), String> {
     // PRD §3.2 says "短，<60 字符" — enforce char count (not bytes).
     if trimmed.chars().count() > 120 {
         return Err("task name exceeds 120 chars".to_string());
+    }
+    Ok(())
+}
+
+fn validate_new_task_session_binding(
+    run_mode: Option<TaskRunMode>,
+    preselected_session_id: Option<&str>,
+) -> Result<(), String> {
+    if run_mode != Some(TaskRunMode::SingleSession) {
+        return Ok(());
+    }
+    let session_id = preselected_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "single-session Task creation requires a materialized preselectedSessionId".to_string()
+        })?;
+    if session_id.starts_with("pending-") {
+        return Err(
+            "single-session Task creation requires a materialized preselectedSessionId".to_string(),
+        );
     }
     Ok(())
 }
@@ -3318,10 +3413,8 @@ pub fn get_task_store() -> Option<&'static Arc<TaskStore>> {
 // Server-side callers (scheduler, CLI → Admin API) use the richer internal
 // `TaskStore::update_status` API and supply their own trusted actor/source.
 //
-// Coordination with `ThoughtStore` (link / unlink `convertedTaskIds`) also lives
-// in the command layer: it keeps `TaskStore` single-responsibility and lets us
-// add SSE broadcast / notification dispatch here in later phases without
-// touching the store.
+// Cross-store/scheduler policy lives in `task_application`; commands only
+// stamp trusted caller fields and adapt Tauri DTOs/errors.
 
 pub type ManagedTaskStore = Arc<TaskStore>;
 
@@ -3331,18 +3424,13 @@ pub async fn cmd_task_create_direct(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateDirectInput,
 ) -> Result<Task, String> {
-    let source_thought_id = input.source_thought_id.clone();
-    let created = task_state.create_direct(input).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_direct(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3351,22 +3439,13 @@ pub async fn cmd_task_create_from_alignment(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     input: TaskCreateFromAlignmentInput,
 ) -> Result<Task, String> {
-    let created = task_state.create_from_alignment(input).await?;
-    // Resolve thought↔task linkage from the CREATED task, not the raw input
-    // (cross-review fix): source_thought_id may have been auto-inherited from
-    // alignment metadata.json inside create_from_alignment, in which case the
-    // input never carried it. Reading from `created` covers both code paths
-    // uniformly and matches the HTTP handler in management_api.rs.
-    if let Some(thought_id) = created.source_thought_id.clone() {
-        if let Err(e) = thought_state.link_task(&thought_id, &created.id).await {
-            ulog_warn!(
-                "[task] created {} but thought link_task failed: {}",
-                created.id,
-                e
-            );
-        }
-    }
-    Ok(created)
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .create_from_alignment(input)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3374,7 +3453,10 @@ pub async fn cmd_task_create_attached(
     task_state: tauri::State<'_, ManagedTaskStore>,
     input: TaskCreateAttachedInput,
 ) -> Result<Task, String> {
-    task_state.create_attached(input).await
+    crate::task_application::TaskApplication::new(task_state.inner().as_ref(), None)
+        .create_attached(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3424,8 +3506,10 @@ pub async fn cmd_task_update(
     state: tauri::State<'_, ManagedTaskStore>,
     input: TaskUpdateInput,
 ) -> Result<Task, String> {
-    state.get_ordinary(&input.id).await?;
-    state.update(input).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_ordinary(input)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3433,30 +3517,20 @@ pub async fn cmd_task_update_status(
     state: tauri::State<'_, ManagedTaskStore>,
     input: UiTaskUpdateStatusInput,
 ) -> Result<Task, String> {
-    let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
-    let current = state.get_ordinary(&input.id).await?;
-    if is_terminal_execution_stop_request(current.status, input.status) {
-        crate::task_scheduler::get_task_scheduler()
-            .stop_with_control_held(&current.id, &task_control)
-            .await?;
-        return Ok(current);
-    }
     // Trust boundary: UI callers are stamped as user/ui here. The internal
     // `update_status` API remains available for scheduler / watchdog / crash /
     // endCondition / rerun paths with their own actor/source context.
-    state
-        .update_status_with_task_control_held(
-            TaskUpdateStatusInput {
-                id: input.id,
-                status: input.status,
-                message: input.message,
-                actor: TransitionActor::User,
-                source: Some(TransitionSource::Ui),
-            },
-            &task_control,
-        )
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .update_status_ordinary(TaskUpdateStatusInput {
+            id: input.id,
+            status: input.status,
+            message: input.message,
+            actor: TransitionActor::User,
+            source: Some(TransitionSource::Ui),
+        })
         .await
-        .map(|(t, _)| t)
+        .map(|result| result.task)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3465,8 +3539,10 @@ pub async fn cmd_task_append_session(
     id: String,
     session_id: String,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.append_session(&id, &session_id).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .append_session_ordinary(&id, &session_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Persist alignment-session sidecar metadata to
@@ -3519,8 +3595,10 @@ pub async fn cmd_task_archive(
     id: String,
     message: Option<String>,
 ) -> Result<Task, String> {
-    state.get_ordinary(&id).await?;
-    state.archive(&id, message).await
+    crate::task_application::TaskApplication::new(state.inner().as_ref(), None)
+        .archive_ordinary(&id, message)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3529,19 +3607,13 @@ pub async fn cmd_task_delete(
     thought_state: tauri::State<'_, crate::thought::ManagedThoughtStore>,
     id: String,
 ) -> Result<(), String> {
-    // Capture source_thought_id before delete so we can unlink after.
-    let source_thought_id = task_state.get_ordinary(&id).await?.source_thought_id;
-    task_state.delete(&id).await?;
-    if let Some(thought_id) = source_thought_id {
-        if let Err(e) = thought_state.unlink_task(&thought_id, &id).await {
-            ulog_warn!(
-                "[task] deleted {} but thought unlink_task failed: {}",
-                id,
-                e
-            );
-        }
-    }
-    Ok(())
+    crate::task_application::TaskApplication::new(
+        task_state.inner().as_ref(),
+        Some(thought_state.inner().as_ref()),
+    )
+    .delete_ordinary(&id)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Read one of the markdown documents attached to a Task.
@@ -3822,6 +3894,7 @@ mod tests {
             clear_mcp_override: false,
             tags: None,
             notification: None,
+            notification_patch: None,
             prompt: None,
         }
     }
@@ -3975,6 +4048,53 @@ mod tests {
         assert!(md.exists());
         let body = std::fs::read_to_string(&md).unwrap();
         assert_eq!(body, "跑通 v2.4");
+    }
+
+    #[tokio::test]
+    async fn single_session_create_requires_a_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for preselected_session_id in [None, Some("   "), Some("pending-tab-1")] {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = preselected_session_id.map(str::to_string);
+            let error = store
+                .create_direct(input)
+                .await
+                .expect_err("pending or empty single-session binding must not commit a Task");
+            assert_eq!(
+                error,
+                "single-session Task creation requires a materialized preselectedSessionId"
+            );
+        }
+
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multiple_single_session_tasks_can_share_one_materialized_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        for _ in 0..2 {
+            let mut input = sample_direct_input(&ws);
+            input.run_mode = Some(TaskRunMode::SingleSession);
+            input.preselected_session_id = Some("session-real".to_string());
+            let created = store.create_direct(input).await.unwrap();
+            assert_eq!(
+                created.preselected_session_id.as_deref(),
+                Some("session-real")
+            );
+        }
+
+        assert_eq!(store.list(TaskListFilter::default()).await.len(), 2);
     }
 
     #[tokio::test]
@@ -4414,41 +4534,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_execution_session_waits_before_rebinding_a_protected_task() {
-        ensure_test_docs_root();
-        let dir = tempdir().unwrap();
-        let ws = dir.path().join("workspace");
-        std::fs::create_dir_all(&ws).unwrap();
-        let store = Arc::new(TaskStore::new(dir.path().join("data")));
-        let mut input = sample_direct_input(&ws);
-        input.run_mode = Some(TaskRunMode::SingleSession);
-        input.preselected_session_id = Some("primary-session".to_string());
-        let created = store.create_direct(input).await.unwrap();
-        store
-            .update_status(status_input(
-                &created.id,
-                TaskStatus::Running,
-                TransitionActor::System,
-                Some(TransitionSource::Scheduler),
-            ))
-            .await
-            .unwrap();
-
-        let store_for_rebind = Arc::clone(&store);
-        let task_id = created.id.clone();
-        let updated = assert_waits_for_session_lifecycle("replacement-session", async move {
-            store_for_rebind
-                .set_execution_session(&task_id, "replacement-session".to_string())
-                .await
-        })
-        .await;
-        assert_eq!(
-            updated.preselected_session_id.as_deref(),
-            Some("replacement-session")
-        );
-    }
-
-    #[tokio::test]
     async fn attached_field_update_waits_before_adding_a_protected_binding() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -4725,11 +4810,116 @@ mod tests {
                 clear_mcp_override: false,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await
             .expect_err("should reject");
         assert!(err.contains("update_rejected_running"));
+    }
+
+    #[tokio::test]
+    async fn notification_patch_preserves_omitted_fields_and_applies_false_and_null() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut create = sample_direct_input(&ws);
+        create.notification = Some(NotificationConfig {
+            desktop: true,
+            bot_channel_id: Some("bot-a".to_string()),
+            bot_thread: Some("thread-a".to_string()),
+            events: Some(vec!["done".to_string()]),
+        });
+        let created = store.create_direct(create).await.unwrap();
+
+        let mut false_patch = empty_update_input(&created.id);
+        false_patch.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let after_false = store.update(false_patch).await.unwrap();
+        let notification = after_false.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-a"));
+        assert_eq!(notification.bot_thread.as_deref(), Some("thread-a"));
+        assert_eq!(notification.events, Some(vec!["done".to_string()]));
+
+        let mut clear_patch = empty_update_input(&created.id);
+        clear_patch.notification_patch = Some(
+            serde_json::from_value(serde_json::json!({
+                "desktop": null,
+                "botChannelId": null,
+                "botThread": null,
+                "events": null
+            }))
+            .unwrap(),
+        );
+        let after_clear = store.update(clear_patch).await.unwrap();
+        assert_eq!(
+            after_clear.notification,
+            Some(NotificationConfig::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_notification_patch_is_an_exact_noop() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        assert!(created.notification.is_none());
+
+        let mut update = empty_update_input(&created.id);
+        update.notification_patch = Some(serde_json::from_value(serde_json::json!({})).unwrap());
+        let updated = store.update(update).await.unwrap();
+
+        assert!(updated.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_notification_patches_preserve_both_writers() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+
+        let mut desktop = empty_update_input(&created.id);
+        desktop.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+        let mut bot = empty_update_input(&created.id);
+        bot.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "botChannelId": "bot-b" })).unwrap());
+
+        let (desktop_result, bot_result) = tokio::join!(store.update(desktop), store.update(bot));
+        desktop_result.unwrap();
+        bot_result.unwrap();
+        let final_task = store.get(&created.id).await.unwrap();
+        let notification = final_task.notification.unwrap();
+        assert!(!notification.desktop);
+        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-b"));
+    }
+
+    #[tokio::test]
+    async fn full_notification_and_patch_are_mutually_exclusive() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let mut update = empty_update_input(&created.id);
+        update.notification = Some(NotificationConfig::default());
+        update.notification_patch =
+            Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
+
+        let error = store.update(update).await.unwrap_err();
+
+        assert!(error.contains("notificationPatch"));
+        assert!(store.get(&created.id).await.unwrap().notification.is_none());
     }
 
     #[tokio::test]
@@ -4864,6 +5054,7 @@ mod tests {
                 clear_mcp_override: true,
                 tags: None,
                 notification: None,
+                notification_patch: None,
                 prompt: None,
             })
             .await

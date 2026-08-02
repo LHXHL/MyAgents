@@ -17,6 +17,15 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const analyticsMocks = vi.hoisted(() => ({
+  trackServer: vi.fn(),
+}));
+
+const runtimeModelMocks = vi.hoisted(() => ({
+  queryRuntimeModels: vi.fn(async () => [{ value: 'gpt-5.6-sol' }]),
+  managedInstalled: true,
+}));
+
 const adminConfigBehavior = vi.hoisted(() => ({
   failProjectWrite: false,
   failNextConfigWrite: false,
@@ -87,6 +96,19 @@ vi.mock('./utils/management-api-client', () => ({
   managementApi: managementApiMocks.managementApi,
 }));
 
+vi.mock('./analytics', () => ({
+  trackServer: analyticsMocks.trackServer,
+}));
+
+vi.mock('./runtimes/external-session', () => ({
+  queryRuntimeModels: runtimeModelMocks.queryRuntimeModels,
+}));
+
+vi.mock('./runtimes/codex-command-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtimes/codex-command-context')>()),
+  isManagedCodexRuntimeInstalled: () => runtimeModelMocks.managedInstalled,
+}));
+
 vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
@@ -123,6 +145,10 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  analyticsMocks.trackServer.mockClear();
+  runtimeModelMocks.queryRuntimeModels.mockClear();
+  runtimeModelMocks.queryRuntimeModels.mockResolvedValue([{ value: 'gpt-5.6-sol' }]);
+  runtimeModelMocks.managedInstalled = true;
   adminConfigBehavior.failProjectWrite = false;
   adminConfigBehavior.failNextConfigWrite = false;
   adminConfigBehavior.delayNextIntent = false;
@@ -145,6 +171,34 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('provides exact Agent and Session leaf help instead of group fallback', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['agent', 'list'],
+      ['agent', 'show'],
+      ['session', 'list'],
+      ['session', 'start'],
+      ['session', 'send'],
+      ['session', 'watch'],
+    ];
+    for (const path of leaves) {
+      const result = handleHelp({ path });
+      const text = String((result.data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('IDENTITY / PERMISSIONS');
+      expect(text).toContain('EXAMPLE');
+      expect(text).toContain('RECOVERY');
+    }
+    const sessionGroup = String((handleHelp({ path: ['session'] }).data as { text?: string })?.text ?? '');
+    expect(sessionGroup).toContain('Fresh context');
+    expect(sessionGroup).toContain('Reuse known context');
+    expect(sessionGroup).toContain('Observe only');
+  });
+
   it('keeps im send-media leaf help aligned with the executable file flag contract', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -570,8 +624,297 @@ describe('admin-api cron create', () => {
   });
 });
 
+describe('admin-api accepted task attempt analytics', () => {
+  it('reports the run ordinal returned by the accepted mutation without a task prefetch', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
+      attemptOrdinal: 4,
+    });
+    const { handleTaskRun } = await import('./admin-api');
+
+    const result = await handleTaskRun({ id: 'task-run-accepted' });
+
+    expect(result).toEqual({
+      success: true,
+      data: {
+        task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
+        attemptOrdinal: 4,
+      },
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/run',
+      'POST',
+      { id: 'task-run-accepted' },
+    );
+    expect(analyticsMocks.trackServer).toHaveBeenCalledWith('task_run', {
+      source: 'cli',
+      run_count: 4,
+    });
+  });
+
+  it('does not report an attempt when run admission is rejected', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      error: 'task is busy',
+    });
+    const { handleTaskRun } = await import('./admin-api');
+
+    const result = await handleTaskRun({ id: 'task-run-rejected' });
+
+    expect(result).toEqual({ success: false, error: 'task is busy' });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(analyticsMocks.trackServer).not.toHaveBeenCalled();
+  });
+
+  it('uses the same accepted ordinal contract for rerun', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-rerun-accepted', sessionIds: ['reused-session'] },
+      attemptOrdinal: 7,
+    });
+    const { handleTaskRerun } = await import('./admin-api');
+
+    const result = await handleTaskRerun({ id: 'task-rerun-accepted' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/rerun',
+      'POST',
+      { id: 'task-rerun-accepted' },
+    );
+    expect(analyticsMocks.trackServer).toHaveBeenCalledWith('task_run', {
+      source: 'cli',
+      run_count: 7,
+    });
+  });
+});
+
+describe('admin-api task runtime model identity', () => {
+  it('rejects managed-provider when the Task runtime is not Codex', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-gemini-pair',
+      runtime: 'gemini',
+      runtimeConfig: { source: 'managed-provider', model: 'gemini-2.5-pro' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('requires runtime=codex');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown Task runtime source values instead of coercing them', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-runtime-source',
+      runtime: 'codex',
+      runtimeConfig: { source: 'mystery-owner', model: 'gpt-5.6-sol' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid runtimeConfig.source');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('validates a Task update against the persisted complete runtime identity', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({
+        ok: true,
+        task: {
+          id: 'task-managed-update',
+          workspacePath: '/tmp/myagents-managed-task-update',
+          runtime: 'codex',
+          runtimeConfig: { source: 'managed-provider', model: 'old-model' },
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, taskUpdated: 1, cronUpdated: 0 });
+    const { handleTaskUpdate } = await import('./admin-api');
+
+    const result = await handleTaskUpdate({
+      id: 'task-managed-update',
+      runtimeConfig: { source: 'managed-provider', model: 'gpt-5.6-sol' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      1,
+      '/api/task/get?id=task-managed-update',
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      2,
+      '/api/task/update',
+      'POST',
+      {
+        id: 'task-managed-update',
+        runtimeConfig: { source: 'managed-provider', model: 'gpt-5.6-sol' },
+      },
+    );
+  });
+
+  it('rejects inherited managed source when the workspace runtime is not Codex', async () => {
+    const workspacePath = '/tmp/myagents-gemini-task-source';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-gemini-task-source',
+        name: 'Gemini Task Source',
+        workspacePath,
+        runtime: 'gemini',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-inherited-managed-source',
+      workspacePath,
+      runtimeConfig: { source: 'managed-provider' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('requires runtime=codex');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('validates clearRuntimeOverride against the inherited Agent identity', async () => {
+    const workspacePath = '/tmp/myagents-clear-runtime-override';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-clear-runtime-override',
+        name: 'Clear Runtime Override',
+        workspacePath,
+        runtime: 'builtin',
+      }],
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: {
+        id: 'task-clear-runtime-override',
+        workspacePath,
+        runtime: 'codex',
+        runtimeConfig: { source: 'managed-provider' },
+        permissionMode: 'no-restrictions',
+      },
+    });
+    const { handleTaskUpdate } = await import('./admin-api');
+
+    const result = await handleTaskUpdate({
+      id: 'task-clear-runtime-override',
+      clearRuntimeOverride: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("'no-restrictions' is not valid");
+    expect(managementApiMocks.managementApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the managed Codex catalog when a managed Agent Task only overrides model', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-model';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-model',
+        name: 'Managed Task Model',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'managed-model-override',
+      workspacePath,
+      model: 'gpt-5.6-sol',
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+  });
+
+  it('validates the canonical external model from runtimeConfig', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-runtime-model',
+      runtime: 'codex',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'not-a-managed-model',
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not-a-managed-model');
+    expect(runtimeModelMocks.queryRuntimeModels).toHaveBeenCalledWith('codex', {
+      runtimeSource: 'managed-provider',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects system-only permission values for inherited managed Codex', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-permission';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-permission',
+        name: 'Managed Task Permission',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-managed-permission',
+      workspacePath,
+      permissionMode: 'full-auto',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("'full-auto' is not valid");
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects inherited managed Codex when its runtime is not installed', async () => {
+    const workspacePath = '/tmp/myagents-managed-task-missing-runtime';
+    runtimeModelMocks.managedInstalled = false;
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-task-missing-runtime',
+        name: 'Managed Task Missing Runtime',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'missing-managed-runtime',
+      workspacePath,
+      model: 'gpt-5.6-sol',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Runtime 'codex' is not installed");
+    expect(runtimeModelMocks.queryRuntimeModels).not.toHaveBeenCalled();
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
 describe('admin-api agent set configuration intent', () => {
-  it('normalizes managed Codex permission vocabulary without changing provider or model', async () => {
+  it('stores managed Codex product permission without changing provider or model', async () => {
     const workspacePath = '/tmp/myagents-agent-set-managed-codex';
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
@@ -598,7 +941,7 @@ describe('admin-api agent set configuration intent', () => {
     const result = await handleAgentSet({
       id: 'agent-managed-codex',
       key: 'permissionMode',
-      value: 'no-restrictions',
+      value: 'fullAgency',
     });
 
     expect(result.success).toBe(true);
@@ -690,9 +1033,71 @@ describe('admin-api agent set configuration intent', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('cannot be stored losslessly');
+    expect(result.error).toContain('Valid: auto, plan, fullAgency');
     expect(readConfig()).toEqual(config);
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects runtimeConfig permission values outside the selected system runtime vocabulary', async () => {
+    const workspacePath = '/tmp/myagents-agent-runtime-config-invalid';
+    const config = {
+      agents: [{
+        id: 'agent-runtime-config-invalid',
+        name: 'Runtime Config Guard',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'codex',
+        runtimeConfig: { source: 'system-cli', permissionMode: 'full-auto' },
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const invalid = await handleAgentSet({
+      id: 'agent-runtime-config-invalid',
+      key: 'runtimeConfig',
+      value: { source: 'system-cli', permissionMode: 'no-such-mode' },
+    });
+    expect(invalid.success).toBe(false);
+    expect(readConfig()).toEqual(config);
+
+    const valid = await handleAgentSet({
+      id: 'agent-runtime-config-invalid',
+      key: 'runtimeConfig',
+      value: { source: 'system-cli', permissionMode: 'no-restrictions' },
+    });
+    expect(valid.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      runtimeConfig: { source: 'system-cli', permissionMode: 'no-restrictions' },
+    });
+  });
+
+  it('keeps managed Agent permission out of runtimeConfig', async () => {
+    const config = {
+      agents: [{
+        id: 'agent-managed-runtime-config',
+        name: 'Managed Runtime Config Guard',
+        workspacePath: '/tmp/myagents-agent-managed-runtime-config',
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-managed-runtime-config',
+      key: 'runtimeConfig',
+      value: { permissionMode: 'no-restrictions' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('product fields');
+    expect(readConfig()).toEqual(config);
   });
 
   it.each([
@@ -1062,9 +1467,15 @@ describe('admin-api agent set configuration intent', () => {
         permissionMode: 'fullAgency',
       }],
     });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-show',
+      name: 'Managed Show',
+      path: '/tmp/myagents-agent-managed-show',
+      agentId: 'agent-managed-show',
+    }]);
     const { handleAgentShow } = await import('./admin-api');
 
-    const result = handleAgentShow({ id: 'agent-managed-show' });
+    const result = await handleAgentShow({ id: 'agent-managed-show' });
 
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
@@ -1660,6 +2071,95 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
   });
 });
 
+describe('admin-api Agent / Session discovery', () => {
+  it('returns only visible active Project-backed Agents and marks the CLI caller', async () => {
+    agentSessionMocks.agentDir = '/tmp/current-workspace';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [
+        { id: 'agent-current', name: 'Current', enabled: false, workspacePath: '/tmp/current-workspace', channels: [] },
+        { id: 'agent-other', name: 'Other', enabled: true, workspacePath: '/tmp/other-workspace', channels: [] },
+        { id: 'agent-orphan', name: 'Orphan', enabled: true, workspacePath: '/tmp/orphan', channels: [] },
+      ],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      { id: 'project-current', name: 'Current', path: '/tmp/current-workspace', agentId: 'agent-current' },
+      { id: 'project-other', name: 'Other', path: '/tmp/other-workspace', agentId: 'agent-other' },
+      { id: 'project-hidden', name: 'Hidden', path: '/tmp/hidden', hidden: true },
+    ]);
+    const { handleAgentList, handleAgentShow } = await import('./admin-api');
+
+    const listed = await handleAgentList();
+    expect(listed.success).toBe(true);
+    expect(listed.data).toEqual([
+      expect.objectContaining({ agentId: 'agent-current', enabled: false, isCurrent: true }),
+      expect.objectContaining({ agentId: 'agent-other', enabled: true, isCurrent: false }),
+    ]);
+    expect((listed.data as Array<Record<string, unknown>>).filter(item => item.isCurrent)).toHaveLength(1);
+
+    const shown = await handleAgentShow({ agentId: 'agent-current' });
+    expect(shown.data).toMatchObject({
+      agentId: 'agent-current',
+      projectId: 'project-current',
+      isCurrent: true,
+      effectiveDefaults: {
+        runtime: 'builtin',
+        mcpEnabledServers: [],
+        enabledPluginIds: [],
+        enabledOfficialToolIds: [],
+      },
+    });
+    expect(shown.data).not.toHaveProperty('id');
+  });
+
+  it('lists persisted history only, newest first, without exposing prepared Sessions', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-1', name: 'Workspace', enabled: true, workspacePath: '/tmp/workspace', channels: [] }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1', name: 'Workspace', path: '/tmp/workspace', agentId: 'agent-1',
+    }]);
+    writeJson(join(scratch, '.myagents', 'sessions.json'), [
+      {
+        id: 'session-old', agentDir: '/tmp/workspace', title: 'Old',
+        createdAt: '2026-07-01T00:00:00.000Z', lastActiveAt: '2026-07-01T00:00:00.000Z',
+        lastMessagePreview: 'existing preview', runtime: 'builtin',
+      },
+      {
+        id: 'session-new', agentDir: '/tmp/workspace', title: 'New',
+        createdAt: '2026-08-01T00:00:00.000Z', lastActiveAt: '2026-08-01T00:00:00.000Z',
+        runtime: 'codex', runtimeSource: 'system-cli', model: 'gpt-5',
+      },
+      {
+        id: 'session-prepared', agentDir: '/tmp/workspace', title: 'Prepared',
+        createdAt: '2026-08-02T00:00:00.000Z', lastActiveAt: '2026-08-02T00:00:00.000Z',
+        materializationState: 'prepared',
+      },
+    ]);
+    const { handleSessionList } = await import('./admin-api');
+
+    const result = await handleSessionList({ agentId: 'agent-1', limit: 2 });
+
+    expect(result).toMatchObject({
+      success: true,
+      agentId: 'agent-1',
+      projectId: 'project-1',
+      limit: 2,
+    });
+    expect(result.data).toEqual([
+      expect.objectContaining({
+        sessionId: 'session-new',
+        lastMessagePreview: null,
+        runtime: 'codex',
+        runtimeSource: 'system-cli',
+      }),
+      expect.objectContaining({
+        sessionId: 'session-old',
+        lastMessagePreview: 'existing preview',
+      }),
+    ]);
+  });
+});
+
 describe('admin-api Agent workspace archive', () => {
   it('archives a linked agent workspace and pauses proactive agent state', async () => {
     const { handleAgentArchive, handleAgentList } = await import('./admin-api');
@@ -1697,9 +2197,9 @@ describe('admin-api Agent workspace archive', () => {
       expect.any(Object),
     );
 
-    const archivedList = handleAgentList({ lifecycle: 'archived' });
+    const archivedList = await handleAgentList({ lifecycle: 'archived' });
     expect((archivedList.data as Array<Record<string, unknown>>)[0]).toMatchObject({
-      id: 'agent-1',
+      agentId: 'agent-1',
       archived: true,
       projectId: 'project-1',
     });

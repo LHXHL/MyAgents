@@ -20,7 +20,7 @@ import { useToast } from '@/components/Toast';
 import PathInputDialog from '@/components/PathInputDialog';
 import { BrandSection } from '@/components/launcher';
 import { useConfig } from '@/hooks/useConfig';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, isProjectActiveForUser, isProjectVisibleToUser } from '@/config/types';
+import { type Project, type PermissionMode, type McpServerDefinition, isProjectActiveForUser, isProjectVisibleToUser } from '@/config/types';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import {
@@ -33,9 +33,10 @@ import {
 import { patchAgentConfig, patchAgentProjectConfig, getAgentById } from '@/config/services/agentConfigService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
-import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections } from '../../shared/types/runtime';
 import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch } from '../../shared/types/runtime';
 import {
+    agentUsesManagedCodexProvider,
     isRuntimeBackedProvider,
     toProviderExecutionIntent,
 } from '../../shared/providerExecution';
@@ -47,6 +48,7 @@ import {
     type OfficialToolId,
 } from '../../shared/official-tools';
 import { apiGetJson } from '@/api/apiFetch';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveLauncherProvider } from '@/utils/optionResolve';
 import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
@@ -211,10 +213,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     runtimeConfigRef.current = selectedAgent?.runtimeConfig;
 
     // Runtime-aware model/permission lists — adapts input bar for external runtimes
-    const selectedAgentRuntimeConfig = selectedAgent?.runtimeConfig as RuntimeConfig | undefined;
-    const selectedAgentUsesManagedCodexProvider =
-        selectedAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-        || selectedAgentRuntimeConfig?.source === 'managed-provider';
+    const selectedAgentUsesManagedCodexProvider = agentUsesManagedCodexProvider(selectedAgent);
     const launcherRuntime: RuntimeType = selectedAgentUsesManagedCodexProvider
         ? 'builtin'
         : multiAgentRuntimeEnabled
@@ -227,7 +226,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'codex') { setCodexModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=codex')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('codex', 'system-cli'))
             .then(res => { if (!cancelled && res?.models?.length) setCodexModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -235,7 +234,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     useEffect(() => {
         if (!multiAgentRuntimeEnabled || launcherRuntime !== 'gemini') { setGeminiModels([]); return; }
         let cancelled = false;
-        apiGetJson<{ models?: RuntimeModelInfo[] }>('/api/runtime/models?type=gemini')
+        apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
             .then(res => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
@@ -437,20 +436,26 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const handleLauncherPermissionModeChange = useCallback((mode: PermissionMode) => {
         setLauncherPermissionMode(mode);
         if (selectedWorkspace) {
+            const model = launcherSelectedModel ?? launcherProvider?.primaryModel;
+            const intent = selectedAgentUsesManagedCodexProvider && launcherProvider && model
+                ? toProviderExecutionIntent(launcherProvider, model)
+                : undefined;
             void persistInputOptionChange({
                 workspaceId: selectedWorkspace.id,
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
-                fields: { permissionMode: mode },
+                fields: intent?.kind === 'runtime-backed-provider'
+                    ? { runtimeBackedProviderSelection: intent, permissionMode: mode }
+                    : { permissionMode: mode },
                 patchProject,
                 patchAgentConfig,
                 patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; runtimeConfigRef is a ref
-    }, [selectedWorkspace?.id, patchProject, isExternalRuntime]);
+    }, [selectedWorkspace?.id, patchProject, isExternalRuntime, launcherSelectedModel, launcherProvider, selectedAgentUsesManagedCodexProvider]);
 
     const handleLauncherModelChange = useCallback((model: string | undefined) => {
         setLauncherSelectedModel(model);

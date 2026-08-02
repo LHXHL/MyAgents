@@ -68,6 +68,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
+import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
@@ -95,9 +96,10 @@ import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
-  managedCodexProviderPermissionToRuntimePermission,
   managedCodexRuntimePermissionToProviderPermission,
+  projectManagedCodexPermissionToRuntime,
   runtimeBackedProviderPermissionMode,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -111,9 +113,9 @@ import {
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
+  projectPermissionModeForRuntime,
 } from '../../shared/types/runtime';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
@@ -323,7 +325,7 @@ function coerceExternalRuntimeModelForUi(model: string | undefined, runtime: Run
 }
 
 function coerceExternalRuntimePermissionForUi(mode: string | undefined, runtime: RuntimeType): string | undefined {
-  return runtime === 'builtin' ? mode : coercePermissionModeForRuntime(mode, runtime);
+  return runtime === 'builtin' ? mode : projectPermissionModeForRuntime(mode, runtime);
 }
 
 function coerceInitialMessageRuntimePermission(
@@ -420,6 +422,8 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
+  /** Native desktop-window focus projection; independent from internal Tab activity. */
+  isWindowFocused: boolean;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
@@ -453,7 +457,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -1284,11 +1288,8 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
-  const currentAgentRuntimeConfig = currentAgent?.runtimeConfig as RuntimeConfig | undefined;
-  const agentUsesManagedCodexProvider =
-    currentAgent?.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
-    || currentAgentRuntimeConfig?.source === 'managed-provider';
-  const agentRuntime: RuntimeType = agentUsesManagedCodexProvider
+  const agentUsesManagedProvider = agentUsesManagedCodexProvider(currentAgent);
+  const agentRuntime: RuntimeType = agentUsesManagedProvider
     ? 'builtin'
     : multiAgentRuntimeEnabled
     ? ((currentAgent?.runtime as RuntimeType) || 'builtin')
@@ -1382,9 +1383,13 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   useEffect(() => {
     if (!isExternalRuntime) return;
     const cfg = currentAgent?.runtimeConfig as { permissionMode?: string; model?: string } | undefined;
-    const saved = cfg?.permissionMode;
-    const effective = coerceExternalRuntimePermissionForUi(saved, currentRuntime)
-      ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default');
+    const saved = managedProviderRuntimeActive
+      ? currentAgent?.permissionMode
+      : cfg?.permissionMode;
+    const effective = managedProviderRuntimeActive
+      ? (projectManagedCodexPermissionToRuntime(saved) ?? 'auto-edit')
+      : (coerceExternalRuntimePermissionForUi(saved, currentRuntime)
+        ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default'));
     setRuntimePermissionMode(effective);
     setRuntimeModel(coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
     // #324 — re-seed effort on runtime transition. RUNTIME_CONFIG_PER_RUNTIME_FIELDS
@@ -1392,7 +1397,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     // different runtime can't be read here; absent = 'default'.
     setReasoningEffort(coerceReasoningEffortForUi((cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort, currentRuntime) ?? 'default');
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only re-sync on runtime transitions, not on every currentAgent.runtimeConfig edit
-  }, [currentRuntime, isExternalRuntime]);
+  }, [currentRuntime, isExternalRuntime, managedProviderRuntimeActive]);
 
   // Runtime-specific models and permission modes
   const runtimePermissionModes = currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
@@ -1404,7 +1409,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if ((!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) || currentRuntime !== 'codex') return;
+    if (!multiAgentRuntimeEnabled || managedProviderRuntimeActive || currentRuntime !== 'codex') return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1413,7 +1418,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     // post-hoc filter in proxyFetch turns the rejection into a silent
     // AbortError instead of a noisy lifecycle log line.
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=codex', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('codex', 'system-cli'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setCodexModels(data.models);
     }).catch(() => {});
@@ -1423,7 +1428,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
     let cancelled = false;
     const controller = new AbortController();
-    apiGet('/api/runtime/models?type=gemini', { signal: controller.signal }).then((res: unknown) => {
+    apiGet(runtimeModelCatalogPath('gemini'), { signal: controller.signal }).then((res: unknown) => {
       const data = res as { models?: typeof CC_MODELS } | undefined;
       if (!cancelled && data?.models?.length) setGeminiModels(data.models);
     }).catch(() => {});
@@ -1485,7 +1490,6 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     apiPost('/api/runtime/prewarm', {
       sessionId,
       model: effectiveModel,  // may be undefined — runtime falls back to its default
-      permissionMode: effectivePermissionMode,
     }, { signal: controller.signal }).then((res) => {
       // Backend returns { success: true, prewarmed: false, reason: '...' } when
       // the endpoint short-circuits (already-active/starting, runtime mismatch,
@@ -1508,7 +1512,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
       prewarmedKeyRef.current = null; // allow a later retry
     });
     return () => { controller.abort(); };
-    // Intentionally omit effectiveModel/effectivePermissionMode from deps —
+    // Intentionally omit effectiveModel from deps —
     // config changes kill the pre-warmed process via setExternalModel/
     // setExternalPermissionMode, and the next user message will resume with
     // the new settings. Re-firing pre-warm on every keystroke-driven option
@@ -1517,7 +1521,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
 
   const runtimeModels = currentRuntime === 'claude-code' ? CC_MODELS
-    : currentRuntime === 'codex' ? codexModels
+    : currentRuntime === 'codex' ? (managedProviderRuntimeActive ? [] : codexModels)
     : currentRuntime === 'gemini' ? geminiModels
     : undefined;
 
@@ -1953,34 +1957,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     return () => clearTimeout(t);
   }, [showStartupOverlay]);
 
-  // Cron task management hook
-  const {
-    state: cronState,
-    enableCronMode,
-    disableCronMode,
-    updateConfig: _updateCronConfig,
-    updateRunningConfig,
-    setExecutionState: setCronExecutionState,
-    startTask: startCronTask,
-    stop: stopCronTask,
-    restoreFromTask: restoreCronTask,
-    updateSessionId: updateCronTaskSessionId,
-  } = useCronTask({
-    workspacePath: agentDir,
-    sessionId: sessionId ?? '',
-    onComplete: (task, reason) => {
-      console.log('[Chat] Cron task completed:', task.id, reason);
-    },
-    onExecutionComplete: (task, success) => {
-      // TabProvider owns exact-Session refresh from the same Tauri completion
-      // event. Chat only clears its local execution projection here.
-      const effectiveSessionId = task.internalSessionId || task.sessionId;
-      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
-      setIsLoading(false);
-    },
-  });
-
-  const materializeGoalOwner = useCallback(async () => {
+  const materializeScheduledOwner = useCallback(async () => {
     if (!sessionId) throw new Error('Goal requires a session identity.');
     if (!isPendingSessionId(sessionId)) return { sessionId, workspacePath: agentDir };
     if (!agentDir) throw new Error('Cannot materialize Goal without workspace path.');
@@ -1999,6 +1976,33 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     setSessionMeta(result.metadata);
     return { sessionId: result.sessionId, workspacePath: agentDir };
   }, [sessionId, tabId, agentDir, apiPost, adoptMigratedSession, setSessionMeta]);
+
+  // Cron task management hook
+  const {
+    state: cronState,
+    enableCronMode,
+    disableCronMode,
+    updateConfig: _updateCronConfig,
+    updateRunningConfig,
+    setExecutionState: setCronExecutionState,
+    startTask: startCronTask,
+    stop: stopCronTask,
+    restoreFromTask: restoreCronTask,
+  } = useCronTask({
+    workspacePath: agentDir,
+    sessionId: sessionId ?? '',
+    materializeOwner: materializeScheduledOwner,
+    onComplete: (task, reason) => {
+      console.log('[Chat] Cron task completed:', task.id, reason);
+    },
+    onExecutionComplete: (task, success) => {
+      // TabProvider owns exact-Session refresh from the same Tauri completion
+      // event. Chat only clears its local execution projection here.
+      const effectiveSessionId = task.internalSessionId || task.sessionId;
+      console.log('[Chat] Cron execution complete:', task.id, task.executionCount, 'effectiveSessionId:', effectiveSessionId, 'success:', success);
+      setIsLoading(false);
+    },
+  });
   const {
     state: sessionGoalState,
     start: startGoal,
@@ -2010,7 +2014,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   } = useSessionGoal({
     workspacePath: agentDir,
     sessionId: sessionId ?? '',
-    materializeOwner: materializeGoalOwner,
+    materializeOwner: materializeScheduledOwner,
   });
 
   // PERFORMANCE: Ref-stabilize cronState for handleSendMessage
@@ -2091,28 +2095,6 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     setGoalCancelConfirmOpen(false);
     setGoalDraftConfig(null);
   }, [sessionId]);
-
-  // Sync cron task's sessionId when session is created after task creation
-  // This handles two cases:
-  // 1. Task has empty sessionId (legacy) - needs to be updated
-  // 2. Task has pending sessionId (pending-xxx) and real sessionId is now available
-  const sessionIdSyncedRef = useRef<string | null>(null);
-  useEffect(() => {
-    const task = cronState.task;
-    if (!task || !sessionId) return;
-
-    // Skip if sessionId is still pending (no real session ID yet)
-    if (isPendingSessionId(sessionId)) return;
-
-    // If task has empty or pending sessionId but we now have a real sessionId, update the task
-    // Use ref to prevent duplicate updates for the same sessionId
-    const taskNeedsUpdate = task.sessionId === '' || isPendingSessionId(task.sessionId);
-    if (taskNeedsUpdate && sessionIdSyncedRef.current !== sessionId) {
-      sessionIdSyncedRef.current = sessionId;
-      console.log(`[Chat] Syncing cron task sessionId: taskId=${task.id}, oldSessionId=${task.sessionId}, newSessionId=${sessionId}`);
-      void updateCronTaskSessionId(sessionId);
-    }
-  }, [cronState.task, sessionId, updateCronTaskSessionId]);
 
   // File drop zone for chat area (HTML5 drag-drop for non-Tauri/development)
   const handleFileDrop = useCallback((files: File[]) => {
@@ -2852,11 +2834,13 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
     const providerModelValue = snapshotIsManagedProvider
       ? managedProviderSnapshotModel(sessionMeta, rawModel)
       : rawModel;
-    const fallbackMode = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.permissionMode
-      : (currentAgent?.permissionMode as string | undefined);
-    const rawMode = snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode);
-    const runtimePermissionValue = snapshotIsExternal
+    const fallbackMode = currentAgent?.permissionMode as string | undefined;
+    const rawMode = snapshotIsExternal
+      ? sessionMeta.permissionMode
+      : (snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode));
+    const runtimePermissionValue = snapshotIsManagedProvider
+      ? (projectManagedCodexPermissionToRuntime(rawMode) ?? 'auto-edit')
+      : snapshotIsExternal
       ? coerceExternalRuntimePermissionForUi(rawMode, snapshotRuntime)
       : rawMode;
     const providerPermissionValue = snapshotIsManagedProvider
@@ -3163,6 +3147,8 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   const chatScrollController = useChatScrollController({
     messages: chatScrollModel.data,
     isActive,
+    isWindowFocused,
+    sessionId,
     rootRef: chatContentRef,
   });
   const {
@@ -3622,10 +3608,15 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
       return;
     }
 
-    const runtimeMode = managedCodexProviderPermissionToRuntimePermission(mode)
-      ?? coerceRuntimeBirthPermissionMode(mode, currentRuntime)
-      ?? getDefaultRuntimePermissionMode(currentRuntime);
-    const persisted = await persistTabConfigChange({ permissionMode: runtimeMode });
+    if (currentProviderExecutionIntent?.kind !== 'runtime-backed-provider') return;
+    const runtimeMode = runtimeBackedProviderPermissionMode(
+      currentProviderExecutionIntent,
+      mode,
+    ) ?? 'auto-edit';
+    const persisted = await persistTabConfigChange({
+      runtimeBackedProviderSelection: currentProviderExecutionIntent,
+      permissionMode: mode,
+    });
     if (!persisted) return;
     projectSyncedRef.current = true;
     setPermissionMode(mode);
@@ -3633,7 +3624,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
   }, [
     managedProviderRuntimeActive,
     handlePermissionModeChange,
-    currentRuntime,
+    currentProviderExecutionIntent,
     persistTabConfigChange,
     guardCronConfigMutation,
   ]);
@@ -4121,9 +4112,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
             ...(targetIntent.kind === 'runtime-backed-provider'
               ? { runtimeBackedProviderSelection: targetIntent }
               : { builtinSelection: { providerId: pending.providerId, model: targetModel } }),
-            permissionMode: targetIntent.kind === 'runtime-backed-provider'
-              ? runtimeBackedProviderPermissionMode(targetIntent, inputChromePermissionMode)
-              : inputChromePermissionMode,
+            permissionMode: inputChromePermissionMode,
           },
           snapshotWriteMode: 'disabled',
           patchProject,
@@ -5154,6 +5143,7 @@ export default function Chat({ onNewSession, onOpenSession, onOpenSessionInNewTa
               isLoading={isLoading}
               sessionId={sessionId}
               isActive={isActive}
+              isWindowFocused={isWindowFocused}
               virtuosoRef={virtuosoRef}
               onScrollerRef={attachScroller}
               followEnabledRef={followEnabledRef}

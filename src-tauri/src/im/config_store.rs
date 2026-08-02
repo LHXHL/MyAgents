@@ -466,6 +466,49 @@ fn find_missing_startable_agent_channels(
 mod agent_monitor_tests {
     use super::*;
 
+    #[test]
+    fn model_command_updates_the_existing_channel_override_owner() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "model": "agent-model",
+                "channels": [{
+                    "id": "channel-1",
+                    "overrides": { "model": "channel-model" }
+                }]
+            }]
+        });
+
+        let channel_owned =
+            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
+                .unwrap();
+
+        assert!(channel_owned);
+        assert_eq!(config["agents"][0]["model"], "agent-model");
+        assert_eq!(
+            config["agents"][0]["channels"][0]["overrides"]["model"],
+            "next-model",
+        );
+    }
+
+    #[test]
+    fn model_command_updates_agent_owner_when_channel_inherits() {
+        let mut config = serde_json::json!({
+            "agents": [{
+                "id": "agent-1",
+                "model": "agent-model",
+                "channels": [{ "id": "channel-1" }]
+            }]
+        });
+
+        let channel_owned =
+            update_agent_channel_model_value(&mut config, "agent-1", "channel-1", "next-model")
+                .unwrap();
+
+        assert!(!channel_owned);
+        assert_eq!(config["agents"][0]["model"], "next-model");
+    }
+
     #[tokio::test]
     async fn proxy_restart_waiter_closes_admission_only_at_idle_boundary() {
         use std::sync::atomic::Ordering;
@@ -2210,6 +2253,98 @@ pub(super) fn persist_agent_config_patch(
     Ok(())
 }
 
+pub(super) fn persist_agent_channel_model(
+    agent_id: &str,
+    channel_id: &str,
+    model: &str,
+) -> Result<AgentConfigPatch, String> {
+    let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
+    let config_path = home.join(".myagents").join("config.json");
+    let mut channel_owned = false;
+    let updated = with_config_lock(&config_path, true, |config| {
+        channel_owned = update_agent_channel_model_value(config, agent_id, channel_id, model)?;
+        Ok(())
+    })?;
+
+    if !channel_owned {
+        return Ok(AgentConfigPatch {
+            model: Some(model.to_string()),
+            ..Default::default()
+        });
+    }
+
+    let channels = updated
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        })
+        .and_then(|agent| agent.get("channels"))
+        .cloned()
+        .ok_or_else(|| format!("[agent] Agent {} has no channels[]", agent_id))?;
+    let channels = serde_json::from_value(channels)
+        .map_err(|error| format!("[agent] Invalid channels after model update: {}", error))?;
+    Ok(AgentConfigPatch {
+        channels: Some(channels),
+        ..Default::default()
+    })
+}
+
+fn update_agent_channel_model_value(
+    config: &mut serde_json::Value,
+    agent_id: &str,
+    channel_id: &str,
+    model: &str,
+) -> Result<bool, String> {
+    let agents = config
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| "[agent] No agents[] in config.json".to_string())?;
+    let agent = agents
+        .iter_mut()
+        .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id))
+        .ok_or_else(|| format!("[agent] Agent {} not found in config.json", agent_id))?;
+    let channel_owned = {
+        let channel = agent
+            .get_mut("channels")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|channels| {
+                channels.iter_mut().find(|channel| {
+                    channel.get("id").and_then(serde_json::Value::as_str) == Some(channel_id)
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "[agent] Channel {} not found for Agent {}",
+                    channel_id, agent_id,
+                )
+            })?;
+        let override_owned = channel
+            .get("overrides")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|overrides| overrides.get("model"))
+            .is_some_and(serde_json::Value::is_string);
+        if override_owned {
+            channel["overrides"]["model"] = serde_json::Value::String(model.to_string());
+            true
+        } else if channel
+            .get("model")
+            .is_some_and(serde_json::Value::is_string)
+        {
+            channel["model"] = serde_json::Value::String(model.to_string());
+            true
+        } else {
+            false
+        }
+    };
+    if !channel_owned {
+        agent["model"] = serde_json::Value::String(model.to_string());
+    }
+    Ok(channel_owned)
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct HeartbeatTargetCandidate {
     channel_id: String,
@@ -2534,12 +2669,24 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_config.id
                 );
                 // Create bot instance directly (no transit through ManagedImBots)
+                let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        ulog_warn!(
+                            "[agent] Auto-start admission closed for channel {}: {}",
+                            bot_id,
+                            error
+                        );
+                        continue;
+                    }
+                };
                 match create_bot_instance(
                     &app_handle,
                     &sidecar_manager,
                     bot_id.clone(),
                     im_config,
                     Some(agent_config.id.clone()),
+                    &creation_permit,
                 )
                 .await
                 {
@@ -3047,12 +3194,24 @@ pub async fn monitor_agent_channels(
                 );
             }
 
+            let creation_permit = match crate::sidecar::begin_lifecycle_spawn_permit() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    ulog_warn!(
+                        "[agent-monitor] Restart admission closed for channel {}: {}",
+                        channel_id,
+                        error
+                    );
+                    continue;
+                }
+            };
             match create_bot_instance(
                 &app_handle,
                 &sidecar_manager,
                 channel_id.clone(),
                 im_config,
                 Some(agent_id.clone()),
+                &creation_permit,
             )
             .await
             {

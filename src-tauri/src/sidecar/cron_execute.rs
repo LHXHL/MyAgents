@@ -16,7 +16,7 @@ pub struct CronExecutePayload {
     /// own runtime/model/MCP configuration.
     #[serde(default)]
     pub initialize_session: bool,
-    /// Session ID for activation tracking (prevents Sidecar from being killed during cron execution)
+    /// Session ID whose Task owner prevents Sidecar release during execution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,7 +199,7 @@ pub async fn execute_cron_task<R: Runtime>(
 
 /// Execute one Session-owned Goal continuation through the existing
 /// SessionEngine transport. Goal ownership is independent from CronTask and
-/// is intentionally not projected into legacy cron session activations.
+/// remains represented only by its Task owner token.
 pub async fn execute_goal_turn<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,

@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AtSign,
+  Ban,
   ChevronRight,
   ChevronUp,
   Eye,
@@ -97,6 +98,8 @@ const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
   plan: Eye,
   fullAgency: LockOpen,
   default: ShieldQuestion,
+  manual: ShieldQuestion,
+  dontAsk: Ban,
   acceptEdits: FilePenLine,
   bypassPermissions: LockOpen,
   autoEdit: FilePenLine,

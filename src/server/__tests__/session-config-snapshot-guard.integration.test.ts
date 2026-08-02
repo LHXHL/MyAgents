@@ -22,7 +22,7 @@
 // own model push (no `imConfigSync`) stays authoritative, and pure IM / cron
 // (live-follow, no snapshot) sessions keep applying channel config.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Control isCurrentSessionSnapshotted() by mocking the metadata source. Keep all
 // other SessionStore exports real so agent-session's import graph is intact.
@@ -40,8 +40,16 @@ import {
   setSessionPermissionMode,
   getSessionPermissionMode,
 } from '../agent-session';
+import { resetProductSessionBinding } from '../session-engine/product-session-binding';
 
 const getMeta = vi.mocked(getSessionMetadata);
+
+beforeEach(() => {
+  // This fixture exercises Session-sidecar setters directly, outside the real
+  // bootstrap that normally establishes the product Session binding. Importing
+  // shared server modules no longer mints that identity on Global's behalf.
+  resetProductSessionBinding({ sessionId: 'snapshot-guard-session' });
+});
 
 function markSnapshotted(snapshotted: boolean): void {
   // Only `configSnapshotAt` is consulted by isCurrentSessionSnapshotted().

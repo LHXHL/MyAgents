@@ -21,7 +21,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 |------|------|
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
 | 桌面框架 | Tauri v2 (Rust) |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.220（多实例 Sidecar 进程） |
+| 后端 | Node.js v24 Sidecar（一个 Global + 每个 Session 一个）；Builtin Runtime 集成 Claude Agent SDK 0.3.220 |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 拖拽 | @dnd-kit/sortable |
 
@@ -64,27 +64,25 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 │  │ (Node→Rust)   │ │  (cmd_*)           │ │  Embedded Browser        │     │
 │  └───────────────┘ └────────────────────┘ └──────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│                  Node.js Sidecar (per Session, 1:1)                         │
-│  ┌─────────────────────────────────────────────────────────────────┐        │
-│  │  Runtime Selector (config.multiAgentRuntime gate)              │        │
-│  │  ┌─────────────┬───────────────┬──────────┬──────────────┐     │        │
-│  │  │ builtin SDK │ Claude Code   │ Codex    │ Gemini       │     │        │
-│  │  │ (in-proc)   │ CLI (NDJSON)  │ CLI(JSON │ CLI (ACP     │     │        │
-│  │  │             │               │ -RPC2.0) │  JSON-RPC)   │     │        │
-│  │  └─────────────┴───────────────┴──────────┴──────────────┘     │        │
-│  │                                                                 │        │
-│  │  In-process MCP:                                                │        │
-│  │   META/INSTANCE registry: gemini-image / edge-tts               │        │
-│  │   context-injected surface: im-bridge-tools                     │        │
-│  │                                                                 │        │
-│  │  External MCP via npx + 预置原生二进制 (cuse)                   │        │
-│  │                                                                 │        │
-│  │  OpenAI Bridge (DeepSeek/Gemini/Moonshot 协议翻译)              │        │
-│  └─────────────────────────────────────────────────────────────────┘        │
+│                             Node.js Sidecars                                │
+│  ┌───────────────────────┐  ┌──────────────────────────────────────────┐   │
+│  │ Global Sidecar        │  │ Session Sidecar（每个 Session 一个）    │   │
+│  │ Settings / Store      │  │ Runtime Selector                        │   │
+│  │ Provider / OAuth      │  │ builtin SDK / Claude Code / Codex       │   │
+│  │ 应用级管理与维护      │  │ / Gemini；Session Runtime 与 turn API   │   │
+│  └───────────────────────┘  └──────────────────────────────────────────┘   │
+│  Shared: health / refs / Runtime 模型目录 / 历史 Session 读取              │
+│  Session: In-process MCP / External MCP / OpenAI Bridge                    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-每个 Sidecar 服务一个 Session。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
+应用维护一个 Global Sidecar；每个 Session 最多对应一个 Session Sidecar。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 可以共享同一个 Session Sidecar，全部释放后才停止该进程。
+
+Rust 在创建 Sidecar 和 Plugin Bridge 时同时建立后代进程树的精确控制句柄。正常停止和应用退出只使用这些句柄，不根据全机进程的命令行猜测归属；应用退出还会先禁止新的资源创建，并等待已获准的创建流程完成登记或释放。全机进程扫描只用于确认前一个应用实例已经退出后的启动恢复，以及更新器的残留进程检查。跨平台实现与退出顺序见 `tech_docs/pit_of_success.md` 的 `process_cmd` 小节，Windows 细节见 `tech_docs/windows_platform.md`。
+
+Session 进程崩溃后，尚未结束的逻辑工作仍由 Rust `SidecarManager` 持有，不能依附于某一次候选进程。候选进程创建或就绪失败只结束该次 generation；owner、恢复轮次和有界重试会保留到新 generation 就绪、owner 全部释放或 Session 被删除。`BackgroundCompletion` 每次轮询都在请求前后核对当前 generation，旧 generation 的迟到结果不能提交终态或释放当前 owner。完整状态机见 `tech_docs/session_architecture.md`。
+
+Global Sidecar 同样把“应用仍需要它运行”与“当前候选进程”分开。`SidecarManager` 用 `Stopped | DesiredRunning` 表示运行意图；候选进程创建或就绪失败不会清除该意图，monitor 会按有上限的退避继续恢复。只有显式停止 Global、`stop_all`、更新关闭或应用退出才清除运行意图。`~/.myagents/sidecar.port` 只记录当前健康 generation 的端口，不能用于判断 Global 是否应该运行。
 
 ---
 
@@ -96,10 +94,11 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 | 概念 | 说明 |
 |------|------|
-| **Sidecar = Agent 实例** | 一个 Sidecar 进程 = 一个 Claude Agent SDK 实例 |
+| **Sidecar 进程角色** | Global Sidecar 负责应用级能力；Session Sidecar 承载当前 Session 的 builtin 或 external Runtime |
 | **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应 |
 | **后端优先，前端辅助** | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab |
 | **Owner 模型** | Tab、Companion、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
+| **Global 运行意图** | Global 没有 Session owner 集；Rust manager 用 `Stopped | DesiredRunning` 独立表达应用常驻需求，候选失败不清除需求 |
 
 ```rust
 pub enum SidecarOwner {
@@ -182,6 +181,8 @@ Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投�
 
 Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。WebView 不得直连普通 API。仅大载荷**数据面**端点（当前为 `/refs/:id`、`/attachment/*`）允许原生 fetch，以避免二进制 / spill payload 再穿 IPC JSON；这些端点必须同时满足 CORS、CSP、大小限制与路径安全约束。该例外不得扩展成第二套控制面。
 
+共享 ref store 支持 Node 与 Rust 多写入者，但两者必须使用同一套不可覆盖的 body/meta 提交协议。Rust HTTP proxy 只允许 loopback 响应写入本地 ref；外部地址的响应必须在内存上限内返回，不能生成指向本地 `/refs` 的 URL。`ProxySpillManager` 只管理 Rust proxy 的在途写入和已知清理失败，不是附件或整个 ref store 的全局配额管理器。文件协议、响应上限和清理规则见 `tech_docs/pit_of_success.md` 的 `maybeSpill` 小节。
+
 所有连接本地 Sidecar（`127.0.0.1`）的 reqwest 客户端 MUST 通过 `crate::local_http::*` 创建，内置 `.no_proxy()` 防止系统代理拦截 → 502。
 
 详见 `tech_docs/pit_of_success.md` 的 `local_http` 节。
@@ -219,24 +220,34 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 
 恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；只有 gap / 无基线或明确的 Sidecar replacement epoch 才重新取快照，transport generation 变化本身不触发恢复。live-recovery commit 只替换权威 recent tail 并保留已分页的 older prefix、滚动锚点与无关 UI state；无 overlap 才整体采用 snapshot。持续 gap 只自动补取一次；请求失败或补取后仍不连续就进入 `failed`，隔离后续普通 revision，等待用户显式重试或下一次 `session-sidecar:restarted`。revision 只属于当前 Sidecar/session process epoch 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
 
-普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external terminal 产出同一份 turn identity/owner/origin descriptor，Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口，`notification.rs` 以 `(sessionId, turnId)` 瞬时 claim 并统一决定 domain 抑制、focus、系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息/UI/unread，不再发送通用完成通知。
+普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external Runtime 产生统一的 turn identity、owner 和 origin 描述；Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口。当前 Sidecar generation 负责发放一次性完成资格，`notification.rs` 再根据业务类型、窗口焦点和通知偏好统一处理系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息、UI 和未读状态。
 
 ### HTTP API 调用
 
 ```
-Tab1 apiPost() ──► getSessionPort(session_123) ──► Rust proxy ──► Sidecar:31415
-Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──► Sidecar:31416
+Tab apiGet/apiPost(relativePath)
+  └─► sessionSidecarFetch(sessionIdHint, Tab owner)
+      └─► Tauri invoke
+          └─► SidecarManager 解析当前 generation 并取得 dispatch lease
+              └─► reqwest ──► 当前 Session Sidecar
+
+Global control request
+  └─► globalSidecarFetch(relativePath)
+      └─► Tauri invoke ──► 当前 Global generation ──► reqwest
 ```
+
+普通控制请求不查询或缓存 Sidecar 端口。`cmd_get_session_port` 只服务已登记的数据面请求和少数就绪状态调用方。
 
 ### Tauri IPC
 
-用于不需要流式的 Rust ↔ 前端调用：
+用于 Rust 与 Renderer 之间的控制请求、命令和事件：
+- Session / Global 普通 HTTP 控制请求（相对路径 + 逻辑 owner，由 Rust 解析当前 generation）
 - 内嵌终端事件（`terminal:data:{id}`）
 - 内嵌浏览器事件（`browser:url-changed:{tabId}`）
 - 任务状态变更（`task:status-changed`）
 - 工作区文件变更（`workspace:files-changed:{eventKey}`，`eventKey` 由 `watch_start` 返回）
 - 工作区文件操作（`cmd_workspace_*`，所有 `src-tauri/src/workspace_files/` 命令）
-- Sidecar 端口查询、Session 激活管理
+- 已登记数据面的就绪端口查询，以及已有 Session Tab 的 owner 交接确认
 
 不走 SSE Proxy。
 
@@ -274,8 +285,8 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 
 | Owner module | 职责 |
 |------|------|
-| `manager.rs` / `types.rs` | `ManagedSidecarManager`、owner model、端口分配、runtime drift 判定 |
-| `session_lifecycle.rs` | `ensure_session_sidecar` / release / upgrade / activation lifecycle |
+| `manager.rs` / `types.rs` | `ManagedSidecarManager`、Session owner model、Global 运行意图、按 generation 分发请求和领取完成资格、端口分配、runtime drift 判定 |
+| `session_lifecycle.rs` | Session Sidecar ensure / release / upgrade / delete lifecycle |
 | `instances.rs` | global/tab sidecar spawn、monitor、wake lock、terminal event forward |
 | `spawn.rs` | Node/script 定位、`normalize_external_path`、spawn diagnostic、kill helper |
 | `health.rs` | TCP health / readiness / reusable sidecar HTTP health check |
@@ -291,20 +302,23 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 |------|------|
 | `cmd_ensure_session_sidecar` | 确保 Session 有运行中的 Sidecar |
 | `cmd_release_session_sidecar` | 释放 Owner 对 Sidecar 的使用 |
-| `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
-| `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：App 先互斥同 Session 的所有 open/switch/delete transition，并提交自己拥有的 exact `Tab` owner ids；Rust 在同一 lifecycle fence 内拒绝 Task/Goal、持久 IM peer binding、Companion/Agent/BackgroundCompletion 或未授权 Tab，完成 Node 存储删除后才释放获授权 Tab。因此任何拒绝都原样保留 owner/UI，不需要 renderer rollback。删除保护快照只做 UI 投影。IM binding 同时读取 live router 与仍在配置中的 Channel health state，覆盖显式停止和 replacement 暂时 detach 的窗口；router 预检遵守 router → lifecycle 既有锁序，锁内以 live `Agent` owner 关闭新绑定竞态。通过后用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
-| `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
-| `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
-| `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后的 activation authority；在 Rust manager 单锁内保留最新 Task identity，并原子写入精确 Tab owner / port / workspace |
-| `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认 surface migration）；old/new 任一 identity 被持久 owner 占用时拒绝 rename，历史导航不得调用 |
+| `cmd_release_tab_session` | 在 Session lifecycle guard 下释放精确的桌面 Tab owner；全部 owner 释放后停止 Sidecar |
+| `cmd_delete_session_if_unowned` | 在同一 Session lifecycle guard 内检查所有持久和临时 owner；只有不存在未授权 owner 时才删除 Node Session 数据并释放调用方提交的 Tab owner。完整删除事务见 `tech_docs/session_architecture.md` |
+| `cmd_get_session_port` | 查询已就绪 Session Sidecar 的端口，仅供登记的数据面和就绪状态调用方使用 |
+| `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后确认当前 generation 仍由该 Tab owner 持有，并释放临时 `BackgroundCompletion` 交接 owner |
+| `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认的 Session 迁移）；旧或新 Session ID 被持久 owner 占用时拒绝改名，历史导航不得调用 |
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
 | `cmd_stop_all_sidecars` | 显式 IPC / debug stop；不拥有应用生命周期 |
 
 冷启动性能详见 `tech_docs/sidecar_cold_start.md`。
 
-#### Sidecar process role 与 MCP OAuth credential owner
+#### Sidecar 进程角色与 MCP OAuth 凭据所有者
 
-Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`--no-pre-warm` 只控制启动行为，不能再被用来推断进程职责。两条 Session spawn path（Tab/global path 的非 global 分支与 `session_lifecycle.rs`）都传 `session`，应用级 Global Sidecar 传 `global`。Global 身份只由 canonical `GLOBAL_SIDECAR_ID` 定义：Global ID 必须没有 `agent_dir`，其它 ID 必须带 `agent_dir`；spawn 边界在产生任何副作用前拒绝两种错配，防止绕过 manager singleton 创建第二个 Global owner。
+Rust 启动 Node Sidecar 时必须显式传入 `--sidecar-role global|session`；`--no-pre-warm` 只控制预热，不能用于推断进程职责。Session 的两条创建路径都传入 `session`，应用级 Sidecar 传入 `global`。Global 身份只由 `GLOBAL_SIDECAR_ID` 定义：Global ID 不能带 `agent_dir`，其它 ID 必须带 `agent_dir`；创建进程前就拒绝身份与角色不一致的请求，避免绕过 manager 创建第二个 Global Sidecar。
+
+Node 在 `sidecar-composition.ts` 统一使用该角色决定启动步骤和可访问路由。请求先分类为 `common / global / session`；未知路由或角色不匹配的路由会在解析请求体和执行业务逻辑前返回 404，测试直接覆盖这条生产路径，不维护第二份路由清单。Global 负责 Settings、Session Store、Provider/OAuth 一次性操作和应用级管理，但不运行 `initializeAgent()`、不恢复 Runtime，也不处理 Chat、Task、Goal、IM、Inbox 或当前 Runtime 配置写入。Session 负责当前 Session 的 Runtime 和 turn 接口，不运行应用级 retention 或 migration 定时任务。health、refs、Runtime 模型目录、历史 Session 读取，以及两类进程都需要的 Agent/Skill/Plugin/Admin 接口属于共享能力；其中依赖当前 Session 的 Admin 路由仍只属于 Session。
+
+`product-session-binding.ts` 在模块加载时不创建 Session。只有 Session 初始化或 adapter 的显式 reset 才能生成并发布 `MYAGENTS_SESSION_ID`；加载共享 SDK 工具不能产生这一副作用。Browser/Vite 开发模式如需单进程提供两类接口，必须通过 `start_dev.sh --dev-union` 显式启用；这不是第三种生产角色，未提供角色时仍按 Session 处理。
 
 自定义 MCP 的 OAuth state 是应用级共享事实，持久化在 `~/.myagents/mcp_oauth_state.json`：
 
@@ -331,12 +345,14 @@ Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPos
 
 `GlobalSidebar` 挂在 `App` 的 Tab Workspace 之外，是应用级导航和资源投影，不是新的页面容器或 Session owner。顶部 Tab 仍是所有主内容页面的唯一 authority：active、关闭、恢复、拖拽、Sidecar owner token 与 pending-session birth 都继续由现有 Tab 状态机管理。
 
+- 桌面主窗口 focus 以 Tauri `onFocusChanged` 为持续事件 authority；`App` 启动时用 renderer 当前 foreground 状态播种一次，之后只持有一个布尔投影并只让 active Chat 响应。focus 只负责保存/恢复滚动意图，不能充当窗口可见性或 geometry authority：仍在展示的 active Chat 即使失焦也持续把 live 消息交给 Virtuoso。只有 App 确实以 `content-visibility:hidden` 隐藏的 internal inactive Tab 才冻结 Virtuoso 输入；TabProvider/Sidecar 生命周期始终不受两者影响。
 - 侧栏只从既有 `ConfigProvider`、任务中心 store、Session 索引与当前 Tab 派生工作区/Session 展示；active 高亮是 projection，不持久化第二份“当前页面”。该投影保持单一持久选中面：Launcher 选择工作区时高亮工作区行，Chat 已进入具体 Session 时只高亮 Session 行，父工作区仅保留层级上下文而不同时涂底或声明 `aria-current`。工作区配置和 Session mutation 分别调用现有 Config / Task Center authority，不在侧栏另存领域状态。
 - 侧栏与顶部 Title/Tab chrome 是同一 App Shell material surface：三者只读取完整 Theme 必需的 `--global-sidebar-bg`，该 Token 由每套 Theme 的 light/dark package 拥有；页面内容与卡片/弹层继续使用既有 `--paper / --paper-elevated / --paper-inset` 语义。App Shell chrome 不再依赖与内容区的分割线，常规 leading inset 为 8px，手动 rail 的 52px 预留同时容纳固定 toggle 与其后 8px 留白；Tab active/hover 复用全局 `--hover-bg`。不能为制造分区而翻转通用 Paper 层级、在组件内混色或为 Tab Chrome 复制一套局部 palette。
 - 侧栏展开/rail 切换的布局槽一次提交最终宽度，不能给 `width` / `flex-basis` 加逐帧 transition 让 Chat、Browser、Terminal 等 resize-sensitive surface 连续重排。可见边界由固定展开宽度的独立 paint-only 材质层通过 `clip-path` 横向揭示/收回；右侧 Tab 标题栏与内容用一次布局后的 compositor transform 保持旧视觉中心，再与边界同节奏归位。Chat 右侧工作区复用镜像模式：面板材质横移，对话区在最终 flex 布局上从旧中心归位；内容只做 opacity/translate/clip 编排，且必须提供 `prefers-reduced-motion` 立即切换路径。
 - App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
 - 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
 - 删除 Session 必须回到 `App` 的统一 deletion capability，因为只有 App 拥有全部 mounted Tab：同一 App-owned admission map 先互斥目标 Session 的 open/switch、fork attach、pending→real identity adoption、TabProvider recovery、mounted Tab turn submission 与 delete，实时非 Tab owner 预检通过后，再由 Rust 将运行中 turn 接管为 `BackgroundCompletion` 或权威确认 idle；只有明确 idle 才把全部匹配 Chat Tab ids 交给 Rust，由 Rust 在同一 lifecycle fence 内以 `SessionEngine.isBusy()` 复核已接纳队列、完成最终 owner 裁决、存储删除与这些 Tab owner 的释放，成功后 App 才清退 UI 与 SSE。任何拒绝都必须原样保留 mounted Tab，不建立 renderer rollback。Floating companion 使用独立 `Companion` owner；headless Inbox 的 healthy reuse 与 dead resume 都在同一 fence 内用 transient `Agent` owner 覆盖投递到 `BackgroundCompletion` 接管，不能伪装成 App 可释放的 Tab。删除专用 strict handoff 不吞 transport / activity-check 错误；运行中或状态查询不可用都保留 mounted Tab 与 transcript，并返回结构化拒绝，不能拿 renderer `isGenerating` 投影当删除许可。GlobalSidebar、搜索覆盖层、Chat 菜单和历史下拉只消费这项 capability；不得各自猜当前 Tab、直接删存储或把 UI 快照当最终 authority。
+- `session start --agent` 的 fresh headless birth 复用现有 lifecycle：source 只提交已解析的 Agent/workspace 与 prompt，Rust 生成 Session/request identity 并持 transient `Agent` owner ensure 目标 workspace Sidecar；target 在写 metadata 前重新解析 Agent/Project lifecycle，并核对当前 Sidecar 的 Session/workspace。通过后按目标侧当前配置与实际 Runtime 创建 owned `prepared` snapshot，在 `SessionEngine` 的既有 dispatch guard 提交可见。明确拒绝按 request identity 回滚；dispatch ACK 后的 runtime 错误仍是已接纳 terminal，ACK 不明保留 ID 且不自动重试。Rust 只复用既有 `BackgroundCompletion` handoff，不为 fresh start 新增 durable token、恢复状态机、配置 fingerprint 或跨文件事务。成功 receipt 只证明 admission，不证明 terminal。
 - 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
 - Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
 - “技能与工具”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
@@ -394,6 +410,7 @@ type InteractionScenario =
 0.3.0 起，Task 是所有新定时自动化的唯一持久权威：
 
 - `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
+- `task_application.rs`：create/link、status、delete/unlink、run/rerun 的唯一应用层 policy；Management/Tauri/Cron/Memory 只通过该 owner 进入 Task mutation。
 - `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
 - `task_execution.rs`：Session 选择、`SidecarOwner::Task`、Task prompt 与同步执行 use case。
 - `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
@@ -405,7 +422,7 @@ type InteractionScenario =
 - AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役
 - `src/server/tools/im-cron-tool.ts` 只保留 IM / Session cron context registry，不再创建 MCP server
 - 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
-- `/cron/execute-sync` 只是历史 wire name，domain owner 是 Task，并统一经过 SessionEngine selector
+- `/cron/execute-sync` 只是为兼容历史保留的接口名，业务归属仍是 Task；`routes/scheduled-turns.ts` 只做请求校验和响应映射，`task-turn-orchestrator.ts` 与 Runtime adapter 负责实际准备和执行
 
 标准 Cron get/list/mutation facade 也只读 TaskStore；未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
 
@@ -415,12 +432,14 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 
 ```
 Project (工作区)
-  = Basic Agent（被动型，用户在客户端主动交互）
-  + 可选的「主动 Agent」模式 → AgentConfig（24h 感知与行动）
-    └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
+  = 必备的 stable Agent identity → AgentConfig（workspace 地址与执行默认）
+    └── enabled=true 时可开启主动能力（24h 感知与行动）
+        └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
 **模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
+
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）必须与同 workspace 的一个 stable Agent 1:1 对应；`enabled` 只控制主动 Channel/heartbeat，不控制显式 addressability。Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在既有 `agent-config-intent.lock` 下按 Agent→Project link 顺序提交；中断后由相同 resolver 幂等收敛，不建立跨文件补偿事务。重复 Project workspace、重复 Agent ID 或一个 workspace 命中多个 Agent 时 fail closed。无 Project backing 的 legacy Agent 不参与 discovery，也不由读取路径删除。`agent list` 只投影 user-visible lifecycle，并用当前 Sidecar workspace 唯一计算 `isCurrent`。
 
 Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖：`src-tauri/src/im/memory_update.rs` 在执行自动更新流程时会确保工作区根目录 `UPDATE_MEMORY.md` 存在，缺失则从 `src/shared/default-update-memory.md` 初始化；已有文件始终是用户内容权威。
 
@@ -450,6 +469,8 @@ Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖�
 ### 7. Plugin Bridge (`src/server/plugin-bridge/`)
 
 独立 Node.js 进程加载 OpenClaw Channel Plugin。MUST 与 Sidecar 保持同等待遇（环境变量注入、日志宏、config 查询范围）。
+
+Bridge lifecycle 也持有与 Sidecar 相同的 birth-time process-group / Job authority；显式 stop 与结构析构都沿该 authority 终止 wrapper 及其后代，不借用 Sidecar argv sweep。
 
 **关键约束：**
 - **入口解析协议**：按 OpenClaw 官方 `package.json["openclaw"].extensions[]` 读取，**不再**信任 `main` / `exports`
@@ -493,8 +514,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `selector.ts` | `shouldUseExternalRuntime()` 的 route 分流 owner；选择 builtin/external `SessionEngine` |
 | `builtin-adapter.ts` | 委托 `agent-session.ts`，保持内置 Claude Agent SDK 会话语义 |
 | `external-adapter.ts` | 委托 `external-session.ts`，保持 Claude Code / Codex / Gemini 会话语义 |
-| `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
-| `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
+| `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、scheduled preparation、queue、session read/config/operation 等 route-facing 能力 |
+| `scheduled-turn-lock.ts`、`task-turn-orchestrator.ts`、`goal-orchestrator.ts` | Scheduled Turn 的共享串行边界与 Task/Goal 生命周期；`routes/scheduled-turns.ts` 只负责请求校验和响应映射，真实 handler/operation tests 验证 HTTP 与 owner 契约 |
 
 `src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、显式 user/assistant channel-delivery owner、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 MyAgents-owned MCP 的统一 soft pre-warm budget / status 分类。
 
@@ -549,7 +570,7 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
-新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/chat/external-retry`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。仅 external-only legacy/diagnostic endpoint 可直接调用 `external-session.ts`，并需在代码注释说明兼容原因。
+新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
 
 **测试防线：** server 测试必须显式后缀分层：`*.unit.test.ts`（pure policy / parser / boundary）、`*.integration.test.ts`（credential-free stateful server 集成，singleFork）、`*.credentialed.test.ts`（真实 Provider / SDK / upstream smoke，显式本地跑）。`unit` / `integration` 都加载 `src/test/setup-no-egress.ts`，阻断 fetch / undici / http(s) / net / tls / dns 非 loopback 出站；`npm run test:classification` 用实际 Vitest project list 扫描并禁止裸 `src/server/**/*.test.ts`。External runtime 的回归主路径通过 `external-session-mock.integration.test.ts` 在测试层 mock `runtimes/factory.ts`，fake runtime 伪装为真实 `RuntimeType`（如 `codex`），穿过 `SessionEngine` 覆盖正常 turn、failed turn、queue、permission response，不在生产代码里增加 mock runtime 类型。
 
@@ -563,9 +584,9 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | 目标 Tab 存在但 Sidecar 不活跃 | 复用该 Tab，由 Rust lifecycle revive 目标 Sidecar |
 | 目标 Session 尚无 Tab | 新建从首帧即绑定目标 Session 的 Tab，再 ensure 目标 Sidecar |
 
-**导航 owner**：Global Sidebar、Search Overlay、通知 / Task deep-link 与开发者模式 Chat History 都必须进入 `App.handleOpenTargetSession()`，由 `planSessionOpen()` 只决定 open / jump；目标 Tab 的 create / reuse 统一交给 `reconcileExistingSessionTabOwner()`。应用启动时的 cold Tab hydration 不是导航入口，但激活后也复用同一个 reconcile，不得复制 Sidecar owner / activation 编排。Chat 与 `TabProvider` 不得自行把当前真实 Session A hot-swap 为 B；历史恢复也不得修改 Node runtime binding。旧 `POST /sessions/switch` 与 `SessionEngine.switchToExistingSession` 已删除。新对话、pending→real、desktop reset 与已确认 surface migration 继续走各自既有 identity handover，不属于历史导航。
+**导航 owner**：Global Sidebar、Search Overlay、通知 / Task deep-link 与开发者模式 Chat History 都必须进入 `App.handleOpenTargetSession()`，由 `planSessionOpen()` 只决定 open / jump；目标 Tab 的 live create / reuse 统一进入 App 的 existing-Session materialization，并由 `reconcileExistingSessionTabOwner()` 取得 exact Tab owner。顶部“恢复上次对话”是同一能力的批量入口：候选先按既有恢复校验过滤，再一次提交最终 live Chat Tabs 与 active correlation；所有 surviving Tab 从首帧挂载正常 `TabProvider`，并各自独立进入同一个 materialization / reconcile，单目标失败只回收该 Tab。不得恢复一排尚无 owner、依赖首次切换才打开的 placeholder Tab，也不得复制 Sidecar owner、port 或 workspace 状态。Chat 与 `TabProvider` 不得自行把当前真实 Session A hot-swap 为 B；历史恢复也不得修改 Node runtime binding。旧 `POST /sessions/switch` 与 `SessionEngine.switchToExistingSession` 已删除。新对话、pending→real、desktop reset 与已确认 surface migration 继续走各自既有 identity handover，不属于历史导航。
 
-**Sidecar owner**：目标 Tab 的 Session identity 在 mount 前已经确定；App 的 `reconcileExistingSessionTabOwner()` 串起 exact Tab owner 的 ensure / abandoned release，activation reconcile 由 Rust manager 在单锁内完成并保留并发 Task identity。pending→real adoption 按 Tab 串行，Rust 只接受 exact Tab owner 的 source 或已迁移 target。配置 push / adopt 只服从锁内返回的 `result.isNew`。
+**Sidecar owner**：目标 Tab 的 Session identity 在 mount 前已经确定；App 的 `reconcileExistingSessionTabOwner()` 串起 exact Tab owner 的 ensure 与废弃请求清理。Rust manager 在同一把锁内确认当前 generation 仍包含该 Tab owner，并释放临时 `BackgroundCompletion` 交接 owner；并发 Task owner 不受影响。pending→real adoption 按 Tab 串行，Rust 只接受 exact Tab owner 的 source 或已迁移 target。配置 push / adopt 只服从锁内返回的 `result.isNew`。
 
 **首屏历史 owner**：`TabProvider` 的 persisted restore lifecycle（`inactive / restoring / ready / failed`）独占可见性裁决；`liveRevisionFence` 只是该 lifecycle 下属的事件连续性机制，不是第二个 UI owner。真实 persisted Session 在首帧同步进入 `restoring`；`GET /sessions/:id` 是持久历史唯一权威，统一 normalize 后原子提交，完成前 `cold-history` 不得进入可见 messages。`target + restoreToken + connectionGeneration` 共同拒绝 stale REST 结果；恢复失败保持目标壳并禁止发送。MessageList 不再维护第二层 session-loading fade。
 
@@ -676,6 +697,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
+- `TaskApplication` 统一编排 Task 的创建、状态、删除和 run/rerun；current-session Task 只在真实 Session 创建完成后才持久化，通知字段在 TaskStore 写锁内合并，成功的 run/rerun 由同一操作返回从 1 开始计数的 `attemptOrdinal`，供 GUI/CLI 上报 analytics
 - Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
 - 同一 Task 的 status、timer、execution claim 与 stop side effect 由 keyed Task-control lifecycle 串行化；stop 使用现有 `queueId` 精确停止当前 Turn。持久 `Running/Stopped` 只表达 scheduler intent，具体 Turn 以非持久 `running/stopping/stop_failed` 投影；stop 未确认时禁止 rerun。Attached Space Task 的终态不能 generic rerun，必须由新的 claim/reopen 创建新 Attached Task
 - AI 讨论路径：想法卡 →「AI 讨论」打开新 Tab + 注入 `task-alignment` Skill → 完成后 `myagents task create-from-alignment`
@@ -880,8 +902,8 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | 事件 | 操作 |
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
-| 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
-| 定时 Task 启动 | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController` |
+| 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 Session lifecycle guard 下释放精确 Tab owner |
+| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController` |
 | Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
 | Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
 | Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
@@ -892,9 +914,9 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | 终端关闭 / Tab 关闭 | `cmd_terminal_close(terminalId)` |
 | 浏览器打开 | `cmd_browser_create(tabId, url, x, y, width, height)` |
 | 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
-| 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
-| Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
-| 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 是唯一应用清理 owner：停止 Sidecar、IM、终端、浏览器并释放进程锁；普通重启入口使用 `request_restart()` 进入该路径。更新安装保留 verified shutdown 后的 updater `relaunch()` 路径 |
+| 任务立即执行 / 重新派发 | `TaskApplication::run*` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
+| Task 软删除 | `TaskApplication::delete_ordinary` → `TaskStore` 写 `→ deleted` 伪状态 + 联动清理 thought |
+| 应用退出 / 普通重启 | Rust `RunEvent::ExitRequested` 统一关闭资源创建入口，等待在途创建完成登记或释放，再通过现有进程树句柄停止 Sidecar / Plugin Bridge 并清理 IM、终端和浏览器；普通重启通过 `request_restart()` 进入同一路径 |
 
 **Owner 释放规则：** 当一个 Session 的所有 Owner 都释放后，Sidecar 才停止。
 
@@ -987,7 +1009,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### Boot Banner
 
-应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
+应用启动时输出 Rust `[boot]` 自检；每个 Session Sidecar 完成 Runtime 初始化后输出 Node `[boot]` 自检：
 ```
 [boot] v=0.3.1 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
 [boot] pid=12345 port=31415 node=24.14.0 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright builtin-mcp-meta=gemini-image,edge-tts

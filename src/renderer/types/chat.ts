@@ -20,8 +20,10 @@ import type {
 import type { ToolUse } from '@/types/stream';
 import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import type { ToolInput } from '../../shared/types/tool-input';
 
 export type { ToolAttachment, ToolAttachmentKind } from '../../shared/types/tool-attachment';
+export type { ToolInput } from '../../shared/types/tool-input';
 
 // Re-export SDK types with friendly names
 export type ReadInput = FileReadInput;
@@ -52,23 +54,6 @@ export interface AgentStatusTodoSnapshot {
   activeForm: string;
   status: AgentStatusTodoSnapshotStatus;
 }
-
-export type ToolInput =
-  | AgentInput
-  | BashInput
-  | ReadInput
-  | WriteInput
-  | EditInput
-  | GlobInput
-  | GrepInput
-  | TodoWriteInput
-  | TaskCreateInput
-  | TaskUpdateInput
-  | TaskGetInput
-  | TaskListInput
-  | WebFetchInput
-  | WebSearchInput
-  | NotebookEditInput;
 
 export interface SubagentToolCall {
   id: string;

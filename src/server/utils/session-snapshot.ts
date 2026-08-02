@@ -2,7 +2,7 @@ import type { AgentConfig } from '../../shared/types/agent';
 import {
   buildRuntimeChangePatch,
   coerceModelForRuntime,
-  coercePermissionModeForRuntime,
+  projectPermissionModeForRuntime,
   type RuntimeSource,
   type RuntimeType,
 } from '../../shared/types/runtime';
@@ -10,7 +10,11 @@ import { coerceReasoningEffortSettingForRuntime } from '../../shared/reasoningEf
 import type { SessionMetadata } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { createConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
-import { createRuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import {
+  agentUsesManagedCodexProvider,
+  createRuntimeBackedProviderIdentity,
+  managedCodexProviderPermissionToRuntimePermission,
+} from '../../shared/providerExecution';
 
 /**
  * Session config snapshot helpers (v0.1.69).
@@ -133,7 +137,10 @@ function shouldSnapshotManagedCodexProvider(
   const isExplicitManagedCodexRuntime =
     options?.runtimeOverride === 'codex'
     && options?.runtimeSourceOverride === 'managed-provider';
+  const managedProviderSelected = isExplicitManagedCodexRuntime
+    || agentUsesManagedCodexProvider(agent);
   return (isImplicitAgentRuntime || isExplicitManagedCodexRuntime)
+    && managedProviderSelected
     && options?.managedCodexProviderReady === true
     && agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
     && typeof agent.model === 'string'
@@ -204,10 +211,8 @@ export function snapshotForOwnedSession(
         agent.runtimeConfig?.reasoningEffort,
         providerExecutionIdentity.runtime,
       ),
-      permissionMode: coercePermissionModeForRuntime(
-        agent.runtimeConfig?.permissionMode,
-        providerExecutionIdentity.runtime,
-      ),
+      permissionMode: managedCodexProviderPermissionToRuntimePermission(agent.permissionMode)
+        ?? 'auto-edit',
       mcpEnabledServers: agent.mcpEnabledServers ? [...agent.mcpEnabledServers] : undefined,
       enabledPluginIds: agent.enabledPluginIds ? [...agent.enabledPluginIds] : undefined,
       enabledOfficialToolIds: agent.enabledOfficialToolIds ? [...agent.enabledOfficialToolIds] : undefined,
@@ -242,7 +247,7 @@ export function snapshotForOwnedSession(
       ? coerceReasoningEffortSettingForRuntime(snapshotAgent.runtimeConfig?.reasoningEffort, runtime)
       : snapshotAgent.reasoningEffort,
     permissionMode: isExternal
-      ? coercePermissionModeForRuntime(snapshotAgent.runtimeConfig?.permissionMode, runtime)
+      ? projectPermissionModeForRuntime(snapshotAgent.runtimeConfig?.permissionMode, runtime)
       : snapshotAgent.permissionMode,
     mcpEnabledServers: snapshotAgent.mcpEnabledServers ? [...snapshotAgent.mcpEnabledServers] : undefined,
     enabledPluginIds: snapshotAgent.enabledPluginIds ? [...snapshotAgent.enabledPluginIds] : undefined,

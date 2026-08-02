@@ -16,7 +16,7 @@ import {
   hashAgentNameSync,
 } from '@/analytics';
 import type { AssistantEntry, EntryIntent, HistoryEntrySource, PendingSessionBirthContext, Surface } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, ensureSessionSidecar, releaseTabSession, activateSession, reconcileSessionTabActivation, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, ensureSessionSidecar, releaseTabSession, reconcileSessionTabActivation, upgradeSessionId, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, startBackgroundCompletionForDeletion, canRestoreSession, getUserSchedulerLifecycleSnapshot, querySessionHasPersistentOwners, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import CustomTitleBar from '@/components/CustomTitleBar';
@@ -64,7 +64,7 @@ import { type Tab, type InitialMessage, type LaunchSessionBirthHint, type Sideca
 import { buildRestoredTabs, saveOpenTabs, hydratePersistedState, pickDurableOverride, shouldOfferRestore, planRestoreTabs } from '@/utils/tabPersistence';
 import { persistOpenTabsDurable, loadAndClearOpenTabsDurable, clearOpenTabsDurable } from '@/utils/tabPersistenceDurable';
 import { consumeCleanExitMarker } from '@/utils/lastExitMarker';
-import { tabContentKind, isRestoreAbandoned } from '@/utils/tabContentKind';
+import { tabContentKind } from '@/utils/tabContentKind';
 import { runAfterNextPaint } from '@/utils/afterPaint';
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../shared/perfTrace';
@@ -76,7 +76,7 @@ import { createSession, getSessions, updateSession } from '@/api/sessionClient';
 import { dismissTopmost } from '@/utils/closeLayer';
 import { dispatchAppShortcut } from '@/utils/appShortcuts';
 import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
-import { forceFlushLogs, setLogServerUrl, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
+import { forceFlushLogs, setLogServerReady, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
 import { normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
 import {
@@ -108,6 +108,7 @@ import { getAgentByWorkspacePath, getAgentById } from '@/config/services/agentCo
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import {
+  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -227,6 +228,7 @@ export interface LaunchProjectAnalyticsContext {
 interface TabContentProps {
   tab: Tab;
   isActive: boolean;
+  isWindowFocused: boolean;
   isLoading: boolean;
   error: string | null;
   /**
@@ -278,10 +280,9 @@ interface TabContentProps {
   taskCenterPendingIntent: { autofocusSearch?: boolean; nonce: number } | null;
 }
 
-// Exported for the cold-restore behavior test (Issue #232) — asserts a cold
-// tab renders a placeholder and never mounts TabProvider.
+// Exported for focused content-mount behavior tests.
 export const MemoizedTabContent = memo(function TabContent({
-  tab, isActive, isLoading, error, isDeferredMount,
+  tab, isActive, isWindowFocused, isLoading, error, isDeferredMount,
   onLaunchProject, onOpenHistorySession, onNewSession,
   onUpdateGenerating, onUpdateTitle, onUpdateUnread, onRenameSession, onForkSession, onUpdateSessionId, onClearInitialMessage,
   claimSessionOpeningTransition,
@@ -364,15 +365,6 @@ export const MemoizedTabContent = memo(function TabContent({
         <Suspense fallback={PAGE_FALLBACK}>
           <Space isActive={isActive} />
         </Suspense>
-      ) : kind === 'cold' ? (
-        // Restored-but-not-yet-activated chat tab (Issue #232). Render only a
-        // cheap placeholder — crucially NO TabProvider, so no SSE connect, no
-        // ensureSessionSidecar, no recovery timers fire for tabs the user hasn't
-        // opened yet. App.activateRestoredTab clears `restoreState` on first
-        // activation, after which the real TabProvider branch below mounts.
-        isActive
-          ? <ChatBootOverlay />
-          : <div className="h-full w-full bg-[var(--paper)]" />
       ) : (
         <TabProvider
           tabId={tab.id}
@@ -387,6 +379,7 @@ export const MemoizedTabContent = memo(function TabContent({
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
+              isWindowFocused={isWindowFocused}
               onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
@@ -412,6 +405,9 @@ export const MemoizedTabContent = memo(function TabContent({
   return (
     prev.tab === next.tab &&
     prev.isActive === next.isActive &&
+    // Desktop focus only affects the active Chat's geometry boundary. Keep
+    // inactive heavy Tab subtrees out of every app-switch render.
+    (next.tab.view !== 'chat' || !next.isActive || prev.isWindowFocused === next.isWindowFocused) &&
     prev.isLoading === next.isLoading &&
     prev.error === next.error &&
     // Drives the deferred-mount → real-content transition for new tabs.
@@ -457,6 +453,7 @@ export default function App() {
   const { config, isLoading: configLoading, providers: appProviders, apiKeys: appApiKeys, providerVerifyStatus: appProviderVerifyStatus, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
   const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable = spaceBuildCapability.available && config.teamSpaceEnabled === true;
+  const [isWindowFocused, setIsWindowFocused] = useState(isRendererForegrounded);
 
   // Helper Agent's persisted model defaults — used by BugReportOverlay for
   // initial picker selection + persist on pick. The LAUNCH_BUG_REPORT handler
@@ -493,8 +490,9 @@ export default function App() {
   // effect below). `buildRestoredTabs()` still runs synchronously here to
   // CAPTURE the prior session's restorable tabs BEFORE the post-commit persist
   // effect overwrites localStorage with this fresh launcher; the captured set
-  // becomes the pill's restore candidate, hydrated `restoreState:'cold'` (no
-  // TabProvider / sidecar until first activation — see MemoizedTabContent).
+  // becomes the pill's restore candidate. Those Tabs are not mounted until the
+  // user accepts the pill; the click path validates them before committing the
+  // final live Chat projection.
   const [restoreCandidate] = useState(() => buildRestoredTabs());
   const [tabs, setTabs] = useState<Tab[]>(() => [createNewTab()]);
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => tabs[0]?.id ?? null);
@@ -572,8 +570,7 @@ export default function App() {
   // fields), and we deliberately avoid `beforeunload` (unreliable in Tauri
   // WKWebView; update install + app quit both exit from the Rust side, not a
   // renderer unload handshake — see the hide/quit flush below and
-  // handleRestartAndUpdate). Restored "cold" tabs are persisted too (they carry
-  // a real sessionId) — serializeTabs strips the runtime-only restoreState flag.
+  // handleRestartAndUpdate).
   useEffect(() => {
     saveOpenTabs(tabs, activeTabId);
   }, [tabs, activeTabId]);
@@ -631,27 +628,6 @@ export default function App() {
       }
     })();
   }, [restoreCandidate]);
-
-  // "恢复对话" pill — restore the previous session on click. Replaces a still-
-  // pristine lone launcher; otherwise APPENDS (deduped by sessionId, capped at
-  // MAX_TABS) so it never disturbs work the user already started this session.
-  // Restored tabs are "cold" (hydratePersistedState) — no sidecar until the user
-  // actually activates one.
-  const handleRestoreLastSession = useCallback(() => {
-    const candidate = restoreCandidateRef.current;
-    setRestorePillCount(0);
-    restoreCandidateRef.current = null;
-    if (!candidate || candidate.tabs.length === 0) return;
-    // planRestoreTabs computes the merged list AND the surviving active id from
-    // the same merge, so the active tab is always present in the list (no
-    // divergent-base setState — see the helper's doc). Plan against the live
-    // tabs via the ref to avoid a stale closure.
-    const plan = planRestoreTabs(tabsRef.current, candidate);
-    if (!plan) return;
-    track('restore_last_session', { count: candidate.tabs.length });
-    setTabs(plan.tabs);
-    setActiveTabId(plan.activeTabId);
-  }, [setActiveTabId]);
 
   // ✕ on the pill — dismiss without restoring (don't nag again this session).
   const handleDismissRestore = useCallback(() => {
@@ -940,14 +916,8 @@ export default function App() {
       markGlobalSidecarReady();
       retryCountRef.current = 0; // Reset on success
 
-      // Set log server URL to global sidecar for unified logging
-      try {
-        const globalUrl = await getGlobalServerUrl();
-        setLogServerUrl(globalUrl);
-        console.log('[App] Global sidecar started, log URL set:', globalUrl);
-      } catch (e) {
-        console.warn('[App] Failed to set log server URL:', e);
-      }
+      setLogServerReady();
+      console.log('[App] Global sidecar started; unified log sink ready');
     } catch (error) {
       if (!mountedRef.current) return;
 
@@ -1158,12 +1128,10 @@ export default function App() {
       }, listenerAc.signal);
 
       // Listen for Global Sidecar auto-restart by Rust health monitor
-      void listenWithCleanup<string>('global-sidecar:restarted', (event) => {
+      void listenWithCleanup<string>('global-sidecar:restarted', () => {
         if (!mountedRef.current) return;
-        const newUrl = event.payload;
-        console.log('[App] Global sidecar auto-restarted by health monitor:', newUrl);
-        updateGlobalServerUrl(newUrl);
-        setLogServerUrl(newUrl);
+        console.log('[App] Global sidecar auto-restarted by health monitor');
+        setLogServerReady();
         // Safety net: if the initial startGlobalSidecar() invoke is still blocked
         // (e.g., monitor killed the first sidecar during its TCP health check),
         // the ready promise would never resolve. Resolve it here so that components
@@ -1401,7 +1369,7 @@ export default function App() {
     try {
       console.log(`[App] Tab ${tabId} sessionId updating: ${oldSessionId} -> ${newSessionId}`);
 
-      // Upgrade the session ID in Rust HashMap (sidecars + session_activations)
+      // Upgrade the manager-owned Session identity in Rust.
       // This is a no-op if oldSessionId is null or same as newSessionId
       if (oldSessionId && oldSessionId !== newSessionId) {
         const upgraded = await upgradeSessionId(oldSessionId, newSessionId, tabId);
@@ -1737,7 +1705,8 @@ export default function App() {
           agentForLaunchBirth?.runtime,
           !!configForLaunchBirth.multiAgentRuntime,
         );
-        if (effectiveAgentRuntime !== 'builtin') {
+        if (effectiveAgentRuntime !== 'builtin'
+            && !agentUsesManagedCodexProvider(agentForLaunchBirth)) {
           return undefined;
         }
         const sel = resolveBuiltinSelection(
@@ -1775,14 +1744,11 @@ export default function App() {
             permissionMode: initialMessage?.permissionMode
               ?? sessionBirthHint?.permissionMode
               ?? (identityResolvedFromCurrentConfig
-                ? (
-                    normalizeStringSetting(agentForLaunchBirth?.runtimeConfig?.permissionMode)
-                    ?? resolveInitialPermissionMode({
-                      project,
-                      agent: agentForLaunchBirth,
-                      defaultPermissionMode: configForLaunchBirth?.defaultPermissionMode,
-                    })
-                  )
+                ? resolveInitialPermissionMode({
+                    project,
+                    agent: agentForLaunchBirth,
+                    defaultPermissionMode: configForLaunchBirth?.defaultPermissionMode,
+                  })
                 : undefined),
             reasoningEffort: initialMessage?.reasoningEffort
               ?? sessionBirthHint?.reasoningEffort
@@ -1875,11 +1841,10 @@ export default function App() {
 
       const result = await ensureSessionSidecar(effectiveSessionId, project.path, 'tab', targetTabId);
       perfMark('launch_ensured', { tabId: targetTabId });
-      console.log(`[App] Session Sidecar ensured: port=${result.port}, isNew=${result.isNew}`);
-
-      // Activate session with Tab (for Session singleton tracking and fallback port lookup)
-      // Always use effectiveSessionId to ensure session_activations has entry for this Tab
-      await activateSession(effectiveSessionId, targetTabId, null, result.port, project.path, false);
+      console.log(`[App] Session Sidecar ensured: isNew=${result.isNew}`);
+      if (!await reconcileSessionTabActivation(effectiveSessionId, targetTabId)) {
+        throw new Error(`Rust refused owner reconcile for session ${effectiveSessionId} and tab ${targetTabId}`);
+      }
 
       // Rust decides whether this owner joined a concurrently-created process.
       const resolved: SidecarConfigDisposition = result.isNew ? 'push' : 'adopt';
@@ -2006,14 +1971,16 @@ export default function App() {
 
     let ownerAcquired = false;
     try {
-      const result = await ensureSessionSidecar(newSessionId, forkAgentDir, 'tab', newTab.id);
+      await ensureSessionSidecar(newSessionId, forkAgentDir, 'tab', newTab.id);
       ownerAcquired = true;
-      console.log(`[App] Fork tab ${newTab.id} sidecar ensured: port=${result.port}`);
+      console.log(`[App] Fork tab ${newTab.id} sidecar ensured`);
       if (!tabsRef.current.some(t => t.id === newTab.id)) {
         await releaseTabSession(newSessionId, newTab.id).catch(() => {});
         return false;
       }
-      await activateSession(newSessionId, newTab.id, null, result.port, forkAgentDir, false);
+      if (!await reconcileSessionTabActivation(newSessionId, newTab.id)) {
+        throw new Error(`Rust refused owner reconcile for session ${newSessionId} and tab ${newTab.id}`);
+      }
       setActiveTabId(newTab.id);
       return true;
     } catch (error) {
@@ -2032,11 +1999,11 @@ export default function App() {
   /**
    * Reconcile one existing Session with the exact Tab that displays it.
    *
-   * This is the single App-owned ensure/activation path for history opens and
-   * cold restored Tabs. Rust atomically reconciles activation after ensure so
-   * a Task claim racing the cold start cannot be overwritten by Renderer.
+   * This is the single App-owned ensure/owner path for history opens and
+   * restored Tabs. Rust atomically verifies the Tab owner after ensure so a
+   * Task claim racing Session startup cannot be overwritten by Renderer.
    * Every await boundary is followed by a Tab identity check so a close/rebind
-   * cannot leave a phantom owner or activation behind.
+   * cannot leave a phantom owner behind.
    */
   const reconcileExistingSessionTabOwner = useCallback(async (
     tabId: string,
@@ -2061,12 +2028,12 @@ export default function App() {
         tabId,
       );
       if (!reconciled) {
-        throw new Error(`Rust refused activation reconcile for session ${sessionId} and tab ${tabId}`);
+        throw new Error(`Rust refused owner reconcile for session ${sessionId} and tab ${tabId}`);
       }
 
       if (!tabStillTargetsSession()) {
-        // releaseTabSession also clears a matching late activation when the
-        // close raced ahead and already removed the owner.
+        // releaseTabSession is idempotent when the close already removed the
+        // owner.
         await releaseTabSession(sessionId, tabId).catch(() => {});
         ownerAcquired = false;
         return null;
@@ -2077,6 +2044,44 @@ export default function App() {
       throw error;
     }
   }, []);
+
+  /**
+   * Materialize an already-mounted live Chat Tab for an existing Session.
+   *
+   * Both single-session navigation and bulk startup restore enter this exact
+   * path after their UI planner has committed the target Tab. The ensure result
+   * is the only authority for push/adopt; callers only decide how to roll back
+   * their own UI projection when this returns false.
+   */
+  const materializeExistingSessionTab = useCallback(async (
+    tabId: string,
+    sessionId: string,
+    agentDir: string,
+  ): Promise<boolean> => {
+    setLoadingTabs((current) => ({ ...current, [tabId]: true }));
+    try {
+      const result = await reconcileExistingSessionTabOwner(tabId, sessionId, agentDir);
+      if (!result) return false;
+      setTabs((current) => current.map((tab) => (
+        tab.id === tabId && tab.sessionId === sessionId
+          ? {
+            ...tab,
+            sidecarConfigDisposition: result.isNew
+              ? 'push'
+              : (tab.sidecarConfigDisposition === 'pending'
+                  ? 'adopt'
+                  : tab.sidecarConfigDisposition),
+          }
+          : tab
+      )));
+      return true;
+    } catch (error) {
+      console.error(`[App] Failed to materialize existing session ${sessionId} in tab ${tabId}:`, error);
+      return false;
+    } finally {
+      setLoadingTabs((current) => ({ ...current, [tabId]: false }));
+    }
+  }, [reconcileExistingSessionTabOwner]);
 
   /**
    * Spawn a fresh Tab bound to an EXISTING session and reconcile its owner.
@@ -2114,24 +2119,16 @@ export default function App() {
     // a render mirror, never a second writable authority.
     flushSync(() => {
       setTabs(prev => [...prev, newTab]);
-      setLoadingTabs(prev => ({ ...prev, [newTab.id]: true }));
     });
     flushSync(() => {
       setActiveTabId(newTab.id);
     });
-    try {
-      const result = await reconcileExistingSessionTabOwner(
-        newTab.id,
-        sessionId,
-        sessionAgentDir,
-      );
-      if (!result) return false;
-      setTabs(prev => prev.map(t =>
-        t.id === newTab.id ? { ...t, sidecarConfigDisposition: result.isNew ? 'push' : 'adopt' } : t,
-      ));
-      return true;
-    } catch (error) {
-      console.error('[App] Failed to open session in new tab:', error);
+    const materialized = await materializeExistingSessionTab(
+      newTab.id,
+      sessionId,
+      sessionAgentDir,
+    );
+    if (!materialized) {
       const remainingTabs = tabsRef.current.filter(t => t.id !== newTab.id);
       setTabs(prev => prev.filter(t => t.id !== newTab.id));
       if (activeTabIdRef.current === newTab.id) {
@@ -2140,14 +2137,10 @@ export default function App() {
           : (remainingTabs.at(-1)?.id ?? null);
         setActiveTabId(fallbackTabId, remainingTabs);
       }
-      // Release the Tab owner we acquired so a failed activation can't leak a
-      // phantom owner that keeps the (possibly otherwise-ownerless) sidecar
-      // alive forever.
       return false;
-    } finally {
-      setLoadingTabs(prev => ({ ...prev, [newTab.id]: false }));
     }
-  }, [reconcileExistingSessionTabOwner, setActiveTabId, t]);
+    return true;
+  }, [materializeExistingSessionTab, setActiveTabId, t]);
 
   /** Open a history session from any surface using an explicit target workspace. */
   const handleOpenTargetSession = useCallback(async (
@@ -2187,35 +2180,14 @@ export default function App() {
         // synchronously, then reconcile its process owner without yanking focus
         // back if the user moves elsewhere during a slow revive.
         setActiveTabId(targetTabId);
-        setLoadingTabs((current) => ({ ...current, [targetTabId]: true }));
-        try {
-          const result = await reconcileExistingSessionTabOwner(
-            targetTabId,
-            sessionId,
-            sessionAgentDir,
-          );
-          if (!result) return false;
-          setTabs((current) => current.map((tab) => {
-            if (tab.id !== targetTabId || tab.sessionId !== sessionId) return tab;
-            const wasCold = tab.restoreState === 'cold';
-            return {
-              ...tab,
-              restoreState: wasCold ? undefined : tab.restoreState,
-              sidecarConfigDisposition: result.isNew
-                ? 'push'
-                : (wasCold || tab.sidecarConfigDisposition === 'pending'
-                    ? 'adopt'
-                    : tab.sidecarConfigDisposition),
-            };
-          }));
-          console.log(`[App] handleOpenTargetSession: Session ${sessionId} owned by tab ${targetTabId}`);
-          return true;
-        } catch (error) {
-          console.error('[App] Failed to open existing session tab:', error);
-          return false;
-        } finally {
-          setLoadingTabs((current) => ({ ...current, [targetTabId]: false }));
-        }
+        const materialized = await materializeExistingSessionTab(
+          targetTabId,
+          sessionId,
+          sessionAgentDir,
+        );
+        if (!materialized) return false;
+        console.log(`[App] handleOpenTargetSession: Session ${sessionId} owned by tab ${targetTabId}`);
+        return true;
       }
       return await spawnTabForExistingSession(sessionId, sessionAgentDir, title || getFolderName(sessionAgentDir), {
         pendingFilePreview: options?.pendingFilePreview,
@@ -2223,7 +2195,116 @@ export default function App() {
     } finally {
       releaseTransition();
     }
-  }, [reconcileExistingSessionTabOwner, setActiveTabId, spawnTabForExistingSession, trackHistorySessionOpenAsync]);
+  }, [materializeExistingSessionTab, setActiveTabId, spawnTabForExistingSession, trackHistorySessionOpenAsync]);
+
+  // "恢复对话" is a bulk entry into the same live existing-Session path used
+  // by normal history navigation. Validate every candidate under its Session
+  // opening admission first, then commit one final tabs/active projection so
+  // every restored Chat mounts TabProvider from its first render. Owner work is
+  // independent per target; failures are removed together from the latest Tab
+  // list so concurrent results cannot overwrite one another or newer user work.
+  const handleRestoreLastSession = useCallback(async () => {
+    const candidate = restoreCandidateRef.current;
+    setRestorePillCount(0);
+    restoreCandidateRef.current = null;
+    if (!candidate || candidate.tabs.length === 0) return;
+
+    type ValidatedRestoreTarget = {
+      tab: Tab & { agentDir: string; sessionId: string };
+      releaseTransition: () => void;
+    };
+    const validated = (await Promise.all(candidate.tabs.map(async (tab): Promise<ValidatedRestoreTarget | null> => {
+      if (!tab.agentDir || !tab.sessionId) return null;
+      const target = tab as Tab & { agentDir: string; sessionId: string };
+      const releaseTransition = tryClaimSessionResourceTransition(
+        sessionResourceTransitionsRef.current,
+        target.sessionId,
+        'opening',
+        target.id,
+      );
+      if (!releaseTransition) return null;
+      try {
+        if (await canRestoreSession(target.sessionId, target.agentDir)) {
+          return { tab: target, releaseTransition };
+        }
+        console.warn(`[App] Restore candidate ${target.id}: session ${target.sessionId} or workspace is gone`);
+      } catch (error) {
+        console.error(`[App] Failed to validate restore candidate ${target.id}:`, error);
+      }
+      releaseTransition();
+      return null;
+    }))).filter((target): target is ValidatedRestoreTarget => target !== null);
+
+    if (validated.length === 0) return;
+    const baseTabs = tabsRef.current;
+    const previousActiveTabId = activeTabIdRef.current;
+    const validTabs = validated.map(({ tab }) => tab);
+    const validActiveTabId = validTabs.some((tab) => tab.id === candidate.activeTabId)
+      ? candidate.activeTabId
+      : null;
+    const plan = planRestoreTabs(baseTabs, {
+      tabs: validTabs,
+      activeTabId: validActiveTabId,
+    });
+    if (!plan) {
+      validated.forEach(({ releaseTransition }) => releaseTransition());
+      return;
+    }
+
+    const addedTargets = validated.filter(({ tab }) => plan.tabs.includes(tab));
+    const addedTabSet = new Set(addedTargets.map(({ tab }) => tab));
+    validated.forEach(({ tab, releaseTransition }) => {
+      if (!addedTabSet.has(tab)) releaseTransition();
+    });
+    if (addedTargets.length === 0) return;
+
+    track('restore_last_session', { count: addedTargets.length });
+    flushSync(() => {
+      // Compose after any queued field-only updates (for example another
+      // existing Tab settling pending → adopt) instead of replacing them with
+      // the pre-await render mirror captured by the restore plan.
+      setTabs((current) => plan.tabs.map((planned) => (
+        current.find((tab) => (
+          tab.id === planned.id && tab.sessionId === planned.sessionId
+        )) ?? planned
+      )));
+      setActiveTabId(plan.activeTabId, plan.tabs);
+    });
+
+    const results = await Promise.allSettled(addedTargets.map(async ({ tab, releaseTransition }) => {
+      try {
+        return await materializeExistingSessionTab(tab.id, tab.sessionId, tab.agentDir);
+      } finally {
+        releaseTransition();
+      }
+    }));
+    const failedTabIds = new Set<string>();
+    results.forEach((result, index) => {
+      if (result.status === 'rejected' || !result.value) {
+        failedTabIds.add(addedTargets[index].tab.id);
+      }
+    });
+    if (failedTabIds.size === 0) return;
+
+    flushSync(() => {
+      const remaining = tabsRef.current.filter((tab) => !failedTabIds.has(tab.id));
+      const nextTabs = remaining.length > 0 ? remaining : [createNewTab()];
+      const currentActiveTabId = activeTabIdRef.current;
+      const nextActiveTabId = currentActiveTabId && nextTabs.some((tab) => tab.id === currentActiveTabId)
+        ? currentActiveTabId
+        : (previousActiveTabId && nextTabs.some((tab) => tab.id === previousActiveTabId)
+            ? previousActiveTabId
+            : nextTabs.at(-1)!.id);
+      // Functional removal composes after each successful target's queued
+      // pending → push/adopt update. A direct `setTabs(nextTabs)` from the
+      // render mirror can overwrite that settlement in React's update queue.
+      setTabs((current) => {
+        const currentRemaining = current.filter((tab) => !failedTabIds.has(tab.id));
+        return currentRemaining.length > 0 ? currentRemaining : nextTabs;
+      });
+      setActiveTabId(nextActiveTabId, nextTabs);
+    });
+  }, [materializeExistingSessionTab, setActiveTabId]);
 
   /** Chat-local adapter: all history selections use the canonical new/jump/revive path. */
   const handleOpenChatHistorySession = useCallback(async (
@@ -2282,8 +2363,10 @@ export default function App() {
 
       // Create new pending session with new Sidecar
       const pendingSessionId = createPendingSessionId(tabId);
-      const result = await ensureSessionSidecar(pendingSessionId, currentTab.agentDir, 'tab', tabId);
-      await activateSession(pendingSessionId, tabId, null, result.port, currentTab.agentDir, false);
+      await ensureSessionSidecar(pendingSessionId, currentTab.agentDir, 'tab', tabId);
+      if (!await reconcileSessionTabActivation(pendingSessionId, tabId)) {
+        throw new Error(`Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`);
+      }
 
       // Update tab state → TabProvider will detect sessionId change and reconnect
       // Fresh sidecar for the new session → 'push' (overwrites any stale disposition)
@@ -2299,7 +2382,7 @@ export default function App() {
       if (fbResult.migrated) {
         console.log(`[App] Floating ball session binding migrated to pending session: ${oldSessionId} -> ${pendingSessionId}, notified=${fbResult.notified}`);
       }
-      console.log(`[App] handleNewSession: Created new Sidecar for pending session ${pendingSessionId} on port ${result.port}`);
+      console.log(`[App] handleNewSession: Created new Sidecar for pending session ${pendingSessionId}`);
       return true;
     } catch (error) {
       console.error('[App] handleNewSession failed:', error);
@@ -2307,107 +2390,9 @@ export default function App() {
     }
   }, []);
 
-  // ---- Restored-tab activation (Issue #232) ---------------------------------
-  // A cold restored tab carries a real sessionId/agentDir but has NO sidecar and
-  // does NOT mount TabProvider (see MemoizedTabContent). The first time one
-  // becomes active we lazily validate it still exists on disk, ensure its
-  // sidecar + activate it, then clear `restoreState` so TabProvider mounts and
-  // runs its normal SSE/loadSession flow. Dedup guard prevents the startup
-  // auto-activation and a near-simultaneous user click from double-spawning.
-  const restoreActivationInFlight = useRef<Set<string>>(new Set());
-
-  // Remove a restored tab that can no longer be activated (deleted session or
-  // missing/moved workspace). Always keeps ≥1 tab and re-points activeTabId.
-  // Decisions are computed from the current committed list BEFORE the state
-  // updates so we never call setActiveTabId inside the setTabs updater (which
-  // would be a side-effecting, StrictMode-double-invoke-unsafe updater).
-  const dropRestoredTab = useCallback((tabId: string) => {
-    const remaining = tabsRef.current.filter((t) => t.id !== tabId);
-    if (remaining.length === 0) {
-      // Last tab gone → replace with a fresh launcher (never leave 0 tabs).
-      const fresh = createNewTab();
-      setTabs([fresh]);
-      setActiveTabId(fresh.id);
-      return;
-    }
-    setTabs((prev) => prev.filter((t) => t.id !== tabId));
-    setActiveTabId((curr) => (curr === tabId ? remaining[remaining.length - 1].id : curr));
-  }, [setActiveTabId]);
-
-  const activateRestoredTab = useCallback(
-    async (tabId: string) => {
-      const tab = tabsRef.current.find((t) => t.id === tabId);
-      if (!tab || tab.restoreState !== 'cold') return;
-      if (!tab.agentDir || !tab.sessionId) { dropRestoredTab(tabId); return; }
-      if (restoreActivationInFlight.current.has(tabId)) return;
-      const { sessionId, agentDir } = tab;
-      const releaseTransition = tryClaimSessionResourceTransition(
-        sessionResourceTransitionsRef.current,
-        sessionId,
-        'opening',
-      );
-      if (!releaseTransition) {
-        // Another same-Session open/delete already owns the transition. Keep
-        // the cold projection unchanged: deletion can still be refused, and
-        // losing the Tab before that decision would discard valid UI state.
-        return;
-      }
-      restoreActivationInFlight.current.add(tabId);
-      try {
-        // Lazy validation, decoupled from global sidecar readiness: reads
-        // sessions.json + workspace dir directly via Rust.
-        const ok = await canRestoreSession(sessionId, agentDir);
-        // If the user closed/switched the tab during validation, bail before
-        // acquiring any sidecar (nothing to release yet).
-        if (isRestoreAbandoned(tabsRef.current.find((t) => t.id === tabId), sessionId, agentDir)) return;
-        if (!ok) {
-          console.warn(`[App] Restored tab ${tabId}: session ${sessionId} or workspace gone, dropping`);
-          dropRestoredTab(tabId);
-          return;
-        }
-        const result = await reconcileExistingSessionTabOwner(tabId, sessionId, agentDir);
-        if (!result) return;
-        // Clear restoreState → MemoizedTabContent mounts TabProvider, which
-        // connects SSE and loadSession()s the history from JSONL.
-        setTabs((prev) =>
-          prev.map((t) =>
-            t.id === tabId
-              ? {
-                ...t,
-                restoreState: undefined,
-                sidecarConfigDisposition: result.isNew ? 'push' : 'adopt',
-              }
-              : t,
-          ),
-        );
-      } catch (err) {
-        console.error(`[App] Failed to activate restored tab ${tabId}:`, err);
-        dropRestoredTab(tabId);
-      } finally {
-        restoreActivationInFlight.current.delete(tabId);
-        releaseTransition();
-      }
-    },
-    [dropRestoredTab, reconcileExistingSessionTabOwner],
-  );
-
   const handleSelectTab = useCallback((tabId: string) => {
     setActiveTabId(tabId);
   }, [setActiveTabId]);
-
-  // Activate a restored cold tab whenever it becomes active — via ANY path
-  // (click, Cmd+Tab/Cmd+1-9, swipe, session jump, or the initial active tab on
-  // startup). Centralizing on `activeTabId` rather than each switch handler is
-  // pit-of-success: no activation path can forget to wake a restored tab, and
-  // only the active tab spawns a sidecar at boot (the rest stay cold). The
-  // in-flight guard + post-activation `restoreState` clear make it idempotent.
-  useEffect(() => {
-    if (!activeTabId) return;
-    const tab = tabs.find((t) => t.id === activeTabId);
-    if (tab?.restoreState === 'cold') {
-      void activateRestoredTab(activeTabId);
-    }
-  }, [activeTabId, tabs, activateRestoredTab]);
 
   // Clear unread indicator only when the active tab identity changes. Do not key
   // this effect on `tabs`: a hidden-but-active tab marks itself unread when a
@@ -3200,6 +3185,7 @@ export default function App() {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
     },
+    onWindowFocusChanged: setIsWindowFocused,
     onWindowFocused: handleWindowFocused,
     onExitRequested: async () => {
       // User-owned scheduler lifecycle is authoritative here. Ordinary Cron
@@ -3331,6 +3317,7 @@ export default function App() {
             key={tab.id}
             tab={tab}
             isActive={tab.id === activeTabId}
+            isWindowFocused={isWindowFocused}
             isLoading={loadingTabs[tab.id] ?? false}
             error={tabErrors[tab.id] ?? null}
             isDeferredMount={deferredMountTabIds.has(tab.id)}
