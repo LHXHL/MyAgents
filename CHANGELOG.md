@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.4] - 2026-08-03
+
+> MyAgents 0.4.4 聚焦旧版 Agent 工作区升级兼容性：工作区被移动、历史 Agent 重复或路径记录不一致时，仍会按稳定的 Agent 身份加载正确配置，并使用 Project 的当前路径运行，不再因旧路径阻断工作区。版本同时改用系统原生滚动条，让首条提问更快成为会话标题，并完善 MCP 连接测试与 Managed Codex 标题生成。
+
+### Changed
+
+- **滚动条回归系统原生体验**：macOS、Windows 和 Linux 交由 OS / WebView 处理滚动条外观、鼠标与触控板输入、明暗模式和辅助功能偏好；Windows 在受支持的 WebView2 上使用 Fluent Overlay，旧 Runtime 保留安全的原生回退。
+
+### Fixed
+
+- **旧版 Agent 工作区升级后仍可正常使用**：Agent 配置按稳定 ID 选择，界面、文件操作和新会话统一使用 Project 当前路径；历史 `workspacePath` 不一致、目录移动、重复 Agent 或遗留孤立 Agent 不再造成错误绑定或强制阻断，新建 Agent 也不再写入这项旧字段。
+- **自动记忆更新不会串用同路径 Agent 的配置**：每个 Agent 独立拥有自己的 Memory 定时任务；停用 Agent 的主动能力会立即停止自动更新，但不会删除其 Memory 子配置，也不影响工作区中的普通对话和文件使用。
+- **MCP 连接测试反映真实可用性**：`myagents mcp test` 会使用已保存的 transport、环境变量、Headers、代理和 OAuth 配置完成 MCP 初始化握手；超时会清理连接，诊断信息保持有界并脱敏，HTTP / SSE 授权失效会给出可操作的重新授权提示。
+- **会话标题生成更及时、更稳定**：首条提问被接纳后会立即显示为当前会话标题，撤回、手动标题和 AI 标题仍保持正确优先级；Managed Codex 的自动标题继续使用受管 Runtime，不会误启系统 Codex 或加载工作区 MCP 导致超时。
+
+---
+
 ## [0.4.3] - 2026-08-02
 
 > MyAgents 0.4.3 聚焦多入口会话与后台运行可靠性：桌面、IM、任务和 CLI 会更稳定地共享正确的 Agent、模型、权限与 Session 身份，Sidecar 重启和并发消息也不会串写或丢失。版本同时升级 Managed Codex、加入 Agent 定向的 CLI 协作入口，并改善恢复会话、流式阅读、窄屏布局和 Chat 细节交互。
