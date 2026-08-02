@@ -420,7 +420,7 @@ vi.mock('@/config/configService', () => ({
 }));
 
 vi.mock('@/config/services/agentConfigService', () => ({
-  getAgentByWorkspacePath: vi.fn(() => mocks.agent),
+  getProjectAgent: vi.fn(() => mocks.agent),
   getAgentById: vi.fn(() => mocks.agent),
 }));
 

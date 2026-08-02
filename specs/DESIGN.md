@@ -1162,7 +1162,7 @@ Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通�
 |------|-------|---------|---------|
 | 字体渲染 | 更平滑 | 更锐利 | 使用系统字体，信任系统渲染 |
 | 窗口控制 | 左上角红绿灯 | 右上角三按钮 | 使用系统原生控件；macOS Overlay inset 由 `NSWindow` 几何通知维护（见 §15），其余交给 Tauri |
-| 滚动条 | 自动隐藏 | WebView2 经典滚动条 | 全局活动态控制：稳定 6px 几何，thumb 仅滚动中显色 |
+| 滚动条 | 系统 Default，服从“自动 / 滚动时 / 始终显示”偏好 | WebView2 Fluent Overlay（Runtime ≥ 125；旧 Runtime 原生回退） | WebView / OS 负责显隐、hover 与拖拽；Renderer 不自绘 |
 | 圆角 | 系统级大圆角 | 小圆角/直角 | 使用自定义圆角，两端一致 |
 
 ### 12.2 字体渲染优化
@@ -1178,39 +1178,15 @@ body {
 
 ### 12.3 滚动条样式
 
-```css
-/* 跨平台细滚动条 */
-* {
-  scrollbar-width: thin;  /* Firefox */
-  scrollbar-color: var(--ink-subtle) transparent;
-}
+滚动条统一的是产品语义，不是跨平台硬编码同一组像素：静止时不抢注意力，滚动时反馈当前位置，鼠标或笔直接操作时提供平台原生的明确 hover / thumb / track 与拖拽能力。
 
-/* Webkit (Chrome/Safari/Edge) */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--ink-subtle);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+- Windows：Tauri WebView creation policy 为所有共享默认 data directory 的 WebView 设置 `ScrollBarStyle::FluentOverlay`。受支持的 WebView2 Runtime 负责从轻量滚动指示器切换到鼠标 / 笔可直接操作的 Fluent scrollbar，显隐不能引起内容宽度变化；Runtime 低于 125.0.2535.41 时能力不生效并保留原生 Default，不用透明 thumb 伪装 overlay。
+- macOS / Linux：保持 WebView `Default`，服从系统偏好、桌面环境与原生手势。应用不能用全局 6px 宽度、颜色或计时 class 覆盖系统行为。
+- Theme：`ThemeRuntime` 继续把当前 scheme 投影到根节点 `color-scheme`；这只提供原生控件的 light / dark 语义，不接管 scrollbar 的交互状态。
+- 标准位置：左侧全局侧栏、中央 AI 对话、右侧文件工作区必须保持各自独立的既有 scroll owner；能力列表等应用内常规滚动面遵循同一 native policy。MessageList、WorkspaceTreeViewport、GlobalSidebar 与能力列表使用 `scrollbar-gutter: stable` 保护 classic fallback 下的内容宽度，不新增平行 DOM scroller。
+- 局部例外：仅允许组件职责明确的隐藏轨道（例如横向 Tab rail、设置导航）或组件自带实现（例如 Monaco）。局部规则必须作用域隔离，不能覆盖三个标准滚动面；embedded Browser 的第三方页面可由页面自身 CSS 改写外观，不承诺 MyAgents 视觉一致性。
 
-/* Windows: renderer 全局 scroll capture 给正在滚动的元素加
-   .myagents-scrollbar-active。默认 thumb 透明，滚动停止后恢复透明，
-   保留 6px 几何以避免内容列重排。 */
-html.platform-windows.platform-windows,
-html.platform-windows.platform-windows * {
-  scrollbar-color: transparent transparent;
-}
-
-html.platform-windows.platform-windows.myagents-scrollbar-active,
-html.platform-windows.platform-windows .myagents-scrollbar-active {
-  scrollbar-color: var(--ink-subtle) transparent;
-}
-```
+禁止通过全局 `::-webkit-scrollbar`、`scrollbar-width: thin`、透明 thumb、scroll timer、pointer proximity 监听或第三方 ScrollArea 模拟原生输入感知行为。所有新增 Tauri WebView builder 必须复用 `src-tauri/src/webview_policy.rs`，避免同 data directory 的 WebView2 style 冲突。
 
 ---
 

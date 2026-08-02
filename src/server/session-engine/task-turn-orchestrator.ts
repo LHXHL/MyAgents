@@ -20,7 +20,7 @@ import {
   CRON_TASK_EXIT_TEXT,
   setCronTaskContext,
 } from '../tools/cron-tools';
-import { findAgentByWorkspacePath, loadConfig } from '../utils/admin-config';
+import { findProjectAgentByWorkspacePath, loadConfig } from '../utils/admin-config';
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { managementApi } from '../utils/management-api-client';
 import { buildCronTaskReminder, type CronScheduleKind } from '../utils/cron-reminder';
@@ -131,7 +131,7 @@ async function initializeTaskSession(
   guard: DispatchGuard,
   lease: NonNullable<ReturnType<typeof beginTaskSessionBirth>>,
 ): Promise<{ accepted: true; sessionId: string } | { accepted: false; error: string; code?: string }> {
-  const agent = findAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
+  const agent = findProjectAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
   const runtimeIdentity = engine.getRuntimeIdentity();
   const liveConfig = engine.getSessionConfigSnapshot();
   const runtime = runtimeIdentity.runtime;

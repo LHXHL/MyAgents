@@ -19,19 +19,25 @@ vi.mock('../SessionStore', () => ({ getSessionMetadata: mocks.getSessionMetadata
 import { handleAdminSessionStart } from './start-admin-handler';
 
 function registry(archived = false) {
-  return {
-    identities: [{
+  const identity = {
+    agentId: 'agent-1',
+    workspacePath: '/target/workspace',
+    agent: { id: 'agent-1', name: 'Target', enabled: false },
+    projectId: 'project-1',
+    association: 'project-linked',
+    canMutateProjectLifecycle: true,
+    project: {
+      id: 'project-1',
+      name: 'Target',
+      path: '/target/workspace',
       agentId: 'agent-1',
-      workspacePath: '/target/workspace',
-      agent: { id: 'agent-1', name: 'Target', enabled: false },
-      project: {
-        id: 'project-1',
-        name: 'Target',
-        path: '/target/workspace',
-        agentId: 'agent-1',
-        ...(archived ? { archivedAt: '2026-08-01T00:00:00.000Z' } : {}),
-      },
-    }],
+      ...(archived ? { archivedAt: '2026-08-01T00:00:00.000Z' } : {}),
+    },
+  };
+  return {
+    identities: [identity],
+    agentProjections: [identity],
+    diagnostics: [],
   };
 }
 

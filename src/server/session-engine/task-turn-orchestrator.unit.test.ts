@@ -31,7 +31,7 @@ vi.mock('../SessionStore', () => ({
   updateSessionMetadata: mocks.updateSessionMetadata,
 }));
 vi.mock('../utils/admin-config', () => ({
-  findAgentByWorkspacePath: vi.fn(() => ({
+  findProjectAgentByWorkspacePath: vi.fn(() => ({
     id: 'agent-1',
     workspacePath: '/workspace',
     runtime: 'builtin',

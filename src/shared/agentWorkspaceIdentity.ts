@@ -5,6 +5,7 @@ import {
   type WorkspaceTemplateAgentDefaults,
 } from './config-types';
 import type { AgentConfig } from './types/agent';
+import { readLegacyAgentWorkspacePath } from './legacyAgentWorkspace';
 import { normalizeWorkspacePathIdentity } from './workspacePath';
 
 /**
@@ -33,7 +34,6 @@ export interface AgentWorkspaceProjectRecord {
 
 export interface AgentWorkspaceAgentRecord {
   id: string;
-  workspacePath?: string;
   enabled?: boolean;
 }
 
@@ -42,9 +42,167 @@ export type AgentWorkspaceIdentityErrorCode =
   | 'DUPLICATE_PROJECT_ID'
   | 'DUPLICATE_PROJECT_WORKSPACE'
   | 'DUPLICATE_AGENT_ID'
-  | 'MULTIPLE_AGENTS_FOR_WORKSPACE'
   | 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS'
   | 'CREATED_AGENT_ID_COLLISION';
+
+export interface AgentWorkspaceIdentityDiagnostic {
+  code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS' | 'DUPLICATE_PROJECT_WORKSPACE';
+  message: string;
+  projectIds: string[];
+  agentIds: string[];
+}
+
+function collectProjectWorkspaceConflicts<P extends AgentWorkspaceProjectRecord>(projects: readonly P[]) {
+  const projectsByWorkspace = new Map<string, P[]>();
+  for (const project of projects) {
+    const identity = normalizeWorkspacePathIdentity(project.path);
+    if (!identity) continue;
+    const matches = projectsByWorkspace.get(identity) ?? [];
+    matches.push(project);
+    projectsByWorkspace.set(identity, matches);
+  }
+
+  const diagnostics: AgentWorkspaceIdentityDiagnostic[] = [];
+  const conflictedProjectIds = new Set<string>();
+  for (const matches of projectsByWorkspace.values()) {
+    if (matches.length < 2) continue;
+    const projectIds = matches.map(project => project.id);
+    projectIds.forEach(projectId => conflictedProjectIds.add(projectId));
+    diagnostics.push({
+      code: 'DUPLICATE_PROJECT_WORKSPACE',
+      message: `Projects '${projectIds.join("', '")}' resolve to the same workspace.`,
+      agentIds: matches.flatMap(project => project.agentId ? [project.agentId] : []),
+      projectIds,
+    });
+  }
+  return { diagnostics, conflictedProjectIds };
+}
+
+export type AgentWorkspaceAssociation =
+  | 'project-linked'
+  | 'legacy-project'
+  | 'legacy-orphan';
+
+export interface ResolvedAgentWorkspaceProjection<
+  P extends AgentWorkspaceProjectRecord = AgentWorkspaceProjectRecord,
+  A extends AgentWorkspaceAgentRecord = AgentWorkspaceAgentRecord,
+> {
+  agentId: string;
+  workspacePath: string;
+  agent: A;
+  projectId?: string;
+  project?: P;
+  association: AgentWorkspaceAssociation;
+  canMutateProjectLifecycle: boolean;
+}
+
+function collectAgentClaimConflicts<P extends AgentWorkspaceProjectRecord>(projects: readonly P[]) {
+  const claimsByAgent = new Map<string, string[]>();
+  for (const project of projects) {
+    if (!project.agentId) continue;
+    const claims = claimsByAgent.get(project.agentId) ?? [];
+    claims.push(project.id);
+    claimsByAgent.set(project.agentId, claims);
+  }
+
+  const diagnostics: AgentWorkspaceIdentityDiagnostic[] = [];
+  const conflictedAgentIds = new Set<string>();
+  const conflictedProjectIds = new Set<string>();
+  for (const [agentId, projectIds] of claimsByAgent) {
+    if (projectIds.length < 2) continue;
+    conflictedAgentIds.add(agentId);
+    projectIds.forEach(projectId => conflictedProjectIds.add(projectId));
+    diagnostics.push({
+      code: 'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
+      message: `Agent '${agentId}' is explicitly linked by multiple Projects.`,
+      agentIds: [agentId],
+      projectIds: [...projectIds],
+    });
+  }
+  return { claimsByAgent, diagnostics, conflictedAgentIds, conflictedProjectIds };
+}
+
+/**
+ * Read-only Agent → workspace projection for already-persisted snapshots.
+ * Exact Project.agentId claims win; legacy path evidence is consulted only for
+ * unlinked historical Agents, and a true orphan keeps its old path fallback.
+ */
+export function resolveAgentWorkspaceProjections<
+  P extends AgentWorkspaceProjectRecord,
+  A extends AgentWorkspaceAgentRecord,
+>(
+  projects: readonly P[],
+  agents: readonly A[],
+): {
+  agentProjections: Array<ResolvedAgentWorkspaceProjection<P, A>>;
+  diagnostics: AgentWorkspaceIdentityDiagnostic[];
+} {
+  const conflictState = collectAgentClaimConflicts(projects);
+  const workspaceConflictState = collectProjectWorkspaceConflicts(projects);
+  const exactProjectByAgent = new Map<string, P>();
+  for (const project of projects) {
+    if (project.agentId
+        && !conflictState.conflictedAgentIds.has(project.agentId)
+        && !workspaceConflictState.conflictedProjectIds.has(project.id)) {
+      exactProjectByAgent.set(project.agentId, project);
+    }
+  }
+
+  const projectByWorkspace = new Map<string, P | null>();
+  for (const project of projects) {
+    if (workspaceConflictState.conflictedProjectIds.has(project.id)) continue;
+    const identity = normalizeWorkspacePathIdentity(project.path);
+    if (!identity) continue;
+    projectByWorkspace.set(identity, projectByWorkspace.has(identity) ? null : project);
+  }
+
+  const agentProjections: Array<ResolvedAgentWorkspaceProjection<P, A>> = [];
+  for (const agent of agents) {
+    if (conflictState.conflictedAgentIds.has(agent.id)) continue;
+    const exactProject = exactProjectByAgent.get(agent.id);
+    if (exactProject) {
+      agentProjections.push({
+        agentId: agent.id,
+        workspacePath: exactProject.path,
+        agent,
+        projectId: exactProject.id,
+        project: exactProject,
+        association: 'project-linked',
+        canMutateProjectLifecycle: true,
+      });
+      continue;
+    }
+
+    const legacyWorkspacePath = readLegacyAgentWorkspacePath(agent);
+    const workspaceIdentity = normalizeWorkspacePathIdentity(legacyWorkspacePath ?? '');
+    if (!workspaceIdentity) continue;
+    const legacyProject = projectByWorkspace.get(workspaceIdentity);
+    if (legacyProject) {
+      agentProjections.push({
+        agentId: agent.id,
+        workspacePath: legacyProject.path,
+        agent,
+        projectId: legacyProject.id,
+        project: legacyProject,
+        association: 'legacy-project',
+        canMutateProjectLifecycle: false,
+      });
+      continue;
+    }
+    agentProjections.push({
+      agentId: agent.id,
+      workspacePath: legacyWorkspacePath!,
+      agent,
+      association: 'legacy-orphan',
+      canMutateProjectLifecycle: false,
+    });
+  }
+
+  return {
+    agentProjections,
+    diagnostics: [...workspaceConflictState.diagnostics, ...conflictState.diagnostics],
+  };
+}
 
 export class AgentWorkspaceIdentityError extends Error {
   readonly code: AgentWorkspaceIdentityErrorCode;
@@ -66,7 +224,7 @@ export interface ReconcileAgentWorkspaceIdentityOptions<
   P extends AgentWorkspaceProjectRecord,
   A extends AgentWorkspaceAgentRecord,
 > {
-  buildAgent: (project: P) => A;
+  buildAgent: (project: P, requestedAgentId?: string) => A;
 }
 
 export interface ReconcileAgentWorkspaceIdentityResult<
@@ -76,6 +234,8 @@ export interface ReconcileAgentWorkspaceIdentityResult<
   projects: P[];
   agents: A[];
   identities: Array<ResolvedAgentWorkspaceIdentity<P, A>>;
+  agentProjections: Array<ResolvedAgentWorkspaceProjection<P, A>>;
+  diagnostics: AgentWorkspaceIdentityDiagnostic[];
   changed: boolean;
   createdAgentIds: string[];
   relinkedProjectIds: string[];
@@ -120,17 +280,6 @@ export function reconcileAgentWorkspaceIdentities<
       );
     }
     projectIds.add(project.id);
-    const existingProject = projectsByWorkspace.get(workspaceIdentity);
-    if (existingProject) {
-      throw new AgentWorkspaceIdentityError(
-        'DUPLICATE_PROJECT_WORKSPACE',
-        `Projects '${existingProject.id}' and '${project.id}' resolve to the same workspace.`,
-        {
-          projectIds: [existingProject.id, project.id],
-          workspacePath: project.path,
-        },
-      );
-    }
     projectsByWorkspace.set(workspaceIdentity, project);
   }
 
@@ -145,30 +294,28 @@ export function reconcileAgentWorkspaceIdentities<
       );
     }
     agentsById.set(agent.id, agent);
-    const workspaceIdentity = normalizeWorkspacePathIdentity(agent.workspacePath ?? '');
+    const workspaceIdentity = normalizeWorkspacePathIdentity(readLegacyAgentWorkspacePath(agent) ?? '');
     if (!workspaceIdentity) continue;
     const matching = agentsByWorkspace.get(workspaceIdentity) ?? [];
     matching.push(agent);
     agentsByWorkspace.set(workspaceIdentity, matching);
   }
 
-  // A duplicated explicit claim is corrupted ownership evidence, not a stale
-  // path that may be silently repaired. Reject it before selecting or creating
-  // any replacement Agent so the persisted conflict remains diagnosable.
-  const rawProjectClaimsByAgent = new Map<string, string[]>();
-  for (const project of nextProjects) {
-    if (!project.agentId || !agentsById.has(project.agentId)) continue;
-    const claims = rawProjectClaimsByAgent.get(project.agentId) ?? [];
-    claims.push(project.id);
-    rawProjectClaimsByAgent.set(project.agentId, claims);
-  }
-  for (const [agentId, projectIds] of rawProjectClaimsByAgent) {
-    if (projectIds.length < 2) continue;
-    throw new AgentWorkspaceIdentityError(
-      'AGENT_ASSIGNED_TO_MULTIPLE_PROJECTS',
-      `Agent '${agentId}' is explicitly linked by multiple Projects.`,
-      { agentId, projectIds },
-    );
+  // Explicit claims reserve an Agent before path-based legacy repair runs. A
+  // duplicated claim is isolated as a target diagnostic so unrelated Projects
+  // remain usable, but neither claimant may be silently selected or rewritten.
+  const conflictState = collectAgentClaimConflicts(nextProjects);
+  const workspaceConflictState = collectProjectWorkspaceConflicts(nextProjects);
+  const { conflictedAgentIds } = conflictState;
+  const conflictedProjectIds = new Set([
+    ...conflictState.conflictedProjectIds,
+    ...workspaceConflictState.conflictedProjectIds,
+  ]);
+  const reservedExplicitProjectByAgent = new Map<string, string>();
+  for (const [agentId, projectIds] of conflictState.claimsByAgent) {
+    if (projectIds.length === 1 && agentsById.has(agentId)) {
+      reservedExplicitProjectByAgent.set(agentId, projectIds[0]);
+    }
   }
 
   const assignedProjectByAgent = new Map<string, string>();
@@ -177,24 +324,23 @@ export function reconcileAgentWorkspaceIdentities<
 
   for (let index = 0; index < nextProjects.length; index += 1) {
     let project = nextProjects[index];
+    if (conflictedProjectIds.has(project.id)) continue;
+
     const workspaceIdentity = normalizeWorkspacePathIdentity(project.path);
     const matchingAgents = agentsByWorkspace.get(workspaceIdentity) ?? [];
-    if (matchingAgents.length > 1) {
-      throw new AgentWorkspaceIdentityError(
-        'MULTIPLE_AGENTS_FOR_WORKSPACE',
-        `Workspace '${project.path}' matches multiple Agents.`,
-        { projectId: project.id, agentIds: matchingAgents.map(agent => agent.id) },
-      );
+    const linkedAgent = project.agentId ? agentsById.get(project.agentId) : undefined;
+    let selectedAgent = linkedAgent;
+    if (!selectedAgent) {
+      selectedAgent = matchingAgents.find(agent => {
+        if (conflictedAgentIds.has(agent.id)) return false;
+        const reservedProjectId = reservedExplicitProjectByAgent.get(agent.id);
+        return !reservedProjectId || reservedProjectId === project.id;
+      });
     }
 
-    const linkedAgent = project.agentId ? agentsById.get(project.agentId) : undefined;
-    const linkedAgentMatchesWorkspace = linkedAgent
-      ? normalizeWorkspacePathIdentity(linkedAgent.workspacePath ?? '') === workspaceIdentity
-      : false;
-    let selectedAgent = linkedAgentMatchesWorkspace ? linkedAgent : matchingAgents[0];
-
     if (!selectedAgent) {
-      selectedAgent = options.buildAgent(project);
+      const requestedAgentId = project.agentId || undefined;
+      selectedAgent = options.buildAgent(project, requestedAgentId);
       if (!selectedAgent.id || agentsById.has(selectedAgent.id)) {
         throw new AgentWorkspaceIdentityError(
           'CREATED_AGENT_ID_COLLISION',
@@ -202,22 +348,19 @@ export function reconcileAgentWorkspaceIdentities<
           { projectId: project.id, agentId: selectedAgent.id },
         );
       }
-      const createdWorkspaceIdentity = normalizeWorkspacePathIdentity(selectedAgent.workspacePath ?? '');
-      if (createdWorkspaceIdentity !== workspaceIdentity) {
+      if (requestedAgentId && selectedAgent.id !== requestedAgentId) {
         throw new AgentWorkspaceIdentityError(
-          'INVALID_PROJECT_IDENTITY',
-          `Generated Agent '${selectedAgent.id}' does not belong to Project '${project.id}'.`,
+          'CREATED_AGENT_ID_COLLISION',
+          `Generated Agent '${selectedAgent.id}' did not reuse Project '${project.id}' stale Agent id.`,
           {
             projectId: project.id,
-            projectPath: project.path,
-            agentId: selectedAgent.id,
-            agentPath: selectedAgent.workspacePath,
+            requestedAgentId,
+            generatedAgentId: selectedAgent.id,
           },
         );
       }
       nextAgents.push(selectedAgent);
       agentsById.set(selectedAgent.id, selectedAgent);
-      agentsByWorkspace.set(workspaceIdentity, [selectedAgent]);
       createdAgentIds.push(selectedAgent.id);
       changed = true;
     }
@@ -232,8 +375,13 @@ export function reconcileAgentWorkspaceIdentities<
     }
     assignedProjectByAgent.set(selectedAgent.id, project.id);
 
-    if (project.agentId !== selectedAgent.id || project.isAgent !== true) {
-      project = { ...project, agentId: selectedAgent.id, isAgent: true };
+    const promoteLegacyProjection = selectedAgent.enabled === true && project.isAgent !== true;
+    if (project.agentId !== selectedAgent.id || promoteLegacyProjection) {
+      project = {
+        ...project,
+        agentId: selectedAgent.id,
+        ...(promoteLegacyProjection ? { isAgent: true } : {}),
+      };
       nextProjects[index] = project;
       relinkedProjectIds.push(project.id);
       changed = true;
@@ -248,10 +396,14 @@ export function reconcileAgentWorkspaceIdentities<
     });
   }
 
+  const projectionResult = resolveAgentWorkspaceProjections(nextProjects, nextAgents);
+
   return {
     projects: nextProjects,
     agents: nextAgents,
     identities,
+    agentProjections: projectionResult.agentProjections,
+    diagnostics: projectionResult.diagnostics,
     changed,
     createdAgentIds,
     relinkedProjectIds,
@@ -291,7 +443,6 @@ export function buildAgentForProject(
     id: options.agentId ?? crypto.randomUUID(),
     name: project.displayName || project.name,
     icon: project.icon,
-    workspacePath: project.path,
     enabled: agentDefaults?.enabled ?? false,
     channels: [],
     providerId: project.providerId ?? undefined,

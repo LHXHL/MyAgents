@@ -100,8 +100,19 @@ export async function handleAdminSessionStart(
       },
     };
   }
-  const identity = registry.identities.find(item => item.agentId === agentId);
-  if (!identity || !isProjectVisibleToUser(identity.project)) {
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
+  if (diagnostic) {
+    return {
+      status: 409,
+      response: {
+        accepted: false,
+        agentId,
+        error: { code: diagnostic.code, message: diagnostic.message },
+      },
+    };
+  }
+  const identity = registry.agentProjections.find(item => item.agentId === agentId);
+  if (!identity || (identity.project && !isProjectVisibleToUser(identity.project))) {
     return {
       status: 404,
       response: {
@@ -111,7 +122,7 @@ export async function handleAdminSessionStart(
       },
     };
   }
-  if (isProjectArchived(identity.project)) {
+  if (identity.project && isProjectArchived(identity.project)) {
     return {
       status: 409,
       response: {

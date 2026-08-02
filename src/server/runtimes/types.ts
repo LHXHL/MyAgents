@@ -77,6 +77,12 @@ export interface SessionStartOptions {
    */
   runtimeSource?: RuntimeSource;
   /**
+   * Do not persist the runtime-native thread/session. Used by short-lived
+   * utility turns such as auto-title generation. Runtime adapters that do not
+   * expose an ephemeral-session primitive may ignore this option.
+   */
+  ephemeral?: boolean;
+  /**
    * Effective MyAgents MCP servers for runtimes that accept MCP at process
    * startup. The builtin SDK path owns live setMcpServers; managed Codex
    * consumes this as app-server startup config.

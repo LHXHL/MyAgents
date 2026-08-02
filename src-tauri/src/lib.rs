@@ -57,6 +57,7 @@ mod tray;
 mod updater;
 pub mod utils;
 pub mod wake_lock;
+mod webview_policy;
 pub mod workspace_files;
 mod workspace_path;
 
@@ -548,8 +549,6 @@ pub fn run() {
             im::commands::cmd_agent_status,
             im::commands::cmd_all_agents_status,
             im::commands::cmd_update_agent_config,
-            im::commands::cmd_create_agent,
-            im::commands::cmd_delete_agent,
             // Session ↔ channel surface handover (PRD 0.2.14)
             im::handover::cmd_session_new_with_surface_migration,
             im::handover::cmd_handover_session_to_channel,
@@ -782,6 +781,7 @@ pub fn run() {
                 "main",
                 WebviewUrl::default(),
             )
+            .scroll_bar_style(crate::webview_policy::scroll_bar_style())
             .title("MyAgents")
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)

@@ -114,9 +114,6 @@ export interface AgentConfig {
   icon?: string;           // Phosphor icon ID or emoji
   enabled: boolean;
 
-  // Core: Workspace
-  workspacePath: string;
-
   // AI Configuration (defaults for all channels)
   providerId?: string;
   model?: string;
@@ -226,7 +223,6 @@ export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfi
     mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
     enabledPluginIds: agent.enabledPluginIds,        // Channel cannot override (mirrors MCP)
     toolsDeny: channel.overrides?.toolsDeny ?? [],
-    workspacePath: agent.workspacePath,               // Always Agent's
     heartbeat: agent.heartbeat,                       // Always Agent's
     runtime,
     runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,

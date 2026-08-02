@@ -452,7 +452,7 @@ import {
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
-import { findAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
+import { findProjectAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 import {
   isManagedCodexProviderReady,
@@ -2699,7 +2699,7 @@ async function main() {
         // from AgentConfig so the session is self-contained from creation onward.
         // The frontend's runtime override (payload.runtime) wins over agent.runtime — Tab UI
         // can pin a session to a specific runtime independent of the Agent's default.
-        const agent = findAgentByWorkspacePath(agentDirValue) as AgentConfig | undefined;
+        const agent = findProjectAgentByWorkspacePath(agentDirValue) as AgentConfig | undefined;
         const baseSnapshot: Partial<SessionMetadata> = agent
           ? snapshotForOwnedSession(agent, {
               runtimeOverride: runtimeValue,
@@ -3003,7 +3003,7 @@ async function main() {
           const baseSnapshot = existingMeta.configSnapshotAt
             ? undefined
             : (() => {
-              const agent = findAgentByWorkspacePath(existingMeta.agentDir) as AgentConfig | undefined;
+              const agent = findProjectAgentByWorkspacePath(existingMeta.agentDir) as AgentConfig | undefined;
               return agent
                 ? snapshotForOwnedSession(agent, {
                     runtimeOverride: existingMeta.runtime as RuntimeType | undefined,
@@ -7367,7 +7367,7 @@ async function main() {
             // the IM cron tool can create live-resolve crons. Only meaningful
             // for builtin runtime (external runtimes manage their own provider).
             const imAgentForProvider = effectiveRuntime === 'builtin' && !snapshotOwnsConfig
-              ? findAgentByWorkspacePath(agentDir)
+              ? findProjectAgentByWorkspacePath(agentDir)
               : null;
             const imProviderId = snapshotOwnsConfig
               ? (snapshotMetaForConfig?.providerId ?? snapshotResolvedConfig?.providerEnv?.providerId)
@@ -8456,11 +8456,13 @@ description: >
           // the Agent once here and verify this process owns that workspace.
           const { resolvePersistedAgentWorkspaceRegistry } = await import('./utils/agent-workspace-identity');
           const registry = await resolvePersistedAgentWorkspaceRegistry();
-          const identity = registry.identities.find(item => item.agentId === agentId);
+          const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
+          const identity = registry.agentProjections.find(item => item.agentId === agentId);
           if (
-            !identity
-            || !isProjectVisibleToUser(identity.project)
-            || isProjectArchived(identity.project)
+            diagnostic
+            || !identity
+            || (identity.project && !isProjectVisibleToUser(identity.project))
+            || (identity.project && isProjectArchived(identity.project))
           ) {
             return jsonResponse({ accepted: false, reason: 'target Agent is unavailable' }, 409);
           }

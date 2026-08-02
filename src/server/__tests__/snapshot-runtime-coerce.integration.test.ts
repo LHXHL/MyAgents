@@ -19,7 +19,6 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     id: 'agent-1',
     name: 'Test Agent',
     enabled: true,
-    workspacePath: '/tmp/agent',
     permissionMode: 'auto',
     channels: [],
     ...overrides,
@@ -124,6 +123,25 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     }), makeAgent({ runtime: 'codex' }), undefined, 'owned');
     expect(r.runtime).toBe('codex');
     expect(r.model).toBe('gpt-5.5-codex');
+  });
+
+  it('owned snapshot remains authoritative when the live Project no longer resolves an Agent', () => {
+    const r = resolveSessionConfig(meta({
+      configSnapshotAt: '2026-08-02T00:00:00.000Z',
+      runtime: 'codex',
+      runtimeSource: 'system-cli',
+      model: 'gpt-5.5-codex',
+      permissionMode: 'full-auto',
+      mcpEnabledServers: ['snapshot-mcp'],
+    }), undefined, undefined, 'owned');
+
+    expect(r).toMatchObject({
+      runtime: 'codex',
+      runtimeSource: 'system-cli',
+      model: 'gpt-5.5-codex',
+      permissionMode: 'full-auto',
+      mcpEnabledServers: ['snapshot-mcp'],
+    });
   });
 
   it('owned/external: stale claude model in snapshot is coerced to undefined (issue #224 repro)', () => {

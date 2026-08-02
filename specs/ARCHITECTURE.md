@@ -432,14 +432,16 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 
 ```
 Project (工作区)
-  = 必备的 stable Agent identity → AgentConfig（workspace 地址与执行默认）
+  = path 权威 + stable agentId ──exact ID──> AgentConfig（执行默认）
     └── enabled=true 时可开启主动能力（24h 感知与行动）
         └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
 **模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
 
-**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）必须与同 workspace 的一个 stable Agent 1:1 对应；`enabled` 只控制主动 Channel/heartbeat，不控制显式 addressability。Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure resolver，并在既有 `agent-config-intent.lock` 下按 Agent→Project link 顺序提交；中断后由相同 resolver 幂等收敛，不建立跨文件补偿事务。重复 Project workspace、重复 Agent ID 或一个 workspace 命中多个 Agent 时 fail closed。无 Project backing 的 legacy Agent 不参与 discovery，也不由读取路径删除。`agent list` 只投影 user-visible lifecycle，并用当前 Sidecar workspace 唯一计算 `isCurrent`。
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。`enabled` 只控制主动能力（Channel、heartbeat、memory auto-update），不控制显式 addressability 或普通工作区使用。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+
+Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure policy，并在既有 `agent-config-intent.lock` 下先提交 `Project.agentId`、再以同一 ID 幂等补建 pathless Agent；中断后复用 stale ID，不建立 repair journal 或跨文件补偿事务。重复 Project workspace、重复 Agent ID 仍是硬冲突；多个历史 Agent 命中同 workspace 时按持久化顺序只为缺失链接选择第一个，不覆盖有效链接。一个 Agent 被多个 Project 显式 claim 时只隔离相关目标，健康 Project 继续工作。历史 extra/orphan Agent 继续按 exact ID discovery/config/start，只有 exact `Project.agentId` claim 才能代表 Project 做 archive/unarchive/remove；`agent list` 只把 Project 选中的 Agent 标为 `isCurrent`。
 
 Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖：`src-tauri/src/im/memory_update.rs` 在执行自动更新流程时会确保工作区根目录 `UPDATE_MEMORY.md` 存在，缺失则从 `src/shared/default-update-memory.md` 初始化；已有文件始终是用户内容权威。
 
@@ -942,10 +944,12 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 |------|-------|---------|-------|
 | 字体渲染 | 更平滑 | 更锐利 | 介于之间 |
 | 窗口控制 | 左上红绿灯 | 右上三按钮 | 取决于桌面环境 |
-| 滚动条 | 自动隐藏 | WebView2 经典滚动条（renderer 用活动态隐藏 thumb） | 取决于桌面环境 |
+| 滚动条 | 系统 Default（服从系统显示偏好） | WebView2 Fluent Overlay（Runtime ≥ 125；旧 Runtime 原生回退） | 系统 Default |
 | Shell | zsh | PowerShell / cmd | bash |
 | Console window 抑制 | — | `process_cmd::new()` 注入 `CREATE_NO_WINDOW` | — |
 | 系统 PATH 查找 | `system_binary::find()`（Finder 启动 PATH 缺失） | — | — |
+
+滚动条外观与输入态属于 WebView / OS authority，不属于 Renderer Theme。`src-tauri/src/webview_policy.rs` 是原生 style 的唯一解析入口：Windows 返回 `ScrollBarStyle::FluentOverlay`，macOS / Linux 返回 `Default`；主窗口、Browser child WebView、浮球、Shield 与 Companion 的每个 builder 都必须调用该 policy，因为 WebView2 要求共享同一 data directory 的 WebView 使用相同 style。Renderer 不得用全局 `::-webkit-scrollbar`、透明 thumb、滚动计时 class 或 pointer proximity 监听复制原生行为；Theme 只通过根节点 `color-scheme` 为原生控件提供明暗语义。内容滚动、Virtuoso 虚拟化与 `scrollbar-gutter: stable` 的 classic fallback 布局保护仍由各既有 scroll container 拥有。
 
 ### 跨平台环境变量 (`src/server/utils/platform.ts`)
 

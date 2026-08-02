@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   loadAppConfig: vi.fn(),
   loadProjects: vi.fn(),
   getAllProviders: vi.fn(),
+  reconcileIdentities: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
@@ -25,6 +26,10 @@ vi.mock('@/utils/tauriListen', () => ({
   }),
 }));
 vi.mock('@/api/apiFetch', () => ({ apiGetJson: vi.fn(async () => ({ models: [] })) }));
+vi.mock('./services/configStore', () => ({
+  withAgentConfigIntentLock: vi.fn(async (run: () => Promise<unknown>) => run()),
+  withProjectsLock: vi.fn(async (run: () => Promise<unknown>) => run()),
+}));
 
 vi.mock('./services/appConfigService', () => ({
   loadAppConfig: mocks.loadAppConfig,
@@ -64,9 +69,7 @@ vi.mock('./services/agentConfigService', () => ({
   configureMemoryEvolutionTasksForAgent: vi.fn(),
   migrateImBotConfigsToAgents: vi.fn((config: AppConfig) => config),
   persistAgents: vi.fn(async () => {}),
-  reconcilePersistedAgentWorkspaceIdentities: vi.fn(async () => ({
-    config: {}, projects: [], changed: false, createdAgents: [],
-  })),
+  reconcilePersistedAgentWorkspaceIdentities: mocks.reconcileIdentities,
   reconcilePersistedAgentWorkspaceIdentitiesLocked: vi.fn(),
 }));
 
@@ -128,6 +131,23 @@ describe('ConfigProvider external config invalidation', () => {
     mocks.loadAppConfig.mockImplementation(async () => mocks.config);
     mocks.loadProjects.mockImplementation(async () => mocks.projects);
     mocks.getAllProviders.mockImplementation(async () => mocks.providers);
+    mocks.reconcileIdentities.mockResolvedValue({
+      config: mocks.config,
+      projects: mocks.projects,
+      changed: false,
+      createdAgents: [],
+      agentProjections: [],
+      diagnostics: [],
+    });
+  });
+
+  it('keeps the readable disk snapshot visible when identity materialization is deferred', async () => {
+    mocks.reconcileIdentities.mockRejectedValueOnce(new Error('config write interrupted'));
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project'));
+    expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider');
   });
 
   it('reloads config, projects, providers, keys, and verify state from one app event', async () => {

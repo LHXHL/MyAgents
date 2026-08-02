@@ -88,7 +88,7 @@ fn workspace_id_for(
     agents
         .iter()
         .find(|agent| {
-            crate::workspace_path::normalize_workspace_path_identity(&agent.workspace_path)
+            crate::workspace_path::normalize_workspace_path_identity(&agent.resolved_workspace_path)
                 == target
         })
         .map(|agent| agent.id.clone())

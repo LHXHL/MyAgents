@@ -291,7 +291,7 @@ const mocks = vi.hoisted(() => {
     )),
     loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
     resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
-    findAgentByWorkspacePath: vi.fn(() => undefined),
+    findProjectAgentByWorkspacePath: vi.fn(() => undefined),
   };
 });
 
@@ -400,7 +400,7 @@ vi.mock('../runtimes/external-session', () => ({
 }));
 
 vi.mock('../utils/admin-config', () => ({
-  findAgentByWorkspacePath: mocks.findAgentByWorkspacePath,
+  findProjectAgentByWorkspacePath: mocks.findProjectAgentByWorkspacePath,
   getAllMcpServers: mocks.getAllMcpServers,
   getEffectiveMcpServers: mocks.getEffectiveMcpServers,
   getEnabledMcpServerIds: mocks.getEnabledMcpServerIds,

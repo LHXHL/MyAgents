@@ -58,7 +58,7 @@ import type {
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import {
-  findAgentByWorkspacePath,
+  findProjectAgentByWorkspacePath,
   getEffectiveOfficialToolIdsForSession,
   loadConfig as loadAdminConfig,
 } from '../utils/admin-config';
@@ -222,7 +222,7 @@ function createExternalProductSessionMetadata(
   scenario: 'desktop' | 'agent-channel',
   origin?: import('../../shared/session-origin').SessionOrigin,
 ): { metadata: SessionMetadata; snapshotKind: string } {
-  const agent = findAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
+  const agent = findProjectAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
   const runtime = getActiveRuntimeType();
   const runtimeSource = getActiveRuntimeSource();
   const metadata = createMaterializedSessionMetadata({
@@ -608,9 +608,9 @@ export function createExternalSessionEngine(): SessionEngine {
 
       const operation = request.operation;
       const managedCodexReady = isManagedCodexProviderReady(loadAdminConfig());
-      const agent = findAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
+      const agent = findProjectAgentByWorkspacePath(request.workspacePath) as AgentConfig | undefined;
       let runtimeConfig = operation.runtimeConfig;
-      if (metadata && agent) {
+      if (metadata) {
         const resolved = resolveSessionConfig(metadata, agent, undefined, 'owned', {
           managedCodexProviderReady: managedCodexReady,
         });

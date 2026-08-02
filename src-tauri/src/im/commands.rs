@@ -1165,6 +1165,7 @@ pub async fn cmd_start_agent_channel(
     sidecarManager: tauri::State<'_, ManagedSidecarManager>,
     agentId: String,
     channelId: String,
+    workspacePath: String,
     agentConfig: AgentConfigRust,
     channelConfig: ChannelConfigRust,
 ) -> Result<ChannelStatus, String> {
@@ -1182,6 +1183,15 @@ pub async fn cmd_start_agent_channel(
             channelId
         ));
     };
+    if crate::workspace_path::normalize_workspace_path_identity(
+        &agentConfig.resolved_workspace_path,
+    ) != crate::workspace_path::normalize_workspace_path_identity(&workspacePath)
+    {
+        return Err(format!(
+            "Agent '{}' workspace changed before channel start; refresh and retry",
+            agentId
+        ));
+    }
 
     // Dedup: check if channel is already running in agent state.
     // If channel exists but is in Error/Stopped state, remove it to allow restart.
@@ -2225,125 +2235,6 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
         }
     }
     drop(agents_guard);
-
-    let _ = app_handle.emit("agent:config-changed", json!({}));
-    Ok(())
-}
-
-/// Create a new agent config (persist to disk, no channels started).
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_create_agent(
-    app_handle: AppHandle,
-    config: AgentConfigRust,
-) -> Result<String, String> {
-    let agent_id = config.id.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-        let config_path = home.join(".myagents").join("config.json");
-
-        with_config_lock(&config_path, true, |app_config| {
-            let agents = app_config.get_mut("agents").and_then(|v| v.as_array_mut());
-            let agent_value = serde_json::to_value(&config)
-                .map_err(|e| format!("[agent] Failed to serialize agent: {}", e))?;
-            if let Some(arr) = agents {
-                arr.push(agent_value);
-            } else {
-                app_config["agents"] = serde_json::json!([agent_value]);
-            }
-            Ok(())
-        })?;
-
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
-
-    let _ = app_handle.emit("agent:config-changed", json!({}));
-    Ok(agent_id)
-}
-
-/// Delete an agent config from disk and stop all its channels.
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_delete_agent(
-    app_handle: AppHandle,
-    agentState: tauri::State<'_, ManagedAgents>,
-    sidecarManager: tauri::State<'_, ManagedSidecarManager>,
-    agentId: String,
-) -> Result<(), String> {
-    let mut channel_ids = {
-        let agents_guard = agentState.lock().await;
-        agents_guard
-            .get(&agentId)
-            .map(|agent| {
-                agent
-                    .config
-                    .channels
-                    .iter()
-                    .map(|channel| channel.id.clone())
-                    .chain(agent.channels.keys().cloned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
-    channel_ids.sort();
-    channel_ids.dedup();
-    let lifecycle_locks = channel_ids
-        .iter()
-        .map(|channel_id| agent_channel_lifecycle_lock(&agentId, channel_id))
-        .collect::<Vec<_>>();
-    let mut _lifecycle_guards = Vec::with_capacity(lifecycle_locks.len());
-    for lock in &lifecycle_locks {
-        _lifecycle_guards.push(lock.lock().await);
-    }
-
-    // Stop all running channels directly via shutdown_bot_instance
-    let channels = {
-        let mut agents_guard = agentState.lock().await;
-        if let Some(agent) = agents_guard.remove(&agentId) {
-            agent.channels
-        } else {
-            HashMap::new()
-        }
-    }; // agents_guard dropped
-
-    for (ch_id, ch_inst) in channels {
-        let _ = shutdown_bot_instance(ch_inst.bot_instance, &sidecarManager, &ch_id).await;
-    }
-
-    // Remove from disk (config.json entry + agent data directory)
-    let aid = agentId.clone();
-    tokio::task::spawn_blocking(move || {
-        let home = dirs::home_dir().ok_or("[agent] Home dir not found")?;
-        let config_path = home.join(".myagents").join("config.json");
-
-        with_config_lock(&config_path, true, |app_config| {
-            if let Some(agents) = app_config.get_mut("agents").and_then(|v| v.as_array_mut()) {
-                agents.retain(|a| a.get("id").and_then(|v| v.as_str()) != Some(&aid));
-            }
-            Ok(())
-        })?;
-
-        // Clean up agent data directory (~/.myagents/agents/{agentId}/)
-        let agent_data_dir = home.join(".myagents").join("agents").join(&aid);
-        if agent_data_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&agent_data_dir) {
-                ulog_warn!(
-                    "[agent] Failed to remove agent data dir {:?}: {}",
-                    agent_data_dir,
-                    e
-                );
-            } else {
-                ulog_info!("[agent] Removed agent data dir {:?}", agent_data_dir);
-            }
-        }
-
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit("agent:config-changed", json!({}));
     Ok(())

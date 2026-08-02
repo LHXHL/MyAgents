@@ -80,7 +80,7 @@ import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
   agentWorkspaceIdentityFailure,
   resolvePersistedAgentWorkspaceRegistry,
-  type PersistedAgentWorkspaceIdentity,
+  type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
 
 // Long-running sidecar operations need their own budget. Anchored to the
@@ -592,6 +592,14 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
   const server = allServers.find(s => s.id === id);
   if (!server) return { success: false, error: `MCP server '${id}' not found` };
 
+  const transportType = (server as { type?: unknown }).type;
+  if (transportType !== 'stdio' && transportType !== 'sse' && transportType !== 'http') {
+    return {
+      success: false,
+      error: `MCP server '${id}' has unsupported transport type '${String(transportType)}'`,
+    };
+  }
+
   // Validate config completeness
   if (server.type === 'stdio' && !server.command) {
     return { success: false, error: `MCP server '${id}' has no command configured` };
@@ -667,75 +675,76 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
     };
   }
 
-  // SSE/HTTP: test URL reachability
-  if (server.type === 'sse' || server.type === 'http') {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      // Inject stored OAuth token if no explicit Authorization header
-      const { resolveAuthHeaders } = await import('./mcp-oauth');
-      const configHeaders = server.headers || {};
-      const hasExplicitAuth = Object.keys(configHeaders).some(k => k.toLowerCase() === 'authorization');
-      const oauthHeaders = hasExplicitAuth ? {} : await resolveAuthHeaders(server.id);
-
-      const headers: Record<string, string> = {
-        'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
-        'Accept-Encoding': 'identity',
-        ...configHeaders,
-        ...oauthHeaders,
-      };
-
-      const resp = server.type === 'http'
-        ? await fetchWithGeneralProxy(server.url!, {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'MyAgents', version: '1.0' } } }),
-            signal: controller.signal,
-          })
-        : await fetchWithGeneralProxy(server.url!, { method: 'GET', headers, signal: controller.signal });
-
-      clearTimeout(timeout);
-
-      if (resp.status === 401 || resp.status === 403) {
-        const hint = oauthHeaders['Authorization']
-          ? 'OAuth token may be expired or revoked. Try re-authorizing.'
-          : 'This server may require OAuth authorization. Use Settings UI or `myagents mcp oauth start`.';
-        return { success: false, error: `Authentication failed (HTTP ${resp.status}). ${hint}` };
-      }
-      if (!resp.ok) {
-        return { success: false, error: `Server returned HTTP ${resp.status}` };
+  // External MCPs are valid only after the exact configured transport completes
+  // protocol initialization. PATH/HTTP reachability is merely a prerequisite and
+  // cannot prove package resolution, args/env, framing, or MCP compatibility.
+  let usedStoredOAuth = false;
+  let operationTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const {
+      MCP_CONNECTION_TEST_TIMEOUT_MS,
+      McpConnectionTestError,
+      testMcpServerConnection,
+    } = await import('./utils/mcp-connection-test');
+    const deadlineAt = Date.now() + MCP_CONNECTION_TEST_TIMEOUT_MS;
+    const operation = (async () => {
+      let probeServer: McpServerDefinition = server;
+      if (server.type === 'sse' || server.type === 'http') {
+        const { resolveAuthHeaders } = await import('./mcp-oauth');
+        const configHeaders = server.headers || {};
+        // Match the Session path exactly: only the two canonical spellings with
+        // a non-empty value suppress stored OAuth injection.
+        const hasExplicitAuth = Boolean(configHeaders.Authorization || configHeaders.authorization);
+        const oauthHeaders = hasExplicitAuth ? {} : await resolveAuthHeaders(server.id);
+        usedStoredOAuth = typeof oauthHeaders.Authorization === 'string';
+        probeServer = {
+          ...server,
+          headers: { ...configHeaders, ...oauthHeaders },
+        };
       }
 
-      return { success: true, data: { id, type: server.type, status: resp.status }, hint: `Connection OK (HTTP ${resp.status}).` };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('abort')) return { success: false, error: 'Connection timed out (15s).' };
-      return { success: false, error: `Connection failed: ${msg}` };
-    }
-  }
-
-  // stdio: check command exists in PATH
-  if (server.type === 'stdio' && server.command && server.command !== '__builtin__') {
-    try {
-      const { getShellEnv } = await import('./utils/shell');
-      const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-      const { spawn } = await import('child_process');
-      const code = await new Promise<number | null>(resolve => {
-        const proc = spawn(checkCmd, [server.command!], { stdio: 'ignore', env: getShellEnv() });
-        proc.on('close', resolve);
-        proc.on('error', () => resolve(null));
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        throw new McpConnectionTestError('Connection timed out (15s)');
+      }
+      return await testMcpServerConnection(probeServer, {
+        fetch: (url, init) => fetchWithGeneralProxy(String(url), init),
+        timeoutMs: remainingMs,
       });
-      if (code === 0) {
-        return { success: true, data: { id, type: 'stdio', command: server.command }, hint: `Command '${server.command}' found.` };
-      }
-      return { success: false, error: `Command '${server.command}' not found in PATH.` };
-    } catch (err) {
-      return { success: false, error: `Failed to check command: ${err instanceof Error ? err.message : String(err)}` };
+    });
+    const overallDeadline = new Promise<never>((_, reject) => {
+      operationTimer = setTimeout(() => {
+        reject(new McpConnectionTestError('Connection timed out (15s)'));
+      }, MCP_CONNECTION_TEST_TIMEOUT_MS);
+      operationTimer.unref?.();
+    });
+    const result = await Promise.race([operation(), overallDeadline]);
+    const identity = [result.serverName, result.serverVersion].filter(Boolean).join(' ');
+    return {
+      success: true,
+      data: {
+        id,
+        type: result.transport,
+        serverName: result.serverName,
+        serverVersion: result.serverVersion,
+        resolvedCommand: result.resolvedCommand,
+      },
+      hint: `MCP initialize succeeded${identity ? ` (${identity})` : ''}.`,
+    };
+  } catch (err) {
+    const probeError = err as { message?: unknown; statusCode?: unknown };
+    const statusCode = typeof probeError.statusCode === 'number' ? probeError.statusCode : undefined;
+    if (statusCode === 401 || statusCode === 403) {
+      const hint = usedStoredOAuth
+        ? 'OAuth token may be expired or revoked. Try re-authorizing.'
+        : 'This server may require OAuth authorization. Use Settings UI or `myagents mcp oauth start`.';
+      return { success: false, error: `Authentication failed (HTTP ${statusCode}). ${hint}` };
     }
+    const message = typeof probeError.message === 'string' ? probeError.message : String(err);
+    return { success: false, error: `MCP initialize failed: ${message}` };
+  } finally {
+    if (operationTimer) clearTimeout(operationTimer);
   }
-
-  return { success: true, data: { id, type: server.type }, hint: 'Configuration valid.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,10 +1180,11 @@ function findProjectForAgent(
   projects: ProjectSlim[],
   agent: AgentConfigSlim,
 ): { index: number; project: ProjectSlim } | null {
-  const index = projects.findIndex(project => (
-    project.agentId === agent.id ||
-    (!!project.path && !!agent.workspacePath && workspacePathsEqual(project.path, agent.workspacePath))
-  ));
+  const matches = projects
+    .map((project, index) => ({ project, index }))
+    .filter(entry => entry.project.agentId === agent.id);
+  if (matches.length !== 1) return null;
+  const index = matches[0].index;
   return index >= 0 ? { index, project: projects[index] } : null;
 }
 
@@ -1187,16 +1197,13 @@ function normalizeAgentLifecycleFilter(value: unknown): 'all' | 'active' | 'arch
   return value === 'all' ? 'all' : 'active';
 }
 
-function getArchivedProjectForAgent(agent: AgentConfigSlim): ProjectSlim | undefined {
-  const project = findProjectForAgent(loadProjects(), agent)?.project;
-  return isProjectArchivedSlim(project) ? project : undefined;
-}
-
 function isCurrentAgentIdentity(
-  identity: PersistedAgentWorkspaceIdentity,
+  identity: PersistedAgentWorkspaceProjection,
   currentWorkspacePath: string | undefined,
 ): boolean {
-  return !!currentWorkspacePath && workspacePathsEqual(identity.workspacePath, currentWorkspacePath);
+  return identity.association === 'project-linked'
+    && !!currentWorkspacePath
+    && workspacePathsEqual(identity.workspacePath, currentWorkspacePath);
 }
 
 export async function handleAgentList(payload: { lifecycle?: string } = {}): Promise<AdminResponse> {
@@ -1204,26 +1211,26 @@ export async function handleAgentList(payload: { lifecycle?: string } = {}): Pro
     const registry = await resolvePersistedAgentWorkspaceRegistry();
     const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
     const currentWorkspacePath = getCurrentWorkspacePath();
-    const agents = registry.identities
-      .filter(identity => isProjectVisibleToUser(identity.project))
+    const agents = registry.agentProjections
+      .filter(identity => !identity.project || isProjectVisibleToUser(identity.project))
       .filter(identity => {
-        const archived = isProjectArchived(identity.project);
+        const archived = identity.project ? isProjectArchived(identity.project) : false;
         if (lifecycle === 'active') return !archived;
         if (lifecycle === 'archived') return archived;
         return true;
       })
-      .map(({ agent, project, workspacePath }) => ({
+      .map(identity => {
+        const { agent, project, workspacePath } = identity;
+        return ({
         agentId: agent.id,
         name: agent.name,
-        projectId: project.id,
+        projectId: project?.id ?? null,
         workspacePath,
         enabled: agent.enabled === true,
-        archived: isProjectArchived(project),
-        archivedAt: isProjectArchived(project) ? project.archivedAt ?? null : null,
-        isCurrent: isCurrentAgentIdentity(
-          { agent, project, agentId: agent.id, projectId: project.id, workspacePath },
-          currentWorkspacePath,
-        ),
+        archived: project ? isProjectArchived(project) : false,
+        archivedAt: project && isProjectArchived(project) ? project.archivedAt ?? null : null,
+        association: identity.association,
+        isCurrent: isCurrentAgentIdentity(identity, currentWorkspacePath),
         channelCount: (agent.channels ?? []).length,
         channels: (agent.channels ?? []).map(channel => ({
           id: channel.id,
@@ -1231,7 +1238,8 @@ export async function handleAgentList(payload: { lifecycle?: string } = {}): Pro
           name: channel.name,
           enabled: channel.enabled,
         })),
-      }));
+      });
+      });
     return { success: true, data: agents };
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
@@ -1240,14 +1248,22 @@ export async function handleAgentList(payload: { lifecycle?: string } = {}): Pro
 
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  const config = loadConfig();
-  const agent = (config.agents ?? []).find(a => a.id === id);
-  if (agent && getArchivedProjectForAgent(agent)) {
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(id));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const projection = registry.agentProjections.find(item => item.agentId === id);
+  if (projection?.project && isProjectArchived(projection.project)) {
+    const lifecycleAgentId = projection.project.agentId ?? id;
     return {
       success: false,
       error: `Agent '${id}' belongs to an archived workspace.`,
       recoveryHint: {
-        recoveryCommand: `myagents agent unarchive ${id}`,
+        recoveryCommand: `myagents agent unarchive ${lifecycleAgentId}`,
         message: 'Unarchive the Agent workspace before enabling proactive channels.',
       },
     };
@@ -2888,10 +2904,10 @@ Commands:
 
   agent: `myagents agent — Discover stable Workspace Agent identities
 
-Every user-visible Workspace has one stable Agent identity. The Agent is its
-long-lived CLI address and owns execution defaults. enabled=false only pauses
-proactive capabilities such as channels and heartbeat; it does not remove the
-identity or prevent an explicit Session start/send.
+Every user-visible Workspace selects one stable Agent identity through
+Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
+The Agent owns execution defaults; Project.path owns the current workspace.
+enabled=false only pauses proactive capabilities such as channels and heartbeat.
 
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
@@ -2915,8 +2931,10 @@ Options for 'channel add':
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
 
-Visibility: default list shows user-visible, non-archived Project-backed Agents.
-Hidden/internal workspaces and orphan/conflicting identities fail closed.
+Visibility: default list shows user-visible, non-archived Project-backed Agents
+plus compatible historical orphan Agents. A conflicting exact target fails
+without hiding healthy targets. Project lifecycle commands require an exact
+Project.agentId claim.
 
 Collaboration flow:
   myagents agent list
@@ -2932,7 +2950,8 @@ WHEN TO CALL
   Before choosing a collaboration target, or to identify this Session's Agent.
 
 EFFECT
-  Read-only. Lists Project-backed Agent identities; does not start a Sidecar.
+  Read-only. Lists Project-backed and compatible historical Agent identities;
+  does not start a Sidecar.
 
 OPTIONS
   --active      Visible, non-archived Agents (default)
@@ -2940,8 +2959,9 @@ OPTIONS
   --json        Machine-readable records
 
 OUTPUT
-  agentId, name, projectId, workspacePath, enabled, archived, archivedAt,
-  isCurrent, channelCount, channels. Human output marks the current Agent with *.
+  agentId, name, projectId, workspacePath, association, enabled, archived,
+  archivedAt, isCurrent, channelCount, channels. Human output marks the current
+  Project-selected Agent with *.
 
 IDENTITY / PERMISSIONS
   Use agentId from this command; never guess IDs or use workspace paths as
@@ -2981,7 +3001,7 @@ EXAMPLE
 
 RECOVERY
   Run myagents agent list (or agent list --archived) to obtain a visible Agent
-  ID. Archived Agents remain inspectable; hidden/orphan identities do not.`,
+  ID. Archived and compatible historical orphan Agents remain inspectable.`,
 
   session: `myagents session — Discover and collaborate across Agent Sessions
 
@@ -5051,8 +5071,10 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }
-  const identity = registry.identities.find(item => item.agentId === id);
-  if (!identity || !isProjectVisibleToUser(identity.project)) {
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(id));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const identity = registry.agentProjections.find(item => item.agentId === id);
+  if (!identity || (identity.project && !isProjectVisibleToUser(identity.project))) {
     return {
       success: false,
       error: `Agent '${id}' not found.`,
@@ -5109,10 +5131,11 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
       agentId: agent.id,
       name: agent.name,
       enabled: agent.enabled,
-      projectId: project.id,
+      projectId: project?.id ?? null,
       workspacePath,
-      archived: isProjectArchived(project),
-      archivedAt: isProjectArchived(project) ? project.archivedAt ?? null : null,
+      archived: project ? isProjectArchived(project) : false,
+      archivedAt: project && isProjectArchived(project) ? project.archivedAt ?? null : null,
+      association: identity.association,
       isCurrent: isCurrentAgentIdentity(identity, getCurrentWorkspacePath()),
       effectiveDefaults: {
         runtime,
@@ -5160,8 +5183,10 @@ export async function handleSessionList(payload: {
   } catch (error) {
     return agentWorkspaceIdentityFailure(error);
   }
-  const identity = registry.identities.find(item => item.agentId === agentId);
-  if (!identity || !isProjectVisibleToUser(identity.project)) {
+  const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
+  if (diagnostic) return { success: false, error: diagnostic.message, code: diagnostic.code };
+  const identity = registry.agentProjections.find(item => item.agentId === agentId);
+  if (!identity || (identity.project && !isProjectVisibleToUser(identity.project))) {
     return {
       success: false,
       error: `Agent '${agentId}' not found.`,
@@ -5191,7 +5216,7 @@ export async function handleSessionList(payload: {
     success: true,
     data: sessions,
     agentId,
-    projectId: identity.projectId,
+    projectId: identity.projectId ?? null,
     workspacePath: identity.workspacePath,
     limit,
   };
@@ -5485,13 +5510,13 @@ function resolveAgentRuntimeIdentityFromWorkspace(
 
   const config = loadConfig();
   const agents = config.agents ?? [];
-  // Match by workspacePath first (most specific), then by workspaceId.
-  // #320 family: CLI/cron callers send POSIX-style paths while config agents
-  // may keep native Windows backslashes — compare on the canonical identity.
-  const agent =
-    (wsPath && agents.find(a => workspacePathsEqual(a.workspacePath, wsPath)))
-    ?? (wsId && agents.find(a => a.id === wsId))
-    ?? undefined;
+  const projects = loadProjects();
+  const project = (wsPath
+    ? projects.find(candidate => workspacePathsEqual(candidate.path, wsPath))
+    : undefined)
+    ?? (wsId ? projects.find(candidate => candidate.id === wsId) : undefined);
+  const agentId = project?.agentId ?? (wsId && agents.some(candidate => candidate.id === wsId) ? wsId : undefined);
+  const agent = agentId ? agents.find(candidate => candidate.id === agentId) : undefined;
   if (!agent) return undefined;
 
   const raw = agent.runtime as unknown;

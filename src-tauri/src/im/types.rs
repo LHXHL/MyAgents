@@ -1176,7 +1176,11 @@ pub struct AgentConfigRust {
     pub icon: Option<String>,
     pub enabled: bool,
 
-    pub workspace_path: String,
+    /// Runtime-only workspace projection. Never serialized into agents[].
+    /// Project.path is authoritative; the config-store compatibility adapter
+    /// fills this from a legacy Agent path only for an unlinked orphan.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub resolved_workspace_path: String,
 
     // AI config (Agent-level defaults)
     #[serde(default)]
@@ -1485,7 +1489,7 @@ impl ChannelConfigRust {
             bot_token: self.bot_token.clone().unwrap_or_default(),
             allowed_users: self.allowed_users.clone(),
             permission_mode,
-            default_workspace_path: Some(agent.workspace_path.clone()),
+            default_workspace_path: Some(agent.resolved_workspace_path.clone()),
             enabled: self.enabled && agent.enabled,
             feishu_app_id: self.feishu_app_id.clone(),
             feishu_app_secret: self.feishu_app_secret.clone(),
@@ -1605,7 +1609,7 @@ mod tests {
             name: "Agent".to_string(),
             icon: None,
             enabled: true,
-            workspace_path: "/tmp/workspace".to_string(),
+            resolved_workspace_path: "/tmp/workspace".to_string(),
             provider_id: Some("openrouter".to_string()),
             model: Some("anthropic/claude-sonnet-4.6".to_string()),
             provider_env_json: None,

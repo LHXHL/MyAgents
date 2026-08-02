@@ -60,10 +60,11 @@ import {
     reconcilePersistedAgentWorkspaceIdentities,
     reconcilePersistedAgentWorkspaceIdentitiesLocked,
 } from './services/agentConfigService';
-import { withAgentConfigIntentLock } from './services/configStore';
+import { withAgentConfigIntentLock, withProjectsLock } from './services/configStore';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
 import {
     effectiveGeneralProxyScopeKey,
@@ -162,16 +163,17 @@ async function reconcileMemoryEvolutionTasks(
     if (!isTauriEnvironment()) return;
     if (!agents?.length) return;
 
-    for (const agent of agents) {
+    const projections = resolveAgentWorkspaceProjections(projects, agents).agentProjections;
+    for (const projection of projections) {
+        const agent = projection.agent;
         if (!agent.memoryEvolution) continue;
-        const project = projects.find(p =>
-            p.agentId === agent.id || workspacePathsEqual(p.path, agent.workspacePath),
-        );
+        const project = projection.project;
         if (!project) continue;
         try {
             await configureMemoryEvolutionTasksForAgent(
                 agent,
                 project.id,
+                projection.workspacePath,
                 agent.memoryEvolution.enabled,
             );
         } catch (err) {
@@ -185,14 +187,17 @@ async function reconcileMemoryEvolutionTasks(
 
 async function reconcileMemoryAutoUpdateTasks(
     agents: readonly AgentConfig[] | undefined,
+    projects: readonly Project[],
 ): Promise<void> {
     if (!isTauriEnvironment()) return;
     if (!agents?.length) return;
 
-    for (const agent of agents) {
+    const projections = resolveAgentWorkspaceProjections(projects, agents).agentProjections;
+    for (const projection of projections) {
+        const agent = projection.agent;
         if (!agent.memoryAutoUpdate) continue;
         try {
-            await configureMemoryAutoUpdateTaskForAgent(agent);
+            await configureMemoryAutoUpdateTaskForAgent(agent, projection.workspacePath);
         } catch (err) {
             console.warn(
                 `[ConfigProvider] Memory auto-update task reconcile failed for agent ${agent.id}:`,
@@ -372,9 +377,29 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
     const commitConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
         const snapshotRevision = ++diskSnapshotRevisionRef.current;
+        let identity: Awaited<ReturnType<typeof reconcilePersistedAgentWorkspaceIdentities>>;
+        try {
+            identity = await reconcilePersistedAgentWorkspaceIdentities();
+        } catch (error) {
+            const healthySnapshot = await loadConfigDiskSnapshot();
+            normalizeAgents(healthySnapshot.config);
+            if (isMountedRef.current && snapshotRevision === diskSnapshotRevisionRef.current) {
+                configRef.current = healthySnapshot.config;
+                setConfig(healthySnapshot.config);
+                setProjects(healthySnapshot.projects);
+                setRawProviders(healthySnapshot.providers);
+                setApiKeys(healthySnapshot.apiKeys);
+                setProviderVerifyStatus(healthySnapshot.verifyStatus);
+            }
+            throw error;
+        }
         const snapshot = await loadConfigDiskSnapshot();
+        if (identity.repairDeferred) {
+            snapshot.projects = identity.projects;
+        }
         normalizeAgents(snapshot.config);
         if (!isMountedRef.current || snapshotRevision !== diskSnapshotRevisionRef.current) return null;
+        setError(null);
         configRef.current = snapshot.config;
         setConfig(snapshot.config);
         setProjects(snapshot.projects);
@@ -426,15 +451,23 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 console.warn('[ConfigProvider] Managed Codex provider default migration failed:', e);
             }
 
-            const [rawConfig, loadedProjects] = await Promise.all([
-                loadAppConfig(),
-                loadProjects(),
-            ]);
+            let loadedConfig!: AppConfig;
+            let loadedProjects!: Project[];
+            await withAgentConfigIntentLock(() => withProjectsLock(async () => {
+                const rawConfig = await loadAppConfig();
+                loadedProjects = await loadProjects();
+                const projectsBefore = JSON.stringify(loadedProjects);
+                const configBefore = JSON.stringify({
+                    agents: rawConfig.agents ?? [],
+                    imBotConfigs: rawConfig.imBotConfigs ?? [],
+                });
+                loadedConfig = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
+                const migrationChanged = configBefore !== JSON.stringify({
+                    agents: loadedConfig.agents ?? [],
+                    imBotConfigs: loadedConfig.imBotConfigs ?? [],
+                });
+                if (!migrationChanged && projectsBefore === JSON.stringify(loadedProjects)) return;
 
-            // Migrate legacy imBotConfigs → agents (one-time, skipped if already migrated)
-            const preMigrationAgentsCount = rawConfig.agents?.length ?? 0;
-            const loadedConfig = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
-            if ((loadedConfig.agents?.length ?? 0) > preMigrationAgentsCount) {
                 // Create timestamped backup before persisting migration
                 try {
                     const { getConfigDir, CONFIG_FILE } = await import('./services/configStore');
@@ -449,10 +482,19 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 } catch (e) {
                     console.warn('[ConfigProvider] Migration backup failed:', e);
                 }
-                // Persist agents + project isAgent/agentId changes
-                await persistAgents(loadedConfig.agents!);
-                await saveProjects(loadedProjects);
-            }
+                // Project.agentId is the birth authority. Commit it before the
+                // pathless Agent record; retry reuses the same id.
+                if (projectsBefore !== JSON.stringify(loadedProjects)) {
+                    await saveProjects(loadedProjects);
+                }
+                if (migrationChanged) {
+                    loadedConfig = await atomicModifyConfig(current => ({
+                        ...current,
+                        agents: loadedConfig.agents,
+                        imBotConfigs: loadedConfig.imBotConfigs,
+                    }));
+                }
+            }));
 
             const hiddenDefaultProject = loadedConfig.defaultWorkspacePath
                 ? loadedProjects.find(p => p.hidden === true && workspacePathsEqual(p.path, loadedConfig.defaultWorkspacePath))
@@ -513,16 +555,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 await persistAgents(loadedConfig.agents);
             }
 
-            // Ensure every project has a linked AgentConfig (basicAgent).
-            // Runs after IM migration + normalize so all existing agents are already in place.
-            const identityResult = await reconcilePersistedAgentWorkspaceIdentities();
-            if (identityResult.changed) {
-                console.log('[ConfigProvider] Reconciled required Agent identities for all projects');
-            }
-
             const snapshot = await commitConfigDiskSnapshot();
             if (!snapshot) return;
-            void reconcileMemoryAutoUpdateTasks(snapshot.config.agents);
+            void reconcileMemoryAutoUpdateTasks(snapshot.config.agents, snapshot.projects);
             void reconcileMemoryEvolutionTasks(snapshot.config.agents, snapshot.projects);
         } catch (err) {
             console.error('Failed to load config:', err);
@@ -589,6 +624,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             }
         } catch (err) {
             console.error(`[ConfigProvider] Failed to refresh config after ${reason}:`, err);
+            if (isMountedRef.current) {
+                setError(err instanceof Error ? err.message : 'Failed to refresh configuration');
+            }
         }
     }, [commitConfigDiskSnapshot, syncNativeUiLanguageFromConfig]);
 
@@ -867,14 +905,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         for (const createdAgent of identityResult.createdAgents) {
             if (createdAgent.memoryAutoUpdate?.enabled) {
                 try {
-                    await configureMemoryAutoUpdateTaskForAgent(createdAgent);
+                    await configureMemoryAutoUpdateTaskForAgent(createdAgent, project.path);
                 } catch (err) {
                     console.warn(`[ConfigProvider] Memory auto-update task provisioning deferred for ${createdAgent.id}:`, err);
                 }
             }
             if (createdAgent.memoryEvolution?.enabled) {
                 try {
-                    await configureMemoryEvolutionTasksForAgent(createdAgent, project.id, true);
+                    await configureMemoryEvolutionTasksForAgent(createdAgent, project.id, project.path, true);
                 } catch (err) {
                     console.warn(
                         `[ConfigProvider] Memory evolution task provisioning failed for agent ${createdAgent.id}:`,
