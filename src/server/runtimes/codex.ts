@@ -3278,7 +3278,7 @@ export class CodexRuntime implements AgentRuntime {
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
-          ephemeral: false,
+          ephemeral: options.ephemeral ?? false,
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
         console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);

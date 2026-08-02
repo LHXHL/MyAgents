@@ -66,8 +66,11 @@ export async function generateAndApplyTitle(
     // applies applyContextWindowSuffix itself, so `model` must be the RAW id.
     title = await generateTitle(rounds, model || '', providerEnv);
   } else {
-    // external runtimes: CLI-owned auth, no providerEnv; agentDir = workspace.
-    title = await generateTitleExternal(rounds, runtime, model || '', agentDir);
+    // External runtimes own their auth. Preserve the Session's persisted
+    // runtimeSource so a Managed Codex conversation cannot silently fall back
+    // to the user's system CLI (and inherit ~/.codex MCP/config) for titling.
+    const runtimeSource = getSessionMetadata(sessionId)?.runtimeSource;
+    title = await generateTitleExternal(rounds, runtime, model || '', agentDir, runtimeSource);
   }
   if (!title) return null;
 

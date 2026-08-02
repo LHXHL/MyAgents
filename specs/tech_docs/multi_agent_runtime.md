@@ -247,7 +247,7 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `approvalPolicy` | enum? | ✅ mapped from permissionMode | `untrusted`/`on-failure`/`on-request`/`never` |
 | `sandbox` | enum? | ✅ mapped from permissionMode | `read-only`/`workspace-write`/`danger-full-access` |
 | `developerInstructions` | string? | ✅ `systemPromptAppend` | MyAgents 三层系统提示词 |
-| `ephemeral` | boolean? | ✅ `false` | 是否临时线程 |
+| `ephemeral` | boolean? | ✅ 默认 `false`；Managed Codex 标题任务为 `true` | 是否临时线程 |
 | `modelProvider` | string? | ✅ Managed Codex | 新 thread 固定为 MyAgents 持有的 HTTP-only 官方 OpenAI provider；system-cli 不覆盖 |
 | `serviceTier` | enum? | ❌ 未对接 | `fast`/`flex` |
 | `personality` | enum? | ❌ 未对接 | `none`/`friendly`/`pragmatic` |
@@ -276,6 +276,8 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 
 **Managed transport owner 边界**：Managed Codex 的 app-server launch config 注册 MyAgents 私有 provider id；该 provider 保持 `name:'OpenAI'`、`wire_api:'responses'` 与 `requires_openai_auth:true`，不设置 `base_url` / `env_key`，因此 Codex 仍按现有 ChatGPT 登录态解析官方 Codex endpoint、订阅模型与 entitlement。唯一 transport 差异是 `supports_websockets:false`，让 Responses 从首包开始直接走 HTTPS，不再先做五轮 WebSocket reconnect。新 thread 显式传同一 `modelProvider`；resume 只有在 Session metadata 提供权威 model 时才把 model/provider 成对覆盖，model 未知的 legacy thread 则两者都交给 Codex 持久化 metadata 恢复。Pre-warm 同理优先使用 Session metadata 的 model，而不是 renderer 可能尚未同步完成的 payload。`runtimeSource:'system-cli'` 完全不注入或覆盖 provider。
+
+**标题 utility turn**：自动标题必须从 Session metadata 保留完整 Runtime identity，不能只传 `runtime:'codex'` 后让 `startSession()` 回落到 `system-cli`。Managed Codex 标题使用同一 managed binary / `CODEX_HOME` / auth owner，但显式传空 `mcpServers`，不注入 workspace MCP；同时固定 `suggest`、低 reasoning effort、`maxTurns:1` 和 ephemeral thread。普通 Session 的 MCP 与权限配置不受影响，system-cli Codex 继续由用户自己的原生配置持有。
 
 **Codex usage owner**：`thread/tokenUsage/updated` 始终保留：其 `last.inputTokens` 是实时 context 占用，`total` 是旧 runtime / 缺失 raw usage 时的 turn 累计 fallback。Codex 0.146+ 在开启 raw events 后还会为每个上游 Responses API completion 发 `rawResponse/completed {threadId, turnId, responseId, usage}`；adapter 在 root turn 内按 `responseId` 去重，累加 provider 回传的 input/output/cached/cache-write，最后在 root terminal 之前只发一个 `semantics:'delta'` usage，交给 `external-session` 既有的 SessionStore / analytics owner。任一 response 的 `usage:null` 或必需 token 字段非法会使整轮 raw 聚合失效并回退 `thread/tokenUsage/updated`，禁止把部分和伪装成精确统计。child thread 的 raw/thread usage 都经过 `isChildThreadGatedMethod()` 丢弃，不污染主 Session；raw payload 与 response id 不跨 adapter 边界。
 
