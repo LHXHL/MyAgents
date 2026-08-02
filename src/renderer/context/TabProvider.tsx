@@ -59,6 +59,7 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
     COLD_HISTORY_REPLAY_KIND,
     LIVE_USER_ECHO_REPLAY_KIND,
@@ -393,6 +394,8 @@ interface TabProviderProps {
     tabId: string;
     agentDir: string;
     sessionId?: string | null;
+    /** Current App-shell title projection, used to preserve newer manual/AI titles during rollback. */
+    sessionTitle?: string;
     /** Whether this Tab is currently visible — fed into TabActiveContext for useTabActive() consumers */
     isActive?: boolean;
     /** Callback when generating state changes (for close confirmation) */
@@ -564,6 +567,7 @@ export default function TabProvider({
     tabId,
     agentDir,
     sessionId = null,
+    sessionTitle,
     isActive,
     onGeneratingChange,
     onSessionIdChange,
@@ -825,6 +829,40 @@ export default function TabProvider({
     onSessionIdChangeRef.current = onSessionIdChange;
     const onTitleChangeRef = useRef(onTitleChange);
     onTitleChangeRef.current = onTitleChange;
+    const currentSessionTitleRef = useRef(sessionTitle);
+    currentSessionTitleRef.current = sessionTitle;
+    type FirstUserTitleProjection = 'established' | {
+        messageId: string;
+        title: string;
+    } | null;
+    // The SessionStore owns the persisted default title, but the active Tab is
+    // a live App-shell projection. Keep one Tab-local marker so a provisional
+    // accepted-user echo can be compensated by chat:messages-retracted without
+    // ever replacing a newer manual/AI title.
+    const firstUserTitleProjectionRef = useRef<FirstUserTitleProjection>(null);
+    const projectAcceptedFirstUserTitle = useCallback((params: {
+        content: unknown;
+        messageId: string;
+    }) => {
+        if (firstUserTitleProjectionRef.current !== null) return;
+        if (historyMessagesRef.current.some(message => (
+            message.role === 'user'
+            && typeof message.content === 'string'
+            && Boolean(deriveSessionTitle(message.content, 40))
+        ))) {
+            firstUserTitleProjectionRef.current = 'established';
+            return;
+        }
+        if (typeof params.content !== 'string') return;
+        const title = deriveSessionTitle(params.content, 40);
+        if (!title) return;
+        firstUserTitleProjectionRef.current = {
+            messageId: params.messageId,
+            title,
+        };
+        currentSessionTitleRef.current = title;
+        onTitleChangeRef.current?.(title);
+    }, []);
     const onUnreadChangeRef = useRef(onUnreadChange);
     onUnreadChangeRef.current = onUnreadChange;
     // Ref for isActive to avoid stale closures in SSE event handlers
@@ -833,8 +871,10 @@ export default function TabProvider({
 
     // Auto-title generation is backend-owned (#296): the sidecar triggers it
     // after a successful turn and pushes the result via the
-    // `chat:session-title-changed` SSE event (handled below). The frontend no
-    // longer accumulates rounds or decides when to title — it only displays.
+    // `chat:session-title-changed` SSE event (handled below). The frontend does
+    // not accumulate rounds or decide AI-title policy. It only projects the
+    // shared deterministic first-query title at the accepted-user boundary and
+    // displays later backend title changes.
 
     // Notify parent when generating state changes (for close confirmation)
     useEffect(() => {
@@ -1042,6 +1082,21 @@ export default function TabProvider({
     const resetSession = useCallback(async (): Promise<boolean> => {
         console.log(`[TabProvider ${tabId}] resetSession: starting...`);
         abortActiveRestoreRequest();
+        const titleBeforeReset = currentSessionTitleRef.current;
+        const titleProjectionBeforeReset = firstUserTitleProjectionRef.current;
+        const restoreTitleAfterRejectedReset = () => {
+            if (currentSessionTitleRef.current === 'New Chat' && titleBeforeReset) {
+                currentSessionTitleRef.current = titleBeforeReset;
+                firstUserTitleProjectionRef.current = titleProjectionBeforeReset;
+                onTitleChangeRef.current?.(titleBeforeReset);
+                return;
+            }
+            // A manual/AI title may have landed while reset was pending. Keep it
+            // authoritative instead of restoring the older projection.
+            firstUserTitleProjectionRef.current = currentSessionTitleRef.current === 'New Chat'
+                ? titleProjectionBeforeReset
+                : 'established';
+        };
 
         // 1. Clear frontend state immediately for responsive UI
         setHistoryMessages([]);
@@ -1107,6 +1162,7 @@ export default function TabProvider({
         // remains the fallback confirmation path.
 
         // Reset tab title so SortableTabItem falls back to folder name
+        currentSessionTitleRef.current = 'New Chat';
         onTitleChangeRef.current?.('New Chat');
 
         // 2. Tell backend to reset (this will also broadcast chat:init)
@@ -1116,6 +1172,7 @@ export default function TabProvider({
                 isNewSessionRef.current = false;
                 resetBirthPendingRef.current = false;
                 resetBirthSessionIdRef.current = null;
+                restoreTitleAfterRejectedReset();
                 console.error(`[TabProvider ${tabId}] resetSession failed:`, response.error);
                 return false;
             }
@@ -1157,6 +1214,7 @@ export default function TabProvider({
                         isNewSessionRef.current = false;
                         resetBirthPendingRef.current = false;
                         resetBirthSessionIdRef.current = null;
+                        restoreTitleAfterRejectedReset();
                         console.error(`[TabProvider ${tabId}] resetSession failed to upgrade parent session id to ${response.sessionId}`);
                         return false;
                     }
@@ -1174,6 +1232,7 @@ export default function TabProvider({
             // `isNewSessionRef.current` is already true (set above), which the
             // organic-mint detector in chat:system-init uses to know that the
             // upcoming id-change is an intentional reset (vs spurious sync).
+            firstUserTitleProjectionRef.current = null;
             setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
 
             return true;
@@ -1181,6 +1240,7 @@ export default function TabProvider({
             isNewSessionRef.current = false;
             resetBirthPendingRef.current = false;
             resetBirthSessionIdRef.current = null;
+            restoreTitleAfterRejectedReset();
             console.error(`[TabProvider ${tabId}] resetSession error:`, error);
             return false;
         }
@@ -1259,10 +1319,12 @@ export default function TabProvider({
         setUnifiedLogs([]);
         setLogs([]);
         setSessionMeta(null);
+        firstUserTitleProjectionRef.current = null;
         setSessionRuntimeSource(null);
         clearInteractiveState();
 
         // Reset tab title so SortableTabItem falls back to folder name.
+        currentSessionTitleRef.current = 'New Chat';
         onTitleChangeRef.current?.('New Chat');
 
         const relabeledAttachment = Boolean(
@@ -2005,6 +2067,13 @@ export default function TabProvider({
                 if (seenIdsRef.current.has(msg.id)) break;
                 seenIdsRef.current.add(msg.id);
 
+                if (isExplicitLiveEcho && msg.role === 'user') {
+                    projectAcceptedFirstUserTitle({
+                        content: msg.content,
+                        messageId: msg.id,
+                    });
+                }
+
                 let attachments = normalizeWireAttachments(msg.attachments);
                 if (msg.role === 'user' && pendingAttachmentsRef.current) {
                     attachments = mergeAttachmentPreviews(attachments, pendingAttachmentsRef.current);
@@ -2073,6 +2142,22 @@ export default function TabProvider({
                 const ids = payload?.messageIds;
                 if (ids && ids.length > 0) {
                     const idSet = new Set(ids);
+                    const titleProjection = firstUserTitleProjectionRef.current;
+                    if (
+                        titleProjection !== null
+                        && titleProjection !== 'established'
+                        && idSet.has(titleProjection.messageId)
+                    ) {
+                        if (currentSessionTitleRef.current === titleProjection.title) {
+                            currentSessionTitleRef.current = 'New Chat';
+                            firstUserTitleProjectionRef.current = null;
+                            onTitleChangeRef.current?.('New Chat');
+                        } else {
+                            // A newer manual/AI title superseded the provisional
+                            // first-query projection before the rejection arrived.
+                            firstUserTitleProjectionRef.current = 'established';
+                        }
+                    }
                     setHistoryMessages(prev =>
                         prev.some(m => idSet.has(m.id)) ? prev.filter(m => !idSet.has(m.id)) : prev
                     );
@@ -2797,6 +2882,8 @@ export default function TabProvider({
                 const titlePayload = data as { sessionId?: string; title?: string } | null;
                 if (titlePayload?.title && titlePayload.sessionId
                     && titlePayload.sessionId === currentSessionIdRef.current) {
+                    firstUserTitleProjectionRef.current = 'established';
+                    currentSessionTitleRef.current = titlePayload.title;
                     onTitleChangeRef.current?.(titlePayload.title);
                 }
                 // Refresh the session-list surfaces (history dropdown / task center),
@@ -3592,6 +3679,11 @@ export default function TabProvider({
                         if (!seenIdsRef.current.has(msgId)) {
                             seenIdsRef.current.add(msgId);
 
+                            projectAcceptedFirstUserTitle({
+                                content: payload.userMessage.content,
+                                messageId: msgId,
+                            });
+
                             let attachments = normalizeWireAttachments(payload.userMessage.attachments);
                             // Look up queued message by real queueId first;
                             // fall back to first opt-* entry when queue:started arrives
@@ -3751,7 +3843,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
 
     const handleSseEvent = useCallback((
         eventName: string,
@@ -4536,7 +4628,18 @@ export default function TabProvider({
             const { messages: _metaMessages, ...metaOnly } = response.session as SessionMetadata & { messages?: unknown };
             void _metaMessages;
             setSessionMeta(metaOnly as SessionMetadata);
-            onTitleChangeRef.current?.(getSessionDisplayText(response.session));
+            firstUserTitleProjectionRef.current = (
+                response.session.titleSource === 'user'
+                || (response.session.title && response.session.title !== 'New Chat')
+                || projectedMessages.some(message => (
+                    message.role === 'user'
+                    && typeof message.content === 'string'
+                    && Boolean(deriveSessionTitle(message.content, 40))
+                ))
+            ) ? 'established' : null;
+            const restoredTitle = getSessionDisplayText(response.session);
+            currentSessionTitleRef.current = restoredTitle;
+            onTitleChangeRef.current?.(restoredTitle);
 
             if (!isLiveRecovery) {
                 const persistedUsage = response.session.lastContextUsage ?? null;

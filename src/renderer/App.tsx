@@ -370,6 +370,7 @@ export const MemoizedTabContent = memo(function TabContent({
           tabId={tab.id}
           agentDir={tab.agentDir ?? ''}
           sessionId={tab.sessionId}
+          sessionTitle={tab.title}
           isActive={isActive}
           onGeneratingChange={(isGenerating) => onUpdateGenerating(tab.id, isGenerating)}
           onTitleChange={(title) => onUpdateTitle(tab.id, title)}
