@@ -73,14 +73,19 @@ TaskScheduler reads current Task
    new Session: initialize from Task/Agent policy
 -> ensure SidecarOwner::Task
 -> Rust POST /cron/execute-sync (compatibility transport name)
+-> routes/scheduled-turns.ts validates the request and maps the response
+-> task-turn-orchestrator.ts owns Task preparation and execution lifecycle
 -> SessionEngine selector chooses builtin/external adapter
--> enqueue one Task turn with per-turn permission
+-> adapter.prepareScheduledTurn binds the Session and applies runtime-native initial config
+-> runInjectedTurn enqueues one Task turn with per-turn permission
 -> wait for real terminal result
 -> persist Task outcome/history
 -> release Task owner on terminal/stop/delete
 ```
 
-`/cron/execute-sync` 是历史 wire name，不是 CronTask domain owner。Payload 不再传 `providerEnv`、`providerIntent` 或 Task-Cron backpointer。
+`/cron/execute-sync` 是为兼容历史保留的接口名，不代表业务仍归 CronTask。Payload 不再传 `providerEnv`、`providerIntent` 或 Task-Cron 反向引用。
+
+`routes/scheduled-turns.ts` 只处理 JSON 解析、字段校验、HTTP 状态和响应结构。Task 的 Session 准备、dispatch guard、reminder/exit 处理与终态判定属于 `task-turn-orchestrator.ts`；Builtin/External 的 Session binding、配置和 MCP 准备属于各自 adapter 的 `prepareScheduledTurn()`。Route 不直接实现 Runtime 分支。
 
 对已有 Session，Node 如果无法切换到 payload 指定的 Session，必须 fail closed；禁止退回“当前碰巧打开的 Session”继续执行。
 
@@ -124,16 +129,19 @@ Task 和 Goal 可同时关联同一 Session，因为它们职责不同：
 | Task/Cron store 持久化 credential env | 泄密且 key rotation 失效 | 只存 identity，创建 Session 时 live resolve |
 | 每个 tick 覆盖已有 Session config | 多 owner 竞态、用户设置被回滚 | 已有 Session 继承自身配置 |
 | Task 同时持有 external runtime 与 builtin provider | 路由语义冲突 | Rust validator 拒绝 |
-| 把 `/cron/execute-sync` wire name 当成 CronTask owner | 复活双权威 | domain owner 始终是 Task |
+| 因 `/cron/execute-sync` 的历史名称而把业务归到 CronTask | 重新产生两个权威来源 | 业务始终归 Task |
 | Goal 复制 Task provider/runtime/MCP | Goal 不是 TaskRun | 读取当前 Session |
 
 ## 8. 关键文件
 
 - `src-tauri/src/task.rs`：持久 schema、validation、mutation
+- `src-tauri/src/task_application.rs`：Task create/status/delete/run/rerun 应用操作
 - `src-tauri/src/task_scheduler.rs`：timer 与 run trigger
 - `src-tauri/src/task_execution.rs`：Session/Sidecar execution use case
 - `src-tauri/src/sidecar/cron_execute.rs`：Rust -> Node sync transport
-- `src/server/index.ts`：`/cron/execute-sync`
-- `src/server/session-engine/`：builtin/external selector 与 adapter
+- `src/server/routes/scheduled-turns.ts`：`/cron/execute-sync` 的请求校验与响应映射
+- `src/server/session-engine/task-turn-orchestrator.ts`：Task scheduled turn 生命周期
+- `src/server/session-engine/builtin-adapter.ts`、`external-adapter.ts`：Runtime 原生 `prepareScheduledTurn()`
+- `src/server/session-engine/selector.ts`：builtin/external adapter 选择
 - `src/server/utils/admin-config.ts`：provider config resolver
 - `src/renderer/components/task-center/editors/TaskAdvancedConfigEditor.tsx`：UI 配对编辑

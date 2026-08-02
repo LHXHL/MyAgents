@@ -85,7 +85,7 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 进程清理分成两种不能互换的 authority：
 
-1. **Live lifecycle**：Sidecar / Plugin Bridge 用 `process_cmd::spawn_tree()` 出生。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`。App exit 先关闭统一 creation admission，等待已获准的 creation 完成 managed-state 注册或释放，再释放 IM / Agent state 中的 Bridge owner；stop / Drop 直接终止 Job 内所有后代。`CREATE_NO_WINDOW` child 没有可靠 console graceful signal，不能加一个无作用的等待冒充 graceful shutdown。正常退出不得扫描全机 argv。
+1. **Live lifecycle**：Sidecar / Plugin Bridge 使用 `process_cmd::spawn_tree()` 创建。Windows child 先以 `CREATE_SUSPENDED` 创建，绑定配置了 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，再恢复初始线程；owner 持有 `ChildTree`，stop / Drop 直接终止 Job 内所有后代。`CREATE_NO_WINDOW` child 没有可靠的 console signal，不能增加无实际作用的等待步骤。应用退出时的创建入口关闭与登记等待是跨平台规则，统一见 `pit_of_success.md` 的 `process_cmd` 小节。正常退出不得扫描全机 argv。
 2. **Recovery**：只有 prior instance 已确定死亡后的启动恢复，以及 updater 的 residual / protected-root / file-lock 验证，才使用 `sysinfo` 枚举。它处理 crash 后已经没有 live handle 的遗留进程，不是正常 shutdown 的 fallback。
 
 **Windows recovery**（`sysinfo` 原生枚举，避免旧 PowerShell/WMI 冷启动开销）：
@@ -132,7 +132,7 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport;
 ❌ 误以为要用 fetch-src（非标准、引擎忽略；真正生效的是 connect-src）
 ```
 
-**详见**：[build_troubleshooting.md#CSP配置错误](./build_troubleshooting.md#csp-配置错误)
+**详见**：[build_troubleshooting.md#CSP配置错误](../guides/build_troubleshooting.md#csp-配置错误)
 
 ---
 
@@ -207,7 +207,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 .\build_dev_win.ps1 -BundleNsis
 ```
 
-**详见**：[build_troubleshooting.md](./build_troubleshooting.md)
+**详见**：[build_troubleshooting.md](../guides/build_troubleshooting.md)
 
 ---
 
@@ -249,7 +249,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 
 ### process_cmd (`src-tauri/src/process_cmd.rs`)
 
-所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建。内置 Windows `CREATE_NO_WINDOW` 标志，防止 GUI 应用启动子进程时弹出黑色控制台窗口。Sidecar / Plugin Bridge 等会派生后代的长生命周期进程还 MUST 用 `crate::process_cmd::spawn_tree()`，由返回的 `ChildTree` 持有 Unix process group / Windows Job Object authority；不能直接 `.spawn()` 后在退出时用 `taskkill` 或 argv scan 补救。
+所有 Rust 层子进程 MUST 通过 `crate::process_cmd::new()` 创建，以统一应用 Windows `CREATE_NO_WINDOW`。会派生后代的长生命周期进程还 MUST 使用 `crate::process_cmd::spawn_tree()` 并保留返回的 `ChildTree`。完整跨平台不变量、例外和禁止项只在 [`pit_of_success.md`](pit_of_success.md#process_cmd) 维护，本节只记录 Windows 的 Job Object 行为。
 
 ### system_binary (`src-tauri/src/system_binary.rs`)
 
@@ -315,6 +315,6 @@ $env:CLAUDE_CODE_GIT_BASH_PATH="C:\Program Files\Git\bin\bash.exe"
 ## 📚 相关文档
 
 - [Windows 构建指南](../guides/windows_build_guide.md)
-- [构建问题排查](./build_troubleshooting.md)
+- [构建问题排查](../guides/build_troubleshooting.md)
 - [代理配置](../tech_docs/proxy_config.md)
 - [自动更新](../tech_docs/auto_update.md)

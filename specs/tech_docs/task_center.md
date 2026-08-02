@@ -13,7 +13,7 @@
 
 `TaskStore` 是 Task 的唯一真相。不存在 `Task.cronTaskId`、关联 `CronTask` 副本、schedule 双写或启动时反向修补。
 
-`TaskApplication` 是 create/link、status、delete/unlink、run/rerun 的窄应用层 owner：它在 Task-control 与 Store 已有事务上编排 policy，不保存第二份状态。Management API 与 Tauri command 只负责 DTO、caller 身份和响应映射；Cron 兼容入口与 Memory managed job 直接调用同一个 application owner，不能反向依赖 transport handler。
+`TaskApplication` 是 create/link、status、delete/unlink、run/rerun 的应用层 owner。它复用 Task control 与 Store 的现有事务来编排规则，不保存第二份状态。Management API 与 Tauri command 只负责 DTO、调用方身份和响应映射；Cron 兼容入口与 Memory managed job 直接调用同一个应用入口，不能反向依赖 transport handler。
 
 Task 的核心职责：
 
@@ -43,7 +43,9 @@ any allowed state -> Deleted (soft delete)
 - 一个 `taskId -> { queueId, canceled, sessionId, pendingSessionBirth?, state, error }` 的瞬时 execution map：复用 SessionEngine 普通 turn identity，原子拒绝重叠、撤销未 dispatch turn，并把 stop 与结果提交线性化；`pendingSessionBirth` 只在 metadata 尚未出生时持有该 exact generation 的 lifecycle capability，它不是持久 TaskRun。
 - 启动时从 `TaskStore` 的 Running Task 重建 timer。
 
-启动 Task 只有一个应用入口：`TaskApplication::run*` 先校验 schedule、提交 `Running`，再 arm timer；arm 失败则提交 `Blocked`。同一 mutation 在 scheduler admission 成功后返回一基的 `attemptOrdinal = executionCount + 1`；Renderer/CLI 只消费该结果上报 `task_run.run_count`，不按 Session history 预测，也不为 admission 失败计数。同一 `taskId` 的 run/rerun、terminal transition、timer 替换、soft delete、stop、outcome/history/UI event/delivery side effect 共用 keyed Task-control lifecycle；完整锁序是 `Task control → Session lifecycle → TaskStore`，锁持有期间使用显式 held-guard 入口，禁止二次 acquire。这样旧 stop 或旧 queue 的迟到结果不可能越过新一轮 birth。
+启动 Task 只有一个应用入口：`TaskApplication::run*` 先校验 schedule、提交 `Running`，再启动 timer；timer 启动失败则提交 `Blocked`。scheduler 接受本次执行后，同一操作返回从 1 开始计数的 `attemptOrdinal = executionCount + 1`；Renderer/CLI 只使用这个结果上报 `task_run.run_count`，不按 Session history 预测，也不为未被接受的执行计数。
+
+同一 `taskId` 的 run/rerun、终态提交、timer 替换、软删除、stop，以及 outcome/history/UI event/delivery 副作用，共用按 taskId 串行的 Task control lifecycle。完整锁序是 `Task control → Session lifecycle → TaskStore`；已经持锁的代码必须使用显式的 held-guard 入口，不能再次取得同一把锁。这样，旧 stop 或旧 queue 的迟到结果不能影响新一轮执行。
 
 timer handle 只负责“何时触发”。真正的 AI Turn 是独立执行作业；Stop 先撤销该次 queue authority，再携带精确 `queueId` 请求 SessionEngine stop。只有精确 stop 得到业务确认才清除 execution、释放 Task owner 并发出 stopped confirmation；失败保留 `stop_failed` 投影与 Session 保护，用户只能重试 stop，不能 rerun/edit/delete。对 `blocked | stopped | done | archived` 再发 stop 只重试 transient turn，保留原终态原因，不追加伪状态迁移。`queueId` 已是执行 generation，禁止再维护冗余 generation counter。worker 异常退出由 RAII claim guard 收敛成可见的 `stop_failed`，不留下不可见的永久 owner。
 
@@ -65,9 +67,8 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 
 - 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
-- 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 的持久化边界拒绝空值与 `pending-*` binding。materialize 失败、取消或 Tab 已卸载都不会留下半绑定 Task。new-session 的 scheduler birth reservation 不变。
-- Session metadata creator 由 scheduler reservation 在 per-Session lifecycle 内按权威 `SessionStore` 是否存在决定，**与 Sidecar `EnsureSidecarResult.isNew` 无关**。已有 Tab/owner 保活进程不等于 metadata 已出生。
-- scheduler reservation 从发布 Session identity 到 metadata birth 只获取一次 per-Session lifecycle authority。Sidecar ensure 必须共享这次 held lease；禁止在 dispatch 下层改走会再次 acquire 同 key 的通用 wrapper，否则新 Session 的 metadata birth 与 ensure 会闭环等待。未 materialize 时，lease 的 fail-closed owner 是 exact `ActiveTaskExecution(taskId + queueId)`，不是可能被 abort/panic 的 worker future；observer 只负责在 metadata 出生后清空该 generation 的 lease，不能成为唯一 owner。
+- 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 的持久化边界拒绝空值与 `pending-*` binding。materialize 失败、取消或 Tab 已卸载都不会留下半绑定 Task。new-session 的 scheduler reservation 不变。
+- 新 Task Session 的 metadata 创建权由 scheduler 根据 `SessionStore` 决定，**与 Sidecar `EnsureSidecarResult.isNew` 无关**。guard、shared lease 与停止确认的完整事务见[第 6 节](#6-数据完整性)。
 - single-session 的持久 binding 若已没有 Session metadata，执行前换成新 UUID 并原子重绑，绝不复活被用户删除的 Session id；`task:session-rebound` 提示 UI。`AttachedSession` 终态不能 generic rerun，后续工作必须重新 claim/reopen 并创建新的 Attached Task。
 - permission 是本轮执行策略，可由 Task 指定；空值解析为对应 runtime 最大权限。
 - durable Task 只保存 provider identity (`providerId + model`)，不保存 credential/env。
@@ -131,7 +132,11 @@ Task 对 Session identity 的保护同时覆盖 durable 与 transient 两层：R
 
 startup legacy migration 也是 durable writer：`create_migrated_with_id` 与 `import_legacy_execution_state` 必须走同一 lifecycle policy，不能以“仅启动期”为由裸拿 TaskStore lock。`create_attached` 在取得 lifecycle 后还要复核 Session metadata；若删除先赢，拒绝创建本地 Attached Task。
 
-首次 materialize 的 Task Session 还把该 guard 保留到权威 `SessionStore` row 出现：creator 与 Sidecar ensure 用 shared lease 表达同一次 acquisition，不能让 ensure 再拿同 key；metadata birth 后 observer 立即从 exact execution generation 清空 lease，另一个共享同一 id 的 Task 才能 adopt。禁止持满整轮，否则 turn 内同 Session 的 Task/Space 工具会等待自己造成死锁。creator 的 turn 若**确认**在 metadata birth 前失败，必须释放 guard 与 Task owner，让下一次 reservation 重新取得 metadata creator 权；若 POST 可能已到 Node、仅响应丢失，则 lease 留在 exact `ActiveTaskExecution`，worker/observer 异常都不能释放。`/task/stop` 的 `not_found` 只有在 Node pre-metadata admission 已取消或 materialize 已结算后才算确认停止，Rust 随后删除 exact generation 并释放 lease；禁止把“runtime queue 暂未注册”误当成 creator 已退出，或在不确定状态下 rebound 出第二个 identity。Sidecar 可被其它 owner 继续保活，这不影响下一次 creator 初始化 metadata。
+首次 materialize 的 Task Session 会把 lifecycle guard 保留到权威 `SessionStore` 记录出现。Session 创建方与 Sidecar ensure 通过 shared lease 表示同一次 guard 获取，ensure 不能再次获取相同 key。metadata 创建后，observer 立即从精确的 execution generation 清除 lease，另一个共享同一 id 的 Task 才能 adopt。guard 不能持有到整个 turn 结束，否则该 turn 内访问同一 Session 的工具会等待自己并造成死锁。
+
+如果该 turn 在 metadata 创建前被**确认**失败，创建方必须释放 guard 与 Task owner，让下一次 reservation 重新取得 metadata 创建权。如果 POST 可能已经到达 Node，只是响应丢失，lease 必须留在精确的 `ActiveTaskExecution`，worker 或 observer 异常都不能释放它。
+
+`/task/stop` 返回 `not_found`，只有在 Node 的 metadata 创建前 admission 已取消，或 materialize 已经结束时，才表示停止已确认；Rust 随后删除精确 generation 并释放 lease。不能把“Runtime queue 尚未登记”误判为创建方已经退出，也不能在状态不确定时绑定第二个 Session identity。Sidecar 是否被其它 owner 保活不影响这一判断。
 
 ## 7. Goal 边界
 

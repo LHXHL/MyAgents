@@ -100,19 +100,19 @@
 <a id="process_cmd"></a>
 ## `process_cmd` (`src-tauri/src/process_cmd.rs`)
 
-**Problem.** Windows 上 GUI 应用（Tauri）启动子进程（node.exe Sidecar / Plugin Bridge / npm install）默认会弹出黑色控制台窗口。长生命周期 Node owner 若只保留直接 `Child`，正常退出又只能按 argv 猜测 SDK / MCP 后代，会误杀同机外部进程；Windows 在 spawn 后再 `taskkill /T` 还存在 wrapper 提前退出与 containment 绑定竞态。
+**Problem.** Windows 上 GUI 应用（Tauri）直接启动子进程（node.exe Sidecar / Plugin Bridge / npm install）会弹出黑色控制台窗口。长生命周期 Node 进程还会创建 SDK / MCP 后代；如果所有者只保存直接 `Child`，正常退出时只能按 argv 猜测哪些后代属于 MyAgents，既可能漏掉后代，也可能误杀同机的外部进程。在 Windows 上先启动再调用 `taskkill /T`，还会留下 wrapper 提前退出、Job Object 尚未绑定的竞态窗口。
 
 **Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
 
-**Invariants enforced.** `ChildTree` 在 user code 执行前完成 containment：Unix child 出生为独立 process group；Windows child 以 suspended 状态创建、绑定 kill-on-close Job Object 后才 resume。owner 保留 `ChildTree`，显式 stop 与 Drop 都只终止该 exact tree；app exit 先关闭统一 creation admission，等待已获准的 creation 完成 managed-state 注册或释放，再释放 Sidecar / Plugin Bridge owner并等待 Unix 的 bounded SIGTERM→SIGKILL worker settle，不能让晚出生资源逃过 registry，也不能让 Rust 进程先于 escalation thread 退出。Windows GUI child 没有可靠 console signal，stop 直接终止 retained Job Object。containment 建立失败时终止 child 并 fail closed，不降级成未受管进程。
+**Invariants enforced.** `ChildTree` 在子进程执行用户代码前建立进程树边界：Unix child 进入独立 process group；Windows child 以 suspended 状态创建，绑定 kill-on-close Job Object 后再恢复运行。所有者必须保留 `ChildTree`，显式 stop 与 Drop 只终止这棵精确进程树。应用退出先禁止新的资源创建，等待已经获准的创建流程完成登记或释放，再释放 Sidecar / Plugin Bridge owner；Unix 还要等待有上限的 SIGTERM→SIGKILL 清理任务结束。Windows GUI child 没有可靠的 console signal，stop 直接终止已保留的 Job Object。进程树边界建立失败时必须终止 child 并返回错误，不能降级为未受管理的进程。
 
-**Don't.** 裸 `std::process::Command::new()`；也不要让 Sidecar / Plugin Bridge 直接 `.spawn()`，或在正常 shutdown 用进程名、安装路径、argv substring 扫描整机来补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于 prior instance 已死亡后的 startup recovery 和 updater residual recovery（Windows updater 另有 protected-root / file-lock verification）；不是 live lifecycle API。
+**Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
 **例外（已内联处理或不适用）：**
 - `#[cfg(windows)]` 守卫内的系统工具命令（taskkill / powershell）
 - `commands.rs` / `workspace_files/system_open.rs` 的 OS opener（open / explorer / xdg-open）——用户可见的系统命令，无需隐藏
 - `terminal.rs` 的 PTY 进程由 `portable-pty` 的 `CommandBuilder` + `slave.spawn_command()` 管理，不走 `std::process::Command`
-- `cli.rs` 的 Node CLI spawn——CLI 模式 NEEDS 控制台显示 stdout/stderr
+- `cli.rs` 的 Node CLI spawn——CLI 模式需要在控制台显示 stdout/stderr
 
 ---
 
@@ -313,11 +313,11 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Surface.**
 - Node `maybeSpill(value, { mimetype, sessionId })` (`src/server/utils/large-value-store.ts`) —— ≤256KiB 返 inline，超阈值写到 `~/.myagents/refs/<id>` 返 `LargeValueRef { id, preview, mimetype, sizeBytes, expiresAt }`（1h TTL，8KiB head preview）
 - `fetchRef(id)` / `getRefStreamPath(id)` —— 消费方拉回
-- `/refs/:id` HTTP 路由 —— 流式 `createReadStream`，绕过 deferred-init gate；新 writer 生成 32 个小写 hex 字符，reader 保留 `^[a-f0-9]{8,32}$` 读取窗口
-- Node / Rust writer 共用 no-clobber 提交协议：独占 `<id>.part` → flush/sync body → hard-link expose body → 独占 `<id>.meta.json.part` → flush/sync meta → hard-link expose meta；reader 只消费 body + meta 完整 pair
+- `/refs/:id` HTTP 路由 —— 使用 `createReadStream` 流式返回，绕过 deferred-init gate；新 writer 生成 32 个小写十六进制字符，reader 保留 `^[a-f0-9]{8,32}$` 的历史读取范围
+- Node / Rust writer 共用不可覆盖的提交协议：独占创建 `<id>.part` → flush/sync body → 用 hard link 发布 body → 独占创建 `<id>.meta.json.part` → flush/sync meta → 用 hard link 发布 meta；reader 只读取完整的 body + meta 组合
 - `clearExpiredRefs` / `clearSessionRefs` + 60s `startRefsGc` 后台清理；session reset 联动；GC 同时回收陈旧 `.part`、`.meta.json.part` 与 body-without-meta
 - Rust `proxy_spill.rs` 边读边决定：loopback >1MiB spill、单响应最多 512MiB；external 单响应最多 8MiB、只在内存中返回，不创建本地 ref
-- Rust `ProxySpillManager` 只核算 proxy 在途写入与删除失败债务（合计 1GiB）；提交成功后所有权回到既有 ref TTL。唯一一次启动清点在 prior writer 确认静止后执行，清理残留、panic 或清点失败会令本次运行的 Rust spill admission fail closed，不得运行期重扫；债务按唯一物理文件身份计量，hard-link alias 不重复收费。已知债务只在下一次真实 spill 请求到达且 next-retry clock 到期时重试，每次最多处理固定数量，不运行 quota daemon
+- Rust `ProxySpillManager` 只统计 proxy 的在途写入与删除失败残留（合计 1GiB）；提交成功后，文件回到既有 ref TTL 管理。启动清点必须等前一实例的 writer 确认停止后执行一次；若残留清理、panic 恢复或清点失败，本次运行拒绝新的 Rust spill，不能在运行期间重扫共享目录。残留大小按物理文件 identity 统计，hard-link alias 不重复计费；只有新的 spill 请求到达且重试时间已到时，才有上限地重试已知残留，不运行长期后台配额任务
 - SSE 三档优先级（`src/server/sse.ts`）：
   - **critical**（errors / status / message-stopped 等）
   - **coalescible**（chunk / delta，同类合并替换）
@@ -326,7 +326,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Invariants enforced.**
 - Node tool/result 超过 256KiB、loopback proxy response 超过 1MiB 时不进入 SSE / IPC base64，改走 ref 数据面
-- ref writer 不能截断或覆盖已有 body/meta/temp target；碰撞换 128-bit id，有界重试
+- ref writer 不能截断或覆盖已有 body、meta 或临时文件；发生碰撞时更换 128-bit id，并按固定次数重试
 - `Content-Length` 只做提前拒绝，实际 chunk 累计仍必须执行同一响应上限；external origin 永远不能收到本地 `/refs/<id>` URL
 - 用户从文件系统拖入 / 桌面文件选择的图片不走 `/chat/send` inline base64：≤10MB 由 `cmd_prepare_user_image_attachments` staged 到 `~/.myagents/attachments/<session>/` 后发送 `attachment_ref`，>10MB 走 `cmd_workspace_copy_paths` 进入 `myagents_files/` 并插入 `@path`。无绝对路径的剪贴板 / 浏览器 `File` 超过 10MB 必须拒绝并提示用户用文件路径入口，禁止为了“自动转文件”把它 base64 塞进 IPC。
 - Bridge tool result 经 `maybeSpill` 再交给 SDK，超阈值替换为 `@ref:<id>` marker
@@ -336,7 +336,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Don't.**
 - 把应经过 Node `maybeSpill` 的超 256KiB 值直接 `JSON.stringify` 进 SSE / IPC
 - 自己手写 base64 round-trip
-- 为 proxy spill 再建持久化 reservation journal、全局 attachment/ref quota 或永久后台清理器；当前 owner 只覆盖在途写入与已知清理债务
+- 为 proxy spill 再建持久化预留日志、全局 attachment/ref 配额或长期后台清理器；当前 owner 只覆盖在途写入与已知清理残留
 - 新加 `controller.enqueue` 不过 priority gate
 - 新增 SSE 事件只注册一处。两处都要：renderer `SseConnection.ts::JSON_EVENTS`（否则前端静默丢弃）+ server `sse.ts::SSE_EVENT_PRIORITIES`（否则回落 `critical` → 永不 coalesce + 每进程一次性 `[sse] missing from SSE_EVENT_PRIORITIES` warn）。latest-wins 快照类（如 `chat:context-usage`）选 `coalescible`
 

@@ -272,7 +272,7 @@ Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：
 
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 
-发送统一经过 `/goal/execute-sync` 与 `src/server/session-engine/` selector，builtin/external adapter 共享 queue identity、stop 与 terminal contract。
+发送统一经过 `/goal/execute-sync`。`routes/scheduled-turns.ts` 只负责请求校验和响应映射，`goal-orchestrator.ts` 管理 Goal 的准备、dispatch 和终态生命周期；Builtin/External adapter 通过 `prepareScheduledTurn()` 完成各自的 Session 绑定与配置准备，并共享 queue identity、stop 与 terminal contract。
 
 #### 用户消息与展示
 
@@ -326,16 +326,9 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 ### Builtin Session Owner Split（Phase6 / Phase7）
 
-Product Session 的 current identity、pending desktop materialization 与 metadata
-freeze/publish 不属于任一 Runtime。它们由
-`src/server/session-engine/product-session-binding.ts` 线性化：prepare/commit/rollback
-共享同一个 durable marker，commit 只在 adapter 完成本 Runtime 的 process teardown 后
-发布新 product Session binding。Builtin SDK UUID 与 external thread/session id 仍分别归各自
-Runtime owner；adapter 不得借用另一 Runtime 的 reset、materializer 或 session id 作为 fallback。
-模块导入本身不生成 product Session id，也不写 `MYAGENTS_SESSION_ID`：Global Sidecar同样会
-加载 one-shot SDK utility与共享类型，但它没有 Session birth authority。只有Session bootstrap
-的 `initializeAgent()` 或 adapter显式 reset/select 才建立当前binding；生产role gate保证Global
-无法通过Chat/IM/Inbox/current-runtime route间接触发该过程。
+Product Session 的当前 identity、待创建的桌面 Session 和 metadata 冻结/发布不属于任何 Runtime，统一由 `src/server/session-engine/product-session-binding.ts` 管理。prepare、commit 和 rollback 使用同一个事务标记；只有 adapter 完成本 Runtime 的进程清理后，commit 才发布新的 Product Session binding。Builtin SDK UUID 与外部 Runtime 的 thread/session id 仍由各自 Runtime 管理；adapter 不能借用另一 Runtime 的 reset、Session 创建函数或 session id 作为兜底。
+
+模块加载本身不会生成 Product Session id，也不会写入 `MYAGENTS_SESSION_ID`。Global Sidecar 可以加载一次性 SDK 工具和共享类型，但不能创建 Product Session。只有 Session 初始化时的 `initializeAgent()`，或 adapter 的显式 reset/select，才能建立当前 binding；生产环境的进程角色检查会阻止 Global 通过 Chat、IM、Inbox 或当前 Runtime 配置路由间接触发这一过程。
 
 `src/server/agent-session.ts` 是 builtin SDK 会话的 public facade：`SessionEngine` adapter、legacy callers、route-facing code 仍从这里 import。Phase6 后，facade 后面的核心 mutable state 分给 `src/server/builtin-session/` owner；Phase7 后，turn terminal 与 transcript persistence 这两类最重行为也拆到明确 owner：
 
@@ -652,11 +645,11 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 ### 控制请求由 Rust 按 owner / generation 寻址
 
-桌面 Renderer 的普通 Session / Global HTTP 请求只提交相对 path。Session 请求同时提交 `sessionIdHint + SidecarOwner(Tab/Companion)`；Rust 在 `SidecarManager` 锁内解析当前进程 generation，并从该进程自己的 `DispatchGate` 取得 lease，随后释放 manager 锁再完成 body 发送和 response 消费。进程 replacement / stop 会先关闭 admission，再等待该 generation 已放行的 lease 归零，因此慢的 non-idempotent POST 不会和新 generation 并行，也不会在端口复用后误写其它进程。
+桌面 Renderer 的普通 Session / Global HTTP 请求只提交相对路径。Session 请求还会提交 `sessionIdHint + SidecarOwner(Tab/Companion)`；Rust 在 `SidecarManager` 锁内找到当前进程 generation，并从该进程的 `DispatchGate` 取得 lease，然后释放 manager 锁，完成请求体发送和响应读取。进程替换或停止会先拒绝新请求，再等待该 generation 已经放行的 lease 归零，因此较慢的非幂等 POST 不会与新 generation 并行，也不会在端口复用后写入错误的进程。
 
-`SessionSidecar` owners 是 Tab / Task / Goal 等 association 的唯一 authority；不再维护 Renderer 可写的 `session_activation` 物理副本。`ensureSessionSidecar` 已附加 owner，`reconcile_session_tab_activation` 只验证 exact Tab owner 并释放临时 `BackgroundCompletion` handoff。终端的 `MYAGENTS_PORT` 也由 Rust 按 Session entry 派生，Renderer 不传物理端口。
+`SessionSidecar` 的 owner 集合是 Tab、Task、Goal 等关联关系的唯一权威来源。Renderer 不维护可写的 owner、port 或 workspace 副本。`ensureSessionSidecar` 已经附加 owner；`reconcile_session_tab_activation` 只确认当前 generation 仍由指定 Tab owner 持有，并释放临时 `BackgroundCompletion` 交接 owner。终端使用的 `MYAGENTS_PORT` 也由 Rust 根据当前 Session entry 生成，Renderer 不传物理端口。
 
-Global singleton 使用相同的 per-generation lease。它的 lifecycle demand 由 Rust `SidecarManager` 的进程内 standing intent 唯一持有，而不是从 `instances`、port file 或 Renderer 页面状态推断：合法 start 在 lifecycle birth admission 后先表达 `DesiredRunning`，candidate reserve/spawn/readiness 失败只删除该 candidate 与 generation；monitor 的原子 snapshot 将此状态明确表示为 `DesiredMissing` 并沿既有封顶退避继续恢复。canonical explicit stop、`stop_all`、update shutdown 与 app exit 才把 intent 置回 `Stopped`。`~/.myagents/sidecar.port` 只投影健康 current generation，replacement 删除旧 generation 时立即移除，ready commit 后才发布新端口。
+Global Sidecar 使用相同的 per-generation lease。Rust `SidecarManager` 以 `Stopped | DesiredRunning` 保存应用是否仍需要 Global 运行，不能从 `instances`、端口文件或 Renderer 页面状态反推。候选进程的预留、创建或就绪检查失败只清除该候选进程；monitor 看到 `DesiredRunning` 且没有健康进程时，会按有上限的退避继续恢复。只有显式停止 Global、`stop_all`、更新关闭或应用退出才把状态改回 `Stopped`。`~/.myagents/sidecar.port` 只记录当前健康 generation 的端口：旧 generation 退出时删除，新 generation 就绪后再写入。
 
 外部 analytics 走独立 Tauri command 和 proxy-aware client，不能借 Session / Global control command 传 arbitrary absolute URL。登记的数据面 `/refs/:id`、`/attachment/*` 仍允许 native fetch；这不是普通控制面的例外扩张。
 
@@ -670,7 +663,11 @@ Global singleton 使用相同的 per-generation lease。它的 lifecycle demand 
 
 历史教训：`390d38ee`（4-25）曾给 `/chat/stream` 加 last-consumer grace interrupt，把"关 Tab"误当"杀 turn"，regress 了 BackgroundCompletion 与 cron/session-send（turn 被 interrupt → `[ERROR turn_failed]` 投回飞书）。最终修法是**彻底删除该 interrupt**；`index.ts` 留有 load-bearing 注释禁止复活。改 SSE 断连相关逻辑前 MUST 理解这条。
 
-Tauri 的 `/chat/stream` 由 Rust per-`connectionKey` supervisor 维护：每个 attempt 都通过 `SidecarManager` 的 `sessionIdHint + SidecarOwner` 解析当前 ready 端口，connect error、非 2xx、body error、read timeout、EOF 统一 capped backoff。合法流可以无限持续，但单个delimiter前event最多8MiB；超限是独立protocol breach，不算transport progress、不把backoff重置到250ms，诊断只记录字节数而不记录payload，下一transport generation仍可正常恢复。Renderer 不缓存 SSE URL、不监听一次性 error 来重建 proxy；`start_sse_proxy` ack 只表示 subscription active。subscription replacement generation 防旧 task 清理/发往新订阅，Rust process-global transport generation 随每条 `{ transportGeneration, data }` envelope 转发，供 Renderer 识别物理断线边界。普通 Tab 与 Floating Ball 共用这条 transport；后者只恢复后续实时事件，不拥有普通 Chat 的完整 snapshot hydration 状态机。
+Tauri 的 `/chat/stream` 由 Rust 按 `connectionKey` 维护长期连接。每次连接尝试都使用 `sessionIdHint + SidecarOwner` 向 `SidecarManager` 查询当前已就绪端口；连接失败、非 2xx、响应体错误、读取超时和 EOF 使用同一套有上限的退避重试。
+
+SSE 流可以长期运行，但分隔符之前的单个事件最多为 8MiB。超限属于独立的协议错误，不计为传输进展，也不会把退避时间重置为 250ms；诊断只记录字节数，不记录 payload，下一次 transport generation 仍可正常连接。Renderer 不缓存 SSE URL，也不依赖一次性 error 事件重建代理；`start_sse_proxy` 的返回只表示订阅已经登记。
+
+订阅 replacement generation 防止旧任务清理或写入新订阅；Rust 的 transport generation 随 `{ transportGeneration, data }` envelope 转发，供 Renderer 识别物理连接边界。普通 Tab 与 Floating Ball 共用该传输层；Floating Ball 只接收重连后的实时事件，不负责普通 Chat 的完整快照恢复。
 
 ### 问题场景
 
@@ -806,9 +803,11 @@ setSystemStatus(null);
 
 ### Turn terminal 与通用完成通知
 
-builtin/external 的真实 turn owner 在 complete/stopped/error 时生成同一份 immutable `SessionCompletionTerminal`：`sessionId + workspacePath + turnId + optional turnOwner + origin + status`。descriptor 保存在各 runtime 既有 turn lifecycle state 中；terminal SSE payload 与 `GET /api/session-state` 返回同一事实，route 和 Rust caller 不重建 owner/origin。新 turn admission 或 session reset 会清掉上一份 descriptor。
+builtin/external 的 turn owner 在 complete/stopped/error 时生成同一份不可变 `SessionCompletionTerminal`：`sessionId + workspacePath + turnId + optional turnOwner + origin + status`。该描述保存在各 Runtime 已有的 turn lifecycle state 中；terminal SSE payload 与 `GET /api/session-state` 返回同一事实，route 和 Rust 调用方不重新推断 owner/origin。新 turn 被接纳或 Session reset 时会清除上一份描述。
 
-Rust `notification.rs` 是普通 Session 通用完成通知的唯一业务 owner：Tab-attached 路径由 SSE proxy 提交，headless 路径由 `BackgroundCompletion` 在 active→terminal 后从 `/api/session-state` 提交。两条路径都必须先从 `SidecarManager` 当前 generation entry 取得一次性 claim；key 为 `(current logical sessionId, generation, turnId)`，claim 集合直接存放在对应 `SessionSidecar`，因此 replacement 的旧事件会被 generation fence 拒绝，pending→real rekey 则借 immutable process identity 保留同一 generation authority。拿到 claim 后统一经过 owner/origin eligibility、窗口 focus、通知偏好、系统 toast、badge 与 session/workspace deep-link。Task/Goal owner、Agent Channel、automation/Cron/Task run、Memory 与 Heartbeat 抑制 generic 通知，继续由各自 domain surface 负责；ordinary desktop、registered-agent/Space 与 Session Inbox 可发送 generic 通知。claim 随 generation entry 回收，刻意不持久化，不新增 notification ledger、TTL 或 replay window。`TabProvider` 只保留 terminal UI 与 unread 状态，不拥有 OS completion toast。
+Rust `notification.rs` 是普通 Session 通用完成通知的唯一业务 owner：有 Tab 的路径由 SSE proxy 提交，无 Tab 的路径由 `BackgroundCompletion` 在 active→terminal 后从 `/api/session-state` 提交。两条路径都必须先向 `SidecarManager` 的当前 generation 申请一次性资格；资格集合存放在对应 `SessionSidecar`，键为当前逻辑 session id 与 turn id。旧 generation 的迟到事件会被拒绝，pending→real 改名仍沿用同一进程 generation。取得资格后，`notification.rs` 再统一判断 owner/origin、窗口焦点、通知偏好、系统通知、badge 和 session/workspace deep-link。
+
+Task/Goal owner、Agent Channel、automation/Cron/Task run、Memory 与 Heartbeat 不发送通用通知，仍由各自领域负责；普通桌面对话、registered-agent/Space 与 Session Inbox 可以发送通用通知。一次性资格随对应的 Sidecar generation 一起回收，不持久化，也不新增通知账本、TTL 或重放机制。`TabProvider` 只维护终态 UI 和未读状态，不负责操作系统完成通知。
 
 transport 断线窗口内 turn 仍照常完成并持久化；普通 Chat 的新 generation REST snapshot 恢复 finalized history 与 idle/error UI。现有 live terminal → Rust notification claim 路径保持不变，但不为断线补交通知新增 replay/outbox/ack，因此不能承诺断线窗口的 OS completion notification。
 
@@ -847,15 +846,15 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 - **依赖不对称**：推送 effect 依赖布尔 `configPending`（`pending→push` 重跑，`adopt→push` 不重放）；采纳 effect 依赖 `isAdopt`（`pending→adopt` 触发一次）。写反 = 漏推或重复采纳。
 - 用户**主动**改配置（`persistTabConfigChange`）走 **defer-while-pending**（仅 `pending` 时延迟推送、磁盘照写；`push`/`adopt` 都推——用户意图）。
 - `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在归置裁决前触发）。
-- 已有 Session 的单目标用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者都调用 `materializeExistingSessionTab`。顶部恢复按钮只批量编排既有 persisted targets：先校验，再一次提交最终 live Chat Tabs / active correlation，然后为每个 surviving Tab 独立调用同一 materialization。该 helper 统一经 `reconcileExistingSessionTabOwner` 对精确 Tab owner 执行幂等 ensure，再由 Rust 单锁原子 reconcile activation（保留最新 Task identity）；禁止恢复依赖首次切换才挂载 `TabProvider` 的空壳 Tab，禁止 Renderer read / branch / write activation，也禁止 `hasSessionSidecar → ensure` 的 TOCTOU 双阶段判断。
-- replacement / recovery commit 属于 Rust ensure authority：旧进程进入 `recovering_sidecars` 后，同一manager-owned entry保留完整 owner 集合、独立`recovery_epoch`、`dead_generation`、candidate generation、attempt与next-retry clock。owner release 在 readiness 窗口仍同时更新active candidate与retained authority；candidate的generation reserve、spawn、TCP/ready失败都不settle recovery epoch。快速重试用尽后转为有频率上限的慢重试；update quiesce只禁止dispatch，解除后active+recovering会重新进入扫描。只有ready candidate（包括独立ensure的同等winner）原子接管剩余owners并刷新activation coordinates、owners归零或Session deletion才结束该epoch；recovery failure不冒充“无owner terminal”。Renderer 不复制该 owner、端口或retry queue。
-- Global recovery 复用上述逻辑需求/candidate 分离的不变量，但状态模型更小：manager-owned `DesiredRunning` standing intent 跨候选失败保留，当前 `instances` / generation 与 CLI port file 都不是恢复 authority。单一 Global monitor 原子读取 `Stopped | DesiredMissing | Present`；`DesiredMissing` 直接进入与 unhealthy replacement 相同的 attempt settlement，失败只推进既有有界 backoff，成功才发布健康 generation 与 restarted event。不得把 Global 塞进 `recovering_sidecars`，也不得让 Renderer、请求 replay 或 port file 建立第二 recovery owner。
-- `BackgroundCompletion` 是logical Session owner，poller状态只保存Session与expected process generation，不长期持有port。首次 activity probe 后的 owner attach 也属于 manager authority：若 probe 期间发生 replacement，单锁把 owner 绑定到 current reusable process，或保留在 recovery entry 等待 ready commit；若 current active 已死但 monitor 尚未迁移，attach 自己先在同一 manager 锁内完成 dead→recovery。任何一种情况都不能返回 `Stale` 后丢掉 poller。每轮poll都从manager解析current `(port, generation)`，HTTP返回后再校验同一binding；terminal提交和owner release仍在manager锁内做exact-generation commit。Recovery entry仍持有该owner或candidate尚未ready commit时，poller进入明确wait/rebind；旧generation的idle/running/HTTP failure响应一律丢弃，不能终止或释放新generation。用户reconnect/cancel则按logical owner同时覆盖active/recovering gap。
+- 已有 Session 的单目标用户入口 MUST 走 `handleOpenTargetSession`：未打开时由 `spawnTabForExistingSession` 建 Tab，已打开时 jump；两者都调用 `materializeExistingSessionTab`。顶部恢复按钮只批量编排既有 persisted targets：先校验，再一次提交最终 live Chat Tabs / active correlation，然后为每个仍存在的 Tab 独立调用同一 materialization。该 helper 通过 `reconcileExistingSessionTabOwner` 为精确 Tab owner 幂等执行 ensure，再由 Rust 确认当前 generation 仍包含该 owner，并释放临时 `BackgroundCompletion` 交接 owner。禁止恢复依赖首次切换才挂载 `TabProvider` 的空壳 Tab，禁止 Renderer 维护 owner/port 副本，也禁止使用 `hasSessionSidecar → ensure` 的 TOCTOU 两阶段判断。
+- replacement / recovery commit 属于 Rust ensure 流程：旧进程进入 `recovering_sidecars` 后，同一个 manager entry 保留完整 owner 集合、独立 `recovery_epoch`、`dead_generation`、候选 generation、尝试次数和下一次重试时间。owner release 在候选进程等待就绪期间仍同时更新候选进程与恢复记录；候选 generation 的预留、创建、TCP/ready 失败都不会结束 recovery epoch。快速重试用尽后转为有频率上限的慢重试；update quiesce 只暂停派发，解除后 active 和 recovering entry 会重新进入扫描。只有就绪候选进程原子接管剩余 owner、owner 全部释放或 Session 被删除，才结束该 epoch；恢复失败不能冒充“已没有 owner”的终态。Renderer 不复制 owner、端口或重试队列。
+- Global recovery 也把“应用仍需要 Global”与“当前候选进程”分开，但使用更小的状态模型。`DesiredRunning` 在候选进程失败后继续保留；`instances`、当前 generation 和 CLI 端口文件都不能决定是否继续恢复。Global monitor 原子读取 `Stopped | DesiredMissing | Present`：`DesiredMissing` 按与不健康进程替换相同的有界退避重试，成功后才发布健康 generation 和 restarted event。Global 不进入 `recovering_sidecars`；Renderer、请求重放和端口文件也不能另建一套恢复状态。
+- `BackgroundCompletion` 是逻辑 Session owner，poller 只保存 Session 和期望的进程 generation，不长期保存端口。首次 activity probe 后附加 owner 也由 manager 处理：若 probe 期间发生进程替换，manager 在同一把锁内把 owner 绑定到当前可复用进程，或保留在 recovery entry 中等待新进程就绪；若当前进程已死但 monitor 尚未迁移，附加操作会先完成 dead→recovery。每轮 poll 都从 manager 解析当前 `(port, generation)`，HTTP 返回后再次校验同一 binding；终态提交和 owner release 也必须在 manager 锁内匹配精确 generation。旧 generation 的 idle/running/HTTP failure 响应一律丢弃，不能终止或释放新 generation。用户 reconnect/cancel 则按逻辑 owner 同时覆盖 active/recovering 间隙。
 - Rust 是 Sidecar process epoch 的唯一 authority；共享 ensure authority 每次实际创建进程都发 `session-sidecar:restarted`。TabProvider 只处理当前绑定 Session，既能在 replacement 时重置 live revision baseline，也不会让无绑定消费者为首次创建建立第二套状态。
 
 即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。
 
-从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再 await `ensureSessionSidecar` / activation。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority。Chat owner 子树立即挂载，由 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure/activation 失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。planner 必须先于 Tab 构造运行，避免把刚预塞的 Tab 误判为既有 owner。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority。
+从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再等待 `ensureSessionSidecar` 与 Tab owner 确认。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority。Chat owner 子树立即挂载，由 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure 或 owner 确认失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。planner 必须先于 Tab 构造运行，避免把刚预塞的 Tab 误判为既有 owner。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority。
 
 ### Session 配置写入方向矩阵：setter 边界的 snapshot guard（#327，0.2.32+）
 
@@ -883,7 +882,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 - turn boundary drain 先应用前导 config ops,再启动下一条 message。
 - Codex / Claude Code 使用 next-turn state；Gemini 的 `session/set_model` /
   `session/set_mode` 也只在 boundary 调用,保持“当前轮不受影响”的产品语义。
-- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。Task 的 initialize/adopt 由 scheduler reservation 在 per-Session lifecycle 内读取持久 Session metadata 决定，不能绑定到 Sidecar 进程的 `EnsureSidecarResult.isNew`：Tab 可已保活同一 Sidecar，而 Task 仍是合法 metadata creator。adopt payload 在 Rust 构造时即不携带 model/provider/runtime/MCP 初始化字段。reservation 从发布 Session id 起持有 lifecycle guard，并把同一次 acquisition 以 shared lease 交给 Sidecar ensure；ensure 不得再进入 acquiring wrapper。未 materialize 时 lease 挂在 exact `ActiveTaskExecution(taskId + queueId)`，metadata observer 只清空该 owner、worker/observer 退出不释放；一旦 materialize 立即释放（不得持满整轮，否则同 Session 工具会反向死锁），保证 shared-session joiner 不会抢在 creator 前 adopt。若 turn **确认**在 metadata birth 前失败，creator 释放 guard 与 Sidecar owner，下一次 reservation 重新取得 creator 权；若 POST 可能已到 Node、仅响应丢失，则 lease 保留到 metadata 出生或精确 queue generation 被确认停止。Node pre-metadata admission 把 authorize、Stop cancellation 与 `createSession()` 线性化：`/task/stop` 必须等 birth admission settled 后才能把 queue `not_found` 当成功，不能提前 rebound；admission 可以在 HTTP handler 尚等待 scheduled-turn mutex 时就因 pre-materialization cancellation 而权威结算。进程是否仍被其它 owner 保活不参与该裁决。
+- IM 仍通过每轮 `ExternalSendContext` 读取实时配置。Task 配置只用于初始化新 Session；已有 Session 继承自己的配置，Rust 为 adopt 构造的 payload 不携带 model/provider/runtime/MCP 初始化字段。新 Task Session 的 metadata 创建权由 scheduler 在 per-Session lifecycle guard 内根据 `SessionStore` 决定，不能绑定到 Sidecar 的 `EnsureSidecarResult.isNew`。同一个 guard 会共享给 Sidecar ensure，并保留到 metadata 创建完成或该次精确执行被确认终止；Node 在同一串行边界内处理 dispatch 授权、Stop 取消和 `createSession()`。完整事务与异常路径见 `task_center.md`。
 - `/api/runtime/config` 是 source-aware：Rust IM router 热同步传 `source:"im-sync"`；桌面 push 走 `runtime-config` / `desktop`。`updateExternalRuntimeConfig()` 必须先调用 `runtime-config-policy` 过滤 snapshotted session 不应接收的字段，再写 `lastModel` / `lastPermissionMode` / `lastReasoningEffort`，禁止“先污染 desired state 再跳过 restart”。
 
 **红线**：

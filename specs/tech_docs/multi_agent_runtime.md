@@ -46,11 +46,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 
 `SessionEngine` 是 Sidecar route 面向“当前会话运行时”的统一门面。Route handler 只负责 HTTP payload shaping、validation 与 response mapping；runtime 选择由 `selector.ts` 通过 `shouldUseExternalRuntime()` 统一完成。
 
-`product-session-binding.ts` 是 facade 内唯一的 product Session identity transaction：
-current/transitioning Session id、pending materialization 以及 metadata freeze/publish 在这里
-提交；Builtin/External adapter 只提供自己的 native process teardown/bind 动作。Runtime-native
-SDK UUID、Codex thread id 等不进入该 owner，也不能用 builtin `getSessionId()` 给 external
-路径兜底。
+`product-session-binding.ts` 是 facade 内 Product Session identity 的唯一事务入口。当前/切换中的 Session id、待创建 Session，以及 metadata 的冻结和发布都在这里提交；Builtin/External adapter 只执行本 Runtime 的进程清理和绑定操作。SDK UUID、Codex thread id 等 Runtime 原生 identity 不进入该模块，也不能用 builtin `getSessionId()` 为 external 路径兜底。
 
 核心职责：
 
@@ -85,7 +81,17 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 | `transcript.ts` | live messages、sequence、persist cursor/cache、SDK UUID freshness sets |
 | `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
 
-Route modules、`SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` owner internals；新增 route-facing 能力仍先接 `SessionEngine`，再由 adapter 调 builtin/external public facade。`runtime-boundary.unit.test.ts` 对 route/session-engine/builtin-session/external-session 目录做边界扫描，并拦截 facade 重新 direct-write owner state 或重新承载已迁出的重行为。Phase8 后，external runtime 也采用 facade + owner modules，但没有抽 builtin/external 通用 lifecycle framework；两边共享的是 `session-core/*` pure policy，而不是进程模型抽象。
+Route modules 和 `SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` 内部模块；新增 route-facing 能力仍先接入 `SessionEngine`，再由 adapter 调用 builtin/external public facade。`runtime-boundary.unit.test.ts` 扫描 route、session-engine、builtin-session 和 external-session 目录，防止 facade 再次直接修改内部状态，或重新实现已经迁出的终态与持久化逻辑。External Runtime 同样采用 facade + owner modules，但没有抽象出 builtin/external 共用的生命周期框架；两边只共享 `session-core/*` 的纯策略。
+
+#### 中性边界类型
+
+跨 Runtime、跨进程或同时被 Renderer/Server 使用的类型放在最窄的中性模块中，而不是借用某个实现模块：
+
+- `ProviderEnv` 由 `src/server/provider-types.ts` 定义，属于 Server provider domain，不依赖 builtin facade。
+- queue admission、cancel 和 turn owner 结果由 `src/server/session-core/turn-queue.ts` 定义。Builtin/External 共用同一语义，但各自保留自己的队列状态。
+- `ToolInput` 由 `src/shared/types/tool-input.ts` 定义。Renderer 可以通过本地 barrel 做 type-only re-export；Server 不得 import Renderer 类型。
+
+这些文件只拥有数据合同，不拥有 Runtime 状态，也不建立新的共享生命周期。
 
 #### Builtin 公共 MCP soft pre-warm 契约
 
@@ -517,7 +523,7 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 
 ## External Session Handler (`src/server/runtimes/external-session.ts`)
 
-`src/server/runtimes/external-session.ts` 是三种外部 Runtime 的 public facade 和高层 orchestration shell。Phase8 后，它不再直接拥有核心 state bags；真实 owner 在 `src/server/runtimes/external-session/`：
+`src/server/runtimes/external-session.ts` 是三种外部 Runtime 的 public facade 和高层编排入口。它不直接拥有核心可变状态；这些状态位于 `src/server/runtimes/external-session/`：
 
 | Owner module | 职责 |
 |---|---|
@@ -530,7 +536,9 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
-Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 channel-delivery admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。每个 direct/queued message operation 同时拥有自己的用户消息以及 surfaced / in-transcript / persisted / retracted 投影事实；Desktop、IM、Inbox、Background、Injected 与 realtime fallback 共用既有 direct-send tail / queue generation，facade 不再保留 process-scope early-message singleton。`external-session.ts` 仍可保留 watchdog、trace、pending birth 等真正 orchestration-local state。
+Facade 仍负责跨模块编排：调用 Runtime 进程、广播 SSE、执行 analytics/title hook，并根据各模块返回的结果依次完成持久化、交互清理和队列 drain。Queue 模块不直接调用 Runtime；lifecycle 模块不接管 stop cleanup；content 的内部引用和 Map 不暴露给 facade，工具、子 Agent 和附件更新都通过命名 API 完成。Turn lifecycle 负责终态分类和本轮 channel delivery 的接纳与顺序；transcript 模块负责用户/assistant 消息、retry truncate、last assistant read 和 SessionStore 写入；interactive 模块负责 IM event bus、registry cleanup 以及 inbox/watch 错误投递，持久化 JSON 结构不变。
+
+每个 direct/queued message operation 保存自己的用户消息，并记录该消息是否已经展示、写入内存 transcript、持久化或撤回。Desktop、IM、Inbox、Background、Injected 与 realtime fallback 复用既有 direct-send tail 和 queue generation，facade 不保存进程级的第二份“首条消息”状态。`external-session.ts` 只保留 watchdog、trace、待创建 Session 等确实属于编排过程的状态。
 
 ### 测试护栏
 
@@ -834,11 +842,13 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/server/runtimes/gemini.ts` | Gemini Runtime 实现(ACP JSON-RPC 2.0 + `GEMINI_SYSTEM_MD` 合并注入) |
 | `src/server/runtimes/external-session.ts` | 外部 Runtime public facade + high-level orchestration |
 | `src/server/runtimes/external-session/*` | 外部 Runtime lifecycle / config / queue / turn / content / transcript / interactive owners |
+| `src/server/provider-types.ts` | Runtime-neutral `ProviderEnv` 类型 |
+| `src/shared/types/tool-input.ts` | Sidecar 与 Renderer 共用的 `ToolInput` wire 类型 |
 | `src/server/session-core/runtime-config-policy.ts` | builtin/external runtime config snapshot/source guard + external runtime config patch policy |
 | `src/server/session-core/turn-result-policy.ts` | terminal / injected turn 成败判定：builtin SDK 仅 `completed`（及旧 payload 缺失 reason）成功，abort 映射 stopped，其余未知 reason fail closed；external 同样只以真 turn 成功为 success |
 | `src/server/session-core/session-activity-policy.ts` | admission/terminal meaningful activity 判定；human/visible classifier 不拥有 recency |
 | `src/server/session-core/heartbeat-ack.ts` | Heartbeat terminal ack remainder 解析纯函数 |
-| `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、force-start 纯规则 |
+| `src/server/session-core/turn-queue.ts` | desktop realtime / turn-boundary queue admission、取消、turn owner 结果与 force-start 纯规则 |
 | `src/server/session-core/mcp-sync-policy.ts` | MCP authority、稳定 fingerprint、snapshot restart 决策 |
 | `src/server/runtimes/env-utils.ts` | 环境变量增强：`augmentedProcessEnv(policy)` 三档 proxy 策略 + `resolveAgentEnvPolicy(workspacePath)` 共享校验入口（PRD 0.2.16） |
 | `src/server/utils/shell.ts` | 用户 interactive shell PATH + 8 proxy var warmup（PRD 0.2.16，供 `'terminal'` 模式回写） |
