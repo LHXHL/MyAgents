@@ -10,6 +10,7 @@ import { TaskStatusBadge } from './TaskStatusBadge';
 import { TaskListPanel } from './TaskListPanel';
 import { TaskCardItem } from './views/TaskCardItem';
 import { TaskItemActions } from './views/TaskItemActions';
+import { __setTaskCenterSessionsForTest } from '@/hooks/taskCenterStore';
 
 const taskApiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
@@ -67,11 +68,6 @@ vi.mock('@/hooks/useCloseLayer', () => ({ useCloseLayer: vi.fn() }));
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ success: vi.fn(), error: vi.fn() }) }));
 vi.mock('@/components/OverlayBackdrop', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-vi.mock('@/components/CustomSelect', () => ({
-  default: ({ value, options }: { value: string; options: Array<{ value: string; label: string }> }) => (
-    <div role="button">{options.find((option) => option.value === value)?.label ?? value}</div>
-  ),
 }));
 vi.mock('./editors/TaskAdvancedConfigEditor', () => ({
   TaskAdvancedConfigEditor: () => <div>高级配置</div>,
@@ -139,6 +135,8 @@ describe('Task Center UX refinements', () => {
     window.localStorage.setItem('myagents:task-center:view', 'list');
     taskApiMocks.taskGetRunStats.mockResolvedValue({ executionCount: 0 });
     taskApiMocks.taskList.mockResolvedValue([]);
+    taskApiMocks.getSessions.mockResolvedValue([]);
+    __setTaskCenterSessionsForTest([]);
   });
 
   it('tracks a run only after using the ordinal accepted by the Task owner', async () => {
@@ -229,6 +227,25 @@ describe('Task Center UX refinements', () => {
     );
 
     expect(screen.queryByText(/上次运行被应用重启中断/)).not.toBeInTheDocument();
+  });
+
+  it('marks command Detector tasks in the normal task list surface', () => {
+    render(
+      <TaskCardItem
+        task={task({
+          trigger: {
+            source: { type: 'time' },
+            detector: {
+              type: 'command',
+              command: { executable: 'node', args: ['detector.js'] },
+            },
+          },
+        })}
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('命令感知')).toBeInTheDocument();
   });
 
   it('projects a failed stop separately from the persisted stopped status', () => {
@@ -349,5 +366,61 @@ describe('Task Center UX refinements', () => {
         expect.objectContaining({ tags: [] }),
       );
     });
+  });
+
+  it('materializes an existing Session when continuous conversation is selected', async () => {
+    const existing: SessionMetadata = {
+      id: 'session-existing',
+      agentDir: '/Users/me/mino',
+      title: '构建排障上下文',
+      createdAt: '2026-08-03T01:00:00.000Z',
+      lastActiveAt: '2026-08-03T02:00:00.000Z',
+    };
+    const other: SessionMetadata = {
+      id: 'session-other',
+      agentDir: '/Users/me/mino',
+      title: '其他排障上下文',
+      createdAt: '2026-08-02T01:00:00.000Z',
+      lastActiveAt: '2026-08-02T02:00:00.000Z',
+    };
+    __setTaskCenterSessionsForTest([other, existing]);
+    taskApiMocks.taskCreateDirect.mockResolvedValue(task({
+      executionMode: 'once',
+      runMode: 'single-session',
+      preselectedSessionId: existing.id,
+      status: 'todo',
+    }));
+    taskApiMocks.taskRun.mockResolvedValue(true);
+
+    render(
+      <DispatchTaskDialog
+        defaultWorkspacePath="/Users/me/mino"
+        currentSessionId="session-existing"
+        onClose={vi.fn()}
+        onDispatched={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText('例如: 升级 OpenClaw lark 适配器到 v2.4'), {
+      target: { value: '等待构建完成' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('AI 执行时看到的 prompt，默认取自想法原文。你可以补充细节、目标、约束。'), {
+      target: { value: '构建失败后分析日志。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '连续对话' }));
+    // The actual current Session is selected by default; opening that selector
+    // must still expose the distinction from other workspace Sessions.
+    fireEvent.click(screen.getByRole('button', { name: '当前 Session · 构建排障上下文' }));
+    const currentSessionButtons = screen.getAllByRole('button', { name: '当前 Session · 构建排障上下文' });
+    expect(currentSessionButtons).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '其他 Session · 其他排障上下文' })).toBeInTheDocument();
+    fireEvent.click(currentSessionButtons[1]);
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }));
+
+    await waitFor(() => expect(taskApiMocks.taskCreateDirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runMode: 'single-session',
+        preselectedSessionId: 'session-existing',
+      }),
+    ));
   });
 });

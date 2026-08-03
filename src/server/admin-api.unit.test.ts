@@ -258,6 +258,24 @@ describe('admin-api help registry', () => {
     expect(handleHelp({ path: ['goal'] }).success).toBe(true);
   });
 
+  it('exposes the unified Task automation readme while keeping cron compatible', async () => {
+    const { handleReadme } = await import('./admin-api');
+
+    const task = handleReadme({ topic: 'task' });
+    const cron = handleReadme({ topic: 'cron' });
+    const taskText = (task.data as { text?: string } | undefined)?.text ?? '';
+    const cronText = (cron.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(task.success).toBe(true);
+    expect(taskText).toContain('myagents-task-automation');
+    expect(taskText).toContain('always');
+    expect(taskText).toContain('command Detector');
+    expect(taskText).toContain('myagents task exit');
+    expect(cron.success).toBe(true);
+    expect(cronText).toContain('myagents task readme');
+    expect(cronText).toContain('Compatibility');
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -691,6 +709,120 @@ describe('admin-api accepted task attempt analytics', () => {
     expect(analyticsMocks.trackServer).toHaveBeenCalledWith('task_run', {
       source: 'cli',
       run_count: 7,
+    });
+  });
+});
+
+describe('admin-api Task Detector forwarding', () => {
+  it('forwards validate, check-now, run-now, and reset to the Rust Task authority', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({ ok: true, trigger: { source: { type: 'time' }, detector: { type: 'always' } } })
+      .mockResolvedValueOnce({ ok: true, result: { state: { checkCount: 2 } } })
+      .mockResolvedValueOnce({ ok: true, taskId: 'task-1', sessionId: 'session-1' })
+      .mockResolvedValueOnce({ ok: true, state: { checkpoint: null, checkpointRevision: 0 } });
+    const {
+      handleTaskTriggerValidate,
+      handleTaskCheckNow,
+      handleTaskRunNow,
+      handleTaskResetCheckpoint,
+    } = await import('./admin-api');
+    const trigger = { source: { type: 'time' }, detector: { type: 'always' } };
+
+    expect((await handleTaskTriggerValidate({ trigger })).success).toBe(true);
+    expect((await handleTaskCheckNow({ id: 'task-1' })).success).toBe(true);
+    expect((await handleTaskRunNow({ id: 'task-1' })).success).toBe(true);
+    expect((await handleTaskResetCheckpoint({ id: 'task-1' })).success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      1,
+      '/api/task/trigger/validate',
+      'POST',
+      { trigger },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      2,
+      '/api/task/check-now',
+      'POST',
+      { id: 'task-1' },
+      { timeoutMs: 310_000 },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      3,
+      '/api/task/run-now',
+      'POST',
+      { id: 'task-1' },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      4,
+      '/api/task/reset-checkpoint',
+      'POST',
+      { id: 'task-1' },
+    );
+  });
+
+  it('keeps test fixtures transient and turns --expect mismatch into failure', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      result: { decision: 'activate', invocationId: 'inv-1' },
+    });
+    const { handleTaskTriggerTest } = await import('./admin-api');
+
+    const result = await handleTaskTriggerTest({
+      taskId: 'task-1',
+      checkpoint: { cursor: 7 },
+      expect: 'quiet',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: 'Detector returned activate; expected quiet',
+      data: { result: { decision: 'activate' } },
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/trigger/test',
+      'POST',
+      { taskId: 'task-1', checkpoint: { cursor: 7 } },
+      { timeoutMs: 310_000 },
+    );
+  });
+
+  it('rejects an invalid --expect before running the Detector', async () => {
+    const { handleTaskTriggerTest } = await import('./admin-api');
+
+    const result = await handleTaskTriggerTest({
+      taskId: 'task-1',
+      expect: 'activte',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: '--expect must be quiet or activate',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('keeps structured check-now failure diagnostics for CLI output', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      code: 'detector_check_failed',
+      error: 'Detector timed out',
+      result: {
+        outcome: 'error',
+        state: {
+          lastError: {
+            code: 'detector_timeout',
+            message: 'Detector timed out',
+            occurredAt: 1_775_000_000_000,
+            timedOut: true,
+          },
+        },
+      },
+    });
+    const { handleTaskCheckNow } = await import('./admin-api');
+
+    expect(await handleTaskCheckNow({ id: 'task-1' })).toMatchObject({
+      success: false,
+      code: 'detector_check_failed',
+      data: { result: { outcome: 'error' } },
     });
   });
 });

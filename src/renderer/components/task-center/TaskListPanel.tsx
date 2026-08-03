@@ -47,6 +47,7 @@ type TaskCardLike =
 
 interface Props {
   highlightTaskId?: string | null;
+  currentSessionId?: string | null;
   /** Bumped by parent to trigger re-fetch (tab activation, post-dispatch). */
   refreshKey?: unknown;
   /** Intent forwarded from `App.tsx`'s `OPEN_TASK_CENTER` event handler.
@@ -79,7 +80,7 @@ function loadStoredView(): TaskView {
   return raw === 'list' ? 'list' : 'card';
 }
 
-export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Props) {
+export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent, currentSessionId }: Props) {
   const toast = useToast();
   const { t } = useTranslation('task');
   const toastRef = useRef(toast);
@@ -622,6 +623,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
 
       {showCreateModal && (
         <DispatchTaskDialog
+          currentSessionId={currentSessionId ?? null}
           onClose={() => setShowCreateModal(false)}
           onDispatched={(created) => {
             setShowCreateModal(false);

@@ -23,7 +23,11 @@ import {
 import { findProjectAgentByWorkspacePath, loadConfig } from '../utils/admin-config';
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { managementApi } from '../utils/management-api-client';
-import { buildCronTaskReminder, type CronScheduleKind } from '../utils/cron-reminder';
+import {
+  buildCronTaskReminder,
+  type CronScheduleKind,
+  type TaskActivationPayload,
+} from '../utils/cron-reminder';
 import { bindOwnedSnapshotToRuntimeIdentity } from '../utils/session-materialization';
 import { snapshotForOwnedSession } from '../utils/session-snapshot';
 import { normalizeSystemMaintenanceKind } from '../../shared/managedScheduledJob';
@@ -52,10 +56,13 @@ export type TaskExecutePayload = {
   intervalMinutes?: number;
   executionNumber?: number;
   scheduleKind?: CronScheduleKind;
+  activationEvent?: TaskActivationPayload;
 };
 
 export type TaskScheduledTurnResult = {
   success: boolean;
+  /** True only after the Runtime adapter accepted this exact queue id. */
+  turnDispatched?: boolean;
   aiRequestedExit?: boolean;
   exitReason?: string;
   outputText?: string;
@@ -291,6 +298,7 @@ export function createTaskTurnOrchestrator() {
           }
 
           setCronTaskContext(payload.taskId, payload.aiCanExit ?? false, effectiveSessionId);
+          let admissionAttempted = false;
           try {
             const wrappedPrompt = buildCronTaskReminder({
               prompt: payload.prompt,
@@ -300,7 +308,9 @@ export function createTaskTurnOrchestrator() {
               runMode: payload.runMode ?? 'single_session',
               intervalMinutes: payload.intervalMinutes ?? 15,
               executionNumber: payload.executionNumber,
+              activationEvent: payload.activationEvent,
             });
+            admissionAttempted = true;
             const turnResult = await engine.runInjectedTurn({
               prompt: wrappedPrompt,
               sessionId: prepared.sessionId ?? effectiveSessionId,
@@ -322,6 +332,7 @@ export function createTaskTurnOrchestrator() {
             if (!turnResult.success) {
               return {
                 success: false,
+                turnDispatched: turnResult.enqueued === true,
                 error: turnResult.error ?? 'Execution failed',
                 ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
                 status: turnResult.status ?? 503,
@@ -348,6 +359,7 @@ export function createTaskTurnOrchestrator() {
             }
             return {
               success: true,
+              turnDispatched: true,
               aiRequestedExit,
               exitReason,
               outputText: text || undefined,
@@ -356,6 +368,8 @@ export function createTaskTurnOrchestrator() {
           } catch (error) {
             return {
               success: false,
+              turnDispatched: false,
+              ...(admissionAttempted ? { terminationUnconfirmed: true } : {}),
               error: error instanceof Error ? error.message : 'Unknown error',
               status: 500,
             };

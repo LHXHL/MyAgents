@@ -412,16 +412,17 @@ type InteractionScenario =
 - `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
 - `task_application.rs`：create/link、status、delete/unlink、run/rerun 的唯一应用层 policy；Management/Tauri/Cron/Memory 只通过该 owner 进入 Task mutation。
 - `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
+- `task_trigger.rs`：Activation Trigger v1 schema、command Detector harness、`trigger-state.json` durable outbox/checkpoint 与进程资源上限；Detector 只产出 `quiet | activate`，failure 是 harness 故障。
 - `task_execution.rs`：Session 选择、`SidecarOwner::Task`、Task prompt 与同步执行 use case。
 - `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
 - `legacy_upgrade.rs`：在 Task scheduler 启动前把普通 At/Every/Cron、旧 Task projection 与 managed row 幂等迁移为 Task；Loop/开发期 Goal row 不迁移。
 
-`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
+`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；command Task 到点后先在 Rust 运行 Detector，`quiet` 不预留 Session、不 ensure Sidecar、不进入 SessionEngine，`activate` 则先原子提交 checkpoint + pending Activation Event，再申请普通 Task queue。Task row 中的 execution receipt 与终态先于 outbox 清理提交，重启可据同一 event id 只结算一次。pending event 持久化 scheduled/check-now origin：Running Task 由 scheduler 按原 origin 恢复，Stopped/Blocked 只执行 check-now 的一次性 manual recovery，绝不因此 arm timer 或改写暂停状态。Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`check-now` 真实运行 Detector并提交状态，`run-now` 绕过 Detector 强制执行 AI；二者都不启用 scheduler 或移动 recurring timer，且 pending outbox 未结算时禁止 run-now 抢占投送 authority。Running Task 的 check-now activation 是真实 AI execution，照常服从 maxExecutions/AI-exit terminal 规则；Stopped/Blocked 保留原状态；detached check-now worker 结算后必须唤醒 timer loop，使终态、pending recovery 或新的 recurring anchor 立即被 scheduler owner 重读。command runtime state 不维护第二份 cleanup flag：deleted / non-command Task 行本身就是持久清理义务，切回 command 前必须先幂等删除旧 state，启动扫描负责恢复中断的物理删除。
 
 **Node.js 层**：
-- AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役
+- AI 统一通过 `myagents-task-automation` Skill 与 canonical `myagents task ...` CLI 使用定时、未来与条件激活能力；历史 `im-cron` MCP 已退役
 - `src/server/tools/im-cron-tool.ts` 只保留 IM / Session cron context registry，不再创建 MCP server
-- 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
+- `myagents cron ...` 作为已发布兼容 alias 保留；新 Agent 工作流不把 Cron 或 Sensor 暴露成独立领域，所有 mutation 仍落 TaskStore
 - `/cron/execute-sync` 只是为兼容历史保留的接口名，业务归属仍是 Task；`routes/scheduled-turns.ts` 只做请求校验和响应映射，`task-turn-orchestrator.ts` 与 Runtime adapter 负责实际准备和执行
 
 标准 Cron get/list/mutation facade 也只读 TaskStore；未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
@@ -699,6 +700,8 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
+- 每个 Task 最多一个 time Activation Trigger；缺失等价 `always`。command Trigger 配置写 Task row，高频 checkpoint/health/pending event 写 `tasks/<id>/trigger-state.json`，两者都只由 TaskStore 读写
+- command Detector 的合法业务结果只有 `quiet | activate`；只有 durable `activate` 才建立 Session/Sidecar/Runtime 工作，failure 在 harness 内诊断、退避或阻塞
 - `TaskApplication` 统一编排 Task 的创建、状态、删除和 run/rerun；current-session Task 只在真实 Session 创建完成后才持久化，通知字段在 TaskStore 写锁内合并，成功的 run/rerun 由同一操作返回从 1 开始计数的 `attemptOrdinal`，供 GUI/CLI 上报 analytics
 - Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
 - 同一 Task 的 status、timer、execution claim 与 stop side effect 由 keyed Task-control lifecycle 串行化；stop 使用现有 `queueId` 精确停止当前 Turn。持久 `Running/Stopped` 只表达 scheduler intent，具体 Turn 以非持久 `running/stopping/stop_failed` 投影；stop 未确认时禁止 rerun。Attached Space Task 的终态不能 generic rerun，必须由新的 claim/reopen 创建新 Attached Task
@@ -905,8 +908,9 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
 | 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 Session lifecycle guard 下释放精确 Tab owner |
-| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController` |
+| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController`；command Task 到点先运行 Rust Detector |
 | Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
+| Detector 执行/结束 | `process_cmd::spawn_tree` 管理精确子进程树；quiet/failure 不创建 Session owner，activate 持久化后才进入普通 Task Turn |
 | Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
 | Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
 | Goal Pause/终态 | 先提交 SessionGoal 状态，再精确 stop queue Turn；确认后才清 authority / 释放 Goal owner并广播 `goal:changed`，不确定时保留 |

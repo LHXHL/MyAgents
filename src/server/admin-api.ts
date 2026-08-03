@@ -2102,7 +2102,7 @@ Options for 'update' <id>:
   accepted as an alias for --prompt here. --prompt-file is supported and
   cannot be combined with --prompt or --message.
 
-See 'myagents cron readme' for long-form usage + exit-from-task flow.`,
+See 'myagents task readme' for the canonical automation + exit flow.`,
 
   goal: `myagents goal — Manage the current session Goal Mode
 
@@ -2705,8 +2705,22 @@ Commands:
                                   prompt / overrides). Rejected while running.
   update-status <taskId> <status> Transition state (running/verifying/done/blocked/stopped)
   append-session <taskId> <sid>   Link an SDK session id to a task
-  run <taskId>                    Dispatch a todo task for execution
+  run <taskId>                    Enable the Task scheduler from todo
+  start <taskId>                  Resume a stopped schedule; does not execute now
+  stop <taskId>                   Pause schedule and stop an active execution
+  runs <taskId> [--limit N]       Show recent AI execution records
+  exit [--reason <text>]          End the current eligible scheduled Task from inside its run
+  readme                          Full scheduled/conditional automation guide
+  run-now <taskId>                Bypass Detector and dispatch one AI execution
   rerun <taskId>                  Reset to 'todo' and dispatch
+  check-now <taskId>              Run Detector now; activate AI only on a hit
+  trigger validate --spec-file <json>
+                                  Validate a Trigger without running it
+  trigger test <taskId> [--checkpoint-file <json>] [--expect quiet|activate]
+  trigger test --spec-file <json> --workspacePath <abs> [--checkpoint-file <json>]
+                                  Really run the command, but do not commit MyAgents
+                                  state, create an event, or activate AI
+  reset-checkpoint <taskId>       Clear the platform-managed Detector checkpoint
   archive <taskId>                Soft-archive (with 30d retention)
   delete <taskId>                 Hard delete (alias: 'remove' for cron-CLI parity)
 
@@ -2723,8 +2737,17 @@ Options for 'create-direct':
                        Exactly one of --taskMdFile / --taskMdContent must be set.
     --executionMode      'once' | 'scheduled' | 'recurring' (default: once)
   --runMode            'single-session' | 'new-session'
+  --preselectedSessionId current|<id>
+                       Required for single-session; current resolves from
+                       MYAGENTS_SESSION_ID before the Task is created
+  --trigger-file <path> Strict Trigger v1 JSON (always or command Detector)
   --tags               Comma-separated tag list
   --sourceThoughtId    Link back to the originating thought
+
+End conditions for scheduled/recurring Task creation:
+  --deadline 2026-08-31T23:59:00+08:00  Stop starting AI turns after this instant
+  --maxExecutions <n>                    Cap settled AI turns; quiet checks do not count
+  --aiCanExit true|false                 Allow the Task AI to call 'task exit'
 
 Scheduling (for executionMode = 'recurring' / 'scheduled'; omitting
 --intervalMinutes on recurring silently defaults to 60 min — the CLI now
@@ -2760,6 +2783,8 @@ Options for 'create-from-alignment' (identical override flags):
   --name               Task name (required)
   --executor --description --workspaceId --workspacePath
   --executionMode --runMode --tags --sourceThoughtId
+  --preselectedSessionId current|<id> --trigger-file <path>
+  --deadline <ISO-with-offset> --maxExecutions <n> --aiCanExit true|false
   --runtime --model --permissionMode --runtimeConfig --mcpEnabledServers
 
 Options for 'create-attached':
@@ -2779,11 +2804,14 @@ Options for 'create-attached':
   MYAGENTS_SESSION_ID and is not guessed by the CLI.
 
 Options for 'update' <taskId>:
-  Accepts every create-direct flag (each optional; missing = leave unchanged).
+  Accepts schedule, prompt, routing, notification and runtime fields from
+  create-direct (each optional; missing = leave unchanged). End-condition
+  flags are create-only; edit existing end conditions in Task Center.
   Additional flags for clearing overrides:
     --clearProviderOverride   Reset providerId + model to follow Agent
     --clearRuntimeOverride    Reset runtime + runtimeConfig to follow Agent
     --clearMcpOverride        Reset MCP override to follow Agent
+    --clear-trigger           Restore the effective always Detector
   Update is rejected when the task is Running/Verifying.
   Notification semantics: --notification* flags MERGE with the existing
   config (CLI sends only provided fields; the Task owner merges them under
@@ -2791,6 +2819,13 @@ Options for 'update' <taskId>:
   '--notificationDesktop false' preserves botChannelId / botThread / events.
   To clear bot routing entirely, recreate the task — empty values are
   rejected at the CLI boundary to catch typos.
+
+Detector safety:
+  --trigger-file / --spec-file are regular non-symlink UTF-8 JSON files.
+  Command args remain a JSON array and are never shell-split. trigger test is
+  a real process execution: MyAgents does not commit checkpoint/event state or
+  activate AI, but the script's own external side effects still happen.
+  check-now uses the persisted checkpoint and commits the normal outcome.
 
 Options for 'update-status':
   Positional: <taskId> <status>
@@ -2818,6 +2853,7 @@ Examples:
       --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
   myagents task run t_abc123
+  myagents task run-now t_abc123  # force AI without running Detector
   myagents task update t_abc123 --intervalMinutes 240   # change cadence after the fact
   myagents task update-status t_abc123 done --message "shipped in v0.1.70"
 
@@ -3645,6 +3681,63 @@ export async function handleTaskRerun(payload: { id: string }): Promise<AdminRes
   return wrapped;
 }
 
+export async function handleTaskRunNow(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/run-now', 'POST', payload);
+  return wrapMgmtResponse(resp);
+}
+
+export async function handleTaskTriggerValidate(
+  payload: { trigger?: unknown },
+): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/trigger/validate', 'POST', payload);
+  return wrapMgmtResponse(resp);
+}
+
+export async function handleTaskTriggerTest(
+  payload: Record<string, unknown>,
+): Promise<AdminResponse> {
+  const { expect, ...request } = payload;
+  if (expect !== undefined && expect !== 'quiet' && expect !== 'activate') {
+    return { success: false, error: '--expect must be quiet or activate' };
+  }
+  // Rust accepts Detector timeouts up to 300s. Keep the transport alive for
+  // the valid execution window plus bounded serialization/IPC overhead.
+  const resp = await managementApi('/api/task/trigger/test', 'POST', request, {
+    timeoutMs: 310_000,
+  });
+  const wrapped = wrapMgmtResponse(resp);
+  if (!wrapped.success && resp.result && typeof resp.result === 'object') {
+    wrapped.data = { result: resp.result };
+  }
+  if (!wrapped.success || expect === undefined) return wrapped;
+  const data = wrapped.data as { result?: { decision?: unknown } } | undefined;
+  const actual = data?.result?.decision;
+  if (actual !== expect) {
+    return {
+      success: false,
+      error: `Detector returned ${String(actual ?? 'unknown')}; expected ${expect}`,
+      data: wrapped.data,
+    };
+  }
+  return wrapped;
+}
+
+export async function handleTaskCheckNow(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/check-now', 'POST', payload, {
+    timeoutMs: 310_000,
+  });
+  const wrapped = wrapMgmtResponse(resp);
+  if (!wrapped.success && resp.result && typeof resp.result === 'object') {
+    wrapped.data = { result: resp.result };
+  }
+  return wrapped;
+}
+
+export async function handleTaskResetCheckpoint(payload: { id: string }): Promise<AdminResponse> {
+  const resp = await managementApi('/api/task/reset-checkpoint', 'POST', payload);
+  return wrapMgmtResponse(resp);
+}
+
 /**
  * Enrich a successful task-create response with:
  *   - the override values **as actually persisted** (read from the returned
@@ -3908,10 +4001,10 @@ export async function handleThoughtCreate(payload: {
 export function handleCronExit(payload: { reason?: string }): AdminResponse {
   const ctx = getCronTaskContext();
   if (!ctx.taskId) {
-    return { success: false, error: 'No active cron task in this session. This command only works inside a cron task run.' };
+    return { success: false, error: 'No active scheduled Task in this session. This command only works inside a scheduled Task run.' };
   }
   if (!ctx.canExit) {
-    return { success: false, error: 'This cron task has "Allow AI to exit" disabled — only the user can stop it from the UI.' };
+    return { success: false, error: 'This Task has "Allow AI to exit" disabled — only the user can stop it from the UI.' };
   }
   const reason = payload.reason?.trim() || 'AI requested task exit';
   const request = markCronTaskExitRequested(reason) ?? {
@@ -4027,7 +4120,66 @@ export async function handleImSendMedia(payload: { filePath?: string; caption?: 
 // it calls `myagents X readme` to pull the full usage doc on demand.
 // ---------------------------------------------------------------------------
 
-const README_CRON = `myagents cron — Scheduled task management
+const README_TASK_AUTOMATION = `myagents task — Scheduled and conditional automation
+
+PRODUCT MODEL
+  Every future or recurring automation is one Task:
+    schedule + activation + task.md action + Session routing + end conditions
+
+  The schedule decides when a tick happens. The effective activation is either:
+    always            Run the AI action at every tick (default; omit --trigger-file)
+    command Detector  Run a cheap program first; quiet stays silent and activate
+                      dispatches the ordinary Task AI turn
+
+  Use the required system skill 'myagents-task-automation' for the complete
+  Agent workflow. It routes command Detector authoring to its protocol reference.
+
+CANONICAL COMMANDS
+  create-direct ...                 Create ordinary or scheduled Task
+  get <taskId> --json               Read authoritative config and runtime health
+  run <taskId>                      Enable a newly-created Todo Task
+  start <taskId>                    Resume a stopped schedule; does not execute now
+  stop <taskId>                     Pause schedule and stop active execution
+  runs <taskId> [--limit N]         Read recent AI execution history
+  run-now <taskId>                  Bypass Detector; does not change schedule/checkpoint
+  check-now <taskId>                Real Detector check; commits state and may activate AI
+  trigger validate/test ...         Validate without committing MyAgents state
+  reset-checkpoint <taskId>         Clear only platform-managed Detector checkpoint
+  rerun <taskId>                    Re-dispatch a terminal Task
+  exit --reason <text>              End the current eligible scheduled Task from inside it
+  delete <taskId>                   Delete after explicit user confirmation
+
+SCHEDULE CREATION
+  --executionMode scheduled --dispatchAt <ISO-with-offset>
+  --executionMode recurring --intervalMinutes <n>             (minimum 5)
+  --executionMode recurring --cronExpression "0 9 * * *" \
+                            --cronTimezone Asia/Shanghai
+
+  Wall-clock Cron schedules use an IANA timezone. Absolute dispatch/deadline
+  inputs require ISO 8601 with an explicit offset or Z.
+
+END CONDITIONS
+  --deadline <ISO-with-offset>       Stop starting new AI turns after the instant
+  --maxExecutions <n>                Cap settled AI turns; quiet checks do not count
+  --aiCanExit true|false             Allow/disallow 'myagents task exit'
+
+LIFECYCLE
+  create --json -> parse taskId -> get --json -> run --json -> get --json.
+  'run' is initial Todo enablement; 'start' resumes Stopped; 'rerun' handles a
+  terminal Task. Running means scheduler enabled, not necessarily executing now.
+
+SAFETY
+  Never use system cron/crontab/at/launchctl/schtasks for a MyAgents Task.
+  The App must remain online. Delete does not remove user workspace scripts.
+  trigger test runs the external command for real; only MyAgents state is not
+  committed, so isolate fixtures and external side effects.`;
+
+const README_CRON = `myagents cron — Compatibility scheduled-task commands
+
+NOTE
+  Cron is not a separate store or scheduler. New Agent workflows use the
+  canonical guide 'myagents task readme'; these commands remain compatible for
+  existing users and scripts.
 
 WHAT
   Create, list, inspect, stop, and delete scheduled AI tasks (cron / interval /
@@ -4083,7 +4235,7 @@ STATUS VOCABULARY (in 'list' / 'status' output and --json)
                executing" — see currentlyExecuting below.
     Stopped    Scheduler is disabled. The task never fires while in this
                state, even when the schedule expression matches. Resume
-               with 'cron start <taskId>'.
+               with 'task start <taskId>' (or compatibility 'cron start').
 
   currentlyExecuting field (--json) / '*' marker after the ID (plain text):
     A tick is firing this very instant — either a scheduled fire or a
@@ -4144,15 +4296,16 @@ EXAMPLES
   myagents cron list
   myagents cron runs <taskId> --limit 5
 
-EXIT FROM INSIDE A TASK (cron scenario only)
-  If you are currently running as a cron task AND the task creator enabled
+EXIT FROM INSIDE A TASK
+  If you are currently running as a scheduled Task AND the task creator enabled
   "Allow AI to exit", call:
-    myagents cron exit --reason "goal achieved"
+    myagents task exit --reason "goal achieved"
   to mark the task complete and stop future executions.
 
 DO NOT
   Use system cron / crontab / at / launchctl — they can't see MyAgents state.
-  Only \`myagents cron\` can create tasks inside MyAgents.`;
+  Only the \`myagents task\` canonical surface or compatible \`myagents cron\`
+  commands can create tasks inside MyAgents.`;
 
 const README_IM = `myagents im — IM Bot capabilities
 
@@ -4379,6 +4532,9 @@ export async function handleSpaceAttachmentInspect(payload: Record<string, unkno
 
 export function handleReadme(payload: { topic?: string; modules?: string[] }): AdminResponse {
   const topic = (payload.topic ?? '').toLowerCase();
+  if (topic === 'task') {
+    return { success: true, data: { text: README_TASK_AUTOMATION } };
+  }
   if (topic === 'cron') {
     return { success: true, data: { text: README_CRON } };
   }
@@ -4405,7 +4561,7 @@ export function handleReadme(payload: { topic?: string; modules?: string[] }): A
   }
   return {
     success: false,
-    error: `Unknown readme topic "${payload.topic}". Available: cron, im, widget.`,
+    error: `Unknown readme topic "${payload.topic}". Available: task, cron, im, widget.`,
   };
 }
 

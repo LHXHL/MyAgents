@@ -22,6 +22,7 @@ Task 的核心职责：
 - `new-session / single-session` 会话策略。
 - 新执行 Session 的 runtime/provider/model/MCP 初始配置，以及每轮 permission policy。
 - notification、关联 Session、执行次数与最近执行时间。
+- 一个 time Activation Trigger：缺失/`always` 直接执行 AI，`command` 先做低成本二元判断。
 
 `Loop` 已退出 Task 模型：新建/编辑拒绝，旧 Loop 启动时转 `Stopped`，不转换为 Goal。
 
@@ -35,7 +36,7 @@ Done -> Archived
 any allowed state -> Deleted (soft delete)
 ```
 
-对时间型 Task，`Running` 表示 scheduler enabled，不表示某个 AI Turn 正在执行。具体 Turn 的 `running | stopping | stop_failed` 只存在于 `TaskSchedulerController.executions`，Task list/get 在 wire projection 上附加 `executionState/executionError`，不写入 `tasks.jsonl`。
+对时间型 Task，`Running` 表示 scheduler enabled，不表示某个 AI Turn 正在执行。具体 Turn 的 `checking | running | stopping | stop_failed` 只存在于 `TaskSchedulerController.executions`，Task list/get 在 wire projection 上附加 `executionState/executionError`，不写入 `tasks.jsonl`。列表只投影 Task 行与该瞬时执行态；完整 checkpoint/health/pending/error 仅由按 id 的 get 读取，因此一个损坏或较大的 `trigger-state.json` 不会击穿整个 Task 列表。
 
 `TaskSchedulerController` 只拥有可重建的内存资源：
 
@@ -61,13 +62,33 @@ timer handle 只负责“何时触发”。真正的 AI Turn 是独立执行作�
 
 每次执行前都重新读取 `task.md`，用户修改会在下一次执行生效。运行历史继续写 `cron_runs/<taskId>.jsonl`，这是查询/审计投影，不是 Task 状态权威。
 
+### Activation Trigger 与 Detector
+
+每个 Task 最多一个 Trigger，Source 固定复用现有时间调度，不能在 Trigger 内复制 interval/cron/timezone。旧 Task 没有 `trigger` 时按 `time + always` 解释，不批量回写。`command` 配置是结构化 `executable + args + cwd + timeoutMs`；Rust 不拼 shell 字符串，bare `node`/`node.exe` 固定解析为 bundled Node.js v24，其他 bare executable 走系统二进制发现。
+
+command tick 的边界固定为：
+
+```text
+timer/check-now -> Detector -> quiet: commit checkpoint/health only
+                            -> failure: preserve checkpoint, record error/backoff
+                            -> activate: atomic checkpoint + pending event
+                                         -> ordinary Task execution claim
+                                         -> SessionEngine queue -> Runtime
+```
+
+Detector protocol v1 只允许 `quiet | activate`。进程退出、timeout、输出超限、非 UTF-8、strict schema 或持久化失败属于 harness failure，不是第三种 decision，也不交给 AI 判断。`test` 真实执行命令但不提交 MyAgents 的 checkpoint/health/counter/event，也不启动 AI；脚本自己的文件、网络或数据库副作用不会回滚。`check-now` 是真实检查，会提交状态；命中时先把 event 与 ordinary queue identity 持久绑定、完成 Rust execution claim / Session reservation 并把投送交给后台 owner 后返回，不等待 AI Turn 终结。Runtime admission 或 terminal 的后续失败仍由 pending outbox、exact queue authority 与 Task health 可见恢复；已有 pending event 时拒绝新检查，绝不把 pending 投送冒充一次 Detector check。程序 failure 对 CLI/Admin 返回非成功诊断。`task run-now`/兼容 `cron run-now` 绕过 Detector，直接执行 AI，但 pending Activation Event 拥有投送优先权：outbox 未结算时 run-now 由 Rust authority 拒绝。
+
+`trigger-state.json` 由 TaskStore 独占，保存 bounded checkpoint、检查/健康统计、最近 128 个已结算 event id 与一个 pending Activation Event。pending 同时持久化 Detector invocation cause；旧文件缺失该字段时按 `scheduled` 兼容。activate 必须先把 checkpoint 和 pending event 写入同一次原子替换，再 claim 并持久绑定 ordinary queue id，之后才能进入 Session admission；这个绑定不是“已被 Runtime 接纳”的回执，而是崩溃恢复与 stop 所需的 exact identity。AI Turn 确认接纳并终结时，Task row 原子提交 execution count、terminal status 与 `lastActivationEventId` receipt，然后才清 outbox；若在两次写之间崩溃，启动恢复只结算匹配 receipt 的 event，不重复唤醒。Running Task 的 pending 由 scheduler 按原 cause 恢复；Stopped/Blocked Task 只恢复 `check-now` 产生的一次性 manual admission，不 arm timer、不改变既有状态。Session 忙碌复用既有 SessionEngine queue，不建立 Trigger 专用队列。
+
+`checkCount` 统计真实 scheduled/check-now Detector 检查，`executionCount` 只统计已接纳并结算的 AI Turn。Running Task 上由 check-now 命中的 AI Turn 同样服从 `maxExecutions`、AI exit 与 provider/terminal 规则；到达 end condition 后不得再做新的 check。Stopped/Blocked 上的 check-now 保留原状态。recurring failure 采用有界退避，连续 3 次失败进入 Blocked；once/scheduled failure 立即 Blocked。Stop 保留 checkpoint 但取消尚未投送的 pending event，取消持久化失败必须返回错误供用户重试；reset 只清平台 checkpoint；delete 在精确 Detector/AI 进程确认停止后移除 trigger state，不删除用户脚本。Task 从 command 切到 always 时先持久化 non-command 行，再 best-effort 删除 state；该行本身就是启动恢复的清理义务。切回 command 时必须先幂等删除任何旧 state，失败则保持 non-command，避免旧 checkpoint/health/event 复活。
+
 ## 3. Session 与配置边界
 
 Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/external runtime 均走 adapter selector。
 
 - 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
 - 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
-- 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 的持久化边界拒绝空值与 `pending-*` binding。materialize 失败、取消或 Tab 已卸载都不会留下半绑定 Task。new-session 的 scheduler reservation 不变。
+- 从当前 Chat 创建 single-session Task 时，Renderer 先通过既有 Session materialization transaction 得到真实 Session identity，再提交 Task；新 Task 与显式改绑的持久化边界在同一 Session lifecycle guard 内拒绝空值、`pending-*` 和不存在的 Session metadata。materialize 失败、取消、Session 并发删除或 Tab 已卸载都不会留下半绑定 Task。升级前已存在且未改绑的 legacy 缺失 binding 仍可编辑；new-session 的 scheduler reservation 不变。
 - 新 Task Session 的 metadata 创建权由 scheduler 根据 `SessionStore` 决定，**与 Sidecar `EnsureSidecarResult.isNew` 无关**。guard、shared lease 与停止确认的完整事务见[第 6 节](#6-数据完整性)。
 - single-session 的持久 binding 若已没有 Session metadata，执行前换成新 UUID 并原子重绑，绝不复活被用户删除的 Session id；`task:session-rebound` 提示 UI。`AttachedSession` 终态不能 generic rerun，后续工作必须重新 claim/reopen 并创建新的 Attached Task。
 - permission 是本轮执行策略，可由 Task 指定；空值解析为对应 runtime 最大权限。
@@ -126,6 +147,8 @@ TaskStore write lock
 
 `tasks.jsonl` 解析是 all-or-nothing；任一 malformed/duplicate row 使 Store 保持只读。写盘使用 tmp + `sync_all` + rename + parent fsync。Task id/path 入口统一经过 `validate_safe_id` 与 `task_docs_dir()` containment 校验。
 
+Trigger 高频状态同样使用同目录临时文件、文件 `sync_all`、rename 与 parent fsync。checkpoint 与 pending activation 不允许拆成两次提交；脚本、Renderer、Node 和 CLI 只经过 TaskStore API，不能直接读写 `trigger-state.json`。
+
 Task notification 的局部更新也在上述同一写事务内合并：字段缺失表示 unchanged，`false` 是精确值，`null` 只清除对应可选字段（desktop 恢复领域默认 `true`）。CLI 只发送用户实际指定的 patch，不先 GET 后拼出完整对象；完整 replacement 输入仍保留，但不得与 patch 同时出现。
 
 Task 对 Session identity 的保护同时覆盖 durable 与 transient 两层：Running direct single-session Task 保护其固定 Session；`AttachedSession` Task 在 Todo/Running/Verifying/Blocked/Stopped 生命周期保护 Cloud claim 绑定的 Session；一次实际执行从 claim 发布 Session id 到 Sidecar `Task` owner 附着前，由 scheduler active-execution map 保护。任何 durable mutation 只要让 Task 进入上述受保护集合，或给已受保护 Task 新增 `preselectedSessionId/sessionIds` binding，都必须与 Session 删除取得同一个 per-Session lifecycle guard，统一使用 `lifecycle → TaskStore` 锁序；scheduler reservation 已持 guard 时使用显式的 held-guard commit 入口，禁止非重入二次 acquire。
@@ -153,8 +176,10 @@ Goal 是 Session 状态，不是 Task execution mode：
 
 - Rust：`src-tauri/src/task.rs`、`task_application.rs`、`task_scheduler.rs`、`task_execution.rs`
 - Legacy compatibility：`src-tauri/src/cron_task/*`、`legacy_upgrade.rs`
-- Management API：`/api/task/*` 与兼容 `/api/cron/*`
-- CLI：`myagents task ...`、兼容 `myagents cron ...`
+- Management API：`/api/task/*`（含 trigger validate/test/check-now/reset 与 run-now）及兼容 `/api/cron/*`
+- CLI：`myagents task ...` 是 Agent-facing canonical surface，覆盖创建、启停、历史、exit、Trigger test/check-now/run-now/reset；`myagents cron ...` 只保留外部兼容
 - Renderer：`src/renderer/components/task-center/`、`useCronTask`（兼容展示 hook）
 
 新建/从想法派发共用 `DispatchTaskDialog`。创建面板不提供手工标签输入；空白新建写入空标签，从想法派发则原样继承来源想法的标签作为 provenance。既有 Task 的标签字段、列表过滤、详情展示与编辑兼容能力保持不变，`TaskStore` schema 不因这项表单收敛而改变。
+
+Task Center 在创建/编辑中提供 always/command、结构化 argv、cwd、timeout 和无提交 test；command Task 显示标识与 runtime health/checkpoint/pending/error 投影，并把 test、check-now、run-now、reset 明确分成四个动作。新建 `single-session` Task 必须先 materialize 并持久化一个真实 `preselectedSessionId`，可选择当前或任意已有 Session。

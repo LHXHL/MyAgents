@@ -95,9 +95,9 @@ Groups:
   skill     管理 Skills（list/info/add/remove/enable/disable/sync）
   tool      用户注册 CLI 工具注册表（实验室开关开启后可用）
   vision    官方图片理解 CLI 工具（readme/analyze；由设置页工具箱开关和读图模型配置门控）
-  cron      管理定时 Task 的兼容命令面（list/add/start/stop/remove/update/run-now/runs/status）
+  cron      定时 Task 的已发布兼容命令面（不再是 Agent canonical surface）
   goal      管理当前 session Goal Mode（get/create/update）
-  task      管理任务中心任务（list/get/create-direct/create-from-alignment/run/rerun/...）
+  task      管理任务中心与定时自动化（create/run/start/stop/runs/exit/Trigger/...）
   thought   管理任务中心想法（list/create）
   im        IM runtime actions（send-media）
   session   Agent Session 发现与协作（list/start/send/watch）
@@ -212,12 +212,37 @@ canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/co
 
 `myagents cron` 保留既有用户命令名和 JSON shape，但不再创建 `CronTask`。所有 add/list/update/start/stop/remove/run-now 都由 Rust compatibility facade 直接读写 `TaskStore`，时间触发由 `TaskSchedulerController` 管理；`cron_tasks.json` 只作为启动迁移的只读历史格式。
 
+新 Agent 工作流以 `myagents task` 为 canonical surface；`task start/stop/runs/exit` 在 CLI 路由层复用对应 compatibility handler，不复制 Admin/Rust 业务逻辑。旧 `cron` 命令继续服务已发布脚本和人工习惯。
+
 标准 Cron list/get 也只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
 
 - `start` 提交 Task `Running` 并 arm timer，不立即执行。
 - `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。
 - `Loop` 被拒绝；持续工作使用 current-session Goal。
 - `/api/admin/cron/*` 是兼容路由名，不代表独立 Cron domain/store。
+
+### Task Automation Skill 与条件激活（0.4.5）
+
+`myagents-task-automation` 是 Required system skill，也是所有“定时、未来唤醒、周期执行、等待条件后继续”的统一 Agent 入口。Skill 先建立 Task，再选择默认 `always` 或低成本 `command Detector`；Sensor 不再作为独立 Skill / 产品实体。Detector 详细协议放在 Skill 的按需 reference，普通 scheduled Task 不加载这部分上下文。
+
+```bash
+myagents task trigger validate --spec-file trigger.json
+myagents task trigger test --spec-file trigger.json --workspacePath /abs/workspace --expect quiet
+myagents task trigger test <taskId> --expect activate
+myagents task create-direct ... --trigger-file trigger.json \
+  --runMode single-session --preselectedSessionId current
+myagents task start <taskId>           # 恢复 stopped schedule
+myagents task stop <taskId>            # 暂停 schedule / 活跃执行
+myagents task runs <taskId>            # AI 执行历史
+myagents task exit --reason "..."     # eligible Task run 内主动结束
+myagents task check-now <taskId>       # 提交 Detector 状态，命中才唤醒 AI
+myagents task run-now <taskId>         # 绕过 Detector，强制执行 AI
+myagents task reset-checkpoint <taskId>
+```
+
+`--preselectedSessionId current` 在 CLI 边界解析 `MYAGENTS_SESSION_ID`，持久层只接收 canonical id；新建 single-session 不允许空绑定。trigger/spec/checkpoint 文件使用有界 regular-file no-follow 读取，拒绝 NUL、无效 UTF-8、超限或非 object JSON；`trigger test --expect` 也必须在任何 Detector 调用前校验为 `quiet | activate`。test 不提交 MyAgents 状态，但命令的外部副作用仍真实发生。human/JSON failure 都保留结构化 code、suggestion、可选 suggested command，以及 Detector 的有界 stderr/stdout 诊断。pending Activation Event 未结算时，Rust authority 拒绝 `run-now`，CLI 只透传该拒绝而不建立第二条执行路径。
+
+Agent-facing CLI 统一使用 `myagents task`。`task start/stop/runs/exit` 只是在 CLI 路由层复用既有 Cron compatibility handler，后端仍进入同一个 Rust Task authority；`myagents cron` 命令为外部用户和脚本继续兼容。Task 创建还可用 `--deadline`、`--maxExecutions`、`--aiCanExit` 写入既有 `TaskEndConditions`，不新增结束状态 owner。
 
 ### Runtime 自诊断（PRD 0.2.16）
 
@@ -272,6 +297,9 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 - 修改 `src/cli/myagents.ts` 或 `src/cli/myagents.cmd`：bump `CLI_VERSION`；若 CLI surface 改变，还要同步 `bundled-skills/myagents-cli/SKILL.md` 并 bump `SYSTEM_SKILLS_VERSION`。
 - 修改 `SYSTEM_SKILLS` 清单内的 `bundled-skills/<name>/`：bump `SYSTEM_SKILLS_VERSION`。
 - 新增 system skill：加入 Rust `SYSTEM_SKILLS` 与 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单并 bump 版本。未进清单的 utility skill 首次 seed 后归用户，不使用强制更新语义。
+- 退役此前由产品强制托管的 system skill 时，必须在同一次版本同步事务中精确清理其旧目录；不能只从名单删除后把旧副本遗留成普通用户 Skill。该清理只接受明确列出的产品旧名，不做通用 orphan 扫描。
+
+Skill frontmatter 以 Agent Skills 标准为 canonical：作者写在 `metadata.author`，不能新增顶层 `author`。`src/shared/slashCommands.ts` 是 UI / Sidecar 共用的归一化 owner：读取时标准 `metadata.author` 优先，并兼容旧顶层 `author` / `Author`；list/detail/CLI 投影继续提供扁平 `author` 方便消费，保存时只写回 `metadata.author`，同时保留其它标准 string metadata。这样旧 Skill 无需一次性迁移也能展示，而任何后续编辑都会自然收敛到标准格式。
 
 `SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
@@ -343,7 +371,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/runtime/*` | 跨 runtime 发现：`list` / `describe` |
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
-| `/api/admin/task/*` | 任务中心：list/get/create-direct/create-from-alignment/run/rerun/update-status/append-session/archive/delete/read-doc/write-doc |
+| `/api/admin/task/*` | 任务中心：list/get/create/update/run/rerun/run-now、trigger validate/test/check-now/reset、status/session/archive/delete/doc |
 | `/api/admin/thought/*` | 任务中心想法：list/create |
 | `/api/admin/skill/*` | Skills CRUD、URL 安装、启停、sync |
 | `/api/admin/tool/*` | 用户注册 CLI 工具注册表（实验室门控，默认关闭） |

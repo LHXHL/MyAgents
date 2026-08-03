@@ -148,6 +148,9 @@ impl CronTaskManager {
                     .stop_with_control_held(id, &task_control)
                     .await?;
             }
+            if task.effective_trigger().is_command() {
+                store.cancel_pending_activation(id).await?;
+            }
             return Ok(task_to_cron(&task));
         }
         let task = store
@@ -380,6 +383,7 @@ fn task_input_from_cron_config(
         start_at,
         recurring_window: window,
         dispatch_at,
+        trigger: None,
         model: config.model,
         provider_id,
         permission_mode: (!config.permission_mode.is_empty()).then_some(config.permission_mode),

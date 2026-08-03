@@ -52,7 +52,10 @@ instructions.
   it('keeps stable CLI capabilities while user-registered tools are gated off', () => {
     const text = buildCliToolsAppend({ type: 'desktop' }, { includeUserTools: false });
 
-    expect(text).toContain('<myagents-cli-cron>');
+    expect(text).toContain('<myagents-cli-task-automation>');
+    expect(text).toContain('myagents-task-automation');
+    expect(text).toContain('myagents task readme');
+    expect(text).not.toContain('<myagents-cli-cron>');
     expect(text).toContain('<myagents-cli-goal>');
     expect(text).toContain('<myagents-cli-thought>');
     expect(text).toContain('myagents goal --help');
@@ -97,6 +100,8 @@ instructions.
 
     expect(cronText).not.toContain('<myagents-cli-goal>');
     expect(cronText).not.toContain('myagents goal create');
+    expect(cronText).toContain('<myagents-cli-task-exit>');
+    expect(cronText).toContain('myagents task exit');
     expect(registeredAgentText).not.toContain('<myagents-cli-goal>');
     expect(registeredAgentText).not.toContain('myagents goal create');
     expect(imGroupText).not.toContain('<myagents-cli-goal>');

@@ -180,7 +180,18 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/task/archive", post(task_archive_handler))
         .route("/api/task/delete", post(task_delete_handler))
         .route("/api/task/run", post(task_run_handler))
+        .route("/api/task/run-now", post(task_run_now_handler))
         .route("/api/task/rerun", post(task_rerun_handler))
+        .route(
+            "/api/task/trigger/validate",
+            post(task_trigger_validate_handler),
+        )
+        .route("/api/task/trigger/test", post(task_trigger_test_handler))
+        .route("/api/task/check-now", post(task_check_now_handler))
+        .route(
+            "/api/task/reset-checkpoint",
+            post(task_reset_checkpoint_handler),
+        )
         .route("/api/task/read-doc", get(task_read_doc_handler))
         .route("/api/task/write-doc", post(task_write_doc_handler))
         .route("/api/thought/list", get(thought_list_handler))
@@ -2537,16 +2548,7 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         include_managed: None,
     };
     let tasks = store.list(filter).await;
-    let executions = crate::task_scheduler::get_task_scheduler()
-        .execution_projections_snapshot()
-        .await;
-    let tasks = tasks
-        .into_iter()
-        .map(|task| {
-            let execution = executions.get(&task.id).cloned();
-            task::TaskProjection::new(task, execution)
-        })
-        .collect::<Vec<_>>();
+    let tasks = task::project_task_list(tasks).await;
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
 }
 
@@ -2603,6 +2605,16 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             let execution = crate::task_scheduler::get_task_scheduler()
                 .execution_projection(&t.id)
                 .await;
+            let trigger_state = if t.effective_trigger().is_command() {
+                match store.read_trigger_state(&t.id).await {
+                    Ok(state) => Some(state),
+                    Err(error) => {
+                        return Json(serde_json::json!({ "ok": false, "error": error }));
+                    }
+                }
+            } else {
+                None
+            };
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2610,6 +2622,7 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
+                    trigger_state,
                 }
             }))
         }
@@ -2681,6 +2694,20 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
             let execution = crate::task_scheduler::get_task_scheduler()
                 .execution_projection(&task.id)
                 .await;
+            let trigger_state = if task.effective_trigger().is_command() {
+                match task::get_task_store()
+                    .expect("TaskStore initialized for management API")
+                    .read_trigger_state(&task.id)
+                    .await
+                {
+                    Ok(state) => Some(state),
+                    Err(error) => {
+                        return Json(serde_json::json!({ "ok": false, "error": error }));
+                    }
+                }
+            } else {
+                None
+            };
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2688,10 +2715,128 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
+                    trigger_state,
                 },
             }))
         }
         Err(error) => task_application_error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskTriggerValidateRequest {
+    trigger: crate::task_trigger::TaskTrigger,
+}
+
+async fn task_trigger_validate_handler(
+    Json(input): Json<TaskTriggerValidateRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_trigger::validate_task_trigger(&input.trigger) {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "trigger": input.trigger })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
+}
+
+fn deserialize_present_nullable_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<serde_json::Map<String, serde_json::Value>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<serde_json::Map<String, serde_json::Value>>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskTriggerTestRequest {
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    trigger: Option<crate::task_trigger::TaskTrigger>,
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable_map")]
+    checkpoint: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+}
+
+async fn task_trigger_test_handler(
+    Json(input): Json<TaskTriggerTestRequest>,
+) -> Json<serde_json::Value> {
+    let scheduler = crate::task_scheduler::get_task_scheduler();
+    let result = match (input.task_id, input.trigger, input.workspace_path) {
+        (Some(task_id), None, None) => scheduler.test_trigger(&task_id, input.checkpoint).await,
+        (None, Some(trigger), Some(workspace_path)) => {
+            scheduler
+                .test_trigger_spec(
+                    None,
+                    trigger,
+                    workspace_path,
+                    input.checkpoint.flatten(),
+                    0,
+                    None,
+                )
+                .await
+        }
+        _ => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "provide either taskId or trigger + workspacePath"
+            }));
+        }
+    };
+    match result {
+        Ok(result) => Json(serde_json::json!({ "ok": true, "result": result })),
+        Err(result) => Json(serde_json::json!({
+            "ok": false,
+            "error": result.error.message,
+            "result": result,
+        })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskTriggerActionRequest {
+    id: String,
+}
+
+async fn task_check_now_handler(
+    Json(input): Json<TaskTriggerActionRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_scheduler::get_task_scheduler()
+        .check_now(&input.id)
+        .await
+    {
+        Ok(result)
+            if result.outcome == Some(crate::task_trigger::TaskTriggerRuntimeOutcome::Error) =>
+        {
+            let message = result
+                .state
+                .last_error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("Detector check failed");
+            Json(serde_json::json!({
+                "ok": false,
+                "code": "detector_check_failed",
+                "error": message,
+                "result": result,
+            }))
+        }
+        Ok(result) => Json(serde_json::json!({ "ok": true, "result": result })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
+}
+
+async fn task_reset_checkpoint_handler(
+    Json(input): Json<TaskTriggerActionRequest>,
+) -> Json<serde_json::Value> {
+    match crate::task_scheduler::get_task_scheduler()
+        .reset_checkpoint(&input.id)
+        .await
+    {
+        Ok(state) => Json(serde_json::json!({ "ok": true, "state": state })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
 
@@ -3179,6 +3324,28 @@ async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json:
             "attemptOrdinal": result.attempt_ordinal,
         })),
         Err(error) => task_application_error_response(error),
+    }
+}
+
+/// Force one AI turn through the ordinary Task execution claim while leaving
+/// schedule anchors and command Detector checkpoint state untouched.
+async fn task_run_now_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
+    let Some(store) = task::get_task_store() else {
+        return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
+    };
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
+    match crate::task_scheduler::get_task_scheduler()
+        .trigger_now(&req.id)
+        .await
+    {
+        Ok(session_id) => Json(serde_json::json!({
+            "ok": true,
+            "taskId": req.id,
+            "sessionId": session_id,
+        })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
 

@@ -242,6 +242,7 @@ interface SessionGoalView {
 - Goal 不持有 taskId、Cron schedule、tab、runtime/model/provider/reasoning/MCP 或普通 delivery。Session 继续拥有运行配置，Goal 只保存 permission turn policy。
 - UI `/goal`、当前 Session 内的 `myagents goal create`、私聊 IM/Agent Channel 都写同一 Goal。创建前必须 materialize 真实 Session id；Rust 拒绝 `pending-*`，没有 post-hoc rebind。
 - Goal 与 Task 可以关联同一 Session。二者不互相引用，实际 Turn 顺序由现有 Runtime queue 决定。
+- command Task 的 pending Activation Event 属于 Rust TaskStore durable outbox，不是 Session queue。只有 checkpoint + event 落盘后才向 SessionEngine 提交普通 Task queue item；quiet/failure/test 不 materialize Session、ensure Sidecar 或进入 Runtime。
 
 #### Turn authority
 
@@ -273,6 +274,8 @@ Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 
 发送统一经过 `/goal/execute-sync`。`routes/scheduled-turns.ts` 只负责请求校验和响应映射，`goal-orchestrator.ts` 管理 Goal 的准备、dispatch 和终态生命周期；Builtin/External adapter 通过 `prepareScheduledTurn()` 完成各自的 Session 绑定与配置准备，并共享 queue identity、stop 与 terminal contract。
+
+Task 仍统一经过 `/cron/execute-sync` 的历史兼容路由名与 `task-turn-orchestrator.ts`。可选 Activation Event 使用 strict v1 envelope；Node 只校验并把固定 event/reason/handoff context 交给既有 Task reminder，不接受 Detector 提供 role、system prompt、runtime、provider、permission、MCP 或 Session 目标。orchestrator 返回真实 `turnDispatched`，Rust 只有在 Runtime admission 已发生且 terminal 已确认时才记一次 AI execution；pre-admission failure 保留 pending event，transport/termination 不确定时保留精确 queue authority供 Stop/recovery。
 
 #### 用户消息与展示
 

@@ -5,15 +5,16 @@ description: >-
   模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget、Goal 目标模式等），全部通过内置 `myagents` CLI 暴露给你。
   当用户的需求**落在 MyAgents 产品能力的射程内**，就加载并使用这个 skill，用 CLI 主动帮用户把事情做掉，
   而不是让用户去 GUI 点击。
-  典型触发场景：用户说"每天 X 点帮我 Y"（→ cron）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
+  典型触发场景：用户说"每天 X 点帮我 Y / 等 X 发生后继续 / 持续盯着，命中才处理"（→ myagents-task-automation）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
   "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、"在飞书/钉钉/Telegram 里跟我聊"（→ agent channel）、
   "装个 X 插件 / 装个 X skill"（→ plugin / skill）、"处理 Space Issue / 下载附件 / 回复 Issue"（→ space）、
   "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"持续执行直到目标完成"（→ goal）、
   "做个图表/仪表盘"
   （→ widget readme）、"看下我有啥任务/定时/Runtime/版本"（→ list / status / version）、"改下应用设置"（→ config）。
   即使用户没说"用 MyAgents 做"几个字，只要意图能映射到上述能力之一，就该走这个 skill。
-  反向边界：纯业务任务（写代码、查资料、读文件）不归这里；用户自己会话里给 AI 排任务用 im-cron MCP，不是这里。
-author: MyAgents
+  反向边界：纯业务任务（立即写代码、查资料、读文件）不归这里；只有需要操作 MyAgents 产品状态或未来自动化时才使用本 Skill。
+metadata:
+  author: MyAgents
 ---
 
 # myagents-cli — MyAgents 产品能力的 CLI 入口
@@ -228,35 +229,22 @@ myagents skill sync                                     # 把 ~/.claude/skills �
 - 报错 `技能 X 已存在` → 跟用户确认要不要 `--force` 覆盖
 - 用户在 `~/.claude/skills/` 自己塞了东西 MyAgents 看不见 → `skill sync`
 
-### 定时任务（cron）
+### 定时与未来自动化 Task
 
 ```bash
-myagents cron list                                      # 列出【当前工作区】的定时任务（按作用域过滤，非全局！）
-                                                        # 空结果≠系统无任务——可能在别的工作区。响应带 scope+提示文案
-myagents cron list --workspace <abs>                    # 查看指定工作区的定时任务（跨工作区查看的唯一方式）
-myagents cron add --name "..." --prompt "..." --schedule "..." --workspace <abs>
-                                                        # --schedule "0 18 * * *" 标准 cron / --every 15 每 N 分钟
-                                                        # --prompt-file <path> 也行（多行 / 含 backtick 用这个，1MB 上限）
-myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path] [--schedule X --every N --model X --permissionMode X]
-                                                        # 改任意字段，没传的不动
-myagents cron start <taskId>                            # 启动已停止的任务
-myagents cron stop <taskId>                             # 停止运行中的任务
-myagents cron run-now <taskId>                          # 立即手动触发一次（不影响计划）
-myagents cron remove <taskId>                           # 删除
-myagents cron runs <taskId> [--limit N]                 # 看执行历史
-myagents cron status                                    # 概览：总数 / 运行中 / 下次执行（同样按【当前工作区】作用域，0 ≠ 全局无任务）
-myagents cron exit [--reason "..."]                     # 仅在 cron 任务自己的 session 内可用，且任务的 Allow AI to exit 必须开
-                                                        # AI 判断"该结束了"时主动退出当前轮
-myagents cron readme                                    # 拉 cron 工具的完整使用文档（progressive disclosure）
+myagents task readme                                    # 统一自动化模型与当前命令
+myagents task get <taskId> --json                       # 权威配置与运行状态
+myagents task run <taskId>                              # 首次启用 Todo Task
+myagents task start <taskId>                            # 恢复已停止的 schedule
+myagents task stop <taskId>                             # 暂停并停止活跃执行
+myagents task runs <taskId> [--limit N]                 # 看 AI 执行历史
+myagents task run-now <taskId>                          # 绕过 Detector 立即执行
+myagents task exit [--reason "..."]                     # 仅在允许 AI exit 的 Task run 内
 ```
 
-**何时用：**
-- "帮我每天 6 点出日报" → `cron add --name "日报" --prompt "..." --schedule "0 18 * * *" --workspace /path`
-- "把日报的 prompt 改一下" → `cron update <taskId> --prompt "新内容"`
-- "立刻跑一次看看" → `cron run-now <taskId>`
-- "停了它别再跑" → `cron stop`（保留配置）；彻底删用 `cron remove`
-- "上次执行成功了吗" → `cron runs <taskId>`
-- `cron exit` / `cron readme` 是 AI 在自己 cron 任务运行中用的——给用户管 cron 用前面那一串
+定时、未来唤醒、循环执行和“满足条件才处理”是同一类 Task 意图。先加载 `myagents-task-automation`，由它选择普通 always 激活或 command Detector，并完成创建、回读和启动。不要让用户先选择 Cron 或 Sensor。
+
+`myagents cron ...` 继续作为旧用户/脚本的兼容 alias，但不是 Agent 新建自动化的规范入口。不要调用系统 `cron/crontab/at/launchctl/schtasks`。
 
 ### Goal 目标模式（goal）
 
@@ -278,6 +266,8 @@ myagents goal update --status blocked                  # AI 判断无法继续�
 
 ### 任务中心（task / thought）
 
+用户要定时、未来唤醒、循环执行或满足条件才叫醒 AI 时，统一加载 `myagents-task-automation`。command Detector 的协议、fixture 和测试由该 Skill 按需路由到自己的 reference；这里仅保留 Task Center 的通用命令索引。
+
 ```bash
 myagents thought list [--tag X --query X --limit N]     # 列想法（用户先记下来、后续派发的轻量条目）
 myagents thought create '...'                           # 记一条想法（首选：单引号包裹防 shell 注入；
@@ -296,6 +286,10 @@ myagents task create-from-alignment <alignmentSessionId> --name "..." [--run] [�
                                                         # 从 AI 对齐会话物化任务（workspaceId/Path/sourceThoughtId 自动继承）
                                                         # --run 创建后立刻派发，省一步
 myagents task run <taskId>                              # 派发 todo 任务
+myagents task start <taskId>                            # 恢复 stopped schedule，不立即执行
+myagents task stop <taskId>                             # 暂停 schedule 并停止活跃执行
+myagents task runs <taskId> [--limit N]                 # 查看最近 AI 执行历史
+myagents task exit [--reason "..."]                     # 仅在允许 AI exit 的 scheduled Task 内
 myagents task rerun <taskId>                            # 从 blocked/stopped/done 重新派发
 myagents task update-status <taskId> <status> [--message "..."]
                                                         # 状态机：todo→running→verifying→done（或 →blocked/stopped）、done→archived
@@ -303,6 +297,8 @@ myagents task append-session <taskId> <sessionId>       # 把一个聊天 sessio
 myagents task archive <taskId> [--message "..."]        # 归档（仅用户可操作；AI 走会被拒）
 myagents task delete <taskId>                           # 软删除（30 天保留）
 ```
+
+创建 scheduled/recurring Task 可用 `--deadline <ISO-8601-with-offset>`、`--maxExecutions <正整数>`、`--aiCanExit true|false` 设置结束条件；quiet Detector 检查不消耗 maxExecutions。
 
 **任务级 runtime/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
 
@@ -508,7 +504,7 @@ myagents widget readme <module1> [<module2> ...]        # 拉具体模块的完�
 - 模块清单：`chart`（Chart.js 图表）/ `diagram`（SVG 流程图）/ `interactive`（滑块/计算器/对比卡）/ `dashboard`（多图表 + 控件）/ `art`（SVG 插画）
 - 渲染输出有严格 `<generative-ui-widget>` 格式契约——readme 开头会说明，跳读会出错
 
-`cron readme` / `im readme` / `widget readme` 都是 progressive disclosure：brief 已经在系统 prompt 里，要用时才 fetch full doc。
+`task readme` / `im readme` / `widget readme` 都是 progressive disclosure：brief 已经在系统 prompt 里，要用时才 fetch full doc。
 
 ---
 

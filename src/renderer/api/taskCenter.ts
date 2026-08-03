@@ -14,6 +14,10 @@ import type {
   TaskCreateFromAlignmentInput,
   TaskListFilter,
   TaskRunStats,
+  TaskTrigger,
+  TaskTriggerCheckNowResult,
+  TaskTriggerRuntimeState,
+  TaskTriggerTestResponse,
   TaskUpdateInput,
   TaskUpdateStatusInput,
 } from '@/../shared/types/task';
@@ -134,6 +138,46 @@ export function taskGet(id: string): Promise<Task | null> {
 
 export function taskUpdate(input: TaskUpdateInput): Promise<Task> {
   return inv('cmd_task_update', { input });
+}
+
+export function taskTriggerValidate(trigger: TaskTrigger): Promise<TaskTrigger> {
+  return inv('cmd_task_trigger_validate', { trigger });
+}
+
+export function taskTriggerTestTask(taskId: string): Promise<TaskTriggerTestResponse> {
+  return inv('cmd_task_trigger_test', { taskId });
+}
+
+export function taskTriggerTestSpec(
+  trigger: TaskTrigger,
+  workspacePath: string,
+  checkpointState?: Pick<
+    TaskTriggerRuntimeState,
+    'checkpoint' | 'checkpointRevision' | 'checkpointUpdatedAt'
+  >,
+  ownerTaskId?: string,
+): Promise<TaskTriggerTestResponse> {
+  return inv('cmd_task_trigger_test', {
+    ownerTaskId,
+    trigger,
+    workspacePath,
+    checkpoint: checkpointState?.checkpoint ?? undefined,
+    checkpointRevision: checkpointState?.checkpointRevision,
+    checkpointUpdatedAt: checkpointState?.checkpointUpdatedAt,
+  });
+}
+
+export function taskCheckNow(id: string): Promise<TaskTriggerCheckNowResult> {
+  return inv('cmd_task_check_now', { id });
+}
+
+/** Force one AI turn through the ordinary Task queue without running Detector. */
+export function taskRunNow(id: string): Promise<string> {
+  return inv('cmd_task_run_now', { id });
+}
+
+export function taskResetCheckpoint(id: string): Promise<TaskTriggerRuntimeState> {
+  return inv('cmd_task_reset_checkpoint', { id });
 }
 
 export function taskUpdateStatus(input: TaskUpdateStatusInput): Promise<Task> {

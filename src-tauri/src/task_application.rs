@@ -269,6 +269,12 @@ impl<'a> TaskApplication<'a> {
                 .stop_with_control_held(&current.id, &control)
                 .await
                 .map_err(TaskApplicationError::mutation)?;
+            if current.effective_trigger().is_command() {
+                self.tasks
+                    .cancel_pending_activation(&current.id)
+                    .await
+                    .map_err(TaskApplicationError::mutation)?;
+            }
             return Ok(TaskStatusMutationResult {
                 task: current,
                 transition: None,
@@ -519,6 +525,7 @@ mod tests {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: None,
             model: None,
             provider_id: None,
             permission_mode: None,
