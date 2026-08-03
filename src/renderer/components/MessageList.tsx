@@ -79,12 +79,23 @@ interface MessageListProps {
   onRewind?: (messageId: string) => void;
   onRetry?: (assistantMessageId: string) => void;
   onFork?: (assistantMessageId: string) => void;
+  conversationOperations?: 'builtin' | 'codex';
+  /** Stable projection of persisted Codex root-turn anchors for user-row eligibility. */
+  rewindableUserMessageIds?: ReadonlySet<string>;
   bottomSpacerPx?: number;
+}
+
+interface MessageActionContext {
+  conversationOperations: 'builtin' | 'codex';
+  rewindableUserMessageIds: ReadonlySet<string>;
+  onRewind?: (messageId: string) => void;
+  onFork?: (assistantMessageId: string) => void;
 }
 
 const STREAMING_MESSAGE_COUNT = 20;
 const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
 const STATUS_ROW_HEIGHT_PX = 30;
+const EMPTY_MESSAGE_ID_SET: ReadonlySet<string> = new Set();
 
 function isLargeRowShrink(reason: RowLayoutChangeReason): boolean {
   return reason === 'process-row-collapse' || reason === 'user-message-collapse-measured';
@@ -264,6 +275,8 @@ const MessageList = memo(function MessageList({
   onRewind,
   onRetry,
   onFork,
+  conversationOperations = 'builtin',
+  rewindableUserMessageIds,
   bottomSpacerPx,
 }: MessageListProps) {
   const { t } = useTranslation('chat');
@@ -455,12 +468,8 @@ const MessageList = memo(function MessageList({
   exitPlanModeAnchorIdRef.current = exitPlanModeAnchorId;
   const exitPlanModeSlotRef = useRef(exitPlanModeSlot);
   exitPlanModeSlotRef.current = exitPlanModeSlot;
-  const onRewindRef = useRef(onRewind);
-  onRewindRef.current = onRewind;
   const onRetryRef = useRef(onRetry);
   onRetryRef.current = onRetry;
-  const onForkRef = useRef(onFork);
-  onForkRef.current = onFork;
   const layoutByMessageIdRef = useRef(layoutByMessageId);
   layoutByMessageIdRef.current = layoutByMessageId;
   const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
@@ -558,11 +567,21 @@ const MessageList = memo(function MessageList({
     onScrollerRef?.(el);
   }, [onScrollerRef]);
 
-  // ── Stable itemContent — reads ALL dynamic values from refs, never recreated ──
+  const messageActionContext = useMemo<MessageActionContext>(() => ({
+    conversationOperations,
+    rewindableUserMessageIds: rewindableUserMessageIds ?? EMPTY_MESSAGE_ID_SET,
+    onRewind,
+    onFork,
+  }), [conversationOperations, onFork, onRewind, rewindableUserMessageIds]);
+
+  // ── Stable itemContent — volatile row actions arrive through Virtuoso context ──
   // eslint-disable-next-line react/display-name
-  const renderItem = useMemo(() => (index: number, message: MessageType) => {
+  const renderItem = useMemo(() => (index: number, message: MessageType, actionContext: MessageActionContext) => {
     const sm = streamingMessageRef.current;
     const isStreamingMsg = !!sm && message === sm;
+    const codexOperations = actionContext.conversationOperations === 'codex';
+    const canRewind = !codexOperations || actionContext.rewindableUserMessageIds.has(message.id);
+    const canFork = !codexOperations || Boolean(message.runtimeTurnAnchor);
     // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
     // margins don't leak past the wrapper — that's what e6de7173 originally
     // wanted. `overflow-hidden` did the same job but added a hard clip side
@@ -585,9 +604,9 @@ const MessageList = memo(function MessageList({
           <Message
             message={message}
             isLoading={isStreamingMsg && isLoadingRef.current}
-            onRewind={onRewindRef.current}
+            onRewind={canRewind ? actionContext.onRewind : undefined}
             onRetry={onRetryRef.current}
-            onFork={onForkRef.current}
+            onFork={canFork ? actionContext.onFork : undefined}
             exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
             initialUserCollapsed={layoutByMessageIdRef.current?.get(message.id)?.likelyUserCollapsed === true}
           />
@@ -649,21 +668,32 @@ const MessageList = memo(function MessageList({
     firstItemIndex: number | undefined;
     heightEstimateSeed?: number[];
     components: typeof components;
+    messageActionContext: MessageActionContext;
   }>({
     data: messages,
     firstItemIndex,
     heightEstimateSeed: liveHeightEstimateSeed,
     components,
+    messageActionContext,
   });
   useLayoutEffect(() => {
     if (isActive) {
-      frozenDataRef.current = { data: messages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed, components };
+      frozenDataRef.current = {
+        data: messages,
+        firstItemIndex,
+        heightEstimateSeed: liveHeightEstimateSeed,
+        components,
+        messageActionContext,
+      };
     }
-  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed, components]);
+  }, [isActive, messages, firstItemIndex, liveHeightEstimateSeed, components, messageActionContext]);
   const virtuosoData = isActive ? messages : frozenDataRef.current.data;
   const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
   const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
   const virtuosoComponents = isActive ? components : frozenDataRef.current.components;
+  const virtuosoMessageActionContext = isActive
+    ? messageActionContext
+    : frozenDataRef.current.messageActionContext;
   const debugProbe = useChatScrollDebugProbe({
     sessionId,
     scroller: debugScroller,
@@ -708,6 +738,7 @@ const MessageList = memo(function MessageList({
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         data={virtuosoData}
+        context={virtuosoMessageActionContext}
         computeItemKey={computeItemKey}
         firstItemIndex={virtuosoFirstItemIndex}
         heightEstimates={virtuosoHeightEstimateSeed}

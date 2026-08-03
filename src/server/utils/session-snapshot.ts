@@ -65,6 +65,37 @@ export type OwnedSessionSnapshot = Pick<
   | 'providerExecutionIdentity'
   | 'providerEnvJson'
 >;
+
+/** Clone the frozen execution identity owned by an existing Session branch source. */
+export function snapshotForForkedSession(
+  source: SessionMetadata,
+  legacyFallback?: OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'>,
+): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
+  const fallback = source.configSnapshotAt ? undefined : legacyFallback;
+  return {
+    runtime: source.runtime ?? fallback?.runtime ?? 'builtin',
+    runtimeSource: source.runtimeSource ?? fallback?.runtimeSource,
+    model: source.model ?? fallback?.model,
+    reasoningEffort: source.reasoningEffort ?? fallback?.reasoningEffort,
+    permissionMode: source.permissionMode ?? fallback?.permissionMode,
+    mcpEnabledServers: source.mcpEnabledServers
+      ? [...source.mcpEnabledServers]
+      : fallback?.mcpEnabledServers ? [...fallback.mcpEnabledServers] : undefined,
+    enabledPluginIds: source.enabledPluginIds
+      ? [...source.enabledPluginIds]
+      : fallback?.enabledPluginIds ? [...fallback.enabledPluginIds] : undefined,
+    enabledOfficialToolIds: source.enabledOfficialToolIds
+      ? [...source.enabledOfficialToolIds]
+      : fallback?.enabledOfficialToolIds ? [...fallback.enabledOfficialToolIds] : undefined,
+    providerId: source.providerId ?? fallback?.providerId,
+    providerRoute: source.providerRoute ?? fallback?.providerRoute,
+    providerExecutionIdentity: source.providerExecutionIdentity ?? fallback?.providerExecutionIdentity,
+    providerEnvJson: source.providerEnvJson ?? fallback?.providerEnvJson,
+    // A fork is always an owned Session. Legacy sources followed Agent config,
+    // so their caller supplies the effective owned snapshot at the fork boundary.
+    configSnapshotAt: source.configSnapshotAt ?? fallback?.configSnapshotAt ?? new Date().toISOString(),
+  };
+}
 // #324 — `reasoningEffort` is a DOCUMENTED divergence from the Rust mirror
 // (`runtime_change.rs::OwnedSessionSnapshot` does NOT carry it): Rust never
 // tracks effort state (it is deliberately not part of sync_ai_config, same

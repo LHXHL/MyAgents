@@ -9,7 +9,12 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { useToast } from '@/components/Toast';
-import { type RewindResponse, warnRewindFileOutcome as showRewindFileOutcomeWarning } from '@/utils/rewindFileOutcome';
+import {
+  classifyCodexRewindTransportOutcome,
+  projectCodexRewindRecovery,
+  type RewindResponse,
+  warnRewindFileOutcome as showRewindFileOutcomeWarning,
+} from '@/utils/rewindFileOutcome';
 import Tip from '@/components/Tip';
 import DirectoryPanel, { type DirectoryPanelHandle, type WorkspaceTreePersistedState } from '@/components/DirectoryPanel';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
@@ -91,6 +96,7 @@ import {
 } from '../../shared/official-tools';
 import { isSupportedLocale } from '../../shared/i18n';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
 import { coerceReasoningEffortForRuntime, reasoningEffortChoices } from '../../shared/reasoningEffort';
 import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
@@ -1162,11 +1168,14 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     messageId: string;
     content: string;
     attachments?: import('@/types/chat').MessageAttachment[];
+    replacesDraft: boolean;
   } | null>(null);
   const [rewindStatus, setRewindStatus] = useState<string | null>(null);
 
   // Fork state
   const [forkTarget, setForkTarget] = useState<string | null>(null); // assistant message ID
+  const [forkPending, setForkPending] = useState(false);
+  const conversationOperationPendingRef = useRef(false);
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -1302,6 +1311,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // spawned with its frozen runtime and the backend routes by sessionId.
   const currentRuntime: RuntimeType = (sessionRuntime as RuntimeType | null) ?? agentRuntime;
   const isExternalRuntime = currentRuntime !== 'builtin';
+  const codexConversationBranchSupported = currentRuntime === 'codex'
+    && supportsCodexConversationBranch(currentRuntimeSource, runtimeDetections.codex.version);
   const handleDiagnoseAgentError = useCallback((message: string) => {
     launchSupportDiagnostics({
       source: 'agent_error',
@@ -3144,6 +3155,14 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     firstItemIndex,
     sessionId,
   });
+  const rewindableUserMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const message of historyMessages) {
+      const rootUserMessageId = message.runtimeTurnAnchor?.rootUserMessageId;
+      if (message.role === 'assistant' && rootUserMessageId) ids.add(rootUserMessageId);
+    }
+    return ids;
+  }, [historyMessages]);
   const chatScrollController = useChatScrollController({
     messages: chatScrollModel.data,
     isActive,
@@ -3937,12 +3956,14 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     }
   }, [agentDir, t]);
 
-  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string) => {
+  const deleteUnopenedForkSession = useCallback(async (targetSessionId: string): Promise<boolean> => {
     try {
       const { deleteSession } = await import('@/api/sessionClient');
-      await deleteSession(targetSessionId);
+      const result = await deleteSession(targetSessionId);
+      return result.deleted || result.reason === 'not-found';
     } catch (err) {
       console.warn('[chat] Failed to delete unopened fork session:', err);
+      return false;
     }
   }, []);
 
@@ -4515,15 +4536,26 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       messageId,
       content: typeof msg.content === 'string' ? msg.content : '',
       attachments: msg.attachments,
+      replacesDraft: Boolean(
+        chatInputRef.current?.getCurrentValue().trim()
+        || chatInputRef.current?.getImages().length
+      ),
     });
   }, []); // [] — 通过 ref 读取 messages，引用永远稳定
 
   const handleRewindConfirm = useCallback(() => {
-    if (!rewindTarget) return;
+    if (!rewindTarget || conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
     const { messageId, content, attachments } = rewindTarget;
 
     // 快照：保存当前 messages 以便后端失败时回滚
     const snapshot = messagesRef.current.slice();
+    const composerSnapshot = {
+      value: chatInputRef.current?.getCurrentValue() ?? '',
+      images: chatInputRef.current?.getImages() ?? [],
+    };
+    const rewindSessionId = sessionIdRef.current;
+    const isCodexRewind = currentRuntime === 'codex';
 
     // 1. 乐观更新 UI（瞬时反馈）
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
@@ -4535,14 +4567,11 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       const idx = prev.findIndex(m => m.id === messageId);
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    if (content) {
-      chatInputRef.current?.setValue(content);
-    }
+    chatInputRef.current?.setValue(content);
     const imageAttachments = attachments?.filter(a =>
       a.isImage || a.mimeType?.startsWith('image/')
     );
-    if (imageAttachments?.length) {
-      const restoredImages: ImageAttachment[] = imageAttachments.map(a => ({
+    const restoredImages: ImageAttachment[] = imageAttachments?.map(a => ({
         id: a.id,
         file: new File([], a.name, { type: a.mimeType }),
         preview: a.previewUrl || '',
@@ -4551,54 +4580,101 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         mimeType: a.mimeType,
         sizeBytes: a.size,
         relativePath: a.relativePath || a.savedPath,
-      }));
-      chatInputRef.current?.setImages(restoredImages);
-    }
+      })) ?? [];
+    chatInputRef.current?.setImages(restoredImages);
 
     // 2. 后端回溯（rewindPromise 会阻塞 enqueueUserMessage 防止竞态）
     //    成功：丢弃快照；失败：从快照回滚 UI
-    track('session_rewind', {});
     setIsLoading(true);
     setRewindStatus('rewinding');
     apiPost('/chat/rewind', { userMessageId: messageId })
       .then(res => {
+        if (sessionIdRef.current !== rewindSessionId) return;
         const r = res as RewindResponse | undefined;
+        track('session_rewind', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: r?.errorCode ?? (r?.success === false ? 'failed' : 'success'),
+        });
         if (r && !r.success) {
           // 后端明确返回失败 → 回滚 UI
           setMessages(snapshot);
-          chatInputRef.current?.setValue('');
-          chatInputRef.current?.setImages([]);
-          toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
+          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setImages(composerSnapshot.images);
+          const error = r.errorCode
+            ? t(`shell.toasts.conversationError.${r.errorCode}`)
+            : r.error || t('shell.toasts.unknownError');
+          toastRef.current.error(t('shell.toasts.rewindFailedWithError', { error }));
         } else {
-          warnRewindFileOutcome(r);
+          if (isCodexRewind || r?.rewindScope === 'conversation-only') {
+            if (r?.errorCode === 'restore_failed') {
+              toastRef.current.warning(t('shell.toasts.codexRestoreFailed'));
+            } else {
+              toastRef.current.success(t('shell.toasts.codexRewindSuccess'));
+            }
+          } else {
+            warnRewindFileOutcome(r);
+          }
         }
       })
-      .catch(err => {
-        // 网络错误或异常 → 回滚 UI
+      .catch(async err => {
+        if (sessionIdRef.current !== rewindSessionId) return;
         console.error('[Chat] Rewind failed:', err);
-        setMessages(snapshot);
-        chatInputRef.current?.setValue('');
-        chatInputRef.current?.setImages([]);
-        toastRef.current.error(t('shell.toasts.rewindFailedRetry'));
+        const structured = err && typeof err === 'object'
+          ? err as { status?: unknown; errorCode?: unknown }
+          : null;
+        const errorCode = typeof structured?.errorCode === 'string' ? structured.errorCode : undefined;
+        track('session_rewind', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: errorCode ?? (typeof structured?.status === 'number' ? 'failed' : 'transport_error'),
+        });
+
+        // A structured HTTP rejection proves the server did not commit. A
+        // transport failure is ambiguous, so Codex reloads SessionStore
+        // authority instead of restoring a possibly stale pre-rewind tail.
+        const reconciliation = isCodexRewind
+          && typeof structured?.status !== 'number'
+          ? await retryCurrentSessionRestore(messageId)
+          : null;
+        if (sessionIdRef.current !== rewindSessionId) return;
+        const transportOutcome = classifyCodexRewindTransportOutcome(reconciliation);
+        const recovery = projectCodexRewindRecovery(transportOutcome);
+        if (recovery.restoreMessageSnapshot) {
+          setMessages(snapshot);
+        }
+        if (recovery.restoreComposerSnapshot) {
+          chatInputRef.current?.setValue(composerSnapshot.value);
+          chatInputRef.current?.setImages(composerSnapshot.images);
+        }
+        if (transportOutcome === 'committed') {
+          toastRef.current.warning(t('shell.toasts.codexRewindReconciled'));
+        } else if (errorCode) {
+          toastRef.current.error(t('shell.toasts.rewindFailedWithError', {
+            error: t(`shell.toasts.conversationError.${errorCode}`),
+          }));
+        } else {
+          toastRef.current.error(t('shell.toasts.rewindFailedRetry'));
+        }
       })
       .finally(() => {
-        setRewindStatus(null);
-        setIsLoading(false);
+        conversationOperationPendingRef.current = false;
+        if (sessionIdRef.current === rewindSessionId) {
+          setRewindStatus(null);
+          setIsLoading(false);
+        }
       });
-  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome]);
+  }, [rewindTarget, apiPost, setMessages, setIsLoading, pauseAutoScroll, t, warnRewindFileOutcome, currentRuntime, currentRuntimeSource, retryCurrentSessionRestore]);
 
   // Retry = rewind to before user message + auto-resend
   // Rewind to before the given user message and re-send its content.
   // Shared by per-assistant retry (handleRetry) and banner-level retry
   // (handleRetryLastUserMessage). Uses refs throughout so deps stay stable.
   //
-  // For external runtimes (Codex / Claude Code / Gemini), /chat/rewind is
-  // unsupported — there's no SDK resume anchor or file checkpoint to roll
-  // back. Issue #192 used to surface "Rewind is not supported for external
-  // runtimes" as a 400 here, turning a recoverable upstream capacity error
-  // into an additional app error. Instead we POST /chat/external-retry which
-  // truncates the failed user turn from allSessionMessages and persists the
-  // truncation; the auto-resend below then becomes the new user turn.
+  // Retry remains a separate operation from Codex historical Rewind. Every
+  // external runtime uses /chat/external-retry here: it removes only the
+  // failed tail user turn from allSessionMessages, persists that truncation,
+  // and lets the auto-resend below become the replacement user turn.
   const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
     const content = typeof userMsg.content === 'string' ? userMsg.content : '';
     const attachments = userMsg.attachments;
@@ -4694,34 +4770,73 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   }, []);
 
   const handleForkConfirm = useCallback(() => {
-    if (!forkTarget) return;
+    if (!forkTarget || forkPending || conversationOperationPendingRef.current) return;
+    conversationOperationPendingRef.current = true;
     const messageId = forkTarget;
     setForkTarget(null);
+    setForkPending(true);
 
-    track('session_fork', {});
     apiPost('/sessions/fork', { messageId })
       .then(async res => {
-        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string } | undefined;
+        const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string } | undefined;
+        track('session_fork', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
+        });
         if (r?.success && r.newSessionId && r.agentDir) {
+          const forkSessionId = r.newSessionId;
+          const discardUnopenedFork = async () => {
+            const removed = await deleteUnopenedForkSession(forkSessionId);
+            if (removed && currentRuntime === 'codex') {
+              console.error(
+                `[chat] Codex conversation branch orphan sessionId=${forkSessionId}`
+                  + ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}`
+                  + ' reason=fork_tab_open_failed orphan=true',
+              );
+            }
+          };
           if (!onForkSession) {
-            await deleteUnopenedForkSession(r.newSessionId);
+            await discardUnopenedFork();
             toastRef.current.error(t('shell.toasts.forkOpenFailed'));
             return;
           }
-          const opened = await onForkSession(r.newSessionId, r.agentDir, r.title || 'Fork');
+          const opened = await onForkSession(forkSessionId, r.agentDir, r.title || 'Fork');
           if (!opened) {
-            await deleteUnopenedForkSession(r.newSessionId);
+            await discardUnopenedFork();
             toastRef.current.error(t('shell.toasts.forkOpenFailed'));
           }
         } else {
-          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error: r?.error || t('shell.toasts.unknownError') }));
+          const error = r?.errorCode
+            ? t(`shell.toasts.conversationError.${r.errorCode}`)
+            : r?.error || t('shell.toasts.unknownError');
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
         }
       })
       .catch(err => {
         console.error('[Chat] Fork failed:', err);
-        toastRef.current.error(t('shell.toasts.forkFailed'));
+        const errorCode = err && typeof err === 'object' && 'errorCode' in err
+          && typeof err.errorCode === 'string'
+          ? err.errorCode
+          : undefined;
+        track('session_fork', {
+          runtime: currentRuntime,
+          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          result: errorCode ?? 'transport_error',
+        });
+        if (errorCode) {
+          toastRef.current.error(t('shell.toasts.forkFailedWithError', {
+            error: t(`shell.toasts.conversationError.${errorCode}`),
+          }));
+        } else {
+          toastRef.current.error(t('shell.toasts.forkFailed'));
+        }
+      })
+      .finally(() => {
+        conversationOperationPendingRef.current = false;
+        setForkPending(false);
       });
-  }, [forkTarget, apiPost, onForkSession, deleteUnopenedForkSession, t]);
+  }, [forkTarget, forkPending, apiPost, onForkSession, deleteUnopenedForkSession, t, currentRuntime, currentRuntimeSource]);
 
   const handleSelectSession = useCallback((
     id: string,
@@ -5163,9 +5278,29 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
               onDismissSystemNotice={handleDismissSystemNotice}
               isStreaming={isLoading || sessionState === 'running' || sessionState === 'starting'}
               sessionState={sessionState}
-              onRewind={isExternalRuntime ? undefined : handleRewind}
+              onRewind={isExternalRuntime
+                ? (codexConversationBranchSupported
+                  && !isLoading
+                  && sessionState === 'idle'
+                  && queuedMessages.length === 0
+                  && !forkPending
+                  && !rewindStatus
+                    ? handleRewind
+                    : undefined)
+                : handleRewind}
               onRetry={handleRetry}
-              onFork={isExternalRuntime ? undefined : handleFork}
+              onFork={isExternalRuntime
+                ? (codexConversationBranchSupported
+                  && !isLoading
+                  && sessionState === 'idle'
+                  && queuedMessages.length === 0
+                  && !forkPending
+                  && !rewindStatus
+                    ? handleFork
+                    : undefined)
+                : handleFork}
+              conversationOperations={currentRuntime === 'codex' ? 'codex' : 'builtin'}
+              rewindableUserMessageIds={rewindableUserMessageIds}
               bottomSpacerPx={inputOverlayHeight}
             />
 
@@ -5723,9 +5858,11 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       {/* Time Rewind Confirm Dialog */}
       {rewindTarget && (
         <ConfirmDialog
-          title={t('shell.dialogs.rewind.title')}
-          message={t('shell.dialogs.rewind.message')}
-          confirmText={t('shell.dialogs.rewind.confirm')}
+          title={t(currentRuntime === 'codex' ? 'shell.dialogs.codexRewind.title' : 'shell.dialogs.rewind.title')}
+          message={t(currentRuntime === 'codex'
+            ? (rewindTarget.replacesDraft ? 'shell.dialogs.codexRewind.messageWithDraft' : 'shell.dialogs.codexRewind.message')
+            : 'shell.dialogs.rewind.message')}
+          confirmText={t(currentRuntime === 'codex' ? 'shell.dialogs.codexRewind.confirm' : 'shell.dialogs.rewind.confirm')}
           cancelText={t('shell.common.cancel')}
           confirmVariant="danger"
           onConfirm={handleRewindConfirm}

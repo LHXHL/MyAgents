@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../SessionStore', () => ({
   getSessionMetadata: vi.fn(() => mocks.metadata),
   getSessionData: vi.fn(() => mocks.data),
+  resolvePendingConversationMutation: vi.fn(async () => ({
+    success: true,
+    metadata: mocks.metadata,
+    messages: mocks.data?.messages ?? [],
+  })),
   saveSessionMetadata: vi.fn(),
   saveSessionMessages: vi.fn(),
   updateSessionMetadata: vi.fn(),
@@ -24,7 +29,7 @@ import {
 const originalRuntime = process.env.MYAGENTS_RUNTIME;
 
 describe('external runtime config snapshot guard', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     process.env.MYAGENTS_RUNTIME = 'codex';
     mocks.data = { messages: [] };
@@ -37,7 +42,7 @@ describe('external runtime config snapshot guard', () => {
       permissionMode: 'full-auto',
       reasoningEffort: 'high',
     };
-    restoreExternalSessionState('snapshot-session', '/workspace', { type: 'desktop' });
+    await restoreExternalSessionState('snapshot-session', '/workspace', { type: 'desktop' });
   });
 
   afterEach(() => {

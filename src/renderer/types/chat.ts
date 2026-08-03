@@ -195,6 +195,10 @@ export interface Message {
   content: string | ContentBlock[];
   timestamp: Date;
   sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
+  runtimeTurnAnchor?: {
+    turnId: string;
+    rootUserMessageId: string;
+  };
   attachments?: MessageAttachment[];
   /** Message source metadata (IM integration) */
   metadata?: MessageMetadata;

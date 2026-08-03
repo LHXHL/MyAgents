@@ -463,6 +463,23 @@ stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SD
 而没有恢复的文件数。对话截断仍可成功，但该计数必须沿既有 `/chat/rewind` 返回契约
 传到 Chat warning，不能把部分文件回溯展示成完整成功；文件路径不进入通知或日志。
 
+### Codex root turn 锚点与可恢复 Rewind（0.4.5）
+
+Builtin 的 `sdkUuid` 和 Codex 的 native turn id 是两套独立 identity。Codex 成功 root terminal assistant 额外持久化：
+
+```typescript
+runtimeTurnAnchor: {
+  turnId: string;
+  rootUserMessageId: string;
+}
+```
+
+`turnId` 由 Codex `turn/start` response 持有，`rootUserMessageId` 是同次 admission 的 MyAgents user row id。失败、中断、child turn、steer 追加和没有精确 admission 的历史消息都不写 anchor。Renderer 只在 exact anchor 存在时展示 Codex Rewind/Fork；服务器仍重新验证 transcript，不能把 UI 门控当 authority。
+
+Codex Rewind 同时改变 JSONL transcript 与 `SessionMetadata.runtimeSessionId`。SessionStore 以 metadata 中单一、bounded 的 `pendingConversationMutation:{schemaVersion:1,kind:'codex-rewind',sourceRuntimeSessionId,replacementRuntimeSessionId,sourceMessageCount,targetMessageCount}` 关闭两文件 crash window：先在既有 per-Session lock 内写 intent，随后同目录 temp + rename 截断 JSONL，最后替换/清除 native binding、清 intent、清 runtime usage/context 并重算 stats/preview。恢复只需要这两个 count 与 source/replacement binding；不持久化恢复器不消费的 message id 或时间字段。恢复时只接受 source count（保留 source、清 intent）或 target count（完成 replacement）；其它 count 或 source binding 不匹配保留证据并拒绝 Runtime 启动。该机制不是通用事务层，不增加 journal 文件、数据库或 renderer 补偿状态。
+
+第一 native Turn 之前的 rewind 以缺失 `runtimeSessionId` 表示，Codex restore 不得回退使用 product Session id；只有 Claude Code legacy history 保留该 fallback。该状态不执行 fresh prewarm，避免持久化不可跨进程 resume 的空 thread；下一条消息由 replacement Sidecar 走正常 fresh-start并回填真正 materialize 的 thread id。存在 native replacement 时，local restore 完成后异步复用既有 prewarm resume；失败不改变 transcript/binding authority。Codex Rewind 只回溯对话上下文，工作区文件保持不变。
+
 ### reloadAnchor：冷加载后的 Rewind 对齐
 
 Rewind 会立即截断 MyAgents store；SDK 侧只能等下一次 `query({ resume,
@@ -525,6 +542,10 @@ interface SessionMessage {
     usage?: MessageUsage;     // 仅 assistant 消息
     toolCount?: number;
     durationMs?: number;
+    runtimeTurnAnchor?: {       // 仅成功的 Codex root terminal assistant
+        turnId: string;
+        rootUserMessageId: string;
+    };
 }
 ```
 

@@ -346,7 +346,19 @@ export type CapabilityOperationResult = {
   skippedLinks?: number;
   /** Outcome of the independent workspace checkpoint restoration during rewind. */
   fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
+  errorCode?: ConversationOperationErrorCode;
+  rewindScope?: 'conversation-only';
 };
+
+export type ConversationOperationErrorCode =
+  | 'unsupported_runtime'
+  | 'codex_update_required'
+  | 'session_busy'
+  | 'anchor_unavailable'
+  | 'native_fork_failed'
+  | 'persistence_failed'
+  | 'storage_consistency_error'
+  | 'restore_failed';
 
 export interface SessionEngine {
   kind: SessionEngineKind;

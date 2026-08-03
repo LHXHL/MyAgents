@@ -201,4 +201,36 @@ describe('external transcript persistence owner', () => {
       lastActiveAt: terminalAt,
     });
   });
+
+  it('persists the exact root runtime Turn anchor only on the terminal assistant row', async () => {
+    setExternalSessionMessages('session-a', [message('user-root')]);
+    vi.mocked(saveSessionMessages).mockResolvedValueOnce(okSave(2));
+
+    const result = await appendAndPersistExternalAssistantTurn({
+      sessionId: 'session-a',
+      content: JSON.stringify([{ type: 'text', text: 'done' }]),
+      usage: null,
+      toolCount: 0,
+      contextUsage: null,
+      runtimeTurnAnchor: {
+        turnId: 'turn-native-1',
+        rootUserMessageId: 'user-root',
+      },
+    });
+
+    const snapshot = getExternalSessionMessagesSnapshot();
+    const persistedAssistant = snapshot[1];
+    expect(result.assistantMessageId).toBe(persistedAssistant?.id);
+    expect(snapshot[0]).not.toHaveProperty('runtimeTurnAnchor');
+    expect(snapshot).toEqual([
+      expect.objectContaining({ id: 'user-root' }),
+      expect.objectContaining({
+        role: 'assistant',
+        runtimeTurnAnchor: {
+          turnId: 'turn-native-1',
+          rootUserMessageId: 'user-root',
+        },
+      }),
+    ]);
+  });
 });

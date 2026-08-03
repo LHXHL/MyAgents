@@ -852,6 +852,13 @@ transition: opacity var(--duration-slow),
 对齐: 右侧（或左侧皆可，但需与 AI 区分）
 ```
 
+#### 对话 Rewind / Fork 操作
+
+- Builtin 沿用 SDK anchor 行为；Codex 仅在当前版本支持且消息已持久化 exact root-turn anchor 时显示入口，不能给 legacy/失败/进行中消息提供看似可用的按钮。
+- Rewind 入口位于 user bubble，确认弹窗必须明确“只回溯对话，工作区文件不变”；输入区已有草稿或图片时还要明确目标消息会替换草稿。确认后立即乐观截断并把目标文本/图片放回输入区，失败则完整恢复操作前的消息和 composer。
+- Fork 入口位于成功 assistant action row，成功沿用新 Tab 打开体验，不额外弹成功 toast。请求期间禁用重复提交。
+- Codex Rewind 成功使用轻量成功反馈；native restore 暂时失败时说明回溯已生效、可重开继续，不能误报为回溯失败。分类错误用用户可理解的 `busy / anchor unavailable / update required / native fork / persistence / restore` 文案。
+
 ### 10.3 工具调用块 (Tool Call Blocks)
 
 工具调用是 AI Agent 的核心交互，需要清晰但不喧宾夺主。

@@ -8790,7 +8790,7 @@ description: >
             emitDeferredPhaseDone('sdk-init');
 
             if (initialSessionId) {
-              if (restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
+              if (await restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
                 currentInitPhase = 'external-runtime-restore';
                 setDeferredInitPhase(currentInitPhase);
                 initPhaseStarted = nowMs();

@@ -57,6 +57,11 @@ export interface LoadOlderMessagesOptions {
     beforePrepend?: (visibleFreshCount: number) => void;
 }
 
+export interface CurrentSessionRestoreResult {
+    restored: boolean;
+    targetMessagePresent: boolean | null;
+}
+
 /**
  * Tab state - all the state that belongs to a single Tab
  */
@@ -201,7 +206,7 @@ export interface TabContextValue extends TabState {
     // Chat actions
     sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute) => Promise<boolean>;
     stopResponse: () => Promise<{ success: boolean; alreadyStopped: boolean }>;
-    retryCurrentSessionRestore: () => Promise<boolean>;
+    retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
     loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
     resetSession: () => Promise<boolean>;
@@ -302,7 +307,7 @@ const defaultContextValue: TabContextValue = {
     setSessionMeta: () => { },
     sendMessage: async () => false,
     stopResponse: async () => ({ success: false, alreadyStopped: true }),
-    retryCurrentSessionRestore: async () => false,
+    retryCurrentSessionRestore: async () => ({ restored: false, targetMessagePresent: null }),
     loadOlderMessages: async () => { },
     resetSession: async () => false,
     adoptMigratedSession: async () => false,

@@ -40,7 +40,7 @@ import type { PermissionRequest } from '@/components/PermissionPrompt';
 import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
-import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
+import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type CurrentSessionRestoreResult, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
 import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit, reconcileLiveRecoveryHistory, normalizeSessionMessageContent, isRestoreActionBlocked } from './sessionRestoreGuards';
 import {
     classifySessionActivity,
@@ -185,6 +185,7 @@ type WireSessionMessage = {
     content: string | ContentBlock[];
     timestamp: string;
     sdkUuid?: string;
+    runtimeTurnAnchor?: Message['runtimeTurnAnchor'];
     metadata?: Message['metadata'];
     attachments?: WireMessageAttachment[];
     usage?: WireMessageUsage;
@@ -209,6 +210,7 @@ type AssistantCompletionPatch = {
     usage?: Message['usage'];
     toolCount?: number;
     durationMs?: number;
+    runtimeTurnAnchor?: Message['runtimeTurnAnchor'];
 };
 
 function applyAssistantCompletionPatch(message: Message, patch: AssistantCompletionPatch | undefined): Message {
@@ -218,7 +220,9 @@ function applyAssistantCompletionPatch(message: Message, patch: AssistantComplet
     const needsUsage = patch.usage && message.usage !== patch.usage;
     const needsToolCount = patch.toolCount !== undefined && message.toolCount !== patch.toolCount;
     const needsDuration = patch.durationMs !== undefined && message.durationMs !== patch.durationMs;
-    if (!needsUuid && !needsId && !needsUsage && !needsToolCount && !needsDuration) return message;
+    const needsRuntimeTurnAnchor = patch.runtimeTurnAnchor !== undefined
+        && message.runtimeTurnAnchor !== patch.runtimeTurnAnchor;
+    if (!needsUuid && !needsId && !needsUsage && !needsToolCount && !needsDuration && !needsRuntimeTurnAnchor) return message;
     return {
         ...message,
         ...(needsId ? { id: patch.realId } : {}),
@@ -226,6 +230,7 @@ function applyAssistantCompletionPatch(message: Message, patch: AssistantComplet
         ...(patch.usage ? { usage: patch.usage } : {}),
         ...(patch.toolCount !== undefined ? { toolCount: patch.toolCount } : {}),
         ...(patch.durationMs !== undefined ? { durationMs: patch.durationMs } : {}),
+        ...(patch.runtimeTurnAnchor ? { runtimeTurnAnchor: patch.runtimeTurnAnchor } : {}),
     };
 }
 
@@ -254,6 +259,7 @@ function wireAssistantToStreamingMessage(message: WireSessionMessage | null | un
         content: normalizeSessionMessageContent(message.content),
         timestamp: new Date(message.timestamp),
         sdkUuid: message.sdkUuid,
+        runtimeTurnAnchor: message.runtimeTurnAnchor,
         ...getAssistantTurnMetrics(message),
     };
 }
@@ -285,6 +291,7 @@ function wireSessionMessageToMessage(message: WireSessionMessage): Message {
         content: normalizeSessionMessageContent(message.content),
         timestamp: new Date(message.timestamp),
         sdkUuid: message.sdkUuid,
+        runtimeTurnAnchor: message.runtimeTurnAnchor,
         attachments: normalizeWireAttachments(message.attachments),
         metadata: message.metadata,
         ...getAssistantTurnMetrics(message),
@@ -418,10 +425,18 @@ interface TabProviderProps {
 /**
  * Handle API response - check for errors and throw if not ok
  */
-async function handleApiResponse<T>(response: Response): Promise<T> {
+export async function handleApiResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error((errorData as { error?: string }).error || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({})) as {
+            error?: unknown;
+            errorCode?: unknown;
+        };
+        const error = new Error(
+            typeof errorData.error === 'string' ? errorData.error : `HTTP ${response.status}`,
+        ) as Error & { status: number; errorCode?: string };
+        error.status = response.status;
+        if (typeof errorData.errorCode === 'string') error.errorCode = errorData.errorCode;
+        throw error;
     }
     return (await response.json()) as T;
 }
@@ -2098,6 +2113,7 @@ export default function TabProvider({
                     content: replayContent,
                     timestamp: new Date(msg.timestamp),
                     sdkUuid: msg.sdkUuid,
+                    runtimeTurnAnchor: msg.runtimeTurnAnchor,
                     attachments,
                     metadata: msg.metadata,
                     ...getAssistantTurnMetrics(msg),
@@ -2754,6 +2770,7 @@ export default function TabProvider({
                     assistant_sdk_uuid?: string;
                     assistant_message_id?: string;
                     compact_result?: 'success';
+                    runtime_turn_anchor?: Message['runtimeTurnAnchor'];
                 } | null;
                 const inputTokens = normalizeFiniteNumber(completePayload?.input_tokens);
                 const outputTokens = normalizeFiniteNumber(completePayload?.output_tokens);
@@ -2780,13 +2797,15 @@ export default function TabProvider({
                     completePayload?.assistant_message_id ||
                     completedUsage ||
                     completedToolCount !== undefined ||
-                    completedDurationMs !== undefined
+                    completedDurationMs !== undefined ||
+                    completePayload?.runtime_turn_anchor
                         ? {
                             sdkUuid: completePayload?.assistant_sdk_uuid,
                             realId: completePayload?.assistant_message_id,
                             usage: completedUsage,
                             toolCount: completedToolCount,
                             durationMs: completedDurationMs,
+                            runtimeTurnAnchor: completePayload?.runtime_turn_anchor,
                         }
                         : undefined;
                 // Pattern 3 §3.2.2 — drain all pending RAF-batched tool deltas
@@ -4981,10 +5000,12 @@ export default function TabProvider({
         void restorePersistedSession(sessionId, { mode: 'initial' });
     }, [sessionId, isConnected, tabId, restorePersistedSession, armSseAttachFallback, clearSseAttachFallback]);
 
-    const retryCurrentSessionRestore = useCallback((): Promise<boolean> => {
+    const retryCurrentSessionRestore = useCallback(async (
+        targetMessageId?: string,
+    ): Promise<CurrentSessionRestoreResult> => {
         const targetSessionId = currentSessionIdRef.current;
         if (!targetSessionId || isPendingSessionId(targetSessionId)) {
-            return Promise.resolve(false);
+            return { restored: false, targetMessagePresent: null };
         }
         const restore = persistedRestoreLifecycleRef.current;
         const mode: PersistedRestoreMode = restore.phase === 'ready'
@@ -4995,11 +5016,45 @@ export default function TabProvider({
             sseRef.current?.getConnectionGeneration() ?? 0,
             mode,
         );
-        return restorePersistedSession(targetSessionId, {
+        const restored = await restorePersistedSession(targetSessionId, {
             restoreToken: fence.restoreToken,
             mode,
         });
-    }, [beginPersistedRestore, restorePersistedSession]);
+        if (!restored || !targetMessageId) {
+            return { restored, targetMessagePresent: null };
+        }
+        if (historyMessagesRef.current.some(message => message.id === targetMessageId)) {
+            return { restored: true, targetMessagePresent: true };
+        }
+
+        let before = historyMessagesRef.current[0]?.id;
+        let hasOlder = hasMoreBeforeRef.current;
+        try {
+            while (hasOlder && before) {
+                const response = await apiGetJson<{
+                    success: boolean;
+                    session?: {
+                        messages: WireSessionMessage[];
+                        hasMoreBefore?: boolean;
+                    };
+                }>(`/sessions/${encodeURIComponent(targetSessionId)}?limit=${OLDER_PAGE_SIZE}&before=${encodeURIComponent(before)}`);
+                if (currentSessionIdRef.current !== targetSessionId || !response.success || !response.session) {
+                    return { restored: true, targetMessagePresent: null };
+                }
+                if (response.session.messages.some(message => message.id === targetMessageId)) {
+                    return { restored: true, targetMessagePresent: true };
+                }
+                hasOlder = response.session.hasMoreBefore ?? false;
+                before = response.session.messages[0]?.id;
+            }
+        } catch {
+            return { restored: true, targetMessagePresent: null };
+        }
+        return {
+            restored: true,
+            targetMessagePresent: hasOlder ? null : false,
+        };
+    }, [apiGetJson, beginPersistedRestore, restorePersistedSession]);
 
     // Cancel a queued message — returns the original text (for restoring to input)
     const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {

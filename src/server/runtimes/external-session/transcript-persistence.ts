@@ -1,4 +1,4 @@
-import type { MessageUsage, SessionMessage } from '../../types/session';
+import type { MessageUsage, RuntimeTurnAnchor, SessionMessage } from '../../types/session';
 import {
   saveSessionMessages,
   updateSessionMetadata,
@@ -133,6 +133,14 @@ function assertExternalSessionMessagesPersisted(
   }
 }
 
+export async function persistExternalForkTranscript(
+  sessionId: string,
+  messages: SessionMessage[],
+): Promise<void> {
+  const saveResult = await saveSessionMessages(sessionId, messages, { allowShrink: false });
+  assertExternalSessionMessagesPersisted(saveResult, 'Fork transcript persist failed');
+}
+
 export async function persistExternalUserMessageAppend(
   sessionId: string,
   _userMessageId: string,
@@ -217,6 +225,7 @@ export interface ExternalAssistantTurnPersistInput {
   toolCount: number;
   contextUsage: ContextUsage | null;
   lastActiveAt?: string;
+  runtimeTurnAnchor?: RuntimeTurnAnchor;
 }
 
 export interface ExternalAssistantTurnPersistResult {
@@ -224,27 +233,36 @@ export interface ExternalAssistantTurnPersistResult {
   failureReason?: string;
   messageCount: number;
   appendedAssistant: boolean;
+  assistantMessageId?: string;
 }
 
 export async function appendAndPersistExternalAssistantTurn(
   input: ExternalAssistantTurnPersistInput,
 ): Promise<ExternalAssistantTurnPersistResult> {
   let appendedAssistant = false;
+  let assistantMessageId: string | undefined;
   if (input.content) {
+    assistantMessageId = `assistant-${Date.now()}`;
     allSessionMessages.push({
-      id: `assistant-${Date.now()}`,
+      id: assistantMessageId,
       role: 'assistant',
       content: input.content,
       timestamp: new Date().toISOString(),
       durationMs: input.durationMs,
       usage: input.usage || undefined,
       toolCount: input.toolCount || undefined,
+      runtimeTurnAnchor: input.runtimeTurnAnchor,
     });
     appendedAssistant = true;
   }
 
   if (allSessionMessages.length === 0 || !input.sessionId) {
-    return { ok: true, messageCount: allSessionMessages.length, appendedAssistant };
+    return {
+      ok: true,
+      messageCount: allSessionMessages.length,
+      appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+    };
   }
 
   try {
@@ -262,6 +280,7 @@ export async function appendAndPersistExternalAssistantTurn(
         failureReason: describeSaveSessionMessagesFailure(saveResult),
         messageCount: allSessionMessages.length,
         appendedAssistant,
+        ...(assistantMessageId ? { assistantMessageId } : {}),
       };
     }
 
@@ -273,13 +292,19 @@ export async function appendAndPersistExternalAssistantTurn(
       ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),
       ...(input.lastActiveAt ? { lastActiveAt: input.lastActiveAt } : {}),
     });
-    return { ok: true, messageCount: allSessionMessages.length, appendedAssistant };
+    return {
+      ok: true,
+      messageCount: allSessionMessages.length,
+      appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
       failureReason: err instanceof Error ? err.message : String(err),
       messageCount: allSessionMessages.length,
       appendedAssistant,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
     };
   }
 }

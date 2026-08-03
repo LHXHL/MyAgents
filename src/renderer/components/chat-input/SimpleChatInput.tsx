@@ -801,6 +801,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     setImages,
     focus: () => textareaRef.current?.focus(),
     getCurrentValue: () => inputValueRef.current,
+    getImages: () => [...images],
     clearWorkspaceBoundDraft: () => {
       // Match `@<path>` tokens that target the workspace-managed `myagents_files/`
       // upload directory. Plain typed `@something` (not workspace-tied) survives.

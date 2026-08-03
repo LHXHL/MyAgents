@@ -234,9 +234,25 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `initialize` | 握手，交换 capability |
 | `thread/start` | 创建新 thread |
 | `thread/resume` | 恢复已有 thread |
+| `thread/read` | 读取完整、有序的 native turns；仅 Rewind 的 before-turn 边界使用 |
+| `thread/fork` | 通过 `lastTurnId` 创建独立 native branch |
+| `thread/unsubscribe` | 解除 source app-server 对刚创建 branch 的临时订阅 |
 | `turn/start` | 发送用户消息到 thread |
 | `turn/steer` | 追加用户输入到当前 in-flight turn（Codex 实时响应路径） |
 | `turn/interrupt` | 中断当前 turn |
+
+### 对话 Rewind / Fork（0.4.5）
+
+Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；System CLI 仅在官方稳定版本 `>= 0.143.0` 开启，Managed Codex 由锁定版本保证。Claude Code / Gemini 不共享这项 capability。
+
+- 每次 root `turn/start` 都传入 MyAgents user message id 作为 `clientUserMessageId`。响应的 native turn id 与该 product id 在本次 admission 内核对；只有成功 terminal assistant 持久化 `runtimeTurnAnchor:{turnId,rootUserMessageId}`。通知和 RPC response 可任意先后，terminal 必须等 admission id 确认后再落盘。
+- External transcript persistence 同时创建 assistant 的 canonical product message id；成功落盘后的 `chat:message-complete` 必须回传同一个 `assistant_message_id`，让普通 live stream 与 reconnect live snapshot 在暴露 transcript action 前归一到 SessionStore identity。Renderer 的 provisional streaming id 只属于展示生命周期，不能用于 Rewind/Fork 等持久化操作寻址。
+- Fork assistant 使用 `thread/fork({threadId,lastTurnId:anchor.turnId})`。Rewind user 先用 `thread/read({threadId,includeTurns:true})` 精确找到对应 turn：有前一 turn 时 fork through previous；目标是第一 turn 时返回 `fresh-thread`，不预建不可跨进程恢复的空 thread。
+- `thread/fork` 会让当前 app-server 临时订阅新 thread，因此交回 product 层前必须 `thread/unsubscribe`。失败则停止 connection；无法确认终止时不提交产品状态。
+- native branch 成功后，产品 transcript 仍以 SessionStore 为 authority，不从 Codex rollout 反向重建富消息。Rewind 只截断对话且保留同一个 product Session id；Fork 复制截止目标 assistant 的 transcript prefix 到新的 product Session。若来源是尚未带 `configSnapshotAt` 的 legacy Session，新分支在创建时以来源当下有效的 Agent/runtime 配置冻结 owned snapshot，来源 Session 本身保持不变。
+- 一个 Session Sidecar 操作结束时仍只持有一个 root thread。Rewind 提交后停止旧 process 并按 replacement binding restore；有 native replacement 时在 mutation lease 释放后异步复用 `prewarmExternalSession()` resume，新进程启动失败不回滚 durable Rewind，下一条消息仍走既有 resume。首 turn rewind 清除 binding且不预热不可恢复的空 thread，让下一条消息走既有 fresh-start。旧 process 无法确认停止时重启该 1:1 Sidecar，不能继续向 source thread 发送。
+
+不得使用 experimental `thread/rollback`、本地 previous-turn mirror、`beforeTurnId` 猜测或 Renderer 直连 app-server。`CodexRuntime` 是 native RPC/subscription owner，`external-session` 是操作编排 owner，SessionStore 是 transcript/metadata owner。
 
 ### `thread/start` 参数 Schema（Codex v0.111.0）
 
@@ -649,6 +665,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
+Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer 的 mount key 不会重新触发上述 POST。因此 durable replacement binding restore 后由 external-session 编排 owner异步复用同一个 `prewarmExternalSession()`；调用发生在 conversation mutation lease 释放后，并在执行前核对当前 lifecycle Session 与 replacement binding，避免迟到预热覆盖后继 Session。第一 Turn Rewind 不走这条优化，因为 fresh prewarm 会产生尚未 materialize、不可跨 app-server resume 的空 thread id；它保持无 binding，等待下一次真实 send fresh-start。
+
 **Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
@@ -804,7 +822,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 1. **服务端** (`agent-session.ts:initializeAgent`)：检测 `meta.runtime !== 'builtin'` → 设 `sessionRegistered=false` → 跳过 SDK resume（避免 "No conversation found" 崩溃）
 2. **前端** (`Chat.tsx`)：检测 `isCrossRuntimeSession` → 发消息时弹 ConfirmDialog → 用户可选择新开会话或留在当前页浏览历史
-3. **Fork/Rewind**：外部 Runtime session 不支持（前端隐藏按钮 + 服务端 400 守卫）
+3. **Fork/Rewind**：Codex 在能力版本满足且消息持有精确 root-turn anchor 时支持；Claude Code / Gemini 仍由前端隐藏并在服务端返回 unsupported
 
 ## Context 用量归一化（PRD 0.2.32）
 

@@ -32,11 +32,14 @@ import {
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionBusy,
+  tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
   respondExternalAskUserQuestion,
   respondExternalPermission,
   restoreExternalSessionState,
+  rewindExternalConversation,
+  forkExternalConversation,
   sendExternalMessage,
   setExternalModel,
   setExternalPermissionMode,
@@ -589,7 +592,10 @@ export function createExternalSessionEngine(): SessionEngine {
       // The runtime owner already exposes the exact restored-state predicate,
       // so only stale/new bindings need disk rehydration.
       if (!isExternalSessionStateRestoredFor(request.sessionId)) {
-        restoreExternalSessionState(request.sessionId, request.workspacePath, request.scenario);
+        const restored = await restoreExternalSessionState(request.sessionId, request.workspacePath, request.scenario);
+        if (!restored.success) {
+          return { success: false, code: 'session_bind_failed', status: 500, error: restored.error };
+        }
       }
 
       const runtime = getActiveRuntimeType();
@@ -906,7 +912,8 @@ export function createExternalSessionEngine(): SessionEngine {
               console.warn(`[session-engine] external materialize: failed to preserve runtimeSessionId for ${metadata.id}`);
             }
           }
-          restoreExternalSessionState(metadata.id, request.workspacePath, { type: 'desktop' });
+          const restored = await restoreExternalSessionState(metadata.id, request.workspacePath, { type: 'desktop' });
+          if (!restored.success) throw new Error(restored.error ?? 'External Session restore failed');
         },
       });
     },
@@ -927,20 +934,12 @@ export function createExternalSessionEngine(): SessionEngine {
       return respondExternalAskUserQuestion(requestId, answers);
     },
 
-    async rewindToUserMessage() {
-      return {
-        success: false,
-        status: 400,
-        error: 'Rewind is not supported for external runtimes (CC/Codex)',
-      };
+    rewindToUserMessage(userMessageId) {
+      return rewindExternalConversation(userMessageId);
     },
 
-    async forkAtAssistantMessage() {
-      return {
-        success: false,
-        status: 400,
-        error: 'Fork is not supported for external runtimes (CC/Codex)',
-      };
+    forkAtAssistantMessage(messageId) {
+      return forkExternalConversation(messageId);
     },
 
     async updateProviderEnv() {
@@ -961,34 +960,52 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async resetForNewDesktopSession(workspacePath) {
       await awaitExternalSessionStarting();
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
+      const lease = tryAcquireExternalSessionMutationLease();
+      if (!lease) {
+        return { success: false, error: 'Wait for the current Session operation to finish' };
       }
-      const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
-      broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
-      restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-      return { success: true, sessionId: newSessionId };
+      try {
+        if (hasExternalRuntimeProcess()) {
+          await stopExternalSession();
+        }
+        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
+        if (!restored.success) return { success: false, error: restored.error };
+        return { success: true, sessionId: newSessionId };
+      } finally {
+        lease.release();
+      }
     },
 
     async resetForNewImSession(workspacePath, options) {
       await awaitExternalSessionStarting();
-      const freeze = await freezeCurrentProductSessionMetadata({
-        workspacePath,
-        snapshotPatch: buildExternalFreezeSnapshotPatch(),
-        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-      });
-      if (!freeze.success) {
-        return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+      const lease = tryAcquireExternalSessionMutationLease();
+      if (!lease) {
+        return { success: false, error: 'Wait for the current Session operation to finish' };
       }
-      if (hasExternalRuntimeProcess()) {
-        await stopExternalSession();
+      try {
+        const freeze = await freezeCurrentProductSessionMetadata({
+          workspacePath,
+          snapshotPatch: buildExternalFreezeSnapshotPatch(),
+          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
+        });
+        if (!freeze.success) {
+          return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+        }
+        if (hasExternalRuntimeProcess()) {
+          await stopExternalSession();
+        }
+        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
+        await publishCurrentProductSessionMetadata(sessionId =>
+          createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
+        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
+        if (!restored.success) return { success: false, error: restored.error };
+        return { success: true, sessionId: newSessionId };
+      } finally {
+        lease.release();
       }
-      const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
-      await publishCurrentProductSessionMetadata(sessionId =>
-        createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
-      broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
-      restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-      return { success: true, sessionId: newSessionId };
     },
   };
 }

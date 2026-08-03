@@ -132,9 +132,10 @@ export async function prewarmExternalRuntimeAtSelector(options: {
   return { httpStatus: 200, body: { success: true, ...result } };
 }
 
-export function restoreInitialExternalSessionAtSelector(sessionId: string, workspacePath: string): boolean {
+export async function restoreInitialExternalSessionAtSelector(sessionId: string, workspacePath: string): Promise<boolean> {
   if (!shouldUseExternalRuntime()) return false;
-  restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+  const restored = await restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
+  if (!restored.success) throw new Error(restored.error ?? 'External Session restore failed');
   return true;
 }
 

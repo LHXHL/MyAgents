@@ -18,7 +18,7 @@ import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSyn
 import { homedir } from 'os';
 import { join } from 'path';
 
-import type { SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { PendingConversationMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
@@ -35,6 +35,7 @@ import { withFileLock } from './utils/file-lock';
 import { countNonEmptyJsonlLines } from './utils/jsonl-line-count';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { normalizeSessionRuntimeIdentity } from './utils/session-runtime-identity';
+import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 
 const MYAGENTS_DIR = join(homedir(), '.myagents');
 const SESSIONS_FILE = join(MYAGENTS_DIR, 'sessions.json');
@@ -449,6 +450,30 @@ function readMessagesFromJsonl(filePath: string): SessionMessage[] {
     } catch (error) {
         console.error('[SessionStore] Failed to read JSONL file:', error);
         return [];
+    }
+}
+
+function readSessionMessagesForMutation(sessionId: string): SessionMessage[] {
+    const jsonlPath = getSessionFilePath(sessionId);
+    if (existsSync(jsonlPath)) return readMessagesFromJsonl(jsonlPath);
+    if (existsSync(getLegacySessionFilePath(sessionId))) return migrateToJsonl(sessionId);
+    return [];
+}
+
+function atomicRewriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+    const filePath = getSessionFilePath(sessionId);
+    const tempPath = `${filePath}.rewind-${process.pid}.tmp`;
+    const content = messages.map(message => JSON.stringify(message)).join('\n')
+        + (messages.length > 0 ? '\n' : '');
+    try {
+        writeFileSync(tempPath, content, 'utf-8');
+        renameSync(tempPath, filePath);
+        lineCountCache.set(sessionId, messages.length);
+    } catch (error) {
+        try {
+            if (existsSync(tempPath)) unlinkSync(tempPath);
+        } catch { /* best-effort temp cleanup */ }
+        throw error;
     }
 }
 
@@ -1090,6 +1115,170 @@ export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionDa
         ...metadata,
         messages,
     };
+}
+
+export type ConversationMutationResult =
+    | { success: true; metadata: SessionMetadata; messages: SessionMessage[] }
+    | {
+        success: false;
+        reason: 'precondition_failed' | 'storage_consistency_error' | 'write_error';
+        error: string;
+    };
+
+function finalizeCodexRewindMetadata(
+    current: SessionMetadata,
+    intent: PendingConversationMutation,
+    messages: SessionMessage[],
+): SessionMetadata {
+    const { preview } = resolveLastVisibleTurnPreview(messages);
+    return {
+        ...current,
+        runtimeSessionId: intent.replacementRuntimeSessionId ?? undefined,
+        pendingConversationMutation: undefined,
+        runtimeUsageTotals: undefined,
+        lastContextUsage: undefined,
+        stats: calculateSessionStats(messages),
+        lastMessagePreview: preview,
+    };
+}
+
+async function resolvePendingConversationMutationLocked(
+    sessionId: string,
+): Promise<ConversationMutationResult> {
+    const messages = readSessionMessagesForMutation(sessionId);
+    return withSessionsLock(async () => {
+        const all = readSessionsIndexForWrite();
+        const index = all.findIndex(session => session.id === sessionId);
+        if (index < 0) {
+            return { success: false, reason: 'precondition_failed', error: 'Session metadata is missing' };
+        }
+        const current = all[index];
+        const intent = current.pendingConversationMutation;
+        if (!intent) return { success: true, metadata: current, messages };
+        if (intent.schemaVersion !== 1 || intent.kind !== 'codex-rewind') {
+            return { success: false, reason: 'storage_consistency_error', error: 'Unknown conversation mutation intent' };
+        }
+        if (current.runtimeSessionId !== intent.sourceRuntimeSessionId) {
+            return {
+                success: false,
+                reason: 'storage_consistency_error',
+                error: 'Conversation mutation source binding mismatch',
+            };
+        }
+
+        if (messages.length === intent.sourceMessageCount) {
+            const restored = { ...current, pendingConversationMutation: undefined };
+            all[index] = restored;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, metadata: restored, messages };
+        }
+        if (messages.length === intent.targetMessageCount) {
+            const completed = finalizeCodexRewindMetadata(current, intent, messages);
+            all[index] = completed;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, metadata: completed, messages };
+        }
+        return {
+            success: false,
+            reason: 'storage_consistency_error',
+            error: `Conversation mutation count mismatch: expected ${intent.sourceMessageCount} or ${intent.targetMessageCount}, found ${messages.length}`,
+        };
+    });
+}
+
+/** Resolve the bounded Codex rewind intent before a Session may resume or send. */
+export async function resolvePendingConversationMutation(
+    sessionId: string,
+): Promise<ConversationMutationResult> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(sessionId, () => resolvePendingConversationMutationLocked(sessionId));
+    } catch (error) {
+        return {
+            success: false,
+            reason: 'write_error',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
+/** Commit transcript truncation and native binding replacement under one recoverable intent. */
+export async function commitCodexConversationRewind(input: {
+    sessionId: string;
+    sourceRuntimeSessionId: string;
+    replacementRuntimeSessionId: string | null;
+    sourceMessages: SessionMessage[];
+    targetMessages: SessionMessage[];
+}): Promise<ConversationMutationResult> {
+    ensureStorageDir();
+    if (
+        input.targetMessages.length >= input.sourceMessages.length
+        || input.targetMessages.some((message, index) => message.id !== input.sourceMessages[index]?.id)
+    ) {
+        return { success: false, reason: 'precondition_failed', error: 'Rewind target is not a strict transcript prefix' };
+    }
+    const intent: PendingConversationMutation = {
+        schemaVersion: 1,
+        kind: 'codex-rewind',
+        sourceRuntimeSessionId: input.sourceRuntimeSessionId,
+        replacementRuntimeSessionId: input.replacementRuntimeSessionId,
+        sourceMessageCount: input.sourceMessages.length,
+        targetMessageCount: input.targetMessages.length,
+    };
+
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const durableMessages = readSessionMessagesForMutation(input.sessionId);
+            if (
+                durableMessages.length !== input.sourceMessages.length
+                || durableMessages.some((message, index) => message.id !== input.sourceMessages[index]?.id)
+            ) {
+                return { success: false, reason: 'precondition_failed', error: 'Session transcript changed before rewind' };
+            }
+
+            const intentWritten = await withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                if (index < 0) return false;
+                const current = all[index];
+                if (
+                    current.runtime !== 'codex'
+                    || current.runtimeSessionId !== input.sourceRuntimeSessionId
+                    || current.pendingConversationMutation
+                ) return false;
+                all[index] = { ...current, pendingConversationMutation: intent };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return true;
+            });
+            if (!intentWritten) {
+                return { success: false, reason: 'precondition_failed', error: 'Session binding changed before rewind' };
+            }
+
+            try {
+                atomicRewriteSessionMessages(input.sessionId, input.targetMessages);
+                return await resolvePendingConversationMutationLocked(input.sessionId);
+            } catch (error) {
+                const recovered = await resolvePendingConversationMutationLocked(input.sessionId);
+                if (
+                    recovered.success
+                    && recovered.messages.length === input.targetMessages.length
+                    && recovered.messages.every((message, index) => message.id === input.targetMessages[index]?.id)
+                ) return recovered;
+                if (!recovered.success && recovered.reason === 'storage_consistency_error') return recovered;
+                return {
+                    success: false,
+                    reason: 'write_error',
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        });
+    } catch (error) {
+        return {
+            success: false,
+            reason: 'write_error',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
 }
 
 /**

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => {
     useExternal: false,
     externalActive: false,
     externalBusy: false,
+    externalConversationMutation: false,
     externalProcessAlive: false,
     builtinTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     builtinDispatchedQueueId: null as string | null,
@@ -192,13 +193,18 @@ const mocks = vi.hoisted(() => {
     hasPendingExternalAskUserQuestion: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalAsk),
     isExternalSessionActive: vi.fn(() => state.externalActive),
     isExternalSessionBusy: vi.fn(() => state.externalBusy),
+    tryAcquireExternalSessionMutationLease: vi.fn(() => {
+      if (state.externalConversationMutation) return null;
+      state.externalConversationMutation = true;
+      return { release: () => { state.externalConversationMutation = false; } };
+    }),
     isExternalSessionStateRestoredFor: vi.fn(() => true),
     isExternalTurnCurrent: vi.fn((queueId: string) => state.externalCurrentQueueId === queueId),
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
-    restoreExternalSessionState: vi.fn(),
+    restoreExternalSessionState: vi.fn(async () => ({ success: true })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
       error?: string;
@@ -381,6 +387,7 @@ vi.mock('../runtimes/external-session', () => ({
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
   isExternalSessionBusy: mocks.isExternalSessionBusy,
+  tryAcquireExternalSessionMutationLease: mocks.tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor: mocks.isExternalSessionStateRestoredFor,
   isExternalTurnCurrent: mocks.isExternalTurnCurrent,
   popLastUserMessageForRetry: mocks.popLastUserMessageForRetry,
@@ -463,6 +470,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
     mocks.state.externalBusy = false;
+    mocks.state.externalConversationMutation = false;
     mocks.state.externalProcessAlive = false;
     mocks.state.builtinTurnIdentity = null;
     mocks.state.builtinDispatchedQueueId = null;
@@ -824,7 +832,7 @@ describe('session-engine selector and adapters', () => {
     });
   });
 
-  it('exposes external read, config, and restore surfaces behind the external adapter', () => {
+  it('exposes external read, config, and restore surfaces behind the external adapter', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalBusy = true;
     mocks.getCurrentBoundSessionId
@@ -905,7 +913,7 @@ describe('session-engine selector and adapters', () => {
       liveSessionState: 'idle',
     });
 
-    expect(restoreInitialExternalSessionAtSelector('sid-restored', '/workspace')).toBe(true);
+    await expect(restoreInitialExternalSessionAtSelector('sid-restored', '/workspace')).resolves.toBe(true);
     expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith('sid-restored', '/workspace', { type: 'desktop' });
   });
 
@@ -946,7 +954,7 @@ describe('session-engine selector and adapters', () => {
       status: 400,
       error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
     });
-    expect(restoreInitialExternalSessionAtSelector('sid', '/workspace')).toBe(false);
+    await expect(restoreInitialExternalSessionAtSelector('sid', '/workspace')).resolves.toBe(false);
     expect(mocks.updateExternalRuntimeConfig).not.toHaveBeenCalled();
     expect(mocks.prewarmExternalSession).not.toHaveBeenCalled();
     expect(mocks.popLastUserMessageForRetry).not.toHaveBeenCalled();
@@ -2447,6 +2455,18 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
   });
 
+  it('rejects external desktop reset while a conversation mutation owns the Session', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalConversationMutation = true;
+
+    await expect(getSessionEngine().resetForNewDesktopSession('/workspace')).resolves.toEqual({
+      success: false,
+      error: 'Wait for the current Session operation to finish',
+    });
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
+  });
+
   it('freezes the current builtin IM session before resetting to a new IM session', async () => {
     const result = await getSessionEngine().resetForNewImSession('/workspace');
 
@@ -2502,6 +2522,19 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
     expect(mocks.resetSession).not.toHaveBeenCalled();
     expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(result.sessionId, '/workspace', { type: 'desktop' });
+  });
+
+  it('rejects external IM reset before freezing metadata while a conversation mutation owns the Session', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalConversationMutation = true;
+
+    await expect(getSessionEngine().resetForNewImSession('/workspace')).resolves.toEqual({
+      success: false,
+      error: 'Wait for the current Session operation to finish',
+    });
+    expect(mocks.updateSessionMetadata).not.toHaveBeenCalled();
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
   });
 
   it('freezes the current external IM session through the engine facade', async () => {

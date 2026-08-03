@@ -24,6 +24,7 @@ type Recorded = {
   firstItemIndex: number | undefined;
   heightEstimates: number[] | undefined;
   components?: unknown;
+  context?: unknown;
   atBottomStateChange?: (atBottom: boolean) => void;
   followOutput?: (isAtBottom: boolean) => false | 'smooth';
   startReached?: () => void;
@@ -37,18 +38,20 @@ vi.mock('react-virtuoso', () => ({
     firstItemIndex?: number;
     heightEstimates?: number[];
     components?: unknown;
+    context?: unknown;
     atBottomStateChange?: (atBottom: boolean) => void;
     followOutput?: (isAtBottom: boolean) => false | 'smooth';
     startReached?: () => void;
     skipAnimationFrameInResizeObserver?: boolean;
     itemSize?: SizeFunction;
-    itemContent?: (index: number, message: MessageType) => React.ReactNode;
+    itemContent?: (index: number, message: MessageType, context?: unknown) => React.ReactNode;
   }) => {
     recorded.push({
       data: props.data,
       firstItemIndex: props.firstItemIndex,
       heightEstimates: props.heightEstimates,
       components: props.components,
+      context: props.context,
       atBottomStateChange: props.atBottomStateChange,
       followOutput: props.followOutput,
       startReached: props.startReached,
@@ -59,7 +62,7 @@ vi.mock('react-virtuoso', () => ({
       <div data-testid="virtuoso" data-count={props.data.length}>
         {props.data.map((message, index) => (
           <React.Fragment key={message.id}>
-            {props.itemContent?.(index, message)}
+            {props.itemContent?.(index, message, props.context)}
           </React.Fragment>
         ))}
       </div>
@@ -378,6 +381,53 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       />,
     );
     expect(streamingText(lastData())).toBe('abcdefghi');
+  });
+
+  it('freezes row-action context while inactive and publishes the live context on re-activation', () => {
+    const user = msg('user-anchor', 'question', 'user');
+    const assistant = {
+      ...msg('assistant-anchor', 'answer'),
+      runtimeTurnAnchor: { turnId: 'turn-anchor', rootUserMessageId: user.id },
+    };
+    const initialRewind = vi.fn();
+    const followProps = createFollowProps();
+    const baseProps = {
+      messages: [user, assistant],
+      streamingMessage: null,
+      isLoading: false,
+      firstItemIndex: 1_000_000,
+      sessionId: 's1',
+      virtuosoRef: { current: null },
+      ...followProps,
+      scrollToBottom: vi.fn(),
+      handleAtBottomChange: vi.fn(),
+      conversationOperations: 'codex' as const,
+    };
+    const { rerender } = renderList({
+      ...baseProps,
+      rewindableUserMessageIds: new Set([user.id]),
+      onRewind: initialRewind,
+      isActive: true,
+    });
+    const activeContext = lastData().context;
+
+    rerender(
+      <MessageList
+        {...baseProps}
+        isActive={false}
+        rewindableUserMessageIds={new Set()}
+      />,
+    );
+    expect(lastData().context).toBe(activeContext);
+
+    rerender(
+      <MessageList
+        {...baseProps}
+        isActive
+        rewindableUserMessageIds={new Set()}
+      />,
+    );
+    expect(lastData().context).not.toBe(activeContext);
   });
 
   it('keeps Virtuoso live while the active Tab remains visible but the window is unfocused', () => {
