@@ -1368,6 +1368,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   // Agent commands
   if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/current') return await api.handleAgentCurrent();
   if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);

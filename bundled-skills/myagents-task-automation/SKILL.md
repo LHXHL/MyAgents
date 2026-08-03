@@ -45,11 +45,11 @@ Cron 只是已发布的兼容命令面，不是另一种资源；Sensor 也不�
 
 ### 生命周期应怎样理解
 
-创建 Task 只是把它持久化为 `Todo`；首次 `run` 后，时间型 Task 进入 `Running`，表示 scheduler 已启用，不表示 AI 此刻正在执行。每个 tick 经 activation 后才可能产生 AI Turn。`stop` 暂停未来调度并停止活跃执行，`start` 恢复 schedule，`rerun` 重新派发终态 Task；`run-now` 是一次绕过 Detector 的人工执行，不改变 schedule 或 checkpoint。
+创建 Task 只是把它持久化为 `Todo`；首次 `run` 后，时间型 Task 进入 `Running`，表示 scheduler 已启用，不表示 AI 此刻正在执行。每个 tick 经 activation 后才可能产生 AI Turn。首次 tick 由 schedule 决定：固定 interval 默认在 `run` 后约 2 秒产生第一次机会（要延后就显式设置 `--startAt`），Cron 等到下一个墙钟点，scheduled 等到 `dispatchAt`。`stop` 暂停未来调度并停止活跃执行；`start` 按保留的 schedule anchor 恢复，anchor 已过期时下一次机会可能接近当前时间，应以回执里的 `nextExecutionAt` 为准。`rerun` 重新派发终态 Task；`run-now` 是一次绕过 Detector 的人工执行，不改变 schedule 或 checkpoint。
 
 MyAgents App 必须在线才会产生 tick 或执行检查。Task 可以在 App 后台驻留时运行，但完全退出或 OS 休眠期间不会运行，也不会逐个补跑错过的 tick。
 
-命令语法有疑问时运行 `myagents task readme` 获取当前紧凑契约；精确参数以对应命令的 leaf help 为准。
+正常创建和列表会自动继承当前 MyAgents workspace，不需要先查 ID。只有明确跨 workspace 操作时才同时传 `--workspaceId` / `--workspacePath`；若要诊断当前身份，使用 `myagents agent current --json`。命令语法有疑问时运行 `myagents task readme` 获取当前紧凑契约；精确参数以对应命令的 leaf help 为准。
 
 ## 选择激活方式
 
@@ -80,7 +80,6 @@ MyAgents App 必须在线才会产生 tick 或执行检查。Task 可以在 App 
 
 ```bash
 myagents task create-direct --name "send release reminder" \
-  --workspaceId <workspace-id> --workspacePath /absolute/workspace \
   --taskMdFile task-action.md --executionMode scheduled \
   --dispatchAt 2026-08-04T09:00:00+08:00 \
   --runMode single-session --preselectedSessionId current --json
@@ -90,13 +89,12 @@ myagents task create-direct --name "send release reminder" \
 
 ```bash
 myagents task create-direct --name "daily report" \
-  --workspaceId <workspace-id> --workspacePath /absolute/workspace \
   --taskMdFile task-action.md --executionMode recurring \
   --cronExpression "0 9 * * *" --cronTimezone Asia/Shanghai \
   --runMode new-session --json
 ```
 
-固定间隔使用 `--intervalMinutes <n>`（最小 5 分钟）。普通 Task 省略 `--trigger-file`，其有效激活策略就是 `always`。
+固定间隔使用 `--intervalMinutes <n>`（最小 5 分钟）。默认首次 tick 在 `run` 后约 2 秒；如果用户希望“从一个 interval 之后才第一次检查”，同时传带时区的 `--startAt <ISO-8601>`。普通 Task 省略 `--trigger-file`，其有效激活策略就是 `always`。
 
 ## `command Detector`：命中才激活
 
@@ -106,7 +104,6 @@ myagents task create-direct --name "daily report" \
 
 ```bash
 myagents task create-direct --name "watch CI failure" \
-  --workspaceId <workspace-id> --workspacePath /absolute/workspace \
   --taskMdFile task-action.md --executionMode recurring --intervalMinutes 5 \
   --runMode single-session --preselectedSessionId current \
   --maxExecutions 1 --trigger-file trigger.production.json --json
@@ -139,10 +136,9 @@ myagents task exit --reason "goal achieved: ..."
 ```bash
 myagents task get <taskId> --json
 myagents task run <taskId> --json
-myagents task get <taskId> --json
 ```
 
-首次从 Todo 启用用 `task run`；暂停后恢复用 `task start`；终态重新派发用 `task rerun`。不要通过目录时间或猜测名称寻找刚创建的 Task。
+创建、`run`、`start`、`stop`、`rerun` 的 JSON 回执都应包含权威最新状态和 `nextExecutionAt`，因此正常流程不需要为了确认 schedule 再额外 `get`；需要完整配置、文档路径、Session 历史或 Detector health 时再用 `task get`。首次从 Todo 启用用 `task run`；暂停后恢复用 `task start`；终态重新派发用 `task rerun`。不要通过目录时间或猜测名称寻找刚创建的 Task。
 
 ## 治理
 
@@ -152,13 +148,16 @@ myagents task runs <taskId> --limit 5   # 最近 AI 执行历史
 myagents task check-now <taskId>        # 真实 Detector 检查；提交状态，命中会激活 AI
 myagents task run-now <taskId>          # 绕过 Detector，直接执行 AI
 myagents task stop <taskId>             # 暂停 schedule，保留 checkpoint
-myagents task start <taskId>            # 恢复 schedule，不立即执行
+myagents task start <taskId>            # 按原 anchor 恢复；查看回执 nextExecutionAt
 myagents task reset-checkpoint <taskId> # 只清平台 checkpoint
 myagents task update <taskId> --clear-trigger # 改回 always
-myagents task delete <taskId>            # 确认后删除 Task；不删除工作区脚本
+myagents task archive <taskId>           # 用户专属的长期可恢复归档
+myagents task delete <taskId>            # 确认后不可恢复地删除；不删除工作区脚本
 ```
 
-`check-now` 会提交真实状态；部署前无副作用验证使用 `trigger test`。`run-now` 不改变 schedule anchor 或 Detector checkpoint。
+`check-now` 会提交真实 MyAgents 状态；部署前不提交 MyAgents 状态的验证使用 `trigger test`（脚本自身副作用仍真实发生）。`run-now` 不改变 schedule anchor 或 Detector checkpoint。
+
+归档和删除不是同一种“软删除”：`archive` 是长期可恢复的产品状态；`delete` 会立即停止调度、移除平台 Trigger state/pending activation，并从正常产品使用中不可恢复地移除 Task。TaskStore 只保留防止旧 Cron 重新迁移所需的内部 tombstone 与审计；没有 30 天恢复承诺，也没有 undelete 命令。两者都不会越权清理工作区脚本、脚本数据库或外部状态。
 
 ## 给用户的部署回执
 

@@ -153,6 +153,7 @@ myagents model verify <id> [--model <某个具体模型>]      # 实际发一条
 
 ```bash
 myagents agent list                                     # 列出所有 Agent
+myagents agent current --json                          # 只看当前 Agent/workspace/Session
 myagents agent list --active                            # 只列出未归档 Agent 工作区
 myagents agent list --archived                          # 只列出已归档 Agent 工作区
 myagents agent show <id>                                # 看某 Agent 的 effective 默认（runtime/model/permissionMode）
@@ -233,9 +234,10 @@ myagents skill sync                                     # 把 ~/.claude/skills �
 
 ```bash
 myagents task readme                                    # 统一自动化模型与当前命令
+myagents agent current --json                          # 仅诊断当前 Agent/workspace/Session
 myagents task get <taskId> --json                       # 权威配置与运行状态
 myagents task run <taskId>                              # 首次启用 Todo Task
-myagents task start <taskId>                            # 恢复已停止的 schedule
+myagents task start <taskId>                            # 恢复 schedule；看回执 nextExecutionAt
 myagents task stop <taskId>                             # 暂停并停止活跃执行
 myagents task runs <taskId> [--limit N]                 # 看 AI 执行历史
 myagents task run-now <taskId>                          # 绕过 Detector 立即执行
@@ -276,9 +278,10 @@ myagents thought create --content "..."                 # 显式 flag 形态，�
 myagents thought create --content-file <abs-path>       # 内容含多行 / CJK / shell 元字符 /
                                                         # Windows 下单引号失灵时的保底通道
 
-myagents task list [--status X --workspaceId X --tag X --includeDeleted]
+myagents task list [--status X --tag X --query X --limit N --includeDeleted]
+                                                        # 默认当前 workspace；JSON 是紧凑投影
 myagents task get <taskId>                              # 详情 + statusHistory + 各 .md 文档路径
-myagents task create-direct --name "..." --workspaceId <id> --workspacePath <abs> \
+myagents task create-direct --name "..." \
     [--taskMdFile <path> | --taskMdContent "..."] \
     [--runtime X --model X --permissionMode X --runtimeConfig <jsonStr> --mcpEnabledServers a,b] \
     [--executor agent --executionMode once --runMode X --tags x,y --sourceThoughtId X]
@@ -286,7 +289,7 @@ myagents task create-from-alignment <alignmentSessionId> --name "..." [--run] [�
                                                         # 从 AI 对齐会话物化任务（workspaceId/Path/sourceThoughtId 自动继承）
                                                         # --run 创建后立刻派发，省一步
 myagents task run <taskId>                              # 派发 todo 任务
-myagents task start <taskId>                            # 恢复 stopped schedule，不立即执行
+myagents task start <taskId>                            # 按保留 anchor 恢复，以 nextExecutionAt 为准
 myagents task stop <taskId>                             # 暂停 schedule 并停止活跃执行
 myagents task runs <taskId> [--limit N]                 # 查看最近 AI 执行历史
 myagents task exit [--reason "..."]                     # 仅在允许 AI exit 的 scheduled Task 内
@@ -295,10 +298,12 @@ myagents task update-status <taskId> <status> [--message "..."]
                                                         # 状态机：todo→running→verifying→done（或 →blocked/stopped）、done→archived
 myagents task append-session <taskId> <sessionId>       # 把一个聊天 session 关联到任务（任务过程中开了新会话用这个登记）
 myagents task archive <taskId> [--message "..."]        # 归档（仅用户可操作；AI 走会被拒）
-myagents task delete <taskId>                           # 软删除（30 天保留）
+myagents task delete <taskId>                           # 不可恢复地移出产品使用；不删工作区脚本
 ```
 
-创建 scheduled/recurring Task 可用 `--deadline <ISO-8601-with-offset>`、`--maxExecutions <正整数>`、`--aiCanExit true|false` 设置结束条件；quiet Detector 检查不消耗 maxExecutions。
+`create-direct` 和 `task list` 正常会继承当前 workspace，不需要先枚举 Agent 再手工拼 `workspaceId/path`；只有明确跨 workspace 时才传两者。`myagents agent current --json` 是紧凑诊断入口，不是 happy path 前置步骤。
+
+创建 scheduled/recurring Task 可用 `--deadline <ISO-8601-with-offset>`、`--maxExecutions <正整数>`、`--aiCanExit true|false` 设置结束条件；quiet Detector 检查不消耗 maxExecutions。固定 interval 第一次 `run` 默认约 2 秒后产生首次 tick；要延后首次机会时传 `--startAt <ISO-8601-with-offset>`。Cron 等下一个墙钟点，scheduled 等 `dispatchAt`。
 
 **任务级 runtime/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
 
@@ -319,9 +324,11 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 - "任务过程中我开了个新对话登记一下" → `task append-session <taskId> <sessionId>`
 - "标记完成" → `task update-status <taskId> done --message "..."`
 - "重新跑一遍" → `task rerun <taskId>`
-- 只读类 `task get` / `task list`：CLI 输出会带各 `.md` 文档路径（task.md / verify.md / progress.md / alignment.md），用 Read/Edit/Write 直接读改即可
+- `task list --json` 只返回紧凑发现字段和 `sessionCount`，不会展开历史 `sessionIds`；拿到 ID 后用 `task get` 读取完整状态与各 `.md` 文档路径
 
 **验证与恢复**：CLI 在转发给 Rust 前会前置校验 `--runtime` / `--model` / `--permissionMode`，不合法直接拒绝并带 `→ Run: myagents runtime describe <rt>` 指引；输出会打印 `overridesRequested` vs `overridden`，传了 override 但没落到持久化态会明确提示 drift。
+
+**归档与删除**：`task archive` 是仅用户可执行、长期可恢复的归档状态，Agent 调用会被 Task authority 拒绝；`task delete` 经确认后不可恢复，没有 30 天恢复或 undelete 承诺。删除会停止调度并清平台 Trigger state/pending activation，但内部 tombstone/审计仍用于 authority 与迁移安全，工作区脚本和脚本自持状态不归 TaskStore 删除。
 
 ### MyAgents Cloud Space（space）
 

@@ -216,7 +216,7 @@ canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/co
 
 标准 Cron list/get 也只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
 
-- `start` 提交 Task `Running` 并 arm timer，不立即执行。
+- `start` 提交 Task `Running` 并 arm timer，不绕过 schedule/Detector；若保留的 interval anchor 已过期，scheduler 可能把下一次 tick clamp 到约 2 秒后，调用方必须读取权威 `nextExecutionAt`。
 - `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。
 - `Loop` 被拒绝；持续工作使用 current-session Goal。
 - `/api/admin/cron/*` 是兼容路由名，不代表独立 Cron domain/store。
@@ -239,6 +239,10 @@ myagents task check-now <taskId>       # 提交 Detector 状态，命中才唤�
 myagents task run-now <taskId>         # 绕过 Detector，强制执行 AI
 myagents task reset-checkpoint <taskId>
 ```
+
+`task create-direct` 与 `task list` 在 Sidecar Admin 边界复用当前 workspace 解析：正常路径省略 workspace flags，Sidecar 以当前 path 匹配 `projects.json` 并补齐 Rust 所需的 stable `workspaceId + workspacePath`；只有显式跨 workspace 时由调用方提供。`agent current --json` 只返回当前 Agent/workspace/Session 的紧凑诊断，不是创建前置步骤。`task list` 的 Agent 投影默认只在当前 workspace 内返回紧凑字段与 `sessionCount`，完整 `sessionIds`、文档和 Trigger health 仍由 `task get` 拥有。
+
+CLI 从自身 `MYAGENTS_SESSION_ID` 判定 `agent/cli` 或 `user/cli`，把内部 caller metadata 传到既有 Rust transition 审计；Sidecar 不用自己的 `MYAGENTS_PORT` 猜调用者。UI 继续在 Tauri command 边界权威盖章为 `user/ui`。archive 仍由状态机执行 user-only guard，delete 记录真实 CLI actor/source。
 
 `--preselectedSessionId current` 在 CLI 边界解析 `MYAGENTS_SESSION_ID`，持久层只接收 canonical id；新建 single-session 不允许空绑定。trigger/spec/checkpoint 文件使用有界 regular-file no-follow 读取，拒绝 NUL、无效 UTF-8、超限或非 object JSON；`trigger test --expect` 也必须在任何 Detector 调用前校验为 `quiet | activate`。test 不提交 MyAgents 状态，但命令的外部副作用仍真实发生。human/JSON failure 都保留结构化 code、suggestion、可选 suggested command，以及 Detector 的有界 stderr/stdout 诊断。pending Activation Event 未结算时，Rust authority 拒绝 `run-now`，CLI 只透传该拒绝而不建立第二条执行路径。
 
@@ -498,10 +502,11 @@ MyAgents CLI 同时承载两类“工具”：
 
 ## Task 创建链路（关键机制）
 
-`task create-direct` / `task create-from-alignment` 是任务中心的重点命令，链路比其他命令长一层 —— 在转发给 Rust 前有一次 **pre-flight 验证**：
+`task create-direct` / `task create-from-alignment` 是任务中心的重点命令，链路比其他命令长一层 —— create-direct 先补齐当前 workspace 与 CLI caller provenance，再在转发给 Rust 前做一次 **pre-flight 验证**：
 
 ```
-CLI → /api/admin/task/create-direct → validateTaskOverrides(payload)
+CLI → /api/admin/task/create-direct → resolveTaskWorkspace(payload)
+                                      → validateTaskOverrides(payload)
                                             │
         ┌───────────────────────────────────┴────────────────────┐
         │                                                         │

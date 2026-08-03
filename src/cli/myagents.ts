@@ -194,16 +194,16 @@ function assertStringFlag(value: unknown, flagName: string): asserts value is st
   }
 }
 
-function parseGoalDeadlineFlag(raw: unknown): string | undefined {
+function parseZonedInstantFlag(raw: unknown, flagName: string): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || !raw.trim()) {
-    console.error('Error: --deadline requires an ISO-8601 timestamp with an explicit timezone offset or Z.');
+    console.error(`Error: --${flagName} requires an ISO-8601 timestamp with an explicit timezone offset or Z.`);
     process.exit(2);
   }
   const value = raw.trim();
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?([zZ]|[+-](\d{2}):(\d{2}))$/.exec(value);
   if (!match) {
-    console.error(`Error: --deadline "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
+    console.error(`Error: --${flagName} "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
     process.exit(2);
   }
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offset, offsetHourText, offsetMinuteText] = match;
@@ -227,10 +227,21 @@ function parseGoalDeadlineFlag(raw: unknown): string | undefined {
     && (offset.toLowerCase() === 'z' || (offsetHour <= 23 && offsetMinute <= 59));
   const timestamp = Date.parse(value);
   if (!calendarIsValid || Number.isNaN(timestamp)) {
-    console.error(`Error: --deadline "${raw}" is not a valid ISO-8601 timestamp.`);
+    console.error(`Error: --${flagName} "${raw}" is not a valid ISO-8601 timestamp.`);
     process.exit(2);
   }
   return new Date(timestamp).toISOString();
+}
+
+function parseGoalDeadlineFlag(raw: unknown): string | undefined {
+  return parseZonedInstantFlag(raw, 'deadline');
+}
+
+function taskCliCaller(): { actor: 'agent' | 'user'; source: 'cli' } {
+  return {
+    actor: process.env.MYAGENTS_SESSION_ID?.trim() ? 'agent' : 'user',
+    source: 'cli',
+  };
 }
 
 function parseGoalMaxExecutionsFlag(raw: unknown): number | undefined {
@@ -364,12 +375,13 @@ Examples:
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
   myagents diagnose runtime codex             # alias for runtime diagnose
   myagents agent list --archived              # archived Agent workspaces
+  myagents agent current --json               # compact current context diagnostic
   myagents agent show <agentId>                # identity + effective defaults
   myagents session list --agent <agentId>      # recent reusable contexts
   myagents session start --agent <agentId> -p "review this" # fresh context
   myagents agent archive <agent-id>
   myagents agent unarchive <agent-id>
-  myagents task list
+  myagents task list --query "review" --limit 20
   myagents task get <taskId>            # returns metadata + docs paths
                                         # (task.md / verify.md / progress.md /
                                         #  alignment.md — read/edit them with
@@ -392,7 +404,6 @@ Examples:
   myagents task check-now <taskId>
   myagents task reset-checkpoint <taskId>
   myagents task create-direct --name "review PR" \\
-      --workspaceId proj --workspacePath /path/to/proj \\
       --taskMdContent "Review this PR and file findings in progress.md" \\
       --runtime codex --model gpt-5.2 --permissionMode full-auto
     # Per-task runtime/model/permissionMode overrides — consult
@@ -661,8 +672,9 @@ export function printResult(
     const status = data?.status ?? 'unknown';
     console.log(`✓ Task ${taskId} is not running`);
     console.log(`  status: ${status}`);
+    printTaskNextExecution(data?.nextExecutionAt);
     if (status === 'blocked') {
-      console.log(`  restart: myagents task start ${taskId}`);
+      console.log(`  restart: myagents task rerun ${taskId}`);
     }
     return;
   }
@@ -670,6 +682,8 @@ export function printResult(
     const data = result.data as Record<string, unknown> | undefined;
     const task = (data?.task as Record<string, unknown> | undefined) ?? data;
     console.log(`✓ Task schedule enabled ${String(task?.id ?? task?.taskId ?? '')}`.trim());
+    console.log(`  status: ${String(task?.status ?? data?.status ?? 'unknown')}`);
+    printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
     return;
   }
   if (group === 'cron' && action === 'update') {
@@ -799,6 +813,10 @@ export function printResult(
   }
   if (group === 'agent' && action === 'show') {
     printAgentShow(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'agent' && action === 'current') {
+    printAgentCurrent(result.data as Record<string, unknown>);
     return;
   }
   if (group === 'session' && action === 'list') {
@@ -991,7 +1009,7 @@ function formatDetectorOccurredAt(value: unknown): string {
  *     task_id:   <uuid>
  *     name:      <string>
  *     docs_path: ~/.myagents/tasks/<uuid>/
- *     next:      myagents task run <uuid>          # non-attached tasks
+ *     dispatch:  myagents task run <uuid>          # non-attached tasks
  *     complete:  myagents task update-status ...   # attached tasks
  */
 function printTaskCreateResult(data: Record<string, unknown>): void {
@@ -1010,6 +1028,7 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   if (id) console.log(`  task_id:   ${id}`);
   if (name) console.log(`  name:      ${name}`);
   console.log(`  docs_path: ${displayDocs}`);
+  printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
 
   // Surface which runtime/model/permission overrides actually landed on the
   // persisted task (read from the server-returned Task record, not echoed
@@ -1043,7 +1062,7 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   const nextSteps = data?.nextSteps as Record<string, string> | undefined;
   const isAttached = task?.dispatchOrigin === 'attached-session';
   const dispatch = nextSteps?.dispatch ?? (!isAttached && id ? `myagents task run ${id}` : '');
-  if (dispatch) console.log(`  next:      ${dispatch}`);
+  if (dispatch) console.log(`  dispatch:  ${dispatch}`);
   const inspect = nextSteps?.inspect;
   if (inspect && isAttached) console.log(`  inspect:   ${inspect}`);
   const complete = nextSteps?.complete;
@@ -1438,6 +1457,20 @@ function printTaskDispatchResult(
   if (id) console.log(`  task_id:  ${id}`);
   console.log(`  runtime:  ${runtime}`);
   console.log(`  model:    ${model}`);
+  printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
+}
+
+function printTaskNextExecution(value: unknown): void {
+  const timestamp = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Date.parse(value)
+      : Number.NaN;
+  if (!Number.isNaN(timestamp)) {
+    console.log(`  next:     ${new Date(timestamp).toISOString()}`);
+  } else if (value === null) {
+    console.log('  next:     none');
+  }
 }
 
 function printToolList(tools: Array<Record<string, unknown>>): void {
@@ -2099,11 +2132,17 @@ function printTaskList(tasks: Array<Record<string, unknown>>): void {
     const origin = String(t.dispatchOrigin ?? 'direct');
     console.log(`  ${t.id}  [${status}]  ${t.name}`);
     console.log(
-      `     mode=${mode}  origin=${origin}  workspace=${t.workspaceId}  sessions=${
-        Array.isArray(t.sessionIds) ? (t.sessionIds as string[]).length : 0
-      }`,
+      `     mode=${mode}  origin=${origin}  workspace=${t.workspaceId}  sessions=${String(t.sessionCount ?? 0)}`,
     );
   }
+}
+
+function printAgentCurrent(current: Record<string, unknown>): void {
+  console.log(`Current Agent: ${String(current.name ?? current.agentId ?? '(unknown)')}`);
+  console.log(`  Agent ID:     ${String(current.agentId ?? '(unknown)')}`);
+  console.log(`  Workspace ID: ${String(current.workspaceId ?? '(unknown)')}`);
+  console.log(`  Workspace:    ${String(current.workspacePath ?? '(unknown)')}`);
+  if (current.sessionId) console.log(`  Session:      ${String(current.sessionId)}`);
 }
 
 function printTaskDetail(task: Record<string, unknown>): void {
@@ -2159,12 +2198,16 @@ function printTaskDetail(task: Record<string, unknown>): void {
       );
     } else if (task.intervalMinutes) {
       console.log(`  Interval:       every ${task.intervalMinutes} minute(s)`);
+      if (task.startAt) {
+        console.log(`  First tick:     ${formatCronInstantWithUtc(task.startAt, resolveLocalTimezone())}`);
+      }
     } else if (task.dispatchAt) {
       console.log(`  Dispatch at:    ${formatCronInstantWithUtc(task.dispatchAt, resolveLocalTimezone())}`);
     }
     if (task.lastExecutedAt) {
       console.log(`  Last executed:  ${formatCronInstantWithUtc(task.lastExecutedAt, resolveLocalTimezone())}`);
     }
+    printTaskNextExecution(task.nextExecutionAt);
   }
 
   // End conditions — when present, they're decision-relevant
@@ -2433,7 +2476,7 @@ async function main(): Promise<void> {
       const task = (data.task as Record<string, unknown>) ?? data;
       const newTaskId = task?.id as string | undefined;
       if (newTaskId) {
-        const runResult = await callApi('task/run', { id: newTaskId });
+        const runResult = await callApi('task/run', { id: newTaskId, ...taskCliCaller() });
         if (!runResult.success) {
           // Flag the failure in the top-level result so exit code reflects
           // it, but keep the successful create payload visible so the user
@@ -4227,6 +4270,7 @@ export function buildRequestBody(
         'agent',
       ),
     };
+    if (action === 'current') return {};
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {
       const channelAction = rest[0] || 'list'; // list | add | remove
@@ -4407,15 +4451,27 @@ export function buildRequestBody(
 
   // Task Center (v0.1.69) — covers all `myagents task <action>` subcommands.
   //
-  // The `actor` / `source` trust fields are NOT settable via the CLI; the
-  // admin-api handler derives them from the calling process environment
-  // (MYAGENTS_PORT present → agent subprocess; otherwise user terminal).
+  // Caller provenance is internal CLI metadata, never a user-settable flag.
+  // The CLI process can observe its own Session identity; the Sidecar process
+  // cannot infer that from its server environment.
   if (group === 'task') {
     if (action === 'list') {
+      assertStringFlag(flags.workspaceId, 'workspaceId');
+      assertStringFlag(flags.status, 'status');
+      assertStringFlag(flags.tag, 'tag');
+      assertStringFlag(flags.query, 'query');
+      assertStringFlag(flags.limit, 'limit');
+      const limit = flags.limit === undefined ? undefined : Number(flags.limit);
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)) {
+        console.error('Error: task list --limit must be an integer from 1 to 200.');
+        process.exit(2);
+      }
       return {
         workspaceId: flags.workspaceId,
         status: flags.status,
         tag: flags.tag,
+        query: flags.query,
+        limit,
         includeDeleted: flags.includeDeleted,
       };
     }
@@ -4425,12 +4481,17 @@ export function buildRequestBody(
         id: rest[0],
         status: rest[1],
         message: flags.message,
+        ...taskCliCaller(),
       };
     }
     if (action === 'append-session') {
       return { id: rest[0], sessionId: rest[1] || flags.sessionId };
     }
-    if (action === 'archive') return { id: rest[0], message: flags.message };
+    if (action === 'archive') return {
+      id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task archive', 'id'),
+      message: flags.message,
+      ...taskCliCaller(),
+    };
     if (action === 'readme') return {};
     if (action === 'exit') {
       assertStringFlag(flags.reason, 'reason');
@@ -4445,6 +4506,7 @@ export function buildRequestBody(
           `task ${action}`,
           'id',
         ),
+        ...taskCliCaller(),
       };
     }
     if (action === 'runs') {
@@ -4470,7 +4532,10 @@ export function buildRequestBody(
     // /api/admin/task/remove route, leaving the user with an opaque "Unknown
     // admin route" error (issue #205 gap #4). Accept both so AI / users who
     // generalized from `cron remove` don't hit a dead end.
-    if (action === 'delete' || action === 'remove') return { id: rest[0] };
+    if (action === 'delete' || action === 'remove') return {
+      id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', `task ${action}`, 'id'),
+      ...taskCliCaller(),
+    };
     if (action === 'trigger') {
       const triggerAction = rest[0];
       if (triggerAction === 'validate') {
@@ -4559,6 +4624,7 @@ export function buildRequestBody(
         cronExpression,
         cronTimezone,
         dispatchAt: parseDispatchAtFlag(flags.dispatchAt),
+        startAt: parseZonedInstantFlag(flags.startAt, 'startAt'),
         notification: buildNotificationFromFlags(flags),
         // Per-task runtime overrides. Admin-api validates these before
         // forwarding to Rust — if the caller mistypes a value, they get a
@@ -4568,6 +4634,7 @@ export function buildRequestBody(
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
+        ...taskCliCaller(),
       };
     }
     if (action === 'create-attached') {
@@ -4661,6 +4728,7 @@ export function buildRequestBody(
       if (flags.cronExpression !== undefined) body.cronExpression = flags.cronExpression;
       if (flags.cronTimezone !== undefined) body.cronTimezone = flags.cronTimezone;
       if (flags.dispatchAt !== undefined) body.dispatchAt = parseDispatchAtFlag(flags.dispatchAt);
+      if (flags.startAt !== undefined) body.startAt = parseZonedInstantFlag(flags.startAt, 'startAt');
       if (flags.model !== undefined) body.model = flags.model;
       if (flags.providerId !== undefined) body.providerId = flags.providerId;
       if (flags.clearProviderOverride) body.clearProviderOverride = true;
@@ -4713,6 +4781,7 @@ export function buildRequestBody(
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
+        ...taskCliCaller(),
       };
     }
     if (action === 'run' || action === 'run-now' || action === 'rerun') {
@@ -4723,6 +4792,7 @@ export function buildRequestBody(
           `task ${action}`,
           'id',
         ),
+        ...taskCliCaller(),
       };
     }
     return {};

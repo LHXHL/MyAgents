@@ -199,6 +199,49 @@ describe('admin-api help registry', () => {
     expect(sessionGroup).toContain('Observe only');
   });
 
+  it('provides compact exact Task leaf help for Agent automation flows', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['task', 'list'],
+      ['task', 'get'],
+      ['task', 'create-direct'],
+      ['task', 'create-from-alignment'],
+      ['task', 'create-attached'],
+      ['task', 'update'],
+      ['task', 'run'],
+      ['task', 'rerun'],
+      ['task', 'start'],
+      ['task', 'stop'],
+      ['task', 'runs'],
+      ['task', 'update-status'],
+      ['task', 'append-session'],
+      ['task', 'exit'],
+      ['task', 'run-now'],
+      ['task', 'check-now'],
+      ['task', 'trigger', 'validate'],
+      ['task', 'trigger', 'test'],
+      ['task', 'reset-checkpoint'],
+      ['task', 'archive'],
+      ['task', 'delete'],
+      ['task', 'readme'],
+    ];
+    for (const path of leaves) {
+      const text = String((handleHelp({ path }).data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('MUTATION / AI');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('EXAMPLE');
+      expect(text).toContain('RECOVERY');
+    }
+    expect(String((handleHelp({ path: ['task', 'delete'] }).data as { text?: string }).text))
+      .toContain('There is no undelete command');
+    expect(String((handleHelp({ path: ['task', 'run'] }).data as { text?: string }).text))
+      .toContain('about 2 seconds');
+  });
+
   it('keeps im send-media leaf help aligned with the executable file flag contract', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -824,6 +867,166 @@ describe('admin-api Task Detector forwarding', () => {
       code: 'detector_check_failed',
       data: { result: { outcome: 'error' } },
     });
+  });
+});
+
+describe('admin-api Task Agent experience', () => {
+  function configureCurrentWorkspace(): string {
+    const workspacePath = join(scratch, 'current-workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    agentSessionMocks.agentDir = workspacePath;
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-current', name: 'Current Agent', workspacePath }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-current',
+      name: 'Current Project',
+      path: workspacePath,
+      agentId: 'agent-current',
+    }]);
+    return workspacePath;
+  }
+
+  it('inherits current workspace for direct creation and preserves CLI caller provenance', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-current', name: 'Current task', workspaceId: 'project-current', workspacePath },
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Current task',
+      taskMdContent: 'Do the work.',
+      actor: 'agent',
+      source: 'cli',
+    });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/create-direct',
+      'POST',
+      expect.objectContaining({
+        workspaceId: 'project-current',
+        workspacePath,
+        actor: 'agent',
+        source: 'cli',
+      }),
+    );
+  });
+
+  it('rejects an explicit workspace id/path pair from different projects', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    const otherPath = join(scratch, 'other-workspace');
+    mkdirSync(otherPath, { recursive: true });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      {
+        id: 'project-current',
+        name: 'Current Project',
+        path: workspacePath,
+        agentId: 'agent-current',
+      },
+      {
+        id: 'project-other',
+        name: 'Other Project',
+        path: otherPath,
+        agentId: 'agent-other',
+      },
+    ]);
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Mismatched task',
+      taskMdContent: 'Do not persist this.',
+      workspaceId: 'project-current',
+      workspacePath: otherPath,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('does not own workspacePath');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('returns a compact filtered current-workspace list without expanded session identities', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      tasks: [
+        {
+          id: 'task-release',
+          name: 'Release review',
+          description: 'Inspect release blockers',
+          workspaceId: 'project-current',
+          status: 'running',
+          executionMode: 'recurring',
+          sessionIds: Array.from({ length: 186 }, (_, index) => `session-${index}`),
+          nextExecutionAt: 1_780_000_000_000,
+          tags: ['release'],
+        },
+        {
+          id: 'task-other',
+          name: 'Other work',
+          workspaceId: 'project-current',
+          status: 'todo',
+          sessionIds: ['session-other'],
+        },
+      ],
+    });
+    const { handleTaskList } = await import('./admin-api');
+
+    const result = await handleTaskList({ query: 'release', limit: 1 });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/task/list?workspaceId=project-current');
+    expect(result.scope).toEqual({
+      workspacePath,
+      source: 'default',
+      visibility: 'current Task workspace',
+    });
+    expect(result.data).toEqual([expect.objectContaining({
+      id: 'task-release',
+      sessionCount: 186,
+      nextExecutionAt: 1_780_000_000_000,
+    })]);
+    expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty('sessionIds');
+    expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty('description');
+  });
+
+  it('exposes only the compact current Agent context for diagnostics', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    sessionEngineMocks.state.context = { sessionId: 'session-current', workspacePath };
+    const { handleAgentCurrent } = await import('./admin-api');
+
+    expect(await handleAgentCurrent()).toEqual({
+      success: true,
+      data: {
+        agentId: 'agent-current',
+        name: 'Current Agent',
+        workspaceId: 'project-current',
+        workspacePath,
+        sessionId: 'session-current',
+      },
+    });
+  });
+
+  it('forwards Agent archive provenance so the Rust user-only guard can reject it', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      error: 'archive is user-only',
+    });
+    const { handleTaskArchive } = await import('./admin-api');
+
+    const result = await handleTaskArchive({
+      id: 'task-1',
+      actor: 'agent',
+      source: 'cli',
+    });
+
+    expect(result.success).toBe(false);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/archive',
+      'POST',
+      { id: 'task-1', actor: 'agent', source: 'cli' },
+    );
   });
 });
 

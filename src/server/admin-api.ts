@@ -133,9 +133,8 @@ import { trackServer } from './analytics';
  *   the CLI as a tool (`cli_agent`). Otherwise it's the user typing in their
  *   terminal (`cli`).
  *
- * Same logic that `handleTaskUpdateStatus` already uses for the persisted
- * `actor` field — extracted so every CLI handler can tag analytics events
- * consistently without re-deriving the heuristic.
+ * Used by legacy handlers that do not yet carry explicit caller metadata.
+ * Task lifecycle handlers instead use the actor stamped by the CLI process.
  */
 function cliSource(): 'cli' | 'cli_agent' {
   return process.env.MYAGENTS_PORT ? 'cli_agent' : 'cli';
@@ -1246,6 +1245,40 @@ export async function handleAgentList(payload: { lifecycle?: string } = {}): Pro
   }
 }
 
+export async function handleAgentCurrent(): Promise<AdminResponse> {
+  try {
+    const registry = await resolvePersistedAgentWorkspaceRegistry();
+    const workspacePath = getCurrentWorkspacePath() ?? defaultCronWorkspace();
+    const identity = registry.agentProjections.find(item =>
+      item.association === 'project-linked'
+      && !!item.project
+      && workspacePathsEqual(item.workspacePath, workspacePath),
+    );
+    if (!identity?.project) {
+      return {
+        success: false,
+        error: `Current workspace is not linked to a visible Agent project: ${workspacePath}`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent list',
+          message: 'Inspect addressable Agent workspaces.',
+        },
+      };
+    }
+    return {
+      success: true,
+      data: {
+        agentId: identity.agent.id,
+        name: identity.agent.name,
+        workspaceId: identity.project.id,
+        workspacePath: identity.workspacePath,
+        sessionId: getSessionEngine().getCurrentSessionContext().sessionId ?? null,
+      },
+    };
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
+}
+
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
   let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
@@ -1975,6 +2008,34 @@ Enable it from Settings → About & Feedback → Lab → CLI tool registry befor
 using 'myagents tool ...'. The stable built-in myagents CLI commands
 (cron, thought, im, widget, task, runtime, etc.) remain available.`;
 
+function taskLeafHelp(input: {
+  usage: string;
+  when: string;
+  effect: string;
+  options: string;
+  mutation: string;
+  output: string;
+  example: string;
+  recovery: string;
+}): string {
+  return `${input.usage}
+
+WHEN TO CALL
+  ${input.when}
+EFFECT
+  ${input.effect}
+OPTIONS
+${input.options}
+MUTATION / AI
+  ${input.mutation}
+OUTPUT
+  ${input.output}
+EXAMPLE
+  ${input.example}
+RECOVERY
+  ${input.recovery}`;
+}
+
 const HELP_TEXTS: Record<string, string> = {
   mcp: `myagents mcp — Manage MCP tool servers
 
@@ -2696,7 +2757,7 @@ RECOVERY
   task: `myagents task — Manage Task Center tasks (v0.1.69+)
 
 Commands:
-  list                            List tasks (filter via --workspaceId / --status / --tag)
+  list                            Compact current-workspace list (--query / --limit supported)
   get <taskId>                    Task metadata + .task/ doc paths
   create-direct <name>            Create a task with inline task.md content
   create-from-alignment <sid>     Materialize a task from an alignment session
@@ -2706,7 +2767,7 @@ Commands:
   update-status <taskId> <status> Transition state (running/verifying/done/blocked/stopped)
   append-session <taskId> <sid>   Link an SDK session id to a task
   run <taskId>                    Enable the Task scheduler from todo
-  start <taskId>                  Resume a stopped schedule; does not execute now
+  start <taskId>                  Resume a stopped schedule and return its next tick
   stop <taskId>                   Pause schedule and stop an active execution
   runs <taskId> [--limit N]       Show recent AI execution records
   exit [--reason <text>]          End the current eligible scheduled Task from inside its run
@@ -2721,15 +2782,15 @@ Commands:
                                   Really run the command, but do not commit MyAgents
                                   state, create an event, or activate AI
   reset-checkpoint <taskId>       Clear the platform-managed Detector checkpoint
-  archive <taskId>                Soft-archive (with 30d retention)
-  delete <taskId>                 Hard delete (alias: 'remove' for cron-CLI parity)
+  archive <taskId>                User-only recoverable long-lived archive state
+  delete <taskId>                 Irreversible product deletion (alias: remove)
 
 Options for 'create-direct':
   --name               Task name (required; may also be the 1st positional)
   --executor           'agent' | 'user' (default: agent)
   --description        Short description
-  --workspaceId        Workspace id (required)
-  --workspacePath      Absolute workspace path (required)
+  --workspaceId        Explicit cross-workspace project id (normally omit)
+  --workspacePath      Explicit cross-workspace absolute path (normally omit)
   --taskMdFile <path>  Read task.md body from a file (preferred for multi-line
                        markdown — avoids shell-escape hell). Max 1 MB.
   --taskMdContent      Inline task.md body (use --taskMdFile instead when
@@ -2753,6 +2814,8 @@ Scheduling (for executionMode = 'recurring' / 'scheduled'; omitting
 --intervalMinutes on recurring silently defaults to 60 min — the CLI now
 emits a warning when you do):
   --intervalMinutes <n>            Fixed interval in minutes (recurring; min 5)
+  --startAt <ISO-with-offset>       First interval tick. Without it, the first
+                                   interval tick is about 2 seconds after run.
   --cronExpression "0 */3 * * *"   Cron expression (recurring; takes precedence over interval)
   --cronTimezone Asia/Shanghai     IANA tz id for cronExpression; create-direct
                                   defaults to local timezone when omitted
@@ -2837,14 +2900,12 @@ Output:
     inheritedFromWorkspace[], nextSteps.{dispatch,inspect,complete}).
 
 Examples:
-  myagents task list --workspaceId my-proj
+  myagents task list --query "review" --limit 20
   myagents task create-direct --name "review PR" \\
-      --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdContent "Review the latest PR and file findings in progress.md" \\
       --runtime codex --model gpt-5.2 --permissionMode full-auto
   # Recurring + IM push — was GUI-only before issue #205
   myagents task create-direct --name "issue triage" \\
-      --workspaceId my-proj --workspacePath /path/to/my-proj \\
       --taskMdFile /tmp/triage-prompt.md \\
       --executionMode recurring --intervalMinutes 180 \\
       --notificationBotChannelId feishu_main
@@ -2860,6 +2921,248 @@ Examples:
 Related:
   myagents agent show <id>          Inspect an agent's effective defaults first,
                                     so you know what you are overriding.`,
+
+  'task/list': taskLeafHelp({
+    usage: 'myagents task list — Discover Tasks in the current workspace',
+    when: 'Before creating a possible duplicate, or when the Task id is unknown.',
+    effect: 'Read-only. Defaults to the current workspace and returns a compact projection; task get owns full detail.',
+    options: '  --query <text>       Match id, name, description, or tag\n  --limit <1..200>     Bound returned rows\n  --status / --tag     Existing lifecycle/tag filters\n  --workspaceId <id>   Explicit cross-workspace scope',
+    mutation: 'None; never starts AI. JSON omits expanded sessionIds and returns sessionCount.',
+    output: 'Compact identity, status, schedule, detector type, counters, nextExecutionAt, and execution health.',
+    example: 'myagents task list --query "release" --limit 20 --json',
+    recovery: 'Use myagents agent current --json when current workspace resolution fails; use task get <id> for full data.',
+  }),
+
+  'task/get': taskLeafHelp({
+    usage: 'myagents task get <taskId> — Read one authoritative Task',
+    when: 'After creation/mutation or whenever full configuration, docs, sessions, or Detector health is needed.',
+    effect: 'Read-only. Returns the full ordinary Task plus docs paths, runtime health, and computed nextExecutionAt.',
+    options: '  <taskId>             Required Task id\n  --json               Machine-readable full record',
+    mutation: 'None; never starts AI.',
+    output: 'Full Task record. Unlike task list, sessionIds and detailed Trigger state are intentionally included.',
+    example: 'myagents task get <taskId> --json',
+    recovery: 'Run task list --query <name> if the id is unknown.',
+  }),
+
+  'task/create-direct': taskLeafHelp({
+    usage: 'myagents task create-direct --name <name> --taskMdFile <path> — Create a Task',
+    when: 'When work must persist beyond this turn and run once in the future, on a schedule, or after a conditional check.',
+    effect: 'Creates a Todo Task in the current workspace. Omit workspace flags normally; pass both only for explicit cross-workspace creation.',
+    options: '  --taskMdFile <path>  Preferred action body (or --taskMdContent)\n  --executionMode once|scheduled|recurring\n  --dispatchAt <ISO>    Scheduled one-shot time\n  --intervalMinutes <n> Fixed interval; --startAt controls the first tick\n  --cronExpression / --cronTimezone for wall-clock recurrence\n  --trigger-file <path> Optional command Detector',
+    mutation: 'Persists Todo only; does not start AI. A recurring interval without startAt gets its first tick about 2 seconds after task run.',
+    output: 'Persisted Task, caller audit provenance, docs path, overrides, nextExecutionAt, and next-step commands.',
+    example: 'myagents task create-direct --name "daily review" --taskMdFile task-action.md --executionMode recurring --cronExpression "0 9 * * *" --json',
+    recovery: 'Run task get <id> to verify. agent current is diagnostic, not a prerequisite.',
+  }),
+
+  'task/create-from-alignment': taskLeafHelp({
+    usage: 'myagents task create-from-alignment <alignmentSessionId> --name <name> — Materialize aligned work',
+    when: 'After the task-alignment flow has produced a reviewed Task directory.',
+    effect: 'Moves the alignment artifacts into one ordinary Task and inherits workspace metadata from the alignment Session.',
+    options: '  <alignmentSessionId> Required alignment Session id\n  --name <name>         Required Task name\n  --run                 Dispatch after successful creation',
+    mutation: 'Creates a once Task; --run also starts its asynchronous AI execution.',
+    output: 'Persisted Task/docs plus optional run result.',
+    example: 'myagents task create-from-alignment <sessionId> --name "ship feature" --run --json',
+    recovery: 'If metadata is missing, pass explicit workspace fields or repair the alignment artifacts.',
+  }),
+
+  'task/create-attached': taskLeafHelp({
+    usage: 'myagents task create-attached --name <name> --sourceIssueId <id> — Attach current Session work',
+    when: 'Only for a claimed Space Issue already executing in the current MyAgents Session.',
+    effect: 'Creates a Running attached-session Task linked to the Space Issue and current canonical Session.',
+    options: '  --name / --sourceIssueId / workspace identity are required\n  --taskMdFile <path>   Preferred action body\n  --source space-issue  Only supported source',
+    mutation: 'Creates lifecycle state but does not start a second AI turn.',
+    output: 'Attached Task, docs, and current Session linkage.',
+    example: 'myagents task create-attached --name "Issue" --sourceIssueId <id> --taskMdFile task.md --workspaceId <id> --workspacePath <abs> --json',
+    recovery: 'Run only inside a Session with MYAGENTS_SESSION_ID; use the Space claim recovery command on partial failure.',
+  }),
+
+  'task/update': taskLeafHelp({
+    usage: 'myagents task update <taskId> [fields] — Patch Task configuration',
+    when: 'When a non-running Task schedule, action, Trigger, notification, or runtime override must change.',
+    effect: 'Updates the existing Task under its authoritative lock; omitted fields stay unchanged.',
+    options: '  <taskId>             Required Task id\n  Use create-direct schedule/runtime flags; --clear-trigger restores always\n  --clearProviderOverride / --clearRuntimeOverride / --clearMcpOverride',
+    mutation: 'Rejected while Running/Verifying; does not start AI.',
+    output: 'Authoritative updated Task and docs.',
+    example: 'myagents task update <taskId> --intervalMinutes 30 --json',
+    recovery: 'Stop first when a running Task must be edited; inspect task get after failure.',
+  }),
+
+  'task/run': taskLeafHelp({
+    usage: 'myagents task run <taskId> — Enable a Todo Task',
+    when: 'Immediately after a Todo Task has been created and verified.',
+    effect: 'Moves Todo to Running and arms the existing scheduler.',
+    options: '  <taskId>             Required Todo Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'Does not wait for an AI result. Interval recurrence without startAt gets a tick in about 2 seconds; Cron waits for its next wall-clock tick; scheduled waits for dispatchAt.',
+    output: 'Current Task, attemptOrdinal, and scheduler-computed nextExecutionAt.',
+    example: 'myagents task run <taskId> --json',
+    recovery: 'Use task rerun for a terminal/stopped Task, or task get to inspect a schedule error.',
+  }),
+
+  'task/start': taskLeafHelp({
+    usage: 'myagents task start <taskId> — Resume a stopped schedule',
+    when: 'When a previously stopped scheduled/recurring Task should continue.',
+    effect: 'Re-arms the existing schedule through the Cron compatibility adapter; it does not bypass the Detector.',
+    options: '  <taskId>             Required Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'May schedule the next tick near now when the preserved interval anchor is overdue; returned nextExecutionAt is authoritative.',
+    output: 'Current Task status and nextExecutionAt; never an empty success object.',
+    example: 'myagents task start <taskId> --json',
+    recovery: 'Use task get for schedule/Trigger health, or task rerun when the Task is terminal.',
+  }),
+
+  'task/rerun': taskLeafHelp({
+    usage: 'myagents task rerun <taskId> — Re-dispatch a terminal Task',
+    when: 'When blocked, stopped, done, or archived work should start again from Todo.',
+    effect: 'Writes the audited rerun transition and arms the same Task scheduler.',
+    options: '  <taskId>             Required Task id\n  --json               Authoritative post-mutation state',
+    mutation: 'May start AI asynchronously according to the Task schedule; attached-session Tasks cannot rerun.',
+    output: 'Current Task, attemptOrdinal, and nextExecutionAt.',
+    example: 'myagents task rerun <taskId> --json',
+    recovery: 'Use task get when the current state or unresolved execution blocks rerun.',
+  }),
+
+  'task/stop': taskLeafHelp({
+    usage: 'myagents task stop <taskId> — Pause a Task',
+    when: 'When future ticks and any active execution must stop.',
+    effect: 'Stops the scheduler/execution and preserves command Detector checkpoint state.',
+    options: '  <taskId>             Required Task id\n  --json               Return the authoritative post-mutation state',
+    mutation: 'Mutates lifecycle; does not delete the Task or its workspace script.',
+    output: 'Current stopped state and nextExecutionAt=null.',
+    example: 'myagents task stop <taskId> --json',
+    recovery: 'Use task start to resume or reset-checkpoint only when the managed cursor must be cleared.',
+  }),
+
+  'task/runs': taskLeafHelp({
+    usage: 'myagents task runs <taskId> [--limit N] — Read recent AI execution history',
+    when: 'To inspect settled AI outputs/errors after asynchronous admission.',
+    effect: 'Read-only compatibility projection over the existing Task run history.',
+    options: '  <taskId>             Required Task id\n  --limit <n>           Positive row limit\n  --full                Do not truncate human output',
+    mutation: 'None; never waits, retries, or starts AI.',
+    output: 'Recent settled run rows; no new execution-receipt protocol is added.',
+    example: 'myagents task runs <taskId> --limit 5 --json',
+    recovery: 'Use task get for current executionState when no settled row exists yet.',
+  }),
+
+  'task/update-status': taskLeafHelp({
+    usage: 'myagents task update-status <taskId> <status> — Write an ordinary lifecycle transition',
+    when: 'When the current actor legitimately advances running work to verifying/done/blocked/stopped.',
+    effect: 'Applies the existing Task state machine with caller actor/source audit.',
+    options: '  <taskId> <status>    Required\n  --message <text>      Optional audit reason',
+    mutation: 'Mutates lifecycle; illegal transitions and Agent archive attempts fail closed.',
+    output: 'Authoritative Task, transition, and nextExecutionAt.',
+    example: 'myagents task update-status <taskId> done --message "shipped" --json',
+    recovery: 'Read task get and choose a legal next state; do not forge actor/source flags.',
+  }),
+
+  'task/append-session': taskLeafHelp({
+    usage: 'myagents task append-session <taskId> <sessionId> — Link an existing Session',
+    when: 'When work moved into another Session and the Task history should reference it.',
+    effect: 'Adds the canonical Session id once to the existing Task.',
+    options: '  <taskId> <sessionId> Both required',
+    mutation: 'Mutates Task metadata only; does not message or start that Session.',
+    output: 'Authoritative Task with updated sessionIds.',
+    example: 'myagents task append-session <taskId> <sessionId> --json',
+    recovery: 'Use session discovery to obtain a real id; never use a workspace path as Session identity.',
+  }),
+
+  'task/exit': taskLeafHelp({
+    usage: 'myagents task exit --reason <text> — End the currently executing eligible Task',
+    when: 'Only from inside that Task run when aiCanExit is enabled and the recurring goal is genuinely finished.',
+    effect: 'Requests terminal settlement for the active Task-owned turn.',
+    options: '  --reason <text>      Concise completion reason',
+    mutation: 'Mutates only the active authorized Task run; rejected outside Task context.',
+    output: 'Accepted Task exit request.',
+    example: 'myagents task exit --reason "goal achieved" --json',
+    recovery: 'Use ordinary error handling for transient failures; do not exit a Task that still serves user intent.',
+  }),
+
+  'task/run-now': taskLeafHelp({
+    usage: 'myagents task run-now <taskId> — Force one AI turn',
+    when: 'For an explicit manual execution that must bypass activation filtering.',
+    effect: 'Dispatches one AI execution without running the Detector.',
+    options: '  <taskId>             Required Running ordinary Task id\n  --json               Machine-readable admission result',
+    mutation: 'Starts AI asynchronously; schedule anchor and Detector checkpoint are unchanged.',
+    output: 'Admission data including taskId and sessionId. It is not a terminal execution receipt.',
+    example: 'myagents task run-now <taskId> --json',
+    recovery: 'Use task runs <id> and task get <id> to inspect the eventual result.',
+  }),
+
+  'task/check-now': taskLeafHelp({
+    usage: 'myagents task check-now <taskId> — Run the persisted Detector now',
+    when: 'After a production Detector is deployed or repaired and a real stateful check is intended.',
+    effect: 'Runs the Detector with persisted checkpoint, commits checkpoint/health, and activates AI only on activate.',
+    options: '  <taskId>             Required Running command-Detector Task id\n  --json               Structured decision/admission data',
+    mutation: 'quiet commits state without AI; activate starts AI asynchronously; failure commits health/backoff and is not a decision.',
+    output: 'Detector result and, on activate, durable admission identity. It is not a terminal execution receipt.',
+    example: 'myagents task check-now <taskId> --json',
+    recovery: 'Use trigger test first for no-commit diagnosis, then task get for health and checkpoint.',
+  }),
+
+  'task/trigger/validate': taskLeafHelp({
+    usage: 'myagents task trigger validate --spec-file <json> — Validate a Trigger',
+    when: 'Before running or attaching a command Detector spec.',
+    effect: 'Parses and validates strict Trigger v1 JSON without executing the command.',
+    options: '  --spec-file <path>   Required regular non-symlink UTF-8 JSON file\n  --json               Return normalized Trigger JSON',
+    mutation: 'None; never runs a process or AI.',
+    output: 'Normalized Trigger on success; precise schema error on failure.',
+    example: 'myagents task trigger validate --spec-file trigger.production.json --json',
+    recovery: 'Read myagents-task-automation/references/command-detector.md and correct the strict schema.',
+  }),
+
+  'task/trigger/test': taskLeafHelp({
+    usage: 'myagents task trigger test <taskId>|--spec-file <json> — Execute a Detector without committing MyAgents state',
+    when: 'During fixture validation or diagnosis before a real check-now.',
+    effect: 'Really executes the command using a snapshot/fixture checkpoint but does not commit MyAgents checkpoint, health, events, or AI activation.',
+    options: '  <taskId>             Test the persisted Trigger\n  --spec-file <path>   Or test an unpersisted Trigger with --workspacePath\n  --checkpoint-file    Optional checkpoint fixture\n  --expect quiet|activate',
+    mutation: 'No MyAgents state or AI mutation. Script file/network/database side effects are real and are not rolled back.',
+    output: 'Structured quiet/activate result or harness failure diagnostics.',
+    example: 'myagents task trigger test --spec-file trigger.test.json --workspacePath /abs/workspace --expect quiet --json',
+    recovery: 'Isolate fixtures; a failure is a program/harness error, not a third decision.',
+  }),
+
+  'task/reset-checkpoint': taskLeafHelp({
+    usage: 'myagents task reset-checkpoint <taskId> — Clear MyAgents-managed Detector checkpoint',
+    when: 'Only when the persisted cursor must intentionally restart from null.',
+    effect: 'Clears the platform checkpoint and advances its revision; preserves check history and script-owned state.',
+    options: '  <taskId>             Required command-Detector Task id\n  --json               Return the new state',
+    mutation: 'Mutates checkpoint only; does not run the Detector or AI.',
+    output: 'Authoritative Trigger runtime state after reset.',
+    example: 'myagents task reset-checkpoint <taskId> --json',
+    recovery: 'Use task get first; do not reset merely to hide a Detector failure.',
+  }),
+
+  'task/archive': taskLeafHelp({
+    usage: 'myagents task archive <taskId> — Move a completed Task to long-lived archive',
+    when: 'When a completed Task should leave active views but remain recoverable and auditable.',
+    effect: 'Transitions Done to Archived. This is a user-only product action.',
+    options: '  <taskId>             Required Done Task id\n  --message <text>      Optional audit message',
+    mutation: 'Mutates lifecycle; Agent callers are rejected by the Task authority.',
+    output: 'Authoritative archived Task and nextExecutionAt=null.',
+    example: 'myagents task archive <taskId> --message "shipped" --json',
+    recovery: 'A user can use task rerun to reactivate an archived Task.',
+  }),
+
+  'task/delete': taskLeafHelp({
+    usage: 'myagents task delete <taskId> — Irreversibly remove a Task from product use',
+    when: 'Only after the user confirms the exact Task to remove.',
+    effect: 'Stops execution, removes Trigger runtime state/pending activation, and hides the Task from ordinary surfaces. An internal tombstone/audit remains for authority and migration safety.',
+    options: '  <taskId>             Required Task id (remove is a compatibility alias)',
+    mutation: 'Irreversible product deletion. It does not delete workspace-owned scripts, databases, or external state.',
+    output: 'Deletion receipt with status=deleted and nextExecutionAt=null.',
+    example: 'myagents task delete <taskId> --json',
+    recovery: 'There is no undelete command. Recreate a Task if deletion was a mistake; clean scripts only under separate explicit user intent.',
+  }),
+
+  'task/readme': taskLeafHelp({
+    usage: 'myagents task readme — Read the compact Task automation contract',
+    when: 'When the Task product model or canonical lifecycle is unclear before choosing a leaf command.',
+    effect: 'Read-only. Explains action, schedule, activation, Session routing, lifecycle, and safety boundaries.',
+    options: '  --json               Return the readme text in a machine-readable response',
+    mutation: 'None; never creates a Task, runs a Detector, or starts AI.',
+    output: 'Current Task command model and links to exact leaf help.',
+    example: 'myagents task readme',
+    recovery: 'Use myagents task <leaf> --help for exact input/output details.',
+  }),
 
   im: `myagents im — IM Bot capabilities (run 'myagents im readme' for long-form docs)
 
@@ -3010,6 +3313,23 @@ EXAMPLES
 RECOVERY
   No current marker is valid from Global/terminal contexts or when the caller
   is filtered out. Identity conflicts are reported instead of guessed.`,
+
+  'agent/current': `myagents agent current — Inspect only this CLI caller's current context
+
+WHEN TO CALL
+  When a diagnostic needs the current Agent, workspace, or Session identity.
+EFFECT
+  Read-only. Resolves the Sidecar's current Project-backed Agent without listing other Agents.
+OPTIONS
+  --json        Machine-readable compact record
+OUTPUT
+  agentId, name, workspaceId, workspacePath, and sessionId when available.
+IDENTITY / PERMISSIONS
+  This is diagnostic only; Task create/list already inherit the current workspace.
+EXAMPLE
+  myagents agent current --json
+RECOVERY
+  Run myagents agent list if the current workspace is not Project-linked.`,
 
   'agent/show': `myagents agent show <agentId> — Inspect one Agent identity
 
@@ -3556,9 +3876,11 @@ export async function handleGoalUpdate(payload: {
 // ---------------------------------------------------------------------------
 // Task Center forwarding (v0.1.69)
 //
-// Trust-boundary note: the CLI stamps `actor` + `source` from its own env
-// (AI subprocess = agent/cli, user terminal = user/cli) BEFORE posting here.
-// We forward these fields verbatim to the Rust Management API. The renderer-
+// Audit-provenance note: the trusted local CLI stamps `actor` + `source` from its own env
+// (a Session id means agent/cli; an ordinary terminal means user/cli) BEFORE
+// posting here. The Sidecar cannot infer this from its own server env.
+// We forward these fields to the Rust Management API, which validates legal
+// combinations. This is not a separate authentication protocol. The renderer-
 // originated path (Tauri IPC) never reaches this module — it goes through
 // `cmd_task_update_status` in Rust which stamps `user/ui` authoritatively.
 // ---------------------------------------------------------------------------
@@ -3572,15 +3894,154 @@ function qsFrom(params: Record<string, string | number | boolean | undefined>): 
   return parts.length ? `?${parts.join('&')}` : '';
 }
 
+type TaskCliCaller = {
+  actor?: 'agent' | 'user';
+  source?: 'cli';
+};
+
+function normalizedTaskCliCaller(payload: TaskCliCaller): Required<TaskCliCaller> {
+  return {
+    actor: payload.actor === 'agent' ? 'agent' : 'user',
+    source: 'cli',
+  };
+}
+
+function taskCliAnalyticsSource(payload: TaskCliCaller): 'cli' | 'cli_agent' {
+  return payload.actor === 'agent' ? 'cli_agent' : 'cli';
+}
+
+function resolveTaskWorkspace(
+  payload: Record<string, unknown>,
+): { payload: Record<string, unknown> } | { response: AdminResponse } {
+  const explicitId = typeof payload.workspaceId === 'string' && payload.workspaceId.trim()
+    ? payload.workspaceId.trim()
+    : undefined;
+  const explicitPath = typeof payload.workspacePath === 'string' && payload.workspacePath.trim()
+    ? payload.workspacePath.trim()
+    : undefined;
+  if (payload.workspaceId !== undefined && !explicitId) {
+    return { response: { success: false, error: 'workspaceId must be a non-empty string' } };
+  }
+  if (payload.workspacePath !== undefined && !explicitPath) {
+    return { response: { success: false, error: 'workspacePath must be a non-empty string' } };
+  }
+
+  const projects = loadProjects();
+  const currentPath = getCurrentWorkspacePath() ?? defaultCronWorkspace();
+  const projectById = explicitId
+    ? projects.find(item => item.id === explicitId)
+    : undefined;
+  const projectByPath = projects.find(item =>
+    workspacePathsEqual(item.path, explicitPath ?? currentPath),
+  );
+  if (explicitId && !projectById) {
+    return {
+      response: {
+        success: false,
+        error: `workspaceId does not identify a registered Task project: ${explicitId}`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent list',
+          message: 'Choose a visible Project-backed Agent workspace.',
+        },
+      },
+    };
+  }
+  if (explicitId && explicitPath && !workspacePathsEqual(projectById!.path, explicitPath)) {
+    return {
+      response: {
+        success: false,
+        error: `workspaceId '${explicitId}' does not own workspacePath '${explicitPath}'.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents agent current --json',
+          message: 'Use the id and path from the same Project-backed Agent workspace.',
+        },
+      },
+    };
+  }
+  const project = projectById ?? projectByPath;
+  const workspaceId = project?.id;
+  const workspacePath = project?.path;
+  if (!workspaceId || !workspacePath) {
+    return {
+      response: {
+        success: false,
+        error: 'Current workspace could not be resolved to a Task project.',
+        recoveryHint: {
+          recoveryCommand: 'myagents agent current --json',
+          message: 'Pass both --workspaceId and --workspacePath only for an explicit cross-workspace operation.',
+        },
+      },
+    };
+  }
+  return { payload: { ...payload, workspaceId, workspacePath } };
+}
+
+function compactTaskForAgent(task: Record<string, unknown>): Record<string, unknown> {
+  const trigger = task.trigger as { detector?: { type?: unknown } } | undefined;
+  return {
+    id: task.id,
+    name: task.name,
+    status: task.status,
+    workspaceId: task.workspaceId,
+    executionMode: task.executionMode,
+    runMode: task.runMode,
+    dispatchOrigin: task.dispatchOrigin,
+    detectorType: trigger?.detector?.type ?? 'always',
+    intervalMinutes: task.intervalMinutes,
+    cronExpression: task.cronExpression,
+    cronTimezone: task.cronTimezone,
+    startAt: task.startAt,
+    dispatchAt: task.dispatchAt,
+    nextExecutionAt: task.nextExecutionAt ?? null,
+    executionCount: task.executionCount ?? 0,
+    sessionCount: Array.isArray(task.sessionIds) ? task.sessionIds.length : 0,
+    lastExecutedAt: task.lastExecutedAt,
+    updatedAt: task.updatedAt,
+    tags: task.tags,
+    executionState: task.executionState,
+    executionError: task.executionError,
+  };
+}
+
 export async function handleTaskList(payload: {
   workspaceId?: string;
+  workspacePath?: string;
   status?: string;
   tag?: string;
+  query?: string;
+  limit?: number;
   includeDeleted?: boolean;
 }): Promise<AdminResponse> {
-  const resp = await managementApi(`/api/task/list${qsFrom(payload)}`);
+  const resolved = resolveTaskWorkspace(payload);
+  if ('response' in resolved) return resolved.response;
+  const { query, limit, workspacePath: _workspacePath, ...filters } = resolved.payload;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 200)) {
+    return { success: false, error: 'limit must be an integer from 1 to 200' };
+  }
+  const resp = await managementApi(`/api/task/list${qsFrom(filters as Record<string, string | number | boolean | undefined>)}`);
   if (resp.ok) {
-    return { success: true, data: (resp as Record<string, unknown>).tasks ?? [] };
+    const tasks = Array.isArray((resp as Record<string, unknown>).tasks)
+      ? ((resp as Record<string, unknown>).tasks as Array<Record<string, unknown>>)
+      : [];
+    const needle = typeof query === 'string' ? query.trim().toLocaleLowerCase() : '';
+    const matched = needle
+      ? tasks.filter(task => {
+          const tags = Array.isArray(task.tags) ? task.tags.join(' ') : '';
+          return [task.id, task.name, task.description, tags]
+            .map(value => String(value ?? '').toLocaleLowerCase())
+            .some(value => value.includes(needle));
+        })
+      : tasks;
+    const limited = limit === undefined ? matched : matched.slice(0, Number(limit));
+    return {
+      success: true,
+      data: limited.map(compactTaskForAgent),
+      scope: {
+        workspacePath: String(resolved.payload.workspacePath),
+        source: payload.workspaceId || payload.workspacePath ? 'explicit' : 'default',
+        visibility: 'current Task workspace',
+      },
+    };
   }
   return mgmtError(resp, 'Failed to list tasks');
 }
@@ -3596,18 +4057,30 @@ export async function handleTaskGet(payload: { id: string }): Promise<AdminRespo
 export async function handleTaskCreateDirect(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  const validationError = await validateTaskOverrides(payload);
+  const resolved = resolveTaskWorkspace(payload);
+  if ('response' in resolved) {
+    // Preserve the most actionable argument error when an explicit runtime
+    // override is malformed, even if current workspace discovery is also
+    // unavailable. A valid request still fails closed on missing workspace.
+    const validationError = await validateTaskOverrides(payload);
+    return validationError ?? resolved.response;
+  }
+  const request: Record<string, unknown> = {
+    ...resolved.payload,
+    ...normalizedTaskCliCaller(resolved.payload as TaskCliCaller),
+  };
+  const validationError = await validateTaskOverrides(request);
   if (validationError) return validationError;
 
-  const overridden = computeOverriddenFields(payload);
-  const resp = await managementApi('/api/task/create-direct', 'POST', payload);
+  const overridden = computeOverriddenFields(request);
+  const resp = await managementApi('/api/task/create-direct', 'POST', request);
   const wrapped = wrapMgmtResponse(resp);
-  const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
+  const enriched = enrichTaskCreateResponse(wrapped, request, overridden);
   if (enriched.success) {
     trackServer('task_create', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(request as TaskCliCaller),
       origin: 'manual',
-      has_workspace: typeof payload.workspacePath === 'string' && payload.workspacePath.length > 0,
+      has_workspace: true,
     });
   }
   return enriched;
@@ -3625,7 +4098,7 @@ export async function handleTaskCreateFromAlignment(
   const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
   if (enriched.success) {
     trackServer('task_create', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
       origin: 'thought_dispatch',
       has_workspace: typeof payload.workspacePath === 'string' && payload.workspacePath.length > 0,
     });
@@ -3661,7 +4134,7 @@ export async function handleTaskRun(payload: { id: string }): Promise<AdminRespo
   if (wrapped.success) {
     const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
       run_count: attemptOrdinal,
     });
   }
@@ -3674,7 +4147,7 @@ export async function handleTaskRerun(payload: { id: string }): Promise<AdminRes
   if (wrapped.success) {
     const { attemptOrdinal } = wrapped.data as { attemptOrdinal: number };
     trackServer('task_run', {
-      source: cliSource(),
+      source: taskCliAnalyticsSource(payload as TaskCliCaller),
       run_count: attemptOrdinal,
     });
   }
@@ -3857,25 +4330,14 @@ export async function handleTaskUpdate(
 export async function handleTaskUpdateStatus(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  // Infer actor/source if caller omitted them:
-  //   Inside an AI subprocess → MYAGENTS_PORT is set → actor=agent, source=cli.
-  //   Otherwise (user ran `myagents` in their terminal) → actor=user, source=cli.
-  // `MYAGENTS_PORT` is injected by `buildClaudeSessionEnv()` into SDK subproc
-  // env (see cli_architecture.md); the user's own shell does NOT have it set
-  // (the user's CLI binary reads `~/.myagents/sidecar.port` instead).
-  if (payload.actor === undefined) {
-    payload.actor = process.env.MYAGENTS_PORT ? 'agent' : 'user';
-  }
-  if (payload.source === undefined) {
-    payload.source = 'cli';
-  }
-  const resp = await managementApi('/api/task/update-status', 'POST', payload);
+  const request = { ...payload, ...normalizedTaskCliCaller(payload as TaskCliCaller) };
+  const resp = await managementApi('/api/task/update-status', 'POST', request);
   const wrapped = wrapMgmtResponse(resp);
   // Only `stopped` counts as a "stop" event in analytics terms — other
   // status transitions (running/done/blocked/etc) flow through the same
   // endpoint but aren't user-initiated stops.
   if (wrapped.success && payload.status === 'stopped') {
-    trackServer('task_stop', { source: cliSource() });
+    trackServer('task_stop', { source: taskCliAnalyticsSource(request as TaskCliCaller) });
   }
   return wrapped;
 }
@@ -3891,12 +4353,21 @@ export async function handleTaskAppendSession(payload: {
 export async function handleTaskArchive(payload: {
   id: string;
   message?: string;
+  actor?: 'agent' | 'user';
+  source?: 'cli';
 }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/archive', 'POST', payload);
+  const resp = await managementApi('/api/task/archive', 'POST', {
+    ...payload,
+    ...normalizedTaskCliCaller(payload),
+  });
   return wrapMgmtResponse(resp);
 }
 
-export async function handleTaskDelete(payload: { id: string }): Promise<AdminResponse> {
+export async function handleTaskDelete(payload: {
+  id: string;
+  actor?: 'agent' | 'user';
+  source?: 'cli';
+}): Promise<AdminResponse> {
   // Fetch the task's status BEFORE the delete so we can report it in the
   // analytics event. Best-effort — if the read fails (e.g. id doesn't exist),
   // we still attempt the delete and just report `status: 'unknown'`. We
@@ -3917,10 +4388,13 @@ export async function handleTaskDelete(payload: { id: string }): Promise<AdminRe
   } catch {
     // Silent — analytics must not affect the main flow.
   }
-  const resp = await managementApi('/api/task/delete', 'POST', payload);
+  const resp = await managementApi('/api/task/delete', 'POST', {
+    ...payload,
+    ...normalizedTaskCliCaller(payload),
+  });
   const wrapped = wrapMgmtResponse(resp);
   if (wrapped.success) {
-    trackServer('task_delete', { source: cliSource(), status });
+    trackServer('task_delete', { source: taskCliAnalyticsSource(payload), status });
   }
   return wrapped;
 }
@@ -4138,7 +4612,7 @@ CANONICAL COMMANDS
   create-direct ...                 Create ordinary or scheduled Task
   get <taskId> --json               Read authoritative config and runtime health
   run <taskId>                      Enable a newly-created Todo Task
-  start <taskId>                    Resume a stopped schedule; does not execute now
+  start <taskId>                    Resume schedule; read returned nextExecutionAt
   stop <taskId>                     Pause schedule and stop active execution
   runs <taskId> [--limit N]         Read recent AI execution history
   run-now <taskId>                  Bypass Detector; does not change schedule/checkpoint
@@ -4152,6 +4626,7 @@ CANONICAL COMMANDS
 SCHEDULE CREATION
   --executionMode scheduled --dispatchAt <ISO-with-offset>
   --executionMode recurring --intervalMinutes <n>             (minimum 5)
+  --startAt <ISO-with-offset>                                 (optional first interval tick)
   --executionMode recurring --cronExpression "0 9 * * *" \
                             --cronTimezone Asia/Shanghai
 
@@ -4164,13 +4639,16 @@ END CONDITIONS
   --aiCanExit true|false             Allow/disallow 'myagents task exit'
 
 LIFECYCLE
-  create --json -> parse taskId -> get --json -> run --json -> get --json.
+  create --json -> parse taskId -> get --json -> run --json.
   'run' is initial Todo enablement; 'start' resumes Stopped; 'rerun' handles a
   terminal Task. Running means scheduler enabled, not necessarily executing now.
+  A new fixed-interval Task without startAt gets its first tick about 2 seconds
+  after run; Cron waits for the next wall-clock tick; scheduled waits for dispatchAt.
 
 SAFETY
   Never use system cron/crontab/at/launchctl/schtasks for a MyAgents Task.
-  The App must remain online. Delete does not remove user workspace scripts.
+  The App must remain online. Archive is recoverable; delete is not and has no
+  undelete/retention promise. Delete does not remove user workspace scripts.
   trigger test runs the external command for real; only MyAgents state is not
   committed, so isolate fixtures and external side effects.`;
 
@@ -4215,8 +4693,8 @@ COMMANDS
   status                          Totals + next execution time
   add OPTIONS                     Create a new task
   start <taskId>                  Enable scheduled task (resume from stopped).
-                                  Does NOT trigger immediate execution — use
-                                  'cron run-now <taskId>' for that.
+                                  Does not bypass schedule/Detector; an overdue
+                                  interval anchor may make the next tick near now.
   run-now <taskId>                Fire one execution immediately without
                                   changing the task's schedule or status.
   stop <taskId>                   Pause a running task

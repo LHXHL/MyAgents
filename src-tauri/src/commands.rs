@@ -1045,7 +1045,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "48";
+const CLI_VERSION: &str = "49";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1207,7 +1207,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "45";
+const SYSTEM_SKILLS_VERSION: &str = "46";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1698,9 +1698,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v45_standardizes_skill_metadata_and_preserves_existing_contracts() {
-        assert_eq!(CLI_VERSION, "48");
-        assert_eq!(SYSTEM_SKILLS_VERSION, "45");
+    fn v46_keeps_task_cli_and_automation_skills_aligned() {
+        assert_eq!(CLI_VERSION, "49");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "46");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1714,10 +1714,16 @@ mod system_skills_tests {
         assert!(bundled.contains("--max-executions <正整数>"));
         assert!(bundled.contains("myagents-task-automation"));
         assert!(bundled.contains("myagents task start <taskId>"));
+        assert!(bundled.contains("myagents agent current --json"));
+        assert!(bundled.contains("--query X --limit N"));
+        assert!(bundled.contains("没有 30 天恢复或 undelete 承诺"));
         assert!(!bundled.contains("myagents-sensor"));
 
         let automation = include_str!("../../bundled-skills/myagents-task-automation/SKILL.md");
         assert!(automation.contains("references/command-detector.md"));
+        assert!(automation.contains("--startAt"));
+        assert!(automation.contains("默认在 `run` 后约 2 秒"));
+        assert!(automation.contains("没有 30 天恢复承诺"));
         assert!(automation.contains("myagents task readme"));
         assert!(automation.contains("--maxExecutions 1"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-task-automation"));

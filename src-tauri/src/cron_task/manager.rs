@@ -124,15 +124,45 @@ impl CronTaskManager {
     }
 
     pub async fn start_task(&self, id: &str) -> Result<CronTask, String> {
+        self.start_task_with_origin(
+            id,
+            crate::task::TransitionActor::System,
+            Some(crate::task::TransitionSource::Scheduler),
+        )
+        .await
+    }
+
+    pub async fn start_task_with_origin(
+        &self,
+        id: &str,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<CronTask, String> {
         let task = crate::task_application::TaskApplication::from_globals()
             .map_err(|error| error.to_string())?
-            .start_scheduled_task(id)
+            .start_scheduled_task_with_origin(id, actor, source)
             .await
             .map_err(|error| error.to_string())?;
         Ok(task_to_cron(&task))
     }
 
     pub async fn stop_task(&self, id: &str, reason: Option<String>) -> Result<CronTask, String> {
+        self.stop_task_with_origin(
+            id,
+            reason,
+            crate::task::TransitionActor::User,
+            Some(crate::task::TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn stop_task_with_origin(
+        &self,
+        id: &str,
+        reason: Option<String>,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<CronTask, String> {
         let task_control = crate::task_scheduler::acquire_task_control(id).await;
         let store = task_store()?;
         let task = store
@@ -159,8 +189,8 @@ impl CronTaskManager {
                     id: id.to_string(),
                     status: crate::task::TaskStatus::Stopped,
                     message: reason,
-                    actor: crate::task::TransitionActor::User,
-                    source: Some(crate::task::TransitionSource::Ui),
+                    actor,
+                    source,
                 },
                 &task_control,
             )

@@ -727,6 +727,10 @@ struct UpdateCronRequest {
 #[serde(rename_all = "camelCase")]
 struct TaskIdRequest {
     task_id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1005,34 +1009,45 @@ async fn delete_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse
     }
 }
 
-async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
+async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
 
     // Check task exists
-    let task = match get_ordinary_cron_task(manager, &req.task_id).await {
-        Ok(t) => t,
-        Err(e) => {
-            return Json(ApiResponse {
-                ok: false,
-                error: Some(e),
-            });
-        }
-    };
-
-    // If task is stopped, start it first
-    if task.status == cron_task::TaskStatus::Stopped {
-        if let Err(e) = manager.start_task(&req.task_id).await {
-            return Json(ApiResponse {
-                ok: false,
-                error: Some(format!("Failed to start task: {}", e)),
-            });
-        }
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        return Json(serde_json::json!({ "ok": false, "error": e }));
     }
 
-    Json(ApiResponse {
-        ok: true,
-        error: None,
-    })
+    // The Task application owns the full state check. Calling it for every
+    // status keeps Running idempotent while rejecting terminal Tasks instead
+    // of letting the lossy Cron projection report a false successful start.
+    if let Err(e) = manager
+        .start_task_with_origin(
+            &req.task_id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("Failed to start task: {}", e),
+        }));
+    }
+
+    let Some(current) = manager.get_task(&req.task_id).await else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("Task not found after start: {}", req.task_id),
+        }));
+    };
+    let summary = CronTaskSummary::from(current);
+    Json(serde_json::json!({
+        "ok": true,
+        "taskId": summary.id,
+        "status": summary.status,
+        "nextExecutionAt": summary.next_execution_at,
+        "task": summary,
+    }))
 }
 
 /// PRD 0.2.5 R4 — POST /api/cron/trigger
@@ -2009,10 +2024,21 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
 // ===== Cron Stop handler =====
 
 fn cron_stop_success_response(task: &crate::task::Task) -> serde_json::Value {
+    let next_execution_at = crate::task_scheduler::next_execution_at(task)
+        .ok()
+        .flatten()
+        .map(|value| value.timestamp_millis());
     serde_json::json!({
         "ok": true,
         "taskId": task.id,
         "status": task.status.as_str(),
+        "nextExecutionAt": next_execution_at,
+        "task": task::TaskProjection {
+            task: task.clone(),
+            execution_state: None,
+            execution_error: None,
+            next_execution_at,
+        },
     })
 }
 
@@ -2025,7 +2051,12 @@ async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::V
         return Json(serde_json::json!({ "ok": false, "error": e }));
     }
     match manager
-        .stop_task(&req.task_id, Some("Stopped via admin CLI".to_string()))
+        .stop_task_with_origin(
+            &req.task_id,
+            Some("Stopped via admin CLI".to_string()),
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
         .await
     {
         Ok(_) => {
@@ -2510,17 +2541,17 @@ async fn handle_bridge_message(
 // ========================================================================
 //
 // These endpoints are called by the Bun Admin API (admin-api.ts), which in
-// turn is called by the `myagents task` CLI. The CLI is the **entry point of
-// trust inference** for `actor` / `source` (PRD §10.2.1 caller-inference table):
+// turn is called by the `myagents task` CLI. The CLI is the entry point for
+// `actor` / `source` audit classification (PRD §10.2.1 caller-inference table):
 //
-// - `MYAGENTS_PORT` env var set → AI sub-process → `actor=agent, source=cli`
+// - `MYAGENTS_SESSION_ID` set in the CLI process → `actor=agent, source=cli`
 // - Otherwise (user terminal reading `~/.myagents/sidecar.port`) →
 //   `actor=user, source=cli`
 //
-// That inference happens in the CLI script itself (knows its own env) and is
-// forwarded to the Bun Admin API, which forwards here. We take the caller's
-// word for actor/source: the CLI process running inside an SDK subprocess is
-// inside a trust boundary already (the whole host is the user's machine).
+// That classification happens in the CLI script itself (knows its own env)
+// and is forwarded through the Sidecar. Rust still enforces legal actor/source
+// combinations. This is provenance for the trusted local CLI, not a new
+// authentication protocol.
 // For UI transitions the Tauri command layer stamps `user/ui` authoritatively
 // without ever reaching this path.
 
@@ -2615,6 +2646,10 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             } else {
                 None
             };
+            let next_execution_at = crate::task_scheduler::next_execution_at(&t)
+                .ok()
+                .flatten()
+                .map(|value| value.timestamp_millis());
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2623,6 +2658,7 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
                     trigger_state,
+                    next_execution_at,
                 }
             }))
         }
@@ -2639,15 +2675,36 @@ fn task_application_error_response(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskCreateDirectApiRequest {
+    #[serde(flatten)]
+    input: task::TaskCreateDirectInput,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
+}
+
 async fn task_create_direct_handler(
-    Json(input): Json<task::TaskCreateDirectInput>,
+    Json(req): Json<TaskCreateDirectApiRequest>,
 ) -> Json<serde_json::Value> {
     let application = match crate::task_application::TaskApplication::from_globals() {
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.create_direct(input).await {
-        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+    match application
+        .create_direct_with_origin(
+            req.input,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -2660,7 +2717,10 @@ async fn task_create_attached_handler(
         Err(error) => return task_application_error_response(error),
     };
     match application.create_attached(input).await {
-        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -2708,6 +2768,10 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
             } else {
                 None
             };
+            let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+                .ok()
+                .flatten()
+                .map(|value| value.timestamp_millis());
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
@@ -2716,6 +2780,7 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
                     execution_state: execution.as_ref().map(|value| value.state),
                     execution_error: execution.and_then(|value| value.error),
                     trigger_state,
+                    next_execution_at,
                 },
             }))
         }
@@ -2936,7 +3001,10 @@ async fn task_update_status_handler(
         .await
     {
         Ok(result) => {
-            let mut response = serde_json::json!({ "ok": true, "task": result.task });
+            let mut response = serde_json::json!({
+                "ok": true,
+                "task": task::project_task(result.task).await,
+            });
             if let Some(transition) = result.transition {
                 response["transition"] =
                     serde_json::to_value(transition).unwrap_or(serde_json::Value::Null);
@@ -2976,6 +3044,10 @@ struct TaskArchiveApiRequest {
     id: String,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<serde_json::Value> {
@@ -2983,8 +3055,19 @@ async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<se
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.archive_ordinary(&req.id, req.message).await {
-        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+    match application
+        .archive_ordinary_with_origin(
+            &req.id,
+            req.message,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -2993,6 +3076,10 @@ async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<se
 #[serde(rename_all = "camelCase")]
 struct TaskDeleteApiRequest {
     id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 async fn task_delete_handler(Json(req): Json<TaskDeleteApiRequest>) -> Json<serde_json::Value> {
@@ -3000,8 +3087,26 @@ async fn task_delete_handler(Json(req): Json<TaskDeleteApiRequest>) -> Json<serd
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.delete_ordinary(&req.id).await {
-        Ok(()) => Json(serde_json::json!({ "ok": true })),
+    match application
+        .delete_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "taskId": req.id,
+            "status": "deleted",
+            "nextExecutionAt": serde_json::Value::Null,
+            "task": {
+                "id": req.id,
+                "status": "deleted",
+                "deleted": true,
+                "nextExecutionAt": serde_json::Value::Null,
+            },
+        })),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -3295,15 +3400,36 @@ async fn space_attachment_inspect_handler(
 // Task Center execution handlers (v0.1.69)
 // ========================================================================
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskCreateFromAlignmentApiRequest {
+    #[serde(flatten)]
+    input: task::TaskCreateFromAlignmentInput,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
+}
+
 async fn task_create_from_alignment_handler(
-    Json(input): Json<task::TaskCreateFromAlignmentInput>,
+    Json(req): Json<TaskCreateFromAlignmentApiRequest>,
 ) -> Json<serde_json::Value> {
     let application = match crate::task_application::TaskApplication::from_globals() {
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.create_from_alignment(input).await {
-        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+    match application
+        .create_from_alignment_with_origin(
+            req.input,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "task": task::project_task(task).await,
+        })),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -3317,10 +3443,17 @@ async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json:
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.run_ordinary(&req.id).await {
+    match application
+        .run_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
         Ok(result) => Json(serde_json::json!({
             "ok": true,
-            "task": result.task,
+            "task": task::project_task(result.task).await,
             "attemptOrdinal": result.attempt_ordinal,
         })),
         Err(error) => task_application_error_response(error),
@@ -3358,10 +3491,17 @@ async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_jso
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
-    match application.rerun_ordinary(&req.id).await {
+    match application
+        .rerun_ordinary_with_origin(
+            &req.id,
+            req.actor.unwrap_or(task::TransitionActor::User),
+            req.source.or(Some(task::TransitionSource::Cli)),
+        )
+        .await
+    {
         Ok(result) => Json(serde_json::json!({
             "ok": true,
-            "task": result.task,
+            "task": task::project_task(result.task).await,
             "attemptOrdinal": result.attempt_ordinal,
         })),
         Err(error) => task_application_error_response(error),
@@ -3464,6 +3604,10 @@ async fn task_write_doc_handler(Json(req): Json<TaskWriteDocRequest>) -> Json<se
 #[serde(rename_all = "camelCase")]
 struct TaskIdApiRequest {
     id: String,
+    #[serde(default)]
+    actor: Option<task::TransitionActor>,
+    #[serde(default)]
+    source: Option<task::TransitionSource>,
 }
 
 // ============================================================================
@@ -4042,6 +4186,55 @@ mod tests {
             response.get("status").and_then(Value::as_str),
             Some("blocked")
         );
+        assert_eq!(
+            response.pointer("/task/status").and_then(Value::as_str),
+            Some("blocked")
+        );
+        assert!(response.get("nextExecutionAt").is_some());
+    }
+
+    #[test]
+    fn direct_create_request_separates_cli_origin_from_domain_input() {
+        let request: TaskCreateDirectApiRequest = serde_json::from_value(serde_json::json!({
+            "name": "agent-created",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "taskMdContent": "Do the work",
+            "executionMode": "once",
+            "actor": "agent",
+            "source": "cli"
+        }))
+        .unwrap();
+
+        assert_eq!(request.input.workspace_id, "workspace");
+        assert_eq!(request.actor, Some(task::TransitionActor::Agent));
+        assert_eq!(request.source, Some(task::TransitionSource::Cli));
+    }
+
+    #[test]
+    fn alignment_and_lifecycle_requests_preserve_cli_origin() {
+        let alignment: TaskCreateFromAlignmentApiRequest =
+            serde_json::from_value(serde_json::json!({
+                "name": "aligned",
+                "executor": "agent",
+                "alignmentSessionId": "alignment-1",
+                "executionMode": "once",
+                "actor": "user",
+                "source": "cli"
+            }))
+            .unwrap();
+        assert_eq!(alignment.actor, Some(task::TransitionActor::User));
+        assert_eq!(alignment.source, Some(task::TransitionSource::Cli));
+
+        let lifecycle: TaskIdApiRequest = serde_json::from_value(serde_json::json!({
+            "id": "task-1",
+            "actor": "agent",
+            "source": "cli"
+        }))
+        .unwrap();
+        assert_eq!(lifecycle.actor, Some(task::TransitionActor::Agent));
+        assert_eq!(lifecycle.source, Some(task::TransitionSource::Cli));
     }
 
     #[tokio::test]

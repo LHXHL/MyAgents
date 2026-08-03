@@ -380,6 +380,23 @@ fn reject_managed_kind_from_ordinary_create(kind: &Option<String>) -> Result<(),
     Ok(())
 }
 
+fn validate_ordinary_caller_origin(
+    actor: TransitionActor,
+    source: Option<TransitionSource>,
+) -> Result<(), String> {
+    match (actor, source) {
+        (TransitionActor::User, Some(TransitionSource::Ui | TransitionSource::Cli))
+        | (TransitionActor::Agent, Some(TransitionSource::Cli)) => Ok(()),
+        (TransitionActor::System, _) => {
+            Err("ordinary Task mutations cannot claim system authority".to_string())
+        }
+        (TransitionActor::Agent, _) => Err(String::from(TaskOpError::agent_source_must_be_cli())),
+        (TransitionActor::User, _) => {
+            Err("user Task mutations require source=ui or source=cli".to_string())
+        }
+    }
+}
+
 fn normalize_managed_kind(kind: Option<String>) -> Result<Option<String>, String> {
     let Some(raw) = kind else {
         return Ok(None);
@@ -658,6 +675,8 @@ pub struct TaskWithDocs {
     pub execution_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_state: Option<crate::task_trigger::TaskTriggerRuntimeState>,
+    /// Computed by the scheduler authority; never persisted on the Task row.
+    pub next_execution_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -669,16 +688,30 @@ pub struct TaskProjection {
     pub execution_state: Option<crate::task_scheduler::TaskExecutionState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_error: Option<String>,
+    /// Computed by the scheduler authority; never persisted on the Task row.
+    pub next_execution_at: Option<i64>,
 }
 
 impl TaskProjection {
     fn new(task: Task, execution: Option<crate::task_scheduler::TaskExecutionProjection>) -> Self {
+        let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+            .ok()
+            .flatten()
+            .map(|value| value.timestamp_millis());
         Self {
             task,
             execution_state: execution.as_ref().map(|value| value.state),
             execution_error: execution.and_then(|value| value.error),
+            next_execution_at,
         }
     }
+}
+
+pub(crate) async fn project_task(task: Task) -> TaskProjection {
+    let execution = crate::task_scheduler::get_task_scheduler()
+        .execution_projection(&task.id)
+        .await;
+    TaskProjection::new(task, execution)
 }
 
 /// Lightweight list projection. Trigger runtime diagnostics intentionally stay
@@ -1429,11 +1462,22 @@ impl TaskStore {
     // ---- Create ----
 
     pub async fn create_direct(&self, input: TaskCreateDirectInput) -> Result<Task, String> {
+        self.create_direct_with_origin(input, TransitionActor::User, Some(TransitionSource::Ui))
+            .await
+    }
+
+    pub async fn create_direct_with_origin(
+        &self,
+        input: TaskCreateDirectInput,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
         reject_managed_kind_from_ordinary_create(&input.managed_kind)?;
+        validate_ordinary_caller_origin(actor, source)?;
         self.create_direct_internal(
             input,
-            TransitionActor::User,
-            Some(TransitionSource::Ui),
+            actor,
+            source,
             "created (direct)",
             session_metadata_exists,
         )
@@ -1811,8 +1855,23 @@ impl TaskStore {
 
     pub async fn create_from_alignment(
         &self,
-        mut input: TaskCreateFromAlignmentInput,
+        input: TaskCreateFromAlignmentInput,
     ) -> Result<Task, String> {
+        self.create_from_alignment_with_origin(
+            input,
+            TransitionActor::Agent,
+            Some(TransitionSource::Cli),
+        )
+        .await
+    }
+
+    pub async fn create_from_alignment_with_origin(
+        &self,
+        mut input: TaskCreateFromAlignmentInput,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
+        validate_ordinary_caller_origin(actor, source)?;
         validate_task_name(&input.name)?;
         validate_safe_id(&input.alignment_session_id, "alignmentSessionId")?;
         validate_new_task_session_binding(input.run_mode, input.preselected_session_id.as_deref())?;
@@ -1968,9 +2027,9 @@ impl TaskStore {
                 from: None,
                 to: TaskStatus::Todo,
                 at: now,
-                actor: TransitionActor::Agent,
+                actor,
                 message: Some("created (ai-aligned)".to_string()),
-                source: Some(TransitionSource::Cli),
+                source,
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::AiAligned,
@@ -3256,25 +3315,54 @@ impl TaskStore {
     /// User-only archive entry. Emits `Done → Archived` with actor=user.
     /// `update_status` tears down the Task scheduler on terminal states.
     pub async fn archive(&self, id: &str, message: Option<String>) -> Result<Task, String> {
+        self.archive_with_origin(
+            id,
+            message,
+            TransitionActor::User,
+            Some(TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn archive_with_origin(
+        &self,
+        id: &str,
+        message: Option<String>,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<Task, String> {
+        validate_ordinary_caller_origin(actor, source)?;
         let (task, _) = self
             .update_status(TaskUpdateStatusInput {
                 id: id.to_string(),
                 status: TaskStatus::Archived,
                 message,
-                actor: TransitionActor::User,
-                source: Some(TransitionSource::Ui),
+                actor,
+                source,
             })
             .await?;
         Ok(task)
     }
 
-    /// Soft-delete. Writes a proper synthetic `→ Deleted` pseudo-transition to
-    /// `statusHistory` (PRD §10.2.2), sets `status=Deleted`, flips the
+    /// Product-level delete. Writes a durable `→ Deleted` tombstone transition
+    /// to `statusHistory` (PRD §10.2.2), sets `status=Deleted`, flips the
     /// `deleted` flag, and tears down the Task scheduler so it cannot fire
     /// against a deleted Task. Downstream auditors
-    /// can filter `statusHistory` on `to == Deleted` to find all removed tasks.
-    /// Physical cleanup happens out-of-band (§9.5, 30-day retention).
+    /// can filter `statusHistory` on `to == Deleted` to find all removed tasks,
+    /// preserving migration safety and audit without promising restoration or a
+    /// retention window. Workspace-owned scripts are outside this store.
     pub async fn delete(&self, id: &str) -> Result<(), String> {
+        self.delete_with_origin(id, TransitionActor::User, Some(TransitionSource::Ui))
+            .await
+    }
+
+    pub async fn delete_with_origin(
+        &self,
+        id: &str,
+        actor: TransitionActor,
+        source: Option<TransitionSource>,
+    ) -> Result<(), String> {
+        validate_ordinary_caller_origin(actor, source)?;
         let task_control = crate::task_scheduler::acquire_task_control(id).await;
         self.ensure_writable()?;
         let before = self
@@ -3309,9 +3397,9 @@ impl TaskStore {
             from: Some(from),
             to: TaskStatus::Deleted,
             at: now,
-            actor: TransitionActor::User,
+            actor,
             message: Some("deleted".to_string()),
-            source: Some(TransitionSource::Ui),
+            source,
         });
         updated.status = TaskStatus::Deleted;
         updated.deleted = true;
@@ -3973,12 +4061,17 @@ pub async fn cmd_task_get(
     } else {
         None
     };
+    let next_execution_at = crate::task_scheduler::next_execution_at(&task)
+        .ok()
+        .flatten()
+        .map(|value| value.timestamp_millis());
     Ok(Some(TaskWithDocs {
         task,
         docs,
         execution_state: execution.as_ref().map(|value| value.state),
         execution_error: execution.and_then(|value| value.error),
         trigger_state,
+        next_execution_at,
     }))
 }
 

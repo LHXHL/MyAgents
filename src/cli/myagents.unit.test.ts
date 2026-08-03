@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   formatCronInstantForDisplay,
@@ -22,6 +22,17 @@ import {
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
 } from './myagents';
+
+const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
+
+beforeEach(() => {
+  delete process.env.MYAGENTS_SESSION_ID;
+});
+
+afterEach(() => {
+  if (inheritedMyAgentsSessionId === undefined) delete process.env.MYAGENTS_SESSION_ID;
+  else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
+});
 
 describe('myagents CLI Task notification updates', () => {
   it('sends only provided notification fields in the single update mutation', () => {
@@ -135,7 +146,11 @@ describe('myagents CLI Task Detector contracts', () => {
         clearTrigger: true,
       })).toEqual({ id: 'task-1', clearTrigger: true });
       expect(buildRequestBody('task', 'check-now', ['task-1'], {})).toEqual({ id: 'task-1' });
-      expect(buildRequestBody('task', 'run-now', ['task-1'], {})).toEqual({ id: 'task-1' });
+      expect(buildRequestBody('task', 'run-now', ['task-1'], {})).toEqual({
+        id: 'task-1',
+        actor: 'agent',
+        source: 'cli',
+      });
       expect(buildRequestBody('task', 'reset-checkpoint', ['task-1'], {})).toEqual({ id: 'task-1' });
     } finally {
       if (previous === undefined) delete process.env.MYAGENTS_SESSION_ID;
@@ -150,8 +165,16 @@ describe('myagents CLI Task Detector contracts', () => {
     expect(buildRoute('task', 'stop', ['task-1'])).toBe('cron/stop');
     expect(buildRoute('task', 'runs', ['task-1'])).toBe('cron/runs');
     expect(buildRoute('task', 'exit', [])).toBe('cron/exit');
-    expect(buildRequestBody('task', 'start', ['task-1'], {})).toEqual({ taskId: 'task-1' });
-    expect(buildRequestBody('task', 'stop', ['task-1'], {})).toEqual({ taskId: 'task-1' });
+    expect(buildRequestBody('task', 'start', ['task-1'], {})).toEqual({
+      taskId: 'task-1',
+      actor: 'user',
+      source: 'cli',
+    });
+    expect(buildRequestBody('task', 'stop', ['task-1'], {})).toEqual({
+      taskId: 'task-1',
+      actor: 'user',
+      source: 'cli',
+    });
     expect(buildRequestBody('task', 'runs', ['task-1'], { limit: '3' })).toEqual({
       taskId: 'task-1',
       limit: 3,
@@ -194,6 +217,29 @@ describe('myagents CLI Task Detector contracts', () => {
     expect(parseArgs(['task', 'update', 'task-1', '--clear-trigger', '--json'])).toEqual({
       positional: ['task', 'update', 'task-1'],
       flags: { clearTrigger: true, json: true },
+    });
+  });
+
+  it('builds compact Task discovery filters and exposes the existing interval startAt', () => {
+    expect(buildRequestBody('task', 'list', [], { query: 'release', limit: '20' })).toEqual({
+      workspaceId: undefined,
+      status: undefined,
+      tag: undefined,
+      query: 'release',
+      limit: 20,
+      includeDeleted: undefined,
+    });
+    expect(buildRequestBody('task', 'create-direct', ['watch later'], {
+      taskMdContent: 'Check the external state.',
+      executionMode: 'recurring',
+      intervalMinutes: '60',
+      startAt: '2026-08-04T09:00:00+08:00',
+    })).toMatchObject({
+      workspaceId: undefined,
+      workspacePath: undefined,
+      startAt: '2026-08-04T01:00:00.000Z',
+      actor: 'user',
+      source: 'cli',
     });
   });
 
@@ -972,6 +1018,7 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
   it('builds explicit Agent discovery and Session list requests', () => {
     expect(buildRequestBody('agent', 'list', [], {})).toEqual({ lifecycle: 'active' });
     expect(buildRequestBody('agent', 'list', [], { archived: true })).toEqual({ lifecycle: 'archived' });
+    expect(buildRequestBody('agent', 'current', [], {})).toEqual({});
     expect(buildRequestBody('agent', 'show', ['agent-1'], {})).toEqual({ agentId: 'agent-1' });
     expect(buildRequestBody('session', 'list', [], { agent: 'agent-1' })).toEqual({
       agentId: 'agent-1',
