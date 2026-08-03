@@ -692,6 +692,9 @@ describe('admin-api accepted task attempt analytics', () => {
   it('reports the run ordinal returned by the accepted mutation without a task prefetch', async () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: true,
+      taskId: 'task-run-accepted',
+      status: 'running',
+      nextExecutionAt: 1_780_000_000_000,
       task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
       attemptOrdinal: 4,
     });
@@ -702,6 +705,9 @@ describe('admin-api accepted task attempt analytics', () => {
     expect(result).toEqual({
       success: true,
       data: {
+        taskId: 'task-run-accepted',
+        status: 'running',
+        nextExecutionAt: 1_780_000_000_000,
         task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
         attemptOrdinal: 4,
       },
@@ -721,13 +727,14 @@ describe('admin-api accepted task attempt analytics', () => {
   it('does not report an attempt when run admission is rejected', async () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: false,
+      code: 'invalid_state',
       error: 'task is busy',
     });
     const { handleTaskRun } = await import('./admin-api');
 
     const result = await handleTaskRun({ id: 'task-run-rejected' });
 
-    expect(result).toEqual({ success: false, error: 'task is busy' });
+    expect(result).toEqual({ success: false, code: 'invalid_state', error: 'task is busy' });
     expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
     expect(analyticsMocks.trackServer).not.toHaveBeenCalled();
   });
@@ -1011,6 +1018,7 @@ describe('admin-api Task Agent experience', () => {
   it('forwards Agent archive provenance so the Rust user-only guard can reject it', async () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: false,
+      code: 'archive_user_only',
       error: 'archive is user-only',
     });
     const { handleTaskArchive } = await import('./admin-api');
@@ -1022,6 +1030,10 @@ describe('admin-api Task Agent experience', () => {
     });
 
     expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      code: 'archive_user_only',
+      error: 'archive is user-only',
+    });
     expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
       '/api/task/archive',
       'POST',

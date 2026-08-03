@@ -218,6 +218,7 @@ canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/co
 
 - `start` 提交 Task `Running` 并 arm timer，不绕过 schedule/Detector；若保留的 interval anchor 已过期，scheduler 可能把下一次 tick clamp 到约 2 秒后，调用方必须读取权威 `nextExecutionAt`。
 - `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。
+- `task start/stop/run/rerun` 的成功数据统一包含 `taskId`、`status`、epoch-ms `nextExecutionAt` 与 canonical `TaskProjection` 字段 `task`；run/rerun 额外包含 `attemptOrdinal`。Task application 失败统一在 Rust Management API 边界输出顶层 `code` + `error`，不得把 TaskStore 的 `{code,message}` 再编码进 `error` 字符串。
 - `Loop` 被拒绝；持续工作使用 current-session Goal。
 - `/api/admin/cron/*` 是兼容路由名，不代表独立 Cron domain/store。
 

@@ -1020,34 +1020,24 @@ async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Va
     // The Task application owns the full state check. Calling it for every
     // status keeps Running idempotent while rejecting terminal Tasks instead
     // of letting the lossy Cron projection report a false successful start.
-    if let Err(e) = manager
-        .start_task_with_origin(
+    let application = match crate::task_application::TaskApplication::from_globals() {
+        Ok(application) => application,
+        Err(error) => return task_application_error_response(error),
+    };
+    match application
+        .start_scheduled_task_with_origin(
             &req.task_id,
             req.actor.unwrap_or(task::TransitionActor::User),
             req.source.or(Some(task::TransitionSource::Cli)),
         )
         .await
     {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!("Failed to start task: {}", e),
-        }));
+        Ok(task) => Json(task_lifecycle_success_response(
+            task::project_task(task).await,
+            None,
+        )),
+        Err(error) => task_application_error_response(error),
     }
-
-    let Some(current) = manager.get_task(&req.task_id).await else {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!("Task not found after start: {}", req.task_id),
-        }));
-    };
-    let summary = CronTaskSummary::from(current);
-    Json(serde_json::json!({
-        "ok": true,
-        "taskId": summary.id,
-        "status": summary.status,
-        "nextExecutionAt": summary.next_execution_at,
-        "task": summary,
-    }))
 }
 
 /// PRD 0.2.5 R4 — POST /api/cron/trigger
@@ -2021,26 +2011,29 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
     }
 }
 
-// ===== Cron Stop handler =====
+// ===== Task lifecycle responses =====
 
-fn cron_stop_success_response(task: &crate::task::Task) -> serde_json::Value {
-    let next_execution_at = crate::task_scheduler::next_execution_at(task)
-        .ok()
-        .flatten()
-        .map(|value| value.timestamp_millis());
-    serde_json::json!({
+fn task_lifecycle_success_response(
+    projection: task::TaskProjection,
+    attempt_ordinal: Option<u32>,
+) -> serde_json::Value {
+    let task_id = projection.task.id.clone();
+    let status = projection.task.status.as_str();
+    let next_execution_at = projection.next_execution_at;
+    let mut response = serde_json::json!({
         "ok": true,
-        "taskId": task.id,
-        "status": task.status.as_str(),
+        "taskId": task_id,
+        "status": status,
         "nextExecutionAt": next_execution_at,
-        "task": task::TaskProjection {
-            task: task.clone(),
-            execution_state: None,
-            execution_error: None,
-            next_execution_at,
-        },
-    })
+        "task": projection,
+    });
+    if let Some(attempt_ordinal) = attempt_ordinal {
+        response["attemptOrdinal"] = serde_json::json!(attempt_ordinal);
+    }
+    response
 }
+
+// ===== Cron Stop handler =====
 
 async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
@@ -2072,7 +2065,10 @@ async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::V
                     "error": format!("Task not found: {}", req.task_id),
                 }));
             };
-            Json(cron_stop_success_response(&task))
+            Json(task_lifecycle_success_response(
+                task::project_task(task).await,
+                None,
+            ))
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
@@ -2669,10 +2665,30 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
 fn task_application_error_response(
     error: crate::task_application::TaskApplicationError,
 ) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    Json(task_error_response_value(error.code(), error.to_string()))
+}
+
+fn task_error_response_value(
+    fallback_code: crate::task_application::TaskApplicationErrorCode,
+    error: String,
+) -> serde_json::Value {
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&error) {
+        if let (Some(code), Some(message)) = (
+            payload.get("code").and_then(serde_json::Value::as_str),
+            payload.get("message").and_then(serde_json::Value::as_str),
+        ) {
+            return serde_json::json!({
+                "ok": false,
+                "code": code,
+                "error": message,
+            });
+        }
+    }
+    serde_json::json!({
         "ok": false,
-        "error": error.to_string(),
-    }))
+        "code": fallback_code,
+        "error": error,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -3451,11 +3467,10 @@ async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json:
         )
         .await
     {
-        Ok(result) => Json(serde_json::json!({
-            "ok": true,
-            "task": task::project_task(result.task).await,
-            "attemptOrdinal": result.attempt_ordinal,
-        })),
+        Ok(result) => Json(task_lifecycle_success_response(
+            task::project_task(result.task).await,
+            Some(result.attempt_ordinal),
+        )),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -3499,11 +3514,10 @@ async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_jso
         )
         .await
     {
-        Ok(result) => Json(serde_json::json!({
-            "ok": true,
-            "task": task::project_task(result.task).await,
-            "attemptOrdinal": result.attempt_ordinal,
-        })),
+        Ok(result) => Json(task_lifecycle_success_response(
+            task::project_task(result.task).await,
+            Some(result.attempt_ordinal),
+        )),
         Err(error) => task_application_error_response(error),
     }
 }
@@ -4157,7 +4171,7 @@ mod tests {
     }
 
     #[test]
-    fn cron_stop_response_preserves_authoritative_blocked_status() {
+    fn task_lifecycle_response_uses_the_canonical_projection() {
         let task: crate::task::Task = serde_json::from_value(serde_json::json!({
             "id": "blocked-task",
             "name": "blocked task",
@@ -4176,7 +4190,15 @@ mod tests {
         }))
         .unwrap();
 
-        let response = cron_stop_success_response(&task);
+        let response = task_lifecycle_success_response(
+            crate::task::TaskProjection {
+                task,
+                execution_state: None,
+                execution_error: None,
+                next_execution_at: Some(1_780_000_000_000),
+            },
+            Some(3),
+        );
 
         assert_eq!(
             response.get("taskId").and_then(Value::as_str),
@@ -4190,7 +4212,54 @@ mod tests {
             response.pointer("/task/status").and_then(Value::as_str),
             Some("blocked")
         );
-        assert!(response.get("nextExecutionAt").is_some());
+        assert_eq!(
+            response.get("nextExecutionAt").and_then(Value::as_i64),
+            Some(1_780_000_000_000)
+        );
+        assert_eq!(
+            response
+                .pointer("/task/nextExecutionAt")
+                .and_then(Value::as_i64),
+            Some(1_780_000_000_000)
+        );
+        assert_eq!(
+            response.get("attemptOrdinal").and_then(Value::as_u64),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn task_error_response_decodes_the_existing_task_op_error() {
+        let response = task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::MutationFailed,
+            r#"{"code":"archive_user_only","message":"archive is user-only"}"#.to_string(),
+        );
+
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("archive_user_only")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("archive is user-only")
+        );
+    }
+
+    #[test]
+    fn task_error_response_preserves_the_application_error_code() {
+        let response = task_error_response_value(
+            crate::task_application::TaskApplicationErrorCode::InvalidState,
+            "task is in state 'done'; use rerun".to_string(),
+        );
+
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("invalid_state")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("task is in state 'done'; use rerun")
+        );
     }
 
     #[test]
