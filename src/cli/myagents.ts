@@ -4630,6 +4630,7 @@ export function buildRequestBody(
         // forwarding to Rust — if the caller mistypes a value, they get a
         // recovery hint pointing to `runtime list` / `runtime describe`.
         runtime: flags.runtime,
+        providerId: flags.providerId,
         model: flags.model,
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),
@@ -4777,6 +4778,7 @@ export function buildRequestBody(
         // Identical override contract to create-direct above — keep these two
         // in lockstep.
         runtime: flags.runtime,
+        providerId: flags.providerId,
         model: flags.model,
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),

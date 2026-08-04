@@ -1501,6 +1501,15 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
   };
 }
 
+const AGENT_SET_FIELDS = [
+  'enabled',
+  'runtime',
+  'runtimeConfig',
+  'providerId',
+  'model',
+  'permissionMode',
+] as const;
+
 export async function handleAgentSet(payload: { id: string; key: string; value: unknown }): Promise<AdminResponse> {
   const { id, key, value } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
@@ -1510,6 +1519,19 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
   const protectedFields = ['id', 'channels'];
   if (protectedFields.includes(key)) {
     return { success: false, error: `Cannot directly set field '${key}'. Use specific commands instead.` };
+  }
+  if (!AGENT_SET_FIELDS.includes(key as typeof AGENT_SET_FIELDS[number])) {
+    const canonicalKey = key === 'provider'
+      ? 'providerId'
+      : key === 'permission'
+        ? 'permissionMode'
+        : undefined;
+    return {
+      success: false,
+      error: canonicalKey
+        ? `Unknown Agent field '${key}'; use '${canonicalKey}'. Supported fields: ${AGENT_SET_FIELDS.join(', ')}.`
+        : `Unknown Agent field '${key}'. Supported fields: ${AGENT_SET_FIELDS.join(', ')}.`,
+    };
   }
 
   if (key === 'enabled') {
@@ -1721,14 +1743,7 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         }
       }
 
-      const projectMirrorFields = new Set([
-        'providerId',
-        'model',
-        'permissionMode',
-        'mcpEnabledServers',
-        'enabledPluginIds',
-      ]);
-      const liveReloadFields = new Set(['providerId', 'model', 'permissionMode']);
+      const syncExecutionDefault = key === 'providerId' || key === 'model' || key === 'permissionMode';
       const providerEnvJson = key === 'providerId'
         ? (() => {
             const resolved = resolveProviderEnv(String(normalizedValue), currentConfig);
@@ -1742,8 +1757,8 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
           [key]: normalizedValue,
           ...(key === 'providerId' ? { providerEnvJson } : {}),
         },
-        projectPatch: projectMirrorFields.has(key) ? { [key]: normalizedValue } : undefined,
-        livePatch: liveReloadFields.has(key)
+        projectPatch: syncExecutionDefault ? { [key]: normalizedValue } : undefined,
+        livePatch: syncExecutionDefault
           ? {
               [key]: normalizedValue,
               ...(key === 'providerId' ? { providerEnvJson: providerEnvJson ?? null } : {}),
@@ -2834,6 +2849,7 @@ silently to disk, even if you set --notificationDesktop):
 Per-task RUNTIME overrides (all optional; omit to inherit workspace defaults):
   --runtime            Override runtime (${RUNTIMES_ENUM_LINE})
                        See: myagents runtime list
+  --providerId         Override builtin provider; must be paired with --model
   --model              Override model — values depend on runtime
                        See: myagents runtime describe <runtime>
   --permissionMode     Override permission mode — values depend on runtime
@@ -2848,7 +2864,7 @@ Options for 'create-from-alignment' (identical override flags):
   --executionMode --runMode --tags --sourceThoughtId
   --preselectedSessionId current|<id> --trigger-file <path>
   --deadline <ISO-with-offset> --maxExecutions <n> --aiCanExit true|false
-  --runtime --model --permissionMode --runtimeConfig --mcpEnabledServers
+  --runtime --providerId --model --permissionMode --runtimeConfig --mcpEnabledServers
 
 Options for 'create-attached':
   --name                  Task name (required)
@@ -2948,7 +2964,7 @@ Related:
     usage: 'myagents task create-direct --name <name> --taskMdFile <path> — Create a Task',
     when: 'When work must persist beyond this turn and run once in the future, on a schedule, or after a conditional check.',
     effect: 'Creates a Todo Task in the current workspace. Omit workspace flags normally; pass both only for explicit cross-workspace creation.',
-    options: '  --taskMdFile <path>  Preferred action body (or --taskMdContent)\n  --executionMode once|scheduled|recurring\n  --dispatchAt <ISO>    Scheduled one-shot time\n  --intervalMinutes <n> Fixed interval; --startAt controls the first tick\n  --cronExpression / --cronTimezone for wall-clock recurrence\n  --trigger-file <path> Optional command Detector',
+    options: '  --taskMdFile <path>  Preferred action body (or --taskMdContent)\n  --executionMode once|scheduled|recurring\n  --dispatchAt <ISO>    Scheduled one-shot time\n  --intervalMinutes <n> Fixed interval; --startAt controls the first tick\n  --cronExpression / --cronTimezone for wall-clock recurrence\n  --trigger-file <path> Optional command Detector\n  --providerId <id> --model <id>  Optional builtin route pair',
     mutation: 'Persists Todo only; does not start AI. A recurring interval without startAt gets its first tick about 2 seconds after task run.',
     output: 'Persisted Task, caller audit provenance, docs path, overrides, nextExecutionAt, and next-step commands.',
     example: 'myagents task create-direct --name "daily review" --taskMdFile task-action.md --executionMode recurring --cronExpression "0 9 * * *" --json',
@@ -2959,7 +2975,7 @@ Related:
     usage: 'myagents task create-from-alignment <alignmentSessionId> --name <name> — Materialize aligned work',
     when: 'After the task-alignment flow has produced a reviewed Task directory.',
     effect: 'Moves the alignment artifacts into one ordinary Task and inherits workspace metadata from the alignment Session.',
-    options: '  <alignmentSessionId> Required alignment Session id\n  --name <name>         Required Task name\n  --run                 Dispatch after successful creation',
+    options: '  <alignmentSessionId> Required alignment Session id\n  --name <name>         Required Task name\n  --providerId <id> --model <id>  Optional builtin route pair\n  --run                 Dispatch after successful creation',
     mutation: 'Creates a once Task; --run also starts its asynchronous AI execution.',
     output: 'Persisted Task/docs plus optional run result.',
     example: 'myagents task create-from-alignment <sessionId> --name "ship feature" --run --json',
@@ -3257,8 +3273,9 @@ Management:
   disable <id>                    Disable an agent
   archive <id>                    Archive an Agent workspace and pause proactive channels
   unarchive <id>                  Restore an archived Agent workspace
-  set <id> <key> <value>          Set one Agent field; provider/model/permission
-                                  also sync the Project mirror and live channels
+  set <id> <key> <value>          Set enabled/runtime/runtimeConfig or one of
+                                  providerId/model/permissionMode; the latter
+                                  sync the Project mirror and live channels
   runtime-status                  Runtime drift status across agents
   channel list <agent-id>         List channels
   channel add <agent-id>          Add a channel
@@ -4251,6 +4268,7 @@ function enrichTaskCreateResponse(
   // lacked model/permission_mode), we want the mismatch to be visible here.
   const persistedOverrides = {
     runtime: (persistedTask.runtime as string | undefined) ?? null,
+    providerId: (persistedTask.providerId as string | undefined) ?? null,
     model: (persistedTask.model as string | undefined) ?? null,
     permissionMode: (persistedTask.permissionMode as string | undefined) ?? null,
     runtimeConfig: persistedTask.runtimeConfig ?? null,
@@ -4272,7 +4290,7 @@ function enrichTaskCreateResponse(
     // a field you sent").
     overridesRequested: requestedOverrides,
     inheritedFromWorkspace:
-      ['runtime', 'model', 'permissionMode'].filter(f => !fieldsWithValue.includes(f)),
+      ['runtime', 'providerId', 'model', 'permissionMode'].filter(f => !fieldsWithValue.includes(f)),
   };
   if (taskId) {
     enriched.nextSteps = options.attached
@@ -5892,6 +5910,7 @@ function hintForMissingRuntime(runtime: RuntimeType): string {
 interface TaskOverrideFields {
   runtime?: unknown;
   runtimeConfig?: unknown;
+  providerId?: unknown;
   model?: unknown;
   permissionMode?: unknown;
   /** Workspace path — used to resolve the agent's default runtime when the
@@ -5902,7 +5921,7 @@ interface TaskOverrideFields {
 }
 
 function hasTaskRuntimeOverride(payload: Record<string, unknown>): boolean {
-  return ['runtime', 'runtimeConfig', 'model', 'permissionMode', 'clearRuntimeOverride']
+  return ['runtime', 'runtimeConfig', 'providerId', 'model', 'permissionMode', 'clearRuntimeOverride']
     .some(field => payload[field] !== undefined && payload[field] !== null && payload[field] !== '');
 }
 
@@ -5913,6 +5932,8 @@ function hasTaskRuntimeOverride(payload: Record<string, unknown>): boolean {
  *
  * Effective-runtime resolution (cross-review fix, v0.1.69):
  *   - If `payload.runtime` is set → use it.
+ *   - Else if `payload.providerId` is set → builtin; Rust owns provider/model
+ *     pair validation and pins the persisted Task runtime to builtin.
  *   - Else if `payload.model` / `payload.permissionMode` is set → resolve the
  *     agent's default runtime from `workspacePath` so we can still validate
  *     the model/mode against the correct allowlist. Without this step a
@@ -5956,6 +5977,8 @@ async function validateTaskOverrides(
         ? { runtimeSource: runtimeConfigSource ?? 'system-cli' }
         : {}),
     };
+  } else if (payload.providerId !== undefined && payload.providerId !== null && payload.providerId !== '') {
+    effectiveRuntimeIdentity = { runtime: 'builtin' };
   } else if (
     (payload.model !== undefined && payload.model !== null && payload.model !== '')
     || (runtimeConfigModel !== undefined && runtimeConfigModel !== null && runtimeConfigModel !== '')
@@ -6119,7 +6142,7 @@ async function validateTaskOverrides(
  * effect (vs. silently falling back to the workspace default).
  */
 function computeOverriddenFields(payload: Record<string, unknown>): string[] {
-  const fields = ['runtime', 'model', 'permissionMode', 'runtimeConfig'];
+  const fields = ['runtime', 'providerId', 'model', 'permissionMode', 'runtimeConfig'];
   return fields.filter(f => {
     const v = payload[f];
     return v !== undefined && v !== null && v !== '';

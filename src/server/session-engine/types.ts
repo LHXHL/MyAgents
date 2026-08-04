@@ -155,6 +155,8 @@ export type InjectedTurnRequest = {
   reasoningEffort?: string;
   providerEnv?: ProviderEnv | 'subscription';
   providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery for a route that becomes unavailable at final dispatch. */
+  providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
@@ -211,6 +213,8 @@ export type ScheduledTurnPreparationResult = {
   model?: string;
   providerEnv?: ProviderEnv | 'subscription';
   providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery retained through final provider materialization. */
+  providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   beforeDispatch?: DispatchGuard;
   release?: () => void | Promise<void>;

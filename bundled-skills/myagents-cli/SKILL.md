@@ -162,7 +162,8 @@ myagents agent disable <id>                             # 禁用
 myagents agent archive <id>                             # 归档 Agent 工作区，并暂停 proactive Channel
 myagents agent unarchive <id>                           # 取消归档；若归档前是 proactive，会恢复启用
 myagents agent set <id> <key> <jsonValue>               # 改单个字段（key/value 形式，value 必须是合法 JSON）
-                                                        # 受保护字段：id / channels（这俩用专用命令）
+                                                        # key 仅限 enabled/runtime/runtimeConfig/providerId/model/permissionMode
+                                                        # id / channels 用专用命令；未知 key 会在写盘前拒绝
 myagents agent channel list <agentId>                   # 列出某 Agent 的所有 Channel
 myagents agent channel add <agentId> --type <平台> --<凭证flag> ...
                                                         # 添加 Channel（平台 = telegram / dingtalk / openclaw:xxx）
@@ -178,7 +179,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 
-`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。provider/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
+`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。只使用上面列出的 canonical key；`provider` / `permission` 不是 alias，分别改用 `providerId` / `permissionMode`。providerId/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
 
 ### Agent Runtime 发现（runtime）
 
@@ -283,7 +284,7 @@ myagents task list [--status X --tag X --query X --limit N --includeDeleted]
 myagents task get <taskId>                              # 详情 + statusHistory + 各 .md 文档路径
 myagents task create-direct --name "..." \
     [--taskMdFile <path> | --taskMdContent "..."] \
-    [--runtime X --model X --permissionMode X --runtimeConfig <jsonStr> --mcpEnabledServers a,b] \
+    [--runtime X --providerId X --model X --permissionMode X --runtimeConfig <jsonStr> --mcpEnabledServers a,b] \
     [--executor agent --executionMode once --runMode X --tags x,y --sourceThoughtId X]
 myagents task create-from-alignment <alignmentSessionId> --name "..." [--run] [其它同 create-direct]
                                                         # 从 AI 对齐会话物化任务（workspaceId/Path/sourceThoughtId 自动继承）
@@ -305,11 +306,12 @@ myagents task delete <taskId>                           # 不可恢复地移出�
 
 创建 scheduled/recurring Task 可用 `--deadline <ISO-8601-with-offset>`、`--maxExecutions <正整数>`、`--aiCanExit true|false` 设置结束条件；quiet Detector 检查不消耗 maxExecutions。固定 interval 第一次 `run` 默认约 2 秒后产生首次 tick；要延后首次机会时传 `--startAt <ISO-8601-with-offset>`。Cron 等下一个墙钟点，scheduled 等 `dispatchAt`。
 
-**任务级 runtime/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
+**任务级 runtime/provider/model/permissionMode 覆盖**：`create-direct` / `create-from-alignment` 支持仅对该任务生效的覆盖 flag，**不会改 Agent 工作区默认**。典型场景："实现用 Claude Code、review 用 Codex" → 创两个任务，`--runtime` 不一样，工作区配置不变。
 
 | Flag | 语义 |
 |------|------|
 | `--runtime` | `builtin` / `claude-code` / `codex` / `gemini`，不传则继承 |
+| `--providerId` | builtin Provider id；必须与 `--model` 成对设置，不传则继承 |
 | `--model` | 值取决于 runtime，**先 `runtime describe <runtime>` 查** |
 | `--permissionMode` | 值取决于 runtime，**同样先 `runtime describe`** |
 | `--runtimeConfig` | JSON 对象字符串，runtime 专属配置（罕用） |

@@ -58,6 +58,40 @@ describe('myagents CLI Task notification updates', () => {
   });
 });
 
+describe('myagents CLI Task provider overrides', () => {
+  it('forwards providerId with model through both Task creation paths', () => {
+    expect(buildRequestBody('task', 'create-direct', ['review'], {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+      taskMdContent: 'Review the workspace.',
+    })).toMatchObject({
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+
+    expect(buildRequestBody('task', 'create-from-alignment', ['session-1'], {
+      name: 'Aligned review',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })).toMatchObject({
+      alignmentSessionId: 'session-1',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('keeps providerId with model on Task update', () => {
+    expect(buildRequestBody('task', 'update', ['task-1'], {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })).toEqual({
+      id: 'task-1',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+});
+
 describe('myagents CLI Task Detector contracts', () => {
   const trigger = {
     source: { type: 'time' },

@@ -320,6 +320,7 @@ export function createTaskTurnOrchestrator() {
               model: prepared.model,
               providerRoute: prepared.providerRoute,
               providerEnv: prepared.providerEnv,
+              providerRoutingRecovery: prepared.providerRoutingRecovery,
               runtimeConfig: prepared.runtimeConfig ?? null,
               analyticsOrigin: origin,
               assistantChannelDelivery: 'caller-owned',

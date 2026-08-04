@@ -319,6 +319,22 @@ describe('admin-api help registry', () => {
     expect(cronText).toContain('Compatibility');
   });
 
+  it('documents canonical Agent keys and Task provider overrides', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const agent = handleHelp({ path: ['agent'] });
+    const task = handleHelp({ path: ['task'] });
+    const agentText = (agent.data as { text?: string } | undefined)?.text ?? '';
+    const taskText = (task.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(agent.success).toBe(true);
+    expect(agentText).toContain('providerId/model/permissionMode');
+    expect(agentText).not.toContain('provider/model/permission');
+    expect(task.success).toBe(true);
+    expect(taskText).toContain('--providerId');
+    expect(taskText).toContain('must be paired with --model');
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -1043,6 +1059,50 @@ describe('admin-api Task Agent experience', () => {
 });
 
 describe('admin-api task runtime model identity', () => {
+  it('treats an explicit Task providerId as builtin instead of inheriting an external Agent runtime', async () => {
+    const workspacePath = '/tmp/myagents-task-builtin-provider';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-external-default',
+        name: 'External Default',
+        workspacePath,
+        runtime: 'codex',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-external-default',
+      path: workspacePath,
+      agentId: 'agent-external-default',
+    }]);
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: {
+        id: 'task-builtin-provider',
+        providerId: 'deepseek',
+        model: 'deepseek-chat',
+      },
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Builtin provider task',
+      workspacePath,
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).not.toHaveBeenCalled();
+    expect(result.data).toMatchObject({
+      overrides: {
+        providerId: 'deepseek',
+        model: 'deepseek-chat',
+      },
+      overridden: expect.arrayContaining(['providerId', 'model']),
+      overridesRequested: expect.arrayContaining(['providerId', 'model']),
+    });
+  });
+
   it('rejects managed-provider when the Task runtime is not Codex', async () => {
     const { handleTaskCreateDirect } = await import('./admin-api');
 
@@ -1279,6 +1339,36 @@ describe('admin-api task runtime model identity', () => {
 });
 
 describe('admin-api agent set configuration intent', () => {
+  it.each([
+    ['provider', 'providerId'],
+    ['permission', 'permissionMode'],
+    ['totallyUnknownField', 'Supported fields'],
+  ])('rejects unsupported field %s before writing config', async (key, recoveryText) => {
+    const config = {
+      agents: [{
+        id: 'agent-unknown-field',
+        name: 'Unknown Field Guard',
+        enabled: true,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-unknown-field',
+      key,
+      value: 'ignored-value',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(recoveryText);
+    expect(readConfig()).toEqual(config);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
   it('stores managed Codex product permission without changing provider or model', async () => {
     const workspacePath = '/tmp/myagents-agent-set-managed-codex';
     writeJson(join(scratch, '.myagents', 'config.json'), {

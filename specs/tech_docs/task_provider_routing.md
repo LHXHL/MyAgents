@@ -98,6 +98,12 @@ TaskScheduler reads current Task
 3. builtin `providerId` 在 Sidecar 从当前 config materialize credential。
 4. 生成 Session metadata/config snapshot，之后由 Session 自己拥有。
 
+Provider materialization 失败时，SessionEngine admission 使用调用点已经掌握的来源给出恢复入口：
+Task 显式 override 指向 canonical `task update`，新 Session 继承值指向 Project-linked Agent，
+已有 Session 指向其冻结快照。该来源只用于当前错误渲染，不新增持久化字段；Provider disabled
+也不自动迁移 durable intent 或 fallback 到其它 Provider。恢复文案会随既有 prepare 结果保留到
+最终 dispatch materialization，覆盖 admission 后 Provider 状态变化的并发窗口。
+
 从这一刻开始，Agent 或 Task 配置的后续修改不会隐式改写该 Session。若用户编辑专属 single-session Task 配置，调用方应通过既有 Session 配置路径显式更新其基线；不能在每个 tick 重放 Task snapshot。
 
 ## 5. 已有 Session 与 Goal

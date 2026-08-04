@@ -136,7 +136,9 @@ describe('Task turn orchestrator', () => {
 
   it('runs an existing Session through preparation and the exact Task guard', async () => {
     mocks.metadata.set('session-1', { id: 'session-1', origin: { kind: 'desktop', surface: 'unknown' } });
-    const { engine, prepareScheduledTurn, runInjectedTurn } = fakeEngine();
+    const { engine, prepareScheduledTurn, runInjectedTurn } = fakeEngine({
+      prepareResult: { providerRoutingRecovery: "Session 'session-1' owns this frozen route." },
+    });
 
     const result = await createTaskTurnOrchestrator().runScheduledTurn(
       engine,
@@ -153,6 +155,7 @@ describe('Task turn orchestrator', () => {
     expect(runInjectedTurn).toHaveBeenCalledWith(expect.objectContaining({
       queueId: 'queue-1',
       turnOwner: { kind: 'task', id: 'task-1' },
+      providerRoutingRecovery: "Session 'session-1' owns this frozen route.",
     }));
     expect(mocks.authorize).toHaveBeenCalledWith('/api/task/turn/authorize', 'POST', {
       taskId: 'task-1',

@@ -160,7 +160,10 @@ myagents session list --agent <agent-id>          # 看最近可复用的 persis
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
-`agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
+`agent set` 不是裸 JSON 属性写入：只接受帮助中列出的 canonical 字段
+`enabled/runtime/runtimeConfig/providerId/model/permissionMode`，未知字段在写盘前拒绝；
+历史帮助里的 `provider` / `permission` 从未产生有效配置，因此不保留为第二套 alias，
+而是明确提示 `providerId` / `permissionMode`。providerId/model/permissionMode 属于配置 intent，
 必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
 Agent/IM Channel。Managed Codex 的 Agent 配置只接受产品 permission
 （`auto | plan | fullAgency`）；`agent show` 再精确投影为 effective Codex

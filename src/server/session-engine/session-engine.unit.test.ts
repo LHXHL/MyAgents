@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
     externalTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     externalCurrentQueueId: null as string | null,
     pendingExternalAsk: false,
+    providerDisabled: false,
     sessionMetadata: new Map<string, Record<string, unknown>>(),
   };
 
@@ -288,7 +289,15 @@ const mocks = vi.hoisted(() => {
     getAllMcpServers: vi.fn(() => [{ id: 'fs' }, { id: 'browser' }]),
     getEffectiveMcpServers: vi.fn(() => [{ id: 'fs' }]),
     getEnabledMcpServerIds: vi.fn(() => ['fs', 'browser']),
+    findProvider: vi.fn((providerId: string) => ({ id: providerId, type: 'api_key' })),
+    isProviderDisabled: vi.fn(() => state.providerDisabled),
     materializeProviderRouteEnv: vi.fn<() => unknown>(() => undefined),
+    resolveProviderEnv: vi.fn((providerId: string) => ({
+      providerId,
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'test-key',
+      apiProtocol: 'anthropic',
+    })),
     managementApi: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(
       async () => ({ ok: true }),
     ),
@@ -297,7 +306,7 @@ const mocks = vi.hoisted(() => {
     )),
     loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
     resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
-    findProjectAgentByWorkspacePath: vi.fn(() => undefined),
+    findProjectAgentByWorkspacePath: vi.fn<() => { id: string } | undefined>(() => undefined),
   };
 });
 
@@ -412,8 +421,11 @@ vi.mock('../utils/admin-config', () => ({
   getEffectiveMcpServers: mocks.getEffectiveMcpServers,
   getEnabledMcpServerIds: mocks.getEnabledMcpServerIds,
   getEffectiveOfficialToolIdsForSession: mocks.getEffectiveOfficialToolIdsForSession,
+  findProvider: mocks.findProvider,
+  isProviderDisabled: mocks.isProviderDisabled,
   loadConfig: mocks.loadConfig,
   materializeProviderRouteEnv: mocks.materializeProviderRouteEnv,
+  resolveProviderEnv: mocks.resolveProviderEnv,
   resolveSubscriptionAuthKind: mocks.resolveSubscriptionAuthKind,
   resolveWorkspaceConfig: mocks.resolveWorkspaceConfig,
 }));
@@ -477,6 +489,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.externalTurnIdentity = null;
     mocks.state.externalCurrentQueueId = null;
     mocks.state.pendingExternalAsk = false;
+    mocks.state.providerDisabled = false;
     mocks.state.sessionMetadata.clear();
     resetProductSessionBinding({ sessionId: 'external-session', workspacePath: '/workspace' });
     mocks.state.sessionMetadata.set('external-session', {
@@ -1811,6 +1824,117 @@ describe('session-engine selector and adapters', () => {
       type: 'cron',
       taskId: 'task-1',
     }));
+  });
+
+  it.each([
+    [
+      'Task override',
+      true,
+      'provider-task',
+      undefined,
+      "Task 'task-route-owner'",
+    ],
+    [
+      'Agent default',
+      true,
+      undefined,
+      { id: 'agent-route-owner' },
+      "Agent 'agent-route-owner'",
+    ],
+    [
+      'Session snapshot',
+      false,
+      undefined,
+      { id: 'agent-route-owner' },
+      "Session 'builtin-session'",
+    ],
+  ])('attributes a disabled provider inherited from %s to the real owner', async (
+    _label,
+    initializeSession,
+    operationProviderId,
+    agent,
+    expectedOwner,
+  ) => {
+    mocks.state.providerDisabled = true;
+    mocks.findProjectAgentByWorkspacePath.mockReturnValue(agent);
+    mocks.state.sessionMetadata.set('builtin-session', {
+      id: 'builtin-session',
+      providerId: operationProviderId ?? 'provider-inherited',
+      model: 'model-1',
+      providerRoute: {
+        kind: 'provider',
+        providerId: operationProviderId ?? 'provider-inherited',
+        model: 'model-1',
+      },
+    });
+
+    const result = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'task-route-owner',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      operation: {
+        kind: 'task',
+        initializeSession,
+        ...(operationProviderId
+          ? { providerId: operationProviderId, model: 'model-1' }
+          : {}),
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'configuration_failed',
+      status: 400,
+    });
+    expect(result.error).toContain(expectedOwner);
+  });
+
+  it('retains owner recovery when a provider becomes unavailable at final dispatch', async () => {
+    const scenario = {
+      type: 'cron' as const,
+      taskId: 'task-route-race',
+      intervalMinutes: 15,
+      aiCanExit: false,
+    };
+    const prepared = await getSessionEngine().prepareScheduledTurn({
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario,
+      operation: {
+        kind: 'task',
+        initializeSession: true,
+        providerId: 'provider-race',
+        model: 'model-1',
+        beforeDispatch: vi.fn(async () => ({ accepted: true })),
+      },
+    });
+
+    expect(prepared).toMatchObject({
+      success: true,
+      providerRoutingRecovery: expect.stringContaining("Task 'task-route-race'"),
+    });
+
+    const result = await runInjectedTurn({
+      prompt: 'run task',
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      scenario,
+      model: prepared.model,
+      providerEnv: prepared.providerEnv,
+      providerRoute: prepared.providerRoute,
+      providerRoutingRecovery: prepared.providerRoutingRecovery,
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({ success: false, enqueued: false, status: 409 });
+    expect(result.error).toContain("Task 'task-route-race'");
+    await prepared.release?.();
   });
 
   it('reconciles a new builtin Task Session to its exact MCP override before dispatch', async () => {
