@@ -219,6 +219,14 @@ describe('Claude SDK context window env', () => {
     vi.unstubAllEnvs();
   });
 
+  it('pins auto-compaction at 90% instead of inheriting the host value (#508)', () => {
+    vi.stubEnv('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', '55');
+
+    const env = buildClaudeSessionEnv(undefined, 'claude-opus-4-8');
+
+    expect(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('90');
+  });
+
   it('keeps Claude 4.6 defaults at 200K without forcing SDK 1M disable flags (#392)', () => {
     vi.stubEnv('CLAUDE_CODE_DISABLE_1M_CONTEXT', '');
     vi.stubEnv('CLAUDE_CODE_ENABLE_1M_CONTEXT', '1');
