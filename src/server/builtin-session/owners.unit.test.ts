@@ -654,17 +654,29 @@ describe('builtin-session owners', () => {
 
   it('config owner applies policy decisions before state mutation', () => {
     setCurrentMcpServers([{ id: 'old', name: 'old', command: 'node', args: [], type: 'stdio', isBuiltin: false }]);
-    const skippedMcp = applyMcpServersUpdate(
+    const changedMcp = applyMcpServersUpdate(
       [{ id: 'new', name: 'new', command: 'node', args: [], type: 'stdio', isBuiltin: false }],
-      { hasQuerySession: true, isSnapshotted: true },
+      { hasQuerySession: true },
     );
-    expect(skippedMcp).toMatchObject({
-      applied: false,
+    expect(changedMcp).toMatchObject({
+      applied: true,
       changed: true,
-      shouldRestart: false,
-      reason: 'snapshot-authoritative',
+      shouldRestart: true,
+      reason: 'fingerprint-changed',
     });
-    expect(snapshotConfig().mcpServers?.map(server => server.id)).toEqual(['old']);
+    expect(snapshotConfig().mcpServers?.map(server => server.id)).toEqual(['new']);
+
+    const refreshedMcp = applyMcpServersUpdate(
+      [{ id: 'new', name: 'new', command: 'new-command', args: [], type: 'stdio', isBuiltin: false }],
+      { hasQuerySession: true },
+    );
+    expect(refreshedMcp).toMatchObject({
+      applied: true,
+      changed: true,
+      shouldRestart: true,
+      reason: 'fingerprint-changed',
+    });
+    expect(snapshotConfig().mcpServers?.[0]?.command).toBe('new-command');
 
     const skippedModel = applyModelUpdate('im-model', { source: 'im-sync', isSnapshotted: true });
     expect(skippedModel).toMatchObject({ applied: false, reason: 'snapshot-authoritative' });

@@ -77,7 +77,7 @@ const sessionEngineMocks = vi.hoisted(() => {
 });
 
 vi.mock('./agent-session', () => ({
-  SDK_RESERVED_MCP_NAMES: new Set<string>(),
+  SDK_RESERVED_MCP_NAMES: [] as string[],
   getAgentState: () => ({ agentDir: agentSessionMocks.agentDir }),
   setMcpServers: agentSessionMocks.setMcpServers,
   setAgents: agentSessionMocks.setAgents,
@@ -2068,6 +2068,96 @@ describe('admin-api model add', () => {
   });
 });
 
+describe('admin-api MCP add contract', () => {
+  it('creates a new server and fans out app-wide config invalidation', async () => {
+    const { handleMcpAdd } = await import('./admin-api');
+
+    const result = await handleMcpAdd({
+      server: {
+        id: 'new-server',
+        name: 'New Server',
+        type: 'stdio',
+        command: 'node',
+        args: ['server.mjs'],
+        env: { TOKEN: 'secret' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(readConfig().mcpServers).toEqual([
+      expect.objectContaining({
+        id: 'new-server',
+        command: 'node',
+        args: ['server.mjs'],
+        env: { TOKEN: 'secret' },
+      }),
+    ]);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/app/config-changed',
+      'POST',
+      {},
+      { timeoutMs: 2_000 },
+    );
+  });
+
+  it('rejects a duplicate custom id without replacing any stored fields', async () => {
+    const original = {
+      id: 'existing-server',
+      name: 'Existing Server',
+      description: 'keep me',
+      type: 'stdio',
+      command: 'node',
+      args: ['old.mjs', '--verbose'],
+      env: { TOKEN: 'original-secret', MODE: 'production' },
+      isBuiltin: false,
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [original],
+      mcpEnabledServers: ['existing-server'],
+    });
+    const { handleMcpAdd } = await import('./admin-api');
+
+    const result = await handleMcpAdd({
+      server: {
+        id: 'existing-server',
+        type: 'stdio',
+        command: 'different-command',
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('mcp add only creates new servers'),
+      recoveryHint: { recoveryCommand: 'myagents mcp show existing-server' },
+    });
+    expect(readConfig()).toMatchObject({
+      mcpServers: [original],
+      mcpEnabledServers: ['existing-server'],
+    });
+    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('does not report add success when app-wide invalidation fails', async () => {
+    const { handleMcpAdd } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      error: 'management offline',
+    });
+
+    await expect(handleMcpAdd({
+      server: {
+        id: 'saved-without-refresh',
+        type: 'stdio',
+        command: 'node',
+      },
+    })).rejects.toThrow('MCP configuration was saved, but app-wide refresh failed');
+    expect(readConfig().mcpServers).toEqual([
+      expect.objectContaining({ id: 'saved-without-refresh' }),
+    ]);
+  });
+});
+
 describe('admin-api MCP connectivity test', () => {
   it('rejects a configured stdio command that exists but exits before MCP initialize', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
@@ -2089,10 +2179,16 @@ describe('admin-api MCP connectivity test', () => {
   });
 
   it('handshakes with the merged stdio args and env used by persisted MCP config', async () => {
+    agentSessionMocks.agentDir = process.cwd();
+    const expectedManagedBin = process.platform === 'win32'
+      ? join(scratch, '.myagents', 'npm-global')
+      : join(scratch, '.myagents', 'npm-global', 'bin');
     const serverCode = [
       "import { Server } from '@modelcontextprotocol/sdk/server/index.js';",
       "import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';",
-      "if (process.argv[1] !== 'legacy-extra' || process.env.MCP_TEST_TOKEN !== 'from-override') {",
+      "import { delimiter } from 'node:path';",
+      `const executablePath = process.env[${JSON.stringify(process.platform === 'win32' ? 'Path' : 'PATH')}] || '';`,
+      `if (process.argv[1] !== 'legacy-extra' || process.env.MCP_TEST_TOKEN !== 'from-override' || process.cwd() !== ${JSON.stringify(process.cwd())} || !executablePath.split(delimiter).includes(${JSON.stringify(expectedManagedBin)})) {`,
       "  process.stderr.write('merged stdio config missing\\n');",
       '  process.exit(1);',
       '}',

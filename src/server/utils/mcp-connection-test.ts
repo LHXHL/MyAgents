@@ -42,6 +42,8 @@ export class McpConnectionTestError extends Error {
 interface McpConnectionTestOptions {
   fetch?: FetchLike;
   timeoutMs?: number;
+  executionEnv?: Record<string, string>;
+  cwd?: string;
 }
 
 interface ProbeTransport {
@@ -85,7 +87,11 @@ function createProbeTransport(
     const transport = new StdioClientTransport({
       command,
       args,
-      env: buildMcpSubprocessEnv(process.env, server.env),
+      env: {
+        ...options.executionEnv,
+        ...buildMcpSubprocessEnv(process.env, server.env),
+      },
+      cwd: options.cwd,
       stderr: 'pipe',
     });
     return {

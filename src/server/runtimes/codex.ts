@@ -105,7 +105,7 @@ export function summarizeCodexThreadParamsForLog(
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
+const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 const CODEX_MCP_PROXY_ENV_KEYS = [
   'HTTP_PROXY',
   'HTTPS_PROXY',

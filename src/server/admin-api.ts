@@ -75,6 +75,7 @@ import { buildCronScope } from './utils/cron-scope';
 import { readLoopbackJson } from './utils/loopback-response';
 import { ADMIN_LOOPBACK_TIMEOUT_MS, managementApi } from './utils/management-api-client';
 import { getCuseDiagnostics } from './utils/cuse-diagnostics';
+import { buildSessionExecutablePath } from './utils/session-executable-path';
 import { getSessionEngine } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
@@ -411,15 +412,26 @@ export async function handleMcpAdd(payload: {
   };
 
   if (dryRun) {
+    if ((loadConfig().mcpServers ?? []).some(existing => existing.id === server.id)) {
+      return mcpAlreadyExistsResponse(server.id);
+    }
     return { success: true, dryRun: true, preview: server };
   }
 
-  await atomicModifyConfig(c => ({
-    ...c,
-    mcpServers: [...(c.mcpServers || []).filter(x => x.id !== server.id), server],
-  }));
+  let alreadyExists = false;
+  await atomicModifyConfig(c => {
+    if ((c.mcpServers ?? []).some(existing => existing.id === server.id)) {
+      alreadyExists = true;
+      return c;
+    }
+    return {
+      ...c,
+      mcpServers: [...(c.mcpServers || []), server],
+    };
+  });
+  if (alreadyExists) return mcpAlreadyExistsResponse(server.id);
 
-  notifyMcpChange('add', server.id);
+  await notifyMcpChange('add', server.id);
   return {
     success: true,
     data: { id: server.id, name: server.name },
@@ -433,7 +445,7 @@ export async function handleMcpRemove(payload: { id: string }): Promise<AdminRes
 
   try {
     const result = await removeCustomMcpServerCascade(id);
-    notifyMcpChange('remove', id);
+    await notifyMcpChange('remove', id);
     return { success: true, data: result, hint: 'Server removed.' };
   } catch (err) {
     const response: AdminResponse = {
@@ -477,7 +489,7 @@ export async function handleMcpEnable(payload: { id: string; scope?: string }): 
     }
   }
 
-  notifyMcpChange('enable', id);
+  await notifyMcpChange('enable', id);
   const scopeLabel = scope === 'both' ? 'global + project' : scope;
   const skipHint = projectMutation && projectMutation.status !== 'updated'
     ? ` Project scope skipped: ${projectMcpMutationReason(projectMutation)}.`
@@ -513,7 +525,7 @@ export async function handleMcpDisable(payload: { id: string; scope?: string }):
     }
   }
 
-  notifyMcpChange('disable', id);
+  await notifyMcpChange('disable', id);
   const skipHint = projectMutation && projectMutation.status !== 'updated'
     ? ` Project scope skipped: ${projectMcpMutationReason(projectMutation)}.`
     : '';
@@ -552,7 +564,7 @@ export async function handleMcpEnv(payload: {
       mcpServerEnv[id] = { ...(mcpServerEnv[id] || {}), ...env };
       return { ...c, mcpServerEnv };
     });
-    notifyMcpChange('env', id);
+    await notifyMcpChange('env', id);
     return { success: true, data: { id, keys: Object.keys(env) }, hint: 'Environment variables updated.' };
   }
 
@@ -576,7 +588,7 @@ export async function handleMcpEnv(payload: {
       }
       return { ...c, mcpServerEnv };
     });
-    notifyMcpChange('env', id);
+    await notifyMcpChange('env', id);
     return { success: true, data: { id, deletedKeys: Object.keys(env) } };
   }
 
@@ -706,9 +718,12 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
       if (remainingMs <= 0) {
         throw new McpConnectionTestError('Connection timed out (15s)');
       }
+      const executablePath = buildSessionExecutablePath();
       return await testMcpServerConnection(probeServer, {
         fetch: (url, init) => fetchWithGeneralProxy(String(url), init),
         timeoutMs: remainingMs,
+        executionEnv: { [executablePath.key]: executablePath.value },
+        cwd: getCurrentWorkspacePath(),
       });
     });
     const overallDeadline = new Promise<never>((_, reject) => {
@@ -929,11 +944,15 @@ export function handleModelList(): AdminResponse {
   return { success: true, data };
 }
 
-async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+async function notifyAppConfigChanged(
+  section: 'model' | 'mcp',
+  action: string,
+  id: string,
+): Promise<void> {
   // Preserve the current Sidecar-local event for tabs connected to this
   // process, then fan out an app-scoped invalidation through Rust so every
   // renderer reloads the disk authorities regardless of Sidecar ownership.
-  broadcast('config:changed', { section: 'model', action, id });
+  broadcast('config:changed', { section, action, id });
   const result = await managementApi(
     '/api/app/config-changed',
     'POST',
@@ -941,10 +960,15 @@ async function notifyModelConfigChanged(action: string, id: string): Promise<voi
     { timeoutMs: 2_000 },
   );
   if (result.ok !== true) {
+    const label = section === 'model' ? 'Model' : 'MCP';
     throw new Error(
-      `Model configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
+      `${label} configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
     );
   }
+}
+
+async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+  await notifyAppConfigChanged('model', action, id);
 }
 
 export async function handleModelSetKey(payload: { id: string; apiKey: string }): Promise<AdminResponse> {
@@ -6226,13 +6250,24 @@ function parseMcpScope(scope: string | undefined): McpScope | null {
 /** Update Sidecar MCP state and notify frontend after config change.
  *  Respects project-scope: only servers enabled both globally AND in the
  *  current workspace project are pushed to the session. */
-function notifyMcpChange(action: string, id: string): void {
+function mcpAlreadyExistsResponse(id: string): AdminResponse {
+  return {
+    success: false,
+    error: `MCP server '${id}' already exists; mcp add only creates new servers`,
+    recoveryHint: {
+      recoveryCommand: `myagents mcp show ${id}`,
+      message: 'Inspect the existing definition. Remove it first if you intend to replace it.',
+    },
+  };
+}
+
+async function notifyMcpChange(action: string, id: string): Promise<void> {
   const workspacePath = getCurrentWorkspacePath();
   const config = loadConfig();
   const effectiveServers = resolveEffectiveMcpServersForWorkspace(config, workspacePath, 'notifyMcpChange');
 
   setMcpServers(effectiveServers);
-  broadcast('config:changed', { section: 'mcp', action, id });
+  await notifyAppConfigChanged('mcp', action, id);
 }
 
 type ProjectMcpMutationResult =

@@ -11,11 +11,12 @@ import {
   type BackgroundAgentPermissionMode,
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
-import { getScriptDir, getBundledNodeDir, getSystemNodeDirs } from './utils/runtime';
+import { getScriptDir } from './utils/runtime';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
+import { buildSessionExecutablePath } from './utils/session-executable-path';
 import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
@@ -123,7 +124,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
 import { participatesInLiveRestore } from '../shared/liveRevision';
@@ -742,11 +743,10 @@ function scheduleDeferredRestart(reason: RestartReason): void {
  * v0.1.69 T14: Return true if the current session is locked — its config was
  * captured as a snapshot at creation (see types/session.ts). Callers that
  * react to AgentConfig change events should consult this before scheduling a
- * restart: a snapshotted session owns MCP/agents/provider/model/permissionMode
- * and does NOT follow later agent changes, so restarting would be wasted work
- * (the frontend already passes the session-resolved list → fingerprint is
- * stable → no restart needed). If the frontend misbehaves and sends the
- * agent's raw list, this guard prevents the mis-call from thrashing the SDK.
+ * restart: a snapshotted session owns MCP selection IDs plus
+ * agents/provider/model/permissionMode and does NOT follow later Agent
+ * defaults. MCP definition bodies and the global enable security lever remain
+ * disk-owned and are resolved separately in setMcpServers().
  *
  * IM sessions intentionally leave `configSnapshotAt` undefined (D4
  * live-follow), so this returns false and the legacy restart path runs.
@@ -2719,24 +2719,22 @@ export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition
  * If MCP config changed and a session is running, it will be restarted with resume
  */
 export function setMcpServers(servers: McpServerDefinition[]): void {
-  const mcpDecision = configApplyMcpServersUpdate(servers, {
+  // Owned Sessions freeze MCP selection IDs in metadata, while config.json
+  // owns definition bodies and the global enable security lever. Resolve that
+  // canonical projection before comparing fingerprints so an incoming
+  // workspace-default list cannot replace the snapshot, and a global disable
+  // or same-ID definition change cannot be rejected as one opaque delta.
+  const meta = sessionId ? getSessionMetadata(sessionId) : null;
+  const effectiveServers = meta?.configSnapshotAt
+    ? resolveWorkspaceConfig(agentDir ?? '', meta, { includeMcp: true }).mcpServers
+    : servers;
+  const mcpDecision = configApplyMcpServersUpdate(effectiveServers, {
     hasQuerySession: Boolean(lifecycleState.query),
-    isSnapshotted: isCurrentSessionSnapshotted(),
   });
 
-  if (!mcpDecision.applied && mcpDecision.reason === 'snapshot-authoritative') {
-    // v0.1.69 T14: Locked session owns its MCP list — agent-level toggles don't apply here.
-    // Expected frontend behavior is to pass the session-resolved list so mcpChanged is false;
-    // if we got here, it means someone passed the agent's raw list. Do not mutate
-    // configState.currentMcpServers: ensureSdkMcpInSync() reads that state and would otherwise
-    // apply the wrong list later without a restart.
-    console.log(`[agent] MCP changed but session ${sessionId} is snapshotted — skip state update/restart (snapshot is authoritative)`);
-    return;
-  }
-
   if (isDebugMode) {
-    console.log(`[agent] MCP servers set: ${servers.map(s => s.id).join(', ') || 'none'}`);
-    for (const s of servers) {
+    console.log(`[agent] MCP servers set: ${effectiveServers.map(s => s.id).join(', ') || 'none'}`);
+    for (const s of effectiveServers) {
       if (s.env && Object.keys(s.env).length > 0) {
         console.log(`[agent] MCP ${s.id}: Has custom env vars: ${Object.keys(s.env).join(', ')}`);
       }
@@ -2750,7 +2748,7 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   // The timer in schedulePreWarm() batches these into a single abort+restart.
   if (mcpDecision.changed && lifecycleState.query) {
     if (mcpDecision.shouldRestart) {
-      const ids = servers.map(s => s.id).join(', ') || 'none';
+      const ids = effectiveServers.map(s => s.id).join(', ') || 'none';
       console.log(`[agent] MCP config changed → [${ids}], deferring restart to pre-warm debounce`);
       scheduleDeferredRestart('mcp');
     }
@@ -2761,6 +2759,15 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   if (!lifecycleState.processing || lifecycleState.preWarming) {
     schedulePreWarm();
   }
+}
+
+function refreshMcpConfigForNewSession(): void {
+  if (configState.currentMcpServers === null || !agentDir) return;
+  const refreshed = getEffectiveMcpServers(agentDir);
+  setCurrentMcpServers(refreshed);
+  console.log(
+    `[agent] resetSession: refreshed ${refreshed.length} effective MCP definition(s) from config.json`,
+  );
 }
 
 /**
@@ -5495,14 +5502,8 @@ export function buildClaudeSessionEnv(
   // (Finder launches via launchd which doesn't inherit shell environment variables)
   const { home } = getCrossPlatformEnv();
   const isDebug = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
-
-  // Cross-platform PATH separator
-  const PATH_SEP = process.platform === 'win32' ? ';' : ':';
-  const PATH_KEY = process.platform === 'win32' ? 'Path' : 'PATH';
-
-  // Detect bundled Node.js directory using shared utility from runtime.ts
   const isWindows = process.platform === 'win32';
-  const bundledNodeDir = getBundledNodeDir();
+  const executablePath = buildSessionExecutablePath();
   const myAgentsNpmGlobalPrefix = getMyAgentsNpmGlobalPrefix(home);
   const myAgentsNpmGlobalBinDir = getMyAgentsNpmGlobalBinDir(home);
 
@@ -5513,101 +5514,10 @@ export function buildClaudeSessionEnv(
 
   if (isDebug) {
     console.log('[env] Script directory:', getScriptDir());
-    console.log(`[env] Bundled Node.js: ${bundledNodeDir || 'NOT FOUND'}`);
-  }
-
-  // Build essential paths based on platform.
-  // v0.2.0+: bundled Bun removed; bundled Node.js is the only app-local JS runtime.
-  const essentialPaths: string[] = [];
-
-  // System Node.js directories — preferred over bundled for MCP/npm ecosystem reliability.
-  // User-maintained Node.js is less likely to have broken npm than our bundled version.
-  // Only add directories that actually exist to avoid polluting PATH with ghost entries.
-  for (const dir of getSystemNodeDirs()) {
-    if (existsSync(dir)) {
-      essentialPaths.push(dir);
-    }
-  }
-
-  // Bundled Node.js directory — fallback for users without system Node.js
-  if (bundledNodeDir) {
-    essentialPaths.push(bundledNodeDir);
-  }
-
-  // MyAgents-managed npm global bin dir. It stays on PATH so tools installed
-  // by MyAgents-localized npm commands (see MYAGENTS_NPM_GLOBAL_PREFIX below)
-  // are immediately invocable. This dir comes BEFORE `~/.myagents/bin` in
-  // essentialPaths so:
-  //   1. AI-installed tools (e.g. agent-browser) shadow any legacy
-  //      `~/.myagents/bin/<name>` wrapper from older app versions —
-  //      legacy wrappers naturally fall idle without explicit cleanup.
-  //   2. Existing installs made by older MyAgents versions remain discoverable
-  //      after we stopped leaking npm_config_prefix globally.
-  if (myAgentsNpmGlobalBinDir) {
-    essentialPaths.push(myAgentsNpmGlobalBinDir);
-  }
-
-  // MyAgents bin directory — user-facing commands (the `myagents` CLI itself).
-  // Legacy `agent-browser` wrappers from older app versions may still live
-  // here; they're shadowed by `npm-global/bin` above so no cleanup needed.
-  if (home) {
-    const myagentsBinDir = isWindows
-      ? resolve(home, '.myagents', 'bin')
-      : `${home}/.myagents/bin`;
-    essentialPaths.push(myagentsBinDir);
-  }
-
-  // System bun/runtime installations (fallback)
-  if (isWindows) {
-    // Windows paths
-    if (home) {
-      essentialPaths.push(resolve(home, '.bun', 'bin'));
-    }
-    // Git for Windows — SDK requires git-bash, and PATH may not include Git yet
-    // (e.g. NSIS just installed Git but current process tree has stale PATH)
-    for (const gp of [
-      resolve(winProgramFiles, 'Git', 'cmd'),
-      resolve(winProgramFilesX86, 'Git', 'cmd'),
-      ...(winLocalAppData ? [resolve(winLocalAppData, 'Programs', 'Git', 'cmd')] : []),
-    ]) {
-      essentialPaths.push(gp);
-    }
-  } else {
-    // macOS/Linux paths
-    if (home) {
-      essentialPaths.push(`${home}/.bun/bin`);
-    }
-    essentialPaths.push('/opt/homebrew/bin');
-    essentialPaths.push('/usr/local/bin');
-    essentialPaths.push('/usr/bin');
-    essentialPaths.push('/bin');
-  }
-
-  const existingPath = process.env[PATH_KEY] || process.env.PATH || '';
-  if (isDebug) console.log('[env] Original PATH:', existingPath.substring(0, 200) + (existingPath.length > 200 ? '...' : ''));
-
-  const pathParts = existingPath ? existingPath.split(PATH_SEP) : [];
-
-  // Add essential paths if not already present (in reverse order so first in list ends up first in PATH)
-  // Use case-insensitive comparison on Windows since paths are case-insensitive
-  const pathIncludes = (parts: string[], path: string): boolean => {
-    if (isWindows) {
-      const lowerPath = path.toLowerCase();
-      return parts.some(p => p.toLowerCase() === lowerPath);
-    }
-    return parts.includes(path);
-  };
-
-  for (const p of [...essentialPaths].reverse()) {
-    if (p && !pathIncludes(pathParts, p)) {
-      pathParts.unshift(p);
-    }
-  }
-
-  const finalPath = pathParts.join(PATH_SEP);
-  if (isDebug) {
-    console.log('[env] Final PATH (first 5 entries):', pathParts.slice(0, 5).join(PATH_SEP));
-    console.log('[env] Bundled Node.js dir:', bundledNodeDir ? bundledNodeDir : 'NOT FOUND (system Node will be used)');
+    console.log(`[env] Bundled Node.js: ${executablePath.bundledNodeDir || 'NOT FOUND'}`);
+    const originalPath = process.env[executablePath.key] || process.env.PATH || '';
+    console.log('[env] Original PATH:', originalPath.substring(0, 200) + (originalPath.length > 200 ? '...' : ''));
+    console.log('[env] Final PATH (first 5 entries):', executablePath.entries.slice(0, 5).join(isWindows ? ';' : ':'));
   }
 
   // Build base environment
@@ -5616,7 +5526,7 @@ export function buildClaudeSessionEnv(
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.PATH;
   delete env.Path;
-  env[PATH_KEY] = finalPath;
+  env[executablePath.key] = executablePath.value;
 
   // Keep builtin sessions away from the provider's hard context boundary.
   // Claude Code 2.1.220 otherwise derives a late fixed-token threshold
@@ -7378,6 +7288,11 @@ export async function resetSession(): Promise<void> {
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
+  // A new conversation inherits current Project/global MCP selection and
+  // current config.json definitions. Do not pre-warm from the outgoing
+  // Session's retained launch objects.
+  refreshMcpConfigForNewSession();
+
   // 4. Clear SDK resume state - CRITICAL: prevents SDK from resuming old context!
   sessionRegistered = false;
   pendingResumeSessionAt = undefined; // Prevent leaking rewind state to new session
@@ -7603,7 +7518,6 @@ export async function initializeAgent(
   // Skip for Global Sidecar (no workspace-specific config).
   if (!lifecycleState.preWarmDisabled) {
     try {
-      const { resolveWorkspaceConfig } = await import('./utils/admin-config');
       const mcpAuthority = getMcpAuthorityForScenario(currentScenario.type);
       const shouldSelfResolveMcp = mcpAuthority === 'self-resolve' && hasInitialPrompt;
       // v0.1.69: pass session metadata so the sidecar prefers session snapshot

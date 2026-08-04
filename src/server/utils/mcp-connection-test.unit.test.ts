@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,6 +46,57 @@ describe('MCP connection test lifecycle', () => {
     await vi.waitFor(() => {
       expect(() => process.kill(childPid, 0)).toThrow();
     }, { timeout: 2_000 });
+  });
+
+  it('passes the Session executable PATH and workspace cwd to a stdio probe', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'myagents-mcp-probe-env-'));
+    scratchDirs.push(scratch);
+    const resultFile = join(scratch, 'probe.json');
+    const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
+    const expectedPath = process.platform === 'win32' ? 'C:\\probe-bin' : '/probe-bin';
+    const serverCode = [
+      "import { writeFileSync } from 'node:fs';",
+      "let buffer = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', chunk => {",
+      '  buffer += chunk;',
+      "  let newline = buffer.indexOf('\\n');",
+      '  while (newline >= 0) {',
+      '    const line = buffer.slice(0, newline);',
+      '    buffer = buffer.slice(newline + 1);',
+      '    if (line) {',
+      '      const request = JSON.parse(line);',
+      "      if (request.method === 'initialize') {",
+      `        writeFileSync(process.env.MCP_TEST_RESULT_FILE, JSON.stringify({ cwd: process.cwd(), path: process.env[${JSON.stringify(pathKey)}] }));`,
+      "        const response = { jsonrpc: '2.0', id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: {}, serverInfo: { name: 'probe-env', version: '1.0.0' } } };",
+      "        process.stdout.write(JSON.stringify(response) + '\\n');",
+      '      }',
+      '    }',
+      "    newline = buffer.indexOf('\\n');",
+      '  }',
+      '});',
+      "process.stdin.on('end', () => process.exit(0));",
+    ].join('\n');
+    const server: McpServerDefinition = {
+      id: 'probe-env',
+      name: 'Probe env fixture',
+      type: 'stdio',
+      command: process.execPath,
+      args: ['--input-type=module', '-e', serverCode],
+      env: { MCP_TEST_RESULT_FILE: resultFile },
+      isBuiltin: false,
+    };
+
+    await expect(testMcpServerConnection(server, {
+      timeoutMs: 1_000,
+      executionEnv: { [pathKey]: expectedPath },
+      cwd: scratch,
+    })).resolves.toMatchObject({ serverName: 'probe-env' });
+
+    expect(JSON.parse(readFileSync(resultFile, 'utf8'))).toEqual({
+      cwd: realpathSync(scratch),
+      path: expectedPath,
+    });
   });
 
   it('redacts a credential supplied as a sensitive command argument', async () => {
