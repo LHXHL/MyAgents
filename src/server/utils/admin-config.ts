@@ -118,6 +118,15 @@ export class ProjectsBusyError extends Error {
   }
 }
 
+export class AgentConfigIntentBusyError extends Error {
+  readonly code = 'AGENT_CONFIG_INTENT_BUSY';
+
+  constructor(message = 'Agent config intent busy: could not acquire agent-config-intent.lock within 5000ms; retry') {
+    super(message);
+    this.name = 'AgentConfigIntentBusyError';
+  }
+}
+
 export class ProviderBusyError extends Error {
   readonly code = 'PROVIDER_BUSY';
 
@@ -342,7 +351,7 @@ export async function withAgentConfigIntentLock<T>(fn: () => Promise<T>): Promis
       fn,
     );
   } catch (error) {
-    if (error instanceof FileBusyError) throw new ConfigBusyError();
+    if (error instanceof FileBusyError) throw new AgentConfigIntentBusyError();
     throw error;
   }
 }

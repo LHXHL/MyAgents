@@ -18,6 +18,7 @@ import {
     CONFIG_FILE,
     safeLoadJson,
     safeWriteJson,
+    isLockBusyError,
 } from './configStore';
 import {
     mockLoadConfig,
@@ -371,6 +372,7 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
                 try {
                     await patchProject(found.id, metadataPatch);
                 } catch (e) {
+                    if (isLockBusyError(e)) throw e;
                     console.warn('[configService] Failed to repair bundled workspace metadata:', e);
                 }
             }
@@ -384,6 +386,7 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
             const metadataPatch = getSystemPresetProjectMetadataPatch(project, DEFAULT_SYSTEM_PRESET_WORKSPACE_ID);
             await patchProject(project.id, metadataPatch);
         } catch (e) {
+            if (isLockBusyError(e)) throw e;
             console.warn('[configService] Failed to set bundled workspace icon:', e);
         }
 
@@ -403,6 +406,10 @@ export async function ensureBundledWorkspace(): Promise<boolean> {
             : '[configService] Bundled workspace recovered into projects:', result.path);
         return true;
     } catch (err) {
+        if (isLockBusyError(err)) {
+            _bundledWorkspaceChecked = false;
+            throw err;
+        }
         console.warn('[configService] ensureBundledWorkspace failed:', err);
         return false;
     }

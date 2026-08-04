@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   loadProjects: vi.fn(),
   getAllProviders: vi.fn(),
   reconcileIdentities: vi.fn(),
+  ensureBundledWorkspace: vi.fn(),
+  withAgentConfigIntentLock: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
@@ -27,7 +29,10 @@ vi.mock('@/utils/tauriListen', () => ({
 }));
 vi.mock('@/api/apiFetch', () => ({ apiGetJson: vi.fn(async () => ({ models: [] })) }));
 vi.mock('./services/configStore', () => ({
-  withAgentConfigIntentLock: vi.fn(async (run: () => Promise<unknown>) => run()),
+  isLockBusyError: (error: unknown) => (
+    !!error && typeof error === 'object' && 'code' in error && String(error.code).endsWith('BUSY')
+  ),
+  withAgentConfigIntentLock: mocks.withAgentConfigIntentLock,
   withProjectsLock: vi.fn(async (run: () => Promise<unknown>) => run()),
 }));
 
@@ -37,7 +42,7 @@ vi.mock('./services/appConfigService', () => ({
     mocks.config = modify(mocks.config);
     return mocks.config;
   }),
-  ensureBundledWorkspace: vi.fn(async () => {}),
+  ensureBundledWorkspace: mocks.ensureBundledWorkspace,
   ensureManagedCodexProviderDevGateDefault: vi.fn(async () => {}),
   mergePresetCustomModels: vi.fn((providers: Provider[]) => providers),
 }));
@@ -93,7 +98,7 @@ function project(id: string, name: string, path: string): Project {
 }
 
 function Probe() {
-  const { config, projects, providers, apiKeys, providerVerifyStatus } = useConfigData();
+  const { config, projects, providers, apiKeys, providerVerifyStatus, error } = useConfigData();
   const { updateConfig } = useConfigActions();
   return (
     <>
@@ -104,6 +109,7 @@ function Probe() {
           providers: providers.map(item => item.id),
           apiKeys: Object.keys(apiKeys),
           verified: Object.keys(providerVerifyStatus),
+          error,
         })}
       </output>
       <button type="button" onClick={() => void updateConfig({ defaultProviderId: 'local-provider' })}>
@@ -131,6 +137,8 @@ describe('ConfigProvider external config invalidation', () => {
     mocks.loadAppConfig.mockImplementation(async () => mocks.config);
     mocks.loadProjects.mockImplementation(async () => mocks.projects);
     mocks.getAllProviders.mockImplementation(async () => mocks.providers);
+    mocks.ensureBundledWorkspace.mockResolvedValue(false);
+    mocks.withAgentConfigIntentLock.mockImplementation(async (run: () => Promise<unknown>) => run());
     mocks.reconcileIdentities.mockResolvedValue({
       config: mocks.config,
       projects: mocks.projects,
@@ -148,6 +156,82 @@ describe('ConfigProvider external config invalidation', () => {
 
     await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project'));
     expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider');
+  });
+
+  it('keeps the readable disk snapshot available when startup maintenance is lock-busy', async () => {
+    mocks.withAgentConfigIntentLock.mockRejectedValueOnce(Object.assign(
+      new Error('Agent config intent busy; retry'),
+      { code: 'AGENT_CONFIG_INTENT_BUSY' },
+    ));
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project'));
+    expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider');
+    expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
+  });
+
+  it('runs at most one deferred maintenance retry', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const busy = Object.assign(new Error('Projects busy; retry'), { code: 'PROJECTS_BUSY' });
+    mocks.ensureBundledWorkspace.mockRejectedValue(busy);
+
+    try {
+      render(<ConfigProvider><Probe /></ConfigProvider>);
+      await waitFor(() => expect(mocks.ensureBundledWorkspace).toHaveBeenCalledTimes(1));
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await waitFor(() => expect(mocks.ensureBundledWorkspace).toHaveBeenCalledTimes(2));
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(mocks.ensureBundledWorkspace).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a deferred maintenance retry on unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const busy = Object.assign(new Error('Projects busy; retry'), { code: 'PROJECTS_BUSY' });
+    mocks.ensureBundledWorkspace.mockRejectedValue(busy);
+
+    try {
+      const view = render(<ConfigProvider><Probe /></ConfigProvider>);
+      await waitFor(() => expect(mocks.ensureBundledWorkspace).toHaveBeenCalledTimes(1));
+      view.unmount();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(mocks.ensureBundledWorkspace).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces a true initial snapshot read failure', async () => {
+    mocks.loadAppConfig.mockRejectedValueOnce(new Error('config disk unavailable'));
+
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('config disk unavailable'));
+  });
+
+  it('keeps the current snapshot visible when external reconciliation is lock-busy', async () => {
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+
+    await waitFor(() => expect(mocks.listeners.has('app:config-changed')).toBe(true));
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(1));
+    mocks.reconcileIdentities.mockRejectedValueOnce(Object.assign(
+      new Error('Projects busy; retry'),
+      { code: 'PROJECTS_BUSY' },
+    ));
+
+    await act(async () => {
+      mocks.listeners.get('app:config-changed')?.();
+    });
+
+    await waitFor(() => expect(mocks.reconcileIdentities).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project');
+    expect(JSON.parse(screen.getByTestId('snapshot').textContent ?? '{}')).toMatchObject({ error: null });
   });
 
   it('reloads config, projects, providers, keys, and verify state from one app event', async () => {
