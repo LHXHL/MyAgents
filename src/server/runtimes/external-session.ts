@@ -68,6 +68,7 @@ import {
   updateSessionMetadata,
   getSessionMetadata,
   getSessionData,
+  loadSessionTranscript,
 } from '../SessionStore';
 import { firePostTurnTitleHook } from '../turn-hooks';
 import {
@@ -1804,8 +1805,8 @@ export async function restoreExternalSessionState(
   // 2. CC session (no runtimeSessionId, but has runtime + messages) → sessionId (CC uses our ID)
   // 3. Brand new session (no messages, or no metadata) → empty string → sendExternalMessage hits Case 1 (fresh start)
   const meta = getSessionMetadata(sessionId);
-  const data = getSessionData(sessionId);
-  const hasExistingMessages = !!(data?.messages?.length);
+  const transcript = await loadSessionTranscript(sessionId);
+  const hasExistingMessages = transcript.messages.length > 0;
   const currentRuntimeType = getCurrentRuntimeType();
 
   // Cross-runtime guard: session created by a different runtime (e.g., Codex session in CC Sidecar).
@@ -1824,7 +1825,7 @@ export async function restoreExternalSessionState(
   }
 
   // Load existing messages for correct incremental save (or clear stale in-memory state)
-  setExternalSessionMessages(sessionId, hasExistingMessages ? data!.messages : []);
+  setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
 
   // PRD 0.2.15 Review F2 — repopulate the external-path attachment registry
   // from persisted ContentBlock[] so /api/attachment/tool/... can still resolve
@@ -4766,7 +4767,8 @@ export async function rewindExternalConversation(
       };
     }
 
-    setExternalSessionMessages(sessionId, committed.messages);
+    const transcript = await loadSessionTranscript(sessionId);
+    setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
     const stopped = !hasExternalRuntimeProcess()
       || await stopExternalSession({ reason: 'conversation-mutation' });
     if (!stopped) {

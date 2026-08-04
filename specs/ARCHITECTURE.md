@@ -526,13 +526,13 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 | Owner module | 职责 |
 |------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry、Session reset/switch/stale-recovery mutation barrier |
+| `lifecycle.ts` | SDK `Query` 进程、可同步撤销的 Query identity authority、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry、Session reset/switch/stale-recovery mutation barrier |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，同时保存 requestId、assistant channel owner 与成功前暂存的完整文本 block）、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、成功终态 channel-delivery commit、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
+| `transcript.ts` | live messages、message sequence、SessionStore 签发的 transcript cursor、SDK UUID freshness sets |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation |
 | `types.ts` | builtin owner 间共享的结构类型 |
 
 Builtin SDK 工具的**可见性 authority** 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，产品会话必须通过 `Options.tools` 显式传入该目录；Provider 验证、订阅登录、标题生成、视觉识别等纯控制面 Query 必须传 `tools: []`。`Options.tools` 只决定模型能看到哪些 SDK 内置工具，不是授权规则；真正的执行许可仍由 `allowedTools` / `disallowedTools`、`canUseTool` 和 `PreToolUse` / `PermissionRequest` hooks 分层裁决。新增或移除内置工具时只修改这一可见性 owner，并分别验证权限链，不得把工具目录复制到 route 或 UI。
@@ -540,6 +540,10 @@ Builtin SDK 工具的**可见性 authority** 是 `src/server/sdk-builtin-tools.t
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
 
 Builtin Session 的 reset、legacy internal switch 与 stale-SDK recovery 都必须进入 `lifecycle.ts::runSerializedSessionMutation()`；enqueue 在登记可取消的 admission ticket 后等待同一 barrier，再读取 metadata 或 dispatch。不得让两个 identity mutation 并行清理 Query / transcript，也不得让用户消息越过进行中的 mutation 发给旧 runtime。
+
+Builtin `Query` 启动时由 `lifecycle.ts` 绑定 launch Product Session id 与 expected SDK Session id；abort 或 Query replacement 必须先同步 revoke 该 authority、清除该 Query 的 buffered control state。旧 Query 的后续 streamed event（包括 retraction/result）全部只可丢弃。streamed / pre-warm buffered `system_init` 只有在 authority 仍是当前 Query、Product binding 仍属于 launch/已完成 pending adoption 的 identity、且 `session_id` 精确等于 expected SDK id 时，才可更新 metadata 或执行 `pending-* → SDK UUID` adoption；adoption 在持有 transcript/index locks 的 commit point 再检查同一 authority。legacy Product id 与 SDK id 不同、以及非 UUID Product id 启动 fresh SDK UUID 时，Product id 保持不变，只更新其 `sdkSessionId`；不得把迟到事件解释成 real→real Product identity migration。
+
+Session transcript 的普通写入只接受 `SessionStore.loadSessionTranscript()` 签发的进程内 `TranscriptWriteCursor` 与新 tail；cursor 封装 durable file identity 和公开的 `persistedMessageCount`，Runtime 不另存 index/cache。短 live projection、stale cursor 或未知 append 结果不能触发 full rewrite；owner 必须重载 durable transcript并拒绝当前操作。rewind、retry、SDK retraction 与 admission rollback 通过 `mutateSessionTranscript()` 的命名 intent，在既有 per-Session lock 内从 durable rows 派生 target 后 temp+rename；SDK retraction 以 durable `sdkUuid` 为选择器，仅可额外删除明确传入的 open streaming tail id。legacy JSON 首次加载先原子发布 JSONL，失败保留 legacy source 并向调用方报错。Fork 只可写入空 target transcript，已有 target 一律冲突退出。Codex 的 transcript + native binding 仍使用既有 `commitCodexConversationRewind()` composite intent，不并入通用 mutation。
 
 **Builtin MCP soft pre-warm：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。初始 Query 或成功安装新 MCP map 时，`lifecycle.ts` 以 Query identity + generation + 单调 installed-map revision + runtime fingerprint 建立一次性 owner，并在 owner 上记录 `startedAt + deadlineAt`；默认预算只由 `session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 定义（当前 10 秒）。Desktop、IM 与 Cron / Goal / Heartbeat / Memory Update 等 injected turn 全部在 `messageGenerator()` promotion 后、live mutation fence 之后消费该 owner 的**剩余**预算。只有 `pending` 会继续等待；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期都把当前 generation 标为 degraded 并继续 AI turn。ready / degraded 都是 terminal one-shot，后续 turn 不再读 status、不开新 timer。用户取消仍立即取消 promotion；Query/map owner replacement 则 requeue 给 replacement generator，不能让旧 control response放行旧 Query。
 
@@ -568,7 +572,7 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、成功终态 commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
+| `transcript-persistence.ts` | in-memory session messages、SessionStore transcript cursor、persisted runtime usage totals、tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
 
 Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `SessionEngine` → external adapter 路径，不建立 Codex 专用 route 或第二套 Session。`codex.ts` 独占 `thread/read(includeTurns:true)`、`thread/fork(lastTurnId)`、`thread/unsubscribe` 与 root `turn/start` admission；`external-session.ts` 在既有 operation serialization 边界内编排 native branch、进程切换和产品 Session；`SessionStore` 独占 transcript/metadata 的可恢复提交。成功 root terminal assistant 才持久化 `{turnId, rootUserMessageId}` 锚点。Rewind 只改变对话上下文，不恢复工作区文件；有 replacement native thread 时在 durable rebind 和 mutation lease 释放后异步复用既有 prewarm，失败只影响下一次 send 的启动延迟；第一 native Turn 之前继续用“无 runtimeSessionId”表示，不预热空 thread，下一次发送复用既有 fresh-start。Claude Code / Gemini 继续明确不支持该能力。

@@ -94,6 +94,8 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 
 **Promise 身份校验**：`querySession.initializationResult()` resolve 前如果发生 abort + 新 pre-warm（querySession 被替换），旧 promise 可能仍 resolve（buffer 里已经有 response 了）。所以 `.then` handler 必须 capture `localQuery` 并检查 `querySession === localQuery`，否则会污染下一个 session 的 `sdkControlReady`。
 
+**`system_init` 身份权限**：每个 Query launch 同时捕获 Product Session id 与实际传给 SDK 的 expected session id；`lifecycle.ts` 持有可同步撤销的 authority。abort 在 interrupt / generator wakeup 前 revoke，Query replacement 也 revoke，并清除旧 Query 的 buffered control state；旧 Query 此后的 streamed event（含 retraction/result）全部丢弃。pre-warm buffered `system_init` 连同原 authority 保存。只有 authority 仍属于当前 Query、Product binding 未越界且事件 `session_id` 精确匹配 expected id，才允许 materialize/update metadata；pending adoption 还要在持有存储锁的 commit point 复核 authority。pending id 可 adoption；legacy/non-UUID Product id 保持自身 binding，只记录不同的 SDK id。迟到或未知 identity 不得清 transcript cursor或触发 real→real migration。
+
 **非 pre-warm 冷启动的额外 fast-path**：用户在没有 pre-warm 的情况下直接发第一条消息，`enqueueUserMessage` 会设 state=`'starting'`。`initializationResult` 的 resolve handler 看到 `sessionState === 'starting'` 时主动转 `'running'`（约 3-5s 后），不必等到第一个 turn 末尾的 streamed `system_init` 才转。否则 /context 这类慢首 turn 会让"AI 启动中"挂 44 秒。
 
 **为什么不切到 SDK 的 `startup()` / `WarmQuery` API**：MyAgents 的「pre-warm 即最终 session」架构（CLAUDE.md「Pre-warm 机制」段）让 `querySession` 是单一对象贯穿生命周期，`setMcpServers` / `setAgents` / `setSessionModel` / `abortPersistentSession` 全部 close-over 它。WarmQuery 模式要求 pre-warm 期间 `querySession` 是 WarmQuery、第一条消息时换成 Query，会波及几十处调用点。`startup()` 内部其实就是 spawn + `await initializationResult()`，我们直接展开调更轻。

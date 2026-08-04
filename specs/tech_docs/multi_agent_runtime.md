@@ -78,8 +78,8 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 | `turn.ts` | current turn usage/output/error、activity facts、completion terminal、SDK output-owner FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、message-complete/empty-result、IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、sequence、persist cursor/cache、SDK UUID freshness sets |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
+| `transcript.ts` | live messages、sequence、SessionStore transcript cursor、SDK UUID freshness sets |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation |
 
 Route modules 和 `SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` 内部模块；新增 route-facing 能力仍先接入 `SessionEngine`，再由 adapter 调用 builtin/external public facade。`runtime-boundary.unit.test.ts` 扫描 route、session-engine、builtin-session 和 external-session 目录，防止 facade 再次直接修改内部状态，或重新实现已经迁出的终态与持久化逻辑。External Runtime 同样采用 facade + owner modules，但没有抽象出 builtin/external 共用的生命周期框架；两边只共享 `session-core/*` 的纯策略。
 
@@ -551,10 +551,12 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `operation-queue.ts` | direct/queued message operation及其 user-message projection、turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、success-gated batch commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
+| `transcript-persistence.ts` | in-memory `SessionMessage[]`、SessionStore transcript cursor、persisted runtime usage totals、user/assistant tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
 Facade 仍负责跨模块编排：调用 Runtime 进程、广播 SSE、执行 analytics/title hook，并根据各模块返回的结果依次完成持久化、交互清理和队列 drain。Queue 模块不直接调用 Runtime；lifecycle 模块不接管 stop cleanup；content 的内部引用和 Map 不暴露给 facade，工具、子 Agent 和附件更新都通过命名 API 完成。Turn lifecycle 负责终态分类和本轮 channel delivery 的接纳与顺序；transcript 模块负责用户/assistant 消息、retry truncate、last assistant read 和 SessionStore 写入；interactive 模块负责 IM event bus、registry cleanup 以及 inbox/watch 错误投递，持久化 JSON 结构不变。
+
+External transcript owner 与 builtin 共用 SessionStore cursor 契约，但不共享 runtime lifecycle 抽象：只能追加 cursor 之后的 exact tail；live projection 短于 durable prefix 时先 rehydrate 再拒绝当前操作，不能把短数组当成删除指令。retry/removal 走命名 mutation，fork target 必须为空；冲突向调用方返回可操作错误，不做 blind retry 或历史合并。
 
 每个 direct/queued message operation 保存自己的用户消息，并记录该消息是否已经展示、写入内存 transcript、持久化或撤回。Desktop、IM、Inbox、Background、Injected 与 realtime fallback 复用既有 direct-send tail 和 queue generation，facade 不保存进程级的第二份“首条消息”状态。`external-session.ts` 只保留 watchdog、trace、待创建 Session 等确实属于编排过程的状态。
 
@@ -717,7 +719,7 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 | **Process/turn 分离** | `sessionState`/`isBusy`/`waitIdle` 只表达 turn；`hasExternalRuntimeProcess` 单独表达 persistent process liveness，pre-warm idle 不阻塞自动回合 |
 | **看门狗** | **Per-turn**(不是 per-process):pre-warm idle 不计时,turn 启动才启动计时器。10 分钟无活动 → kill |
 | **Stale text 防护** | `lastTurnSucceeded` 标志,cron/heartbeat 路径检查,防止崩溃后返回上一轮旧回复 |
-| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 写入 SessionStore,崩溃不丢用户消息;owner 检查 `saveSessionMessages()` 返回值,`unindexed-create-refused` 视为发送失败而不是 log-only |
+| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 携带 SessionStore cursor 追加 exact tail，崩溃不丢用户消息；stale cursor 先 rehydrate，`unindexed-create-refused` 视为发送失败而不是 log-only |
 | **Token 用量** | `thread/tokenUsage/updated` 作为 running-total fallback，与持久化 baseline 做 diff；0.146+ 完整 raw usage 作为 turn delta 累加入同一 baseline。旧 baseline 无法分离历史 cache，fallback 不记 cache 细分，避免把历史量误记到当前 turn |
 | **Cross-runtime 守卫** | pre-warm / restore / send 路径均用 `SessionMetadata.runtime` 校验,阻止跨 runtime 污染 |
 

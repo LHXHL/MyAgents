@@ -1,12 +1,10 @@
-import type { SessionMessage } from '../types/session';
+import type { TranscriptWriteCursor } from '../SessionStore';
 import type { MessageWire } from './types';
 
 const messages: MessageWire[] = [];
 let messageSequence = 0;
-let lastPersistedIndex = 0;
-const persistedSessionMessageCache: SessionMessage[] = [];
+let transcriptCursor: TranscriptWriteCursor | null = null;
 const persistChainBySession = new Map<string, Promise<void>>();
-const authoritativeRewritePendingSessions = new Set<string>();
 const currentSessionUuids = new Set<string>();
 const liveSessionUuids = new Set<string>();
 let pendingReloadAnchor: string | undefined = undefined;
@@ -19,13 +17,12 @@ export const transcriptState = {
   set messageSequence(value: number) {
     messageSequence = value;
   },
-  get lastPersistedIndex(): number {
-    return lastPersistedIndex;
+  get transcriptCursor(): TranscriptWriteCursor | null {
+    return transcriptCursor;
   },
-  set lastPersistedIndex(value: number) {
-    lastPersistedIndex = value;
+  set transcriptCursor(value: TranscriptWriteCursor | null) {
+    transcriptCursor = value;
   },
-  persistedSessionMessageCache,
   persistChainBySession,
   currentSessionUuids,
   liveSessionUuids,
@@ -103,37 +100,16 @@ export function truncateMessages(length: number): void {
   messages.length = Math.max(0, length);
 }
 
-export function getLastPersistedIndex(): number {
-  return lastPersistedIndex;
+export function getTranscriptCursor(): TranscriptWriteCursor | null {
+  return transcriptCursor;
 }
 
-export function setLastPersistedIndex(value: number): void {
-  lastPersistedIndex = value;
+export function setTranscriptCursor(cursor: TranscriptWriteCursor): void {
+  transcriptCursor = cursor;
 }
 
-export function getPersistedSessionMessageCache(): SessionMessage[] {
-  return persistedSessionMessageCache;
-}
-
-export function appendPersistedSessionMessage(message: SessionMessage): void {
-  persistedSessionMessageCache.push(message);
-}
-
-export function removePersistedSessionMessageAt(index: number): SessionMessage[] {
-  return persistedSessionMessageCache.splice(index, 1);
-}
-
-export function replacePersistedSessionMessageCache(nextMessages: SessionMessage[]): void {
-  persistedSessionMessageCache.length = 0;
-  persistedSessionMessageCache.push(...nextMessages);
-}
-
-export function clearPersistedSessionMessageCache(): void {
-  persistedSessionMessageCache.length = 0;
-}
-
-export function truncatePersistedSessionMessageCache(length: number): void {
-  persistedSessionMessageCache.length = Math.max(0, length);
+export function invalidateTranscriptCursor(): void {
+  transcriptCursor = null;
 }
 
 export function getPersistChain(sessionId: string): Promise<void> | undefined {
@@ -150,18 +126,6 @@ export function deletePersistChain(sessionId: string): void {
 
 export function clearPersistChains(): void {
   persistChainBySession.clear();
-}
-
-export function markAuthoritativeRewritePending(sessionId: string): void {
-  authoritativeRewritePendingSessions.add(sessionId);
-}
-
-export function clearAuthoritativeRewritePending(sessionId: string): void {
-  authoritativeRewritePendingSessions.delete(sessionId);
-}
-
-export function hasAuthoritativeRewritePending(sessionId: string): boolean {
-  return authoritativeRewritePendingSessions.has(sessionId);
 }
 
 export function getCurrentSessionUuids(): Set<string> {
@@ -207,8 +171,7 @@ export function getPendingReloadAnchor(): string | undefined {
 export function clearTranscriptState(): void {
   messages.length = 0;
   messageSequence = 0;
-  lastPersistedIndex = 0;
-  persistedSessionMessageCache.length = 0;
+  transcriptCursor = null;
   currentSessionUuids.clear();
   liveSessionUuids.clear();
   pendingReloadAnchor = undefined;
@@ -218,18 +181,15 @@ export function snapshotTranscript() {
   return {
     messages: [...messages],
     messageSequence,
-    lastPersistedIndex,
-    persistedSessionMessageCache: [...persistedSessionMessageCache],
+    transcriptCursor,
     currentSessionUuids: new Set(currentSessionUuids),
     liveSessionUuids: new Set(liveSessionUuids),
     pendingReloadAnchor,
     persistChainSessionIds: [...persistChainBySession.keys()],
-    authoritativeRewritePendingSessionIds: [...authoritativeRewritePendingSessions],
   };
 }
 
 export function resetTranscriptForTest(): void {
   clearTranscriptState();
   persistChainBySession.clear();
-  authoritativeRewritePendingSessions.clear();
 }

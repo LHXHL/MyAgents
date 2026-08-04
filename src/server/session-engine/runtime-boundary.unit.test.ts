@@ -222,11 +222,11 @@ describe('SessionEngine runtime boundary', () => {
       /turnState\.currentTurnTextBlocks\.length\s*(?<!=)=(?!=)/,
       /turnState\.currentTurnInboxMeta\s*(?<!=)=(?!=)/,
       /configState\.(?:currentMcpServers|currentEnabledPluginIds|currentAgentDefinitions|currentPermissionMode|prePlanPermissionMode|currentBackgroundAgentPermissionMode|currentModel|currentReasoningEffort|currentProviderEnv|pendingProviderHistoryBoundaryReset|frozenSdkMcpFingerprint)\s*(?<!=)=(?!=)/,
-      /transcriptState\.(?:messages|messageSequence|lastPersistedIndex|persistedSessionMessageCache|persistChainBySession|currentSessionUuids|liveSessionUuids|pendingReloadAnchor)\s*(?:(?<!=)=(?!=)|\+\+|--)/,
+      /transcriptState\.(?:messages|messageSequence|transcriptCursor|persistChainBySession|currentSessionUuids|liveSessionUuids|pendingReloadAnchor)\s*(?:(?<!=)=(?!=)|\+\+|--)/,
       /transcriptState\.messages\[[^\n]+\]\.sdkUuid\s*(?<!=)=(?!=)/,
       /\bcurrentAssistant\.sdkUuid\s*(?<!=)=(?!=)/,
-      /transcriptState\.(?:messages|persistedSessionMessageCache)\.length\s*(?<!=)=(?!=)/,
-      /transcriptState\.(?:messages|persistedSessionMessageCache|persistChainBySession|currentSessionUuids|liveSessionUuids)\.(?:push|splice|add|delete|clear)\(/,
+      /transcriptState\.messages\.length\s*(?<!=)=(?!=)/,
+      /transcriptState\.(?:messages|persistChainBySession|currentSessionUuids|liveSessionUuids)\.(?:push|splice|add|delete|clear)\(/,
     ];
     const violations = forbidden
       .filter(pattern => pattern.test(source))
@@ -261,10 +261,22 @@ describe('SessionEngine runtime boundary', () => {
     expect(turnLifecycle).toContain('isEmptySuccessfulSdkResult');
     expect(turnLifecycle).toContain('lastTurnEndPersist');
     expect(turnLifecycle).toContain('stampTurnUsageOnPendingAssistant');
-    expect(transcriptPersistence).toContain('saveSessionMessages');
+    expect(transcriptPersistence).toContain('appendSessionMessages');
+    expect(transcriptPersistence).toContain('mutateSessionTranscript');
     expect(transcriptPersistence).toContain('saveForkTranscript');
     expect(transcriptPersistence).toContain('scheduleTranscriptPersist');
     expect(transcriptPersistence).toContain('loadTranscriptFromSessionMessages');
+  });
+
+  it('separates ordinary transcript append from explicit destructive mutation', () => {
+    const store = sourceWithoutCommentLines(join(repoRoot, 'src/server/SessionStore.ts'));
+    expect(store).not.toMatch(/\b(?:saveSessionMessages|appendSessionMessage)\b/);
+    expect(store).not.toMatch(/\b(?:allowShrink|forceRewrite)\b/);
+    expect(store).toContain('TranscriptWriteCursor');
+    expect(store).toContain('appendSessionMessages');
+    expect(store).toContain('mutateSessionTranscript');
+    expect(store).toContain("kind: 'builtin-rewind'");
+    expect(store).toContain("kind: 'external-retry'");
   });
 
   it('keeps session-core pure and side-effect free', () => {

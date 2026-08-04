@@ -13,7 +13,9 @@ vi.mock('../SessionStore', async (importOriginal) => {
   };
 });
 
-import { claimPreparedSessionForTurnAdmission, deleteSession, getSessionMetadata, migratePendingSessionIdentity, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
+import { claimPreparedSessionForTurnAdmission, deleteSession, getSessionMetadata, loadSessionTranscript, migratePendingSessionIdentity, saveSessionMetadata, updateSessionMetadata } from '../SessionStore';
+import { setQuerySessionWithAuthority } from '../builtin-session/lifecycle';
+import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import {
   resetProductSessionMaterializationState as resetSessionMaterializationState,
   setPendingProductSessionMaterialization as setPendingDesktopMaterialization,
@@ -279,12 +281,20 @@ describe('materializePendingDesktopSession rollback guard', () => {
       const metadata = { ...source, ...patch, id: targetId };
       savedMetadata.delete(sourceId);
       savedMetadata.set(targetId, metadata);
-      return { migrated: true, metadata };
+      return {
+        migrated: true,
+        metadata,
+        transcript: await loadSessionTranscript(targetId),
+      };
     });
 
     await initializeAgent('/tmp/workspace', null, 'pending-tab-1', { preWarmDisabled: true });
 
     const concreteSessionId = '11111111-2222-4333-8444-555555555555';
+    setQuerySessionWithAuthority({} as Query, {
+      productSessionId: 'pending-tab-1',
+      expectedSdkSessionId: concreteSessionId,
+    });
     const canonicalSessionId = await ensureSessionMetadataForSdkSystemInit({
       session_id: concreteSessionId,
       tools: [],
@@ -306,6 +316,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
       'pending-tab-1',
       concreteSessionId,
       { sdkSessionId: concreteSessionId, unifiedSession: true },
+      expect.any(Function),
     );
     expect(mockedDeleteSession).not.toHaveBeenCalled();
   });
@@ -315,6 +326,10 @@ describe('materializePendingDesktopSession rollback guard', () => {
 
     const concreteSessionId = '22222222-3333-4444-8555-666666666666';
     await initializeAgent('/tmp/workspace', null, concreteSessionId, { preWarmDisabled: true });
+    setQuerySessionWithAuthority({} as Query, {
+      productSessionId: concreteSessionId,
+      expectedSdkSessionId: concreteSessionId,
+    });
 
     await expect(ensureSessionMetadataForSdkSystemInit({
       session_id: concreteSessionId,
@@ -323,6 +338,133 @@ describe('materializePendingDesktopSession rollback guard', () => {
       timestamp: '2026-06-23T00:00:00.000Z',
     })).rejects.toThrow('refusing SDK system_init for unindexed existing session');
     expect(mockedSaveSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  it('keeps a legacy Product Session id while recording its distinct expected SDK id', async () => {
+    const productSessionId = '33333333-3333-4333-8333-333333333333';
+    const sdkSessionId = '44444444-4444-4444-8444-444444444444';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      sdkSessionId,
+      unifiedSession: false,
+      runtime: 'builtin',
+      agentDir: '/tmp/workspace',
+      title: 'Legacy',
+      createdAt: '2026-06-23T00:00:00.000Z',
+      lastActiveAt: '2026-06-23T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    mockedUpdateSessionMetadata.mockResolvedValue(metadata);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySessionWithAuthority({} as Query, { productSessionId, expectedSdkSessionId: sdkSessionId });
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: sdkSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    })).resolves.toBe(productSessionId);
+
+    expect(getSessionId()).toBe(productSessionId);
+    expect(mockedUpdateSessionMetadata).toHaveBeenCalledWith(productSessionId, {
+      sdkSessionId,
+      unifiedSession: false,
+    });
+  });
+
+  it('keeps a non-UUID Product Session id when a fresh Query receives its expected SDK id', async () => {
+    const productSessionId = 'cron-im-legacy-session';
+    const sdkSessionId = '88888888-8888-4888-8888-888888888888';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      agentDir: '/tmp/workspace',
+      title: 'Legacy cron',
+      createdAt: '2026-06-23T00:00:00.000Z',
+      lastActiveAt: '2026-06-23T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    mockedUpdateSessionMetadata.mockResolvedValue({
+      ...metadata,
+      sdkSessionId,
+      unifiedSession: false,
+    });
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySessionWithAuthority({} as Query, { productSessionId, expectedSdkSessionId: sdkSessionId });
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: sdkSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    })).resolves.toBe(productSessionId);
+
+    expect(getSessionId()).toBe(productSessionId);
+    expect(mockedUpdateSessionMetadata).toHaveBeenCalledWith(productSessionId, {
+      sdkSessionId,
+      unifiedSession: false,
+    });
+  });
+
+  it('rejects a delayed system_init after its Query authority has been replaced', async () => {
+    const productSessionId = '99999999-9999-4999-8999-999999999999';
+    const oldSdkSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const replacementSdkSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      agentDir: '/tmp/workspace',
+      title: 'Delayed init',
+      createdAt: '2026-06-23T00:00:00.000Z',
+      lastActiveAt: '2026-06-23T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    const oldAuthority = setQuerySessionWithAuthority({} as Query, {
+      productSessionId,
+      expectedSdkSessionId: oldSdkSessionId,
+    });
+    setQuerySessionWithAuthority({} as Query, {
+      productSessionId,
+      expectedSdkSessionId: replacementSdkSessionId,
+    });
+    vi.clearAllMocks();
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: oldSdkSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    }, oldAuthority)).rejects.toThrow('revoked or replaced Query');
+
+    expect(getSessionId()).toBe(productSessionId);
+    expect(mockedUpdateSessionMetadata).not.toHaveBeenCalled();
+    expect(mockedSaveSessionMetadata).not.toHaveBeenCalled();
+    expect(mockedMigratePendingSessionIdentity).not.toHaveBeenCalled();
+  });
+
+  it('rejects system_init whose SDK id does not match the Query launch authority', async () => {
+    const productSessionId = '55555555-5555-4555-8555-555555555555';
+    const expectedSdkSessionId = '66666666-6666-4666-8666-666666666666';
+    const metadata: SessionMetadata = {
+      id: productSessionId,
+      runtime: 'builtin',
+      agentDir: '/tmp/workspace',
+      title: 'Identity fence',
+      createdAt: '2026-06-23T00:00:00.000Z',
+      lastActiveAt: '2026-06-23T00:00:00.000Z',
+    };
+    mockedGetSessionMetadata.mockImplementation(id => id === productSessionId ? metadata : null);
+    await initializeAgent('/tmp/workspace', null, productSessionId, { preWarmDisabled: true });
+    setQuerySessionWithAuthority({} as Query, { productSessionId, expectedSdkSessionId });
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: '77777777-7777-4777-8777-777777777777',
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    })).rejects.toThrow(`expected ${expectedSdkSessionId}`);
+    expect(mockedUpdateSessionMetadata).not.toHaveBeenCalled();
   });
 
   it('commits a prepared row even when the active session id is already the prepared id', async () => {

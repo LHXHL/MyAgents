@@ -67,6 +67,12 @@ async function createCodexSession(): Promise<SessionMetadata> {
   });
 }
 
+async function seedTranscript(sessionId: string, messages: SessionMessage[]): Promise<void> {
+  const snapshot = await store.loadSessionTranscript(sessionId);
+  const result = await store.appendSessionMessages(sessionId, snapshot.cursor, messages);
+  expect(result.ok).toBe(true);
+}
+
 function writeIntent(sessionId: string, intent: PendingConversationMutation): void {
   const path = join(testHome, '.myagents', 'sessions.json');
   const sessions = JSON.parse(readFileSync(path, 'utf-8')) as SessionMetadata[];
@@ -79,7 +85,7 @@ describe('Codex conversation rewind SessionStore transaction', () => {
   it('commits transcript truncation and native binding replacement together', async () => {
     const session = await createCodexSession();
     const source = transcript();
-    await store.saveSessionMessages(session.id, source);
+    await seedTranscript(session.id, source);
 
     const result = await store.commitCodexConversationRewind({
       sessionId: session.id,
@@ -103,7 +109,7 @@ describe('Codex conversation rewind SessionStore transaction', () => {
   it('clears an intent against the untouched source transcript', async () => {
     const session = await createCodexSession();
     const source = transcript();
-    await store.saveSessionMessages(session.id, source);
+    await seedTranscript(session.id, source);
     writeIntent(session.id, {
       schemaVersion: 1,
       kind: 'codex-rewind',
@@ -121,7 +127,7 @@ describe('Codex conversation rewind SessionStore transaction', () => {
   it('finishes replacement binding from a target-sized transcript and refuses unknown counts', async () => {
     const completed = await createCodexSession();
     const source = transcript();
-    await store.saveSessionMessages(completed.id, source.slice(0, 2));
+    await seedTranscript(completed.id, source.slice(0, 2));
     const intent: PendingConversationMutation = {
       schemaVersion: 1,
       kind: 'codex-rewind',
@@ -136,7 +142,7 @@ describe('Codex conversation rewind SessionStore transaction', () => {
     expect(store.getSessionMetadata(completed.id)?.runtimeSessionId).toBeUndefined();
 
     const inconsistent = await createCodexSession();
-    await store.saveSessionMessages(inconsistent.id, source.slice(0, 3));
+    await seedTranscript(inconsistent.id, source.slice(0, 3));
     writeIntent(inconsistent.id, intent);
     await expect(store.resolvePendingConversationMutation(inconsistent.id)).resolves.toMatchObject({
       success: false,

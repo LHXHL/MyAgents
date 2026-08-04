@@ -9,6 +9,16 @@ import type { BuiltinLifecycleSnapshot, MessageQueueItem } from './types';
 const PRE_WARM_MAX_RETRIES = 3;
 
 let querySession: Query | null = null;
+export type BuiltinQueryAuthority = Readonly<{
+  query: Query;
+  productSessionId: string;
+  expectedSdkSessionId: string;
+  readonly revoked: boolean;
+}>;
+let queryAuthorityRecord: {
+  authority: BuiltinQueryAuthority;
+  revoke: () => void;
+} | null = null;
 let queryGeneration = 0;
 let queryMcpRevision = 0;
 let queryMcpPrewarmOwner: {
@@ -53,6 +63,7 @@ let preWarmTimer: ReturnType<typeof setTimeout> | null = null;
 let preWarmFailCount = 0;
 let preWarmDisabled = false;
 let systemInitInfo: SystemInitInfo | null = null;
+let systemInitAuthority: BuiltinQueryAuthority | null = null;
 let sdkControlReady = false;
 let liveRevision = 0;
 let sessionMutationBarrier: Promise<void> | null = null;
@@ -60,6 +71,9 @@ let sessionMutationBarrier: Promise<void> | null = null;
 function replaceQuerySession(session: Query | null): void {
   if (querySession === session) return;
   const previousQuery = querySession;
+  queryAuthorityRecord?.revoke();
+  queryAuthorityRecord = null;
+  resetControlPlaneState();
   if (queryMcpMutationOwner) {
     queryMcpMutationOwner.settle({
       ok: false,
@@ -158,6 +172,42 @@ export function hasQuerySession(): boolean {
 
 export function setQuerySession(session: Query | null): void {
   replaceQuerySession(session);
+}
+
+export function setQuerySessionWithAuthority(
+  session: Query,
+  identity: { productSessionId: string; expectedSdkSessionId: string },
+): BuiltinQueryAuthority {
+  queryAuthorityRecord?.revoke();
+  queryAuthorityRecord = null;
+  replaceQuerySession(session);
+  let revoked = false;
+  const authority = Object.freeze({
+    query: session,
+    productSessionId: identity.productSessionId,
+    expectedSdkSessionId: identity.expectedSdkSessionId,
+    get revoked() { return revoked; },
+  });
+  queryAuthorityRecord = {
+    authority,
+    revoke: () => { revoked = true; },
+  };
+  return authority;
+}
+
+export function getCurrentQueryAuthority(): BuiltinQueryAuthority | null {
+  return queryAuthorityRecord?.authority ?? null;
+}
+
+export function isCurrentQueryAuthority(
+  authority: BuiltinQueryAuthority | null | undefined,
+): authority is BuiltinQueryAuthority {
+  return Boolean(
+    authority
+    && !authority.revoked
+    && querySession === authority.query
+    && queryAuthorityRecord?.authority === authority,
+  );
 }
 
 export function clearQuerySession(): Query | null {
@@ -406,6 +456,8 @@ export function isAbortRequested(): boolean {
 }
 
 export function requestAbort(): void {
+  queryAuthorityRecord?.revoke();
+  resetControlPlaneState();
   abortRequested = true;
   for (const waiter of queryExitWaiters) waiter.resolve();
   queryExitWaiters.clear();
@@ -510,6 +562,11 @@ export function getSystemInitInfo(): SystemInitInfo | null {
 
 export function setSystemInitInfo(info: SystemInitInfo | null): void {
   systemInitInfo = info;
+  systemInitAuthority = info ? getCurrentQueryAuthority() : null;
+}
+
+export function getSystemInitAuthority(): BuiltinQueryAuthority | null {
+  return systemInitAuthority;
 }
 
 export function isSdkControlReady(): boolean {
@@ -540,6 +597,7 @@ export function waitForMessage(dequeue: () => MessageQueueItem | undefined): Pro
 
 export function resetControlPlaneState(): void {
   systemInitInfo = null;
+  systemInitAuthority = null;
   sdkControlReady = false;
 }
 
@@ -637,6 +695,8 @@ export function resetLifecycleForTest(): void {
     error: 'Lifecycle reset during MCP transport mutation',
   });
   querySession = null;
+  queryAuthorityRecord?.revoke();
+  queryAuthorityRecord = null;
   queryGeneration = 0;
   queryMcpRevision = 0;
   queryMcpPrewarmOwner = null;
@@ -652,6 +712,7 @@ export function resetLifecycleForTest(): void {
   preWarmFailCount = 0;
   preWarmDisabled = false;
   systemInitInfo = null;
+  systemInitAuthority = null;
   sdkControlReady = false;
   sessionMutationBarrier = null;
 }
