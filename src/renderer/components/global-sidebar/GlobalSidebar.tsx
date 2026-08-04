@@ -103,8 +103,10 @@ import {
 } from '@/utils/globalSidebarPreference';
 import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
+import { getFullSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
 import { openExternal } from '@/utils/openExternal';
+import { OverflowNameTooltip } from '@/components/workspace-tree/OverflowNameTooltip';
 
 const loadHistorySearchOverlayContent = () => import('@/components/HistorySearchOverlayContent');
 const HistorySearchOverlayContent = lazy(loadHistorySearchOverlayContent);
@@ -1803,6 +1805,8 @@ function SessionRow({
   const { t: tLauncher, i18n } = useTranslation('launcher');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const [menuOpen, setMenuOpen] = useState(false);
+  const displayTitle = getSessionDisplayText(session);
+  const fullTitle = getFullSessionDisplayText(session);
   const menuRef = useRef<HTMLButtonElement | null>(null);
   const setMenu = useCallback((open: boolean) => {
     setMenuOpen(open);
@@ -1838,12 +1842,14 @@ function SessionRow({
           isGenerating={tab?.isGenerating}
           hasUnread={tab?.hasUnread}
         />
-        <span
+        <OverflowNameTooltip
+          label={displayTitle}
+          tooltipLabel={fullTitle}
+          contentIsTruncated={displayTitle !== fullTitle}
+          delayMs={1_000}
           className="min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
-        >
-          {getSessionDisplayText(session)}
-        </span>
+        />
         {session.favorite && <Star className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
         {tags.map((tag, index) => <SessionTagBadge key={`${tag.type}-${index}`} tag={tag} />)}
         <UnreadNotificationIndicator

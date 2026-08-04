@@ -2459,6 +2459,16 @@ export default function App() {
     track('tab_new', { tab_count: currentLength + 1 });
   }, [openNewTabDeferred]);
 
+  const handleSidebarNewChat = useCallback(() => {
+    const currentTabs = tabsRef.current;
+    const leftmostLauncher = currentTabs.find((tab) => tab.view === 'launcher');
+    if (leftmostLauncher) {
+      setActiveTabId(leftmostLauncher.id, currentTabs);
+      return;
+    }
+    handleNewTab();
+  }, [handleNewTab, setActiveTabId]);
+
   const handleOpenWorkspaceFromSidebar = useCallback(async (
     project: Project,
     initialMessage?: InitialMessage,
@@ -3297,7 +3307,7 @@ export default function App() {
         activeWorkspacePath={activeWorkspacePath}
         sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
         teamSpaceAvailable={teamSpaceAvailable}
-        onNewTab={handleNewTab}
+        onNewTab={handleSidebarNewChat}
         onOpenTaskCenter={handleOpenTaskCenter}
         onOpenSpace={handleOpenSpace}
         onOpenCapabilities={handleOpenCapabilities}
