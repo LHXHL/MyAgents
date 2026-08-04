@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.45
-> **Last Updated**: 2026-07-29
+> **Version**: 2.8.47
+> **Last Updated**: 2026-08-04
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -32,30 +32,32 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 
 MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
 
-Production catalog 当前包含八套完整 Theme：MyAgents Default、Default Black、Sage、Claude、
-Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
+Production catalog 当前包含九套完整 Theme：MyAgents Light、MyAgents Classic、MyAgents Classic2、
+Sage、Claude、Linear、Proof、Codex、Raycast。`myagents-default`（用户可见名 MyAgents Classic）仍是 canonical
 fallback；它的物理 owner 是：
 
 - `src/renderer/theme/themes/myagents-default.css`：通用首帧 fallback + 精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball 运行时 Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
-- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：六套 palette Theme 的共置 package；CSS
+- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：七套 preset-built palette Theme 的共置 package；CSS
   显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
   色板派生，不复制 canonical 值；构造与 Registry 校验共享语义解析器，不依赖 production minifier
   是否保留属性引号、空白或末尾分号；
-- `default-black` 是当前产品默认，也是受控的 Baseline A/B：完整复制 canonical host Token，只将 light
-  `button-primary-bg/hover` 改为中性黑；dark、Hero 与五类 embedded adapter 与 Default 保持同源，
-  并由测试锁定除此配对外不得漂移；
+- `myagents-light` 是当前产品默认：完整复制 Claude host Token，只将 light
+  `button-primary-bg/hover` 改为中性黑；dark 与五类 embedded adapter 与 Claude 保持一致；
+- `default-black`（用户可见名 MyAgents Classic2）保留为 canonical 的受控 Baseline A/B：同样只将 light
+  主按钮改为中性黑，dark、Hero 与五类 embedded adapter 与 MyAgents Classic 保持同源；两组差异都由测试锁定；
 - `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及不携带视觉值的 Tailwind runtime Token 编译桥。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
 
 可主题化：宿主与 Space 的色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 不维护第二套 palette；其 paper、文字、圆角、阴影、动作色与业务状态色直接继承当前全局 Theme。
 
-八套 Theme 的产品顺序和动作语义：
+九套 Theme 的产品顺序和动作语义：
 
 | Theme | 主要视觉角色 |
 |---|---|
-| MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 是当前产品默认，仅将 light 主按钮改为中性黑，本章色值表仍只描述 canonical Theme |
+| MyAgents Light | Claude 的柔和中性色表面与陶土强调色；当前产品默认，light 主按钮使用中性黑 |
+| MyAgents Classic / MyAgents Classic2 | 暖纸张、陶土橙；Classic2 仅将 Classic 的 light 主按钮改为中性黑，本章色值表仍只描述 canonical Theme |
 | Sage | PR #441 的鼠尾草绿与自然纸面 |
 | Claude / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
 
@@ -1283,7 +1285,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与工具的连续主导航、Agent 工作区树、底部小助理/设置；其中团队入口仅在 Team Space 实验室开关开启且当前构建能力可用时出现，关闭后展开态与 rail 均不保留失效入口。主导航项与底部入口使用 36px 命中高度且不添加行间距；从主导航到 Agent 工作区、再到底部入口均不使用横分割线，主要层级只依靠 8–12px 组间留白、工作区标题和选中面，不将每组包成卡片。
 
-全局侧栏根面与顶部 Tab 标题栏共同消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使两块 App Shell chrome 同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担分区，不再叠加侧栏右侧竖线或标题栏底部横线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片与弹层继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
+全局侧栏根面与顶部 Tab 标题栏共同消费 Theme-owned `--global-sidebar-bg`。九套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使两块 App Shell chrome 同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担分区，不再叠加侧栏右侧竖线或标题栏底部横线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片与弹层继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
 
 ```
 展开态 256px:
@@ -1406,6 +1408,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.47 | 2026-08-04 | **MyAgents Light 默认主题**：新增基于 Claude 完整 light/dark package 的 MyAgents Light，仅将 light Primary CTA 改为中性黑，并置于主题列表第一项成为未显式选择用户的新默认；MyAgents Default / Default Black 的用户可见名分别调整为 MyAgents Classic / MyAgents Classic2，稳定 ID 与显式选择兼容不变；Registry 产品顺序与 canonical fallback 注册顺序解耦，两组受控按钮差异由逐 Token 测试锁定 |
 | 2.8.46 | 2026-07-29 | **Session 恢复单次揭示**：已有 Session 从 active cold Tab 首帧起即由同一 Chat shell 覆盖，REST history restore 前不投影 SSE cold replay，消除 raw Markdown 中间态；最终历史同帧提交，移除 MessageList 的 600ms 二次淡入与重复 spinner；恢复失败继续隔离旧内容和迟到 replay，revision/generation 修复成功后一次释放，target 变更会取消旧 REST/timer；恢复期间发送 fail closed，同 Tab UI intent、renderer 已确认 Node binding 与服务端全部 binding mutation 分层串行，并以有限 predecessor 候选做 CAS，保证快速切换/reset 的最终 identity |
 | 2.8.45 | 2026-07-29 | **Markdown 代码横滑归属修复**：非换行代码正文显式声明 `overflow-x-auto`，让 user/query、assistant、文档等共享代码块及 Mermaid 源码视图恢复原生横向滚动，并在到达边缘时继续持有手势；普通正文的双指左右切 Tab 保持不变 |
 | 2.8.44 | 2026-07-29 | **macOS 红绿灯留白校准**：顶部 Tab 与侧栏同色后，主窗口红绿灯左侧 inset 从 5px 调至 15px，使左缘留白接近顶部留白，并与右侧固定 toggle 槽形成更均衡的间隔；继续由原生布局 owner 保证 zoom、resize 与全屏切换稳定，Windows 不受影响 |

@@ -858,10 +858,11 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
 
-- `themeId`：当前生效的完整 Theme 身份；production registry 依次注册 `myagents-default`、`default-black`、
-  Sage、Claude（稳定内部 ID `absolutely`）、Linear、Proof、Codex、Raycast；
+- `themeId`：当前生效的完整 Theme 身份；production registry 的产品顺序为 MyAgents Light（`myagents-light`）、
+  MyAgents Classic（canonical ID `myagents-default`）、MyAgents Classic2（`default-black`）、Sage、
+  Claude（稳定内部 ID `absolutely`）、Linear、Proof、Codex、Raycast；
 - `themeSelectionExplicit`：用户是否明确选过 Theme；`false` 时跟随可独立演进的产品默认
-  `DEFAULT_THEME_ID`（当前为 `default-black`），`true` 时永久尊重 `themeId`；
+  `DEFAULT_THEME_ID`（当前为 `myagents-light`），`true` 时永久尊重 `themeId`；
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 
@@ -873,7 +874,7 @@ Token 的运行时引用。禁止在动态 Theme package 中放 raw `@theme`；�
 Tailwind，否则 utility 会静默回退 framework default。`build:web` 后的 generated-CSS 契约校验
 是这条编译边界的必备护栏。
 
-配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`。缺失 Theme 选择或历史自动物化的 `myagents-default` 迁为 `default-black + themeSelectionExplicit:false`；历史非 canonical ID 视为用户已选择，继续保留。读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `{ themeId, themeSelectionExplicit:true }` 或 `appearanceMode`，两者不得互相覆盖。`myagents-default` 继续只承担 canonical/unknown-ID fallback，产品默认与结构兜底不得重新合并成一个概念。
+配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`。缺失 Theme 选择或历史自动物化的 `myagents-default` 迁为 `myagents-light + themeSelectionExplicit:false`；历史非 canonical ID 视为用户已选择，继续保留。读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `{ themeId, themeSelectionExplicit:true }` 或 `appearanceMode`，两者不得互相覆盖。`myagents-default` 继续只承担 canonical/unknown-ID fallback，产品默认与结构兜底不得重新合并成一个概念。
 
 启动与窗口数据流：
 

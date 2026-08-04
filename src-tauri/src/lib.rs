@@ -1574,7 +1574,7 @@ mod nav_guard_tests {
             "main",
         );
         assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
-        assert!(script.contains("let themeId = 'default-black'"));
+        assert!(script.contains("let themeId = 'myagents-light'"));
         assert!(script.contains("appearanceMode: \"dark\""));
         assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
         assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));
