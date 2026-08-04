@@ -2,9 +2,9 @@
 // Three sections: active (running/verifying), pending (todo/blocked/stopped),
 // finished (done/archived). PRD §7.2.
 //
-// Two render modes: a 2-column card view (default) and a dense single-line
-// list view (quick scan / filter). The choice is persisted in localStorage
-// so returning users see their last-picked view.
+// Two render modes: a 2-column card view and a dense single-line list view
+// (default, optimized for quick scan / filter). The choice is persisted in
+// localStorage so returning users see their last-picked view.
 //
 // Unmigrated historical Cron rows remain visible as read-only diagnostics.
 
@@ -75,9 +75,9 @@ const BUCKET_STATUSES: Record<Bucket, TaskStatus[]> = {
 const VIEW_STORAGE_KEY = 'myagents:task-center:view';
 
 function loadStoredView(): TaskView {
-  if (typeof window === 'undefined') return 'card';
+  if (typeof window === 'undefined') return 'list';
   const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
-  return raw === 'list' ? 'list' : 'card';
+  return raw === 'card' ? 'card' : 'list';
 }
 
 export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent, currentSessionId }: Props) {

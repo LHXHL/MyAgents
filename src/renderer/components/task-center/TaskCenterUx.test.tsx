@@ -139,6 +139,32 @@ describe('Task Center UX refinements', () => {
     __setTaskCenterSessionsForTest([]);
   });
 
+  it('defaults the task panel to list view when no preference is stored', async () => {
+    window.localStorage.removeItem('myagents:task-center:view');
+
+    render(<TaskListPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/列表视图|List view/)).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect(screen.getByTitle(/卡片视图|Card view/)).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps an explicit card preference and persists a later list choice', async () => {
+    window.localStorage.setItem('myagents:task-center:view', 'card');
+
+    render(<TaskListPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/卡片视图|Card view/)).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    fireEvent.click(screen.getByTitle(/列表视图|List view/));
+
+    expect(window.localStorage.getItem('myagents:task-center:view')).toBe('list');
+    expect(screen.getByTitle(/列表视图|List view/)).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('tracks a run only after using the ordinal accepted by the Task owner', async () => {
     const accepted = task({
       status: 'running',
