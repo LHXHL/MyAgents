@@ -104,7 +104,7 @@ import { createLiveUserMessageReplay } from '../shared/chatMessageReplay';
 import { isPendingSessionId } from '../shared/constants';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { normalizeReasoningEffort, isSdkEffortLevel } from '../shared/reasoningEffort';
-import { computeContextUsage } from '../shared/contextUsage';
+import { BUILTIN_AUTO_COMPACT_PERCENT, computeContextUsage } from '../shared/contextUsage';
 import {
   chooseBuiltinContextUsageModel,
   inferContextWindowFromSdkModelTag,
@@ -5412,7 +5412,6 @@ function sealCcAuthEnv(env: NodeJS.ProcessEnv): void {
 
 const WINDOWS_UTF8_BASH_ENV_SENTINEL = 'MYAGENTS_WINDOWS_UTF8';
 const WINDOWS_UTF8_BASH_ENV_FILENAME = 'windows-utf8-bash-env.sh';
-const SDK_AUTO_COMPACT_PCT_OVERRIDE = '90';
 const WINDOWS_UTF8_BASH_ENV_CONTENT = [
   '# MyAgents-managed Bash prelude for Windows SDK tool output.',
   `if [ -n "\${MYAGENTS_ORIGINAL_BASH_ENV:-}" ] && [ "\${MYAGENTS_ORIGINAL_BASH_ENV}" != "\${BASH_ENV:-}" ] && [ -r "\${MYAGENTS_ORIGINAL_BASH_ENV}" ]; then`,
@@ -5546,7 +5545,7 @@ export function buildClaudeSessionEnv(
   // provider's safe input limit once its completion budget is included (#508).
   // Pinning the value also prevents a shell/project launch environment from
   // silently changing MyAgents' session policy.
-  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = SDK_AUTO_COMPACT_PCT_OVERRIDE;
+  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(BUILTIN_AUTO_COMPACT_PERCENT);
 
   // Expose the managed npm prefix for command-local use only. Do NOT set
   // npm_config_prefix / NPM_CONFIG_PREFIX / PREFIX on the whole SDK env:
