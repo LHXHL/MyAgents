@@ -833,7 +833,7 @@ config.multiAgentRuntime (磁盘/React state)
 **核心不变量**
 - **占用 = 最近一次 API 调用的 input 系 token，不是整 turn 聚合**。带工具的一轮发多次 API、每次重发上下文，聚合会严重高估（圆环钉死在 ~100%）。
 - **两系 cache 语义相反**：Anthropic 系（builtin / Claude Code）`input` 不含 cache → `input + cacheRead + cacheCreation`；OpenAI 系（Codex）`inputTokens` 已含 cached → 直接用，不再加。
-- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值（= auto-compact 有效窗口，约「窗口 − 13K」触发压缩）。
+- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值，表示模型的有效完整窗口；builtin 会在该窗口的 90% 处自动压缩，external runtime 保留自己的压缩策略。
 
 **每 runtime 占用来源**
 
