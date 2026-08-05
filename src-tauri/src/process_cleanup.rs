@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
 
 /// A substring pattern tested against a process's full command line (the
 /// `argv` array joined by space).
@@ -404,21 +404,27 @@ pub fn find_live_processes_by_pid(pids: &[u32]) -> Vec<ProcessMatch> {
     sysinfo_pids
         .iter()
         .filter_map(|pid| {
-            system.process(*pid).map(|proc| {
-                let cmd_raw: String = proc
-                    .cmd()
-                    .iter()
-                    .map(|os| os.to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                ProcessMatch {
-                    pid: pid.as_u32(),
-                    name: proc.name().to_string_lossy().into_owned(),
-                    reason: "residual descendant after kill".to_string(),
-                    exe: proc.exe().map(|p| p.to_string_lossy().into_owned()),
-                    cmd: cmd_raw,
-                }
-            })
+            system
+                .process(*pid)
+                // Linux keeps a killed orphan visible as a zombie until its
+                // reaper runs. It owns no executable resources and cannot be
+                // killed again, so it must not block shutdown convergence.
+                .filter(|proc| proc.status() != ProcessStatus::Zombie)
+                .map(|proc| {
+                    let cmd_raw: String = proc
+                        .cmd()
+                        .iter()
+                        .map(|os| os.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    ProcessMatch {
+                        pid: pid.as_u32(),
+                        name: proc.name().to_string_lossy().into_owned(),
+                        reason: "residual descendant after kill".to_string(),
+                        exe: proc.exe().map(|p| p.to_string_lossy().into_owned()),
+                        cmd: cmd_raw,
+                    }
+                })
         })
         .collect()
 }

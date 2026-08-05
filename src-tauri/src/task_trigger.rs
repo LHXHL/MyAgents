@@ -666,8 +666,14 @@ fn run_command_blocking(
     let stdin_thread = std::thread::spawn(move || {
         let mut stdin = stdin;
         if let Err(error) = stdin.write_all(&stdin_bytes) {
-            *stdin_error_writer.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(format!("Failed to write Detector stdin: {error}"));
+            // A Detector may make a static decision and exit with a complete
+            // protocol response without reading stdin. On Linux that valid
+            // race reports EPIPE; the response and exit status remain the
+            // authoritative outcome. Other write failures still surface.
+            if error.kind() != std::io::ErrorKind::BrokenPipe {
+                *stdin_error_writer.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(format!("Failed to write Detector stdin: {error}"));
+            }
         }
         let _ = stdin.flush();
     });
@@ -2195,7 +2201,7 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().error.code, "detector_canceled");
 
-        let still_alive = std::process::Command::new("/bin/sh")
+        let still_alive = crate::process_cmd::new("/bin/sh")
             .args(["-c", &format!("kill -0 {child_pid} 2>/dev/null")])
             .status()
             .expect("probe descendant")

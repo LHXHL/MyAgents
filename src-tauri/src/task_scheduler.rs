@@ -3531,7 +3531,7 @@ mod tests {
         .await
         .expect("the detached worker must settle and release its exact claim");
 
-        let still_alive = std::process::Command::new("/bin/sh")
+        let still_alive = crate::process_cmd::new("/bin/sh")
             .args(["-c", &format!("kill -0 {child_pid} 2>/dev/null")])
             .status()
             .expect("probe Detector descendant")
