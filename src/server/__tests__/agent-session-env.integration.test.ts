@@ -149,22 +149,22 @@ describe('session model alias resolution', () => {
         baseUrl: 'https://api.minimax.example',
         apiKey: 'test-key',
         modelAliases: {
-          sonnet: 'MiniMax-M2.7',
-          opus: 'MiniMax-M2.7',
-          haiku: 'MiniMax-M2.7',
+          sonnet: 'MiniMax-M3',
+          opus: 'MiniMax-M3',
+          haiku: 'MiniMax-M3',
         },
       },
-      'MiniMax-M2.5',
+      'MiniMax-M2.7',
     );
 
-    // #335 — MiniMax-M2.5's preset contextLength is 204_800 (> the SDK 200K
+    // #335 — MiniMax-M2.7's preset contextLength is 204_800 (> the SDK 200K
     // default), so the SDK-ingress `_MODEL` envs carry the `[1m]` unlock; the
     // display-label `_MODEL_NAME` env stays raw (applyContextWindowSuffix
     // contract: wrapped values flow ONLY into SDK ingress points).
-    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('MiniMax-M2.5[1m]');
-    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe('MiniMax-M2.5');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('MiniMax-M2.7[1m]');
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe('MiniMax-M2.7');
   });
 
   it('keeps split subagent alias env unchanged', () => {
@@ -380,16 +380,16 @@ describe('Claude SDK context window env', () => {
         baseUrl: 'https://api.minimax.example',
         apiKey: 'test-key',
         modelAliases: {
-          sonnet: 'MiniMax-M2.7',
-          opus: 'MiniMax-M2.7',
-          haiku: 'MiniMax-M2.7',
+          sonnet: 'MiniMax-M3',
+          opus: 'MiniMax-M3',
+          haiku: 'MiniMax-M3',
         },
       },
-      'MiniMax-M2.5',
+      'MiniMax-M2.7',
     );
 
     expect(env.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBeUndefined();
     expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('204800');
-    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.5[1m]');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('MiniMax-M2.7[1m]');
   });
 });

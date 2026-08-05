@@ -228,10 +228,10 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
   it('an incomplete discovered entry does NOT shadow the preset contextLength', () => {
     writeFileSync(
       join(tmpHome, '.myagents', 'config.json'),
-      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5.1', inputModalities: ['text'] }] } }),
+      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5-turbo', inputModalities: ['text'] }] } }),
     );
     __resetModelCapabilityCacheForTests();
-    expect(lookupModelContextLength('glm-5.1')).toBe(204_800); // filled from preset, not shadowed
+    expect(lookupModelContextLength('glm-5-turbo')).toBe(202_752); // filled from preset, not shadowed
   });
 
   // A reseller reusing the bundled id claude-sonnet-4-6 at a 1M window, stored
@@ -324,12 +324,12 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
   it('per-field merge: explicit modalities win, missing contextLength fills from preset', () => {
     writeFileSync(
       join(tmpHome, '.myagents', 'config.json'),
-      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5.1', inputModalities: ['text'] }] } }),
+      JSON.stringify({ presetCustomModels: { zhipu: [{ model: 'glm-5-turbo', inputModalities: ['text'] }] } }),
     );
     __resetModelCapabilityCacheForTests();
-    const cap = lookupModelCapability('glm-5.1');
+    const cap = lookupModelCapability('glm-5-turbo');
     expect(cap?.inputModalities).toEqual(['text']); // explicit override preserved
-    expect(cap?.contextLength).toBe(204_800);        // gap filled from the bundled preset
+    expect(cap?.contextLength).toBe(202_752);        // gap filled from the bundled preset
   });
 
   // applyContextWindowSuffix must not feed the SDK a garbage model option built
