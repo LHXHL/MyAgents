@@ -911,12 +911,25 @@ function resetModuleState(): void {
   clearExternalQueueWithCancellation();
 }
 
+type CommitCodexConversationRewind = typeof commitCodexConversationRewind;
+let commitCodexConversationRewindForTests: CommitCodexConversationRewind | null = null;
+
 export function __resetExternalSessionForTests(): void {
   if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
     throw new Error('__resetExternalSessionForTests is only available in tests');
   }
   resetModuleState();
   externalSessionMutationInFlight = false;
+  commitCodexConversationRewindForTests = null;
+}
+
+export function __setCodexConversationRewindCommitForTests(
+  implementation: CommitCodexConversationRewind,
+): void {
+  if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+    throw new Error('__setCodexConversationRewindCommitForTests is only available in tests');
+  }
+  commitCodexConversationRewindForTests = implementation;
 }
 
 /**
@@ -4740,7 +4753,8 @@ export async function rewindExternalConversation(
     }
 
     const targetMessages = data.messages.slice(0, targetUserIndex);
-    const committed = await commitCodexConversationRewind({
+    const commitRewind = commitCodexConversationRewindForTests ?? commitCodexConversationRewind;
+    const committed = await commitRewind({
       sessionId,
       sourceRuntimeSessionId: metadata.runtimeSessionId,
       replacementRuntimeSessionId: branch.kind === 'native-thread' ? branch.runtimeSessionId : null,

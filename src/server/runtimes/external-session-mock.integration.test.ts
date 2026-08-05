@@ -377,7 +377,6 @@ let activeHarness: Harness | null = null;
 let previousHome: string | undefined;
 let previousUserProfile: string | undefined;
 let previousRuntime: string | undefined;
-let conversationRewindCommitFailure: 'storage_consistency_error' | undefined;
 
 async function createHarness(
   scripts: TurnScript[],
@@ -402,25 +401,6 @@ async function createHarness(
   } = {},
 ): Promise<Harness> {
   vi.resetModules();
-  conversationRewindCommitFailure = options.conversationRewindCommitFailure;
-  vi.doMock('../SessionStore', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../SessionStore')>();
-    return {
-      ...actual,
-      commitCodexConversationRewind: async (
-        ...args: Parameters<typeof actual.commitCodexConversationRewind>
-      ) => {
-        if (conversationRewindCommitFailure) {
-          return {
-            success: false as const,
-            reason: conversationRewindCommitFailure,
-            error: 'fake inconsistent rewind state',
-          };
-        }
-        return actual.commitCodexConversationRewind(...args);
-      },
-    };
-  });
   const home = mkdtempSync(join(tmpdir(), 'myagents-external-mock-'));
   mkdirSync(join(home, '.myagents'), { recursive: true });
   if (options.config) {
@@ -527,6 +507,14 @@ async function createHarness(
     import('../SessionStore'),
   ]);
   externalSession.__resetExternalSessionForTests();
+  if (options.conversationRewindCommitFailure) {
+    const reason = options.conversationRewindCommitFailure;
+    externalSession.__setCodexConversationRewindCommitForTests(async () => ({
+      success: false,
+      reason,
+      error: 'fake inconsistent rewind state',
+    }));
+  }
   activeHarness = {
     home,
     runtime,
@@ -574,7 +562,6 @@ afterEach(async () => {
     rmSync(harness.home, { recursive: true, force: true });
   }
   restoreEnv();
-  conversationRewindCommitFailure = undefined;
   vi.doUnmock('./factory');
   vi.doUnmock('../sse');
   vi.doUnmock('../utils/im-mirror');
