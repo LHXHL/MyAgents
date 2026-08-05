@@ -5,6 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { applyWindowsUtf8SubprocessEnv, buildClaudeSessionEnv } from '../agent-session';
+import {
+  applyContextWindowSuffixForContextLength,
+  lookupSnapshotModelContextLength,
+  snapshotProviderModelContextLengths,
+} from '../utils/model-capabilities';
 
 describe('buildClaudeSessionEnv npm prefix isolation', () => {
   afterEach(() => {
@@ -266,6 +271,96 @@ describe('Claude SDK context window env', () => {
 
       expect(subscriptionEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('200000');
       expect(customEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('uses only the active provider row for context and adopts its later discovery metadata (#516)', () => {
+    const prevHome = process.env.HOME;
+    const tempHome = mkdtempSync(join(tmpdir(), 'myagents-env-home-'));
+    const providerDir = join(tempHome, '.myagents', 'providers');
+    const cacheDir = join(tempHome, '.myagents', 'cache');
+    const providerPath = join(providerDir, 'amd.json');
+    try {
+      mkdirSync(providerDir, { recursive: true });
+      mkdirSync(cacheDir, { recursive: true });
+      writeFileSync(
+        providerPath,
+        JSON.stringify({
+          id: 'amd',
+          models: [{ model: 'DeepSeek-V4-Flash', modelName: 'DeepSeek V4 Flash' }],
+        }),
+      );
+      writeFileSync(
+        join(cacheDir, 'litellm_model_prices.json'),
+        JSON.stringify({
+          'deepseek-v4-flash': { max_input_tokens: 1_000_000, mode: 'chat' },
+          'tensormesh/deepseek-ai/DeepSeek-V4-Flash': { max_input_tokens: 32_768, mode: 'chat' },
+        }),
+      );
+      vi.stubEnv('HOME', tempHome);
+      const providerEnv = {
+        providerId: 'amd',
+        baseUrl: 'https://amd.example/v1',
+        apiKey: 'test-key',
+        apiProtocol: 'openai' as const,
+        modelAliases: {
+          sonnet: 'DeepSeek-V4-Flash',
+          opus: 'DeepSeek-V4-Flash',
+          haiku: 'DeepSeek-V4-Flash',
+        },
+      };
+
+      const launchContextWindowSnapshot = snapshotProviderModelContextLengths(
+        ['DeepSeek-V4-Flash'],
+        'amd',
+      );
+      const beforeDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd', contextWindowSnapshot: launchContextWindowSnapshot },
+      );
+      expect(beforeDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(beforeDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash');
+      const beforeDiscoveryLaunchModel = applyContextWindowSuffixForContextLength(
+        'DeepSeek-V4-Flash',
+        lookupSnapshotModelContextLength(launchContextWindowSnapshot, 'DeepSeek-V4-Flash'),
+      );
+
+      writeFileSync(
+        providerPath,
+        JSON.stringify({
+          id: 'amd',
+          models: [{
+            model: 'DeepSeek-V4-Flash',
+            modelName: 'DeepSeek V4 Flash',
+            contextLength: 1_048_576,
+            source: 'discovered',
+          }],
+        }),
+      );
+      const afterDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd' },
+      );
+      const heldLaunchAfterDiscovery = buildClaudeSessionEnv(
+        providerEnv,
+        'DeepSeek-V4-Flash',
+        { providerId: 'amd', contextWindowSnapshot: launchContextWindowSnapshot },
+      );
+      expect(afterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1048576');
+      expect(afterDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash[1m]');
+      expect(heldLaunchAfterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(heldLaunchAfterDiscovery.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('DeepSeek-V4-Flash');
+      expect(beforeDiscoveryLaunchModel).toBe('DeepSeek-V4-Flash');
+      expect(applyContextWindowSuffixForContextLength(
+        'DeepSeek-V4-Flash',
+        Number(afterDiscovery.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+      )).toBe('DeepSeek-V4-Flash[1m]');
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   loadAppConfig: vi.fn(),
   loadProjects: vi.fn(),
   getAllProviders: vi.fn(),
+  atomicModifyCustomProvider: vi.fn(),
   reconcileIdentities: vi.fn(),
   ensureBundledWorkspace: vi.fn(),
   withAgentConfigIntentLock: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock('./services/providerService', () => ({
   loadProviderVerifyStatus: vi.fn(async () => ({})),
   saveProviderVerifyStatus: vi.fn(),
   saveCustomProvider: vi.fn(),
+  atomicModifyCustomProvider: mocks.atomicModifyCustomProvider,
   deleteCustomProvider: vi.fn(),
   rebuildAndPersistAvailableProviders: vi.fn(async () => {}),
 }));
@@ -99,7 +101,7 @@ function project(id: string, name: string, path: string): Project {
 
 function Probe() {
   const { config, projects, providers, apiKeys, providerVerifyStatus, error } = useConfigData();
-  const { updateConfig } = useConfigActions();
+  const { updateConfig, updateCustomProvider } = useConfigActions();
   return (
     <>
       <output data-testid="snapshot">
@@ -114,6 +116,15 @@ function Probe() {
       </output>
       <button type="button" onClick={() => void updateConfig({ defaultProviderId: 'local-provider' })}>
         Save local config
+      </button>
+      <button
+        type="button"
+        onClick={() => providers[0] && void updateCustomProvider(
+          providers[0],
+          [{ id: providers[0].primaryModel, contextLength: 1_048_576 }],
+        )}
+      >
+        Merge discovered capability
       </button>
     </>
   );
@@ -137,6 +148,16 @@ describe('ConfigProvider external config invalidation', () => {
     mocks.loadAppConfig.mockImplementation(async () => mocks.config);
     mocks.loadProjects.mockImplementation(async () => mocks.projects);
     mocks.getAllProviders.mockImplementation(async () => mocks.providers);
+    mocks.atomicModifyCustomProvider.mockImplementation(async (
+      providerId: string,
+      modify: (current: Provider) => Provider,
+    ) => {
+      const current = mocks.providers.find(item => item.id === providerId);
+      if (!current) return null;
+      const next = modify(current);
+      mocks.providers = mocks.providers.map(item => item.id === providerId ? next : item);
+      return next;
+    });
     mocks.ensureBundledWorkspace.mockResolvedValue(false);
     mocks.withAgentConfigIntentLock.mockImplementation(async (run: () => Promise<unknown>) => run());
     mocks.reconcileIdentities.mockResolvedValue({
@@ -156,6 +177,21 @@ describe('ConfigProvider external config invalidation', () => {
 
     await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-project'));
     expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider');
+  });
+
+  it('merges late discovery into the lock-current Provider without replacing a newer explicit value', async () => {
+    render(<ConfigProvider><Probe /></ConfigProvider>);
+    await waitFor(() => expect(screen.getByTestId('snapshot')).toHaveTextContent('old-provider'));
+
+    const current = mocks.providers[0]!;
+    mocks.providers = [{
+      ...current,
+      models: current.models.map(model => ({ ...model, contextLength: 262_144 })),
+    }];
+    fireEvent.click(screen.getByRole('button', { name: 'Merge discovered capability' }));
+
+    await waitFor(() => expect(mocks.atomicModifyCustomProvider).toHaveBeenCalledTimes(1));
+    expect(mocks.providers[0]?.models[0]?.contextLength).toBe(262_144);
   });
 
   it('keeps the readable disk snapshot available when startup maintenance is lock-busy', async () => {

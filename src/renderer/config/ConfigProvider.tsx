@@ -40,9 +40,14 @@ import {
     deleteApiKey as deleteApiKeyService,
     saveProviderVerifyStatus as saveProviderVerifyStatusService,
     saveCustomProvider as saveCustomProviderService,
+    atomicModifyCustomProvider,
     deleteCustomProvider as deleteCustomProviderService,
     rebuildAndPersistAvailableProviders,
 } from './services/providerService';
+import {
+    enrichExistingModelsFromDiscovery,
+    type DiscoveredModel,
+} from './services/modelDiscoveryService';
 import {
     loadProjects,
     saveProjects,
@@ -238,7 +243,7 @@ export interface ConfigActionsValue {
     touchProject: (projectId: string) => Promise<void>;
     // Providers
     addCustomProvider: (provider: Provider) => Promise<void>;
-    updateCustomProvider: (provider: Provider) => Promise<void>;
+    updateCustomProvider: (provider: Provider, discoveredModels?: DiscoveredModel[]) => Promise<void>;
     deleteCustomProvider: (providerId: string) => Promise<void>;
     refreshProviders: () => Promise<void>;
     // Preset custom models
@@ -1098,8 +1103,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         await refreshProviders();
     }, [refreshProviders]);
 
-    const updateCustomProvider = useCallback(async (provider: Provider) => {
-        await saveCustomProviderService(provider);
+    const updateCustomProvider = useCallback(async (
+        provider: Provider,
+        discoveredModels?: DiscoveredModel[],
+    ) => {
+        if (discoveredModels) {
+            // Discovery starts from a render snapshot and may finish after the
+            // user edits the same model. Re-read under the Provider file lock
+            // and merge only missing fields so a late result cannot overwrite
+            // an explicit value or resurrect a deleted model.
+            await atomicModifyCustomProvider(provider.id, current => {
+                const models = enrichExistingModelsFromDiscovery(current.models, discoveredModels);
+                return models === current.models ? current : { ...current, models };
+            });
+        } else {
+            await saveCustomProviderService(provider);
+        }
         await rebuildAndPersistAvailableProviders();
         await refreshProviders();
     }, [refreshProviders]);

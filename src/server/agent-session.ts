@@ -17,7 +17,15 @@ import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
 import { buildSessionExecutablePath } from './utils/session-executable-path';
-import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
+import {
+  applyContextWindowSuffixForContextLength,
+  applyProviderContextWindowSuffix,
+  lookupSnapshotModelContextLength,
+  lookupProviderModelContextLength,
+  modelSupportsModality,
+  snapshotProviderModelContextLengths,
+  type ModelContextLengthSnapshot,
+} from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
@@ -5496,7 +5504,11 @@ export function applyWindowsUtf8SubprocessEnv(
 export function buildClaudeSessionEnv(
   providerEnv?: ProviderEnv,
   modelOverride?: string,
-  opts?: { bridgeToken?: string; providerId?: string },
+  opts?: {
+    bridgeToken?: string;
+    providerId?: string;
+    contextWindowSnapshot?: ModelContextLengthSnapshot;
+  },
 ): NodeJS.ProcessEnv {
   // Ensure essential paths are always present, even when launched from Finder
   // (Finder launches via launchd which doesn't inherit shell environment variables)
@@ -5677,6 +5689,11 @@ export function buildClaudeSessionEnv(
   // Hoisted above the OpenAI early return so both protocol paths benefit.
   const resolvedModel = modelOverride ?? configState.currentModel;
   const aliases = resolveSessionModelAliases(effectiveProviderEnv?.modelAliases, resolvedModel);
+  const resolveContextLength = (model: string | undefined): number | undefined => (
+    opts?.contextWindowSnapshot
+      ? lookupSnapshotModelContextLength(opts.contextWindowSnapshot, model)
+      : lookupProviderModelContextLength(model, effectiveProviderId)
+  );
   if (aliases) {
     // _MODEL is what SDK feeds into getContextWindowForModel(); for 1M-window
     // alias targets we MUST tag it with [1m] so the SDK takes the 1M path.
@@ -5684,10 +5701,10 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
-    const fableWrapped = applyProviderContextWindowSuffix(aliases.fable, effectiveProviderId);
-    const sonnetWrapped = applyProviderContextWindowSuffix(aliases.sonnet, effectiveProviderId);
-    const opusWrapped = applyProviderContextWindowSuffix(aliases.opus, effectiveProviderId);
-    const haikuWrapped = applyProviderContextWindowSuffix(aliases.haiku, effectiveProviderId);
+    const fableWrapped = applyContextWindowSuffixForContextLength(aliases.fable, resolveContextLength(aliases.fable));
+    const sonnetWrapped = applyContextWindowSuffixForContextLength(aliases.sonnet, resolveContextLength(aliases.sonnet));
+    const opusWrapped = applyContextWindowSuffixForContextLength(aliases.opus, resolveContextLength(aliases.opus));
+    const haikuWrapped = applyContextWindowSuffixForContextLength(aliases.haiku, resolveContextLength(aliases.haiku));
     if (aliases.fable) {
       env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
       env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
@@ -5736,7 +5753,7 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
-  const modelContextLength = lookupProviderModelContextLength(resolvedModel, effectiveProviderId);
+  const modelContextLength = resolveContextLength(resolvedModel);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
     console.log(`[env] CLAUDE_CODE_AUTO_COMPACT_WINDOW=${modelContextLength} (model=${resolvedModel ?? '(unknown)'})`);
@@ -10200,9 +10217,38 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // "unknown bridge token" instead of resolving to the new subprocess's
   // config (the cross-pollination class we're eliminating).
   ensureActiveSessionBridgeRegistered({ freshToken: true });
+  const launchProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const launchAgentDefinitionsSource = configState.currentAgentDefinitions;
+  const launchContextWindowSnapshot = snapshotProviderModelContextLengths([
+    configState.currentModel,
+    ...Object.values(configState.currentProviderEnv?.modelAliases ?? {}),
+    ...Object.values(launchAgentDefinitionsSource ?? {}).map(agent => agent.model),
+  ], launchProviderId);
   const env = buildClaudeSessionEnv(undefined, undefined, {
     bridgeToken: activeSessionBridgeToken ?? undefined,
+    providerId: launchProviderId,
+    contextWindowSnapshot: launchContextWindowSnapshot,
   });
+  const launchModel = applyContextWindowSuffixForContextLength(
+    configState.currentModel,
+    lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
+  );
+  const launchAgentDefinitions = launchAgentDefinitionsSource
+    ? Object.fromEntries(
+        Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
+          name,
+          agent.model
+            ? {
+                ...agent,
+                model: applyContextWindowSuffixForContextLength(
+                  agent.model,
+                  lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
+                ),
+              }
+            : agent,
+        ]),
+      )
+    : null;
   console.log(`[agent] ${preWarm ? 'pre-warm' : 'start'} session cwd=${agentDir}`);
   resetAbortFlag();
   resetAbortFlag();
@@ -10550,14 +10596,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // via setPermissionMode('bypassPermissions'). Without this flag at query creation time,
       // the SDK silently ignores the mode switch and keeps calling canUseTool.
       allowDangerouslySkipPermissions: true,
-      // applyProviderContextWindowSuffix appends [1m] when the active provider's
-      // registered contextLength exceeds the SDK 200K default (#335) — without it, SDK
+      // launchModel appends [1m] from the SAME context snapshot used by env
+      // when the active provider's contextLength exceeds the SDK 200K default
+      // (#335/#516). Without it, SDK
       // getContextWindowForModel() falls back to 200K for non-Anthropic models
       // and /context, auto-compact, attachment trimming all use the wrong
       // ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW then pulls the effective
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
-      model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
+      model: launchModel,
       pathToClaudeCodeExecutable: claudeCodeExecutable,
       env,
       stderr: (message: string) => {
@@ -10644,25 +10691,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       allowedTools: [
         'Grep',
         'Glob',
-        ...(configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0
+        ...(launchAgentDefinitions && Object.keys(launchAgentDefinitions).length > 0
           ? ['Task']
           : []),
       ],
-      // Sub-agents: inject custom agent definitions if configured
-      // Each sub-agent's `model` runs through applyProviderContextWindowSuffix so a sub-agent
-      // pinned to a 1M model gets the [1m] tag independently of the main session's
+      // Sub-agents: inject custom agent definitions if configured. Each model
+      // was decorated from launchContextWindowSnapshot before async startup
+      // work, so it cannot observe a newer Provider-file generation than env.
+      // A sub-agent pinned to a 1M model gets the [1m] tag independently of the main session's
       // model (the parent could be on a 200K model, the sub-agent on a 1M one,
       // or vice versa). The original configState.currentAgentDefinitions is left untouched
       // so config owner fingerprinting and downstream config consumers see clean names.
-      ...(configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0
-        ? {
-            agents: Object.fromEntries(
-              Object.entries(configState.currentAgentDefinitions).map(([name, a]) => [
-                name,
-                a.model ? { ...a, model: applyProviderContextWindowSuffix(a.model, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID) } : a,
-              ])
-            ),
-          }
+      ...(launchAgentDefinitions && Object.keys(launchAgentDefinitions).length > 0
+        ? { agents: launchAgentDefinitions }
         : {}),
       // disallowedTools: group chat deny list + IM-incompatible UI-interaction tools
       // Uses SDK disallowedTools because canUseTool is skipped in bypassPermissions mode

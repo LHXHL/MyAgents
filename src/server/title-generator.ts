@@ -19,7 +19,7 @@ import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge } from './agent-session';
 import type { ProviderEnv } from './provider-types';
-import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
+import { applyContextWindowSuffixForContextLength } from './utils/model-capabilities';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isLikelyErrorTitle } from '../shared/titleFilters';
 import { capTitleAtBoundary } from '../shared/sessionTitle';
@@ -227,6 +227,10 @@ async function generateTitleInner(
       bridgeToken,
       providerId: providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
     });
+    const launchModel = applyContextWindowSuffixForContextLength(
+      model,
+      Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+    );
     const prompt = buildUserPrompt(rounds);
 
     async function* titlePrompt() {
@@ -271,7 +275,7 @@ async function generateTitleInner(
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
         // the suffix before the wire.
-        ...(model ? { model: applyProviderContextWindowSuffix(model, providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID) } : {}),
+        ...(launchModel ? { model: launchModel } : {}),
       },
     }));
 
