@@ -22,6 +22,9 @@ vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => true }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => {}) }));
 vi.mock('@/api/apiFetch', () => ({ apiGetJson: vi.fn(async () => ({ models: [] })) }));
 vi.mock('./services/configStore', () => ({
+    isLockBusyError: (error: unknown) => (
+        !!error && typeof error === 'object' && 'code' in error && String(error.code).endsWith('BUSY')
+    ),
     withAgentConfigIntentLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
     withProjectsLock: vi.fn(async <T,>(run: () => Promise<T>) => run()),
 }));

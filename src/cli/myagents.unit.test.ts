@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   formatCronInstantForDisplay,
@@ -10,6 +10,7 @@ import {
   buildRoute,
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
+  commandResultExitCode,
   TOP_HELP,
   normalizeScheduleFlag,
   parseArgs,
@@ -21,6 +22,17 @@ import {
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
 } from './myagents';
+
+const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
+
+beforeEach(() => {
+  delete process.env.MYAGENTS_SESSION_ID;
+});
+
+afterEach(() => {
+  if (inheritedMyAgentsSessionId === undefined) delete process.env.MYAGENTS_SESSION_ID;
+  else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
+});
 
 describe('myagents CLI Task notification updates', () => {
   it('sends only provided notification fields in the single update mutation', () => {
@@ -43,6 +55,375 @@ describe('myagents CLI Task notification updates', () => {
       id: 'task-1',
       name: 'renamed',
     });
+  });
+});
+
+describe('myagents CLI Task provider overrides', () => {
+  it('forwards providerId with model through both Task creation paths', () => {
+    expect(buildRequestBody('task', 'create-direct', ['review'], {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+      taskMdContent: 'Review the workspace.',
+    })).toMatchObject({
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+
+    expect(buildRequestBody('task', 'create-from-alignment', ['session-1'], {
+      name: 'Aligned review',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })).toMatchObject({
+      alignmentSessionId: 'session-1',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('keeps providerId with model on Task update', () => {
+    expect(buildRequestBody('task', 'update', ['task-1'], {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })).toEqual({
+      id: 'task-1',
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+});
+
+describe('myagents CLI Task Detector contracts', () => {
+  const trigger = {
+    source: { type: 'time' },
+    detector: {
+      type: 'command',
+      command: {
+        executable: 'node',
+        args: ['scripts/watch inbox.js', '--mode', 'strict'],
+        cwd: '/tmp',
+      },
+      timeoutMs: 10_000,
+    },
+  };
+
+  it('warns in help that Detector test runs real external side effects', () => {
+    expect(TOP_HELP).toContain('Test does not commit MyAgents checkpoint/Activation state');
+    expect(TOP_HELP).toContain('external side effects are not rolled back');
+  });
+
+  it('routes nested Trigger actions and reads specs/checkpoint fixtures without splitting args', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-trigger-cli-'));
+    try {
+      const spec = join(dir, 'trigger.json');
+      const checkpoint = join(dir, 'checkpoint.json');
+      writeFileSync(spec, JSON.stringify(trigger));
+      writeFileSync(checkpoint, JSON.stringify({ cursor: '消息 42' }));
+
+      expect(buildRoute('task', 'trigger', ['validate'])).toBe('task/trigger/validate');
+      expect(buildRoute('task', 'trigger', ['test', 'task-1'])).toBe('task/trigger/test');
+      expect(buildRequestBody('task', 'trigger', ['validate'], { specFile: spec })).toEqual({
+        trigger,
+      });
+      expect(buildRequestBody('task', 'trigger', ['test', 'task-1'], {
+        checkpointFile: checkpoint,
+        expect: 'quiet',
+      })).toEqual({
+        taskId: 'task-1',
+        checkpoint: { cursor: '消息 42' },
+        expect: 'quiet',
+      });
+      expect(buildRequestBody('task', 'trigger', ['test'], {
+        specFile: spec,
+        workspacePath: '/tmp/work space',
+      })).toEqual({
+        trigger,
+        workspacePath: '/tmp/work space',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves current Session before create and supports trigger update/clear actions', () => {
+    const previous = process.env.MYAGENTS_SESSION_ID;
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-trigger-cli-'));
+    try {
+      process.env.MYAGENTS_SESSION_ID = 'session-canonical';
+      const spec = join(dir, 'trigger.json');
+      writeFileSync(spec, JSON.stringify(trigger));
+      expect(buildRequestBody('task', 'create-direct', ['watch inbox'], {
+        workspaceId: 'ws',
+        workspacePath: '/tmp/workspace',
+        taskMdContent: 'React only when the detector activates.',
+        executionMode: 'recurring',
+        intervalMinutes: '5',
+        runMode: 'single-session',
+        preselectedSessionId: 'current',
+        triggerFile: spec,
+        deadline: '2026-08-31T23:59:00+08:00',
+        maxExecutions: '1',
+        aiCanExit: 'true',
+      })).toMatchObject({
+        runMode: 'single-session',
+        preselectedSessionId: 'session-canonical',
+        trigger,
+        endConditions: {
+          deadline: Date.parse('2026-08-31T23:59:00+08:00'),
+          maxExecutions: 1,
+          aiCanExit: true,
+        },
+      });
+      expect(buildRequestBody('task', 'update', ['task-1'], {
+        triggerFile: spec,
+      })).toEqual({ id: 'task-1', trigger });
+      expect(buildRequestBody('task', 'update', ['task-1'], {
+        clearTrigger: true,
+      })).toEqual({ id: 'task-1', clearTrigger: true });
+      expect(buildRequestBody('task', 'check-now', ['task-1'], {})).toEqual({ id: 'task-1' });
+      expect(buildRequestBody('task', 'run-now', ['task-1'], {})).toEqual({
+        id: 'task-1',
+        actor: 'agent',
+        source: 'cli',
+      });
+      expect(buildRequestBody('task', 'reset-checkpoint', ['task-1'], {})).toEqual({ id: 'task-1' });
+    } finally {
+      if (previous === undefined) delete process.env.MYAGENTS_SESSION_ID;
+      else process.env.MYAGENTS_SESSION_ID = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps scheduled Task governance on canonical task aliases', () => {
+    expect(buildRoute('task', 'readme', [])).toBe('readme/task');
+    expect(buildRoute('task', 'start', ['task-1'])).toBe('cron/start');
+    expect(buildRoute('task', 'stop', ['task-1'])).toBe('cron/stop');
+    expect(buildRoute('task', 'runs', ['task-1'])).toBe('cron/runs');
+    expect(buildRoute('task', 'exit', [])).toBe('cron/exit');
+    expect(buildRequestBody('task', 'start', ['task-1'], {})).toEqual({
+      taskId: 'task-1',
+      actor: 'user',
+      source: 'cli',
+    });
+    expect(buildRequestBody('task', 'stop', ['task-1'], {})).toEqual({
+      taskId: 'task-1',
+      actor: 'user',
+      source: 'cli',
+    });
+    expect(buildRequestBody('task', 'runs', ['task-1'], { limit: '3' })).toEqual({
+      taskId: 'task-1',
+      limit: 3,
+    });
+    expect(buildRequestBody('task', 'exit', [], { reason: 'complete' })).toEqual({
+      reason: 'complete',
+    });
+    expect(TOP_HELP).toContain('myagents task start <taskId>');
+    expect(TOP_HELP).toContain('myagents task exit --reason');
+  });
+
+  it('rejects malformed values on canonical scheduled Task aliases', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody('task', 'exit', [], { reason: true }))
+        .toThrow('process.exit(2)');
+      expect(error).toHaveBeenLastCalledWith(expect.stringContaining('--reason requires a value'));
+
+      expect(() => buildRequestBody('task', 'start', [], { id: true }))
+        .toThrow('process.exit(2)');
+      expect(error).toHaveBeenLastCalledWith(expect.stringContaining('--id requires a value'));
+
+      expect(() => buildRequestBody('task', 'runs', ['task-1'], { limit: 'abc' }))
+        .toThrow('process.exit(2)');
+      expect(error).toHaveBeenLastCalledWith('Error: task runs --limit must be a positive integer.');
+
+      expect(() => buildRequestBody('task', 'runs', ['task-1'], { limit: '0' }))
+        .toThrow('process.exit(2)');
+      expect(error).toHaveBeenLastCalledWith('Error: task runs --limit must be a positive integer.');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('parses clear-trigger as a presence flag without consuming the next flag', () => {
+    expect(parseArgs(['task', 'update', 'task-1', '--clear-trigger', '--json'])).toEqual({
+      positional: ['task', 'update', 'task-1'],
+      flags: { clearTrigger: true, json: true },
+    });
+  });
+
+  it('builds compact Task discovery filters and exposes the existing interval startAt', () => {
+    expect(buildRequestBody('task', 'list', [], { query: 'release', limit: '20' })).toEqual({
+      workspaceId: undefined,
+      status: undefined,
+      tag: undefined,
+      query: 'release',
+      limit: 20,
+      includeDeleted: undefined,
+    });
+    expect(buildRequestBody('task', 'create-direct', ['watch later'], {
+      taskMdContent: 'Check the external state.',
+      executionMode: 'recurring',
+      intervalMinutes: '60',
+      startAt: '2026-08-04T09:00:00+08:00',
+    })).toMatchObject({
+      workspaceId: undefined,
+      workspacePath: undefined,
+      startAt: '2026-08-04T01:00:00.000Z',
+      actor: 'user',
+      source: 'cli',
+    });
+  });
+
+  it('rejects an invalid --expect before a request can be built', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody('task', 'trigger', ['test', 'task-1'], {
+        expect: 'activte',
+      })).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith('Error: --expect must be quiet or activate.');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('rejects unsafe, malformed, and oversized Detector fixture files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-trigger-files-'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const invalid = join(dir, 'invalid.json');
+      const nul = join(dir, 'nul.json');
+      const utf8 = join(dir, 'utf8.json');
+      const oversized = join(dir, 'oversized.json');
+      const target = join(dir, 'target.json');
+      const link = join(dir, 'link.json');
+      writeFileSync(invalid, '{');
+      writeFileSync(nul, Buffer.from('{"x":"\0"}'));
+      writeFileSync(utf8, Buffer.from([0xff, 0xfe]));
+      writeFileSync(oversized, Buffer.alloc(256 * 1024 + 1, 0x20));
+      writeFileSync(target, JSON.stringify(trigger));
+      if (process.platform !== 'win32') symlinkSync(target, link);
+
+      const rejected = [invalid, nul, utf8, oversized, join(dir, 'missing.json')];
+      if (process.platform !== 'win32') rejected.push(link);
+      for (const specFile of rejected) {
+        expect(() => buildRequestBody('task', 'trigger', ['validate'], { specFile }))
+          .toThrow('process.exit(2)');
+      }
+      expect(exit).toHaveBeenCalled();
+      expect(error).toHaveBeenCalled();
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints complete program-failure diagnostics in human mode', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      printResult('task', 'trigger', {
+        success: false,
+        error: 'Detector timed out',
+        data: {
+          result: {
+            durationMs: 300_001,
+            error: {
+              code: 'detector_timeout',
+              message: 'Detector timed out',
+              occurredAt: 1_775_000_000_000,
+              exitCode: 17,
+              signal: 'SIGKILL',
+              timedOut: true,
+              stderrTail: 'tail',
+            },
+          },
+        },
+      }, false, {}, ['test']);
+
+      const output = error.mock.calls.flat().join('\n');
+      expect(output).toContain('detector_timeout');
+      expect(output).toContain('17');
+      expect(output).toContain('SIGKILL');
+      expect(output).toContain('true');
+      expect(output).toContain('tail');
+      expect(output).toContain('2026-');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('prints every Trigger command in human/JSON mode and maps command failure to exit 1', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const validate = { success: true };
+      const test = {
+        success: true,
+        data: {
+          result: {
+            decision: 'activate',
+            reason: { code: 'changed', message: 'Changed' },
+            event: { id: 'event-1', kind: 'state.changed', occurredAt: '2026-08-03T00:00:00Z' },
+            handoff: { summary: 'Changed' },
+            durationMs: 12,
+            exitCode: 0,
+          },
+        },
+      };
+      const check = {
+        success: true,
+        data: { result: { outcome: 'quiet', state: { checkCount: 4 } } },
+      };
+      const reset = { success: true };
+      printResult('task', 'trigger', validate, false, {}, ['validate']);
+      printResult('task', 'trigger', test, false, {}, ['test']);
+      printResult('task', 'check-now', check, false);
+      printResult('task', 'reset-checkpoint', reset, false);
+      expect(log.mock.calls.flat()).toContain('✓ Trigger spec is valid');
+      expect(log.mock.calls.flat()).toContain('✓ Detector test completed (MyAgents state was not committed)');
+      expect(log.mock.calls.flat()).toContain('  decision: activate');
+      expect(log.mock.calls.flat()).toContain('✓ Detector check completed');
+      expect(log.mock.calls.flat()).toContain('  outcome: quiet');
+      expect(log.mock.calls.flat()).toContain('  checks:  4');
+      expect(log.mock.calls.flat()).toContain('✓ Detector checkpoint reset');
+
+      for (const [action, result, rest] of [
+        ['trigger', validate, ['validate']],
+        ['trigger', test, ['test']],
+        ['check-now', check, []],
+        ['reset-checkpoint', reset, []],
+      ] as const) {
+        log.mockClear();
+        printResult('task', action, result, true, {}, [...rest]);
+        expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual(result);
+      }
+      expect(commandResultExitCode({ success: true })).toBe(0);
+      expect(commandResultExitCode({ success: false, error: 'Detector failed' })).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(['check-now', 'reset-checkpoint'])('rejects missing task id for %s with exit 1', (action) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(() => buildRequestBody('task', action, [], {})).toThrow('process.exit(1)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
   });
 });
 
@@ -671,6 +1052,7 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
   it('builds explicit Agent discovery and Session list requests', () => {
     expect(buildRequestBody('agent', 'list', [], {})).toEqual({ lifecycle: 'active' });
     expect(buildRequestBody('agent', 'list', [], { archived: true })).toEqual({ lifecycle: 'archived' });
+    expect(buildRequestBody('agent', 'current', [], {})).toEqual({});
     expect(buildRequestBody('agent', 'show', ['agent-1'], {})).toEqual({ agentId: 'agent-1' });
     expect(buildRequestBody('session', 'list', [], { agent: 'agent-1' })).toEqual({
       agentId: 'agent-1',

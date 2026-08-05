@@ -97,6 +97,8 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'no-reply' ||
         key === 'clear-provider-override' ||
         key === 'clear-runtime-override' ||
+        key === 'clear-mcp-override' ||
+        key === 'clear-trigger' ||
         key === 'purge' ||
         key === 'stdin' ||
         key === 'active' ||
@@ -192,16 +194,16 @@ function assertStringFlag(value: unknown, flagName: string): asserts value is st
   }
 }
 
-function parseGoalDeadlineFlag(raw: unknown): string | undefined {
+function parseZonedInstantFlag(raw: unknown, flagName: string): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || !raw.trim()) {
-    console.error('Error: --deadline requires an ISO-8601 timestamp with an explicit timezone offset or Z.');
+    console.error(`Error: --${flagName} requires an ISO-8601 timestamp with an explicit timezone offset or Z.`);
     process.exit(2);
   }
   const value = raw.trim();
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?([zZ]|[+-](\d{2}):(\d{2}))$/.exec(value);
   if (!match) {
-    console.error(`Error: --deadline "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
+    console.error(`Error: --${flagName} "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
     process.exit(2);
   }
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offset, offsetHourText, offsetMinuteText] = match;
@@ -225,10 +227,21 @@ function parseGoalDeadlineFlag(raw: unknown): string | undefined {
     && (offset.toLowerCase() === 'z' || (offsetHour <= 23 && offsetMinute <= 59));
   const timestamp = Date.parse(value);
   if (!calendarIsValid || Number.isNaN(timestamp)) {
-    console.error(`Error: --deadline "${raw}" is not a valid ISO-8601 timestamp.`);
+    console.error(`Error: --${flagName} "${raw}" is not a valid ISO-8601 timestamp.`);
     process.exit(2);
   }
   return new Date(timestamp).toISOString();
+}
+
+function parseGoalDeadlineFlag(raw: unknown): string | undefined {
+  return parseZonedInstantFlag(raw, 'deadline');
+}
+
+function taskCliCaller(): { actor: 'agent' | 'user'; source: 'cli' } {
+  return {
+    actor: process.env.MYAGENTS_SESSION_ID?.trim() ? 'agent' : 'user',
+    source: 'cli',
+  };
 }
 
 function parseGoalMaxExecutionsFlag(raw: unknown): number | undefined {
@@ -313,9 +326,9 @@ Commands:
   agent     Discover stable Workspace Agents and manage proactive channels
   runtime   Inspect Agent Runtimes (list installed + describe models/modes)
   skill     Manage skills (install from URL, list, enable/disable, sync)
-  cron      Manage scheduled tasks (list/add/runs/exit ...)
+  cron      Legacy-compatible scheduled Task aliases
   goal      Manage the current session Goal (get/create/update)
-  task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
+  task      Manage Task Center and scheduled automation tasks
   thought   Manage Task Center thoughts (list/create)
   space     Discover Cloud Goals and manage Space Issues/attachments
   im        IM runtime actions for current chat (send-media)
@@ -353,7 +366,7 @@ Examples:
   myagents skill add "npx skills add foo/bar --skill baz" --force
   myagents skill remove my-skill
   myagents skill sync
-  myagents cron list
+  myagents task readme
   myagents goal get
   myagents goal create --objective-file goal-objective.txt --max-executions 12
   myagents goal update --status complete
@@ -362,12 +375,13 @@ Examples:
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
   myagents diagnose runtime codex             # alias for runtime diagnose
   myagents agent list --archived              # archived Agent workspaces
+  myagents agent current --json               # compact current context diagnostic
   myagents agent show <agentId>                # identity + effective defaults
   myagents session list --agent <agentId>      # recent reusable contexts
   myagents session start --agent <agentId> -p "review this" # fresh context
   myagents agent archive <agent-id>
   myagents agent unarchive <agent-id>
-  myagents task list
+  myagents task list --query "review" --limit 20
   myagents task get <taskId>            # returns metadata + docs paths
                                         # (task.md / verify.md / progress.md /
                                         #  alignment.md — read/edit them with
@@ -377,9 +391,19 @@ Examples:
   myagents task update-status <taskId> done --message "bundle size dropped 40%"
   myagents task append-session <taskId> <sessionId>
   myagents task run <taskId>
+  myagents task start <taskId>          # resume a stopped schedule
+  myagents task stop <taskId>           # pause schedule and active execution
+  myagents task runs <taskId> --limit 5
+  myagents task exit --reason "goal achieved" # only inside an eligible Task run
+  myagents task run-now <taskId>        # bypass Detector; does not change checkpoint
   myagents task rerun <taskId>
+  myagents task trigger validate --spec-file trigger.json
+  myagents task trigger test <taskId> --expect quiet|activate
+    # Test does not commit MyAgents checkpoint/Activation state, but the local
+    # command really runs and its own external side effects are not rolled back.
+  myagents task check-now <taskId>
+  myagents task reset-checkpoint <taskId>
   myagents task create-direct --name "review PR" \\
-      --workspaceId proj --workspacePath /path/to/proj \\
       --taskMdContent "Review this PR and file findings in progress.md" \\
       --runtime codex --model gpt-5.2 --permissionMode full-auto
     # Per-task runtime/model/permissionMode overrides — consult
@@ -475,6 +499,10 @@ export function sessionTransportExitCode(route: string): 2 | 3 {
     : 3;
 }
 
+export function commandResultExitCode(result: Record<string, unknown>): 0 | 1 {
+  return result.success ? 0 : 1;
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting
 // ---------------------------------------------------------------------------
@@ -502,6 +530,31 @@ export function printResult(
 
   if (!result.success) {
     console.error(`Error: ${result.error}`);
+    if (group === 'task' && action === 'trigger' && rest[0] === 'test') {
+      const data = result.data as { result?: Record<string, unknown> } | undefined;
+      const failed = data?.result ?? {};
+      const detectorError = (failed.error as Record<string, unknown> | undefined) ?? {};
+      console.error(`  code:     ${String(detectorError.code ?? 'unknown')}`);
+      console.error(`  duration: ${String(failed.durationMs ?? 0)} ms`);
+      console.error(`  exit:     ${String(detectorError.exitCode ?? 'n/a')}`);
+      console.error(`  signal:   ${String(detectorError.signal ?? 'n/a')}`);
+      console.error(`  timeout:  ${String(detectorError.timedOut ?? false)}`);
+      console.error(`  occurred: ${formatDetectorOccurredAt(detectorError.occurredAt)}`);
+      const stderr = detectorError.stderrTail;
+      if (stderr) console.error(`  stderr:   ${String(stderr)}`);
+      if (failed.stdout) console.error(`  stdout:   ${String(failed.stdout)}`);
+    }
+    if (group === 'task' && action === 'check-now') {
+      const data = result.data as { result?: Record<string, unknown> } | undefined;
+      const state = (data?.result?.state as Record<string, unknown> | undefined) ?? {};
+      const detectorError = (state.lastError as Record<string, unknown> | undefined) ?? {};
+      console.error(`  code:     ${String(detectorError.code ?? result.code ?? 'unknown')}`);
+      console.error(`  exit:     ${String(detectorError.exitCode ?? 'n/a')}`);
+      console.error(`  signal:   ${String(detectorError.signal ?? 'n/a')}`);
+      console.error(`  timeout:  ${String(detectorError.timedOut ?? false)}`);
+      console.error(`  occurred: ${formatDetectorOccurredAt(detectorError.occurredAt)}`);
+      if (detectorError.stderrTail) console.error(`  stderr:   ${String(detectorError.stderrTail)}`);
+    }
     if (group === 'session' && action === 'start' && result.sessionId && result.messageId) {
       console.error(`  agent:   ${String(result.agentId ?? '(unknown)')}`);
       console.error(`  session: ${String(result.sessionId)}`);
@@ -595,7 +648,7 @@ export function printResult(
     if (result.hint) console.log(`\n${result.hint}`);
     return;
   }
-  if (group === 'cron' && action === 'runs') {
+  if ((group === 'cron' || group === 'task') && action === 'runs') {
     printCronRuns(result.data as Array<Record<string, unknown>>, !!flags.full);
     return;
   }
@@ -613,15 +666,24 @@ export function printResult(
     console.log(`  runs:    myagents cron runs ${data.taskId ?? '<id>'} --limit 1`);
     return;
   }
-  if (group === 'cron' && action === 'stop') {
+  if ((group === 'cron' || group === 'task') && action === 'stop') {
     const data = result.data as Record<string, unknown> | undefined;
     const taskId = data?.taskId ?? '(unknown)';
     const status = data?.status ?? 'unknown';
     console.log(`✓ Task ${taskId} is not running`);
     console.log(`  status: ${status}`);
+    printTaskNextExecution(data?.nextExecutionAt);
     if (status === 'blocked') {
-      console.log(`  restart: myagents cron start ${taskId}`);
+      console.log(`  restart: myagents task rerun ${taskId}`);
     }
+    return;
+  }
+  if (group === 'task' && action === 'start') {
+    const data = result.data as Record<string, unknown> | undefined;
+    const task = (data?.task as Record<string, unknown> | undefined) ?? data;
+    console.log(`✓ Task schedule enabled ${String(task?.id ?? task?.taskId ?? '')}`.trim());
+    console.log(`  status: ${String(task?.status ?? data?.status ?? 'unknown')}`);
+    printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
     return;
   }
   if (group === 'cron' && action === 'update') {
@@ -753,6 +815,10 @@ export function printResult(
     printAgentShow(result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'agent' && action === 'current') {
+    printAgentCurrent(result.data as Record<string, unknown>);
+    return;
+  }
   if (group === 'session' && action === 'list') {
     printSessionList(result.data as Array<Record<string, unknown>>, result);
     return;
@@ -829,7 +895,8 @@ export function printResult(
     return;
   }
 
-  // Tool readmes: `cron readme` / `im readme` / any `widget ...` form all
+  // Tool readmes: canonical `task readme`, compatible `cron readme`,
+  // `im readme`, and any `widget ...` form all
   // return a raw text body in result.data.text. Print it as-is — no padding,
   // no status line, no ticks — so AI can consume it directly as context.
   if (action === 'readme' || group === 'widget') {
@@ -861,12 +928,69 @@ export function printResult(
     printTaskDispatchResult(action, result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'task' && action === 'run-now') {
+    const data = result.data as Record<string, unknown> | undefined;
+    console.log('\u2713 AI execution dispatched without running Detector');
+    console.log(`  task:    ${String(data?.taskId ?? '')}`);
+    console.log(`  session: ${String(data?.sessionId ?? '')}`);
+    console.log('  checkpoint: unchanged');
+    return;
+  }
+  if (group === 'task' && action === 'trigger') {
+    const triggerAction = rest[0] ?? 'validate';
+    if (triggerAction === 'validate') {
+      console.log('\u2713 Trigger spec is valid');
+      return;
+    }
+    const data = result.data as { result?: Record<string, unknown> } | undefined;
+    const tested = data?.result ?? {};
+    const reason = (tested.reason as Record<string, unknown> | undefined) ?? {};
+    const event = (tested.event as Record<string, unknown> | undefined) ?? null;
+    const handoff = (tested.handoff as Record<string, unknown> | undefined) ?? null;
+    console.log('\u2713 Detector test completed (MyAgents state was not committed)');
+    console.log(`  decision: ${String(tested.decision ?? 'unknown')}`);
+    console.log(`  reason:   ${String(reason.code ?? 'unknown')} · ${String(reason.message ?? '')}`);
+    if (event) {
+      console.log(`  event:    ${String(event.id ?? '')} · ${String(event.kind ?? '')} · ${String(event.occurredAt ?? '')}`);
+    }
+    if (handoff?.summary) console.log(`  handoff:  ${String(handoff.summary)}`);
+    if (Object.hasOwn(tested, 'nextCheckpoint')) {
+      console.log(`  checkpoint: ${JSON.stringify(tested.nextCheckpoint)}`);
+    }
+    console.log(`  duration: ${String(tested.durationMs ?? 0)} ms`);
+    console.log(`  exit:     ${String(tested.exitCode ?? 'unknown')}`);
+    if (tested.stderrTail) console.log(`  stderr:   ${String(tested.stderrTail)}`);
+    console.log('  note: the command really ran; its own external side effects are not rolled back');
+    return;
+  }
+  if (group === 'task' && action === 'check-now') {
+    const data = result.data as { result?: Record<string, unknown> } | undefined;
+    const checked = data?.result ?? {};
+    const state = (checked.state as Record<string, unknown> | undefined) ?? {};
+    console.log('\u2713 Detector check completed');
+    console.log(`  outcome: ${String(checked.outcome ?? state.lastOutcome ?? 'unknown')}`);
+    console.log(`  checks:  ${String(state.checkCount ?? 0)}`);
+    return;
+  }
+  if (group === 'task' && action === 'reset-checkpoint') {
+    console.log('\u2713 Detector checkpoint reset');
+    return;
+  }
 
   // Generic success output
   const symbol = '\u2713'; // ✓
   const hint = result.hint ? ` ${result.hint}` : '';
   const id = (result.data as Record<string, unknown>)?.id ?? '';
   console.log(`${symbol} ${action} ${id}${hint}`);
+}
+
+function formatDetectorOccurredAt(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
+  try {
+    return new Date(value).toISOString();
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -885,7 +1009,7 @@ export function printResult(
  *     task_id:   <uuid>
  *     name:      <string>
  *     docs_path: ~/.myagents/tasks/<uuid>/
- *     next:      myagents task run <uuid>          # non-attached tasks
+ *     dispatch:  myagents task run <uuid>          # non-attached tasks
  *     complete:  myagents task update-status ...   # attached tasks
  */
 function printTaskCreateResult(data: Record<string, unknown>): void {
@@ -904,6 +1028,7 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   if (id) console.log(`  task_id:   ${id}`);
   if (name) console.log(`  name:      ${name}`);
   console.log(`  docs_path: ${displayDocs}`);
+  printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
 
   // Surface which runtime/model/permission overrides actually landed on the
   // persisted task (read from the server-returned Task record, not echoed
@@ -937,7 +1062,7 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   const nextSteps = data?.nextSteps as Record<string, string> | undefined;
   const isAttached = task?.dispatchOrigin === 'attached-session';
   const dispatch = nextSteps?.dispatch ?? (!isAttached && id ? `myagents task run ${id}` : '');
-  if (dispatch) console.log(`  next:      ${dispatch}`);
+  if (dispatch) console.log(`  dispatch:  ${dispatch}`);
   const inspect = nextSteps?.inspect;
   if (inspect && isAttached) console.log(`  inspect:   ${inspect}`);
   const complete = nextSteps?.complete;
@@ -1332,6 +1457,20 @@ function printTaskDispatchResult(
   if (id) console.log(`  task_id:  ${id}`);
   console.log(`  runtime:  ${runtime}`);
   console.log(`  model:    ${model}`);
+  printTaskNextExecution(task?.nextExecutionAt ?? data?.nextExecutionAt);
+}
+
+function printTaskNextExecution(value: unknown): void {
+  const timestamp = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Date.parse(value)
+      : Number.NaN;
+  if (!Number.isNaN(timestamp)) {
+    console.log(`  next:     ${new Date(timestamp).toISOString()}`);
+  } else if (value === null) {
+    console.log('  next:     none');
+  }
 }
 
 function printToolList(tools: Array<Record<string, unknown>>): void {
@@ -1732,7 +1871,7 @@ function printCronList(tasks: Array<Record<string, unknown>>): void {
   // R9: status carries the raw enum name (Running / Stopped) — the
   // scheduler-state vocabulary. The transient "currently executing" state
   // is a separate concept, surfaced via `t.currentlyExecuting` and
-  // rendered as a `*` marker after the task ID. See `cron readme` for
+  // rendered as a `*` marker after the task ID. See `task readme` for
   // the full vocabulary explanation.
 
   const fmtDuration = (ms: unknown): string => {
@@ -1760,7 +1899,7 @@ function printCronList(tasks: Array<Record<string, unknown>>): void {
     const lastTime = formatCronInstantForDisplay(t.lastExecutedAt, tz.timezone, 'table');
     const last = lastTime === '—' ? '—' : `${lastMark}${lastTime}`;
     // Asterisk marker = a tick is firing this very instant (scheduled or
-    // run-now). Distinct from `Running` status — see `cron readme`.
+    // run-now). Distinct from `Running` status — see `task readme`.
     const idDisplay = `${String(t.id).slice(0, 22)}${t.currentlyExecuting ? '*' : ''}`;
     console.log(
       pad(idDisplay, 24) +
@@ -1993,11 +2132,17 @@ function printTaskList(tasks: Array<Record<string, unknown>>): void {
     const origin = String(t.dispatchOrigin ?? 'direct');
     console.log(`  ${t.id}  [${status}]  ${t.name}`);
     console.log(
-      `     mode=${mode}  origin=${origin}  workspace=${t.workspaceId}  sessions=${
-        Array.isArray(t.sessionIds) ? (t.sessionIds as string[]).length : 0
-      }`,
+      `     mode=${mode}  origin=${origin}  workspace=${t.workspaceId}  sessions=${String(t.sessionCount ?? 0)}`,
     );
   }
+}
+
+function printAgentCurrent(current: Record<string, unknown>): void {
+  console.log(`Current Agent: ${String(current.name ?? current.agentId ?? '(unknown)')}`);
+  console.log(`  Agent ID:     ${String(current.agentId ?? '(unknown)')}`);
+  console.log(`  Workspace ID: ${String(current.workspaceId ?? '(unknown)')}`);
+  console.log(`  Workspace:    ${String(current.workspacePath ?? '(unknown)')}`);
+  if (current.sessionId) console.log(`  Session:      ${String(current.sessionId)}`);
 }
 
 function printTaskDetail(task: Record<string, unknown>): void {
@@ -2053,12 +2198,16 @@ function printTaskDetail(task: Record<string, unknown>): void {
       );
     } else if (task.intervalMinutes) {
       console.log(`  Interval:       every ${task.intervalMinutes} minute(s)`);
+      if (task.startAt) {
+        console.log(`  First tick:     ${formatCronInstantWithUtc(task.startAt, resolveLocalTimezone())}`);
+      }
     } else if (task.dispatchAt) {
       console.log(`  Dispatch at:    ${formatCronInstantWithUtc(task.dispatchAt, resolveLocalTimezone())}`);
     }
     if (task.lastExecutedAt) {
       console.log(`  Last executed:  ${formatCronInstantWithUtc(task.lastExecutedAt, resolveLocalTimezone())}`);
     }
+    printTaskNextExecution(task.nextExecutionAt);
   }
 
   // End conditions — when present, they're decision-relevant
@@ -2327,7 +2476,7 @@ async function main(): Promise<void> {
       const task = (data.task as Record<string, unknown>) ?? data;
       const newTaskId = task?.id as string | undefined;
       if (newTaskId) {
-        const runResult = await callApi('task/run', { id: newTaskId });
+        const runResult = await callApi('task/run', { id: newTaskId, ...taskCliCaller() });
         if (!runResult.success) {
           // Flag the failure in the top-level result so exit code reflects
           // it, but keep the successful create payload visible so the user
@@ -2367,7 +2516,10 @@ async function main(): Promise<void> {
   }
 
   // Exit with proper code: 0 = success, 1 = business error
-  if (result && !result.success) process.exit(1);
+  if (result) {
+    const exitCode = commandResultExitCode(result);
+    if (exitCode !== 0) process.exit(exitCode);
+  }
 }
 
 function groupIsSpaceCommand(group: string | undefined): boolean {
@@ -2411,6 +2563,17 @@ export function rejectUnsupportedSpaceDryRun(
 }
 
 export function buildRoute(group: string, action: string, rest: string[]): string {
+  if (group === 'task' && action === 'trigger') {
+    const triggerAction = rest[0] || 'validate';
+    return `task/trigger/${triggerAction}`;
+  }
+  // Canonical Task automation vocabulary. These are CLI aliases over the
+  // existing Cron compatibility handlers, which already mutate the one Rust
+  // TaskStore authority. Keeping the alias here avoids a second Admin/API
+  // implementation while letting Agent-facing docs stop teaching two dialects.
+  if (group === 'task' && ['start', 'stop', 'runs', 'exit'].includes(action)) {
+    return `cron/${action}`;
+  }
   // `diagnose runtime <type>` sugar maps to `runtime/diagnose` so handlers
   // and admin routes stay singular (issue #194).
   if (group === 'diagnose' && action === 'runtime') {
@@ -2430,11 +2593,12 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
     const oauthAction = rest[0] || 'status';
     return `mcp/oauth/${oauthAction}`;
   }
-  // Tool readmes: `myagents cron readme`, `myagents im readme`, `myagents widget ...`,
+  // Tool readmes: `myagents task readme`, compatibility `cron readme`,
+  // `myagents im readme`, `myagents widget ...`,
   // `myagents thought readme`. `thought` is included so the AI's natural
   // generalization from cron/im/widget readme doesn't 404 — the server returns
   // a brief "no separate readme" message redirecting back to the prompt brief.
-  if (action === 'readme' && (group === 'cron' || group === 'im' || group === 'widget' || group === 'thought')) {
+  if (action === 'readme' && (group === 'task' || group === 'cron' || group === 'im' || group === 'widget' || group === 'thought')) {
     return `readme/${group}`;
   }
   if (group === 'goal') {
@@ -2687,10 +2851,15 @@ type GuardedTextFileScope =
   | { kind: 'workspace'; root: string }
   | { kind: 'local'; basePath: string };
 
-function readGuardedTextFile(path: string, scope: GuardedTextFileScope): string {
+/** Open once, validate the opened descriptor, and read at most max+1 bytes.
+ * This prevents the path-swap and post-stat growth races of lstat+readFile. */
+function readGuardedFileBytes(
+  path: string,
+  scope: GuardedTextFileScope,
+  maxBytes: number,
+): Buffer {
   const fs = require('fs') as typeof import('fs');
   const pathMod = require('path') as typeof import('path');
-  const MAX_BYTES = 1024 * 1024;
   const basePath = scope.kind === 'workspace' ? scope.root : scope.basePath;
   const baseReal = fs.realpathSync(pathMod.resolve(basePath));
   const requested = pathMod.resolve(baseReal, path);
@@ -2720,27 +2889,34 @@ function readGuardedTextFile(path: string, scope: GuardedTextFileScope): string 
       const openedReal = fs.realpathSync(target);
       assertInsideWorkspace(openedReal);
     }
-    const current = fs.statSync(target);
-    if (current.dev !== stat.dev || current.ino !== stat.ino) {
+    const current = fs.lstatSync(target);
+    if (current.isSymbolicLink()) {
+      throw new Error('path became a symlink while it was being opened');
+    }
+    if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino) {
       throw new Error('path changed while it was being opened');
     }
 
-    const bytes = Buffer.allocUnsafe(MAX_BYTES + 1);
+    const bytes = Buffer.allocUnsafe(maxBytes + 1);
     let offset = 0;
     while (offset < bytes.length) {
       const count = fs.readSync(fd, bytes, offset, bytes.length - offset, null);
       if (count === 0) break;
       offset += count;
     }
-    if (offset > MAX_BYTES) throw new Error(`file exceeds ${MAX_BYTES} bytes`);
-    const body = bytes.subarray(0, offset).toString('utf8');
-    if (body.includes('\0')) {
-      throw new Error('file contains NUL bytes');
-    }
-    return body;
+    if (offset > maxBytes) throw new Error(`file exceeds ${maxBytes} bytes`);
+    return bytes.subarray(0, offset);
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function readGuardedTextFile(path: string, scope: GuardedTextFileScope): string {
+  const body = readGuardedFileBytes(path, scope, 1024 * 1024).toString('utf8');
+  if (body.includes('\0')) {
+    throw new Error('file contains NUL bytes');
+  }
+  return body;
 }
 
 export function readWorkspaceTextFile(path: string, workspacePath = process.cwd()): string {
@@ -4094,6 +4270,7 @@ export function buildRequestBody(
         'agent',
       ),
     };
+    if (action === 'current') return {};
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {
       const channelAction = rest[0] || 'list'; // list | add | remove
@@ -4274,15 +4451,27 @@ export function buildRequestBody(
 
   // Task Center (v0.1.69) — covers all `myagents task <action>` subcommands.
   //
-  // The `actor` / `source` trust fields are NOT settable via the CLI; the
-  // admin-api handler derives them from the calling process environment
-  // (MYAGENTS_PORT present → agent subprocess; otherwise user terminal).
+  // Caller provenance is internal CLI metadata, never a user-settable flag.
+  // The CLI process can observe its own Session identity; the Sidecar process
+  // cannot infer that from its server environment.
   if (group === 'task') {
     if (action === 'list') {
+      assertStringFlag(flags.workspaceId, 'workspaceId');
+      assertStringFlag(flags.status, 'status');
+      assertStringFlag(flags.tag, 'tag');
+      assertStringFlag(flags.query, 'query');
+      assertStringFlag(flags.limit, 'limit');
+      const limit = flags.limit === undefined ? undefined : Number(flags.limit);
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)) {
+        console.error('Error: task list --limit must be an integer from 1 to 200.');
+        process.exit(2);
+      }
       return {
         workspaceId: flags.workspaceId,
         status: flags.status,
         tag: flags.tag,
+        query: flags.query,
+        limit,
         includeDeleted: flags.includeDeleted,
       };
     }
@@ -4292,18 +4481,105 @@ export function buildRequestBody(
         id: rest[0],
         status: rest[1],
         message: flags.message,
+        ...taskCliCaller(),
       };
     }
     if (action === 'append-session') {
       return { id: rest[0], sessionId: rest[1] || flags.sessionId };
     }
-    if (action === 'archive') return { id: rest[0], message: flags.message };
+    if (action === 'archive') return {
+      id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task archive', 'id'),
+      message: flags.message,
+      ...taskCliCaller(),
+    };
+    if (action === 'readme') return {};
+    if (action === 'exit') {
+      assertStringFlag(flags.reason, 'reason');
+      return { reason: flags.reason || rest[0] };
+    }
+    if (action === 'start' || action === 'stop') {
+      assertStringFlag(flags.id, 'id');
+      return {
+        taskId: requirePositional(
+          rest[0] ?? (flags.id as string | undefined),
+          'task-id',
+          `task ${action}`,
+          'id',
+        ),
+        ...taskCliCaller(),
+      };
+    }
+    if (action === 'runs') {
+      assertStringFlag(flags.id, 'id');
+      assertStringFlag(flags.limit, 'limit');
+      const limit = flags.limit === undefined ? undefined : Number(flags.limit);
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+        console.error('Error: task runs --limit must be a positive integer.');
+        process.exit(2);
+      }
+      return {
+        taskId: requirePositional(
+          rest[0] ?? (flags.id as string | undefined),
+          'task-id',
+          'task runs',
+          'id',
+        ),
+        limit,
+      };
+    }
     // `remove` is the cron-side vocabulary for the same operation; before this
     // alias the CLI accepted `task remove` and forwarded to a non-existent
     // /api/admin/task/remove route, leaving the user with an opaque "Unknown
     // admin route" error (issue #205 gap #4). Accept both so AI / users who
     // generalized from `cron remove` don't hit a dead end.
-    if (action === 'delete' || action === 'remove') return { id: rest[0] };
+    if (action === 'delete' || action === 'remove') return {
+      id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', `task ${action}`, 'id'),
+      ...taskCliCaller(),
+    };
+    if (action === 'trigger') {
+      const triggerAction = rest[0];
+      if (triggerAction === 'validate') {
+        return { trigger: resolveTaskTriggerFile(flags.specFile, '--spec-file') };
+      }
+      if (triggerAction === 'test') {
+        const taskId = rest[1] ?? (flags.id as string | undefined);
+        const hasSpec = flags.specFile !== undefined;
+        if (!!taskId === hasSpec) {
+          console.error('Error: task trigger test requires exactly one of <taskId> or --spec-file.');
+          process.exit(2);
+        }
+        const body: Record<string, unknown> = hasSpec
+          ? {
+            trigger: resolveTaskTriggerFile(flags.specFile, '--spec-file'),
+            workspacePath: requireNonEmptyStringFlag(
+              flags.workspacePath,
+              'workspacePath',
+              'task trigger test --spec-file',
+            ),
+          }
+          : { taskId };
+        if (
+          flags.expect !== undefined
+          && flags.expect !== 'quiet'
+          && flags.expect !== 'activate'
+        ) {
+          console.error('Error: --expect must be quiet or activate.');
+          process.exit(2);
+        }
+        if (flags.checkpointFile !== undefined) {
+          body.checkpoint = resolveTaskCheckpointFile(flags.checkpointFile);
+        }
+        if (flags.expect !== undefined) body.expect = flags.expect;
+        return body;
+      }
+      console.error('Error: task trigger supports validate or test.');
+      process.exit(2);
+    }
+    if (action === 'check-now' || action === 'reset-checkpoint') {
+      return {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', `task ${action}`, 'id'),
+      };
+    }
     if (action === 'create-direct') {
       assertStringFlag(flags.name, 'name');
       // Resolve task.md body: `--taskMdFile` (industry-standard for long
@@ -4312,11 +4588,14 @@ export function buildRequestBody(
       // set. Mirrors the `cron add --prompt-file` pattern above.
       const taskMdContent = resolveTaskMdContent(flags);
       const executionMode = (flags.executionMode as string | undefined) ?? 'once';
+      const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
+      validateTaskSessionBinding(flags.runMode, preselectedSessionId, flags);
       maybeWarnRecurringWithoutInterval(executionMode, flags);
       const cronExpression = typeof flags.cronExpression === 'string' ? flags.cronExpression : undefined;
       const cronTimezone = typeof flags.cronTimezone === 'string'
         ? flags.cronTimezone
         : (executionMode === 'recurring' && cronExpression?.trim() ? resolveLocalTimezone() : undefined);
+      const endConditions = buildTaskEndConditions(flags);
       return {
         name: rest[0] || flags.name,
         executor: flags.executor ?? 'agent',
@@ -4326,6 +4605,11 @@ export function buildRequestBody(
         taskMdContent,
         executionMode,
         runMode: flags.runMode,
+        ...(endConditions !== undefined ? { endConditions } : {}),
+        preselectedSessionId,
+        trigger: flags.triggerFile !== undefined
+          ? resolveTaskTriggerFile(flags.triggerFile)
+          : undefined,
         sourceThoughtId: flags.sourceThoughtId,
         tags: typeof flags.tags === 'string'
           ? (flags.tags as string).split(',').map(s => s.trim()).filter(Boolean)
@@ -4340,15 +4624,18 @@ export function buildRequestBody(
         cronExpression,
         cronTimezone,
         dispatchAt: parseDispatchAtFlag(flags.dispatchAt),
+        startAt: parseZonedInstantFlag(flags.startAt, 'startAt'),
         notification: buildNotificationFromFlags(flags),
         // Per-task runtime overrides. Admin-api validates these before
         // forwarding to Rust — if the caller mistypes a value, they get a
         // recovery hint pointing to `runtime list` / `runtime describe`.
         runtime: flags.runtime,
+        providerId: flags.providerId,
         model: flags.model,
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
+        ...taskCliCaller(),
       };
     }
     if (action === 'create-attached') {
@@ -4424,15 +4711,25 @@ export function buildRequestBody(
       const executionMode = flags.executionMode as string | undefined;
       if (executionMode) maybeWarnRecurringWithoutInterval(executionMode, flags);
       const body: Record<string, unknown> = { id };
+      const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
+      if (flags.runMode !== undefined || preselectedSessionId !== undefined) {
+        validateTaskSessionBinding(flags.runMode, preselectedSessionId, flags, false);
+      }
       if (flags.name !== undefined) body.name = flags.name;
       if (flags.executor !== undefined) body.executor = flags.executor;
       if (flags.description !== undefined) body.description = flags.description;
       if (executionMode !== undefined) body.executionMode = executionMode;
       if (flags.runMode !== undefined) body.runMode = flags.runMode;
+      if (flags.preselectedSessionId !== undefined) {
+        body.preselectedSessionId = preselectedSessionId;
+      }
+      if (flags.triggerFile !== undefined) body.trigger = resolveTaskTriggerFile(flags.triggerFile);
+      if (flags.clearTrigger) body.clearTrigger = true;
       if (flags.intervalMinutes !== undefined) body.intervalMinutes = parseIntervalMinutesFlag(flags.intervalMinutes);
       if (flags.cronExpression !== undefined) body.cronExpression = flags.cronExpression;
       if (flags.cronTimezone !== undefined) body.cronTimezone = flags.cronTimezone;
       if (flags.dispatchAt !== undefined) body.dispatchAt = parseDispatchAtFlag(flags.dispatchAt);
+      if (flags.startAt !== undefined) body.startAt = parseZonedInstantFlag(flags.startAt, 'startAt');
       if (flags.model !== undefined) body.model = flags.model;
       if (flags.providerId !== undefined) body.providerId = flags.providerId;
       if (flags.clearProviderOverride) body.clearProviderOverride = true;
@@ -4457,6 +4754,9 @@ export function buildRequestBody(
       // happens to parse as a sessionId). An empty alignmentSessionId will be
       // rejected by the Rust layer's `validate_safe_id`.
       assertStringFlag(flags.name, 'name');
+      const preselectedSessionId = resolvePreselectedSessionId(flags.preselectedSessionId, flags);
+      validateTaskSessionBinding(flags.runMode, preselectedSessionId, flags);
+      const endConditions = buildTaskEndConditions(flags);
       return {
         name: flags.name,
         executor: flags.executor ?? 'agent',
@@ -4466,6 +4766,11 @@ export function buildRequestBody(
         alignmentSessionId: flags.alignmentSessionId ?? rest[0],
         executionMode: flags.executionMode ?? 'once',
         runMode: flags.runMode,
+        ...(endConditions !== undefined ? { endConditions } : {}),
+        preselectedSessionId,
+        trigger: flags.triggerFile !== undefined
+          ? resolveTaskTriggerFile(flags.triggerFile)
+          : undefined,
         sourceThoughtId: flags.sourceThoughtId,
         tags: typeof flags.tags === 'string'
           ? (flags.tags as string).split(',').map(s => s.trim()).filter(Boolean)
@@ -4473,14 +4778,24 @@ export function buildRequestBody(
         // Identical override contract to create-direct above — keep these two
         // in lockstep.
         runtime: flags.runtime,
+        providerId: flags.providerId,
         model: flags.model,
         permissionMode: flags.permissionMode,
         runtimeConfig: parseRuntimeConfigFlag(flags.runtimeConfig),
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
+        ...taskCliCaller(),
       };
     }
-    if (action === 'run' || action === 'rerun') {
-      return { id: rest[0] || flags.id };
+    if (action === 'run' || action === 'run-now' || action === 'rerun') {
+      return {
+        id: requirePositional(
+          rest[0] ?? (flags.id as string | undefined),
+          'task-id',
+          `task ${action}`,
+          'id',
+        ),
+        ...taskCliCaller(),
+      };
     }
     return {};
   }
@@ -4764,6 +5079,107 @@ export function normalizeScheduleFlag(
  *  1 MB cap so neither ingress path can ship a pathologically large body
  *  through to Rust, where it would bloat `.task/<id>/task.md` without bound. */
 const TASK_MD_MAX_BYTES = 1024 * 1024;
+const TASK_TRIGGER_SPEC_MAX_BYTES = 256 * 1024;
+const TASK_TRIGGER_CHECKPOINT_MAX_BYTES = 64 * 1024;
+
+function readTaskTriggerJsonFile(
+  rawPath: unknown,
+  flag: '--trigger-file' | '--spec-file' | '--checkpoint-file',
+  maxBytes: number,
+  allowNull: boolean,
+): Record<string, unknown> | null {
+  if (typeof rawPath !== 'string' || !rawPath.trim()) {
+    console.error(`Error: ${flag} requires a file path.`);
+    process.exit(2);
+  }
+  try {
+    const bytes = readGuardedFileBytes(
+      rawPath,
+      { kind: 'local', basePath: process.cwd() },
+      maxBytes,
+    );
+    if (bytes.includes(0)) throw new Error('file contains NUL bytes');
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const value = JSON.parse(text) as unknown;
+    if (value === null && allowNull) return null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(allowNull ? 'JSON must be an object or null' : 'JSON must be an object');
+    }
+    return value as Record<string, unknown>;
+  } catch (error) {
+    console.error(`Error: failed to read ${flag} "${rawPath}": ${error instanceof Error ? error.message : String(error)}.`);
+    process.exit(2);
+  }
+}
+
+function resolveTaskTriggerFile(
+  rawPath: unknown,
+  flag: '--trigger-file' | '--spec-file' = '--trigger-file',
+): Record<string, unknown> {
+  return readTaskTriggerJsonFile(
+    rawPath,
+    flag,
+    TASK_TRIGGER_SPEC_MAX_BYTES,
+    false,
+  ) as Record<string, unknown>;
+}
+
+function resolveTaskCheckpointFile(rawPath: unknown): Record<string, unknown> | null {
+  return readTaskTriggerJsonFile(
+    rawPath,
+    '--checkpoint-file',
+    TASK_TRIGGER_CHECKPOINT_MAX_BYTES,
+    true,
+  );
+}
+
+function resolvePreselectedSessionId(
+  raw: unknown,
+  flags: Record<string, unknown>,
+): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return exitAgentCliError(flags, {
+      code: 'TASK_SESSION_REQUIRED',
+      error: '--preselectedSessionId requires current or a Session id.',
+      suggestion: 'Pass `--preselectedSessionId current` inside a MyAgents Session, or use an id from `myagents session list --json`.',
+      suggestedCommand: 'myagents session list --json',
+    });
+  }
+  const value = raw.trim();
+  if (value !== 'current') return value;
+  const current = process.env.MYAGENTS_SESSION_ID?.trim();
+  if (current) return current;
+  return exitAgentCliError(flags, {
+    code: 'CURRENT_SESSION_UNAVAILABLE',
+    error: '--preselectedSessionId current requires MYAGENTS_SESSION_ID.',
+    suggestion: 'Run this command inside a MyAgents Session, or pass an explicit id from `myagents session list --json`.',
+    suggestedCommand: 'myagents session list --json',
+  });
+}
+
+function validateTaskSessionBinding(
+  runMode: unknown,
+  preselectedSessionId: string | undefined,
+  flags: Record<string, unknown>,
+  requireForSingle = true,
+): void {
+  if (preselectedSessionId && runMode !== undefined && runMode !== 'single-session') {
+    exitAgentCliError(flags, {
+      code: 'TASK_SESSION_MODE_MISMATCH',
+      error: '--preselectedSessionId is only valid with --runMode single-session.',
+      suggestion: 'Use `--runMode single-session`, or remove --preselectedSessionId for a fresh Session on every AI execution.',
+    });
+  }
+  if (requireForSingle && runMode === 'single-session' && !preselectedSessionId) {
+    exitAgentCliError(flags, {
+      code: 'TASK_SESSION_REQUIRED',
+      error: '--runMode single-session requires --preselectedSessionId current|<session-id>.',
+      suggestion: 'Use `current` inside MyAgents, or choose a materialized id from `myagents session list --json`.',
+      suggestedCommand: 'myagents session list --json',
+    });
+  }
+}
 
 /**
  * Resolve `task create-direct --taskMdFile` / `--taskMdContentFile` /
@@ -4891,6 +5307,28 @@ function parseMcpEnabledServersFlag(raw: unknown): string[] | undefined {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Build the TaskEndConditions replacement used at Task creation. Task
+ * deadlines are persisted as epoch milliseconds, while the CLI accepts the
+ * same strict, timezone-bearing ISO input as Goal Mode. Omission keeps the
+ * Rust defaults (`aiCanExit=true`) and avoids manufacturing an empty config.
+ */
+function buildTaskEndConditions(
+  flags: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const deadlineIso = parseGoalDeadlineFlag(flags.deadline);
+  const maxExecutions = parseGoalMaxExecutionsFlag(flags.maxExecutions);
+  const aiCanExit = parseGoalAiCanExitFlag(flags.aiCanExit);
+  if (deadlineIso === undefined && maxExecutions === undefined && aiCanExit === undefined) {
+    return undefined;
+  }
+  return {
+    ...(deadlineIso !== undefined ? { deadline: Date.parse(deadlineIso) } : {}),
+    ...(maxExecutions !== undefined ? { maxExecutions } : {}),
+    ...(aiCanExit !== undefined ? { aiCanExit } : {}),
+  };
 }
 
 /**

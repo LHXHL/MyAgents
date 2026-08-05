@@ -9,7 +9,7 @@
  * Two scopes
  * ----------
  * - `buildCliToolsAppend(scenario)` — MyAgents-CLI capability hints
- *   (cron CRUD, cron self-exit, Goal Mode, IM media send, thought capture). Universal
+ *   (Task automation, Task self-exit, Goal Mode, IM media send, thought capture). Universal
  *   across runtimes (builtin Claude Agent SDK + Codex / Gemini / Claude Code
  *   CLI) since v0.2.11 dropped the corresponding in-process MCP servers
  *   (`cron-tools`, `im-cron`, `im-media`) and unified on the CLI. Gated by
@@ -31,53 +31,38 @@ import { IMAGE_UNDERSTANDING_TOOL_ID, type OfficialToolId } from '../shared/offi
 // Each section is a self-contained block with one responsibility. We stack
 // them conditionally per scenario in `buildCliToolsAppend` below.
 
-const SECTION_CRON = `<myagents-cli-cron>
-You can create, inspect, and manage MyAgents scheduled tasks from the shell
-using the \`myagents cron\` CLI. These tasks run inside MyAgents on a schedule
-regardless of which runtime the user is currently chatting with. Use this
-whenever the user asks for anything like:
+const SECTION_TASK_AUTOMATION = `<myagents-cli-task-automation>
+MyAgents represents every future, scheduled, recurring, or conditionally
+activated automation as one Task. Use the required system skill
+\`myagents-task-automation\` whenever the user asks for anything like:
 
-  "每 N 分钟 / 每小时 / 每天 / 定时 / 到 HH:MM 提醒 / 循环检查 / run on a schedule"
+  "稍后 / 到某个时间 / 每 N 分钟 / 每天 / 定时 / Cron / 循环检查 /
+   持续监控 / 等 X 发生后继续 / 满足条件才提醒或处理"
 
-Trigger: any request that implies repetition over time.
+That Skill chooses one coherent workflow: schedule + always activation for work
+that should run every tick, or schedule + command Detector when a cheap program
+can keep most checks quiet. The user never needs to choose Cron versus Sensor.
 
-DO NOT use the system \`cron\` / \`crontab\` / \`at\` / \`launchctl\` / \`schtasks\`
-commands for this — they can't see MyAgents state. Only \`myagents cron\` creates
-tasks that can invoke the AI with a prompt on a schedule.
+Use the canonical \`myagents task\` CLI. Run \`myagents task readme\` for the
+current command surface and \`myagents task --help\` for exact flags. Pass
+\`--json\` when creating or reading back state. Legacy \`myagents cron\` commands
+remain compatible but are not the Agent-facing workflow.
 
-Quick reference (full docs: run \`myagents cron readme\`):
-  myagents cron list                       # see existing tasks
-  myagents cron add --name X --prompt "..." --every 30    # short prompts
-  myagents cron add --name X --prompt-file /tmp/p.txt --every 30
-      # Long / multiline / quoted prompts — write to a file first (using your
-      # normal file-writing tool) and pass --prompt-file. This avoids shell
-      # escape problems with quotes, newlines, and backticks.
-  myagents cron add --name X --prompt "..." --schedule "0 9 * * *"
-      # Wall-clock schedules like "daily at 09:00" default to this machine's
-      # IANA timezone. Use JSON with "tz" only for a different timezone or UTC.
-  myagents cron add --name X --prompt "..." --schedule '{"kind":"cron","expr":"0 9 * * *","tz":"America/New_York"}'
-      # Explicit non-local timezone example.
-  myagents cron runs <taskId> --limit 5    # inspect recent executions
-  myagents cron remove <taskId>            # delete a task
+Do not use system cron/crontab/at/launchctl/schtasks; those commands cannot see
+MyAgents Task, Session, Runtime, notification, or Detector state.
+</myagents-cli-task-automation>`;
 
-Pass \`--json\` on any command for machine-parseable output. Non-zero exit means
-the command failed; read stderr for the reason. Before running any command,
-always call \`myagents cron readme\` once if you haven't yet this session. When
-auditing schedules, inspect schedule.expr + schedule.tz; lastExecutedAt is an
-execution instant, not the user's configured wall-clock time.
-</myagents-cli-cron>`;
-
-const SECTION_CRON_EXIT = `<myagents-cli-cron-exit>
+const SECTION_TASK_EXIT = `<myagents-cli-task-exit>
 You are currently running as a scheduled task AND the task creator enabled
 "Allow AI to exit". If the task goal is fully achieved, or further executions
 would be pointless or counterproductive, end the task early:
 
-  myagents cron exit --reason "goal achieved: ..."
+  myagents task exit --reason "goal achieved: ..."
 
 This marks the task complete and stops future executions. Only use this when
 you're sure — the user set up a schedule for a reason. Do NOT use it to bail
 out of transient errors; retry instead.
-</myagents-cli-cron-exit>`;
+</myagents-cli-task-exit>`;
 
 const SECTION_GOAL = `<myagents-cli-goal>
 MyAgents Goal Mode lets the current MyAgents session keep working toward one
@@ -253,8 +238,8 @@ export function buildSessionInboxSection(_scenario: InteractionScenario): string
  * Build the external-runtime CLI-tools appendix.
  *
  * Conditional stacking:
- *   - cron CRUD         always (every scenario can benefit from scheduling)
- *   - cron self-exit    only when scenario.type === 'cron' && aiCanExit
+ *   - Task automation  always (every scenario can benefit from future work)
+ *   - Task self-exit   only when scenario.type === 'cron' && aiCanExit
  *   - Goal Mode         only in private user-facing scenarios (desktop / IM / agent-channel)
  *   - IM media          only in 'im' / 'agent-channel' scenarios
  *   - thought capture   in 'desktop' / 'im' / 'agent-channel' scenarios.
@@ -267,7 +252,7 @@ export function buildSessionInboxSection(_scenario: InteractionScenario): string
  * `buildSystemPromptAppend()`.
  *
  * Returns an empty string when nothing applies (defensive; not expected in
- * practice since cron is always emitted).
+ * practice since Task automation is always emitted).
  */
 export function buildCliToolsAppend(
   scenario: InteractionScenario,
@@ -275,8 +260,8 @@ export function buildCliToolsAppend(
 ): string {
   const parts: string[] = [];
 
-  // cron — universal
-  parts.push(SECTION_CRON);
+  // Task automation — universal
+  parts.push(SECTION_TASK_AUTOMATION);
 
   // Goal Mode — user-facing private channels only. Do not expose it in headless
   // cron or semi-open registered-agent issue workflows.
@@ -287,9 +272,9 @@ export function buildCliToolsAppend(
     parts.push(SECTION_GOAL);
   }
 
-  // cron self-exit — only inside a cron run that allows it
+  // Task self-exit — only inside a scheduled Task run that allows it
   if (scenario.type === 'cron' && scenario.aiCanExit) {
-    parts.push(SECTION_CRON_EXIT);
+    parts.push(SECTION_TASK_EXIT);
   }
 
   // IM media — IM / agent-channel scenarios only

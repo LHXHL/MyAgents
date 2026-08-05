@@ -104,7 +104,11 @@ import {
 import type { AgentConfig } from '../../shared/types/agent';
 import { resolveSessionConfig } from '../utils/resolve-session-config';
 import { isManagedCodexProviderReady, managedCodexNotReadyMessage } from '../utils/managed-codex-readiness';
-import { resolveTaskProviderRouting } from '../utils/task-provider-routing';
+import {
+  resolveTaskProviderRouting,
+  taskProviderRoutingRecovery,
+  type TaskProviderRoutingOwner,
+} from '../utils/task-provider-routing';
 import { resolveScheduledTurnPermissionMode } from '../../shared/types/runtime';
 import {
   createScheduledDispatchGuard,
@@ -128,6 +132,20 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
   });
 }
 
+function taskProviderRoutingOwner(
+  request: Parameters<SessionEngine['prepareScheduledTurn']>[0],
+  hasTaskProviderOverride: boolean,
+  agent: AgentConfig | undefined,
+): TaskProviderRoutingOwner {
+  if (hasTaskProviderOverride && request.scenario.type === 'cron') {
+    return { kind: 'task', taskId: request.scenario.taskId };
+  }
+  if (request.operation.kind === 'task' && request.operation.initializeSession && agent) {
+    return { kind: 'agent', agentId: agent.id };
+  }
+  return { kind: 'session', sessionId: request.sessionId };
+}
+
 // runInjectedTurn requires an explicit promotion acknowledgement even when no
 // domain guard is present. MCP readiness is intentionally not part of it.
 const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true });
@@ -135,6 +153,7 @@ const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true 
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
   providerEnv?: ProviderEnv | 'subscription';
+  providerRoutingRecovery?: string;
   model?: string;
 }): { providerEnv: ProviderEnv | 'subscription' | undefined; model?: string; error?: string; status?: number } {
   if (!request.providerRoute) {
@@ -169,9 +188,10 @@ function providerEnvForRouteRequest(request: {
   }
   const providerEnv = materializeProviderRouteEnv(request.providerRoute);
   if (!providerEnv) {
+    const recovery = request.providerRoutingRecovery?.trim();
     return {
       providerEnv: undefined,
-      error: `Provider "${request.providerRoute.providerId}" is unavailable or missing an API key.`,
+      error: `Provider "${request.providerRoute.providerId}" is unavailable or missing an API key.${recovery ? ` ${recovery}` : ''}`,
       status: 409,
     };
   }
@@ -557,9 +577,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
         let providerEnv: ProviderEnv | 'subscription' | undefined;
         let providerRoute: ProviderRoute | undefined;
         let runtimeConfig = operation.runtimeConfig;
+        const routingOwner = taskProviderRoutingOwner(request, Boolean(operation.providerId), agent);
+        const providerRoutingRecovery = taskProviderRoutingRecovery(routingOwner);
 
         if (operation.providerId) {
-          providerEnv = resolveTaskProviderRouting(operation.providerId);
+          providerEnv = resolveTaskProviderRouting(operation.providerId, routingOwner);
           if (operation.model) {
             providerRoute = createConcreteProviderRoute(operation.providerId, operation.model);
           }
@@ -571,19 +593,20 @@ export function createBuiltinSessionEngine(): SessionEngine {
           if (isConcreteProviderRoute(resolved.providerRoute)) {
             providerRoute = resolved.providerRoute;
             model = resolved.providerRoute.model;
-            providerEnv = resolveTaskProviderRouting(resolved.providerRoute.providerId);
+            providerEnv = resolveTaskProviderRouting(resolved.providerRoute.providerId, routingOwner);
           } else if (resolved.providerEnvJson) {
             const decoded = decodeProviderEnvSnapshot(resolved.providerEnvJson, resolved.providerId);
             if (!decoded) {
+              const reason = resolved.providerId && isProviderDisabled(resolved.providerId)
+                ? `Provider '${resolved.providerId}' is disabled`
+                : 'Session provider snapshot is invalid';
               throw new Error(
-                resolved.providerId && isProviderDisabled(resolved.providerId)
-                  ? `Provider '${resolved.providerId}' is disabled`
-                  : 'Session provider snapshot is invalid',
+                `${reason}. ${providerRoutingRecovery}`,
               );
             }
             providerEnv = decoded as ProviderEnv;
           } else if (resolved.providerId) {
-            providerEnv = resolveTaskProviderRouting(resolved.providerId);
+            providerEnv = resolveTaskProviderRouting(resolved.providerId, routingOwner);
             if (model) providerRoute = createConcreteProviderRoute(resolved.providerId, model);
           }
           if (resolved.runtime !== 'builtin') {
@@ -641,6 +664,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           model,
           providerEnv,
           providerRoute,
+          providerRoutingRecovery,
           runtimeConfig: runtimeConfig ?? null,
           beforeDispatch: createScheduledDispatchGuard({
             preceding: operation.beforeDispatch,

@@ -105,7 +105,7 @@
 
 **Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
 
-**Invariants enforced.** `ChildTree` 在子进程执行用户代码前建立进程树边界：Unix child 进入独立 process group；Windows child 以 suspended 状态创建，绑定 kill-on-close Job Object 后再恢复运行。所有者必须保留 `ChildTree`，显式 stop 与 Drop 只终止这棵精确进程树。应用退出先禁止新的资源创建，等待已经获准的创建流程完成登记或释放，再释放 Sidecar / Plugin Bridge owner；Unix 还要等待有上限的 SIGTERM→SIGKILL 清理任务结束。Windows GUI child 没有可靠的 console signal，stop 直接终止已保留的 Job Object。进程树边界建立失败时必须终止 child 并返回错误，不能降级为未受管理的进程。
+**Invariants enforced.** `ChildTree` 在子进程执行用户代码前建立进程树边界：Unix child 进入独立 process group；Windows child 以 suspended 状态创建，绑定 kill-on-close Job Object 后再恢复运行。所有者必须保留 `ChildTree`，显式 stop 与 Drop 只终止这棵精确进程树。应用退出先禁止新的资源创建，等待已经获准的创建流程完成登记或释放，再释放 Sidecar / Plugin Bridge owner；Unix 还要等待有上限的 SIGTERM→SIGKILL 清理任务结束。Windows GUI child 没有可靠的 console signal，stop 直接终止已保留的 Job Object。Task command Detector 同样属于受管进程树：timeout、stdout 超限、Stop、delete 与 App shutdown 都必须通过 retained `ChildTree` 收敛，读取 stdout/stderr 的线程也要 join 后再判断最终上限状态。进程树边界建立失败时必须终止 child 并返回错误，不能降级为未受管理的进程。
 
 **Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
@@ -448,12 +448,13 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="context-window-suffix"></a>
 ## Context-window suffix helpers (`src/server/utils/model-capabilities.ts`)
 
-**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 ~187K 就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
+**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 90%（约 180K）就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
 
-**Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值（有效压缩窗口 = min(1M, registry) − ~33K）。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
+**Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值；builtin 的自动压缩阈值统一为 `90% × min(1M, registry)`。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
 
-- `applyProviderContextWindowSuffix(model, providerId)`：调用点已知 active provider 时的首选入口。裸 model id 先查该 provider 自己的 model row，没有对应 row 时再 fallback flat registry；调用方显式传入的 `[1m]` 原样保留。
+- `applyProviderContextWindowSuffix(model, providerId)`：调用点已知 active provider 时的首选入口。裸 model id 先查该 provider 自己的 model row；没有对应 row 时再 fallback flat registry，已有 row 但 capability 字段缺失时保持 unknown，不能跨 Provider 补字段；调用方显式传入的 `[1m]` 原样保留。
 - `applyContextWindowSuffix(model)`：只有调用点确实不知道 provider 时才用的 flat fallback。
+- 创建包含主模型、alias 与 sub-agent model 的持久 SDK Query 时，必须先通过 `snapshotProviderModelContextLengths` 固定同一份 capability 视图；`buildClaudeSessionEnv()` 与所有 `options.model` 再用 `applyContextWindowSuffixForContextLength` 消费它。单模型 one-shot（title / verify / vision）可以先构建 env，再用该 env 的 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 生成自己的 query model。两种路径都禁止在异步启动间隔后重新读 Provider 文件，否则 env cap 与 model unlock 可能来自两版配置。
 
 **Invariants enforced.**
 - 所有 SDK ingress 必须过 wrap：`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL` env；已知 provider 的入口必须走 provider-scoped helper。
@@ -462,6 +463,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 **Don't.**
 - 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
 - registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
+- LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal（大小写归一后）裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max 选一个——相同 tail 在不同 Provider 上可能是 8K 与 10M，取 max 会让真实小窗口端点在自动压缩前先溢出（#516）。
 
 ---
 

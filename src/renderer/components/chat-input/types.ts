@@ -152,4 +152,5 @@ export interface SimpleChatInputHandle {
   focus: () => void;
   clearWorkspaceBoundDraft: () => { strippedReferences: number; clearedImages: number };
   getCurrentValue: () => string;
+  getImages: () => ImageAttachment[];
 }

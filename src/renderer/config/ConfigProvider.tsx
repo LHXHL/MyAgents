@@ -40,9 +40,14 @@ import {
     deleteApiKey as deleteApiKeyService,
     saveProviderVerifyStatus as saveProviderVerifyStatusService,
     saveCustomProvider as saveCustomProviderService,
+    atomicModifyCustomProvider,
     deleteCustomProvider as deleteCustomProviderService,
     rebuildAndPersistAvailableProviders,
 } from './services/providerService';
+import {
+    enrichExistingModelsFromDiscovery,
+    type DiscoveredModel,
+} from './services/modelDiscoveryService';
 import {
     loadProjects,
     saveProjects,
@@ -60,7 +65,7 @@ import {
     reconcilePersistedAgentWorkspaceIdentities,
     reconcilePersistedAgentWorkspaceIdentitiesLocked,
 } from './services/agentConfigService';
-import { withAgentConfigIntentLock, withProjectsLock } from './services/configStore';
+import { isLockBusyError, withAgentConfigIntentLock, withProjectsLock } from './services/configStore';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -101,6 +106,8 @@ async function loadConfigDiskSnapshot(): Promise<ConfigDiskSnapshot> {
         verifyStatus: config.providerVerifyStatus ?? {},
     };
 }
+
+const STARTUP_MAINTENANCE_RETRY_MS = 30_000;
 
 // Main-window process scope: an App launch may make at most one background
 // update attempt even if React remounts ConfigProvider. A real App relaunch
@@ -236,7 +243,7 @@ export interface ConfigActionsValue {
     touchProject: (projectId: string) => Promise<void>;
     // Providers
     addCustomProvider: (provider: Provider) => Promise<void>;
-    updateCustomProvider: (provider: Provider) => Promise<void>;
+    updateCustomProvider: (provider: Provider, discoveredModels?: DiscoveredModel[]) => Promise<void>;
     deleteCustomProvider: (providerId: string) => Promise<void>;
     refreshProviders: () => Promise<void>;
     // Preset custom models
@@ -345,6 +352,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const isMountedRef = useRef(true);
     const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
     const diskSnapshotRevisionRef = useRef(0);
+    const startupMaintenanceRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const startupMaintenanceRetryAttemptedRef = useRef(false);
     useEffect(() => {
         isMountedRef.current = true;
         return () => { isMountedRef.current = false; };
@@ -375,28 +384,10 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             .catch((error) => console.error('[ConfigProvider] Proxy propagation failed:', error));
     }, [config.proxySettings, isLoading]);
 
-    const commitConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
-        const snapshotRevision = ++diskSnapshotRevisionRef.current;
-        let identity: Awaited<ReturnType<typeof reconcilePersistedAgentWorkspaceIdentities>>;
-        try {
-            identity = await reconcilePersistedAgentWorkspaceIdentities();
-        } catch (error) {
-            const healthySnapshot = await loadConfigDiskSnapshot();
-            normalizeAgents(healthySnapshot.config);
-            if (isMountedRef.current && snapshotRevision === diskSnapshotRevisionRef.current) {
-                configRef.current = healthySnapshot.config;
-                setConfig(healthySnapshot.config);
-                setProjects(healthySnapshot.projects);
-                setRawProviders(healthySnapshot.providers);
-                setApiKeys(healthySnapshot.apiKeys);
-                setProviderVerifyStatus(healthySnapshot.verifyStatus);
-            }
-            throw error;
-        }
-        const snapshot = await loadConfigDiskSnapshot();
-        if (identity.repairDeferred) {
-            snapshot.projects = identity.projects;
-        }
+    const publishConfigDiskSnapshot = useCallback((
+        snapshot: ConfigDiskSnapshot,
+        snapshotRevision: number,
+    ): ConfigDiskSnapshot | null => {
         normalizeAgents(snapshot.config);
         if (!isMountedRef.current || snapshotRevision !== diskSnapshotRevisionRef.current) return null;
         setError(null);
@@ -409,12 +400,197 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         return snapshot;
     }, []);
 
+    const commitReadableConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
+        const snapshotRevision = ++diskSnapshotRevisionRef.current;
+        const snapshot = await loadConfigDiskSnapshot();
+        return publishConfigDiskSnapshot(snapshot, snapshotRevision);
+    }, [publishConfigDiskSnapshot]);
+
+    const commitConfigDiskSnapshot = useCallback(async (): Promise<ConfigDiskSnapshot | null> => {
+        const snapshotRevision = ++diskSnapshotRevisionRef.current;
+        let identity: Awaited<ReturnType<typeof reconcilePersistedAgentWorkspaceIdentities>>;
+        try {
+            identity = await reconcilePersistedAgentWorkspaceIdentities();
+        } catch (error) {
+            const healthySnapshot = await loadConfigDiskSnapshot();
+            publishConfigDiskSnapshot(healthySnapshot, snapshotRevision);
+            throw error;
+        }
+        const snapshot = await loadConfigDiskSnapshot();
+        if (identity.repairDeferred) {
+            snapshot.projects = identity.projects;
+        }
+        return publishConfigDiskSnapshot(snapshot, snapshotRevision);
+    }, [publishConfigDiskSnapshot]);
+
     // Local disk commits share the snapshot revision owner. Advancing it
     // before mirroring the write into React prevents an older in-flight read
     // from overwriting newer local authority.
     const acceptLocalDiskWrite = useCallback((): boolean => {
         diskSnapshotRevisionRef.current += 1;
         return isMountedRef.current;
+    }, []);
+
+    // Startup maintenance may write config, but it must never own the
+    // availability of an already-readable disk snapshot.
+    const runStartupConfigMaintenance = useCallback(async () => {
+        await ensureBundledWorkspace();
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const results = await Promise.allSettled([
+                invoke('cmd_sync_admin_agent'),
+                invoke('cmd_sync_cli'),
+                // System skills (task-alignment / task-implement) —
+                // independent version gate (SYSTEM_SKILLS_VERSION in
+                // commands.rs). Force-overwrites user copies so the
+                // skill contracts always match the shipped CLI.
+                invoke('cmd_sync_system_skills'),
+            ]);
+            for (const r of results) {
+                if (r.status === 'rejected') {
+                    console.warn('[ConfigProvider] Sync failed:', r.reason);
+                }
+            }
+        } catch (e) {
+            console.warn('[ConfigProvider] Agent/CLI/system-skills sync failed:', e);
+        }
+
+        try {
+            await ensureManagedCodexProviderDevGateDefault();
+        } catch (e) {
+            if (isLockBusyError(e)) throw e;
+            console.warn('[ConfigProvider] Managed Codex provider default migration failed:', e);
+        }
+
+        let loadedConfig!: AppConfig;
+        let loadedProjects!: Project[];
+        await withAgentConfigIntentLock(() => withProjectsLock(async () => {
+            const rawConfig = await loadAppConfig();
+            loadedProjects = await loadProjects();
+            const projectsBefore = JSON.stringify(loadedProjects);
+            const configBefore = JSON.stringify({
+                agents: rawConfig.agents ?? [],
+                imBotConfigs: rawConfig.imBotConfigs ?? [],
+            });
+            loadedConfig = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
+            const migrationChanged = configBefore !== JSON.stringify({
+                agents: loadedConfig.agents ?? [],
+                imBotConfigs: loadedConfig.imBotConfigs ?? [],
+            });
+            if (!migrationChanged && projectsBefore === JSON.stringify(loadedProjects)) return;
+
+            // Create timestamped backup before persisting migration
+            try {
+                const { getConfigDir, CONFIG_FILE } = await import('./services/configStore');
+                const { copyFile, exists } = await import('@tauri-apps/plugin-fs');
+                const { join } = await import('@tauri-apps/api/path');
+                const dir = await getConfigDir();
+                const configPath = await join(dir, CONFIG_FILE);
+                if (await exists(configPath)) {
+                    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                    await copyFile(configPath, await join(dir, `config.json.bak.${ts}`));
+                }
+            } catch (e) {
+                console.warn('[ConfigProvider] Migration backup failed:', e);
+            }
+            // Project.agentId is the birth authority. Commit it before the
+            // pathless Agent record; retry reuses the same id.
+            if (projectsBefore !== JSON.stringify(loadedProjects)) {
+                await saveProjects(loadedProjects);
+            }
+            if (migrationChanged) {
+                loadedConfig = await atomicModifyConfig(current => ({
+                    ...current,
+                    agents: loadedConfig.agents,
+                    imBotConfigs: loadedConfig.imBotConfigs,
+                }));
+            }
+        }));
+
+        const hiddenDefaultProject = loadedConfig.defaultWorkspacePath
+            ? loadedProjects.find(p => p.hidden === true && workspacePathsEqual(p.path, loadedConfig.defaultWorkspacePath))
+            : undefined;
+        if (hiddenDefaultProject) {
+            loadedConfig.defaultWorkspacePath = undefined;
+            await atomicModifyConfig(c => (
+                workspacePathsEqual(c.defaultWorkspacePath, hiddenDefaultProject.path)
+                    ? { ...c, defaultWorkspacePath: undefined }
+                    : c
+            ));
+            console.log('[ConfigProvider] Cleared defaultWorkspacePath pointing at hidden workspace');
+        }
+
+        // One-time cleanup: remove imBotConfigs entries whose credentials
+        // now exist in agents[].channels[] (post-migration duplicates)
+        // Re-read from disk in case migration cleared in-memory but didn't persist imBotConfigs
+        const diskImBotConfigs = (await loadAppConfig())?.imBotConfigs ?? loadedConfig.imBotConfigs ?? [];
+        if (loadedConfig.agents?.length && diskImBotConfigs.length) {
+            loadedConfig.imBotConfigs = diskImBotConfigs;
+            // Collect all credential fingerprints from agent channels
+            const agentCredentials = new Set<string>();
+            for (const agent of loadedConfig.agents) {
+                for (const ch of (agent.channels ?? [])) {
+                    if (ch.feishuAppId) agentCredentials.add(`feishu:${ch.feishuAppId}`);
+                    if (ch.botToken) agentCredentials.add(`botToken:${ch.botToken}`);
+                    if (ch.dingtalkClientId) agentCredentials.add(`dingtalk:${ch.dingtalkClientId}`);
+                    if (ch.openclawPluginConfig?.appId) agentCredentials.add(`openclaw:${ch.openclawPluginConfig.appId}`);
+                }
+            }
+
+            const remaining = loadedConfig.imBotConfigs.filter(bot => {
+                if (bot.feishuAppId && agentCredentials.has(`feishu:${bot.feishuAppId}`)) return false;
+                if (bot.botToken && agentCredentials.has(`botToken:${bot.botToken}`)) return false;
+                if (bot.dingtalkClientId && agentCredentials.has(`dingtalk:${bot.dingtalkClientId}`)) return false;
+                if (bot.openclawPluginConfig?.appId && agentCredentials.has(`openclaw:${bot.openclawPluginConfig.appId}`)) return false;
+                return true;
+            });
+
+            const removedCount = loadedConfig.imBotConfigs.length - remaining.length;
+            if (removedCount > 0) {
+                console.log(`[ConfigProvider] Cleaning up ${removedCount} legacy imBotConfigs entry(ies) already migrated to agents`);
+                loadedConfig.imBotConfigs = remaining;
+                await atomicModifyConfig(c => ({ ...c, imBotConfigs: remaining }));
+            }
+        }
+
+        await rebuildAndPersistAvailableProviders();
+
+        // Normalize agents and self-heal corrupted config on disk
+        if (normalizeAgents(loadedConfig) && loadedConfig.agents) {
+            await persistAgents(loadedConfig.agents);
+            console.log('[ConfigProvider] Repaired agents with missing channels — persisted to disk');
+        }
+
+        // Migrate old hardcoded tool groups → undefined (= all groups enabled)
+        if (migrateToolGroups(loadedConfig) && loadedConfig.agents) {
+            await persistAgents(loadedConfig.agents);
+        }
+
+        const snapshot = await commitConfigDiskSnapshot();
+        if (!snapshot) return;
+        void reconcileMemoryAutoUpdateTasks(snapshot.config.agents, snapshot.projects);
+        void reconcileMemoryEvolutionTasks(snapshot.config.agents, snapshot.projects);
+    }, [commitConfigDiskSnapshot]);
+
+    const scheduleStartupMaintenanceRetry = useCallback(() => {
+        if (!isMountedRef.current) return;
+        if (startupMaintenanceRetryAttemptedRef.current) return;
+        if (startupMaintenanceRetryTimerRef.current !== null) return;
+        startupMaintenanceRetryTimerRef.current = setTimeout(() => {
+            startupMaintenanceRetryTimerRef.current = null;
+            if (!isMountedRef.current) return;
+            startupMaintenanceRetryAttemptedRef.current = true;
+            void runStartupConfigMaintenance().catch((error) => {
+                console.warn('[ConfigProvider] Deferred startup config maintenance still unavailable:', error);
+            });
+        }, STARTUP_MAINTENANCE_RETRY_MS);
+    }, [runStartupConfigMaintenance]);
+
+    useEffect(() => () => {
+        if (startupMaintenanceRetryTimerRef.current !== null) {
+            clearTimeout(startupMaintenanceRetryTimerRef.current);
+            startupMaintenanceRetryTimerRef.current = null;
+        }
     }, []);
 
     // ============= Load All Data =============
@@ -424,152 +600,33 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         setError(null);
 
         try {
-            await ensureBundledWorkspace();
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                const results = await Promise.allSettled([
-                    invoke('cmd_sync_admin_agent'),
-                    invoke('cmd_sync_cli'),
-                    // System skills (task-alignment / task-implement) —
-                    // independent version gate (SYSTEM_SKILLS_VERSION in
-                    // commands.rs). Force-overwrites user copies so the
-                    // skill contracts always match the shipped CLI.
-                    invoke('cmd_sync_system_skills'),
-                ]);
-                for (const r of results) {
-                    if (r.status === 'rejected') {
-                        console.warn('[ConfigProvider] Sync failed:', r.reason);
-                    }
-                }
-            } catch (e) {
-                console.warn('[ConfigProvider] Agent/CLI/system-skills sync failed:', e);
-            }
-
-            try {
-                await ensureManagedCodexProviderDevGateDefault();
-            } catch (e) {
-                console.warn('[ConfigProvider] Managed Codex provider default migration failed:', e);
-            }
-
-            let loadedConfig!: AppConfig;
-            let loadedProjects!: Project[];
-            await withAgentConfigIntentLock(() => withProjectsLock(async () => {
-                const rawConfig = await loadAppConfig();
-                loadedProjects = await loadProjects();
-                const projectsBefore = JSON.stringify(loadedProjects);
-                const configBefore = JSON.stringify({
-                    agents: rawConfig.agents ?? [],
-                    imBotConfigs: rawConfig.imBotConfigs ?? [],
-                });
-                loadedConfig = migrateImBotConfigsToAgents(rawConfig, loadedProjects);
-                const migrationChanged = configBefore !== JSON.stringify({
-                    agents: loadedConfig.agents ?? [],
-                    imBotConfigs: loadedConfig.imBotConfigs ?? [],
-                });
-                if (!migrationChanged && projectsBefore === JSON.stringify(loadedProjects)) return;
-
-                // Create timestamped backup before persisting migration
-                try {
-                    const { getConfigDir, CONFIG_FILE } = await import('./services/configStore');
-                    const { copyFile, exists } = await import('@tauri-apps/plugin-fs');
-                    const { join } = await import('@tauri-apps/api/path');
-                    const dir = await getConfigDir();
-                    const configPath = await join(dir, CONFIG_FILE);
-                    if (await exists(configPath)) {
-                        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-                        await copyFile(configPath, await join(dir, `config.json.bak.${ts}`));
-                    }
-                } catch (e) {
-                    console.warn('[ConfigProvider] Migration backup failed:', e);
-                }
-                // Project.agentId is the birth authority. Commit it before the
-                // pathless Agent record; retry reuses the same id.
-                if (projectsBefore !== JSON.stringify(loadedProjects)) {
-                    await saveProjects(loadedProjects);
-                }
-                if (migrationChanged) {
-                    loadedConfig = await atomicModifyConfig(current => ({
-                        ...current,
-                        agents: loadedConfig.agents,
-                        imBotConfigs: loadedConfig.imBotConfigs,
-                    }));
-                }
-            }));
-
-            const hiddenDefaultProject = loadedConfig.defaultWorkspacePath
-                ? loadedProjects.find(p => p.hidden === true && workspacePathsEqual(p.path, loadedConfig.defaultWorkspacePath))
-                : undefined;
-            if (hiddenDefaultProject) {
-                loadedConfig.defaultWorkspacePath = undefined;
-                await atomicModifyConfig(c => (
-                    workspacePathsEqual(c.defaultWorkspacePath, hiddenDefaultProject.path)
-                        ? { ...c, defaultWorkspacePath: undefined }
-                        : c
-                ));
-                console.log('[ConfigProvider] Cleared defaultWorkspacePath pointing at hidden workspace');
-            }
-
-            // One-time cleanup: remove imBotConfigs entries whose credentials
-            // now exist in agents[].channels[] (post-migration duplicates)
-            // Re-read from disk in case migration cleared in-memory but didn't persist imBotConfigs
-            const diskImBotConfigs = (await loadAppConfig())?.imBotConfigs ?? loadedConfig.imBotConfigs ?? [];
-            if (loadedConfig.agents?.length && diskImBotConfigs.length) {
-                loadedConfig.imBotConfigs = diskImBotConfigs;
-                // Collect all credential fingerprints from agent channels
-                const agentCredentials = new Set<string>();
-                for (const agent of loadedConfig.agents) {
-                    for (const ch of (agent.channels ?? [])) {
-                        if (ch.feishuAppId) agentCredentials.add(`feishu:${ch.feishuAppId}`);
-                        if (ch.botToken) agentCredentials.add(`botToken:${ch.botToken}`);
-                        if (ch.dingtalkClientId) agentCredentials.add(`dingtalk:${ch.dingtalkClientId}`);
-                        if (ch.openclawPluginConfig?.appId) agentCredentials.add(`openclaw:${ch.openclawPluginConfig.appId}`);
-                    }
-                }
-
-                const remaining = loadedConfig.imBotConfigs.filter(bot => {
-                    if (bot.feishuAppId && agentCredentials.has(`feishu:${bot.feishuAppId}`)) return false;
-                    if (bot.botToken && agentCredentials.has(`botToken:${bot.botToken}`)) return false;
-                    if (bot.dingtalkClientId && agentCredentials.has(`dingtalk:${bot.dingtalkClientId}`)) return false;
-                    if (bot.openclawPluginConfig?.appId && agentCredentials.has(`openclaw:${bot.openclawPluginConfig.appId}`)) return false;
-                    return true;
-                });
-
-                const removedCount = loadedConfig.imBotConfigs.length - remaining.length;
-                if (removedCount > 0) {
-                    console.log(`[ConfigProvider] Cleaning up ${removedCount} legacy imBotConfigs entry(ies) already migrated to agents`);
-                    loadedConfig.imBotConfigs = remaining;
-                    await atomicModifyConfig(c => ({ ...c, imBotConfigs: remaining }));
-                }
-            }
-
-            await rebuildAndPersistAvailableProviders();
-
-            // Normalize agents and self-heal corrupted config on disk
-            if (normalizeAgents(loadedConfig) && loadedConfig.agents) {
-                await persistAgents(loadedConfig.agents);
-                console.log('[ConfigProvider] Repaired agents with missing channels — persisted to disk');
-            }
-
-            // Migrate old hardcoded tool groups → undefined (= all groups enabled)
-            if (migrateToolGroups(loadedConfig) && loadedConfig.agents) {
-                await persistAgents(loadedConfig.agents);
-            }
-
-            const snapshot = await commitConfigDiskSnapshot();
-            if (!snapshot) return;
-            void reconcileMemoryAutoUpdateTasks(snapshot.config.agents, snapshot.projects);
-            void reconcileMemoryEvolutionTasks(snapshot.config.agents, snapshot.projects);
+            const snapshot = await commitReadableConfigDiskSnapshot();
+            if (!snapshot && !isMountedRef.current) return;
         } catch (err) {
             console.error('Failed to load config:', err);
             if (isMountedRef.current) {
                 setError(err instanceof Error ? err.message : 'Failed to load configuration');
             }
+            return;
         } finally {
             if (isMountedRef.current) {
                 setIsLoading(false);
             }
         }
-    }, [commitConfigDiskSnapshot]);
+
+        try {
+            await runStartupConfigMaintenance();
+        } catch (err) {
+            console.warn('[ConfigProvider] Startup config maintenance deferred:', err);
+            if (isLockBusyError(err)) {
+                scheduleStartupMaintenanceRetry();
+            }
+        }
+    }, [
+        commitReadableConfigDiskSnapshot,
+        runStartupConfigMaintenance,
+        scheduleStartupMaintenanceRetry,
+    ]);
 
     // Initial load
     useEffect(() => {
@@ -624,11 +681,15 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             }
         } catch (err) {
             console.error(`[ConfigProvider] Failed to refresh config after ${reason}:`, err);
+            if (isLockBusyError(err)) {
+                scheduleStartupMaintenanceRetry();
+                return;
+            }
             if (isMountedRef.current) {
                 setError(err instanceof Error ? err.message : 'Failed to refresh configuration');
             }
         }
-    }, [commitConfigDiskSnapshot, syncNativeUiLanguageFromConfig]);
+    }, [commitConfigDiskSnapshot, scheduleStartupMaintenanceRetry, syncNativeUiLanguageFromConfig]);
 
     // ============= Listen for im:bot-config-changed =============
 
@@ -1042,8 +1103,22 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         await refreshProviders();
     }, [refreshProviders]);
 
-    const updateCustomProvider = useCallback(async (provider: Provider) => {
-        await saveCustomProviderService(provider);
+    const updateCustomProvider = useCallback(async (
+        provider: Provider,
+        discoveredModels?: DiscoveredModel[],
+    ) => {
+        if (discoveredModels) {
+            // Discovery starts from a render snapshot and may finish after the
+            // user edits the same model. Re-read under the Provider file lock
+            // and merge only missing fields so a late result cannot overwrite
+            // an explicit value or resurrect a deleted model.
+            await atomicModifyCustomProvider(provider.id, current => {
+                const models = enrichExistingModelsFromDiscovery(current.models, discoveredModels);
+                return models === current.models ? current : { ...current, models };
+            });
+        } else {
+            await saveCustomProviderService(provider);
+        }
         await rebuildAndPersistAvailableProviders();
         await refreshProviders();
     }, [refreshProviders]);

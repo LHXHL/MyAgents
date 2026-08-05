@@ -2,9 +2,9 @@
 // Three sections: active (running/verifying), pending (todo/blocked/stopped),
 // finished (done/archived). PRD §7.2.
 //
-// Two render modes: a 2-column card view (default) and a dense single-line
-// list view (quick scan / filter). The choice is persisted in localStorage
-// so returning users see their last-picked view.
+// Two render modes: a 2-column card view and a dense single-line list view
+// (default, optimized for quick scan / filter). The choice is persisted in
+// localStorage so returning users see their last-picked view.
 //
 // Unmigrated historical Cron rows remain visible as read-only diagnostics.
 
@@ -47,6 +47,7 @@ type TaskCardLike =
 
 interface Props {
   highlightTaskId?: string | null;
+  currentSessionId?: string | null;
   /** Bumped by parent to trigger re-fetch (tab activation, post-dispatch). */
   refreshKey?: unknown;
   /** Intent forwarded from `App.tsx`'s `OPEN_TASK_CENTER` event handler.
@@ -74,12 +75,12 @@ const BUCKET_STATUSES: Record<Bucket, TaskStatus[]> = {
 const VIEW_STORAGE_KEY = 'myagents:task-center:view';
 
 function loadStoredView(): TaskView {
-  if (typeof window === 'undefined') return 'card';
+  if (typeof window === 'undefined') return 'list';
   const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
-  return raw === 'list' ? 'list' : 'card';
+  return raw === 'card' ? 'card' : 'list';
 }
 
-export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Props) {
+export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent, currentSessionId }: Props) {
   const toast = useToast();
   const { t } = useTranslation('task');
   const toastRef = useRef(toast);
@@ -622,6 +623,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
 
       {showCreateModal && (
         <DispatchTaskDialog
+          currentSessionId={currentSessionId ?? null}
           onClose={() => setShowCreateModal(false)}
           onDispatched={(created) => {
             setShowCreateModal(false);

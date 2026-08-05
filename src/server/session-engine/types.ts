@@ -155,6 +155,8 @@ export type InjectedTurnRequest = {
   reasoningEffort?: string;
   providerEnv?: ProviderEnv | 'subscription';
   providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery for a route that becomes unavailable at final dispatch. */
+  providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
@@ -211,6 +213,8 @@ export type ScheduledTurnPreparationResult = {
   model?: string;
   providerEnv?: ProviderEnv | 'subscription';
   providerRoute?: ProviderRoute;
+  /** Ephemeral owner-aware recovery retained through final provider materialization. */
+  providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   beforeDispatch?: DispatchGuard;
   release?: () => void | Promise<void>;
@@ -346,7 +350,19 @@ export type CapabilityOperationResult = {
   skippedLinks?: number;
   /** Outcome of the independent workspace checkpoint restoration during rewind. */
   fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
+  errorCode?: ConversationOperationErrorCode;
+  rewindScope?: 'conversation-only';
 };
+
+export type ConversationOperationErrorCode =
+  | 'unsupported_runtime'
+  | 'codex_update_required'
+  | 'session_busy'
+  | 'anchor_unavailable'
+  | 'native_fork_failed'
+  | 'persistence_failed'
+  | 'storage_consistency_error'
+  | 'restore_failed';
 
 export interface SessionEngine {
   kind: SessionEngineKind;

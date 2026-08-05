@@ -51,6 +51,7 @@ pub mod task;
 pub mod task_application;
 pub mod task_execution;
 pub mod task_scheduler;
+pub mod task_trigger;
 pub mod terminal;
 pub mod thought;
 mod tray;
@@ -655,6 +656,11 @@ pub fn run() {
             task::cmd_task_create_attached,
             task::cmd_task_list,
             task::cmd_task_get,
+            task::cmd_task_trigger_validate,
+            task::cmd_task_trigger_test,
+            task::cmd_task_check_now,
+            task::cmd_task_run_now,
+            task::cmd_task_reset_checkpoint,
             task::cmd_task_update,
             task::cmd_task_update_status,
             task::cmd_task_append_session,
@@ -1420,6 +1426,9 @@ pub fn run() {
                     app_dirs::record_clean_exit(code == Some(tauri::RESTART_EXIT_CODE));
                     im::signal_all_agents_shutdown(&agent_state_for_exit);
                     im::signal_all_bots_shutdown(&im_state_for_exit);
+                    tauri::async_runtime::block_on(
+                        task_scheduler::get_task_scheduler().shutdown_all(),
+                    );
                     let sidecar_cleanup_ok = match stop_all_sidecars(
                         &sidecar_state_for_exit,
                         shutdown_reason,
@@ -1565,7 +1574,7 @@ mod nav_guard_tests {
             "main",
         );
         assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
-        assert!(script.contains("let themeId = 'default-black'"));
+        assert!(script.contains("let themeId = 'myagents-light'"));
         assert!(script.contains("appearanceMode: \"dark\""));
         assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
         assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));

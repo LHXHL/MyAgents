@@ -278,6 +278,7 @@ interface TabContentProps {
   // Task Center intent carried by the most recent OPEN_TASK_CENTER event.
   // Only read by the `taskcenter` tab; other tab views ignore it.
   taskCenterPendingIntent: { autofocusSearch?: boolean; nonce: number } | null;
+  taskCenterCurrentSessionId?: string | null;
 }
 
 // Exported for focused content-mount behavior tests.
@@ -305,6 +306,7 @@ export const MemoizedTabContent = memo(function TabContent({
   onRestartAndUpdate,
   sessionNotificationBadgeCounts,
   taskCenterPendingIntent,
+  taskCenterCurrentSessionId,
 }: TabContentProps) {
   const kind = tabContentKind(tab, isDeferredMount);
   const handleLauncherWorkspaceChange = useCallback(
@@ -359,7 +361,11 @@ export const MemoizedTabContent = memo(function TabContent({
         </Suspense>
       ) : kind === 'taskcenter' ? (
         <Suspense fallback={PAGE_FALLBACK}>
-          <TaskCenter isActive={isActive} pendingIntent={taskCenterPendingIntent} />
+          <TaskCenter
+            isActive={isActive}
+            pendingIntent={taskCenterPendingIntent}
+            currentSessionId={taskCenterCurrentSessionId}
+          />
         </Suspense>
       ) : kind === 'space' ? (
         <Suspense fallback={PAGE_FALLBACK}>
@@ -433,7 +439,8 @@ export const MemoizedTabContent = memo(function TabContent({
     // dropped: isActive stays true, tab ref stays the same, so memo
     // returns true and the new `pendingIntent` prop never reaches the
     // TaskCenter tab. (v0.1.69 cross-review C1)
-    prev.taskCenterPendingIntent === next.taskCenterPendingIntent
+    prev.taskCenterPendingIntent === next.taskCenterPendingIntent &&
+    prev.taskCenterCurrentSessionId === next.taskCenterCurrentSessionId
   );
 });
 
@@ -2452,6 +2459,16 @@ export default function App() {
     track('tab_new', { tab_count: currentLength + 1 });
   }, [openNewTabDeferred]);
 
+  const handleSidebarNewChat = useCallback(() => {
+    const currentTabs = tabsRef.current;
+    const leftmostLauncher = currentTabs.find((tab) => tab.view === 'launcher');
+    if (leftmostLauncher) {
+      setActiveTabId(leftmostLauncher.id, currentTabs);
+      return;
+    }
+    handleNewTab();
+  }, [handleNewTab, setActiveTabId]);
+
   const handleOpenWorkspaceFromSidebar = useCallback(async (
     project: Project,
     initialMessage?: InitialMessage,
@@ -2600,6 +2617,15 @@ export default function App() {
   // Open TaskCenter as a singleton tab (mirrors handleOpenSettings)
   const handleOpenTaskCenter = useCallback(() => {
     const currentTabs = tabsRef.current;
+    const sourceTab = currentTabs.find((tab) => tab.id === activeTabIdRef.current);
+    if (sourceTab?.view === 'chat') {
+      const sourceSessionId = sourceTab.sessionId?.trim();
+      setTaskCenterCurrentSessionId(
+        sourceSessionId && !isPendingSessionId(sourceSessionId) ? sourceSessionId : null,
+      );
+    } else if (sourceTab?.view !== 'taskcenter') {
+      setTaskCenterCurrentSessionId(null);
+    }
     const existing = currentTabs.find((t) => t.view === 'taskcenter');
     if (existing) {
       setActiveTabId(existing.id);
@@ -2643,6 +2669,7 @@ export default function App() {
   const [taskCenterPendingIntent, setTaskCenterPendingIntent] = useState<
     { autofocusSearch?: boolean; nonce: number } | null
   >(null);
+  const [taskCenterCurrentSessionId, setTaskCenterCurrentSessionId] = useState<string | null>(null);
 
   // Listen for OPEN_TASK_CENTER custom event from child components
   useEffect(() => {
@@ -3280,7 +3307,7 @@ export default function App() {
         activeWorkspacePath={activeWorkspacePath}
         sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
         teamSpaceAvailable={teamSpaceAvailable}
-        onNewTab={handleNewTab}
+        onNewTab={handleSidebarNewChat}
         onOpenTaskCenter={handleOpenTaskCenter}
         onOpenSpace={handleOpenSpace}
         onOpenCapabilities={handleOpenCapabilities}
@@ -3353,6 +3380,7 @@ export default function App() {
             onFilePreviewIntentConsumed={handleFilePreviewIntentConsumed}
             sessionNotificationBadgeCounts={tab.id === activeTabId ? sessionNotificationBadgeCounts : undefined}
             taskCenterPendingIntent={taskCenterPendingIntent}
+            taskCenterCurrentSessionId={taskCenterCurrentSessionId}
           />
         ))}
       </div>

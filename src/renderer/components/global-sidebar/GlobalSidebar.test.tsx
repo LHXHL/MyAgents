@@ -491,6 +491,40 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.copySessionId')) })).toBeInTheDocument();
   });
 
+  it('shows a truncated Session title only after a one-second hover', () => {
+    const title = 'A very long historical conversation title that cannot fit in the sidebar';
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'session-1',
+      agentDir: '/work/project-one',
+      title,
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const trigger = document.querySelector<HTMLElement>('[data-global-sidebar-session-title]')!;
+    expect(trigger).not.toHaveTextContent(title);
+    expect(trigger.textContent).toMatch(/\.\.\.$/);
+    Object.defineProperty(trigger, 'clientWidth', { configurable: true, value: 360 });
+    Object.defineProperty(trigger, 'scrollWidth', { configurable: true, value: 200 });
+    fireEvent.pointerEnter(trigger);
+    act(() => vi.advanceTimersByTime(999));
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(title);
+  });
+
   it('routes sidebar Session deletion through the App-owned lifecycle capability', async () => {
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     mocks.taskData.sessions.push({

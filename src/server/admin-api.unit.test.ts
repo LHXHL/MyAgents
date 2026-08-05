@@ -77,7 +77,7 @@ const sessionEngineMocks = vi.hoisted(() => {
 });
 
 vi.mock('./agent-session', () => ({
-  SDK_RESERVED_MCP_NAMES: new Set<string>(),
+  SDK_RESERVED_MCP_NAMES: [] as string[],
   getAgentState: () => ({ agentDir: agentSessionMocks.agentDir }),
   setMcpServers: agentSessionMocks.setMcpServers,
   setAgents: agentSessionMocks.setAgents,
@@ -199,6 +199,49 @@ describe('admin-api help registry', () => {
     expect(sessionGroup).toContain('Observe only');
   });
 
+  it('provides compact exact Task leaf help for Agent automation flows', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['task', 'list'],
+      ['task', 'get'],
+      ['task', 'create-direct'],
+      ['task', 'create-from-alignment'],
+      ['task', 'create-attached'],
+      ['task', 'update'],
+      ['task', 'run'],
+      ['task', 'rerun'],
+      ['task', 'start'],
+      ['task', 'stop'],
+      ['task', 'runs'],
+      ['task', 'update-status'],
+      ['task', 'append-session'],
+      ['task', 'exit'],
+      ['task', 'run-now'],
+      ['task', 'check-now'],
+      ['task', 'trigger', 'validate'],
+      ['task', 'trigger', 'test'],
+      ['task', 'reset-checkpoint'],
+      ['task', 'archive'],
+      ['task', 'delete'],
+      ['task', 'readme'],
+    ];
+    for (const path of leaves) {
+      const text = String((handleHelp({ path }).data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('MUTATION / AI');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('EXAMPLE');
+      expect(text).toContain('RECOVERY');
+    }
+    expect(String((handleHelp({ path: ['task', 'delete'] }).data as { text?: string }).text))
+      .toContain('There is no undelete command');
+    expect(String((handleHelp({ path: ['task', 'run'] }).data as { text?: string }).text))
+      .toContain('about 2 seconds');
+  });
+
   it('keeps im send-media leaf help aligned with the executable file flag contract', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -256,6 +299,40 @@ describe('admin-api help registry', () => {
     expect(readmeText).not.toContain('{"kind":"loop"}');
     expect(shortText).toContain('--prompt-file is supported');
     expect(handleHelp({ path: ['goal'] }).success).toBe(true);
+  });
+
+  it('exposes the unified Task automation readme while keeping cron compatible', async () => {
+    const { handleReadme } = await import('./admin-api');
+
+    const task = handleReadme({ topic: 'task' });
+    const cron = handleReadme({ topic: 'cron' });
+    const taskText = (task.data as { text?: string } | undefined)?.text ?? '';
+    const cronText = (cron.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(task.success).toBe(true);
+    expect(taskText).toContain('myagents-task-automation');
+    expect(taskText).toContain('always');
+    expect(taskText).toContain('command Detector');
+    expect(taskText).toContain('myagents task exit');
+    expect(cron.success).toBe(true);
+    expect(cronText).toContain('myagents task readme');
+    expect(cronText).toContain('Compatibility');
+  });
+
+  it('documents canonical Agent keys and Task provider overrides', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const agent = handleHelp({ path: ['agent'] });
+    const task = handleHelp({ path: ['task'] });
+    const agentText = (agent.data as { text?: string } | undefined)?.text ?? '';
+    const taskText = (task.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(agent.success).toBe(true);
+    expect(agentText).toContain('providerId/model/permissionMode');
+    expect(agentText).not.toContain('provider/model/permission');
+    expect(task.success).toBe(true);
+    expect(taskText).toContain('--providerId');
+    expect(taskText).toContain('must be paired with --model');
   });
 
   it('includes vision in the derived command group list', async () => {
@@ -631,6 +708,9 @@ describe('admin-api accepted task attempt analytics', () => {
   it('reports the run ordinal returned by the accepted mutation without a task prefetch', async () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: true,
+      taskId: 'task-run-accepted',
+      status: 'running',
+      nextExecutionAt: 1_780_000_000_000,
       task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
       attemptOrdinal: 4,
     });
@@ -641,6 +721,9 @@ describe('admin-api accepted task attempt analytics', () => {
     expect(result).toEqual({
       success: true,
       data: {
+        taskId: 'task-run-accepted',
+        status: 'running',
+        nextExecutionAt: 1_780_000_000_000,
         task: { id: 'task-run-accepted', sessionIds: ['shared-session'] },
         attemptOrdinal: 4,
       },
@@ -660,13 +743,14 @@ describe('admin-api accepted task attempt analytics', () => {
   it('does not report an attempt when run admission is rejected', async () => {
     managementApiMocks.managementApi.mockResolvedValueOnce({
       ok: false,
+      code: 'invalid_state',
       error: 'task is busy',
     });
     const { handleTaskRun } = await import('./admin-api');
 
     const result = await handleTaskRun({ id: 'task-run-rejected' });
 
-    expect(result).toEqual({ success: false, error: 'task is busy' });
+    expect(result).toEqual({ success: false, code: 'invalid_state', error: 'task is busy' });
     expect(managementApiMocks.managementApi).toHaveBeenCalledOnce();
     expect(analyticsMocks.trackServer).not.toHaveBeenCalled();
   });
@@ -695,7 +779,330 @@ describe('admin-api accepted task attempt analytics', () => {
   });
 });
 
+describe('admin-api Task Detector forwarding', () => {
+  it('forwards validate, check-now, run-now, and reset to the Rust Task authority', async () => {
+    managementApiMocks.managementApi
+      .mockResolvedValueOnce({ ok: true, trigger: { source: { type: 'time' }, detector: { type: 'always' } } })
+      .mockResolvedValueOnce({ ok: true, result: { state: { checkCount: 2 } } })
+      .mockResolvedValueOnce({ ok: true, taskId: 'task-1', sessionId: 'session-1' })
+      .mockResolvedValueOnce({ ok: true, state: { checkpoint: null, checkpointRevision: 0 } });
+    const {
+      handleTaskTriggerValidate,
+      handleTaskCheckNow,
+      handleTaskRunNow,
+      handleTaskResetCheckpoint,
+    } = await import('./admin-api');
+    const trigger = { source: { type: 'time' }, detector: { type: 'always' } };
+
+    expect((await handleTaskTriggerValidate({ trigger })).success).toBe(true);
+    expect((await handleTaskCheckNow({ id: 'task-1' })).success).toBe(true);
+    expect((await handleTaskRunNow({ id: 'task-1' })).success).toBe(true);
+    expect((await handleTaskResetCheckpoint({ id: 'task-1' })).success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      1,
+      '/api/task/trigger/validate',
+      'POST',
+      { trigger },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      2,
+      '/api/task/check-now',
+      'POST',
+      { id: 'task-1' },
+      { timeoutMs: 310_000 },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      3,
+      '/api/task/run-now',
+      'POST',
+      { id: 'task-1' },
+    );
+    expect(managementApiMocks.managementApi).toHaveBeenNthCalledWith(
+      4,
+      '/api/task/reset-checkpoint',
+      'POST',
+      { id: 'task-1' },
+    );
+  });
+
+  it('keeps test fixtures transient and turns --expect mismatch into failure', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      result: { decision: 'activate', invocationId: 'inv-1' },
+    });
+    const { handleTaskTriggerTest } = await import('./admin-api');
+
+    const result = await handleTaskTriggerTest({
+      taskId: 'task-1',
+      checkpoint: { cursor: 7 },
+      expect: 'quiet',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: 'Detector returned activate; expected quiet',
+      data: { result: { decision: 'activate' } },
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/trigger/test',
+      'POST',
+      { taskId: 'task-1', checkpoint: { cursor: 7 } },
+      { timeoutMs: 310_000 },
+    );
+  });
+
+  it('rejects an invalid --expect before running the Detector', async () => {
+    const { handleTaskTriggerTest } = await import('./admin-api');
+
+    const result = await handleTaskTriggerTest({
+      taskId: 'task-1',
+      expect: 'activte',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: '--expect must be quiet or activate',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('keeps structured check-now failure diagnostics for CLI output', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      code: 'detector_check_failed',
+      error: 'Detector timed out',
+      result: {
+        outcome: 'error',
+        state: {
+          lastError: {
+            code: 'detector_timeout',
+            message: 'Detector timed out',
+            occurredAt: 1_775_000_000_000,
+            timedOut: true,
+          },
+        },
+      },
+    });
+    const { handleTaskCheckNow } = await import('./admin-api');
+
+    expect(await handleTaskCheckNow({ id: 'task-1' })).toMatchObject({
+      success: false,
+      code: 'detector_check_failed',
+      data: { result: { outcome: 'error' } },
+    });
+  });
+});
+
+describe('admin-api Task Agent experience', () => {
+  function configureCurrentWorkspace(): string {
+    const workspacePath = join(scratch, 'current-workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    agentSessionMocks.agentDir = workspacePath;
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{ id: 'agent-current', name: 'Current Agent', workspacePath }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-current',
+      name: 'Current Project',
+      path: workspacePath,
+      agentId: 'agent-current',
+    }]);
+    return workspacePath;
+  }
+
+  it('inherits current workspace for direct creation and preserves CLI caller provenance', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: { id: 'task-current', name: 'Current task', workspaceId: 'project-current', workspacePath },
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Current task',
+      taskMdContent: 'Do the work.',
+      actor: 'agent',
+      source: 'cli',
+    });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/create-direct',
+      'POST',
+      expect.objectContaining({
+        workspaceId: 'project-current',
+        workspacePath,
+        actor: 'agent',
+        source: 'cli',
+      }),
+    );
+  });
+
+  it('rejects an explicit workspace id/path pair from different projects', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    const otherPath = join(scratch, 'other-workspace');
+    mkdirSync(otherPath, { recursive: true });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [
+      {
+        id: 'project-current',
+        name: 'Current Project',
+        path: workspacePath,
+        agentId: 'agent-current',
+      },
+      {
+        id: 'project-other',
+        name: 'Other Project',
+        path: otherPath,
+        agentId: 'agent-other',
+      },
+    ]);
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Mismatched task',
+      taskMdContent: 'Do not persist this.',
+      workspaceId: 'project-current',
+      workspacePath: otherPath,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('does not own workspacePath');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('returns a compact filtered current-workspace list without expanded session identities', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      tasks: [
+        {
+          id: 'task-release',
+          name: 'Release review',
+          description: 'Inspect release blockers',
+          workspaceId: 'project-current',
+          status: 'running',
+          executionMode: 'recurring',
+          sessionIds: Array.from({ length: 186 }, (_, index) => `session-${index}`),
+          nextExecutionAt: 1_780_000_000_000,
+          tags: ['release'],
+        },
+        {
+          id: 'task-other',
+          name: 'Other work',
+          workspaceId: 'project-current',
+          status: 'todo',
+          sessionIds: ['session-other'],
+        },
+      ],
+    });
+    const { handleTaskList } = await import('./admin-api');
+
+    const result = await handleTaskList({ query: 'release', limit: 1 });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/task/list?workspaceId=project-current');
+    expect(result.scope).toEqual({
+      workspacePath,
+      source: 'default',
+      visibility: 'current Task workspace',
+    });
+    expect(result.data).toEqual([expect.objectContaining({
+      id: 'task-release',
+      sessionCount: 186,
+      nextExecutionAt: 1_780_000_000_000,
+    })]);
+    expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty('sessionIds');
+    expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty('description');
+  });
+
+  it('exposes only the compact current Agent context for diagnostics', async () => {
+    const workspacePath = configureCurrentWorkspace();
+    sessionEngineMocks.state.context = { sessionId: 'session-current', workspacePath };
+    const { handleAgentCurrent } = await import('./admin-api');
+
+    expect(await handleAgentCurrent()).toEqual({
+      success: true,
+      data: {
+        agentId: 'agent-current',
+        name: 'Current Agent',
+        workspaceId: 'project-current',
+        workspacePath,
+        sessionId: 'session-current',
+      },
+    });
+  });
+
+  it('forwards Agent archive provenance so the Rust user-only guard can reject it', async () => {
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      code: 'archive_user_only',
+      error: 'archive is user-only',
+    });
+    const { handleTaskArchive } = await import('./admin-api');
+
+    const result = await handleTaskArchive({
+      id: 'task-1',
+      actor: 'agent',
+      source: 'cli',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      code: 'archive_user_only',
+      error: 'archive is user-only',
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/task/archive',
+      'POST',
+      { id: 'task-1', actor: 'agent', source: 'cli' },
+    );
+  });
+});
+
 describe('admin-api task runtime model identity', () => {
+  it('treats an explicit Task providerId as builtin instead of inheriting an external Agent runtime', async () => {
+    const workspacePath = '/tmp/myagents-task-builtin-provider';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-external-default',
+        name: 'External Default',
+        workspacePath,
+        runtime: 'codex',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-external-default',
+      path: workspacePath,
+      agentId: 'agent-external-default',
+    }]);
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      task: {
+        id: 'task-builtin-provider',
+        providerId: 'deepseek',
+        model: 'deepseek-chat',
+      },
+    });
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'Builtin provider task',
+      workspacePath,
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    });
+
+    expect(result.success).toBe(true);
+    expect(runtimeModelMocks.queryRuntimeModels).not.toHaveBeenCalled();
+    expect(result.data).toMatchObject({
+      overrides: {
+        providerId: 'deepseek',
+        model: 'deepseek-chat',
+      },
+      overridden: expect.arrayContaining(['providerId', 'model']),
+      overridesRequested: expect.arrayContaining(['providerId', 'model']),
+    });
+  });
+
   it('rejects managed-provider when the Task runtime is not Codex', async () => {
     const { handleTaskCreateDirect } = await import('./admin-api');
 
@@ -932,6 +1339,36 @@ describe('admin-api task runtime model identity', () => {
 });
 
 describe('admin-api agent set configuration intent', () => {
+  it.each([
+    ['provider', 'providerId'],
+    ['permission', 'permissionMode'],
+    ['totallyUnknownField', 'Supported fields'],
+  ])('rejects unsupported field %s before writing config', async (key, recoveryText) => {
+    const config = {
+      agents: [{
+        id: 'agent-unknown-field',
+        name: 'Unknown Field Guard',
+        enabled: true,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-unknown-field',
+      key,
+      value: 'ignored-value',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(recoveryText);
+    expect(readConfig()).toEqual(config);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
   it('stores managed Codex product permission without changing provider or model', async () => {
     const workspacePath = '/tmp/myagents-agent-set-managed-codex';
     writeJson(join(scratch, '.myagents', 'config.json'), {
@@ -1631,6 +2068,96 @@ describe('admin-api model add', () => {
   });
 });
 
+describe('admin-api MCP add contract', () => {
+  it('creates a new server and fans out app-wide config invalidation', async () => {
+    const { handleMcpAdd } = await import('./admin-api');
+
+    const result = await handleMcpAdd({
+      server: {
+        id: 'new-server',
+        name: 'New Server',
+        type: 'stdio',
+        command: 'node',
+        args: ['server.mjs'],
+        env: { TOKEN: 'secret' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(readConfig().mcpServers).toEqual([
+      expect.objectContaining({
+        id: 'new-server',
+        command: 'node',
+        args: ['server.mjs'],
+        env: { TOKEN: 'secret' },
+      }),
+    ]);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/app/config-changed',
+      'POST',
+      {},
+      { timeoutMs: 2_000 },
+    );
+  });
+
+  it('rejects a duplicate custom id without replacing any stored fields', async () => {
+    const original = {
+      id: 'existing-server',
+      name: 'Existing Server',
+      description: 'keep me',
+      type: 'stdio',
+      command: 'node',
+      args: ['old.mjs', '--verbose'],
+      env: { TOKEN: 'original-secret', MODE: 'production' },
+      isBuiltin: false,
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      mcpServers: [original],
+      mcpEnabledServers: ['existing-server'],
+    });
+    const { handleMcpAdd } = await import('./admin-api');
+
+    const result = await handleMcpAdd({
+      server: {
+        id: 'existing-server',
+        type: 'stdio',
+        command: 'different-command',
+      },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('mcp add only creates new servers'),
+      recoveryHint: { recoveryCommand: 'myagents mcp show existing-server' },
+    });
+    expect(readConfig()).toMatchObject({
+      mcpServers: [original],
+      mcpEnabledServers: ['existing-server'],
+    });
+    expect(agentSessionMocks.setMcpServers).not.toHaveBeenCalled();
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('does not report add success when app-wide invalidation fails', async () => {
+    const { handleMcpAdd } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: false,
+      error: 'management offline',
+    });
+
+    await expect(handleMcpAdd({
+      server: {
+        id: 'saved-without-refresh',
+        type: 'stdio',
+        command: 'node',
+      },
+    })).rejects.toThrow('MCP configuration was saved, but app-wide refresh failed');
+    expect(readConfig().mcpServers).toEqual([
+      expect.objectContaining({ id: 'saved-without-refresh' }),
+    ]);
+  });
+});
+
 describe('admin-api MCP connectivity test', () => {
   it('rejects a configured stdio command that exists but exits before MCP initialize', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
@@ -1652,10 +2179,16 @@ describe('admin-api MCP connectivity test', () => {
   });
 
   it('handshakes with the merged stdio args and env used by persisted MCP config', async () => {
+    agentSessionMocks.agentDir = process.cwd();
+    const expectedManagedBin = process.platform === 'win32'
+      ? join(scratch, '.myagents', 'npm-global')
+      : join(scratch, '.myagents', 'npm-global', 'bin');
     const serverCode = [
       "import { Server } from '@modelcontextprotocol/sdk/server/index.js';",
       "import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';",
-      "if (process.argv[1] !== 'legacy-extra' || process.env.MCP_TEST_TOKEN !== 'from-override') {",
+      "import { delimiter } from 'node:path';",
+      `const executablePath = process.env[${JSON.stringify(process.platform === 'win32' ? 'Path' : 'PATH')}] || '';`,
+      `if (process.argv[1] !== 'legacy-extra' || process.env.MCP_TEST_TOKEN !== 'from-override' || process.cwd() !== ${JSON.stringify(process.cwd())} || !executablePath.split(delimiter).includes(${JSON.stringify(expectedManagedBin)})) {`,
       "  process.stderr.write('merged stdio config missing\\n');",
       '  process.exit(1);',
       '}',

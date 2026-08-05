@@ -986,6 +986,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v44: one Agent workflow for scheduled, future and conditional Task
+  // automation; command Detector protocol is progressively disclosed inside.
+  'myagents-task-automation',
   // v35: stable product-use knowledge and expected-behaviour contract for
   // every MyAgents session. Live operations remain in myagents-cli.
   'myagents-docs',
@@ -1365,6 +1368,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   // Agent commands
   if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/current') return await api.handleAgentCurrent();
   if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
@@ -1409,7 +1413,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'im/channels') return await api.handleImChannels();
 
   // Tool readme — progressive-disclosure helpers for external runtimes
-  if (route === 'readme/cron' || route === 'readme/im' || route === 'readme/widget' || route === 'readme/thought') {
+  if (route === 'readme/task' || route === 'readme/cron' || route === 'readme/im' || route === 'readme/widget' || route === 'readme/thought') {
     const topic = route.split('/')[1];
     return api.handleReadme({
       topic,
@@ -1460,7 +1464,12 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'task/create-from-alignment') return await api.handleTaskCreateFromAlignment(payload);
   if (route === 'task/create-attached') return await api.handleTaskCreateAttached(payload);
   if (route === 'task/run') return await api.handleTaskRun(payload as Parameters<typeof api.handleTaskRun>[0]);
+  if (route === 'task/run-now') return await api.handleTaskRunNow(payload as Parameters<typeof api.handleTaskRunNow>[0]);
   if (route === 'task/rerun') return await api.handleTaskRerun(payload as Parameters<typeof api.handleTaskRerun>[0]);
+  if (route === 'task/trigger/validate') return await api.handleTaskTriggerValidate(payload as Parameters<typeof api.handleTaskTriggerValidate>[0]);
+  if (route === 'task/trigger/test') return await api.handleTaskTriggerTest(payload);
+  if (route === 'task/check-now') return await api.handleTaskCheckNow(payload as Parameters<typeof api.handleTaskCheckNow>[0]);
+  if (route === 'task/reset-checkpoint') return await api.handleTaskResetCheckpoint(payload as Parameters<typeof api.handleTaskResetCheckpoint>[0]);
   if (route === 'task/update') return await api.handleTaskUpdate(payload);
   if (route === 'task/update-status') return await api.handleTaskUpdateStatus(payload);
   if (route === 'task/append-session') return await api.handleTaskAppendSession(payload as Parameters<typeof api.handleTaskAppendSession>[0]);
@@ -8782,7 +8791,7 @@ description: >
             emitDeferredPhaseDone('sdk-init');
 
             if (initialSessionId) {
-              if (restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
+              if (await restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
                 currentInitPhase = 'external-runtime-restore';
                 setDeferredInitPhase(currentInitPhase);
                 initPhaseStarted = nowMs();

@@ -11,11 +11,6 @@ const cronTaskMocks = vi.hoisted(() => ({
     getBackgroundSessions: vi.fn(),
 }));
 
-const taskCenterMocks = vi.hoisted(() => ({
-    taskCenterAvailable: vi.fn(),
-    taskList: vi.fn(),
-}));
-
 const configMocks = vi.hoisted(() => ({
     loadAppConfig: vi.fn(),
 }));
@@ -42,11 +37,6 @@ vi.mock('@/api/sessionClient', () => ({
 vi.mock('@/api/cronTaskClient', () => ({
     getAllCronTasks: cronTaskMocks.getAllCronTasks,
     getBackgroundSessions: cronTaskMocks.getBackgroundSessions,
-}));
-
-vi.mock('@/api/taskCenter', () => ({
-    taskCenterAvailable: taskCenterMocks.taskCenterAvailable,
-    taskList: taskCenterMocks.taskList,
 }));
 
 vi.mock('@/config/configService', () => ({
@@ -140,8 +130,6 @@ beforeEach(() => {
     sessionClientMocks.getSessions.mockResolvedValue([]);
     cronTaskMocks.getAllCronTasks.mockResolvedValue([]);
     cronTaskMocks.getBackgroundSessions.mockResolvedValue([]);
-    taskCenterMocks.taskCenterAvailable.mockReturnValue(false);
-    taskCenterMocks.taskList.mockResolvedValue([]);
     configMocks.loadAppConfig.mockResolvedValue({ agents: [] });
 });
 
@@ -272,7 +260,6 @@ describe('store snapshot', () => {
         const unsubscribe = subscribePassive(listener);
         try {
             expect(sessionClientMocks.getSessions).not.toHaveBeenCalled();
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
 
             ensureWorkspaceSessions(['/work/mino']);
             await vi.waitFor(() => {
@@ -281,7 +268,6 @@ describe('store snapshot', () => {
 
             expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(1);
             expect(sessionClientMocks.getSessions).toHaveBeenCalledWith('/work/mino');
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
         } finally {
             unsubscribe();
         }
@@ -325,7 +311,6 @@ describe('store snapshot', () => {
             });
             expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(3);
             expect(sessionClientMocks.getSessions).toHaveBeenLastCalledWith(agentDir);
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
         } finally {
             unsubscribe();
         }
@@ -371,7 +356,6 @@ describe('store snapshot', () => {
             });
             expect(sessionClientMocks.getSessions).toHaveBeenCalledTimes(2);
             expect(sessionClientMocks.getSessions).toHaveBeenLastCalledWith(agentDir);
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
         } finally {
             unsubscribe();
         }
@@ -411,7 +395,6 @@ describe('store snapshot', () => {
                     'existing-session',
                 ]);
             });
-            expect(taskCenterMocks.taskList).not.toHaveBeenCalled();
         } finally {
             secondUnsubscribe();
         }
@@ -702,6 +685,7 @@ describe('store snapshot', () => {
             unsubscribe();
         }
     });
+
 });
 
 describe('actions.deleteSession', () => {

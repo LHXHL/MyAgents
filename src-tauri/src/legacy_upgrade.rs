@@ -221,6 +221,7 @@ fn migration_input(
             start_at,
             recurring_window: window,
             dispatch_at,
+            trigger: None,
             model: cron.model.clone(),
             provider_id,
             permission_mode: (!cron.permission_mode.is_empty())

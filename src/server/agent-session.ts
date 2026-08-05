@@ -11,12 +11,21 @@ import {
   type BackgroundAgentPermissionMode,
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
-import { getScriptDir, getBundledNodeDir, getSystemNodeDirs } from './utils/runtime';
+import { getScriptDir } from './utils/runtime';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
-import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
+import { buildSessionExecutablePath } from './utils/session-executable-path';
+import {
+  applyContextWindowSuffixForContextLength,
+  applyProviderContextWindowSuffix,
+  lookupSnapshotModelContextLength,
+  lookupProviderModelContextLength,
+  modelSupportsModality,
+  snapshotProviderModelContextLengths,
+  type ModelContextLengthSnapshot,
+} from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { attemptFileRewind, type FileRewindStatus } from './utils/rewind-file-result';
@@ -95,7 +104,7 @@ import { createLiveUserMessageReplay } from '../shared/chatMessageReplay';
 import { isPendingSessionId } from '../shared/constants';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { normalizeReasoningEffort, isSdkEffortLevel } from '../shared/reasoningEffort';
-import { computeContextUsage } from '../shared/contextUsage';
+import { BUILTIN_AUTO_COMPACT_PERCENT, computeContextUsage } from '../shared/contextUsage';
 import {
   chooseBuiltinContextUsageModel,
   inferContextWindowFromSdkModelTag,
@@ -106,7 +115,7 @@ import {
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { OfficialToolId } from '../shared/official-tools';
-import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
+import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromTurnAttribution } from '../shared/session-origin';
@@ -123,7 +132,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
 import { participatesInLiveRestore } from '../shared/liveRevision';
@@ -241,7 +250,10 @@ import {
   getQueryMcpMutation,
   incrementPreWarmFailCount,
   getBuiltinLiveRevision,
+  getCurrentQueryAuthority,
   getSessionMutationBarrier,
+  getSystemInitAuthority,
+  isCurrentQueryAuthority,
   lifecycleState,
   nextBuiltinLiveRevision,
   requestAbort,
@@ -254,6 +266,7 @@ import {
   setPreWarmTimer,
   setPreWarmDisabled,
   setQuerySession,
+  setQuerySessionWithAuthority,
   setQueryMcpPrewarmOwner,
   settleQueryMcpPrewarmOwner,
   setSdkControlReady,
@@ -265,6 +278,7 @@ import {
   waitForQueryExit,
   waitForMessage as lifecycleWaitForMessage,
   type QueryMcpMutationResult,
+  type BuiltinQueryAuthority,
 } from './builtin-session/lifecycle';
 import {
   MCP_PREWARM_GRACE_MS,
@@ -419,11 +433,9 @@ import {
   loadTranscriptFromSessionMessages,
   messageWireToSessionMessage,
   resetTranscriptPersistenceForSession,
-  restoreTranscriptPersistenceState,
   saveForkTranscript,
   scheduleTranscriptPersist,
   sessionMessageToMessageWire,
-  snapshotTranscriptPersistenceState,
   truncateTranscriptPersistenceForRewind,
 } from './builtin-session/transcript-persistence';
 import { createBuiltinTurnLifecycle, type BuiltinSdkResultMessage } from './builtin-session/turn-lifecycle';
@@ -445,7 +457,7 @@ import type {
  * - queue.ts: realtime queue, mid-turn buffer, turn-boundary queue, in-flight slot, admission ticket.
  * - turn.ts: current turn usage/output/error state, SDK output-owner FIFO, injected turn outcomes.
  * - config.ts: MCP/agents/plugins/model/permission/provider state plus deferred restart latch.
- * - transcript.ts: live messages, sequence, persist cursor/cache, SDK UUID freshness sets.
+ * - transcript.ts: live messages, sequence, SessionStore transcript cursor, SDK UUID freshness sets.
  *
  * Keep HTTP/SSE wire contracts and SessionEngine imports pointed at this facade;
  * new internal mutations should go through the owner state above, not new
@@ -739,11 +751,10 @@ function scheduleDeferredRestart(reason: RestartReason): void {
  * v0.1.69 T14: Return true if the current session is locked — its config was
  * captured as a snapshot at creation (see types/session.ts). Callers that
  * react to AgentConfig change events should consult this before scheduling a
- * restart: a snapshotted session owns MCP/agents/provider/model/permissionMode
- * and does NOT follow later agent changes, so restarting would be wasted work
- * (the frontend already passes the session-resolved list → fingerprint is
- * stable → no restart needed). If the frontend misbehaves and sends the
- * agent's raw list, this guard prevents the mis-call from thrashing the SDK.
+ * restart: a snapshotted session owns MCP selection IDs plus
+ * agents/provider/model/permissionMode and does NOT follow later Agent
+ * defaults. MCP definition bodies and the global enable security lever remain
+ * disk-owned and are resolved separately in setMcpServers().
  *
  * IM sessions intentionally leave `configSnapshotAt` undefined (D4
  * live-follow), so this returns false and the legacy restart path runs.
@@ -1023,21 +1034,16 @@ async function surfaceBuiltinUserMessage(
 }
 
 async function rollbackFailedBuiltinUserSurface(messageId: string): Promise<void> {
-  applyTranscriptRetractionToPersistence(new Set([messageId]));
-  broadcast('chat:messages-retracted', {
-    messageIds: [messageId],
-    retractedStreamingTail: false,
-  });
   try {
-    // The failed write may have appended the row before a later index/stat
-    // update failed. Replace the complete transcript so memory, UI and disk
-    // converge before this message is rejected.
-    await persistMessagesToStorage(
-      transcriptState.messages.length,
-      undefined,
-      'skip',
-      true,
+    await applyTranscriptRetractionToPersistence(
+      sessionId,
+      new Set([messageId]),
+      { kind: 'builtin-admission-rollback' },
     );
+    broadcast('chat:messages-retracted', {
+      messageIds: [messageId],
+      retractedStreamingTail: false,
+    });
   } catch (rollbackError) {
     console.error('[agent][admission-persist] action=rollback_persist_failed', rollbackError);
   }
@@ -1183,35 +1189,44 @@ function assistantTextForTransientRetryRetraction(message: MessageWire): string 
   return parts.join('');
 }
 
-function retractTransientProviderTextOutput(resultText: string): void {
+async function retractTransientProviderTextOutput(resultText: string): Promise<void> {
   // The retry resumes the same logical SDK yield. Any text staged for the
   // retracted provider error belongs to that attempt and must not survive,
   // whether its content block already closed or is still open.
-  clearCurrentOutputOwnerAssistantChannelBlocks();
-  pendingTextBlockTexts.clear();
   const expected = normalizeAssistantRetryText(resultText);
-  if (!expected) return;
+  if (!expected) {
+    clearCurrentOutputOwnerAssistantChannelBlocks();
+    pendingTextBlockTexts.clear();
+    return;
+  }
   const tail = transcriptState.messages[transcriptState.messages.length - 1];
   if (!tail || tail.role !== 'assistant') {
+    clearCurrentOutputOwnerAssistantChannelBlocks();
+    pendingTextBlockTexts.clear();
     clearCurrentTurnTextBlocks();
     return;
   }
   const tailText = assistantTextForTransientRetryRetraction(tail);
   if (!tailText || normalizeAssistantRetryText(tailText) !== expected) {
+    clearCurrentOutputOwnerAssistantChannelBlocks();
+    pendingTextBlockTexts.clear();
     clearCurrentTurnTextBlocks();
     return;
   }
 
-  const { removedBelowCursor } = applyTranscriptRetractionToPersistence(new Set([tail.id]));
+  await applyTranscriptRetractionToPersistence(
+    sessionId,
+    new Set([tail.id]),
+    { kind: 'builtin-transient-retry' },
+  );
+  clearCurrentOutputOwnerAssistantChannelBlocks();
+  pendingTextBlockTexts.clear();
   isStreamingMessage = false;
   clearCurrentTurnTextBlocks();
   broadcast('chat:messages-retracted', {
     messageIds: [tail.id],
     retractedStreamingTail: true,
   });
-  if (removedBelowCursor > 0) {
-    void persistMessagesToStorage();
-  }
   console.log(`[agent][transient-provider-text] retracted assistant error bubble ${tail.id}`);
 }
 
@@ -1258,12 +1273,9 @@ function scheduleTransientProviderRetry(decision: TransientProviderTextRetry): b
   });
   return true;
 }
-// Pattern 3 §3.2.4 — incremental persistence cursor.
-// `persistMessagesToStorage` previously remapped the entire `transcriptState.messages` array
-// every turn (O(history) per turn, where history grows monotonically).
-// Now we only map and append the new tail (`transcriptState.messages.slice(transcriptState.lastPersistedIndex)`)
-// and bump the cursor on success. Reset to 0 in any path that recreates the
-// session-scoped state (resetSession / new session / fork / rewind).
+// SessionStore's branded transcript cursor owns the durable count. Runtime
+// persistence maps only the new tail; reset/switch invalidates the capability
+// and reloads it instead of guessing a new count.
 const streamIndexToToolId: Map<number, string> = new Map();
 const streamIndexToBlockType: Map<number, string> = new Map(); // Positive block type tracking for subagent content_block_stop
 const toolResultIndexToId: Map<number, string> = new Map();
@@ -2715,24 +2727,22 @@ export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition
  * If MCP config changed and a session is running, it will be restarted with resume
  */
 export function setMcpServers(servers: McpServerDefinition[]): void {
-  const mcpDecision = configApplyMcpServersUpdate(servers, {
+  // Owned Sessions freeze MCP selection IDs in metadata, while config.json
+  // owns definition bodies and the global enable security lever. Resolve that
+  // canonical projection before comparing fingerprints so an incoming
+  // workspace-default list cannot replace the snapshot, and a global disable
+  // or same-ID definition change cannot be rejected as one opaque delta.
+  const meta = sessionId ? getSessionMetadata(sessionId) : null;
+  const effectiveServers = meta?.configSnapshotAt
+    ? resolveWorkspaceConfig(agentDir ?? '', meta, { includeMcp: true }).mcpServers
+    : servers;
+  const mcpDecision = configApplyMcpServersUpdate(effectiveServers, {
     hasQuerySession: Boolean(lifecycleState.query),
-    isSnapshotted: isCurrentSessionSnapshotted(),
   });
 
-  if (!mcpDecision.applied && mcpDecision.reason === 'snapshot-authoritative') {
-    // v0.1.69 T14: Locked session owns its MCP list — agent-level toggles don't apply here.
-    // Expected frontend behavior is to pass the session-resolved list so mcpChanged is false;
-    // if we got here, it means someone passed the agent's raw list. Do not mutate
-    // configState.currentMcpServers: ensureSdkMcpInSync() reads that state and would otherwise
-    // apply the wrong list later without a restart.
-    console.log(`[agent] MCP changed but session ${sessionId} is snapshotted — skip state update/restart (snapshot is authoritative)`);
-    return;
-  }
-
   if (isDebugMode) {
-    console.log(`[agent] MCP servers set: ${servers.map(s => s.id).join(', ') || 'none'}`);
-    for (const s of servers) {
+    console.log(`[agent] MCP servers set: ${effectiveServers.map(s => s.id).join(', ') || 'none'}`);
+    for (const s of effectiveServers) {
       if (s.env && Object.keys(s.env).length > 0) {
         console.log(`[agent] MCP ${s.id}: Has custom env vars: ${Object.keys(s.env).join(', ')}`);
       }
@@ -2746,7 +2756,7 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   // The timer in schedulePreWarm() batches these into a single abort+restart.
   if (mcpDecision.changed && lifecycleState.query) {
     if (mcpDecision.shouldRestart) {
-      const ids = servers.map(s => s.id).join(', ') || 'none';
+      const ids = effectiveServers.map(s => s.id).join(', ') || 'none';
       console.log(`[agent] MCP config changed → [${ids}], deferring restart to pre-warm debounce`);
       scheduleDeferredRestart('mcp');
     }
@@ -2757,6 +2767,15 @@ export function setMcpServers(servers: McpServerDefinition[]): void {
   if (!lifecycleState.processing || lifecycleState.preWarming) {
     schedulePreWarm();
   }
+}
+
+function refreshMcpConfigForNewSession(): void {
+  if (configState.currentMcpServers === null || !agentDir) return;
+  const refreshed = getEffectiveMcpServers(agentDir);
+  setCurrentMcpServers(refreshed);
+  console.log(
+    `[agent] resetSession: refreshed ${refreshed.length} effective MCP definition(s) from config.json`,
+  );
 }
 
 /**
@@ -4682,7 +4701,6 @@ async function persistMessagesToStorage(
   targetMessageCount = transcriptState.messages.length,
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
-  forceRewrite = false,
 ): Promise<void> {
   return scheduleTranscriptPersist({
     sessionId,
@@ -4690,7 +4708,6 @@ async function persistMessagesToStorage(
     targetMessageCount,
     lastActiveAt,
     metadataDisposition,
-    forceRewrite,
   });
 }
 
@@ -4872,33 +4889,51 @@ async function persistSessionMetadataForAdmittedMessage(
   }
 }
 
-function isUuidSessionId(value: string | null | undefined): value is string {
-  return typeof value === 'string'
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-}
-
-export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: SystemInitInfo): Promise<string> {
+export async function ensureSessionMetadataForSdkSystemInit(
+  nextSystemInit: SystemInitInfo,
+  authority: BuiltinQueryAuthority | null = getCurrentQueryAuthority(),
+): Promise<string> {
   const sdkSessionId = nextSystemInit.session_id;
+  if (!isCurrentQueryAuthority(authority)) {
+    throw new Error('[agent] refusing SDK system_init from a revoked or replaced Query');
+  }
+  if (!sdkSessionId || sdkSessionId !== authority.expectedSdkSessionId) {
+    throw new Error(
+      `[agent] refusing SDK system_init identity ${sdkSessionId ?? 'missing'}; expected ${authority.expectedSdkSessionId}`,
+    );
+  }
   const previousSessionId = sessionId;
-  const targetSessionId = isUuidSessionId(sdkSessionId) ? sdkSessionId : previousSessionId;
+  if (
+    previousSessionId !== authority.productSessionId
+    && previousSessionId !== authority.expectedSdkSessionId
+  ) {
+    throw new Error(
+      `[agent] refusing SDK system_init after Product Session changed from ${authority.productSessionId} to ${previousSessionId}`,
+    );
+  }
+  const shouldMigratePendingIdentity = previousSessionId === authority.productSessionId
+    && isPendingSessionId(previousSessionId);
+  const targetSessionId = shouldMigratePendingIdentity ? sdkSessionId : previousSessionId;
   const previousMeta = getSessionMetadata(previousSessionId);
   const targetMeta = getSessionMetadata(targetSessionId);
 
-  if (targetSessionId !== previousSessionId && isPendingSessionId(previousSessionId)) {
+  if (shouldMigratePendingIdentity) {
     const migration = await migratePendingSessionIdentity(previousSessionId, targetSessionId, {
-      sdkSessionId: sdkSessionId ?? targetSessionId,
-      unifiedSession: sdkSessionId
-        ? sdkSessionId === targetSessionId
-        : (previousMeta ?? targetMeta)?.unifiedSession,
-    });
+      sdkSessionId,
+      unifiedSession: sdkSessionId === targetSessionId,
+    }, () => (
+      isCurrentQueryAuthority(authority)
+      && sessionId === authority.productSessionId
+    ));
     if (!migration.migrated) {
       throw new Error(`[agent] failed pending session identity migration ${previousSessionId} -> ${targetSessionId}: ${migration.reason}`);
     }
+    loadTranscriptFromSessionMessages(migration.transcript.messages, migration.transcript.cursor);
     console.log(`[agent] session ${targetSessionId} persisted to SessionStore (atomic pending identity migration, from=${previousSessionId}, scenario=${currentScenario.type})`);
   } else if (targetMeta) {
     const updated = await updateSessionMetadata(targetSessionId, {
-      sdkSessionId: sdkSessionId ?? targetSessionId,
-      unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
+      sdkSessionId,
+      unifiedSession: sdkSessionId === targetSessionId,
     });
     if (!updated) {
       throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
@@ -4915,8 +4950,8 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
       ? {
           ...previousMeta,
           id: targetSessionId,
-          sdkSessionId: sdkSessionId ?? targetSessionId,
-          unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : previousMeta.unifiedSession,
+          sdkSessionId,
+          unifiedSession: sdkSessionId === targetSessionId,
         }
       : createMetadataForSessionId(
           targetSessionId,
@@ -4926,8 +4961,8 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
     if (!previousMeta && !isLiveFollowScenario(currentScenario.type)) {
       Object.assign(metadata, buildOwnedFreezeSnapshotPatch());
     }
-    metadata.sdkSessionId = sdkSessionId ?? targetSessionId;
-    metadata.unifiedSession = sdkSessionId ? sdkSessionId === targetSessionId : metadata.unifiedSession;
+    metadata.sdkSessionId = sdkSessionId;
+    metadata.unifiedSession = sdkSessionId === targetSessionId;
 
     await saveSessionMetadata(metadata);
     if (!getSessionMetadata(targetSessionId)) {
@@ -4939,7 +4974,6 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
   if (targetSessionId !== previousSessionId) {
     setCurrentSessionId(targetSessionId);
     initLogger(targetSessionId);
-    resetTranscriptPersistenceForSession(previousSessionId);
     console.log(`[agent] SDK system_init migrated session identity ${previousSessionId} -> ${targetSessionId}`);
   }
 
@@ -5469,20 +5503,18 @@ export function applyWindowsUtf8SubprocessEnv(
 export function buildClaudeSessionEnv(
   providerEnv?: ProviderEnv,
   modelOverride?: string,
-  opts?: { bridgeToken?: string; providerId?: string },
+  opts?: {
+    bridgeToken?: string;
+    providerId?: string;
+    contextWindowSnapshot?: ModelContextLengthSnapshot;
+  },
 ): NodeJS.ProcessEnv {
   // Ensure essential paths are always present, even when launched from Finder
   // (Finder launches via launchd which doesn't inherit shell environment variables)
   const { home } = getCrossPlatformEnv();
   const isDebug = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
-
-  // Cross-platform PATH separator
-  const PATH_SEP = process.platform === 'win32' ? ';' : ':';
-  const PATH_KEY = process.platform === 'win32' ? 'Path' : 'PATH';
-
-  // Detect bundled Node.js directory using shared utility from runtime.ts
   const isWindows = process.platform === 'win32';
-  const bundledNodeDir = getBundledNodeDir();
+  const executablePath = buildSessionExecutablePath();
   const myAgentsNpmGlobalPrefix = getMyAgentsNpmGlobalPrefix(home);
   const myAgentsNpmGlobalBinDir = getMyAgentsNpmGlobalBinDir(home);
 
@@ -5493,101 +5525,10 @@ export function buildClaudeSessionEnv(
 
   if (isDebug) {
     console.log('[env] Script directory:', getScriptDir());
-    console.log(`[env] Bundled Node.js: ${bundledNodeDir || 'NOT FOUND'}`);
-  }
-
-  // Build essential paths based on platform.
-  // v0.2.0+: bundled Bun removed; bundled Node.js is the only app-local JS runtime.
-  const essentialPaths: string[] = [];
-
-  // System Node.js directories — preferred over bundled for MCP/npm ecosystem reliability.
-  // User-maintained Node.js is less likely to have broken npm than our bundled version.
-  // Only add directories that actually exist to avoid polluting PATH with ghost entries.
-  for (const dir of getSystemNodeDirs()) {
-    if (existsSync(dir)) {
-      essentialPaths.push(dir);
-    }
-  }
-
-  // Bundled Node.js directory — fallback for users without system Node.js
-  if (bundledNodeDir) {
-    essentialPaths.push(bundledNodeDir);
-  }
-
-  // MyAgents-managed npm global bin dir. It stays on PATH so tools installed
-  // by MyAgents-localized npm commands (see MYAGENTS_NPM_GLOBAL_PREFIX below)
-  // are immediately invocable. This dir comes BEFORE `~/.myagents/bin` in
-  // essentialPaths so:
-  //   1. AI-installed tools (e.g. agent-browser) shadow any legacy
-  //      `~/.myagents/bin/<name>` wrapper from older app versions —
-  //      legacy wrappers naturally fall idle without explicit cleanup.
-  //   2. Existing installs made by older MyAgents versions remain discoverable
-  //      after we stopped leaking npm_config_prefix globally.
-  if (myAgentsNpmGlobalBinDir) {
-    essentialPaths.push(myAgentsNpmGlobalBinDir);
-  }
-
-  // MyAgents bin directory — user-facing commands (the `myagents` CLI itself).
-  // Legacy `agent-browser` wrappers from older app versions may still live
-  // here; they're shadowed by `npm-global/bin` above so no cleanup needed.
-  if (home) {
-    const myagentsBinDir = isWindows
-      ? resolve(home, '.myagents', 'bin')
-      : `${home}/.myagents/bin`;
-    essentialPaths.push(myagentsBinDir);
-  }
-
-  // System bun/runtime installations (fallback)
-  if (isWindows) {
-    // Windows paths
-    if (home) {
-      essentialPaths.push(resolve(home, '.bun', 'bin'));
-    }
-    // Git for Windows — SDK requires git-bash, and PATH may not include Git yet
-    // (e.g. NSIS just installed Git but current process tree has stale PATH)
-    for (const gp of [
-      resolve(winProgramFiles, 'Git', 'cmd'),
-      resolve(winProgramFilesX86, 'Git', 'cmd'),
-      ...(winLocalAppData ? [resolve(winLocalAppData, 'Programs', 'Git', 'cmd')] : []),
-    ]) {
-      essentialPaths.push(gp);
-    }
-  } else {
-    // macOS/Linux paths
-    if (home) {
-      essentialPaths.push(`${home}/.bun/bin`);
-    }
-    essentialPaths.push('/opt/homebrew/bin');
-    essentialPaths.push('/usr/local/bin');
-    essentialPaths.push('/usr/bin');
-    essentialPaths.push('/bin');
-  }
-
-  const existingPath = process.env[PATH_KEY] || process.env.PATH || '';
-  if (isDebug) console.log('[env] Original PATH:', existingPath.substring(0, 200) + (existingPath.length > 200 ? '...' : ''));
-
-  const pathParts = existingPath ? existingPath.split(PATH_SEP) : [];
-
-  // Add essential paths if not already present (in reverse order so first in list ends up first in PATH)
-  // Use case-insensitive comparison on Windows since paths are case-insensitive
-  const pathIncludes = (parts: string[], path: string): boolean => {
-    if (isWindows) {
-      const lowerPath = path.toLowerCase();
-      return parts.some(p => p.toLowerCase() === lowerPath);
-    }
-    return parts.includes(path);
-  };
-
-  for (const p of [...essentialPaths].reverse()) {
-    if (p && !pathIncludes(pathParts, p)) {
-      pathParts.unshift(p);
-    }
-  }
-
-  const finalPath = pathParts.join(PATH_SEP);
-  if (isDebug) {
-    console.log('[env] Final PATH (first 5 entries):', pathParts.slice(0, 5).join(PATH_SEP));
-    console.log('[env] Bundled Node.js dir:', bundledNodeDir ? bundledNodeDir : 'NOT FOUND (system Node will be used)');
+    console.log(`[env] Bundled Node.js: ${executablePath.bundledNodeDir || 'NOT FOUND'}`);
+    const originalPath = process.env[executablePath.key] || process.env.PATH || '';
+    console.log('[env] Original PATH:', originalPath.substring(0, 200) + (originalPath.length > 200 ? '...' : ''));
+    console.log('[env] Final PATH (first 5 entries):', executablePath.entries.slice(0, 5).join(isWindows ? ';' : ':'));
   }
 
   // Build base environment
@@ -5596,7 +5537,15 @@ export function buildClaudeSessionEnv(
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.PATH;
   delete env.Path;
-  env[PATH_KEY] = finalPath;
+  env[executablePath.key] = executablePath.value;
+
+  // Keep builtin sessions away from the provider's hard context boundary.
+  // Claude Code 2.1.220 otherwise derives a late fixed-token threshold
+  // (effective window - 13K), which is 967K for a 1M model and can exceed a
+  // provider's safe input limit once its completion budget is included (#508).
+  // Pinning the value also prevents a shell/project launch environment from
+  // silently changing MyAgents' session policy.
+  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(BUILTIN_AUTO_COMPACT_PERCENT);
 
   // Expose the managed npm prefix for command-local use only. Do NOT set
   // npm_config_prefix / NPM_CONFIG_PREFIX / PREFIX on the whole SDK env:
@@ -5739,6 +5688,11 @@ export function buildClaudeSessionEnv(
   // Hoisted above the OpenAI early return so both protocol paths benefit.
   const resolvedModel = modelOverride ?? configState.currentModel;
   const aliases = resolveSessionModelAliases(effectiveProviderEnv?.modelAliases, resolvedModel);
+  const resolveContextLength = (model: string | undefined): number | undefined => (
+    opts?.contextWindowSnapshot
+      ? lookupSnapshotModelContextLength(opts.contextWindowSnapshot, model)
+      : lookupProviderModelContextLength(model, effectiveProviderId)
+  );
   if (aliases) {
     // _MODEL is what SDK feeds into getContextWindowForModel(); for 1M-window
     // alias targets we MUST tag it with [1m] so the SDK takes the 1M path.
@@ -5746,10 +5700,10 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
-    const fableWrapped = applyProviderContextWindowSuffix(aliases.fable, effectiveProviderId);
-    const sonnetWrapped = applyProviderContextWindowSuffix(aliases.sonnet, effectiveProviderId);
-    const opusWrapped = applyProviderContextWindowSuffix(aliases.opus, effectiveProviderId);
-    const haikuWrapped = applyProviderContextWindowSuffix(aliases.haiku, effectiveProviderId);
+    const fableWrapped = applyContextWindowSuffixForContextLength(aliases.fable, resolveContextLength(aliases.fable));
+    const sonnetWrapped = applyContextWindowSuffixForContextLength(aliases.sonnet, resolveContextLength(aliases.sonnet));
+    const opusWrapped = applyContextWindowSuffixForContextLength(aliases.opus, resolveContextLength(aliases.opus));
+    const haikuWrapped = applyContextWindowSuffixForContextLength(aliases.haiku, resolveContextLength(aliases.haiku));
     if (aliases.fable) {
       env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
       env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
@@ -5798,7 +5752,7 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
-  const modelContextLength = lookupProviderModelContextLength(resolvedModel, effectiveProviderId);
+  const modelContextLength = resolveContextLength(resolvedModel);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
     console.log(`[env] CLAUDE_CODE_AUTO_COMPACT_WINDOW=${modelContextLength} (model=${resolvedModel ?? '(unknown)'})`);
@@ -6151,7 +6105,7 @@ function ensureAssistantMessage(): MessageWire {
  * streaming bubble is evicted, isStreamingMessage resets so the retry starts a
  * fresh bubble instead of concatenating refused + replacement content.
  */
-function applyMessageRetraction(retractedUuids: readonly string[] | undefined, source: string): void {
+async function applyMessageRetraction(retractedUuids: readonly string[] | undefined, source: string): Promise<void> {
   if (!retractedUuids || retractedUuids.length === 0) return;
   // fallbackToStreamingTail: a refusal cuts the stream possibly BEFORE any
   // final assistant frame — the refused bubble then has no (or a stale)
@@ -6163,18 +6117,17 @@ function applyMessageRetraction(retractedUuids: readonly string[] | undefined, s
   const plan = planRetraction(transcriptState.messages, retractedUuids, { fallbackToStreamingTail: isStreamingMessage });
   if (plan.removedMessageIds.length > 0) {
     const removed = new Set(plan.removedMessageIds);
+    const streamingTailMessageId = plan.removedStreamingTail
+      ? transcriptState.messages[transcriptState.messages.length - 1]?.id
+      : undefined;
+    await applyTranscriptRetractionToPersistence(sessionId, removed, {
+      kind: 'sdk-retraction',
+      sdkUuids: retractedUuids,
+      ...(streamingTailMessageId ? { streamingTailMessageId } : {}),
+    });
     if (plan.removedStreamingTail) {
       isStreamingMessage = false;
     }
-    // Persistence-cursor invariant (same surgery discipline as rewind/fork):
-    // doPersistMessagesToStorage() is cursor-based — transcriptState.persistedSessionMessageCache
-    // mirrors transcriptState.messages[0, transcriptState.lastPersistedIndex). Mid-turn persists (queued-command
-    // echo, local-command output) can move the cursor past a refused bubble, so
-    // splicing without re-aligning would leave the cache holding the refused
-    // message forever AND drop a legitimate message into the dead zone below
-    // the cursor where it never persists. Splice both arrays in lockstep and
-    // pull the cursor back by the number of removed entries below it.
-    const { removedBelowCursor } = applyTranscriptRetractionToPersistence(removed);
     // Live frontend streaming bubbles use client-generated ids that never
     // match server transcriptState.messageSequence ids mid-turn (see the message-complete
     // assistant_message_id piggyback) — the id list below only evicts
@@ -6184,11 +6137,6 @@ function applyMessageRetraction(retractedUuids: readonly string[] | undefined, s
       messageIds: plan.removedMessageIds,
       retractedStreamingTail: plan.removedStreamingTail,
     });
-    if (removedBelowCursor > 0) {
-      // Refused content already reached disk via a mid-turn persist — converge
-      // now (shrink-rewrite path) instead of leaving it until the next persist.
-      void persistMessagesToStorage();
-    }
   } else if (retractedUuids.length > 0 && source === 'model_refusal_fallback') {
     // Retraction named uuids but nothing matched and no stream was open —
     // surface it: this is the observable signal for a protocol/mapping gap.
@@ -7356,6 +7304,11 @@ export async function resetSession(): Promise<void> {
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
+  // A new conversation inherits current Project/global MCP selection and
+  // current config.json definitions. Do not pre-warm from the outgoing
+  // Session's retained launch objects.
+  refreshMcpConfigForNewSession();
+
   // 4. Clear SDK resume state - CRITICAL: prevents SDK from resuming old context!
   sessionRegistered = false;
   pendingResumeSessionAt = undefined; // Prevent leaking rewind state to new session
@@ -7542,13 +7495,13 @@ export async function initializeAgent(
   // This is critical for shared Sidecar (IM + Desktop Tab):
   // 1. SSE replay (chat:message-replay) includes old transcriptState.messages when Tab connects
   // 2. transcriptState.messageSequence continues from last ID (prevents ID collision with disk transcriptState.messages)
-  // 3. saveSessionMessages incremental append works correctly (transcriptState.messages.slice(existingCount))
+  // 3. SessionStore issues the exact append cursor for the loaded transcript
   // Same pattern as switchToSession's message loading.
   // Also load for cross-runtime sessions (sessionRegistered=false but transcriptState.messages exist for display).
   //
   // Note on the "two-sidecar ID collision" scenario (originally called Bug B):
   // that scenario would require a concurrent writer's disk flush to lag behind
-  // its metadata stats. `saveSessionMessages` in SessionStore.ts writes the
+  // its metadata stats. SessionStore transcript append writes the
   // JSONL via appendFileSync BEFORE it updates `stats.messageCount` under the
   // sessions-lock, so `diskCount === 0 && stats.messageCount > 0` is unreachable
   // through normal mutations. Bug A's rotate-per-tick fix additionally removes
@@ -7559,11 +7512,11 @@ export async function initializeAgent(
   // every persisted message — so the seed would under-count and still collide.
   // Removed rather than fixed: the disk-first write order is the real guard.
   if (initialSessionId && initMeta) {
-	  const sessionData = getSessionData(initialSessionId);
-	  if (sessionData?.messages?.length) {
-	    loadTranscriptFromSessionMessages(sessionData.messages);
-	    console.log(`[agent] initializeAgent: loaded ${sessionData.messages.length} existing transcriptState.messages, transcriptState.messageSequence=${transcriptState.messageSequence}`);
-	  }
+    const transcript = await loadSessionTranscript(initialSessionId);
+    loadTranscriptFromSessionMessages(transcript.messages, transcript.cursor);
+    if (transcript.messages.length > 0) {
+      console.log(`[agent] initializeAgent: loaded ${transcript.messages.length} existing transcriptState.messages, transcriptState.messageSequence=${transcriptState.messageSequence}`);
+    }
   }
 
   // Initialize logger for new session (lazy file creation)
@@ -7581,7 +7534,6 @@ export async function initializeAgent(
   // Skip for Global Sidecar (no workspace-specific config).
   if (!lifecycleState.preWarmDisabled) {
     try {
-      const { resolveWorkspaceConfig } = await import('./utils/admin-config');
       const mcpAuthority = getMcpAuthorityForScenario(currentScenario.type);
       const shouldSelfResolveMcp = mcpAuthority === 'self-resolve' && hasInitialPrompt;
       // v0.1.69: pass session metadata so the sidecar prefers session snapshot
@@ -7770,12 +7722,12 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
 
   // Load existing transcriptState.messages from storage into memory
-  // This is critical for incremental save logic in saveSessionMessages
-	  const sessionData = getSessionData(targetSessionId);
-	  if (sessionData?.messages?.length) {
-	    loadTranscriptFromSessionMessages(sessionData.messages);
-	    console.log(`[agent] switchToSession: loaded ${sessionData.messages.length} existing transcriptState.messages`);
-	  }
+  // This is critical for cursor-based incremental append
+    const transcript = await loadSessionTranscript(targetSessionId);
+    loadTranscriptFromSessionMessages(transcript.messages, transcript.cursor);
+    if (transcript.messages.length > 0) {
+      console.log(`[agent] switchToSession: loaded ${transcript.messages.length} existing transcriptState.messages`);
+    }
 
   // Set sessionRegistered based on whether the SDK can actually resume this
   // session. Metadata-only sessions must start fresh with the same sessionId.
@@ -8632,7 +8584,10 @@ export async function enqueueUserMessage(
     setPreWarmInProgress(false);
     // Pre-warm 已收到 system_init → SDK 已注册此 session，后续必须用 resume
     if (lifecycleState.systemInitInfo) {
-      await ensureSessionMetadataForSdkSystemInit(lifecycleState.systemInitInfo);
+      await ensureSessionMetadataForSdkSystemInit(
+        lifecycleState.systemInitInfo,
+        getSystemInitAuthority(),
+      );
       sessionRegistered = true;
     }
     console.log(`[agent] pre-warm → active, first user message, sessionRegistered=${sessionRegistered}`);
@@ -9857,10 +9812,11 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    // 6. 截断消息
+    // 6. SessionStore validates and commits the durable truncation before the
+    // live/UI projection changes. The returned cursor remains the sole append
+    // authority for the shortened transcript.
+    await truncateTranscriptPersistenceForRewind(sessionId, targetMessage.id, targetIndex);
     truncateMessages(targetIndex);
-    truncateTranscriptPersistenceForRewind();
-    await persistMessagesToStorage();
 
     // 7. 设置下次 query 的对话截断点 — 三分支决策树
     //    UUID 有效性校验（OR 逻辑）：
@@ -9927,6 +9883,15 @@ export async function rewindSession(userMessageId: string): Promise<{
   rewindPromise = promise;
   try {
     return await promise;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail.includes('stale-cursor')) {
+      return { success: false, error: 'Conversation history changed during rewind; reopen the session before trying again.' };
+    }
+    if (detail.includes('malformed-transcript')) {
+      return { success: false, error: 'Conversation history contains data that cannot be safely rewound.' };
+    }
+    return { success: false, error: `Failed to persist rewind: ${detail}` };
   } finally {
     rewindPromise = null;
   }
@@ -10098,14 +10063,6 @@ export async function forkSession(assistantMessageId: string): Promise<{
       .slice(0, targetIndex + 1)
       .map(messageWireToSessionMessage);
 
-    // Pattern 3 §3.2.4 — fix #2 (forkSession parent cursor). Snapshot the parent's persist
-    // cursor + cache before invoking SessionStore writers for the FORKED session; restore
-    // them afterwards so a subsequent persist on the parent doesn't observe stale state.
-    const parentPersistStateSnapshot = snapshotTranscriptPersistenceState();
-    const restoreParentPersistState = () => {
-      restoreTranscriptPersistenceState(parentPersistStateSnapshot);
-    };
-
     // PRD 0.2.27 — EAGER fork (AppConfig.eagerFork, developer toggle in Settings→About, DEFAULT
     // ON; flip off → lazy path). Create the SDK fork up front + re-stamp our rows' sdkUuids, so
     // the fork resumes as a plain session with NO forkFrom state machine (#134/#135) and NO
@@ -10138,13 +10095,8 @@ export async function forkSession(assistantMessageId: string): Promise<{
           // Persist threw AFTER the SDK fork file was created — clean up the orphan SDK
           // transcript so we don't leak it, then let the outer catch surface the failure.
           try { await sdkDeleteSession(eager.newSid, { dir: currentAgentDir }); } catch { /* best-effort */ }
-          // Restore the parent's persist cursor/cache on this exit too, so EVERY path out of the
-          // eager block leaves the invariant uniform — defensive against a future SessionStore
-          // writer that touches these module globals (harmless today, asymmetric otherwise).
-          restoreParentPersistState();
           throw persistErr;
         }
-        restoreParentPersistState();
         console.log(`[agent] forked session (EAGER) ${sourceSessionId} → ${newSession.id} at ${assistantMessageId}, ${eager.remapped.length} transcriptState.messages, sdkUuids remapped`);
         return { success: true, newSessionId: newSession.id, agentDir: currentAgentDir, title: newSession.title };
       }
@@ -10163,7 +10115,6 @@ export async function forkSession(assistantMessageId: string): Promise<{
     };
     await saveSessionMetadata(newSession);
     await saveForkTranscript(newSession.id, forkedMessages);
-    restoreParentPersistState();
 
     console.log(`[agent] forked session ${sourceSessionId} → ${newSession.id} at message ${assistantMessageId} (sdkUuid: ${targetMsg.sdkUuid}), ${forkedMessages.length} transcriptState.messages copied`);
 
@@ -10265,9 +10216,38 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // "unknown bridge token" instead of resolving to the new subprocess's
   // config (the cross-pollination class we're eliminating).
   ensureActiveSessionBridgeRegistered({ freshToken: true });
+  const launchProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const launchAgentDefinitionsSource = configState.currentAgentDefinitions;
+  const launchContextWindowSnapshot = snapshotProviderModelContextLengths([
+    configState.currentModel,
+    ...Object.values(configState.currentProviderEnv?.modelAliases ?? {}),
+    ...Object.values(launchAgentDefinitionsSource ?? {}).map(agent => agent.model),
+  ], launchProviderId);
   const env = buildClaudeSessionEnv(undefined, undefined, {
     bridgeToken: activeSessionBridgeToken ?? undefined,
+    providerId: launchProviderId,
+    contextWindowSnapshot: launchContextWindowSnapshot,
   });
+  const launchModel = applyContextWindowSuffixForContextLength(
+    configState.currentModel,
+    lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
+  );
+  const launchAgentDefinitions = launchAgentDefinitionsSource
+    ? Object.fromEntries(
+        Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
+          name,
+          agent.model
+            ? {
+                ...agent,
+                model: applyContextWindowSuffixForContextLength(
+                  agent.model,
+                  lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
+                ),
+              }
+            : agent,
+        ]),
+      )
+    : null;
   console.log(`[agent] ${preWarm ? 'pre-warm' : 'start'} session cwd=${agentDir}`);
   resetAbortFlag();
   resetAbortFlag();
@@ -10329,6 +10309,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // Declared outside try so hooks, iterator events and finally share the exact
   // Query identity without falling back to mutable lifecycleState.query.
   let activeQuery: Query | null = null;
+  let activeQueryAuthority: BuiltinQueryAuthority | null = null;
+  const queryProductSessionId = sessionId;
 
   try {
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
@@ -10613,14 +10595,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // via setPermissionMode('bypassPermissions'). Without this flag at query creation time,
       // the SDK silently ignores the mode switch and keeps calling canUseTool.
       allowDangerouslySkipPermissions: true,
-      // applyProviderContextWindowSuffix appends [1m] when the active provider's
-      // registered contextLength exceeds the SDK 200K default (#335) — without it, SDK
+      // launchModel appends [1m] from the SAME context snapshot used by env
+      // when the active provider's contextLength exceeds the SDK 200K default
+      // (#335/#516). Without it, SDK
       // getContextWindowForModel() falls back to 200K for non-Anthropic models
       // and /context, auto-compact, attachment trimming all use the wrong
       // ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW then pulls the effective
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
-      model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
+      model: launchModel,
       pathToClaudeCodeExecutable: claudeCodeExecutable,
       env,
       stderr: (message: string) => {
@@ -10707,25 +10690,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       allowedTools: [
         'Grep',
         'Glob',
-        ...(configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0
+        ...(launchAgentDefinitions && Object.keys(launchAgentDefinitions).length > 0
           ? ['Task']
           : []),
       ],
-      // Sub-agents: inject custom agent definitions if configured
-      // Each sub-agent's `model` runs through applyProviderContextWindowSuffix so a sub-agent
-      // pinned to a 1M model gets the [1m] tag independently of the main session's
+      // Sub-agents: inject custom agent definitions if configured. Each model
+      // was decorated from launchContextWindowSnapshot before async startup
+      // work, so it cannot observe a newer Provider-file generation than env.
+      // A sub-agent pinned to a 1M model gets the [1m] tag independently of the main session's
       // model (the parent could be on a 200K model, the sub-agent on a 1M one,
       // or vice versa). The original configState.currentAgentDefinitions is left untouched
       // so config owner fingerprinting and downstream config consumers see clean names.
-      ...(configState.currentAgentDefinitions && Object.keys(configState.currentAgentDefinitions).length > 0
-        ? {
-            agents: Object.fromEntries(
-              Object.entries(configState.currentAgentDefinitions).map(([name, a]) => [
-                name,
-                a.model ? { ...a, model: applyProviderContextWindowSuffix(a.model, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID) } : a,
-              ])
-            ),
-          }
+      ...(launchAgentDefinitions && Object.keys(launchAgentDefinitions).length > 0
+        ? { agents: launchAgentDefinitions }
         : {}),
       // disallowedTools: group chat deny list + IM-incompatible UI-interaction tools
       // Uses SDK disallowedTools because canUseTool is skipped in bypassPermissions mode
@@ -11219,13 +11196,21 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       console.log('[agent] startStreamingSession: aborted just before query() by stop during starting');
       throw new Error('STARTUP_ABORTED_BY_STOP');
     }
+    if (sessionId !== queryProductSessionId) {
+      throw new Error(
+        `[agent] Product Session changed before Query launch (${queryProductSessionId} -> ${sessionId})`,
+      );
+    }
 
     try {
       activeQuery = await createGuardedSdkQuery(claudeCodeExecutable, () => query({
         prompt: promptGen,
         options: { ...sessionOption, ...commonQueryOptions },
       }));
-      setQuerySession(activeQuery);
+      activeQueryAuthority = setQuerySessionWithAuthority(activeQuery, {
+        productSessionId: queryProductSessionId,
+        expectedSdkSessionId: effectiveSdkSessionId,
+      });
     } catch (queryError: unknown) {
       // Defensive fallback: metadata lost but SDK disk data exists → switch to resume
       // Note: "already in use" may surface asynchronously during for-await iteration
@@ -11242,7 +11227,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             ...commonQueryOptions,
           },
         }));
-        setQuerySession(activeQuery);
+        activeQueryAuthority = setQuerySessionWithAuthority(activeQuery, {
+          productSessionId: queryProductSessionId,
+          expectedSdkSessionId: effectiveSdkSessionId,
+        });
       } else {
         throw queryError;
       }
@@ -11525,7 +11513,15 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }, API_WATCHDOG_INTERVAL_MS);
 
     if (!activeQuery) throw new Error('SDK query session was not initialized');
+    let warnedRevokedQueryEvent = false;
     for await (const sdkMessage of activeQuery) {
+      if (!isCurrentQueryAuthority(activeQueryAuthority)) {
+        if (!warnedRevokedQueryEvent) {
+          console.warn('[agent] dropping SDK events from a revoked or replaced Query');
+          warnedRevokedQueryEvent = true;
+        }
+        continue;
+      }
       messageCount++;
       watchdog.markActivity();
       // Flip turn-scoped substantive-activity flag on first non-init frame.
@@ -11611,7 +11607,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           clearTimeout(startupTimeoutId);
         }
         const canonicalSessionId = !lifecycleState.preWarming
-          ? await ensureSessionMetadataForSdkSystemInit(nextSystemInit)
+          ? await ensureSessionMetadataForSdkSystemInit(nextSystemInit, activeQueryAuthority)
           : sessionId;
         setSystemInitInfo(nextSystemInit);
         // Buffer system_init during pre-warm; replay when first user message arrives
@@ -11890,7 +11886,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           };
           console.warn(`[agent] model refusal fallback: ${rf.original_model} → ${rf.fallback_model}` +
             (rf.api_refusal_category ? ` (category=${rf.api_refusal_category})` : ''));
-          applyMessageRetraction(rf.retracted_message_uuids, 'model_refusal_fallback');
+          await applyMessageRetraction(rf.retracted_message_uuids, 'model_refusal_fallback');
         }
 
         if (retryMsg.subtype === 'model_refusal_no_fallback') {
@@ -12433,7 +12429,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // model_refusal_fallback notice that usually precedes this message.
         const supersedes = (sdkMessage as { supersedes?: string[] }).supersedes;
         if (supersedes && supersedes.length > 0) {
-          applyMessageRetraction(supersedes, 'assistant.supersedes');
+          await applyMessageRetraction(supersedes, 'assistant.supersedes');
         }
         // Track SDK assistant UUID for resumeSessionAt / rewindFiles
         const currentAssistant = ensureAssistantMessage();
@@ -12624,7 +12620,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
       } else if (sdkMessage.type === 'result') {
-        builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
+        await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
         // half lives in the system block above): a type outside the 0.3.220
@@ -13247,7 +13243,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         await prepareSessionPlansForUserTurn({ clearStale: true });
       }
       if (deferredSystemInit) {
-        await ensureSessionMetadataForSdkSystemInit(deferredSystemInit);
+        await ensureSessionMetadataForSdkSystemInit(
+          deferredSystemInit,
+          getSystemInitAuthority(),
+        );
         sessionRegistered = true;
       }
       if (item.deferredSessionMetadata) {

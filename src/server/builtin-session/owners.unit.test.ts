@@ -11,13 +11,17 @@ import {
   hasMessageResolver,
   incrementPreWarmFailCount,
   isAbortRequested,
+  isCurrentQueryAuthority,
   getQueryMcpMutation,
   getQueryMcpPrewarmOwner,
   getSessionMutationBarrier,
+  getSystemInitAuthority,
+  getSystemInitInfo,
   requestAbort,
   resetLifecycleForTest,
   runSerializedSessionMutation,
   setQuerySession,
+  setQuerySessionWithAuthority,
   setQueryMcpPrewarmOwner,
   settleQueryMcpPrewarmOwner,
   readQueryMcpStatuses,
@@ -25,6 +29,7 @@ import {
   registerSessionAbortCleanup,
   setSessionProcessing,
   setSessionTerminationPromise,
+  setSystemInitInfo,
   snapshotLifecycle,
   takeQueryBackgroundTasks,
   waitForQueryExit,
@@ -98,12 +103,10 @@ import {
   bindSdkUuidToMessage,
   clearTranscriptState,
   getCurrentSessionUuids,
-  getLastPersistedIndex,
   getMessages,
   nextMessageSequence,
   replaceMessages,
   resetTranscriptForTest,
-  setLastPersistedIndex,
   snapshotTranscript,
 } from './transcript';
 import type { MessageQueueItem } from './types';
@@ -651,17 +654,29 @@ describe('builtin-session owners', () => {
 
   it('config owner applies policy decisions before state mutation', () => {
     setCurrentMcpServers([{ id: 'old', name: 'old', command: 'node', args: [], type: 'stdio', isBuiltin: false }]);
-    const skippedMcp = applyMcpServersUpdate(
+    const changedMcp = applyMcpServersUpdate(
       [{ id: 'new', name: 'new', command: 'node', args: [], type: 'stdio', isBuiltin: false }],
-      { hasQuerySession: true, isSnapshotted: true },
+      { hasQuerySession: true },
     );
-    expect(skippedMcp).toMatchObject({
-      applied: false,
+    expect(changedMcp).toMatchObject({
+      applied: true,
       changed: true,
-      shouldRestart: false,
-      reason: 'snapshot-authoritative',
+      shouldRestart: true,
+      reason: 'fingerprint-changed',
     });
-    expect(snapshotConfig().mcpServers?.map(server => server.id)).toEqual(['old']);
+    expect(snapshotConfig().mcpServers?.map(server => server.id)).toEqual(['new']);
+
+    const refreshedMcp = applyMcpServersUpdate(
+      [{ id: 'new', name: 'new', command: 'new-command', args: [], type: 'stdio', isBuiltin: false }],
+      { hasQuerySession: true },
+    );
+    expect(refreshedMcp).toMatchObject({
+      applied: true,
+      changed: true,
+      shouldRestart: true,
+      reason: 'fingerprint-changed',
+    });
+    expect(snapshotConfig().mcpServers?.[0]?.command).toBe('new-command');
 
     const skippedModel = applyModelUpdate('im-model', { source: 'im-sync', isSnapshotted: true });
     expect(skippedModel).toMatchObject({ applied: false, reason: 'snapshot-authoritative' });
@@ -716,26 +731,63 @@ describe('builtin-session owners', () => {
       { id: 'm1', role: 'user', content: 'hello', timestamp: 'now' },
       assistant,
     ]);
-    setLastPersistedIndex(1);
     addCurrentSessionUuid('uuid-1');
 
     expect(bindSdkUuidToLatestUnboundUserMessage('user-uuid')).toBe('m1');
     expect(bindSdkUuidToMessage(assistant, 'assistant-uuid')).toBe('m2');
     expect(getMessages()).toHaveLength(2);
     expect(getMessages().map(message => message.sdkUuid)).toEqual(['user-uuid', 'assistant-uuid']);
-    expect(getLastPersistedIndex()).toBe(1);
     expect(getCurrentSessionUuids().has('uuid-1')).toBe(true);
 
     clearTranscriptState();
     expect(snapshotTranscript()).toMatchObject({
       messages: [],
       messageSequence: 0,
-      lastPersistedIndex: 0,
+      transcriptCursor: null,
     });
   });
 
   it('prewarm fail count is owned by lifecycle', () => {
     expect(getPreWarmFailCount()).toBe(0);
     expect(incrementPreWarmFailCount()).toBe(1);
+  });
+
+  it('revokes Query identity authority synchronously on abort and replacement', () => {
+    const firstQuery = {} as never;
+    const first = setQuerySessionWithAuthority(firstQuery, {
+      productSessionId: 'product-a',
+      expectedSdkSessionId: 'sdk-a',
+    });
+    expect(isCurrentQueryAuthority(first)).toBe(true);
+    setSystemInitInfo({
+      session_id: 'sdk-a',
+      tools: [],
+      mcp_servers: [],
+      timestamp: 'now',
+    });
+    expect(getSystemInitInfo()?.session_id).toBe('sdk-a');
+    expect(getSystemInitAuthority()).toBe(first);
+
+    requestAbort();
+    expect(first.revoked).toBe(true);
+    expect(isCurrentQueryAuthority(first)).toBe(false);
+    expect(getSystemInitInfo()).toBeNull();
+    expect(getSystemInitAuthority()).toBeNull();
+
+    clearAbortFlag();
+    const second = setQuerySessionWithAuthority({} as never, {
+      productSessionId: 'product-b',
+      expectedSdkSessionId: 'sdk-b',
+    });
+    expect(isCurrentQueryAuthority(first)).toBe(false);
+    expect(isCurrentQueryAuthority(second)).toBe(true);
+
+    const replacementForSameQuery = setQuerySessionWithAuthority(second.query, {
+      productSessionId: 'product-b',
+      expectedSdkSessionId: 'sdk-b',
+    });
+    expect(second.revoked).toBe(true);
+    expect(isCurrentQueryAuthority(second)).toBe(false);
+    expect(isCurrentQueryAuthority(replacementForSameQuery)).toBe(true);
   });
 });

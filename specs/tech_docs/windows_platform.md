@@ -81,6 +81,8 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 **PATH 注入策略**：SDK 子进程（AI Bash 工具）实际看到的 PATH 优先**系统**，其次 bundled —— 用户自己维护的 Node 往往比我们 bundle 的版本新，npm 也更可靠（见 `buildClaudeSessionEnv`）。详见 `bundled_node.md`。
 
+Task command Detector 不经过 SDK shell：bare `node` / `node.exe` 固定解析到 bundled Node.js v24，其他 bare executable 走 `system_binary::find()`；`executable + args + cwd` 分开传递，不经 `cmd /c` 或字符串重拼。Rust 进入进程边界前对绝对路径使用现有 external-path normalize，不能把 Windows verbatim/长路径前缀直接泄漏给 Node。
+
 ### 进程清理
 
 进程清理分成两种不能互换的 authority：
@@ -101,6 +103,8 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport;
 ```
 
 > **关键**：普通短生命周期子进程 spawn 仍 MUST 使用 `process_cmd::new()`（Windows CREATE_NO_WINDOW）；会创建后代的长生命周期进程 MUST 再用 `spawn_tree()`。外部 binary 解析继续走 `system_binary::find()`（PATH 补充）。禁止裸 `std::process::Command::new()`，也禁止把 stale cleanup 扩展到正常退出；recovery 扫描统一由 `process_cleanup::kill_stale_processes()` owner，调用方不要再写 ad-hoc PowerShell / `pgrep`。
+
+Activation Trigger 的 Detector 也属于 Live lifecycle：每次 invocation 保留自己的 Job Object，timeout、stdout 超限、Task Stop/Delete 和 App shutdown 都终止同一棵树；不能只 kill 根 PID。harness 先 `env_clear()`，再恢复 Windows system/home/temp、证书、通用代理、增强 PATH 与 `LANG/LC_ALL/PYTHONUTF8/PYTHONIOENCODING` 规范 baseline，不继承 Provider credential 或 `MYAGENTS_*` 端口。它以 UTF-8 JSON 写 stdin，并把 stdout 当严格 UTF-8 协议解析；任意仍输出本地代码页字节的脚本会得到可诊断的 protocol failure，而不是静默替换字符或激活 AI。
 
 ---
 

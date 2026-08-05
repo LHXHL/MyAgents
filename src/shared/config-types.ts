@@ -1368,7 +1368,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Moonshot',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'kimi-k2.6',
+    primaryModel: 'kimi-k3',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://platform.moonshot.cn/console',
@@ -1376,14 +1376,11 @@ export const PRESET_PROVIDERS: Provider[] = [
     config: {
       baseUrl: 'https://api.moonshot.cn/anthropic',
     },
-    modelAliases: { sonnet: 'kimi-k2.6', opus: 'kimi-k2.6', haiku: 'kimi-k2-thinking-turbo' },
+    modelAliases: { sonnet: 'kimi-k3', opus: 'kimi-k3', haiku: 'kimi-k3' },
     models: [
-      // K2.5 引入视觉,K2.6 增加视频;K2-0711(原始 0711 release)在视觉之前,纯文本
+      { model: 'kimi-k3', modelName: 'Kimi K3', modelSeries: 'moonshot', contextLength: 1_048_576, inputModalities: ['text', 'image', 'video'] },
       { model: 'kimi-k2.6', modelName: 'Kimi K2.6', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image', 'video'] },
-      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
-      { model: 'kimi-k2-thinking-turbo', modelName: 'Kimi K2 Thinking Turbo', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 262_144, inputModalities: ['text', 'image'] },
-      // 官方 API id 必须带 -preview 后缀（kimi-k2-0711 会 model-not-found）
-      { model: 'kimi-k2-0711-preview', modelName: 'Kimi K2', modelSeries: 'moonshot', contextLength: 131_072, maxOutputTokens: 16_384, inputModalities: ['text'] },
+      { model: 'kimi-k2.7-code', modelName: 'Kimi K2.7 Code', modelSeries: 'moonshot', contextLength: 262_144, inputModalities: ['text'] },
     ],
   },
   {
@@ -1404,6 +1401,8 @@ export const PRESET_PROVIDERS: Provider[] = [
       // Kimi Code 由 K2.5 驱动，256K 上下文，支持 screenshot-to-code 等视觉工作流
       // (https://www.kimi.com/resources/kimi-code-introduction)
       { model: 'kimi-for-coding', modelName: 'Kimi for Coding', modelSeries: 'moonshot', contextLength: 262_144, maxOutputTokens: 65_536, inputModalities: ['text', 'image'] },
+      { model: 'k3', modelName: 'Kimi K3', modelSeries: 'moonshot', contextLength: 1_048_576, inputModalities: ['text', 'image', 'video'] },
+      { model: 'k3-256k', modelName: 'Kimi K3 256K', modelSeries: 'moonshot', contextLength: 262_144, inputModalities: ['text', 'image'] },
     ],
   },
   {
@@ -1412,7 +1411,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Zhipu',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'glm-4.7',
+    primaryModel: 'glm-5.2',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://bigmodel.cn/console/overview',
@@ -1422,17 +1421,11 @@ export const PRESET_PROVIDERS: Provider[] = [
       timeout: 600000,
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'glm-5.1', opus: 'glm-5.2', haiku: 'glm-5.1' },
+    modelAliases: { sonnet: 'glm-5.2', opus: 'glm-5.2', haiku: 'glm-5-turbo' },
     models: [
-      // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
-      // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
-      // GLM-5.x / 4.x chat 端点为纯文本；视觉能力在独立的 GLM-4V / GLM-5V 模型族
+      // GLM-5.x chat 端点为纯文本；视觉能力在独立的 GLM-5V 模型族。
       { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5.1', modelName: 'GLM 5.1', modelSeries: 'zhipu', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
       { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-4.5-air', modelName: 'GLM 4.5 Air', modelSeries: 'zhipu', contextLength: 128_000, maxOutputTokens: 32_000, inputModalities: ['text'] },
     ],
   },
   {
@@ -1446,7 +1439,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Zhipu',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'glm-4.7',
+    primaryModel: 'glm-5.2',
     isBuiltin: true,
     authType: 'api_key',
     apiProtocol: 'openai',
@@ -1456,17 +1449,11 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
       timeout: 600000,
     },
-    modelAliases: { sonnet: 'glm-5.1', opus: 'glm-5.2', haiku: 'glm-5.1' },
+    modelAliases: { sonnet: 'glm-5.2', opus: 'glm-5.2', haiku: 'glm-5-turbo' },
     models: [
-      // GLM-5.2 Coding Plan 官方接入文档公布 1M 上下文 / 131072 max tokens；
-      // GLM-5.1 / 5-Turbo 官方公布 200K 上下文（docs.bigmodel.cn / z.ai），其余系列以 LiteLLM 数据为准
-      // GLM-5.x / 4.x chat 端点为纯文本；视觉能力在独立的 GLM-4V / GLM-5V 模型族
+      // GLM-5.x chat 端点为纯文本；视觉能力在独立的 GLM-5V 模型族。
       { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-5.1', modelName: 'GLM 5.1', modelSeries: 'zhipu', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
       { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'zhipu', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text'] },
-      { model: 'glm-4.5-air', modelName: 'GLM 4.5 Air', modelSeries: 'zhipu', contextLength: 128_000, maxOutputTokens: 32_000, inputModalities: ['text'] },
     ],
   },
   {
@@ -1475,26 +1462,22 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'MiniMax',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'MiniMax-M2.7',
+    primaryModel: 'MiniMax-M3',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://platform.minimaxi.com/docs/guides/models-intro',
     config: {
       baseUrl: 'https://api.minimaxi.com/anthropic',
     },
-    modelAliases: { sonnet: 'MiniMax-M2.7', opus: 'MiniMax-M2.7', haiku: 'MiniMax-M2.7-highspeed' },
+    modelAliases: { sonnet: 'MiniMax-M3', opus: 'MiniMax-M3', haiku: 'MiniMax-M2.7-highspeed' },
     models: [
       // MiniMax-M3（2026-06-01 发布）为新旗舰，原生多模态，官方上下文 1M（≥阈值 → 自动 [1m]）。
       // M2.x 全系上下文 = 204,800（200K，官方 api-overview；旧 196,608 与 LiteLLM 的 1M 均为错误值）。
       // 变体 API id 用 -highspeed（"Lightning" 仅营销名，API 不接受）。
-      // max output 官方未逐一公布：M3 暂按 M2 系列 128K（待核），M2.5/M2.1 沿用历史值。
+      // max output 官方未逐一公布：M3 暂按 M2 系列 128K（待核）。
       { model: 'MiniMax-M3', modelName: 'MiniMax M3', modelSeries: 'minimax', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
       { model: 'MiniMax-M2.7', modelName: 'MiniMax M2.7', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
       { model: 'MiniMax-M2.7-highspeed', modelName: 'MiniMax M2.7 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 131_072, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.5-highspeed', modelName: 'MiniMax M2.5 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.1', modelName: 'MiniMax M2.1', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
-      { model: 'MiniMax-M2.1-highspeed', modelName: 'MiniMax M2.1 Highspeed', modelSeries: 'minimax', contextLength: 204_800, maxOutputTokens: 8_192, inputModalities: ['text'] },
     ],
   },
   {
@@ -1546,7 +1529,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Google',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'gemini-2.5-flash',
+    primaryModel: 'gemini-3.6-flash',
     isBuiltin: true,
     authType: 'api_key',
     apiProtocol: 'openai',
@@ -1555,15 +1538,12 @@ export const PRESET_PROVIDERS: Provider[] = [
     config: {
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     },
-    modelAliases: { sonnet: 'gemini-3.1-pro-preview', opus: 'gemini-3.1-pro-preview', haiku: 'gemini-3.5-flash' },
+    modelAliases: { sonnet: 'gemini-3-pro-preview', opus: 'gemini-3-pro-preview', haiku: 'gemini-3.6-flash' },
     models: [
       // Gemini 全系原生多模态：text + image + video + audio
-      { model: 'gemini-2.5-pro', modelName: 'Gemini 2.5 Pro', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-2.5-flash', modelName: 'Gemini 2.5 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-2.5-flash-lite', modelName: 'Gemini 2.5 Flash-Lite', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_535, inputModalities: ['text', 'image', 'video', 'audio'] },
-      { model: 'gemini-3.1-pro-preview', modelName: 'Gemini 3.1 Pro Preview', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
-      // gemini-3.5-flash（2026-05 GA）为当前旗舰 Flash，取代 gemini-3-flash-preview
-      { model: 'gemini-3.5-flash', modelName: 'Gemini 3.5 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
+      { model: 'gemini-3.6-flash', modelName: 'Gemini 3.6 Flash', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
+      { model: 'gemini-3.5-flash-lite', modelName: 'Gemini 3.5 Flash-Lite', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
+      { model: 'gemini-3-pro-preview', modelName: 'Gemini 3 Pro Preview', modelSeries: 'google', contextLength: 1_048_576, maxOutputTokens: 65_536, inputModalities: ['text', 'image', 'video', 'audio'] },
     ],
   },
   {

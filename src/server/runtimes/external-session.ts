@@ -27,11 +27,11 @@ import type {
   ImagePayload,
   ResolvedImagePayload,
 } from './types';
-import { StaleRuntimeSessionError } from './types';
+import { RuntimeConversationBranchError, StaleRuntimeSessionError } from './types';
 import { awaitInFlightSaves, rebuildAttachmentRegistryFromBlocks, trackInFlightSave } from './tool-attachments';
 import { messageAttachmentsFromImagePayloads, resolveImagePayloads } from './image-payload';
 import { maybeSpill } from '../utils/large-value-store';
-import { formatTextPreviewForLog } from '../utils/log-summary';
+import { formatTextPreviewForLog, summarizeSensitiveValueForLog } from '../utils/log-summary';
 import type { AskUserQuestionInput, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import { withQuestionTextAnswerKeys } from '../../shared/types/askUserQuestion';
 import {
@@ -61,10 +61,14 @@ import {
 } from '../session-core/session-activity-policy';
 import {
   commitPreparedSessionForFirstUserTurn,
+  commitCodexConversationRewind,
+  deleteSession,
+  resolvePendingConversationMutation,
   saveSessionMetadata,
   updateSessionMetadata,
   getSessionMetadata,
   getSessionData,
+  loadSessionTranscript,
 } from '../SessionStore';
 import { firePostTurnTitleHook } from '../turn-hooks';
 import {
@@ -75,6 +79,7 @@ import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { findProjectAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
 import type { AgentConfig } from '../../shared/types/agent';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
+import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
 import { trackServer } from '../analytics';
 import {
@@ -91,6 +96,7 @@ import {
 } from './external-watchdog-policy';
 import { observedContextTokens } from '../utils/context-occupancy';
 import { computeContextUsage } from '../../shared/contextUsage';
+import { snapshotForForkedSession, snapshotForOwnedSession } from '../utils/session-snapshot';
 import { lookupModelContextLength } from '../utils/model-capabilities';
 import {
   filterRuntimeConfigPatchForSnapshot,
@@ -247,6 +253,7 @@ import {
   getExternalCurrentTurnUsage,
   getExternalTurnStartTime,
   getExternalTurnActivityFacts,
+  getExternalRuntimeTurnAnchor,
   isExternalTurnCompleted,
   isExternalTurnFinalizationInFlight,
   isExternalTurnGenerationCurrent,
@@ -267,6 +274,7 @@ import {
   setExternalLastTurnSucceeded,
   setExternalTurnCompleted,
   setExternalTurnActivityFacts,
+  setExternalRuntimeTurnAnchor,
   trackExternalTurnFinalization,
   updateExternalCurrentTurnUsageModel,
   waitForExternalTurnTerminalObserver,
@@ -330,6 +338,7 @@ import {
   getExternalSessionMessagesSnapshot,
   getExternalTranscriptSessionId,
   getLastPersistedRuntimeUsageTotals,
+  persistExternalForkTranscript,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
   removeAndPersistExternalSessionMessage,
@@ -435,6 +444,7 @@ let currentTurnTraceId = '';
 let currentTurnTraceSessionId = '';
 let currentTurnAnalyticsSource: TurnAnalyticsSource | null = null;
 let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
+let externalSessionMutationInFlight = false;
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
@@ -901,11 +911,25 @@ function resetModuleState(): void {
   clearExternalQueueWithCancellation();
 }
 
+type CommitCodexConversationRewind = typeof commitCodexConversationRewind;
+let commitCodexConversationRewindForTests: CommitCodexConversationRewind | null = null;
+
 export function __resetExternalSessionForTests(): void {
   if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
     throw new Error('__resetExternalSessionForTests is only available in tests');
   }
   resetModuleState();
+  externalSessionMutationInFlight = false;
+  commitCodexConversationRewindForTests = null;
+}
+
+export function __setCodexConversationRewindCommitForTests(
+  implementation: CommitCodexConversationRewind,
+): void {
+  if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+    throw new Error('__setCodexConversationRewindCommitForTests is only available in tests');
+  }
+  commitCodexConversationRewindForTests = implementation;
 }
 
 /**
@@ -1762,7 +1786,7 @@ function isAskUserQuestionInput(input: unknown): input is AskUserQuestionInput {
  */
 export function setRuntimeSessionId(id: string): void {
   setExternalRuntimeSessionId(id);
-  console.log(`[external-session] Runtime session ID set: ${id}`);
+  console.log(`[external-session] Runtime session ID set: ${JSON.stringify(summarizeSensitiveValueForLog(id))}`);
 }
 
 /**
@@ -1770,11 +1794,17 @@ export function setRuntimeSessionId(id: string): void {
  * Called from index.ts when an external runtime session is reopened from history.
  * Sets lastRuntimeSessionId so sendExternalMessage uses resume instead of new session.
  */
-export function restoreExternalSessionState(
+export async function restoreExternalSessionState(
   sessionId: string,
   workspacePath: string,
   scenario: InteractionScenario,
-): void {
+): Promise<{ success: boolean; error?: string }> {
+  if (getSessionMetadata(sessionId)?.pendingConversationMutation) {
+    const resolvedMutation = await resolvePendingConversationMutation(sessionId);
+    if (!resolvedMutation.success) {
+      return { success: false, error: resolvedMutation.error };
+    }
+  }
   // If switching to a different session, reset all accumulated state to prevent contamination
   if (sessionId !== getExternalLifecycleSessionId()) {
     resetModuleState();
@@ -1788,8 +1818,8 @@ export function restoreExternalSessionState(
   // 2. CC session (no runtimeSessionId, but has runtime + messages) → sessionId (CC uses our ID)
   // 3. Brand new session (no messages, or no metadata) → empty string → sendExternalMessage hits Case 1 (fresh start)
   const meta = getSessionMetadata(sessionId);
-  const data = getSessionData(sessionId);
-  const hasExistingMessages = !!(data?.messages?.length);
+  const transcript = await loadSessionTranscript(sessionId);
+  const hasExistingMessages = transcript.messages.length > 0;
   const currentRuntimeType = getCurrentRuntimeType();
 
   // Cross-runtime guard: session created by a different runtime (e.g., Codex session in CC Sidecar).
@@ -1801,14 +1831,14 @@ export function restoreExternalSessionState(
     console.log(`[external-session] Cross-runtime session: meta.runtime=${meta!.runtime}, current=${currentRuntimeType}, will start fresh`);
   } else if (meta?.runtimeSessionId) {
     setExternalRuntimeSessionId(meta.runtimeSessionId);
-  } else if (meta?.runtime && meta.runtime !== 'builtin' && hasExistingMessages) {
+  } else if (meta?.runtime === 'claude-code' && hasExistingMessages) {
     setExternalRuntimeSessionId(sessionId); // CC: session ID === runtime session ID
   } else {
     clearExternalRuntimeSessionId(); // New session: nothing to resume
   }
 
   // Load existing messages for correct incremental save (or clear stale in-memory state)
-  setExternalSessionMessages(sessionId, hasExistingMessages ? data!.messages : []);
+  setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
 
   // PRD 0.2.15 Review F2 — repopulate the external-path attachment registry
   // from persisted ContentBlock[] so /api/attachment/tool/... can still resolve
@@ -1852,7 +1882,8 @@ export function restoreExternalSessionState(
     runtime: currentRuntimeType,
     sessionId,
   });
-  console.log(`[external-session] Restored state for session ${sessionId}, runtimeSessionId=${getExternalRuntimeSessionId()} (${getExternalSessionMessageCount()} messages), permissionMode=${getExternalRuntimeDesiredPermissionMode() || '(default)'}, model=${getExternalRuntimeDesiredModel() || '(default)'}, effort=${getExternalRuntimeDesiredReasoningEffort() || '(default)'}`);
+  console.log(`[external-session] Restored state for session ${sessionId}, runtimeSessionId=${JSON.stringify(summarizeSensitiveValueForLog(getExternalRuntimeSessionId()))} (${getExternalSessionMessageCount()} messages), permissionMode=${getExternalRuntimeDesiredPermissionMode() || '(default)'}, model=${getExternalRuntimeDesiredModel() || '(default)'}, effort=${getExternalRuntimeDesiredReasoningEffort() || '(default)'}`);
+  return { success: true };
 }
 
 // Pattern B — `setExternalImStreamCallback` removed. The /api/im/chat handler
@@ -1985,7 +2016,7 @@ export async function updateExternalRuntimeConfig(
     getExternalOperationQueueLength(),
     isExternalOperationDrainInFlight(),
     isExternalTurnFinalizationInFlight(),
-  );
+  ) || externalSessionMutationInFlight;
   const noop = isExternalRuntimeConfigPatchNoopAgainstDesired(
     normalized,
     { allowLiveReportedModel: !shouldDefer },
@@ -2732,6 +2763,9 @@ async function _doStartExternalSession(options: {
         // Stop invalidate the promotion while initialize/resume is still
         // awaiting and before any runtime can consume the prompt.
         initialMessage: options.dispatchPromotion ? undefined : options.initialMessage,
+        initialClientUserMessageId: options.dispatchPromotion
+          ? undefined
+          : options.messageOperation?.userProjection.message.id,
         initialImages: options.dispatchPromotion ? undefined : options.initialImages,
         systemPromptAppend,
         model: startModel,
@@ -2765,7 +2799,7 @@ async function _doStartExternalSession(options: {
       // still lands instead of looping on the stale id forever. If the fresh
       // retry also fails, fall through to the normal error surface.
       if (err instanceof StaleRuntimeSessionError && options.resumeSessionId) {
-        console.warn(`[external-session] ${runtimeType} resume rejected as stale (id=${err.runtimeSessionId}): ${err.message} — invalidating and retrying fresh`);
+        console.warn(`[external-session] ${runtimeType} resume rejected as stale (id=${JSON.stringify(summarizeSensitiveValueForLog(err.runtimeSessionId))}); invalidating and retrying fresh`);
         clearExternalRuntimeSessionId();
         if (options.sessionId) {
           try {
@@ -2806,7 +2840,12 @@ async function _doStartExternalSession(options: {
       assertExternalTurnPromotionCurrent(options.dispatchPromotion);
       if (process.exited || getExternalActiveProcess() !== process) return;
       finishExternalTurnPromotion(options.dispatchPromotion, { status: 'dispatched' });
-      await runtime.sendMessage(process, options.initialMessage, options.initialImages);
+      await runtime.sendMessage(
+        process,
+        options.initialMessage,
+        options.initialImages,
+        { clientUserMessageId: options.messageOperation?.userProjection.message.id },
+      );
     }
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
@@ -3381,7 +3420,7 @@ async function dispatchExternalMessageOperation(
     const nextScenario = context?.scenario ?? getExternalLifecycleScenario();
     const nextModel = context?.model ?? getExternalRuntimeDesiredModel();
     const nextPermissionMode = context?.permissionMode ?? getExternalRuntimeDesiredPermissionMode();
-    console.log(`[external-session] Previous process exited, resuming ${runtimeType} session ${resumeId}`);
+    console.log(`[external-session] Previous process exited, resuming ${runtimeType} session ${JSON.stringify(summarizeSensitiveValueForLog(resumeId))}`);
     if (!ensureInitialDispatchPromotion()) {
       clearExternalInboxMetaOnRejection({
         sessionId: lifecycleSessionId,
@@ -3536,7 +3575,12 @@ async function dispatchExternalMessageOperation(
       return { queued: true };
     }
     runtimeDispatchStarted = true;
-    await activeRuntime.sendMessage(activeProcess, text, hasImages ? resolvedImages : undefined);
+    await activeRuntime.sendMessage(
+      activeProcess,
+      text,
+      hasImages ? resolvedImages : undefined,
+      { clientUserMessageId: userMsg.id },
+    );
     return { queued: true };
   } catch (err) {
     if (
@@ -3800,7 +3844,7 @@ export function enqueueExternalSendForDesktop(
   // Return the queueId SYNCHRONOUSLY so /chat/send can hand it back to the renderer, which
   // reconciles its optimistic `opt-` pill with this real queueId (exactly like the builtin
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
-  if (shouldQueueExternalOperation(getExternalLifecycleState(), {
+  if (externalSessionMutationInFlight || shouldQueueExternalOperation(getExternalLifecycleState(), {
     responseMode: queueResponseMode,
     canSteerActiveTurn,
   })) {
@@ -3923,7 +3967,8 @@ export function enqueueExternalSendForIm(
   dispatch: Promise<ExternalSendResult>;
 } {
   if (
-    hasExternalSendInFlight()
+    externalSessionMutationInFlight
+    || hasExternalSendInFlight()
     || shouldQueueExternalOperation(getExternalLifecycleState(), {
     responseMode: 'turn',
     canSteerActiveTurn: false,
@@ -3978,12 +4023,12 @@ export function enqueueExternalSendForIm(
  * chat:message-complete on the SSE wire (see persistTurnResult idle-ordering notes).
  */
 function drainExternalQueueAfterTurn(): void {
-  if (!canDrainExternalOperations(getExternalLifecycleState())) return;
+  if (externalSessionMutationInFlight || !canDrainExternalOperations(getExternalLifecycleState())) return;
   void drainExternalOperationsAfterTurn();
 }
 
 async function drainExternalOperationsAfterTurn(): Promise<void> {
-  if (!canDrainExternalOperations(getExternalLifecycleState())) return;
+  if (externalSessionMutationInFlight || !canDrainExternalOperations(getExternalLifecycleState())) return;
   const drainGeneration = getExternalOperationGeneration();
   setExternalOperationDrainInFlight(true);
   let reservedItem: ReturnType<typeof reserveExternalOperationForDrain> | undefined;
@@ -4298,7 +4343,7 @@ export async function cancelExternalImRequest(
   return { aborted: false, mode: 'unknown' };
 }
 
-type ExternalStopReason = 'user' | 'config-restart';
+type ExternalStopReason = 'user' | 'config-restart' | 'conversation-mutation';
 
 /**
  * Stop the active external session.
@@ -4312,7 +4357,7 @@ export async function stopExternalSession(options?: {
   const canceledPromotion = cancelExternalTurnPromotion({ preserveQueue });
   const active = getExternalActivePair();
   const reason = options?.reason ?? 'user';
-  const isConfigRestart = reason === 'config-restart';
+  const isConfigRestart = reason !== 'user';
   if (!active) {
     if (!canceledPromotion) {
       clearPendingExternalProcessConfigRestarts();
@@ -4512,10 +4557,22 @@ export function isExternalSessionActive(): boolean {
 
 /** External turn admission includes work accepted into the serialized queue. */
 export function isExternalSessionBusy(): boolean {
-  return isExternalTurnBusy()
+  return externalSessionMutationInFlight
+    || isExternalTurnBusy()
     || hasExternalSendInFlight()
     || hasExternalQueuedOperations()
     || isExternalOperationDrainInFlight();
+}
+
+/** Single atomic owner for reset, rewind, and fork Session-boundary mutations. */
+export function tryAcquireExternalSessionMutationLease(): { release: () => void } | null {
+  if (externalSessionMutationInFlight) return null;
+  externalSessionMutationInFlight = true;
+  return {
+    release: () => {
+      externalSessionMutationInFlight = false;
+    },
+  };
 }
 
 /**
@@ -4529,16 +4586,339 @@ export function hasExternalRuntimeProcess(): boolean {
   return Boolean(process && !process.exited);
 }
 
+export type ExternalConversationOperationResult = {
+  success: boolean;
+  status?: number;
+  error?: string;
+  errorCode?:
+    | 'unsupported_runtime'
+    | 'codex_update_required'
+    | 'session_busy'
+    | 'anchor_unavailable'
+    | 'native_fork_failed'
+    | 'persistence_failed'
+    | 'storage_consistency_error'
+    | 'restore_failed';
+  content?: string;
+  attachments?: SessionMessage['attachments'];
+  rewindScope?: 'conversation-only';
+  newSessionId?: string;
+  agentDir?: string;
+  title?: string;
+};
+
+function externalConversationBranchFailure(error: unknown): ExternalConversationOperationResult {
+  if (error instanceof RuntimeConversationBranchError) {
+    if (error.code === 'capability_unavailable') {
+      return { success: false, status: 400, errorCode: 'codex_update_required', error: error.message };
+    }
+    if (error.code === 'anchor_unavailable') {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: error.message };
+    }
+  }
+  return {
+    success: false,
+    status: 502,
+    errorCode: 'native_fork_failed',
+    error: error instanceof Error ? error.message : 'Codex conversation branch failed',
+  };
+}
+
+function logCodexConversationOrphan(
+  sessionId: string,
+  runtimeSessionId: string,
+  reason: 'rewind_persistence_failed' | 'fork_persistence_failed',
+): void {
+  console.error(
+    `[external-session] Codex conversation branch orphan sessionId=${sessionId}`
+      + ` runtimeSource=${getCurrentRuntimeSource()} reason=${reason} orphan=true`
+      + ` nativeThread=${JSON.stringify(summarizeSensitiveValueForLog(runtimeSessionId))}`,
+  );
+}
+
+async function withExternalConversationMutation(
+  operation: () => Promise<ExternalConversationOperationResult>,
+): Promise<ExternalConversationOperationResult> {
+  await awaitExternalLifecycleStarting();
+  if (isExternalSessionBusy()) {
+    return {
+      success: false,
+      status: 409,
+      errorCode: 'session_busy',
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+  const lease = tryAcquireExternalSessionMutationLease();
+  if (!lease) {
+    return {
+      success: false,
+      status: 409,
+      errorCode: 'session_busy',
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+  try {
+    return await operation();
+  } finally {
+    lease.release();
+    setTimeout(drainExternalQueueAfterTurn, 0);
+  }
+}
+
+async function getCodexConversationBranchPair(): Promise<ReturnType<typeof getExternalActivePair>> {
+  let active = getExternalActivePair();
+  if (active && !active.process.exited) return active;
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  if (!sessionId || !workspacePath) return null;
+  const prewarm = await prewarmExternalSession({
+    sessionId,
+    workspacePath,
+    scenario: getExternalLifecycleScenario(),
+  });
+  if (!prewarm.prewarmed && !hasExternalRuntimeProcess()) return null;
+  active = getExternalActivePair();
+  return active && !active.process.exited ? active : null;
+}
+
+function restartSidecarForConversationMutation(reason: 'storage-inconsistent' | 'source-stop-unconfirmed'): void {
+  console.error(`[external-session] Codex conversation mutation requires a clean Sidecar restart reason=${reason}`);
+  const timer = setTimeout(() => process.kill(process.pid, 'SIGTERM'), 0);
+  timer.unref();
+}
+
+function startCodexReplacementPrewarm(options: {
+  sessionId: string;
+  workspacePath: string;
+  scenario: InteractionScenario;
+  replacementRuntimeSessionId: string;
+}): void {
+  const metadata = getSessionMetadata(options.sessionId);
+  if (
+    getExternalLifecycleSessionId() !== options.sessionId
+    || metadata?.runtimeSessionId !== options.replacementRuntimeSessionId
+  ) return;
+  void prewarmExternalSession({
+    sessionId: options.sessionId,
+    workspacePath: options.workspacePath,
+    scenario: options.scenario,
+  }).catch(() => {
+    console.warn(
+      `[external-session] Codex replacement prewarm failed sessionId=${options.sessionId}`
+        + ` runtimeSource=${getCurrentRuntimeSource()} reason=runtime_start_failed`,
+    );
+  });
+}
+
+export async function rewindExternalConversation(
+  userMessageId: string,
+): Promise<ExternalConversationOperationResult> {
+  if (getCurrentRuntimeType() !== 'codex') {
+    return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation rewind is only supported by Codex' };
+  }
+  let replacementPrewarm: Parameters<typeof startCodexReplacementPrewarm>[0] | undefined;
+  const result = await withExternalConversationMutation(async () => {
+    const sessionId = getExternalLifecycleSessionId();
+    const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+    const data = sessionId ? getSessionData(sessionId) : null;
+    if (!metadata || !data || !metadata.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex conversation binding is unavailable' };
+    }
+    const targetUserIndex = data.messages.findIndex(message => message.id === userMessageId && message.role === 'user');
+    const anchoredAssistants = data.messages.filter(message => (
+      message.role === 'assistant'
+      && message.runtimeTurnAnchor?.rootUserMessageId === userMessageId
+    ));
+    if (targetUserIndex < 0 || anchoredAssistants.length !== 1) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'This message has no exact Codex turn anchor' };
+    }
+    const targetUser = data.messages[targetUserIndex]!;
+    const targetAssistant = anchoredAssistants[0]!;
+    if (data.messages.indexOf(targetAssistant) <= targetUserIndex || !targetAssistant.runtimeTurnAnchor) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex turn anchor does not match this user message' };
+    }
+
+    const active = await getCodexConversationBranchPair();
+    if (!active?.runtime.branchConversation) {
+      return { success: false, status: 400, errorCode: 'codex_update_required', error: 'This Codex runtime cannot branch conversations' };
+    }
+    let branch;
+    try {
+      branch = await active.runtime.branchConversation(active.process, {
+        kind: 'before-turn',
+        runtimeTurnId: targetAssistant.runtimeTurnAnchor.turnId,
+      });
+    } catch (error) {
+      return externalConversationBranchFailure(error);
+    }
+
+    const targetMessages = data.messages.slice(0, targetUserIndex);
+    const commitRewind = commitCodexConversationRewindForTests ?? commitCodexConversationRewind;
+    const committed = await commitRewind({
+      sessionId,
+      sourceRuntimeSessionId: metadata.runtimeSessionId,
+      replacementRuntimeSessionId: branch.kind === 'native-thread' ? branch.runtimeSessionId : null,
+      sourceMessages: data.messages,
+      targetMessages,
+    });
+    if (!committed.success) {
+      if (branch.kind === 'native-thread') {
+        logCodexConversationOrphan(sessionId, branch.runtimeSessionId, 'rewind_persistence_failed');
+      }
+      if (committed.reason === 'storage_consistency_error') {
+        // The durable intent is deliberately retained as recovery evidence.
+        // Restart before releasing live admission so startup resolution is the
+        // only path that may bind a runtime or accept another send.
+        restartSidecarForConversationMutation('storage-inconsistent');
+      }
+      return {
+        success: false,
+        status: committed.reason === 'precondition_failed' ? 409 : 500,
+        errorCode: committed.reason === 'storage_consistency_error'
+          ? 'storage_consistency_error'
+          : 'persistence_failed',
+        error: committed.error,
+      };
+    }
+
+    const transcript = await loadSessionTranscript(sessionId);
+    setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
+    const stopped = !hasExternalRuntimeProcess()
+      || await stopExternalSession({ reason: 'conversation-mutation' });
+    if (!stopped) {
+      restartSidecarForConversationMutation('source-stop-unconfirmed');
+      return {
+        success: true,
+        content: targetUser.content,
+        attachments: targetUser.attachments,
+        rewindScope: 'conversation-only',
+        errorCode: 'restore_failed',
+        error: 'The conversation was rewound and the Codex Sidecar is restarting',
+      };
+    }
+    const restoreScenario = getExternalLifecycleScenario();
+    const restored = await restoreExternalSessionState(
+      sessionId,
+      metadata.agentDir,
+      restoreScenario,
+    );
+    if (restored.success && branch.kind === 'native-thread') {
+      replacementPrewarm = {
+        sessionId,
+        workspacePath: metadata.agentDir,
+        scenario: restoreScenario,
+        replacementRuntimeSessionId: branch.runtimeSessionId,
+      };
+    }
+    return {
+      success: true,
+      content: targetUser.content,
+      attachments: targetUser.attachments,
+      rewindScope: 'conversation-only',
+      ...(!restored.success ? {
+        errorCode: 'restore_failed' as const,
+        error: restored.error ?? 'The conversation was rewound, but Codex must be restarted',
+      } : {}),
+    };
+  });
+  // withExternalConversationMutation has released the mutation lease here.
+  // Prewarm is best-effort and owns runtime start through the existing path.
+  if (replacementPrewarm) startCodexReplacementPrewarm(replacementPrewarm);
+  return result;
+}
+
+export async function forkExternalConversation(
+  assistantMessageId: string,
+): Promise<ExternalConversationOperationResult> {
+  if (getCurrentRuntimeType() !== 'codex') {
+    return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation fork is only supported by Codex' };
+  }
+  return withExternalConversationMutation(async () => {
+    const sessionId = getExternalLifecycleSessionId();
+    const source = sessionId ? getSessionData(sessionId) : null;
+    if (!source?.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex conversation binding is unavailable' };
+    }
+    const targetIndex = source.messages.findIndex(message => message.id === assistantMessageId && message.role === 'assistant');
+    const target = targetIndex >= 0 ? source.messages[targetIndex] : undefined;
+    if (!target?.runtimeTurnAnchor) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'This message has no exact Codex turn anchor' };
+    }
+    const active = await getCodexConversationBranchPair();
+    if (!active?.runtime.branchConversation) {
+      return { success: false, status: 400, errorCode: 'codex_update_required', error: 'This Codex runtime cannot branch conversations' };
+    }
+    let branch;
+    try {
+      branch = await active.runtime.branchConversation(active.process, {
+        kind: 'through-turn',
+        runtimeTurnId: target.runtimeTurnAnchor.turnId,
+      });
+    } catch (error) {
+      return externalConversationBranchFailure(error);
+    }
+    if (branch.kind !== 'native-thread') {
+      return { success: false, status: 502, errorCode: 'native_fork_failed', error: 'Codex returned an invalid fork result' };
+    }
+
+    const legacyAgent = source.configSnapshotAt
+      ? undefined
+      : findProjectAgentByWorkspacePath(source.agentDir) as AgentConfig | undefined;
+    const legacyFallback = legacyAgent
+      ? snapshotForOwnedSession(legacyAgent, {
+          runtimeOverride: 'codex',
+          runtimeSourceOverride: getCurrentRuntimeSource(),
+          managedCodexProviderReady: isManagedCodexProviderReady(loadAdminConfig()),
+        })
+      : {
+          runtime: 'codex' as const,
+          runtimeSource: getCurrentRuntimeSource(),
+          model: getExternalRuntimeDesiredModel() || undefined,
+          reasoningEffort: getExternalRuntimeDesiredReasoningEffort() || undefined,
+          permissionMode: getExternalRuntimeDesiredPermissionMode() || undefined,
+          configSnapshotAt: new Date().toISOString(),
+        };
+    const forked = createSessionMetadata(
+      source.agentDir,
+      snapshotForForkedSession(source, legacyFallback),
+    );
+    forked.runtimeSessionId = branch.runtimeSessionId;
+    forked.title = `🌿 ${source.title || 'Chat'}`;
+    forked.titleSource = 'auto';
+    forked.origin = { kind: 'desktop', surface: 'session_fork' };
+    const forkedMessages = source.messages.slice(0, targetIndex + 1);
+    try {
+      await saveSessionMetadata(forked);
+      await persistExternalForkTranscript(forked.id, forkedMessages);
+    } catch (error) {
+      await deleteSession(forked.id, { kind: 'user-delete' });
+      logCodexConversationOrphan(sessionId, branch.runtimeSessionId, 'fork_persistence_failed');
+      return {
+        success: false,
+        status: 500,
+        errorCode: 'persistence_failed',
+        error: error instanceof Error ? error.message : 'Fork persistence failed',
+      };
+    }
+    return {
+      success: true,
+      newSessionId: forked.id,
+      agentDir: forked.agentDir,
+      title: forked.title,
+    };
+  });
+}
+
 /**
  * Truncate `allSessionMessages` at the given user message id and persist the
  * truncation. Returns the popped user message's content + attachments so the
  * caller can re-send.
  *
  * External-runtime equivalent of builtin `rewindSession()`. Used by the
- * retry button when the previous turn failed (e.g. model capacity). External
- * runtimes don't support /chat/rewind because there's no SDK resume anchor /
- * file checkpoint to roll back, but a "drop the failed user turn + resend"
- * semantic is still sound: the failed turn never produced an assistant
+ * retry button when the previous turn failed (e.g. model capacity). This
+ * remains separate from Codex conversation rewind: a failed tail has no
+ * successful native Turn anchor to branch from. A "drop the failed user turn
+ * + resend" semantic is still sound because the failed turn never produced an assistant
  * message (persistTurnResult only fires on subtype=success), so the local
  * history just has a dangling user message at the tail.
  *
@@ -4820,6 +5200,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
   // the inbox-meta discipline. Null = no usage event this turn → persist must OMIT
   // the field (never write undefined, which would erase the prior persisted value).
   const turnContextUsage = getExternalCurrentTurnContextUsage();
+  const runtimeTurnAnchor = getExternalRuntimeTurnAnchor();
   const turnAnalyticsSource = currentTurnAnalyticsSource ?? getExternalLifecycleAnalyticsSource();
   const lifecycleScenarioForOrigin = getExternalLifecycleScenario();
   const turnAnalyticsOrigin = currentTurnAnalyticsOrigin
@@ -4903,6 +5284,9 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       // reported one. Null omits the metadata key, preserving the previous value.
       contextUsage: turnContextUsage,
       lastActiveAt: terminalActivityAt,
+      runtimeTurnAnchor: getCurrentRuntimeType() === 'codex'
+        ? runtimeTurnAnchor ?? undefined
+        : undefined,
     });
     if (persistResult.appendedAssistant) {
       resetIfStillOurs();
@@ -4947,6 +5331,9 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         );
       }
       broadcast('chat:message-complete', withSessionCompletionTerminal({
+        ...(persistResult.assistantMessageId
+          ? { assistant_message_id: persistResult.assistantMessageId }
+          : {}),
         ...(usageData ? {
           model: usageData.model,
           input_tokens: usageData.inputTokens,
@@ -4956,6 +5343,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         } : {}),
         ...(turnToolCount > 0 ? { tool_count: turnToolCount } : {}),
         ...(turnDurationMs ? { duration_ms: turnDurationMs } : {}),
+        ...(runtimeTurnAnchor ? { runtime_turn_anchor: runtimeTurnAnchor } : {}),
       }, completionTerminal));
     }
     // PRD 0.2.19 — session_id joins back to renderer session_new for full funnel.
@@ -5295,6 +5683,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
   recordRuntimeActivity();
 
   switch (event.kind) {
+    case 'root_turn_admitted':
+      if (getCurrentRuntimeType() === 'codex') {
+        setExternalRuntimeTurnAnchor({
+          turnId: event.runtimeTurnId,
+          rootUserMessageId: event.clientUserMessageId,
+        });
+      }
+      break;
+
     case 'turn_started':
       if (!isExternalTurnCompleted() && getExternalTurnStartTime() === 0) {
         clearExternalPrewarmingSession();

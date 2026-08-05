@@ -109,6 +109,12 @@ SDK 子进程（AI Bash 工具）看到的 PATH 优先级：
 nvm 会在 shell 初始化时检测这些变量并输出兼容性警告。需要固定 npm 全局安装落点的
 skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_PREFIX" npm install -g ...`）。
 
+### Task command Detector
+
+Activation Trigger 的 command Detector 是 Rust Task harness 启动的受管子进程，不是 SDK Bash。为保证 AI 生成的 JavaScript 感知器零外部依赖，Detector 的 bare `node` / `node.exe` **固定**解析到 MyAgents bundled Node.js v24；这与上面 AI shell 的“系统优先、bundled 兜底”是两个不同入口。其他 bare executable 走 `system_binary::find()`，绝对路径直接校验；结构化 args 原样传递，不经 shell 拼接。
+
+Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/system 基线、证书、通用代理变量和增强后的 `PATH`，并固定设置 UTF-8 locale、`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`。它不继承 Provider API key、Session credential、`MYAGENTS_*` 控制端口或任意启动 shell 变量；需要业务 credential 的脚本必须自己从明确的外部安全来源读取，不能依赖 MyAgents 进程环境的偶然泄漏。
+
 ## MCP / 社区 npm 包的执行
 
 ### 外部 stdio MCP（用户装 `@notionhq/notion-mcp-server` 等）

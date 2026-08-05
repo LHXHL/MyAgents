@@ -567,13 +567,13 @@ describe('turn-lifecycle owner', () => {
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
   });
 
-  it('auto-retries success-shaped transient provider text instead of completing the turn', () => {
+  it('auto-retries success-shaped transient provider text instead of completing the turn', async () => {
     const { deps, broadcasts } = makeDeps({
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 
@@ -592,14 +592,14 @@ describe('turn-lifecycle owner', () => {
     expect(deps.persistTranscript).not.toHaveBeenCalled();
   });
 
-  it('does not auto-retry transient provider text after tool side effects', () => {
+  it('does not auto-retry transient provider text after tool side effects', async () => {
     const { deps, broadcasts } = makeDeps({
       scheduleTransientProviderRetry: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
     setCurrentTurnToolCount(1);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 
@@ -612,13 +612,13 @@ describe('turn-lifecycle owner', () => {
     expect(deps.setLastAgentError).toHaveBeenCalledWith(expect.stringContaining('无法安全自动重试'));
   });
 
-  it('surfaces a clear terminal error after transient provider text retries are exhausted', () => {
+  it('surfaces a clear terminal error after transient provider text retries are exhausted', async () => {
     const { deps, broadcasts } = makeDeps({
       getCurrentTransientProviderRetryAttempt: () => 3,
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
-    lifecycle.handleSdkResult(makeResult({
+    await lifecycle.handleSdkResult(makeResult({
       result: '[Error]: Concurrency limit exceeded for account, please retry later',
     }));
 

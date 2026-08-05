@@ -235,7 +235,7 @@ vi.mock('@/components/LinkContextMenuProvider', () => ({
 }));
 
 vi.mock('@/components/TabBar', () => ({
-  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void> }) => {
+  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void>; onNewTab: () => void }) => {
     mocks.tabbarProps.push(props);
     return <div data-testid="tabbar-active">{props.tabs.find(t => t.id === props.activeTabId)?.title ?? 'missing'}</div>;
   },
@@ -490,6 +490,7 @@ describe('App helper launch', () => {
     const props = mocks.sidebarProps.at(-1);
     if (!props) throw new Error('GlobalSidebar props were not captured');
     return props as {
+      onNewTab: () => void;
       onOpenCapabilities: () => void;
       onOpenSettings: () => void;
       onOpenTaskCenter: () => void;
@@ -503,6 +504,16 @@ describe('App helper launch', () => {
     };
   }
 
+  function latestTabbarProps() {
+    const props = mocks.tabbarProps.at(-1);
+    if (!props) throw new Error('TabBar props were not captured');
+    return props as {
+      tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string }>;
+      activeTabId: string | null;
+      onNewTab: () => void;
+    };
+  }
+
   function latestSettingsProps() {
     const props = [...mocks.settingsProps]
       .reverse()
@@ -510,6 +521,37 @@ describe('App helper launch', () => {
     if (!props) throw new Error('Capabilities Settings props were not captured');
     return props;
   }
+
+  it('reuses the leftmost Launcher from the sidebar while the Tab plus keeps creating', () => {
+    render(<App />);
+    const firstLauncherId = latestTabbarProps().tabs[0].id;
+
+    act(() => latestTabbarProps().onNewTab());
+    expect(latestTabbarProps().tabs).toHaveLength(2);
+    expect(latestTabbarProps().activeTabId).not.toBe(firstLauncherId);
+
+    act(() => latestSidebarProps().onNewTab());
+    expect(latestTabbarProps().tabs).toHaveLength(2);
+    expect(latestTabbarProps().activeTabId).toBe(firstLauncherId);
+
+    act(() => latestTabbarProps().onNewTab());
+    expect(latestTabbarProps().tabs).toHaveLength(3);
+    expect(latestTabbarProps().activeTabId).toBe(latestTabbarProps().tabs[2].id);
+  });
+
+  it('creates a Launcher from the sidebar when no Launcher Tab exists', async () => {
+    render(<App />);
+
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    expect(latestTabbarProps().tabs.some((tab) => tab.view === 'launcher')).toBe(false);
+
+    act(() => latestSidebarProps().onNewTab());
+    const current = latestTabbarProps();
+    expect(current.tabs).toHaveLength(2);
+    expect(current.tabs.find((tab) => tab.id === current.activeTabId)?.view).toBe('launcher');
+  });
 
   it('prepares managed Codex from the Agent product permission, not stale runtime permission', async () => {
     mocks.agent.runtimeConfig = {

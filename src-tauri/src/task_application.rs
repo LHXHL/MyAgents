@@ -193,9 +193,23 @@ impl<'a> TaskApplication<'a> {
         &self,
         input: TaskCreateDirectInput,
     ) -> Result<Task, TaskApplicationError> {
+        self.create_direct_with_origin(
+            input,
+            crate::task::TransitionActor::User,
+            Some(crate::task::TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn create_direct_with_origin(
+        &self,
+        input: TaskCreateDirectInput,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<Task, TaskApplicationError> {
         let task = self
             .tasks
-            .create_direct(input)
+            .create_direct_with_origin(input, actor, source)
             .await
             .map_err(TaskApplicationError::mutation)?;
         self.link_source_thought(&task).await;
@@ -216,9 +230,23 @@ impl<'a> TaskApplication<'a> {
         &self,
         input: TaskCreateFromAlignmentInput,
     ) -> Result<Task, TaskApplicationError> {
+        self.create_from_alignment_with_origin(
+            input,
+            crate::task::TransitionActor::Agent,
+            Some(crate::task::TransitionSource::Cli),
+        )
+        .await
+    }
+
+    pub async fn create_from_alignment_with_origin(
+        &self,
+        input: TaskCreateFromAlignmentInput,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<Task, TaskApplicationError> {
         let task = self
             .tasks
-            .create_from_alignment(input)
+            .create_from_alignment_with_origin(input, actor, source)
             .await
             .map_err(TaskApplicationError::mutation)?;
         self.link_source_thought(&task).await;
@@ -269,6 +297,12 @@ impl<'a> TaskApplication<'a> {
                 .stop_with_control_held(&current.id, &control)
                 .await
                 .map_err(TaskApplicationError::mutation)?;
+            if current.effective_trigger().is_command() {
+                self.tasks
+                    .cancel_pending_activation(&current.id)
+                    .await
+                    .map_err(TaskApplicationError::mutation)?;
+            }
             return Ok(TaskStatusMutationResult {
                 task: current,
                 transition: None,
@@ -290,26 +324,66 @@ impl<'a> TaskApplication<'a> {
         task_id: &str,
         message: Option<String>,
     ) -> Result<Task, TaskApplicationError> {
+        self.archive_ordinary_with_origin(
+            task_id,
+            message,
+            crate::task::TransitionActor::User,
+            Some(crate::task::TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn archive_ordinary_with_origin(
+        &self,
+        task_id: &str,
+        message: Option<String>,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<Task, TaskApplicationError> {
         self.ordinary_task(task_id).await?;
         self.tasks
-            .archive(task_id, message)
+            .archive_with_origin(task_id, message, actor, source)
             .await
             .map_err(TaskApplicationError::mutation)
     }
 
     pub async fn delete_ordinary(&self, task_id: &str) -> Result<(), TaskApplicationError> {
+        self.delete_ordinary_with_origin(
+            task_id,
+            crate::task::TransitionActor::User,
+            Some(crate::task::TransitionSource::Ui),
+        )
+        .await
+    }
+
+    pub async fn delete_ordinary_with_origin(
+        &self,
+        task_id: &str,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<(), TaskApplicationError> {
         let task = self.ordinary_task(task_id).await?;
-        self.delete_task(task).await
+        self.delete_task(task, actor, source).await
     }
 
     pub async fn delete_internal(&self, task_id: &str) -> Result<(), TaskApplicationError> {
         let task = self.any_task(task_id).await?;
-        self.delete_task(task).await
+        self.delete_task(
+            task,
+            crate::task::TransitionActor::User,
+            Some(crate::task::TransitionSource::Ui),
+        )
+        .await
     }
 
-    async fn delete_task(&self, task: Task) -> Result<(), TaskApplicationError> {
+    async fn delete_task(
+        &self,
+        task: Task,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<(), TaskApplicationError> {
         self.tasks
-            .delete(&task.id)
+            .delete_with_origin(&task.id, actor, source)
             .await
             .map_err(TaskApplicationError::mutation)?;
         self.unlink_source_thought(&task).await;
@@ -319,6 +393,20 @@ impl<'a> TaskApplication<'a> {
     pub async fn run_ordinary(&self, task_id: &str) -> Result<TaskRunResult, TaskApplicationError> {
         self.ordinary_task(task_id).await?;
         self.run(task_id).await
+    }
+
+    pub async fn run_ordinary_with_origin(
+        &self,
+        task_id: &str,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<TaskRunResult, TaskApplicationError> {
+        self.ordinary_task(task_id).await?;
+        let control = crate::task_scheduler::try_acquire_task_control(task_id)
+            .await
+            .ok_or_else(|| TaskApplicationError::busy(task_id))?;
+        self.run_with_control_and_origin(task_id, &control, actor, source)
+            .await
     }
 
     pub async fn run(&self, task_id: &str) -> Result<TaskRunResult, TaskApplicationError> {
@@ -332,6 +420,22 @@ impl<'a> TaskApplication<'a> {
         &self,
         task_id: &str,
         control: &TaskControlGuard,
+    ) -> Result<TaskRunResult, TaskApplicationError> {
+        self.run_with_control_and_origin(
+            task_id,
+            control,
+            crate::task::TransitionActor::System,
+            Some(crate::task::TransitionSource::Scheduler),
+        )
+        .await
+    }
+
+    pub(crate) async fn run_with_control_and_origin(
+        &self,
+        task_id: &str,
+        control: &TaskControlGuard,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
     ) -> Result<TaskRunResult, TaskApplicationError> {
         let task = self.any_task(task_id).await?;
         if task.status != TaskStatus::Todo {
@@ -360,8 +464,8 @@ impl<'a> TaskApplication<'a> {
                     id: task.id.clone(),
                     status: TaskStatus::Running,
                     message: Some("dispatched".to_string()),
-                    actor: crate::task::TransitionActor::System,
-                    source: Some(crate::task::TransitionSource::Scheduler),
+                    actor,
+                    source,
                 },
                 control,
             )
@@ -403,6 +507,20 @@ impl<'a> TaskApplication<'a> {
         &self,
         task_id: &str,
     ) -> Result<TaskRunResult, TaskApplicationError> {
+        self.rerun_ordinary_with_origin(
+            task_id,
+            crate::task::TransitionActor::System,
+            Some(crate::task::TransitionSource::Rerun),
+        )
+        .await
+    }
+
+    pub async fn rerun_ordinary_with_origin(
+        &self,
+        task_id: &str,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<TaskRunResult, TaskApplicationError> {
         let control = crate::task_scheduler::try_acquire_task_control(task_id)
             .await
             .ok_or_else(|| TaskApplicationError::busy(task_id))?;
@@ -432,19 +550,35 @@ impl<'a> TaskApplication<'a> {
                     id: task.id.clone(),
                     status: TaskStatus::Todo,
                     message: Some("rerun requested".to_string()),
-                    actor: crate::task::TransitionActor::System,
-                    source: Some(crate::task::TransitionSource::Rerun),
+                    actor,
+                    source,
                 },
                 &control,
             )
             .await
             .map_err(|error| TaskApplicationError::mutation(format!("reset failed: {error}")))?;
-        self.run_with_control(task_id, &control).await
+        self.run_with_control_and_origin(task_id, &control, actor, source)
+            .await
     }
 
-    /// Compatibility start preserves the retired Cron surface's idempotent
-    /// running/restart behavior while sharing the canonical run transition.
+    /// Compatibility start accepts a newly-created Todo or resumes Stopped,
+    /// while remaining idempotent for Running. Terminal retries use rerun so
+    /// `start` cannot silently reactivate completed or archived work.
     pub async fn start_scheduled_task(&self, task_id: &str) -> Result<Task, TaskApplicationError> {
+        self.start_scheduled_task_with_origin(
+            task_id,
+            crate::task::TransitionActor::System,
+            Some(crate::task::TransitionSource::Scheduler),
+        )
+        .await
+    }
+
+    pub async fn start_scheduled_task_with_origin(
+        &self,
+        task_id: &str,
+        actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>,
+    ) -> Result<Task, TaskApplicationError> {
         let control = crate::task_scheduler::acquire_task_control(task_id).await;
         let mut task = self.any_task(task_id).await?;
         if task.status == TaskStatus::Running {
@@ -469,7 +603,14 @@ impl<'a> TaskApplication<'a> {
             }
             return Ok(task);
         }
-        if task.status != TaskStatus::Todo {
+        if !matches!(task.status, TaskStatus::Todo | TaskStatus::Stopped) {
+            return Err(TaskApplicationError::invalid_state(format!(
+                "task is in state '{}'; use 'myagents task rerun {}' to re-dispatch it",
+                task.status.as_str(),
+                task.id
+            )));
+        }
+        if task.status == TaskStatus::Stopped {
             task = self
                 .tasks
                 .update_status_with_task_control_held(
@@ -477,8 +618,8 @@ impl<'a> TaskApplication<'a> {
                         id: task_id.to_string(),
                         status: TaskStatus::Todo,
                         message: Some("scheduled task restarted".to_string()),
-                        actor: crate::task::TransitionActor::System,
-                        source: Some(crate::task::TransitionSource::Scheduler),
+                        actor,
+                        source,
                     },
                     &control,
                 )
@@ -486,7 +627,7 @@ impl<'a> TaskApplication<'a> {
                 .map_err(TaskApplicationError::mutation)?
                 .0;
         }
-        self.run_with_control(&task.id, &control)
+        self.run_with_control_and_origin(&task.id, &control, actor, source)
             .await
             .map(|result| result.task)
     }
@@ -519,6 +660,7 @@ mod tests {
             start_at: None,
             recurring_window: None,
             dispatch_at: None,
+            trigger: None,
             model: None,
             provider_id: None,
             permission_mode: None,
@@ -567,6 +709,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cli_origin_is_preserved_and_agent_archive_is_rejected() {
+        let temp = tempdir().unwrap();
+        let tasks = TaskStore::new(temp.path().join("task-store"));
+        let application = TaskApplication::new(&tasks, None);
+        let created = application
+            .create_direct_with_origin(
+                direct_input(temp.path()),
+                TransitionActor::Agent,
+                Some(TransitionSource::Cli),
+            )
+            .await
+            .unwrap();
+        let created_transition = created.status_history.last().unwrap();
+        assert_eq!(created_transition.actor, TransitionActor::Agent);
+        assert_eq!(created_transition.source, Some(TransitionSource::Cli));
+
+        for status in [TaskStatus::Running, TaskStatus::Verifying, TaskStatus::Done] {
+            tasks
+                .update_status(crate::task::TaskUpdateStatusInput {
+                    id: created.id.clone(),
+                    status,
+                    message: None,
+                    actor: TransitionActor::System,
+                    source: Some(TransitionSource::Scheduler),
+                })
+                .await
+                .unwrap();
+        }
+        let error = application
+            .archive_ordinary_with_origin(
+                &created.id,
+                None,
+                TransitionActor::Agent,
+                Some(TransitionSource::Cli),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("user-only"));
+    }
+
+    #[tokio::test]
+    async fn delete_records_cli_actor_without_deleting_the_tombstone() {
+        let temp = tempdir().unwrap();
+        let tasks = TaskStore::new(temp.path().join("task-store"));
+        let application = TaskApplication::new(&tasks, None);
+        let created = application
+            .create_direct(direct_input(temp.path()))
+            .await
+            .unwrap();
+
+        application
+            .delete_ordinary_with_origin(
+                &created.id,
+                TransitionActor::Agent,
+                Some(TransitionSource::Cli),
+            )
+            .await
+            .unwrap();
+
+        let deleted = tasks.get(&created.id).await.unwrap();
+        assert!(deleted.deleted);
+        assert_eq!(deleted.status, TaskStatus::Deleted);
+        let transition = deleted.status_history.last().unwrap();
+        assert_eq!(transition.actor, TransitionActor::Agent);
+        assert_eq!(transition.source, Some(TransitionSource::Cli));
+    }
+
+    #[tokio::test]
     async fn busy_run_is_a_typed_application_error() {
         let temp = tempdir().unwrap();
         let tasks = TaskStore::new(temp.path().join("task-store"));
@@ -603,6 +813,45 @@ mod tests {
             unchanged.status_history[0].source,
             Some(TransitionSource::Ui)
         );
+    }
+
+    #[tokio::test]
+    async fn start_rejects_terminal_task_instead_of_silently_rerunning_it() {
+        let temp = tempdir().unwrap();
+        let tasks = TaskStore::new(temp.path().join("task-store"));
+        let application = TaskApplication::new(&tasks, None);
+        let task = application
+            .create_direct(direct_input(temp.path()))
+            .await
+            .unwrap();
+        for status in [TaskStatus::Running, TaskStatus::Verifying, TaskStatus::Done] {
+            tasks
+                .update_status(crate::task::TaskUpdateStatusInput {
+                    id: task.id.clone(),
+                    status,
+                    message: None,
+                    actor: TransitionActor::System,
+                    source: Some(TransitionSource::Scheduler),
+                })
+                .await
+                .unwrap();
+        }
+        let before = tasks.get(&task.id).await.unwrap();
+
+        let error = application
+            .start_scheduled_task_with_origin(
+                &task.id,
+                TransitionActor::Agent,
+                Some(TransitionSource::Cli),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), TaskApplicationErrorCode::InvalidState);
+        assert!(error.to_string().contains("task rerun"));
+        let after = tasks.get(&task.id).await.unwrap();
+        assert_eq!(after.status, TaskStatus::Done);
+        assert_eq!(after.status_history.len(), before.status_history.len());
     }
 
     #[tokio::test]

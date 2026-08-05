@@ -78,8 +78,8 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 | `turn.ts` | current turn usage/output/error、activity facts、completion terminal、SDK output-owner FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、message-complete/empty-result、IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、sequence、persist cursor/cache、SDK UUID freshness sets |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
+| `transcript.ts` | live messages、sequence、SessionStore transcript cursor、SDK UUID freshness sets |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation |
 
 Route modules 和 `SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` 内部模块；新增 route-facing 能力仍先接入 `SessionEngine`，再由 adapter 调用 builtin/external public facade。`runtime-boundary.unit.test.ts` 扫描 route、session-engine、builtin-session 和 external-session 目录，防止 facade 再次直接修改内部状态，或重新实现已经迁出的终态与持久化逻辑。External Runtime 同样采用 facade + owner modules，但没有抽象出 builtin/external 共用的生命周期框架；两边只共享 `session-core/*` 的纯策略。
 
@@ -234,9 +234,25 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `initialize` | 握手，交换 capability |
 | `thread/start` | 创建新 thread |
 | `thread/resume` | 恢复已有 thread |
+| `thread/read` | 读取完整、有序的 native turns；仅 Rewind 的 before-turn 边界使用 |
+| `thread/fork` | 通过 `lastTurnId` 创建独立 native branch |
+| `thread/unsubscribe` | 解除 source app-server 对刚创建 branch 的临时订阅 |
 | `turn/start` | 发送用户消息到 thread |
 | `turn/steer` | 追加用户输入到当前 in-flight turn（Codex 实时响应路径） |
 | `turn/interrupt` | 中断当前 turn |
+
+### 对话 Rewind / Fork（0.4.5）
+
+Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；System CLI 仅在官方稳定版本 `>= 0.143.0` 开启，Managed Codex 由锁定版本保证。Claude Code / Gemini 不共享这项 capability。
+
+- 每次 root `turn/start` 都传入 MyAgents user message id 作为 `clientUserMessageId`。响应的 native turn id 与该 product id 在本次 admission 内核对；只有成功 terminal assistant 持久化 `runtimeTurnAnchor:{turnId,rootUserMessageId}`。通知和 RPC response 可任意先后，terminal 必须等 admission id 确认后再落盘。
+- External transcript persistence 同时创建 assistant 的 canonical product message id；成功落盘后的 `chat:message-complete` 必须回传同一个 `assistant_message_id`，让普通 live stream 与 reconnect live snapshot 在暴露 transcript action 前归一到 SessionStore identity。Renderer 的 provisional streaming id 只属于展示生命周期，不能用于 Rewind/Fork 等持久化操作寻址。
+- Fork assistant 使用 `thread/fork({threadId,lastTurnId:anchor.turnId})`。Rewind user 先用 `thread/read({threadId,includeTurns:true})` 精确找到对应 turn：有前一 turn 时 fork through previous；目标是第一 turn 时返回 `fresh-thread`，不预建不可跨进程恢复的空 thread。
+- `thread/fork` 会让当前 app-server 临时订阅新 thread，因此交回 product 层前必须 `thread/unsubscribe`。失败则停止 connection；无法确认终止时不提交产品状态。
+- native branch 成功后，产品 transcript 仍以 SessionStore 为 authority，不从 Codex rollout 反向重建富消息。Rewind 只截断对话且保留同一个 product Session id；Fork 复制截止目标 assistant 的 transcript prefix 到新的 product Session。若来源是尚未带 `configSnapshotAt` 的 legacy Session，新分支在创建时以来源当下有效的 Agent/runtime 配置冻结 owned snapshot，来源 Session 本身保持不变。
+- 一个 Session Sidecar 操作结束时仍只持有一个 root thread。Rewind 提交后停止旧 process 并按 replacement binding restore；有 native replacement 时在 mutation lease 释放后异步复用 `prewarmExternalSession()` resume，新进程启动失败不回滚 durable Rewind，下一条消息仍走既有 resume。首 turn rewind 清除 binding且不预热不可恢复的空 thread，让下一条消息走既有 fresh-start。旧 process 无法确认停止时重启该 1:1 Sidecar，不能继续向 source thread 发送。
+
+不得使用 experimental `thread/rollback`、本地 previous-turn mirror、`beforeTurnId` 猜测或 Renderer 直连 app-server。`CodexRuntime` 是 native RPC/subscription owner，`external-session` 是操作编排 owner，SessionStore 是 transcript/metadata owner。
 
 ### `thread/start` 参数 Schema（Codex v0.111.0）
 
@@ -535,10 +551,12 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `operation-queue.ts` | direct/queued message operation及其 user-message projection、turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、success-gated batch commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
+| `transcript-persistence.ts` | in-memory `SessionMessage[]`、SessionStore transcript cursor、persisted runtime usage totals、user/assistant tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
 Facade 仍负责跨模块编排：调用 Runtime 进程、广播 SSE、执行 analytics/title hook，并根据各模块返回的结果依次完成持久化、交互清理和队列 drain。Queue 模块不直接调用 Runtime；lifecycle 模块不接管 stop cleanup；content 的内部引用和 Map 不暴露给 facade，工具、子 Agent 和附件更新都通过命名 API 完成。Turn lifecycle 负责终态分类和本轮 channel delivery 的接纳与顺序；transcript 模块负责用户/assistant 消息、retry truncate、last assistant read 和 SessionStore 写入；interactive 模块负责 IM event bus、registry cleanup 以及 inbox/watch 错误投递，持久化 JSON 结构不变。
+
+External transcript owner 与 builtin 共用 SessionStore cursor 契约，但不共享 runtime lifecycle 抽象：只能追加 cursor 之后的 exact tail；live projection 短于 durable prefix 时先 rehydrate 再拒绝当前操作，不能把短数组当成删除指令。retry/removal 走命名 mutation，fork target 必须为空；冲突向调用方返回可操作错误，不做 blind retry 或历史合并。
 
 每个 direct/queued message operation 保存自己的用户消息，并记录该消息是否已经展示、写入内存 transcript、持久化或撤回。Desktop、IM、Inbox、Background、Injected 与 realtime fallback 复用既有 direct-send tail 和 queue generation，facade 不保存进程级的第二份“首条消息”状态。`external-session.ts` 只保留 watchdog、trace、待创建 Session 等确实属于编排过程的状态。
 
@@ -649,6 +667,8 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
+Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer 的 mount key 不会重新触发上述 POST。因此 durable replacement binding restore 后由 external-session 编排 owner异步复用同一个 `prewarmExternalSession()`；调用发生在 conversation mutation lease 释放后，并在执行前核对当前 lifecycle Session 与 replacement binding，避免迟到预热覆盖后继 Session。第一 Turn Rewind 不走这条优化，因为 fresh prewarm 会产生尚未 materialize、不可跨 app-server resume 的空 thread id；它保持无 binding，等待下一次真实 send fresh-start。
+
 **Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
@@ -699,7 +719,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 | **Process/turn 分离** | `sessionState`/`isBusy`/`waitIdle` 只表达 turn；`hasExternalRuntimeProcess` 单独表达 persistent process liveness，pre-warm idle 不阻塞自动回合 |
 | **看门狗** | **Per-turn**(不是 per-process):pre-warm idle 不计时,turn 启动才启动计时器。10 分钟无活动 → kill |
 | **Stale text 防护** | `lastTurnSucceeded` 标志,cron/heartbeat 路径检查,防止崩溃后返回上一轮旧回复 |
-| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 写入 SessionStore,崩溃不丢用户消息;owner 检查 `saveSessionMessages()` 返回值,`unindexed-create-refused` 视为发送失败而不是 log-only |
+| **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 携带 SessionStore cursor 追加 exact tail，崩溃不丢用户消息；stale cursor 先 rehydrate，`unindexed-create-refused` 视为发送失败而不是 log-only |
 | **Token 用量** | `thread/tokenUsage/updated` 作为 running-total fallback，与持久化 baseline 做 diff；0.146+ 完整 raw usage 作为 turn delta 累加入同一 baseline。旧 baseline 无法分离历史 cache，fallback 不记 cache 细分，避免把历史量误记到当前 turn |
 | **Cross-runtime 守卫** | pre-warm / restore / send 路径均用 `SessionMetadata.runtime` 校验,阻止跨 runtime 污染 |
 
@@ -804,7 +824,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 1. **服务端** (`agent-session.ts:initializeAgent`)：检测 `meta.runtime !== 'builtin'` → 设 `sessionRegistered=false` → 跳过 SDK resume（避免 "No conversation found" 崩溃）
 2. **前端** (`Chat.tsx`)：检测 `isCrossRuntimeSession` → 发消息时弹 ConfirmDialog → 用户可选择新开会话或留在当前页浏览历史
-3. **Fork/Rewind**：外部 Runtime session 不支持（前端隐藏按钮 + 服务端 400 守卫）
+3. **Fork/Rewind**：Codex 在能力版本满足且消息持有精确 root-turn anchor 时支持；Claude Code / Gemini 仍由前端隐藏并在服务端返回 unsupported
 
 ## Context 用量归一化（PRD 0.2.32）
 
@@ -813,7 +833,7 @@ config.multiAgentRuntime (磁盘/React state)
 **核心不变量**
 - **占用 = 最近一次 API 调用的 input 系 token，不是整 turn 聚合**。带工具的一轮发多次 API、每次重发上下文，聚合会严重高估（圆环钉死在 ~100%）。
 - **两系 cache 语义相反**：Anthropic 系（builtin / Claude Code）`input` 不含 cache → `input + cacheRead + cacheCreation`；OpenAI 系（Codex）`inputTokens` 已含 cached → 直接用，不再加。
-- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值（= auto-compact 有效窗口，约「窗口 − 13K」触发压缩）。
+- **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值，表示模型的有效完整窗口；builtin 会在该窗口的 90% 处自动压缩，external runtime 保留自己的压缩策略。
 
 **每 runtime 占用来源**
 

@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SseEventMetadata } from '@/api/SseConnection';
 import { tryClaimSessionResourceTransition } from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
-import TabProvider from './TabProvider';
+import TabProvider, { handleApiResponse } from './TabProvider';
 
 type EventHandler = (
   eventName: string,
@@ -113,6 +114,7 @@ function Probe() {
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
   } = useTabState();
+  const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
   return (
     <>
       <output data-testid="activity">
@@ -129,10 +131,19 @@ function Probe() {
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
       <output data-testid="session-restore-error">{sessionRestoreError ?? ''}</output>
       <output data-testid="history-content">{JSON.stringify(historyMessages.map(message => message.content))}</output>
+      <output data-testid="history-identities">{JSON.stringify(historyMessages.map(message => ({
+        id: message.id,
+        runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
+      })))}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
+      <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
-      <button type="button" onClick={() => void retryCurrentSessionRestore()}>retry restore</button>
+      <button type="button" onClick={() => {
+        void retryCurrentSessionRestore('m2').then(result => {
+          if (result.restored) setRetryRestoreTargetPresent(result.targetMessagePresent);
+        });
+      }}>retry restore</button>
       <button type="button" onClick={() => void adoptMigratedSession('session-migrated-b', { sidecarAlreadyMigrated: true })}>adopt migrated session</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
@@ -182,6 +193,22 @@ function readStreamingContent(): string | unknown[] | null {
 const allowSessionOpening = () => () => undefined;
 
 describe('TabProvider session activity ownership', () => {
+  it('preserves structured operation error codes across the Tab API boundary', async () => {
+    const response = new Response(JSON.stringify({
+      success: false,
+      error: 'Wait for the current Session operation to finish',
+      errorCode: 'session_busy',
+    }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toMatchObject({
+      message: 'Wait for the current Session operation to finish',
+      status: 409,
+      errorCode: 'session_busy',
+    });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     sseHarness.state.connected = false;
@@ -830,6 +857,78 @@ describe('TabProvider session activity ownership', () => {
     expect(readStreamingContent()).toEqual(structuredContent);
   });
 
+  it.each([
+    ['a newly streamed reply', false],
+    ['a live-recovery snapshot', true],
+  ] as const)('reconciles the persisted assistant identity for %s', async (_label, fromLiveRecovery) => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/sessions/session-assistant-identity?') && !init?.method) {
+        return new Response(JSON.stringify({
+          success: true,
+          session: {
+            id: 'session-assistant-identity',
+            agentDir: '/tmp/workspace',
+            title: 'Assistant identity',
+            createdAt: '2026-07-15T00:00:00.000Z',
+            lastActiveAt: '2026-07-15T00:00:00.000Z',
+            runtime: 'codex',
+            messages: [],
+            snapshotRevision: 0,
+            liveSessionState: 'idle',
+            liveStreamingMessage: null,
+            hasMoreBefore: false,
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+
+    render(
+      <TabProvider
+        tabId={`tab-assistant-identity-${String(fromLiveRecovery)}`}
+        agentDir="/tmp/workspace"
+        sessionId="session-assistant-identity"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.connected).toBe(true));
+    if (fromLiveRecovery) {
+      emit('chat:init', {
+        sessionId: 'session-assistant-identity',
+        sessionState: 'running',
+        liveStreamingMessage: {
+          id: 'external-live-provisional',
+          role: 'assistant',
+          content: 'Recovered answer',
+          timestamp: '2026-07-15T00:00:01.000Z',
+        },
+      });
+    } else {
+      emit('chat:message-chunk', 'Fresh answer');
+    }
+
+    emit('chat:message-complete', {
+      assistant_message_id: 'assistant-canonical',
+      runtime_turn_anchor: {
+        turnId: 'turn-native-1',
+        rootUserMessageId: 'user-root-1',
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('history-identities')).toHaveTextContent(
+      JSON.stringify([{
+        id: 'assistant-canonical',
+        runtimeTurnAnchor: {
+          turnId: 'turn-native-1',
+          rootUserMessageId: 'user-root-1',
+        },
+      }]),
+    ));
+  });
+
   it('rolls back a refused migration relabel before a later real-session switch', async () => {
     tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const match = url.match(/\/sessions\/(session-refused-[ab])\?/);
@@ -1348,6 +1447,66 @@ describe('TabProvider session activity ownership', () => {
     expect(sessionGetCount).toBe(1);
     expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
   });
+
+  it('walks older persisted pages before deciding whether a rewind target still exists', async () => {
+    let olderPageCount = 0;
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (!url.includes('/sessions/session-deep-rewind?') || init?.method) {
+        throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+      }
+      const before = new URL(url).searchParams.get('before');
+      if (before === 'm81') {
+        olderPageCount += 1;
+        return new Response(JSON.stringify({
+          success: true,
+          session: {
+            messages: [
+              { id: 'm1', role: 'user', content: 'oldest', timestamp: '2026-07-15T00:00:00.000Z' },
+              { id: 'm2', role: 'user', content: 'rewind target', timestamp: '2026-07-15T00:00:01.000Z' },
+            ],
+            hasMoreBefore: false,
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: 'session-deep-rewind',
+          agentDir: '/tmp/workspace',
+          title: 'Deep rewind session',
+          createdAt: '2026-07-15T00:00:00.000Z',
+          lastActiveAt: '2026-07-15T00:01:22.000Z',
+          runtime: 'codex',
+          messages: [
+            { id: 'm81', role: 'user', content: 'recent', timestamp: '2026-07-15T00:01:21.000Z' },
+            { id: 'm82', role: 'assistant', content: 'latest', timestamp: '2026-07-15T00:01:22.000Z' },
+          ],
+          snapshotRevision: 82,
+          liveSessionState: 'idle',
+          liveStreamingMessage: null,
+          hasMoreBefore: true,
+        },
+      }), { status: 200 });
+    });
+
+    render(
+      <TabProvider
+        tabId="tab-deep-rewind"
+        agentDir="/tmp/workspace"
+        sessionId="session-deep-rewind"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+    await waitFor(() => expect(readActivity().historyCount).toBe(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'retry restore' }));
+
+    await waitFor(() => expect(screen.getByTestId('retry-restore-target-present')).toHaveTextContent('true'));
+    expect(olderPageCount).toBe(1);
+  });
+
   it('fails a revision-gap restore closed and retries only on user action', async () => {
     let sessionGetCount = 0;
     tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -1432,6 +1591,7 @@ describe('TabProvider session activity ownership', () => {
 
     await waitFor(() => expect(sessionGetCount).toBe(4));
     await waitFor(() => expect(readActivity().historyCount).toBe(3));
+    expect(screen.getByTestId('retry-restore-target-present')).toHaveTextContent('true');
     expect(screen.getByTestId('session-loading')).toHaveTextContent('false');
     expect(sseHarness.connection.connect).toHaveBeenCalledTimes(1);
   });

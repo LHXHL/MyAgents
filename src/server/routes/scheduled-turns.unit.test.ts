@@ -44,8 +44,17 @@ describe('scheduled turn HTTP handlers', () => {
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({
       success: false,
-      error: 'Task id, queue id, session id, and prompt are required.',
+      error: 'Task id, queue id, session id, prompt, and Activation Event must be valid.',
     });
+
+    const malformedActivation = await handleTaskExecuteSyncRoute(
+      request('/cron/execute-sync', {
+        taskId: 'task-1', queueId: 'queue-1', sessionId: 'session-1', prompt: 'work',
+        activationEvent: { event: { id: 7 } },
+      }),
+      dependencies,
+    );
+    expect(malformedActivation.status).toBe(400);
   });
 
   it('maps Task orchestrator terminal results without changing the wire shape', async () => {
@@ -73,6 +82,7 @@ describe('scheduled turn HTTP handlers', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       success: true,
+      turnDispatched: true,
       aiRequestedExit: true,
       exitReason: 'done',
       outputText: 'TASK_COMPLETE: done',
@@ -111,10 +121,76 @@ describe('scheduled turn HTTP handlers', () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       success: false,
+      turnDispatched: false,
       error: 'Task execution was canceled before dispatch',
       code: 'task_dispatch_canceled',
       terminationUnconfirmed: true,
     });
+  });
+
+  it('strictly validates the bounded Activation Event envelope', async () => {
+    const activationEvent = {
+      event: {
+        id: 'build-319',
+        kind: 'ci.failed',
+        occurredAt: '2026-08-03T09:30:00+08:00',
+      },
+      reason: { code: 'ci_failed', message: 'CI failed' },
+      handoff: { summary: 'Build 319 failed', data: { build: 319 } },
+      detectedAt: 1_775_000_000_000,
+    };
+    const dependencies = {
+      getEngine: () => engine('session-task'),
+      getWorkspacePath: () => '/workspace',
+      taskOrchestrator: {
+        runScheduledTurn: vi.fn(async () => ({ success: true, turnDispatched: true })),
+      },
+    };
+    const invoke = (candidate: unknown) => handleTaskExecuteSyncRoute(
+      request('/cron/execute-sync', {
+        taskId: 'task-1',
+        queueId: 'queue-1',
+        sessionId: 'session-task',
+        prompt: 'work',
+        activationEvent: candidate,
+      }),
+      dependencies,
+    );
+
+    expect((await invoke(activationEvent)).status).toBe(200);
+    expect((await invoke({ ...activationEvent, unexpected: true })).status).toBe(400);
+    expect((await invoke({
+      ...activationEvent,
+      event: { ...activationEvent.event, occurredAt: '03 Aug 2026' },
+    })).status).toBe(400);
+    for (const occurredAt of [
+      '2026-08-03 12:34:56UTC',
+      '2026-08-03t12:34:56z',
+      '2026-08-03T12:34:56UTC',
+      '2026-08-03T12:34:56',
+      '2026-08-03T23:59:60Z',
+      '2026-02-30T12:00:00Z',
+      '2026-04-31T12:00:00Z',
+      '2026-08-03T24:00:00Z',
+    ]) {
+      expect((await invoke({
+        ...activationEvent,
+        event: { ...activationEvent.event, occurredAt },
+      })).status).toBe(400);
+    }
+    expect((await invoke({
+      ...activationEvent,
+      handoff: { summary: 'ok', text: 'x'.repeat(32 * 1024 + 1) },
+    })).status).toBe(400);
+    expect((await invoke({
+      ...activationEvent,
+      reason: { ...activationEvent.reason, extra: true },
+    })).status).toBe(400);
+    expect((await invoke({
+      ...activationEvent,
+      event: { ...activationEvent.event, id: 'build\u200b319' },
+    })).status).toBe(400);
+    expect(dependencies.taskOrchestrator.runScheduledTurn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps Goal validation and success response fields stable', async () => {

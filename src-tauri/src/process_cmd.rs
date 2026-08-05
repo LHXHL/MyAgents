@@ -462,7 +462,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminating_owned_tree_preserves_unrelated_same_argv_process() {
-        let mut unrelated = std::process::Command::new("sleep")
+        let mut unrelated = new("sleep")
             .arg("60")
             .stdin(Stdio::null())
             .stdout(Stdio::null())

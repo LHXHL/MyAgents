@@ -258,9 +258,9 @@ Global control request
 | 前缀 | 职责 | 调用方 |
 |------|------|--------|
 | `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
-| `/api/task/*`（13 条） | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts` |
+| `/api/task/*`（20 条） | Task Center 任务 CRUD、run/run-now/rerun、Trigger validate/test/check-now/reset-checkpoint 与 doc 读写 | CLI、`admin-api.ts` |
 | `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
-| `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model mutation |
+| `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model / MCP mutation |
 | `/api/runtime/sdk-child/{admit,settle}` | Rust-owned Claude SDK native child launch circuit；按 executable identity 限流 deterministic exec denial | Global / Session Sidecar 的 `createGuardedSdkQuery()` |
 | `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
@@ -412,16 +412,17 @@ type InteractionScenario =
 - `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
 - `task_application.rs`：create/link、status、delete/unlink、run/rerun 的唯一应用层 policy；Management/Tauri/Cron/Memory 只通过该 owner 进入 Task mutation。
 - `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
+- `task_trigger.rs`：Activation Trigger v1 schema、command Detector harness、`trigger-state.json` durable outbox/checkpoint 与进程资源上限；Detector 只产出 `quiet | activate`，failure 是 harness 故障。
 - `task_execution.rs`：Session 选择、`SidecarOwner::Task`、Task prompt 与同步执行 use case。
 - `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
 - `legacy_upgrade.rs`：在 Task scheduler 启动前把普通 At/Every/Cron、旧 Task projection 与 managed row 幂等迁移为 Task；Loop/开发期 Goal row 不迁移。
 
-`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
+`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；command Task 到点后先在 Rust 运行 Detector，`quiet` 不预留 Session、不 ensure Sidecar、不进入 SessionEngine，`activate` 则先原子提交 checkpoint + pending Activation Event，再申请普通 Task queue。Task row 中的 execution receipt 与终态先于 outbox 清理提交，重启可据同一 event id 只结算一次。pending event 持久化 scheduled/check-now origin：Running Task 由 scheduler 按原 origin 恢复，Stopped/Blocked 只执行 check-now 的一次性 manual recovery，绝不因此 arm timer 或改写暂停状态。Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`check-now` 真实运行 Detector并提交状态，`run-now` 绕过 Detector 强制执行 AI；二者都不启用 scheduler 或移动 recurring timer，且 pending outbox 未结算时禁止 run-now 抢占投送 authority。Running Task 的 check-now activation 是真实 AI execution，照常服从 maxExecutions/AI-exit terminal 规则；Stopped/Blocked 保留原状态；detached check-now worker 结算后必须唤醒 timer loop，使终态、pending recovery 或新的 recurring anchor 立即被 scheduler owner 重读。command runtime state 不维护第二份 cleanup flag：deleted / non-command Task 行本身就是持久清理义务，切回 command 前必须先幂等删除旧 state，启动扫描负责恢复中断的物理删除。
 
 **Node.js 层**：
-- AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役
+- AI 统一通过 `myagents-task-automation` Skill 与 canonical `myagents task ...` CLI 使用定时、未来与条件激活能力；历史 `im-cron` MCP 已退役
 - `src/server/tools/im-cron-tool.ts` 只保留 IM / Session cron context registry，不再创建 MCP server
-- 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
+- `myagents cron ...` 作为已发布兼容 alias 保留；新 Agent 工作流不把 Cron 或 Sensor 暴露成独立领域，所有 mutation 仍落 TaskStore
 - `/cron/execute-sync` 只是为兼容历史保留的接口名，业务归属仍是 Task；`routes/scheduled-turns.ts` 只做请求校验和响应映射，`task-turn-orchestrator.ts` 与 Runtime adapter 负责实际准备和执行
 
 标准 Cron get/list/mutation facade 也只读 TaskStore；未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
@@ -495,7 +496,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 **模型别名映射：** 子 Agent 指定 `model: "sonnet"` / `"fable"` 时，SDK 通过 `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` 解析为供应商模型。四个别名变量：`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL`。
 
-**Context-window ingress：** 所有进入 Claude Agent SDK 的 model id 都要经过 `model-capabilities.ts` 的 suffix helper；调用点已知 provider 时必须用 `applyProviderContextWindowSuffix(model, providerId)`，只有 provider 不可知时才直接用 flat `applyContextWindowSuffix(model)`。Provider helper 对裸 model id 优先读取 active provider 的 registry row，该 provider 没有对应 row 时才 fallback flat registry；调用方显式传入的 `[1m]` 保持不变。bridge、cron、持久化与用户可见 surface 始终保留裸 model id。
+**Context-window ingress：** 所有进入 Claude Agent SDK 的 model id 都要经过 `model-capabilities.ts` 的 suffix policy。普通 provider-aware lookup 与 live `setModel` 使用 `applyProviderContextWindowSuffix(model, providerId)`；provider 不可知的 flat 入口才用 `applyContextWindowSuffix(model)`。一个持久 SDK Query 同时装配 env、主模型、alias 与 sub-agent model 时，先用 `snapshotProviderModelContextLengths` 固定本次 launch 的 provider-scoped capability，再由 `applyContextWindowSuffixForContextLength` 统一消费；只有单模型 one-shot 可以直接复用同一次 `buildClaudeSessionEnv()` 产出的 env cap。Provider scope 对裸 model id 优先读取 active provider 的 registry row；该 provider **没有对应 row** 时才 fallback flat registry，已有 row 但缺 `contextLength` 必须保持 unknown，不能借用另一 Provider 的同名值。调用方显式传入的 `[1m]` 保持不变。bridge、cron、持久化与用户可见 surface 始终保留裸 model id。
 
 **Provider Self-Resolve：** IM 与尚未 materialize 的 backend-created Task Session 可从磁盘初始化 Provider/Model，不依赖前端 `/api/provider/set`；已有 Task Session 保留自己的配置 authority。owned builtin session 的 canonical 身份是 `providerRoute`（providerId + model），请求时再从当前配置 materialize `ProviderEnv`；旧数据解析链兼容 `providerRoute → legacy providerId/model → providerEnvJson fallback → agent/default`，不得把 apiKey/baseUrl 作为新 snapshot 身份写回。
 
@@ -525,13 +526,13 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 | Owner module | 职责 |
 |------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry、Session reset/switch/stale-recovery mutation barrier |
+| `lifecycle.ts` | SDK `Query` 进程、可同步撤销的 Query identity authority、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry、Session reset/switch/stale-recovery mutation barrier |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，同时保存 requestId、assistant channel owner 与成功前暂存的完整文本 block）、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、成功终态 channel-delivery commit、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
-| `transcript.ts` | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
+| `transcript.ts` | live messages、message sequence、SessionStore 签发的 transcript cursor、SDK UUID freshness sets |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation |
 | `types.ts` | builtin owner 间共享的结构类型 |
 
 Builtin SDK 工具的**可见性 authority** 是 `src/server/sdk-builtin-tools.ts::SDK_BUILTIN_TOOLS`，产品会话必须通过 `Options.tools` 显式传入该目录；Provider 验证、订阅登录、标题生成、视觉识别等纯控制面 Query 必须传 `tools: []`。`Options.tools` 只决定模型能看到哪些 SDK 内置工具，不是授权规则；真正的执行许可仍由 `allowedTools` / `disallowedTools`、`canUseTool` 和 `PreToolUse` / `PermissionRequest` hooks 分层裁决。新增或移除内置工具时只修改这一可见性 owner，并分别验证权限链，不得把工具目录复制到 route 或 UI。
@@ -539,6 +540,10 @@ Builtin SDK 工具的**可见性 authority** 是 `src/server/sdk-builtin-tools.t
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
 
 Builtin Session 的 reset、legacy internal switch 与 stale-SDK recovery 都必须进入 `lifecycle.ts::runSerializedSessionMutation()`；enqueue 在登记可取消的 admission ticket 后等待同一 barrier，再读取 metadata 或 dispatch。不得让两个 identity mutation 并行清理 Query / transcript，也不得让用户消息越过进行中的 mutation 发给旧 runtime。
+
+Builtin `Query` 启动时由 `lifecycle.ts` 绑定 launch Product Session id 与 expected SDK Session id；abort 或 Query replacement 必须先同步 revoke 该 authority、清除该 Query 的 buffered control state。旧 Query 的后续 streamed event（包括 retraction/result）全部只可丢弃。streamed / pre-warm buffered `system_init` 只有在 authority 仍是当前 Query、Product binding 仍属于 launch/已完成 pending adoption 的 identity、且 `session_id` 精确等于 expected SDK id 时，才可更新 metadata 或执行 `pending-* → SDK UUID` adoption；adoption 在持有 transcript/index locks 的 commit point 再检查同一 authority。legacy Product id 与 SDK id 不同、以及非 UUID Product id 启动 fresh SDK UUID 时，Product id 保持不变，只更新其 `sdkSessionId`；不得把迟到事件解释成 real→real Product identity migration。
+
+Session transcript 的普通写入只接受 `SessionStore.loadSessionTranscript()` 签发的进程内 `TranscriptWriteCursor` 与新 tail；cursor 封装 durable file identity 和公开的 `persistedMessageCount`，Runtime 不另存 index/cache。短 live projection、stale cursor 或未知 append 结果不能触发 full rewrite；owner 必须重载 durable transcript并拒绝当前操作。rewind、retry、SDK retraction 与 admission rollback 通过 `mutateSessionTranscript()` 的命名 intent，在既有 per-Session lock 内从 durable rows 派生 target 后 temp+rename；SDK retraction 以 durable `sdkUuid` 为选择器，仅可额外删除明确传入的 open streaming tail id。legacy JSON 首次加载先原子发布 JSONL，失败保留 legacy source 并向调用方报错。Fork 只可写入空 target transcript，已有 target 一律冲突退出。Codex 的 transcript + native binding 仍使用既有 `commitCodexConversationRewind()` composite intent，不并入通用 mutation。
 
 **Builtin MCP soft pre-warm：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。初始 Query 或成功安装新 MCP map 时，`lifecycle.ts` 以 Query identity + generation + 单调 installed-map revision + runtime fingerprint 建立一次性 owner，并在 owner 上记录 `startedAt + deadlineAt`；默认预算只由 `session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 定义（当前 10 秒）。Desktop、IM 与 Cron / Goal / Heartbeat / Memory Update 等 injected turn 全部在 `messageGenerator()` promotion 后、live mutation fence 之后消费该 owner 的**剩余**预算。只有 `pending` 会继续等待；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期都把当前 generation 标为 degraded 并继续 AI turn。ready / degraded 都是 terminal one-shot，后续 turn 不再读 status、不开新 timer。用户取消仍立即取消 promotion；Query/map owner replacement 则 requeue 给 replacement generator，不能让旧 control response放行旧 Query。
 
@@ -567,8 +572,10 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、成功终态 commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state |
-| `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
+| `transcript-persistence.ts` | in-memory session messages、SessionStore transcript cursor、persisted runtime usage totals、tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
+
+Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `SessionEngine` → external adapter 路径，不建立 Codex 专用 route 或第二套 Session。`codex.ts` 独占 `thread/read(includeTurns:true)`、`thread/fork(lastTurnId)`、`thread/unsubscribe` 与 root `turn/start` admission；`external-session.ts` 在既有 operation serialization 边界内编排 native branch、进程切换和产品 Session；`SessionStore` 独占 transcript/metadata 的可恢复提交。成功 root terminal assistant 才持久化 `{turnId, rootUserMessageId}` 锚点。Rewind 只改变对话上下文，不恢复工作区文件；有 replacement native thread 时在 durable rebind 和 mutation lease 释放后异步复用既有 prewarm，失败只影响下一次 send 的启动延迟；第一 native Turn 之前继续用“无 runtimeSessionId”表示，不预热空 thread，下一次发送复用既有 fresh-start。Claude Code / Gemini 继续明确不支持该能力。
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
@@ -699,6 +706,8 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
+- 每个 Task 最多一个 time Activation Trigger；缺失等价 `always`。command Trigger 配置写 Task row，高频 checkpoint/health/pending event 写 `tasks/<id>/trigger-state.json`，两者都只由 TaskStore 读写
+- command Detector 的合法业务结果只有 `quiet | activate`；只有 durable `activate` 才建立 Session/Sidecar/Runtime 工作，failure 在 harness 内诊断、退避或阻塞
 - `TaskApplication` 统一编排 Task 的创建、状态、删除和 run/rerun；current-session Task 只在真实 Session 创建完成后才持久化，通知字段在 TaskStore 写锁内合并，成功的 run/rerun 由同一操作返回从 1 开始计数的 `attemptOrdinal`，供 GUI/CLI 上报 analytics
 - Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
 - 同一 Task 的 status、timer、execution claim 与 stop side effect 由 keyed Task-control lifecycle 串行化；stop 使用现有 `queueId` 精确停止当前 Turn。持久 `Running/Stopped` 只表达 scheduler intent，具体 Turn 以非持久 `running/stopping/stop_failed` 投影；stop 未确认时禁止 rerun。Attached Space Task 的终态不能 generic rerun，必须由新的 claim/reopen 创建新 Attached Task
@@ -853,10 +862,11 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
 
-- `themeId`：当前生效的完整 Theme 身份；production registry 依次注册 `myagents-default`、`default-black`、
-  Sage、Claude（稳定内部 ID `absolutely`）、Linear、Proof、Codex、Raycast；
+- `themeId`：当前生效的完整 Theme 身份；production registry 的产品顺序为 MyAgents Light（`myagents-light`）、
+  MyAgents Classic（canonical ID `myagents-default`）、MyAgents Classic2（`default-black`）、Sage、
+  Claude（稳定内部 ID `absolutely`）、Linear、Proof、Codex、Raycast；
 - `themeSelectionExplicit`：用户是否明确选过 Theme；`false` 时跟随可独立演进的产品默认
-  `DEFAULT_THEME_ID`（当前为 `default-black`），`true` 时永久尊重 `themeId`；
+  `DEFAULT_THEME_ID`（当前为 `myagents-light`），`true` 时永久尊重 `themeId`；
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 
@@ -868,7 +878,7 @@ Token 的运行时引用。禁止在动态 Theme package 中放 raw `@theme`；�
 Tailwind，否则 utility 会静默回退 framework default。`build:web` 后的 generated-CSS 契约校验
 是这条编译边界的必备护栏。
 
-配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`。缺失 Theme 选择或历史自动物化的 `myagents-default` 迁为 `default-black + themeSelectionExplicit:false`；历史非 canonical ID 视为用户已选择，继续保留。读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `{ themeId, themeSelectionExplicit:true }` 或 `appearanceMode`，两者不得互相覆盖。`myagents-default` 继续只承担 canonical/unknown-ID fallback，产品默认与结构兜底不得重新合并成一个概念。
+配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`。缺失 Theme 选择或历史自动物化的 `myagents-default` 迁为 `myagents-light + themeSelectionExplicit:false`；历史非 canonical ID 视为用户已选择，继续保留。读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `{ themeId, themeSelectionExplicit:true }` 或 `appearanceMode`，两者不得互相覆盖。`myagents-default` 继续只承担 canonical/unknown-ID fallback，产品默认与结构兜底不得重新合并成一个概念。
 
 启动与窗口数据流：
 
@@ -905,8 +915,9 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
 | 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 Session lifecycle guard 下释放精确 Tab owner |
-| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController` |
+| 定时 Task 启动 | `TaskApplication::run*` 提交 Running 并 arm `TaskSchedulerController`；command Task 到点先运行 Rust Detector |
 | Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
+| Detector 执行/结束 | `process_cmd::spawn_tree` 管理精确子进程树；quiet/failure 不创建 Session owner，activate 持久化后才进入普通 Task Turn |
 | Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
 | Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
 | Goal Pause/终态 | 先提交 SessionGoal 状态，再精确 stop queue Turn；确认后才清 authority / 释放 Goal owner并广播 `goal:changed`，不确定时保留 |

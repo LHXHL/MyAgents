@@ -54,6 +54,8 @@ interface SessionStats {
 
 `configSnapshotAt` 是配置权威边界：存在时，session snapshot 拥有当前会话配置；缺字段不是“自动读 Agent 默认值”的许可。Agent/Project 只作为新 session 模板、legacy/no-snapshot 兼容源、以及 IM 无 Tab owner live-follow 源。
 
+MCP 是分层 authority：`mcpEnabledServers` 冻结该 Session 选择的 server ID；`command / args / env / headers / url` 定义和全局 enabled 安全总闸仍以当前 `config.json` 为权威。任何输入先解析成“snapshot IDs ∩ global enabled ∩ current definitions”，再比较完整 fingerprint；因此 Project 默认变化不能偷改 owned Session 的选择，同 ID 定义变化与全局 disable/re-enable 又都能更新并重启 SDK/MCP。新会话 pre-warm 前按当前 Project/global 配置重新解析有效 MCP，不能复用旧 Session 留在 Sidecar 内存里的启动对象。
+
 `lastActiveAt` 表示 Session 最近一次 meaningful activity，是历史排序时间，不是真人输入时间，也不是任意 transcript 写入时间。被 turn lifecycle 真正接纳的普通 desktop、Space、Task/Cron/Goal、Session Inbox 等工作在 admission 推进一次，并在 complete/stopped/error terminal 再反映终态时间；Memory、silent Heartbeat、prewarm、replay、纯持久化重写与 system maintenance Session 不推进。Heartbeat 只有携带 visible work，或终态在移除 `HEARTBEAT_OK` 与格式空白后仍有内容时才算 meaningful。`isHumanUserMessage` 只服务真人 query/Memory/统计语义，不拥有 recency。用户显式编辑 title/model/permission/provider 等 Session 设置仍可由 metadata PATCH 推进排序时间，favorite 不推进。`SessionStore.updateSessionMetadata` 在 sessions file lock 内保证 `lastActiveAt` 单调不回退；读取方若需要真人 query 时间，必须按 JSONL message timestamp 精确判断，不能用 `lastActiveAt` 预筛。
 
 `providerRoute` 是 owned builtin snapshot 的 canonical provider/model 身份。它只持久化 `{kind, providerId, model}`，不持久化 `baseUrl`、`apiKey`、`authType`、`modelAliases` 等运行时 env。真正发起请求时，Sidecar 用 `providerRoute` + 当前磁盘配置 materialize 出 `ProviderEnv`；subscription route materialize 为 `'subscription'` sentinel，API route 必须能从当前配置解析出 API key，否则本次发送失败并提示用户修复配置。
@@ -242,6 +244,7 @@ interface SessionGoalView {
 - Goal 不持有 taskId、Cron schedule、tab、runtime/model/provider/reasoning/MCP 或普通 delivery。Session 继续拥有运行配置，Goal 只保存 permission turn policy。
 - UI `/goal`、当前 Session 内的 `myagents goal create`、私聊 IM/Agent Channel 都写同一 Goal。创建前必须 materialize 真实 Session id；Rust 拒绝 `pending-*`，没有 post-hoc rebind。
 - Goal 与 Task 可以关联同一 Session。二者不互相引用，实际 Turn 顺序由现有 Runtime queue 决定。
+- command Task 的 pending Activation Event 属于 Rust TaskStore durable outbox，不是 Session queue。只有 checkpoint + event 落盘后才向 SessionEngine 提交普通 Task queue item；quiet/failure/test 不 materialize Session、ensure Sidecar 或进入 Runtime。
 
 #### Turn authority
 
@@ -273,6 +276,8 @@ Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 
 发送统一经过 `/goal/execute-sync`。`routes/scheduled-turns.ts` 只负责请求校验和响应映射，`goal-orchestrator.ts` 管理 Goal 的准备、dispatch 和终态生命周期；Builtin/External adapter 通过 `prepareScheduledTurn()` 完成各自的 Session 绑定与配置准备，并共享 queue identity、stop 与 terminal contract。
+
+Task 仍统一经过 `/cron/execute-sync` 的历史兼容路由名与 `task-turn-orchestrator.ts`。可选 Activation Event 使用 strict v1 envelope；Node 只校验并把固定 event/reason/handoff context 交给既有 Task reminder，不接受 Detector 提供 role、system prompt、runtime、provider、permission、MCP 或 Session 目标。orchestrator 返回真实 `turnDispatched`，Rust 只有在 Runtime admission 已发生且 terminal 已确认时才记一次 AI execution；pre-admission failure 保留 pending event，transport/termination 不确定时保留精确 queue authority供 Stop/recovery。
 
 #### 用户消息与展示
 
@@ -334,13 +339,13 @@ Product Session 的当前 identity、待创建的桌面 Session 和 metadata 冻
 
 | Owner | 拥有内容 | 典型写入 / 行为入口 |
 |---|---|---|
-| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
+| `lifecycle.ts` | SDK `Query`、可撤销 identity authority、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、system_init authority、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
 | `queue.ts` | `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue`、in-flight metadata、admission ticket | enqueue/cancel/force/rescue/drain |
 | `turn.ts` | current turn usage/output/error、SDK output-owner FIFO、injected turn outcomes、inbox binding | turn state mutation API |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 语义、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 | terminal complete/stopped/error、SDK result finalization |
 | `config.ts` | MCP/agents/plugins/model/permission/reasoning/provider、deferred restart、MCP fingerprint | config setters、provider boundary reset、MCP sync |
-| `transcript.ts` | live `messages`、message sequence、persist cursor/cache、current/live SDK UUID sets、reload anchor | transcript state mutation API |
-| `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency | load/persist/reset/switch/rewind/fork/retraction persistence behavior |
+| `transcript.ts` | live `messages`、message sequence、SessionStore transcript cursor、current/live SDK UUID sets、reload anchor | transcript state mutation API |
+| `transcript-persistence.ts` | SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 rewind/retraction/rollback mutation | load/persist/reset/switch/rewind/fork/retraction persistence behavior |
 
 边界规则：
 
@@ -352,6 +357,8 @@ Product Session 的当前 identity、待创建的桌面 Session 和 metadata 冻
 - `agent-session.ts` 不再解释 SDK terminal result，也不再实现 transcript persistence mapping/chain；这两类行为分别归 `turn-lifecycle.ts` 与 `transcript-persistence.ts`，facade 只组装必要依赖并委托。
 - builtin SDK terminal 的成功判定统一由 `session-core/turn-result-policy.ts::classifyBuiltinSdkTerminalResult()` 提供：`is_error` 不是单独 authority；只有 `completed` 与兼容旧 SDK 的缺失 reason 可以 complete，`aborted_*` 映射 stopped，其它或未来未知 reason 一律 fail closed，避免 Task / Goal 把部分结果误结算为成功。
 - builtin pre-warm 遇到 SDK native child 的确定性 exec denial 时，第一次失败只做短暂 control-plane handoff；随后必须采用 Rust admission 返回的 `retryAfterMs`，不得回落为 process-local 500ms/0ms 重启循环。Rust half-open lease 是唯一重试时钟，详见 `bundled_node.md`。
+
+每次 builtin Query launch 由 `lifecycle.ts` 签发仅属于该 Query object 的 identity authority，记录 launch Product Session id 与启动参数实际使用的 expected SDK Session id。`abortPersistentSession()` 先同步 revoke authority，再 interrupt / wake generator；Query replacement 同样撤销旧 authority。streamed 或 pre-warm buffered `system_init` 必须携带原 authority，只有 authority 当前未撤销、Product binding 仍属于 launch identity（或已完成同一 pending adoption）、且 `system_init.session_id` 与 expected SDK id 精确相等时才能产生 metadata side effect。`pending-*` 可原子 adoption 到 SDK UUID；legacy Product A / SDK B 与非 UUID Product A / fresh SDK B 保持 Product A，只记录 `sdkSessionId=B`。未知、缺失或迟到 identity fail closed。
 
 #### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
 
@@ -460,6 +467,23 @@ stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SD
 而没有恢复的文件数。对话截断仍可成功，但该计数必须沿既有 `/chat/rewind` 返回契约
 传到 Chat warning，不能把部分文件回溯展示成完整成功；文件路径不进入通知或日志。
 
+### Codex root turn 锚点与可恢复 Rewind（0.4.5）
+
+Builtin 的 `sdkUuid` 和 Codex 的 native turn id 是两套独立 identity。Codex 成功 root terminal assistant 额外持久化：
+
+```typescript
+runtimeTurnAnchor: {
+  turnId: string;
+  rootUserMessageId: string;
+}
+```
+
+`turnId` 由 Codex `turn/start` response 持有，`rootUserMessageId` 是同次 admission 的 MyAgents user row id。失败、中断、child turn、steer 追加和没有精确 admission 的历史消息都不写 anchor。Renderer 只在 exact anchor 存在时展示 Codex Rewind/Fork；服务器仍重新验证 transcript，不能把 UI 门控当 authority。
+
+Codex Rewind 同时改变 JSONL transcript 与 `SessionMetadata.runtimeSessionId`。SessionStore 以 metadata 中单一、bounded 的 `pendingConversationMutation:{schemaVersion:1,kind:'codex-rewind',sourceRuntimeSessionId,replacementRuntimeSessionId,sourceMessageCount,targetMessageCount}` 关闭两文件 crash window：先在既有 per-Session lock 内写 intent，随后同目录 temp + rename 截断 JSONL，最后替换/清除 native binding、清 intent、清 runtime usage/context 并重算 stats/preview。恢复只需要这两个 count 与 source/replacement binding；不持久化恢复器不消费的 message id 或时间字段。恢复时只接受 source count（保留 source、清 intent）或 target count（完成 replacement）；其它 count 或 source binding 不匹配保留证据并拒绝 Runtime 启动。该机制不是通用事务层，不增加 journal 文件、数据库或 renderer 补偿状态。
+
+第一 native Turn 之前的 rewind 以缺失 `runtimeSessionId` 表示，Codex restore 不得回退使用 product Session id；只有 Claude Code legacy history 保留该 fallback。该状态不执行 fresh prewarm，避免持久化不可跨进程 resume 的空 thread；下一条消息由 replacement Sidecar 走正常 fresh-start并回填真正 materialize 的 thread id。存在 native replacement 时，local restore 完成后异步复用既有 prewarm resume；失败不改变 transcript/binding authority。Codex Rewind 只回溯对话上下文，工作区文件保持不变。
+
 ### reloadAnchor：冷加载后的 Rewind 对齐
 
 Rewind 会立即截断 MyAgents store；SDK 侧只能等下一次 `query({ resume,
@@ -522,20 +546,23 @@ interface SessionMessage {
     usage?: MessageUsage;     // 仅 assistant 消息
     toolCount?: number;
     durationMs?: number;
+    runtimeTurnAnchor?: {       // 仅成功的 Codex root terminal assistant
+        turnId: string;
+        rootUserMessageId: string;
+    };
 }
 ```
 
-### 性能优化
+### 写入能力与性能
 
-**行数缓存**：避免每次保存消息都读取整个 JSONL 文件计数。`lineCountCache: Map<sessionId, count>` 冷启动时读文件，追加时增量更新。
+`loadSessionTranscript()` 在既有 per-Session file lock 内读取 durable rows，并签发仅在当前进程可用的 branded `TranscriptWriteCursor`。cursor 公开 `persistedMessageCount`，私有部分绑定 Session 与 JSONL physical identity；builtin/external owner 只持有该 cursor，不另建行数 cache 或可独立漂移的 persist index。普通 `appendSessionMessages()` 接受 cursor 与新 tail，验证 durable file 仍等于 cursor source 后 O(tail) 追加；live 比 cursor 短或 source 已变化时文件不变，owner 重新 load/rehydrate。
 
-**增量统计**：只计算新增消息的 token 用量，而非全量重算。统计更新在文件锁内执行避免 TOCTOU：
+追加后的 stats 只计算新 tail；显式 destructive mutation 才从完整 durable rows 重算 stats/preview：
 ```typescript
 await withSessionFileLock(sessionId, async () => {
-    const newMessages = messages.slice(existingCount);
-    if (newMessages.length === 0) return;
-    appendFileSync(filePath, linesToAppend);  // transcript commit point
-    const incrementalStats = calculateSessionStats(newMessages);
+    assertCursorMatchesDurableFile(cursor);
+    appendFileSync(filePath, serialize(tail)); // transcript commit point
+    const incrementalStats = calculateSessionStats(tail);
     await withSessionsLock(() => {
         // sessions.json 派生统计在锁内 read-modify-write
     });
@@ -544,7 +571,9 @@ await withSessionFileLock(sessionId, async () => {
 
 **文件锁**：JSONL append / rewrite 使用 per-Session `withSessionFileLock`，`sessions.json` 的多 Sidecar read-modify-write 使用全局 `withSessionsLock`。底层走 `withFileLock` / `with_file_lock`（详见 `pit_of_success.md` 的「withFileLock」节）。
 
-JSONL append / rewrite 是 transcript 的 durability commit point；`sessions.json.stats` 与 preview 等 metadata 是派生投影，后续更新失败只能告警，`saveSessionMessages()` 仍返回 transcript 成功，调用方不得回滚已经落盘的消息。Builtin direct 与 turn-boundary user surface 必须在 SDK dispatch 前完成该持久化；失败时撤回对应 UI row、终止 exact turn / IM request。由于失败可能发生在 append 已提交后的后续步骤，rollback 使用 authoritative full rewrite；若 rewrite 也失败，`forceRewrite` latch 保持到后续一次完整重写成功，禁止退回增量追加猜测磁盘状态。
+JSONL append / atomic replace 是 transcript 的 durability commit point；`sessions.json.stats` 与 preview 等 metadata 是派生投影，后续更新失败只能告警，调用方不得回滚已经落盘的消息。若 append 抛错，SessionStore 在锁内只接受三种可证明状态：旧 EOF 未变、完整 expected suffix 已提交、或 expected suffix 的严格前缀（截回旧 EOF）；其它状态返回 storage consistency error 并使 cursor 失效。Builtin direct 与 turn-boundary user surface 必须在 SDK dispatch 前完成持久化；失败回滚通过 `builtin-admission-rollback` 命名 mutation 先提交 durable target，再撤回 UI/live row，不存在 full-rewrite latch。
+
+缩短/删除不是普通 append 的选项。`mutateSessionTranscript()` 接受 cursor 与 `builtin-rewind`、`sdk-retraction`、`builtin-admission-rollback`、`builtin-transient-retry`、`external-retry` 或 `external-rejected-message` intent，在同一锁内严格读取 durable rows、验证 metadata/cursor/operation 参数、从 source 派生 target 并 temp+rename；`sdk-retraction` 按 durable `sdkUuid` 删除命名 rows，仅允许用 exact message id 额外删除当前 open streaming tail。malformed source 一律拒绝。legacy JSON 迁移先 temp+rename 原子发布 JSONL，成功后才删除 legacy 文件；任何失败保留 source 并向 owner 报错。Builtin/external fork 在写入前验证 target transcript 为空，不能把分支追加到已有历史。Codex rewind 的 transcript 与 native binding 仍由 `commitCodexConversationRewind()` 的 recoverable composite intent 独占。
 
 ### 损坏行容错
 
@@ -904,7 +933,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 | `src/server/SessionStore.ts` | 存储层实现 |
 | `src/server/agent-session.ts` | builtin SDK public facade + session orchestration glue、`switchToSession()`、system-init 处理 |
 | `src/server/builtin-session/turn-lifecycle.ts` | builtin SDK result/stopped/error terminal 语义、usage stamping、IM/inbox/watch/analytics/title hook 顺序 |
-| `src/server/builtin-session/transcript-persistence.ts` | builtin transcript ↔ SessionStore mapping、incremental persist chain、load seeding、cursor/cache 一致性 |
+| `src/server/builtin-session/transcript-persistence.ts` | builtin transcript ↔ SessionStore mapping、tail-only persist chain、load/cursor seeding、命名 destructive mutation |
 | `src/renderer/api/sessionClient.ts` | 前端 API 客户端 |
 | `src/renderer/utils/formatTokens.ts` | Token / 时长格式化工具 |
 | `src/renderer/context/TabProvider.tsx` | 前端 reset / 防护标志 |

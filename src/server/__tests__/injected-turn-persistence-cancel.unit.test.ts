@@ -3,6 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const sdkMocks = vi.hoisted(() => ({
   query: vi.fn(),
 }));
+const storeMocks = vi.hoisted(() => {
+  const cursor = { persistedMessageCount: 0 } as never;
+  return {
+    cursor,
+    appendSessionMessages: vi.fn(),
+    mutateSessionTranscript: vi.fn(),
+    loadSessionTranscript: vi.fn(),
+  };
+});
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
@@ -27,18 +36,16 @@ vi.mock('../SessionStore', async (importOriginal) => {
     ...actual,
     commitPreparedSessionForFirstUserTurn: vi.fn(),
     saveSessionMetadata: vi.fn(async () => undefined),
-    saveSessionMessages: vi.fn(async () => ({
-      ok: true as const,
-      action: 'appended' as const,
-      count: 0,
-      totalCount: 0,
-    })),
+    appendSessionMessages: storeMocks.appendSessionMessages,
+    mutateSessionTranscript: storeMocks.mutateSessionTranscript,
+    loadSessionTranscript: storeMocks.loadSessionTranscript,
   };
 });
 
 import {
+  appendSessionMessages,
   commitPreparedSessionForFirstUserTurn,
-  saveSessionMessages,
+  mutateSessionTranscript,
   saveSessionMetadata,
 } from '../SessionStore';
 import { broadcast, broadcastLive } from '../sse';
@@ -99,11 +106,22 @@ describe('injected-turn cancellation before user persistence', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     sdkMocks.query.mockImplementation(createPromptDrainingQuery);
-    vi.mocked(saveSessionMessages).mockResolvedValue({
+    storeMocks.loadSessionTranscript.mockResolvedValue({
+      messages: [],
+      cursor: storeMocks.cursor,
+      hasMalformedRows: false,
+    });
+    vi.mocked(appendSessionMessages).mockResolvedValue({
       ok: true,
       action: 'appended',
       count: 0,
       totalCount: 0,
+      cursor: storeMocks.cursor,
+    });
+    vi.mocked(mutateSessionTranscript).mockResolvedValue({
+      ok: true,
+      action: 'noop',
+      cursor: storeMocks.cursor,
     });
     resetQueueForTest();
     await initializeAgent('/tmp/myagents-mcp-readiness-cancel', null, undefined, {
@@ -112,33 +130,30 @@ describe('injected-turn cancellation before user persistence', () => {
   });
 
   it('rejects and retracts an ordinary user row when transcript persistence fails', async () => {
-    vi.mocked(saveSessionMessages)
-      .mockResolvedValueOnce({
-        ok: false,
-        reason: 'write-error',
-        count: 1,
-        error: 'disk full',
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        action: 'rewritten',
-        count: 0,
-        totalCount: 0,
-      });
+    vi.mocked(appendSessionMessages).mockResolvedValueOnce({
+      ok: false,
+      reason: 'write-error',
+      error: 'disk full',
+      cursor: storeMocks.cursor,
+    });
 
     await expect(enqueueUserMessage(
       'must not survive a failed write',
       [], undefined, undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined,
       { channelDelivery: NO_CHANNEL_DELIVERY },
-    )).rejects.toThrow('failed to persist transcript');
+    )).rejects.toThrow('failed to append transcript');
 
     expect(getMessages()).not.toContainEqual(expect.objectContaining({
       role: 'user',
       content: 'must not survive a failed write',
     }));
-    expect(vi.mocked(saveSessionMessages)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(saveSessionMessages).mock.calls[1]?.[2]).toEqual({ forceRewrite: true });
+    expect(vi.mocked(appendSessionMessages)).toHaveBeenCalledOnce();
+    expect(vi.mocked(mutateSessionTranscript)).toHaveBeenCalledWith(
+      expect.any(String),
+      storeMocks.cursor,
+      expect.objectContaining({ kind: 'builtin-admission-rollback' }),
+    );
     const retractionEvents = [
       ...vi.mocked(broadcast).mock.calls,
       ...vi.mocked(broadcastLive).mock.calls,
@@ -159,8 +174,9 @@ describe('injected-turn cancellation before user persistence', () => {
       action: 'appended';
       count: number;
       totalCount: number;
+      cursor: never;
     }>();
-    vi.mocked(saveSessionMessages).mockImplementationOnce(async () => {
+    vi.mocked(appendSessionMessages).mockImplementationOnce(async () => {
       persistenceStarted.resolve();
       return releasePersistence.promise;
     });
@@ -198,6 +214,7 @@ describe('injected-turn cancellation before user persistence', () => {
       action: 'appended',
       count: 1,
       totalCount: 1,
+      cursor: storeMocks.cursor,
     });
     await vi.runAllTicks();
   });

@@ -985,7 +985,7 @@ mod tests {
         };
 
         let first_manager = Arc::clone(&manager);
-        let first_task = tokio::spawn(async move {
+        let first_task = tauri::async_runtime::spawn(async move {
             stream_response_body(
                 first_response,
                 "application/octet-stream",
@@ -997,7 +997,7 @@ mod tests {
             .await
         });
         let second_manager = Arc::clone(&manager);
-        let second_task = tokio::spawn(async move {
+        let second_task = tauri::async_runtime::spawn(async move {
             stream_response_body(
                 second_response,
                 "application/octet-stream",
@@ -1009,7 +1009,7 @@ mod tests {
             .await
         });
         let third_manager = Arc::clone(&manager);
-        let third_task = tokio::spawn(async move {
+        let third_task = tauri::async_runtime::spawn(async move {
             stream_response_body(
                 third_response,
                 "application/octet-stream",

@@ -11,7 +11,7 @@ import { execFileSync, execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort } from './agent-session';
 import type { ProviderEnv } from './provider-types';
-import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
+import { applyContextWindowSuffixForContextLength } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
 import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
@@ -255,7 +255,12 @@ async function verifyViaSdk(
         tools: [],
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
         // uses the 1M path.
-        ...(opts.model ? { model: applyProviderContextWindowSuffix(opts.model, opts.providerId) } : {}),
+        ...(opts.model ? {
+          model: applyContextWindowSuffixForContextLength(
+            opts.model,
+            Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+          ),
+        } : {}),
       },
     }));
     let timeoutId: ReturnType<typeof setTimeout> | undefined;

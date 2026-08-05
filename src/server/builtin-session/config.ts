@@ -144,18 +144,13 @@ export function applyMcpServersUpdate(
   servers: McpServerDefinition[],
   params: {
     hasQuerySession: boolean;
-    isSnapshotted: boolean;
   },
 ): ReturnType<typeof decideMcpSync> & { applied: boolean } {
   const decision = decideMcpSync({
     previousServers: currentMcpServers ?? [],
     nextServers: servers,
     hasQuerySession: params.hasQuerySession,
-    isSnapshotted: params.isSnapshotted,
   });
-  if (decision.changed && decision.reason === 'snapshot-authoritative') {
-    return { ...decision, applied: false };
-  }
   currentMcpServers = servers;
   return { ...decision, applied: true };
 }

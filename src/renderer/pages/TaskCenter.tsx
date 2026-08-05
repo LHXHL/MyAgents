@@ -14,6 +14,8 @@ import type { Task } from '@/../shared/types/task';
 
 interface Props {
   isActive?: boolean;
+  /** Canonical Session id of the Chat tab from which Task Center was opened. */
+  currentSessionId?: string | null;
   /** Most recent OPEN_TASK_CENTER event payload. Forwarded to `TaskListPanel`
    *  so navigation with `{ autofocusSearch: true }` can open the task-list
    *  search input without the user touching the UI a second time. `nonce`
@@ -22,7 +24,7 @@ interface Props {
   pendingIntent?: { autofocusSearch?: boolean; nonce: number } | null;
 }
 
-export default function TaskCenter({ isActive, pendingIntent }: Props) {
+export default function TaskCenter({ isActive, pendingIntent, currentSessionId }: Props) {
   const { t } = useTranslation('task');
   const [dispatching, setDispatching] = useState<Thought | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -136,6 +138,7 @@ export default function TaskCenter({ isActive, pendingIntent }: Props) {
           <TaskListPanel
             refreshKey={`${refreshKey}:${isActive ? '1' : '0'}`}
             pendingIntent={pendingIntent ?? null}
+            currentSessionId={currentSessionId ?? null}
           />
         </div>
       </div>
@@ -143,6 +146,7 @@ export default function TaskCenter({ isActive, pendingIntent }: Props) {
       {dispatching && (
         <DispatchTaskDialog
           thought={dispatching}
+          currentSessionId={currentSessionId ?? null}
           onClose={() => setDispatching(null)}
           onDispatched={handleDispatched}
         />
