@@ -904,6 +904,8 @@ transition: opacity var(--duration-slow),
 内边距: 2px 6px
 ```
 
+AI 正文反引号内容采用渐进增强：普通 code、尚在检查、文件不存在、被路径安全策略拒绝或检查失败时均保持上述普通样式；有效 HTTP(S) URL 通过格式校验后、文件/目录通过当前有效的 Rust existence + safety 校验后，才增加虚线下划线、pointer 与对应链接动作。文件下划线表达“当前已验证可操作”，不能只凭字符串像路径或后端返回了结果对象就出现；左右键执行前仍需复核，失效后立即降级。显式 Markdown / GFM 链接继续使用标准链接视觉，其样式表达作者已经声明的链接意图。
+
 #### 多行代码块
 ```
 正文背景: var(--paper-inset) / 30%，与 Chat tool/process 组共用同一表面

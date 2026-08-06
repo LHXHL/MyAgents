@@ -642,7 +642,7 @@ Chat / Tab 自己持有的 URL 预览器（Tauri Multi-Webview）。AI Markdown 
 **关键设计：**
 - 依赖 Tauri `"unstable"` feature（`Window::add_child()` 多 Webview API）
 - **安全隔离**：`browser.json` Capability 零权限，Webview 无法访问 Tauri IPC；`on_navigation` 限制 http/https scheme
-- **链接动作 owner**：Markdown、`ExternalLink`、WebSearch / WebFetch 与文件工具不各自解释点击。HTTP(S) 统一走 `useOpenWebLink()`：Chat 普通点击进入当前 Tab 的 `BrowserPanel`，Cmd/Ctrl 点击或 Chat 外 surface 才交给系统浏览器。文件链接、inline path 与工具 path 统一走 `FileActionContext`：可预览文件内部打开、工作区目录 reveal 到文件树、Cmd/Ctrl 显式外部打开；不存在或不支持的目标必须给出明确反馈，不能静默交给 OS 或退化成无动作文本。
+- **链接动作 owner**：Markdown、`ExternalLink`、WebSearch / WebFetch 与文件工具不各自解释点击。HTTP(S) 统一走 `useOpenWebLink()`：Chat 普通点击进入当前 Tab 的 `BrowserPanel`，Cmd/Ctrl 点击或 Chat 外 surface 才交给系统浏览器；反引号 HTTP(S) 仅做标准 URL 格式校验，不探测网络可达性。文件链接、inline path 与工具 path 统一走 `FileActionContext`：显式 Markdown file link 保留作者声明的链接样式并在动作时复核；系统推断的 inline/tool path 只有 Rust existence + safety check 为 `exists:true` 时才获得下划线和左右键动作。只有当前挂载的 inferred target 才订阅校验，按 target 去重并以最多 200 条分批；工作区 watcher 使 workspace cache 失效，workspace 外 local target 使用 30 秒临时验证租约。workspace identity / generation fence 与单 target request sequence 共同拒绝跨工作区、跨代次和乱序迟到结果，左右键动作均再次复核。目标在动作前失效时撤销资格并明确反馈，不能静默交给 OS。
 - **Overlay 协调**：原生 Webview 浮于 React DOM 之上，Overlay 出现时通过 `closeLayer.hasOverlayLayer()` 自动 hide
 - **呈现与关闭 owner**：全屏条件只由“Browser 是当前 active split view”派生，不能由残留 `browserUrl` 单独决定；分屏、全屏、工具栏和 Tab × 共用同一个资源清理与剩余 view handoff callback
 - **Cookie 持久化**：同 App 所有 Webview 共享，默认持久化磁盘

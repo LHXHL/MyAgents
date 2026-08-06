@@ -5227,22 +5227,16 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           {/*
             FileActionProvider.refreshTrigger intentionally excludes
             toolCompleteCount. toolCompleteCount bumps when AI file-modifying
-            tools complete, and workspace filesystem changes also arrive via
-            the Rust workspace watcher in the surfaces that need live data.
-            Tying the path-existence cache to those coarse invalidation
-            signals caused full wipe-and-requery storms on active dev
-            workspaces.
-
-            The path cache is safe to keep across file changes: inline-code
-            path annotations are rendered once from history and rarely
-            become stale in a way the user notices. Explicit UI refreshes
-            (workspaceRefreshTrigger — drag-drop, tab activate, save-config
-            callbacks) still clear the cache.
+            tools complete, and tying every completion to a full cache wipe
+            caused requery storms. The ref-counted workspace watcher is the
+            filesystem mutation authority; FileActionProvider invalidates the
+            old affordance and mounted consumers lazily re-request in batches.
+            Explicit UI refreshes remain a second controlled source.
           */}
           <FileActionProvider
             workspacePath={agentDir}
             onInsertReference={handleInsertReference}
-            refreshTrigger={workspaceRefreshTrigger}
+            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
             onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
             onQuoteFile={handleQuoteFile}
             onQuoteSelection={handleQuoteFileSelection}
