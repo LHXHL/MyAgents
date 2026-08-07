@@ -473,8 +473,7 @@ import { initLogger, getLoggerDiagnostics, withLogContext, setStdioBrokenProbe }
 import {
   buildGateResponseBody,
   buildReadyResponseBody,
-  markDeferredInitFailed,
-  markDeferredInitReady,
+  runDeferredInit,
   setDeferredInitPhase,
 } from './readiness-state';
 import { appendUnifiedLogBatch, getRecentLogLines, getActiveUnifiedLogPath } from './UnifiedLogger';
@@ -1725,28 +1724,16 @@ async function main() {
   //      debounce outlasting the few µs between these two calls.
   setSidecarPort(port);
 
-  // ── Deferred init gate ──────────────────────────────────────────────────
+  // ── Deferred init state ─────────────────────────────────────────────────
   // Everything heavy (skill seed, socks bridge, initializeAgent, external
   // runtime restore) moves to AFTER
   // honoServe() binds, so Rust's TCP health check unblocks in < 100ms
-  // instead of waiting ~2s for this work to complete. Routes that need
-  // agent state `await deferredInit` at the top of the fetch handler.
+  // instead of waiting ~2s for this work to complete. Routes consult the
+  // readiness state machine before entering handlers that need agent state.
   //
   // /health is exempt so the sidecar becomes "healthy" from Rust's
   // perspective the moment the HTTP server accepts TCP connections —
   // letting the frontend render the Tab UI while deferred init still runs.
-  let resolveDeferredInit!: () => void;
-  let rejectDeferredInit!: (e: unknown) => void;
-  const deferredInitPromise: Promise<void> = new Promise((res, rej) => {
-    resolveDeferredInit = res;
-    rejectDeferredInit = rej;
-  });
-  // Route handlers that need agent state call `await awaitDeferredInit()`.
-  // Exposed on globalThis so the hono fetch handler (below) can reach it
-  // without changing signatures.
-  (globalThis as { __myagentsDeferredInit?: Promise<void> }).__myagentsDeferredInit =
-    deferredInitPromise;
-
   /**
    * Extract the bridge token from a `/bridge/<token>/v1/messages` URL.
    * Returns the token string or `null` for any URL that doesn't match
@@ -8670,9 +8657,9 @@ description: >
   // ── Deferred heavy init ─────────────────────────────────────────────────
   // Runs AFTER honoServe has bound the port. Rust's TCP health check now
   // passes within ~50ms instead of waiting ~2s for all this work to finish.
-  // Routes (except /health) `await __myagentsDeferredInit` before running,
-  // so correctness is preserved: anything that needs agent state (MCP,
-  // model, file watcher, bridge) waits for this block to finish.
+  // Routes (except /health) consult DeferredInitState before running, so
+  // anything that needs agent state (MCP, model, file watcher, bridge) is
+  // admitted only after this block finishes.
   //
   // Order within this block still matters:
   //   1. migrations/cleanup — best-effort, can interleave
@@ -8701,8 +8688,8 @@ description: >
     status: 'ok',
     detail: { port, sessionId: initialSessionId ?? 'new' },
   });
-  (async () => {
-    try {
+  void runDeferredInit(
+    async () => {
       await runSidecarBootstrap(sidecarComposition, [
         {
           capability: 'global',
@@ -8811,8 +8798,6 @@ description: >
         },
       ]);
 
-      markDeferredInitReady();
-      resolveDeferredInit();
       emitPerfTrace({
         trace: 'sidecar_boot',
         phase: 'deferred_init_done',
@@ -8820,7 +8805,9 @@ description: >
         status: 'ok',
         detail: { port, sessionId: initialSessionId ?? 'new' },
       });
-    } catch (err) {
+    },
+    () => currentInitPhase,
+    (err) => {
       console.error('[startup] Deferred init failed:', err);
       console.warn(`[health-state] Deferred init failed in phase=${currentInitPhase}: ${err instanceof Error ? err.message : String(err)}`);
       emitPerfTrace({
@@ -8834,14 +8821,8 @@ description: >
           error: err instanceof Error ? err.message : String(err),
         },
       });
-      // Pattern 4: capture the phase for /health/ready's structured 503.
-      // retryable=false until we have a real re-runner (TODO above).
-      markDeferredInitFailed(currentInitPhase, err, false);
-      rejectDeferredInit(err);
-      // Don't re-throw — the server stays up so /health/* keeps responding
-      // and the renderer can render the failure state instead of timing out.
-    }
-  })();
+    },
+  );
 
   // Kick off interactive-shell PATH detection in the background.
   // `warmupShellPath()` uses async `execFile` so it never blocks the event loop

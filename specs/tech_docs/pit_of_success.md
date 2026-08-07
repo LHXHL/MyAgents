@@ -238,8 +238,8 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Invariants enforced.**
 - Atomic-mkdir-based 协议，跨进程互斥
-- Owner sentinel `<runtime>:<pid>:<startMs>`，stale recovery 通过 `/proc/<pid>/stat`(Linux) 或 `ps -p ... -o lstart=`(macOS) 检测 pid reuse；Windows fallback 到 age-only
-- Rust 端 parser 支持 2-tuple（旧）和 3-tuple（新）owner，混部署期不会误删 live lock
+- Owner sentinel `<runtime>:<pid>:<startMs>`；确认 PID 已死亡时立即回收，不等待 stale age。合法进程 owner 只要仍存活或 liveness 不确定就必须保守保留；v1 `startMs` 受墙上时间与平台 probe 差异影响，只用于兼容和 release fencing，mismatch 不能授权删除 live writer
+- Node/Rust parser 只接受严格 ASCII 十进制的 2-tuple（旧）与 3-tuple（新）owner，并共享 PID / `startMs` 数值范围；owner 缺失、格式不可识别或 `renderer:*` 时才等待 stale age
 - `delay()` **不** `unref`——unref 会让进程在 acquire 等待中提前退出
 - Async 实现，零 sync busy-wait
 
