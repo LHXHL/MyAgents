@@ -1017,8 +1017,8 @@
           "detail": "The provider returned a rate-limit or quota error. Check the provider quota or wait for it to reset."
         },
         "rapid_refill_breaker": {
-          "label": "Requests are too frequent; backing off",
-          "detail": "The SDK triggered its rapid refill breaker and is backing off before retrying. It should recover automatically."
+          "label": "Context repeatedly refilled; this turn stopped",
+          "detail": "The context reached its limit several times shortly after automatic compaction. Reduce file or tool output and try again; if it still fails, start a new chat."
         },
         "aborted_tools": {
           "label": "Tool execution was interrupted",
