@@ -686,10 +686,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         }
         ImPlatform::OpenClaw(ref channel_id) => {
             // Allocate port for bridge process
-            let bridge_port = {
-                let manager = sidecar_manager.lock().unwrap();
-                manager.allocate_port()?
-            };
+            let port_allocator = sidecar_manager.lock().unwrap().port_allocator();
+            let bridge_port = crate::sidecar::allocate_sidecar_port(&port_allocator)?;
 
             let rust_port = crate::management_api::get_management_port();
             let plugin_id = config.openclaw_plugin_id.as_deref().unwrap_or(channel_id);
@@ -2618,17 +2616,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         {
                             // task_runtime is already a String cloned above at the top of
                             // this spawn (runtime_for_loop.read().await.clone()).
-                            let drift_result = match {
-                                let mut router_guard = task_router.lock().await;
-                                router_guard
-                                    .check_and_reset_on_runtime_identity_drift(
-                                        &session_key,
-                                        &task_runtime,
-                                        task_runtime_source.as_deref(),
-                                        &task_manager,
-                                    )
-                                    .await
-                            } {
+                            let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(
+                                &task_router,
+                                &session_key,
+                                &task_runtime,
+                                task_runtime_source.as_deref(),
+                                &task_manager,
+                            )
+                            .await
+                            {
                                 Ok(result) => result,
                                 Err(error) => {
                                     ulog_error!(

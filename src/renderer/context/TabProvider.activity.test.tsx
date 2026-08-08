@@ -3,7 +3,10 @@ import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SseEventMetadata } from '@/api/SseConnection';
-import { tryClaimSessionResourceTransition } from '@/utils/sessionDeletionCoordinator';
+import {
+  createSessionResourceTransitionState,
+  tryClaimSessionResourceTransition,
+} from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
 import TabProvider, { handleApiResponse } from './TabProvider';
 
@@ -685,7 +688,7 @@ describe('TabProvider session activity ownership', () => {
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
     });
 
-    const transitions = new Map();
+    const transitions = createSessionResourceTransitionState();
     const transitionOwnerId = 'tab-reset-race';
     const claimSessionOpeningTransition = vi.fn((sessionId: string) => (
       tryClaimSessionResourceTransition(
@@ -775,7 +778,7 @@ describe('TabProvider session activity ownership', () => {
 
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(sseHarness.connection.connect).not.toHaveBeenCalled();
-    expect(transitions.size).toBe(0);
+    expect(transitions.claims.size).toBe(0);
   });
 
   it('reconciles chat-init assistant snapshots instead of appending them as deltas', async () => {

@@ -474,7 +474,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **排查信号.** 点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 探针量**真实绘制时刻**（不是 commit 时刻）；若绘制时刻 ≈ 某同步命令返回时刻，即是它。注意 unified 日志只显 commit 不显 paint，容易被误导去改前端。
 
-**正确做法.** 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**。快速查表 / getter 类同步命令不受影响，无需改。
+**正确做法.** 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**。Condvar drain 即使不做 IO 也属于阻塞等待，不能直接占用 async runtime worker；等待 per-Session 资源时也不能持有跨 Session 共享的 manager / Router 锁。快速查表 / getter 类同步命令不受影响，无需改。
 
 **Don't.** 在同步命令里做：等 sidecar 就绪 / 轮询 / 网络请求 / 大量文件 copy / kill+wait。改动任何可能阻塞 >1 帧的命令时必查此节。
 

@@ -90,11 +90,12 @@ import {
   type NotificationBadgeItem,
   type NotificationBadgeTarget,
 } from '@/utils/notificationBadgeRegistry';
-import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
+import { applyTerminalSessionToTabs, resetTabToLauncher } from '@/utils/sessionTermination';
 import {
+  createSessionResourceTransitionState,
   deleteSessionThroughAppOwner,
+  isSessionOpening,
   tryClaimSessionResourceTransition,
-  type SessionResourceTransitionClaim,
 } from '@/utils/sessionDeletionCoordinator';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { listenWithCleanup } from '@/utils/tauriListen';
@@ -1180,34 +1181,49 @@ export default function App() {
         async (event) => {
           if (!mountedRef.current) return;
           const { sessionId, generation } = event.payload;
-          // Generation check first: a same-session relaunch after this terminal
-          // event gets a fresh generation. If that replacement is currently dead
-          // but still ownerful and awaiting health-monitor recovery, a liveness
-          // check alone would return false and incorrectly clear the new binding.
-          const currentGeneration = await getSessionGeneration(sessionId);
-          if (currentGeneration !== null && currentGeneration !== generation) {
-            console.log(
-              `[App] Ignoring stale terminal event for ${sessionId} (event gen=${generation}, current gen=${currentGeneration})`
-            );
-            return;
-          }
-          // Presence check for the same-generation edge case. Readiness is
-          // intentionally irrelevant here; any live entry means don't clear.
-          const liveSidecarPresent = await hasSessionSidecar(sessionId);
-          if (liveSidecarPresent) {
-            console.log(
-              `[App] Ignoring stale terminal event for ${sessionId} (gen=${generation}) — live sidecar entry present`
-            );
-            return;
-          }
-          if (!mountedRef.current) return;
-          setTabs((prev) => {
-            const next = applyTerminalSessionToTabs(prev, sessionId);
-            if (next !== prev) {
-              console.log(`[App] Tab.sessionId reset for terminated session ${sessionId}`);
+          while (mountedRef.current) {
+            // `openingRevision` detects an opening that starts and finishes
+            // entirely while either Rust read is in flight. An opening already
+            // active here owns both its success and failure rollback.
+            const openingRevision = sessionResourceTransitionsRef.current.openingRevision;
+            if (isSessionOpening(sessionResourceTransitionsRef.current, sessionId)) return;
+
+            // Generation check first: a same-session relaunch after this terminal
+            // event gets a fresh generation. If that replacement is currently dead
+            // but still ownerful and awaiting health-monitor recovery, a liveness
+            // check alone would return false and incorrectly clear the new binding.
+            const currentGeneration = await getSessionGeneration(sessionId);
+            if (currentGeneration !== null && currentGeneration !== generation) {
+              console.log(
+                `[App] Ignoring stale terminal event for ${sessionId} (event gen=${generation}, current gen=${currentGeneration})`
+              );
+              return;
             }
-            return next as typeof prev;
-          });
+            // Presence check for the same-generation edge case. Readiness is
+            // intentionally irrelevant here; any live entry means don't clear.
+            if (await hasSessionSidecar(sessionId)) {
+              console.log(
+                `[App] Ignoring stale terminal event for ${sessionId} (gen=${generation}) — live sidecar entry present`
+              );
+              return;
+            }
+            if (isSessionOpening(sessionResourceTransitionsRef.current, sessionId)) return;
+            if (sessionResourceTransitionsRef.current.openingRevision !== openingRevision) continue;
+            if (!mountedRef.current) return;
+
+            // Commit in the same synchronous boundary as the stable revision
+            // check so a later opening observes the terminal projection.
+            flushSync(() => {
+              setTabs((prev) => {
+                const next = applyTerminalSessionToTabs(prev, sessionId);
+                if (next !== prev) {
+                  console.log(`[App] Tab.sessionId reset for terminated session ${sessionId}`);
+                }
+                return next as typeof prev;
+              });
+            });
+            return;
+          }
         },
         listenerAc.signal,
       );
@@ -1233,28 +1249,40 @@ export default function App() {
         async (event) => {
           if (!mountedRef.current) return;
           const stillLive = new Set<string>(event.payload.liveSessionIds);
-          const candidates = tabsRef.current
-            .filter((t) => t.sessionId && !isPendingSessionId(t.sessionId))
-            .map((t) => t.sessionId as string)
-            .filter((sid) => !stillLive.has(sid));
-          const goneIds: string[] = [];
-          await Promise.all(
-            candidates.map(async (sid) => {
-              const currentGeneration = await getSessionGeneration(sid);
-              if (currentGeneration === null) goneIds.push(sid);
-            })
-          );
-          if (!mountedRef.current || goneIds.length === 0) return;
-          setTabs((prev) => {
-            let next = prev;
-            for (const sid of goneIds) {
-              next = applyTerminalSessionToTabs(next, sid) as typeof prev;
-            }
-            if (next !== prev) {
-              console.log(`[App] Reconcile cleared ${goneIds.length} stale binding(s)`);
-            }
-            return next;
-          });
+          while (mountedRef.current) {
+            const openingRevision = sessionResourceTransitionsRef.current.openingRevision;
+            const candidates = tabsRef.current
+              .filter((tab) => (
+                tab.sessionId
+                && !isPendingSessionId(tab.sessionId)
+                && !stillLive.has(tab.sessionId)
+                && !isSessionOpening(sessionResourceTransitionsRef.current, tab.sessionId)
+              ))
+              .map((tab) => tab.sessionId as string);
+            const goneIds = (await Promise.all(candidates.map(async (sessionId) => (
+              await getSessionGeneration(sessionId) === null ? sessionId : null
+            )))).filter((sessionId): sessionId is string => sessionId !== null);
+            if (!mountedRef.current || goneIds.length === 0) return;
+            if (sessionResourceTransitionsRef.current.openingRevision !== openingRevision) continue;
+            const stableGoneIds = goneIds.filter(
+              (sessionId) => !isSessionOpening(sessionResourceTransitionsRef.current, sessionId),
+            );
+            if (stableGoneIds.length === 0) return;
+
+            flushSync(() => {
+              setTabs((prev) => {
+                let next = prev;
+                for (const sessionId of stableGoneIds) {
+                  next = applyTerminalSessionToTabs(next, sessionId) as typeof prev;
+                }
+                if (next !== prev) {
+                  console.log(`[App] Reconcile cleared ${stableGoneIds.length} stale binding(s)`);
+                }
+                return next;
+              });
+            });
+            return;
+          }
         },
         listenerAc.signal,
       );
@@ -1335,7 +1363,7 @@ export default function App() {
   // App-owned admission boundary for operations that can acquire, migrate, or
   // destroy a fixed Session identity. Claims are per Session, so unrelated
   // Tabs remain fully concurrent.
-  const sessionResourceTransitionsRef = useRef<Map<string, SessionResourceTransitionClaim>>(new Map());
+  const sessionResourceTransitionsRef = useRef(createSessionResourceTransitionState());
   const tabSessionIdentityTransitionsRef = useRef<Map<string, Promise<void>>>(new Map());
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
@@ -2210,7 +2238,19 @@ export default function App() {
           sessionId,
           sessionAgentDir,
         );
-        if (!materialized) return false;
+        if (!materialized) {
+          // The opening claim suppresses predecessor terminal events while
+          // revive is in flight, so this path owns rollback for the existing
+          // Tab just as the optimistic new/restore paths own theirs.
+          flushSync(() => {
+            setTabs((current) => current.map((tab) => (
+              tab.id === targetTabId && tab.sessionId === sessionId
+                ? resetTabToLauncher(tab)
+                : tab
+            )));
+          });
+          return false;
+        }
         console.log(`[App] handleOpenTargetSession: Session ${sessionId} owned by tab ${targetTabId}`);
         return true;
       }
