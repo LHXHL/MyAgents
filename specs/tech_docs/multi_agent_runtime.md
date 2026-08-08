@@ -57,7 +57,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 - `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()`、`getSessionCompletionTerminal()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
 - common operation methods：`rewindToUserMessage()`、`forkAtAssistantMessage()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把真正具有共同产品语义的会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。`updateRuntimeConfig`、`prewarm`、startup restore 与 `retryLastExternalUserMessage` 只属于 external runtime，由 selector seam 的显式 helper 校验 runtime 后调用 native owner，不能为 builtin 增加伪对称 stub，也不能让 route/bootstrap 直接 import external facade。打开既有 Session 属于 App 的 Tab 导航，不是 Runtime operation。
-- queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦；`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/interaction-scenario/set` 对 external runtime 显式 skip，不在 route 层静默判断。
+- queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦。`/api/mcp/set`、`/api/agents/set`、`/api/interaction-scenario/set` 与 `/api/cc-plugin/session-enable` 都走对应 `SessionEngine` 方法；builtin 委托 SDK config owner，Managed Codex 委托 Product Extension reconciler，其它 external source 返回明确的不适用/不支持状态。`/api/provider/set` 继续由 runtime config owner 处理，route 不静默猜 Runtime。
 
 新增“注入 user 消息 / 同步 config / 等待 idle 后判定 completed”的 endpoint 必须优先接入 `SessionEngine`，不要在 `index.ts` 或新 route module 里重新手写 builtin/external 分支。
 
@@ -306,7 +306,24 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 1. 调 `syncProjectUserConfigFiles(workspacePath)`，把 `~/.myagents/skills` 中启用的用户级 skills 同步为工作区 `.claude/skills/*` symlink（与 builtin Claude SDK 共用同一套磁盘桥接逻辑，不另建 Codex 专用目录）。
 2. `initialize` 握手完成后调 Codex app-server RPC `skills/extraRoots/set`，把 `<workspace>/.claude/skills` 作为额外 skill root 注入当前 Codex 进程。
 
-同步失败只记录 warning，Codex 会话继续启动；`.claude/skills` 作为工作区级 extra root 的注入与用户级 symlink 同步解耦，仍会照常尝试。这条路径在 `src/server/runtimes/codex.ts::CodexRuntime.startSession()` 内，因此 `runtimeSource:'managed-provider'`（内置 Codex 订阅）和 `runtimeSource:'system-cli'`（实验室外部 Codex CLI）都会生效。若用户系统 CLI 版本过旧、不支持 `skills/extraRoots/set`，adapter 同样只记录 warning 并继续启动会话；此时 Codex 回落到自身默认 `.agents/skills` 扫描。
+这段兼容路径只描述 `runtimeSource:'system-cli'`：同步或 `skills/extraRoots/set` 失败只记录 warning，用户自己的 Codex 会话继续启动并回落到默认 `.agents/skills` 扫描。`runtimeSource:'managed-provider'` 不复用该宽松语义；它走下节的精确 Product Extension projection，设置或 read-back 失败会让本次 Runtime 启动失败，不能带着旧/多余 Skill 冒充成功。
+
+### Managed Codex Product Extensions（0.4.6）
+
+这套投影仅适用于 `runtime:'codex' + runtimeSource:'managed-provider'`。MyAgents 仍是 Product Session、配置、Plugin Store、权限与 transcript 的 authority；Codex app-server 只是 Runtime kernel，`system-cli` Codex 继续使用用户自己的配置，不接管其扩展体系。
+
+`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。只有新进程启动成功、严格 Skill read-back 通过且 MCP startup barrier 完成 terminal/timeout 观察后才更新 effective；单个 server 的连接失败继续由 `RuntimeDiagnostics.mcpServers` 表达。`RuntimeDiagnostics.extensions` 把 applied/pending/deferred/unsupported/failed 逐组件送到现有诊断 banner，禁止 external-runtime 伪成功。
+
+| MyAgents 组件 | Managed Codex 投影 | 关键边界 |
+|---|---|---|
+| Workspace/全局/Plugin Skills | 临时精确目录 → `skills/extraRoots/set` + read-back | project > user > plugin；只投影合并后 enabled 的 canonical、非 symlink、限深限大 `SKILL.md`；正文 digest 进入 revision |
+| Commands | Sidecar admission-time 展开为 runtime prompt | transcript 保留用户原始 `/command args`；`$ARGUMENTS` 只作用于发给 Runtime 的文本 |
+| Agents | 启动时生成临时 native `agents.<role>.config_file` | prompt/model/Skill 可忠实映射；tools/disallowedTools/maxTurns 等字段逐 Agent unsupported，不用 prompt 伪装约束 |
+| 外部 MCP | Managed app-server 启动配置 | stdio/streamable HTTP 由服务端权威 MCP definition 投影；无法安全表达或 env key 值冲突时整次启动失败，不静默 skip；secret 值只进入进程 apply fingerprint，不进入 revision/diagnostics |
+| SDK in-process MCP / IM Bridge | `thread/start.dynamicTools` +反向 `item/tool/call` | Dispatcher 复用标准 MCP handler、现有权限 owner、AbortSignal、timeout、附件与 large-value spill；exactly-once 且绑定 process generation |
+| Plugin | 按 `plugin.json` 的 `skills`/`commands`/`agents`/`mcpServers` 路径与默认目录编译 | 命名组件使用 project > user > plugin；MCP 按 server id 独立合并并显式报告冲突。Hooks/LSP/monitors/bin 和不可表示 transport 逐组件 unsupported，不阻断其它可转换组件 |
+
+协议契约锁定在 app-server `0.146.0`，升级下载锁不能自动放开扩展路径，必须先重新生成 schema 并跑 exact-binary conformance。`thread/start.dynamicTools` 的目录属于 native thread birth：resume 没有替换目录的协议字段。Session metadata 因此只保存 protocol version 与 secret-free catalog fingerprint；相同目录可原生 resume，目录改变或 legacy Session 无法证明一致时返回 `host_tools_catalog_immutable`，要求新建 Product Session。唯一兼容例外是历史 metadata 与当前 desired catalog 都为空，此时没有可漂移的 Host 能力，可继续 resume。不得以 MCP fallback、额外 Extension Host 或第二套 Agent loop 绕过这个限制。
 
 ### 事件映射
 
@@ -338,7 +355,8 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `item/tool/requestUserInput` | 映射到 `AskUserQuestion`，答案按 Codex 原生 question id 回传 |
 | `mcpServer/elicitation/request` (`form` / `openai/form`) | 有 schema fields 时映射到 `AskUserQuestion`；`url` / tool approval / generic elicitation 走 `permission_request` |
 | `currentTime/read` | runtime adapter 直接返回 `{currentTimeAt}`，不进入 UI |
-| `item/tool/call` / token refresh / attestation | MyAgents 不托管，显式 error |
+| `item/tool/call` | 仅 Managed Codex 且命中本 generation 的 Host catalog 时进入既有 permission UI 后由 Dispatcher 执行；重复、stale、unknown、timeout 或 stop 都 exactly-once 失败结算 |
+| token refresh / attestation | MyAgents 不托管，显式 error |
 
 IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.askUserQuestion === 'none'`，Codex `item/tool/requestUserInput` 立即按协议返回空 answers，`mcpServer/elicitation/request` form 立即返回 `action:'cancel'`，并且不登记 `pendingRequests`。`runtimeSource:'managed-provider'` 与 `runtimeSource:'system-cli'` 共享同一个 Codex adapter，因此必须保持一致。
 
@@ -739,6 +757,8 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 | `app/list` | 已配置的 connector（artifact-tool / github 等）+ 可访问性 | `RuntimeAppInfo[]` |
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
+
+Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`；它是已有 banner 的扩展，不建立第二条状态通道。pending/deferred/unsupported/failed 都属于用户可操作诊断，不能只把 `failed` 当成可见条件。
 
 Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
 

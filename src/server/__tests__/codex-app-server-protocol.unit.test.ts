@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildCodexFileChangeResultContent,
   buildCodexCompletedFileChangeInput,
+  buildManagedCodexAgentRoleConfig,
   buildCodexAppServerArgs,
   buildCodexAppServerLaunchConfig,
   buildCodexInitializeParams,
@@ -17,6 +18,7 @@ import {
   codexModelCacheKey,
   configureCodexSkillExtraRoots,
   createCodexMcpStartupBarrier,
+  assertManagedCodexExtensionProtocolVersion,
   initializeCodexRpc,
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
@@ -46,6 +48,160 @@ describe('Codex app-server protocol helpers', () => {
     tempRoots.push(dir);
     return dir;
   }
+
+  it('fails closed when the Managed Codex extension protocol drifts', () => {
+    expect(() => assertManagedCodexExtensionProtocolVersion('0.146.0')).not.toThrow();
+    expect(() => assertManagedCodexExtensionProtocolVersion('0.147.0')).toThrow(
+      /exact-version conformance/i,
+    );
+    expect(() => assertManagedCodexExtensionProtocolVersion(undefined)).toThrow(/resolved unknown/i);
+  });
+
+  it('materializes native Agent role prompt, model, and Skill references deterministically', () => {
+    expect(buildManagedCodexAgentRoleConfig({
+      name: 'reviewer',
+      description: 'Reviews changes',
+      prompt: 'Review carefully.\nDo not guess.',
+      model: 'gpt-5.4',
+      skills: [{ name: 'testing', path: '/workspace/.claude/skills/testing/SKILL.md' }],
+      scope: 'project',
+      sourceId: 'workspace:reviewer',
+    })).toBe([
+      'developer_instructions = "Review carefully.\\nDo not guess."',
+      'model = "gpt-5.4"',
+      '',
+      '[[skills.config]]',
+      'path = "/workspace/.claude/skills/testing/SKILL.md"',
+      'enabled = true',
+      '',
+    ].join('\n'));
+  });
+
+  it('holds Managed Codex Host tools behind the existing permission owner', async () => {
+    const runtime = new CodexRuntime();
+    const dispatch = vi.fn(async () => ({
+      success: true,
+      contentItems: [{ type: 'text' as const, text: 'done' }],
+    }));
+    const rpc = { respond: vi.fn() };
+    const process = {
+      exited: false,
+      threadId: 'thread-one',
+      currentTurnId: 'turn-one',
+      processGeneration: 'generation-one',
+      approvalPolicy: 'on-request',
+      rpc,
+      pendingRequests: new Map(),
+      pendingHostCalls: new Map(),
+      settledHostCallIds: new Set(),
+      extensionSnapshot: {
+        hostToolDispatcher: {
+          descriptors: [{ name: 'mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
+          dispatch,
+          dispose: vi.fn(),
+        },
+      },
+      abortPendingHostCall(callId: string, reason: string) {
+        const pending = this.pendingHostCalls.get(callId);
+        if (!pending || pending.settled) return;
+        pending.settled = true;
+        pending.controller.abort();
+        this.pendingHostCalls.delete(callId);
+        this.settledHostCallIds.add(callId);
+        this.rpc.respond(pending.rpcId, {
+          success: false,
+          contentItems: [{ type: 'inputText', text: reason }],
+        });
+      },
+    };
+    const events: unknown[] = [];
+    const handle = (runtime as unknown as {
+      handleManagedCodexHostToolCall(
+        target: typeof process,
+        rpcId: number,
+        params: Record<string, unknown>,
+        emit: (event: unknown) => void,
+      ): void;
+    }).handleManagedCodexHostToolCall.bind(runtime);
+
+    handle(process, 41, {
+      threadId: 'thread-one',
+      turnId: 'turn-one',
+      callId: 'call-one',
+      tool: 'mcp__local__write',
+      arguments: { path: 'README.md' },
+    }, event => events.push(event));
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(events).toEqual([expect.objectContaining({
+      kind: 'permission_request',
+      requestId: '41',
+      toolName: 'mcp__local__write',
+    })]);
+    await runtime.respondPermission(
+      process as unknown as import('../runtimes/types').RuntimeProcess,
+      '41',
+      'allow_once',
+    );
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(rpc.respond).toHaveBeenCalledWith(41, {
+      success: true,
+      contentItems: [{ type: 'inputText', text: 'done' }],
+    }));
+  });
+
+  it('rejects schema-invalid Host arguments before opening permission UI', () => {
+    const runtime = new CodexRuntime();
+    const rpc = { respond: vi.fn() };
+    const events: unknown[] = [];
+    const process = {
+      exited: false,
+      threadId: 'thread-one',
+      currentTurnId: 'turn-one',
+      processGeneration: 'generation-one',
+      approvalPolicy: 'on-request',
+      rpc,
+      pendingRequests: new Map(),
+      pendingHostCalls: new Map(),
+      settledHostCallIds: new Set(),
+      extensionSnapshot: {
+        hostToolDispatcher: {
+          descriptors: [{
+            name: 'mcp__local__write',
+            description: 'Write',
+            inputSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+              additionalProperties: false,
+            },
+          }],
+          dispatch: vi.fn(),
+          dispose: vi.fn(),
+        },
+      },
+    };
+    const handle = (runtime as unknown as {
+      handleManagedCodexHostToolCall(
+        target: typeof process,
+        rpcId: number,
+        params: Record<string, unknown>,
+        emit: (event: unknown) => void,
+      ): void;
+    }).handleManagedCodexHostToolCall.bind(runtime);
+
+    handle(process, 42, {
+      threadId: 'thread-one',
+      turnId: 'turn-one',
+      callId: 'call-invalid',
+      tool: 'mcp__local__write',
+      arguments: { unexpected: true },
+    }, event => events.push(event));
+
+    expect(events).toEqual([]);
+    expect(process.pendingRequests.size).toBe(0);
+    expect(rpc.respond).toHaveBeenCalledWith(42, expect.objectContaining({ success: false }));
+  });
 
   it('logs developer instructions as irreversible metadata, never a prefix', () => {
     const developerInstructions = 'private identity and workspace instructions';
@@ -408,85 +564,50 @@ describe('Codex app-server protocol helpers', () => {
     });
   });
 
-  it('skips managed Codex MCP entries that cannot be represented safely', () => {
-    const env: Record<string, string | undefined> = {};
-    const args = buildCodexAppServerArgs({
+  it('fails the managed MCP snapshot instead of silently skipping unsafe entries', () => {
+    const build = (server: NonNullable<Parameters<typeof buildCodexAppServerArgs>[0]['mcpServers']>[number]) => () => (
+      buildCodexAppServerArgs({
+        commandPath: '/managed/codex',
+        runtimeSource: 'managed-provider',
+        codexEnv: {},
+        mcpServers: [server],
+      })
+    );
+
+    expect(build({
+      id: 'arg-secret', name: 'Arg Secret', type: 'stdio', command: 'node',
+      args: ['server.js', '--api-key', 'sk-test-secret-value'], isBuiltin: false,
+    })).toThrow(/arg-secret.*credential flag/i);
+    expect(build({
+      id: 'env-openai', name: 'OpenAI env', type: 'stdio', command: 'node',
+      args: ['server.js'], env: { OPENAI_API_KEY: 'must-not-leak' }, isBuiltin: false,
+    })).toThrow(/env-openai.*OPENAI_API_KEY/i);
+    expect(build({
+      id: 'url-query', name: 'URL Query', type: 'http',
+      url: 'https://example.com/mcp?transport=streamable', isBuiltin: false,
+    })).toThrow(/url-query.*query string/i);
+  });
+
+  it('keeps in-process MCP on the Host path and rejects conflicting native MCP env values', () => {
+    expect(() => buildCodexAppServerArgs({
       commandPath: '/managed/codex',
       runtimeSource: 'managed-provider',
-      codexEnv: env,
-      mcpServers: [
-        {
-          id: 'builtin-image',
-          name: 'Builtin image',
-          type: 'stdio',
-          command: '__builtin__',
-          args: [],
-          isBuiltin: true,
-        },
-        {
-          id: 'arg-secret',
-          name: 'Arg Secret',
-          type: 'stdio',
-          command: 'node',
-          args: ['server.js', '--api-key', 'sk-test-secret-value'],
-          isBuiltin: false,
-        },
-        {
-          id: 'env-openai',
-          name: 'OpenAI env',
-          type: 'stdio',
-          command: 'node',
-          args: ['server.js'],
-          env: { OPENAI_API_KEY: 'must-not-leak' },
-          isBuiltin: false,
-        },
-        {
-          id: 'url-secret',
-          name: 'URL Secret',
-          type: 'http',
-          url: 'https://example.com/mcp?key={{TOKEN}}',
-          env: { TOKEN: 'secret-token' },
-          isBuiltin: false,
-        },
-        {
-          id: 'legacy-sse',
-          name: 'Legacy SSE',
-          type: 'sse',
-          url: 'https://example.com/sse',
-          isBuiltin: false,
-        },
-        {
-          id: 'url-query',
-          name: 'URL Query',
-          type: 'http',
-          url: 'https://example.com/mcp?transport=streamable',
-          isBuiltin: false,
-        },
-      ],
-    });
+      codexEnv: {},
+      mcpServers: [{
+        id: 'builtin-image', name: 'Builtin image', type: 'stdio',
+        command: '__builtin__', args: [], isBuiltin: true,
+      }],
+    })).not.toThrow();
 
-    expect(args).toEqual([
-      '/managed/codex',
-      '-c',
-      'project_doc_fallback_filenames=["CLAUDE.md"]',
-      '-c',
-      'cli_auth_credentials_store="file"',
-      '-c',
-      'model_provider="myagents_managed_http"',
-      '-c',
-      'model_providers.myagents_managed_http.name="OpenAI"',
-      '-c',
-      'model_providers.myagents_managed_http.wire_api="responses"',
-      '-c',
-      'model_providers.myagents_managed_http.requires_openai_auth=true',
-      '-c',
-      'model_providers.myagents_managed_http.supports_websockets=false',
-      'app-server',
-    ]);
-    expect(env.TOKEN).toBeUndefined();
-    expect(env.OPENAI_API_KEY).toBeUndefined();
-    expect(args.join('\n')).not.toContain('sk-test-secret-value');
-    expect(args.join('\n')).not.toContain('must-not-leak');
+    expect(() => buildCodexAppServerArgs({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: {},
+      mcpServers: [
+        { id: 'one', name: 'One', type: 'stdio', command: 'one', env: { TOKEN: 'first' }, isBuiltin: false },
+        { id: 'two', name: 'Two', type: 'stdio', command: 'two', env: { TOKEN: 'second' }, isBuiltin: false },
+      ],
+    })).toThrow(/two.*TOKEN.*one/i);
   });
 
   it('injects project .claude/skills as Codex app-server extra skill roots', async () => {

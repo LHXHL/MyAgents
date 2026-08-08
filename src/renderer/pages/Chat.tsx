@@ -123,7 +123,7 @@ import {
   getDefaultRuntimePermissionMode,
   projectPermissionModeForRuntime,
 } from '../../shared/types/runtime';
-import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics, RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
 import type { FilePreviewFocusTarget } from '@/types/filePreview';
 import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
@@ -161,6 +161,12 @@ import { getRichDocKind, isPreviewable, type RichDocKind } from '../../shared/fi
 
 const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = { kind: 'desktop', surface: 'session_fork' };
 const WORKSPACE_PANEL_TRANSITION_MS = 200;
+
+type ExtensionUpdateResponse = {
+  success?: boolean;
+  error?: string;
+  extensionStatus?: RuntimeExtensionDiagnostics;
+};
 
 type SplitPreviewFile = {
   name: string;
@@ -2613,6 +2619,19 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     enabledOfficialToolIds?: OfficialToolId[];
   }) => {
     if (!currentProject) return false;
+    const handleExtensionUpdateResponse = (response: ExtensionUpdateResponse): void => {
+      const status = response.extensionStatus;
+      if (response.success === false || status?.state === 'failed') {
+        throw new Error(response.error ?? 'Managed Codex extension update failed');
+      }
+      if (status?.state === 'deferred_until_idle') {
+        toastRef.current.info(t('shell.toasts.extensionsDeferred'));
+      } else if (status?.state === 'pending_next_start') {
+        toastRef.current.info(t('shell.toasts.extensionsPending'));
+      } else if (status?.components.some(component => component.state === 'unsupported')) {
+        toastRef.current.warning(t('shell.toasts.extensionsUnsupported'));
+      }
+    };
     const result = await persistInputOptionChange({
       workspaceId: currentProject.id,
       agentId: currentProject.agentId ?? null,
@@ -2651,7 +2670,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // 'adopt' the user's choice is persisted for future sessions. Post-resolution
         // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
         if (configDispositionRef.current === 'pending') return;
-        await apiPost('/api/mcp/set', { servers });
+        const response = await apiPost<ExtensionUpdateResponse>('/api/mcp/set', { servers });
+        handleExtensionUpdateResponse(response);
       },
       getAllMcpServers,
       getGlobalMcpEnabled: getEnabledMcpServerIds,
@@ -2660,7 +2680,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       // mirroring the MCP push above.
       pushPluginsToSidecar: async (enabledIds) => {
         if (configDispositionRef.current === 'pending') return; // defer while unresolved; disk write still happens
-        await apiPost('/api/cc-plugin/session-enable', { enabledIds });
+        const response = await apiPost<ExtensionUpdateResponse>('/api/cc-plugin/session-enable', { enabledIds });
+        handleExtensionUpdateResponse(response);
       },
       pushOfficialToolsToSidecar: async (enabledIds) => {
         if (configDispositionRef.current === 'pending') return;

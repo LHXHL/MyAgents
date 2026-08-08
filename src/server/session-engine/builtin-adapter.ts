@@ -19,6 +19,7 @@ import {
   getPendingInteractiveRequests,
   getQueueStatus,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  getCurrentImBridgeTurnContext,
   getDispatchedTurnIdentity as getBuiltinDispatchedTurnIdentity,
   hasQueuedTurnByOwner as hasBuiltinQueuedTurnByOwner,
   getSessionId,
@@ -48,6 +49,7 @@ import {
   setSessionModel,
   setSessionPermissionMode,
   setSessionEnabledOfficialToolIds,
+  setSessionEnabledPluginIds,
   setSessionProviderEnv,
   setProxyConfig,
   setSessionReasoningEffort,
@@ -361,6 +363,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     getCurrentTurnIdentity() {
       return getBuiltinCurrentTurnIdentity();
+    },
+
+    getActiveImBridgeTurnContext() {
+      return getCurrentImBridgeTurnContext();
     },
 
     getSessionCompletionTerminal() {
@@ -900,6 +906,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateAgents(agents) {
       setAgents(agents as Record<string, AgentDefinition>);
       return { success: true };
+    },
+
+    async updateEnabledPluginIds(ids) {
+      setSessionEnabledPluginIds(ids);
+      return { success: true, enabledIds: ids };
     },
 
     async updateDesktopInteractionScenario(scenario) {

@@ -85,6 +85,26 @@ export async function handleSessionConfigRoute(
     }
   }
 
+  if (pathname === '/api/cc-plugin/session-enable' && request.method === 'POST') {
+    try {
+      const payload = await request.json() as { enabledIds?: unknown };
+      if (payload.enabledIds !== null && payload.enabledIds !== undefined && !Array.isArray(payload.enabledIds)) {
+        return jsonResponse({ success: false, error: 'enabledIds must be string[] or null' }, 400);
+      }
+      const ids = payload.enabledIds === null || payload.enabledIds === undefined
+        ? null
+        : payload.enabledIds.filter((entry): entry is string => typeof entry === 'string');
+      const result = await getSessionEngine().updateEnabledPluginIds(ids);
+      return jsonResponse({ ...result, enabledIds: ids }, result.success ? 200 : 500);
+    } catch (error) {
+      console.error('[api/cc-plugin/session-enable] Error:', error);
+      return jsonResponse(
+        { success: false, error: error instanceof Error ? error.message : 'Failed to set Session plugins' },
+        500,
+      );
+    }
+  }
+
   if (pathname === '/api/agents/set' && request.method === 'POST') {
     try {
       const payload = await request.json() as { agents: Record<string, unknown> };

@@ -1,10 +1,10 @@
 /**
- * RuntimeDiagnosticsBanner — surface BLOCKING Codex (and future Claude Code /
- * Gemini) runtime issues in the chat header (issue #194).
+ * RuntimeDiagnosticsBanner — surface blocking Runtime failures and actionable
+ * Managed Codex extension lifecycle states in the chat header (issue #194).
  *
  * Design rules (v2 — post user feedback):
  *
- * 1. **Only blocking issues render here.** Anything the user can still keep
+ * 1. **Only blocking or extension-actionable issues render here.** Anything the user can still keep
  *    working through (e.g. `app/list` 403 — apps unavailable but chat works,
  *    individual MCP server failed — others still usable, feature flag query
  *    failed — purely informational) is logged via `chat:log` instead and is
@@ -12,11 +12,13 @@
  *    bug v1 of this banner had: users saw yellow warning for every transient
  *    Codex backend hiccup.
  *
- *    Blocking set today:
+ *    Actionable set today:
  *      • `auth.requiresLogin === true` — without a credential, every turn
  *        will 401 immediately. User must `codex login` (or equivalent).
  *      • All four diagnostic RPCs returned errors — suggests Codex itself
  *        is broken, not a single subsystem.
+ *      • Extension snapshot failed, is waiting for a restart/idle boundary,
+ *        or contains an unsupported component the user must resolve.
  *
  * 2. **Always visible close button.** v1 made the X conditional on a
  *    `onDismiss` prop the caller forgot to pass — so the banner had no way
@@ -97,6 +99,12 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
       allProblems.push(`${issue.title}：${issue.message.slice(0, 100)}`);
     }
   }
+  const extensionProblems = d.extensions?.components.filter(component => (
+    component.state === 'failed'
+    || component.state === 'unsupported'
+    || component.state === 'pending_next_start'
+    || component.state === 'deferred_until_idle'
+  )) ?? [];
 
   // ── Decide blocking ──
   const blockingIssue = d.issues?.find(issue => issue.severity === 'error');
@@ -104,6 +112,34 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
     return {
       isBlocking: true,
       headline: blockingIssue.title.slice(0, 60),
+      allProblems,
+    };
+  }
+  if (d.extensions?.state === 'failed' || extensionProblems.some(item => item.state === 'failed')) {
+    return {
+      isBlocking: true,
+      headline: t('shell.runtimeDiagnostics.headlines.extensionsFailed'),
+      allProblems,
+    };
+  }
+  if (d.extensions?.state === 'deferred_until_idle') {
+    return {
+      isBlocking: true,
+      headline: t('shell.runtimeDiagnostics.headlines.extensionsDeferred'),
+      allProblems,
+    };
+  }
+  if (d.extensions?.state === 'pending_next_start') {
+    return {
+      isBlocking: true,
+      headline: t('shell.runtimeDiagnostics.headlines.extensionsPending'),
+      allProblems,
+    };
+  }
+  if (extensionProblems.some(item => item.state === 'unsupported')) {
+    return {
+      isBlocking: true,
+      headline: t('shell.runtimeDiagnostics.headlines.extensionsPartial'),
       allProblems,
     };
   }
@@ -164,7 +200,7 @@ export default function RuntimeDiagnosticsBanner({
   );
 
   if (!diagnostics || !assessment) return null;
-  // The whole point of v2: silently swallow non-blocking diagnostics.
+  // Silently swallow non-actionable diagnostics.
   // Sidecar emits them as chat:log entries which surface in the Logs panel.
   if (!assessment.isBlocking) return null;
   if (dismissed) return null;
@@ -192,6 +228,31 @@ export default function RuntimeDiagnosticsBanner({
                   </ul>
                 </div>
               )}
+
+              <div>
+                {diagnostics.extensions && (
+                  <div>
+                    <div className="font-semibold">
+                      {t('shell.runtimeDiagnostics.sections.extensions')} [{diagnostics.extensions.state}]
+                    </div>
+                    <div className="text-[var(--ink-muted)] font-mono text-xs leading-tight">
+                      desired: {diagnostics.extensions.desiredRevision.slice(0, 12) || '(none)'} • effective: {diagnostics.extensions.effectiveRevision?.slice(0, 12) ?? '(none)'}
+                    </div>
+                    <ul className="list-disc pl-4 mt-1 space-y-0.5 text-[var(--ink-muted)]">
+                      {diagnostics.extensions.components.map((item, index) => (
+                        <li key={`${item.component}:${item.id ?? ''}:${item.code}:${index}`}>
+                          {t('shell.runtimeDiagnostics.problems.extensionComponent', {
+                            component: item.component,
+                            id: item.id ? `/${item.id}` : '',
+                            state: item.state,
+                            reason: item.message ?? item.code,
+                          })}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
 
               <div>
                 <div className="font-semibold">

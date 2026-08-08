@@ -159,6 +159,10 @@ export function getExternalLifecycleScenario(): InteractionScenario {
   return lastScenario;
 }
 
+export function setExternalLifecycleScenario(scenario: InteractionScenario): void {
+  lastScenario = scenario;
+}
+
 export function getExternalLifecycleAnalyticsSource(): TurnAnalyticsSource {
   return lastAnalyticsSource;
 }

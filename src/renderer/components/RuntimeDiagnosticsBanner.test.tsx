@@ -143,4 +143,37 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
 
     expect(screen.queryByRole('button', { name: /Ask helper to diagnose/ })).not.toBeInTheDocument();
   });
+
+  it('surfaces unsupported Managed Codex extension components with their reason', async () => {
+    const diagnostics: RuntimeDiagnostics = {
+      ...blockingDiagnostics,
+      timestamp: '2026-08-08T00:00:00.000Z',
+      auth: { authMethod: 'chatgpt', requiresLogin: false },
+      extensions: {
+        desiredRevision: 'desired-revision',
+        effectiveRevision: 'effective-revision',
+        state: 'applied',
+        components: [
+          {
+            component: 'skills',
+            state: 'applied',
+            code: 'skill_compiled',
+          },
+          {
+            component: 'host_tools',
+            state: 'unsupported',
+            code: 'host_tools_catalog_immutable',
+            message: 'Start a new Product Session.',
+          },
+        ],
+      },
+    };
+    render(<RuntimeDiagnosticsBanner diagnostics={diagnostics} />);
+
+    const headline = screen.getByRole('button', { name: /Some Managed Codex extensions are unsupported/ });
+    await userEvent.click(headline);
+    expectTextContaining('Extension host_tools', 'Start a new Product Session.');
+    expectTextContaining('Extension skills', 'applied');
+    expectTextContaining('desired: desired-revi', 'effective: effective-re');
+  });
 });

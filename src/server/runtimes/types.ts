@@ -7,6 +7,7 @@ import type { InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { LargeValueRef } from '../utils/large-value-store';
+import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
@@ -90,6 +91,11 @@ export interface SessionStartOptions {
    * consumes this as app-server startup config.
    */
   mcpServers?: McpServerDefinition[];
+  /**
+   * MyAgents-owned extension projection for the existing managed Codex
+   * adapter. It is generation-scoped and never persisted by the runtime.
+   */
+  managedCodexExtensions?: ManagedCodexExtensionSnapshot;
 }
 
 /**
@@ -97,6 +103,8 @@ export interface SessionStartOptions {
  */
 export interface RuntimeProcess {
   readonly pid: number;
+  /** Optional adapter-owned identity for generation-scoped projections/callbacks. */
+  readonly runtimeGeneration?: string;
   /** Write a line to the process stdin */
   writeLine(line: string): Promise<void>;
   /** Kill the process */

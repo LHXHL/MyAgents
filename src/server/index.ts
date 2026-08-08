@@ -433,7 +433,6 @@ import {
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
-  getCurrentImBridgeTurnContext,
   isCurrentImBridgeToolSurfaceInstalled,
   setBackgroundAgentPermissionMode,
 } from './agent-session';
@@ -6223,28 +6222,6 @@ async function main() {
         }
       }
 
-      // POST /api/cc-plugin/session-enable - body { enabledIds[] | null }
-      // Push a per-Tab override to THIS sidecar (the current session). null
-      // clears the override back to Agent-default tracking. Triggers a
-      // deferred restart so the next pre-warm picks up the new plugin set.
-      if (pathname === '/api/cc-plugin/session-enable' && request.method === 'POST') {
-        try {
-          const body = (await request.json()) as { enabledIds?: string[] | null };
-          const ids = body.enabledIds === null || body.enabledIds === undefined
-            ? null
-            : Array.isArray(body.enabledIds)
-              ? body.enabledIds.filter((s): s is string => typeof s === 'string')
-              : null;
-          const { setSessionEnabledPluginIds } = await import('./agent-session');
-          setSessionEnabledPluginIds(ids);
-          return jsonResponse({ success: true, enabledIds: ids });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Session enable failed';
-          console.error('[api/cc-plugin/session-enable] Error:', error);
-          return jsonResponse({ success: false, error: message }, 500);
-        }
-      }
-
       // ============= COMMANDS MANAGEMENT API =============
       // GET /api/command-items - List all commands
       // Supports ?agentDir= for listing commands from a specific workspace (e.g. from Launcher)
@@ -7422,7 +7399,7 @@ async function main() {
                     bridgePort: payload.bridgePort,
                     pluginId: payload.bridgePluginId,
                     enabledToolGroups: payload.bridgeEnabledToolGroups || [],
-                  }, getCurrentImBridgeTurnContext),
+                  }, () => getSessionEngine().getActiveImBridgeTurnContext()),
                   requestEntry.abortController.signal,
                 );
               } catch (error) {

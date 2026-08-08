@@ -1691,6 +1691,8 @@ export async function updateSessionMetadata(
         | 'runtime'
         | 'runtimeSource'
         | 'runtimeSessionId'
+        | 'managedCodexExtensionProtocolVersion'
+        | 'managedCodexHostCatalogFingerprint'
         | 'runtimeUsageTotals'
         | 'lastContextUsage'
         | 'model'

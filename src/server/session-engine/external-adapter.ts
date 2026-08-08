@@ -11,6 +11,7 @@ import {
   forceExecuteExternalQueueItem,
   getActiveRuntimeSource,
   getActiveRuntimeType,
+  getActiveExternalImBridgeTurnContext,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
   getExternalNativeSessionId,
@@ -25,9 +26,14 @@ import {
   getExternalSessionWorkspacePath,
   getExternalSystemInitPayload,
   getExternalCurrentTurnIdentity,
+  getManagedCodexExtensionConfigSnapshot,
   getLastExternalAssistantText,
   handleExternalOfficialToolIdsChange,
   handleExternalProxyConfigChange,
+  handleExternalAgentsChange,
+  handleExternalDesktopInteractionScenarioChange,
+  handleExternalMcpServersChange,
+  handleExternalSessionEnabledPluginsChange,
   hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
   isExternalSessionActive,
@@ -207,6 +213,9 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   if (model) patch.model = model;
   if (permissionMode) patch.permissionMode = permissionMode;
   if (reasoningEffort) patch.reasoningEffort = reasoningEffort;
+  const extensions = getManagedCodexExtensionConfigSnapshot();
+  if (extensions.enabledPluginIds) patch.enabledPluginIds = extensions.enabledPluginIds;
+  if (extensions.mcpServerIds) patch.mcpEnabledServers = extensions.mcpServerIds;
   if (runtime === 'codex' && runtimeSource === 'managed-provider' && model) {
     patch.providerExecutionIdentity = {
       kind: 'runtime-backed-provider',
@@ -310,13 +319,16 @@ export function createExternalSessionEngine(): SessionEngine {
       const runtimeSessionId = getRuntimeSessionId();
       const session = runtimeSessionId ? getSessionData(runtimeSessionId) : null;
       const workspacePath = getRuntimeWorkspacePath();
+      const extensions = getManagedCodexExtensionConfigSnapshot();
       return {
         success: true,
         runtime: getActiveRuntimeType(),
         runtimeSource: getActiveRuntimeSource(),
         model: getExternalSessionModel(),
-        mcpServerIds: null,
-        agentNames: null,
+        mcpServerIds: extensions.mcpServerIds,
+        agentNames: extensions.agentNames,
+        enabledPluginIds: extensions.enabledPluginIds,
+        ...(extensions.extensionStatus ? { extensionStatus: extensions.extensionStatus } : {}),
         enabledOfficialToolIds: workspacePath
           ? getEffectiveOfficialToolIdsForSession(workspacePath, session)
           : [],
@@ -368,6 +380,10 @@ export function createExternalSessionEngine(): SessionEngine {
 
     getCurrentTurnIdentity() {
       return getExternalCurrentTurnIdentity();
+    },
+
+    getActiveImBridgeTurnContext() {
+      return getActiveExternalImBridgeTurnContext();
     },
 
     getSessionCompletionTerminal() {
@@ -947,15 +963,20 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async updateMcpServers(servers) {
-      return { success: true, servers: servers.map(s => s.id), skipped: 'external-runtime' };
+      return handleExternalMcpServersChange(servers);
     },
 
     async updateAgents() {
-      return { success: true, skipped: 'external-runtime' };
+      return handleExternalAgentsChange();
     },
 
-    async updateDesktopInteractionScenario() {
-      return { success: true, skipped: 'external-runtime' };
+    async updateEnabledPluginIds(ids) {
+      const result = await handleExternalSessionEnabledPluginsChange(ids);
+      return { ...result, enabledIds: ids };
+    },
+
+    async updateDesktopInteractionScenario(scenario) {
+      return handleExternalDesktopInteractionScenarioChange(scenario);
     },
 
     async resetForNewDesktopSession(workspacePath) {
