@@ -15,6 +15,7 @@ use crate::{ulog_info, ulog_warn};
 use reqwest::Client;
 use serde_json::json;
 use tauri::{AppHandle, Runtime};
+use tokio::sync::Mutex;
 
 use crate::sidecar::{
     ensure_session_sidecar_with_runtime_identity_override_lifecycle, release_session_sidecar,
@@ -681,80 +682,95 @@ impl SessionRouter {
     /// config (typically via `normalize_runtime_type(agent_config.runtime)`).
     /// Valid values: `"builtin"`, `"claude-code"`, `"codex"`, `"gemini"`.
     pub async fn check_and_reset_on_runtime_drift(
-        &mut self,
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
         desired_runtime: &str,
         manager: &ManagedSidecarManager,
     ) -> Result<Option<(String, String)>, String> {
-        self.check_and_reset_on_runtime_identity_drift(session_key, desired_runtime, None, manager)
-            .await
+        Self::check_and_reset_on_runtime_identity_drift(
+            router,
+            session_key,
+            desired_runtime,
+            None,
+            manager,
+        )
+        .await
     }
 
     pub async fn check_and_reset_on_runtime_identity_drift(
-        &mut self,
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
         desired_runtime: &str,
         desired_runtime_source: Option<&str>,
         manager: &ManagedSidecarManager,
     ) -> Result<Option<(String, String)>, String> {
-        let Some(session_id) = self
-            .peer_sessions
-            .get(session_key)
-            .map(|peer| peer.session_id.clone())
-        else {
-            return Ok(None);
-        };
-        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
-        if crate::sidecar::has_persisted_session_owner(&session_id).await? {
-            return Ok(None);
-        }
-        Ok(
-            self.check_and_reset_on_runtime_identity_drift_with_resolver(
-                session_key,
-                desired_runtime,
-                desired_runtime_source,
-                manager,
-                |session_id| {
-                    resolve_session_runtime_identity_full(session_id)
-                        .map(|identity| (identity.runtime, identity.runtime_source))
-                },
-            ),
+        Self::check_and_reset_on_runtime_identity_drift_with_resolver(
+            router,
+            session_key,
+            desired_runtime,
+            desired_runtime_source,
+            manager,
+            |session_id| {
+                resolve_session_runtime_identity_full(session_id)
+                    .map(|identity| (identity.runtime, identity.runtime_source))
+            },
         )
+        .await
     }
 
-    fn check_and_reset_on_runtime_identity_drift_with_resolver<F>(
-        &mut self,
+    async fn check_and_reset_on_runtime_identity_drift_with_resolver<F>(
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
         desired_runtime: &str,
         desired_runtime_source: Option<&str>,
         manager: &ManagedSidecarManager,
         resolve_persisted_runtime: F,
-    ) -> Option<(String, String)>
+    ) -> Result<Option<(String, String)>, String>
     where
         F: FnOnce(&str) -> Option<(String, Option<String>)>,
     {
-        let old_id = self.peer_sessions.get(session_key)?.session_id.clone();
+        let session_id = {
+            let router_guard = router.lock().await;
+            let Some(session_id) = router_guard
+                .peer_sessions
+                .get(session_key)
+                .map(|peer| peer.session_id.clone())
+            else {
+                return Ok(None);
+            };
+            session_id
+        };
+        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
+        if crate::sidecar::has_persisted_session_owner(&session_id).await? {
+            return Ok(None);
+        }
 
-        // Delegate the Sidecar-side half (compare spawn-time runtime, decide
-        // whether killing is safe based on owner accounting) to SidecarManager
-        // so router.rs doesn't reach into private fields.
-        //
-        // The tri-state result lets us distinguish:
-        //   - NoDrift → no action
-        //   - KilledAndRemoved → full kill happened, spawn path will recreate
-        //   - DetectedKeptAlive → Sidecar stays alive (shared with desktop
-        //     Tab/Cron/BackgroundCompletion), but we STILL regenerate the
-        //     peer session_id to fork the IM conversation cleanly. The
-        //     desktop session continues unperturbed on the old session_id.
-        let drift_result = {
-            let mut mgr = manager.lock().ok()?;
-            mgr.kill_sidecar_if_runtime_identity_differs(
-                &old_id,
+        // The Router mutex is deliberately not held across Sidecar drain. It
+        // is shared by every IM peer, whereas this lifecycle fence is scoped
+        // to exactly one Session.
+        let binding_is_current = matches!(
+            router.lock().await.peer_sessions.get(session_key),
+            Some(peer) if peer.session_id == session_id
+        );
+        if !binding_is_current {
+            return Ok(None);
+        }
+        let transition = {
+            let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
+            manager_guard.kill_sidecar_if_runtime_identity_differs(
+                &session_id,
                 desired_runtime,
                 desired_runtime_source,
             )
         };
-        let persisted_identity = resolve_persisted_runtime(&old_id);
+        let drain_manager = manager.clone();
+        let drift_result = tauri::async_runtime::spawn_blocking(move || {
+            crate::sidecar::finish_runtime_drift_transition(&drain_manager, transition)
+        })
+        .await
+        .map_err(|error| format!("Runtime drift retirement task failed: {error:?}"))??;
+
+        let persisted_identity = resolve_persisted_runtime(&session_id);
         let persisted_drift = persisted_identity
             .as_ref()
             .map(|(runtime, source)| {
@@ -766,24 +782,57 @@ impl SessionRouter {
                 )
             })
             .unwrap_or(false);
-
         if !drift_result.is_drift() && !persisted_drift {
-            return None;
+            return Ok(None);
         }
 
         if matches!(
             drift_result,
             RuntimeDriftResult::NoDrift | RuntimeDriftResult::DetectedKeptAlive
         ) {
-            let owner = SidecarOwner::Agent(session_key.to_string());
-            if let Err(e) = release_session_sidecar(manager, &old_id, &owner) {
+            let release_manager = manager.clone();
+            let release_session_id = session_id.clone();
+            let release_owner = SidecarOwner::Agent(session_key.to_string());
+            let release = tauri::async_runtime::spawn_blocking(move || {
+                release_session_sidecar(&release_manager, &release_session_id, &release_owner)
+            })
+            .await
+            .map_err(|error| format!("Runtime drift owner release task failed: {error:?}"))?;
+            if let Err(error) = release {
                 ulog_warn!(
                     "[im-router] Failed to release old Agent owner during runtime drift (session_key={} session={}): {}",
                     session_key,
-                    old_id,
-                    e
+                    session_id,
+                    error
                 );
             }
+        }
+
+        Ok(router.lock().await.commit_runtime_drift_reset(
+            session_key,
+            &session_id,
+            desired_runtime,
+            desired_runtime_source,
+            persisted_identity,
+            drift_result,
+        ))
+    }
+
+    fn commit_runtime_drift_reset(
+        &mut self,
+        session_key: &str,
+        old_id: &str,
+        desired_runtime: &str,
+        desired_runtime_source: Option<&str>,
+        persisted_identity: Option<(String, Option<String>)>,
+        drift_result: RuntimeDriftResult,
+    ) -> Option<(String, String)> {
+        let binding_is_current = matches!(
+            self.peer_sessions.get(session_key),
+            Some(peer) if peer.session_id == old_id
+        );
+        if !binding_is_current {
+            return None;
         }
 
         // Regenerate the peer's session_id. Zero the cached port so
@@ -815,7 +864,7 @@ impl SessionRouter {
             drift_result,
         );
 
-        Some((old_id, new_id))
+        Some((old_id.to_string(), new_id))
     }
 
     pub async fn reset_session<R: Runtime>(
@@ -2090,26 +2139,32 @@ mod tests {
         assert!(restored_peer.metadata_indexed);
     }
 
-    #[test]
-    fn persisted_runtime_drift_rotates_peer_session_without_live_sidecar() {
+    #[tokio::test]
+    async fn persisted_runtime_drift_rotates_peer_session_without_live_sidecar() {
         let session_key = "agent:a:feishu:private:user";
         let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
         router.upsert_peer_session(peer(session_key, "old-session"));
-        let manager = Arc::new(Mutex::new(SidecarManager::new()));
+        let router = Arc::new(tokio::sync::Mutex::new(router));
+        let manager = Arc::new(std::sync::Mutex::new(SidecarManager::new()));
 
-        let reset = router.check_and_reset_on_runtime_identity_drift_with_resolver(
+        let reset = SessionRouter::check_and_reset_on_runtime_identity_drift_with_resolver(
+            &router,
             session_key,
             "codex",
             None,
             &manager,
             |_| Some(("builtin".to_string(), None)),
-        );
+        )
+        .await
+        .expect("runtime drift check");
 
         let (old_id, new_id) = reset.expect("persisted runtime drift should reset");
         assert_eq!(old_id, "old-session");
         assert_ne!(new_id, "old-session");
 
         let ps = router
+            .lock()
+            .await
             .peer_session_snapshot(session_key)
             .expect("peer session remains bound after rotation");
         assert_eq!(ps.session_id, new_id);

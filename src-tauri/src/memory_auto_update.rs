@@ -1647,9 +1647,9 @@ mod tests {
         };
         {
             let mut sidecars = manager.lock().expect("sidecar manager lock");
-            assert_eq!(
-                sidecars.remove_session_owner(session_id, &tab_owner),
-                (true, false),
+            let release = sidecars.remove_session_owner(session_id, &tab_owner);
+            assert!(
+                release.summary() == (true, false),
                 "the memory-update owner must keep the Sidecar alive"
             );
             assert!(sidecars.session_has_owners(session_id));

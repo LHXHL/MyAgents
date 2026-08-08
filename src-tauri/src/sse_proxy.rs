@@ -985,7 +985,12 @@ pub async fn session_sidecar_http_request(
         acquire_session_dispatch_with_wait(sidecar_manager.inner(), &session_id_hint, &owner)
             .await?;
     let request = request.resolve(&dispatch)?;
-    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+    let response = execute_http_request(app, spill_manager.inner().clone(), request, true).await;
+    // The generation lease protects only the Sidecar request and response
+    // body. Tauri/WebKit IPC delivery is a separate transport phase and must
+    // not keep process retirement waiting on the macOS main run loop.
+    drop(dispatch);
+    response
 }
 
 #[tauri::command]
@@ -997,7 +1002,9 @@ pub async fn global_sidecar_http_request(
 ) -> Result<HttpResponse, String> {
     let dispatch = acquire_global_dispatch_with_wait(sidecar_manager.inner()).await?;
     let request = request.resolve(&dispatch)?;
-    execute_http_request(app, spill_manager.inner().clone(), request, true).await
+    let response = execute_http_request(app, spill_manager.inner().clone(), request, true).await;
+    drop(dispatch);
+    response
 }
 
 #[tauri::command]

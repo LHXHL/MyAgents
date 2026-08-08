@@ -78,6 +78,8 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 应用维护一个 Global Sidecar；每个 Session 最多对应一个 Session Sidecar。Tab / Companion / Task / Goal / BackgroundCompletion / Agent owner 可以共享同一个 Session Sidecar，全部释放后才停止该进程。
 
+Sidecar 停止与 replacement 复用 per-generation `DispatchGate`：manager 锁内关闭 exact generation 的新请求准入并继续保留该 entry，已放行请求的排空在锁外完成，随后按 gate identity 回到 manager 内提交移除；进程对象释放仍在锁外。Session 与 Global 都遵守这一顺序。Global 首次启动先在唯一的 `instances[GLOBAL_SIDECAR_ID]` 槽位登记 process-less birth reservation，再持该 gate 的瞬时 lease 在锁外 spawn；replacement 同样由旧 gate 的瞬时 lease 覆盖锁外候选创建并原子替换原 entry。两者都不建立第二套候选 owner 或 restart mutex。standing intent 只表达应用是否仍需要该服务，generation 由 Global entry 自身持有，监控结果按 `(generation, port)` 拒绝过期工作。请求 lease 只覆盖 Sidecar HTTP 到响应体物化，不覆盖 Tauri / WebKit IPC 回传；端口探测、进程创建、资源清理及可能等待排空的工作都不能占用 manager 锁，阻塞型 command 必须通过 async + blocking worker，应用级批量停止还要先关闭 lifecycle birth admission。这样保留旧/新 generation 的非幂等隔离，又不会让一个 Session 的关闭冻结主线程或其它 Session。
+
 Rust 在创建 Sidecar 和 Plugin Bridge 时同时建立后代进程树的精确控制句柄。正常停止和应用退出只使用这些句柄，不根据全机进程的命令行猜测归属；应用退出还会先禁止新的资源创建，并等待已获准的创建流程完成登记或释放。全机进程扫描只用于确认前一个应用实例已经退出后的启动恢复，以及更新器的残留进程检查。跨平台实现与退出顺序见 `tech_docs/pit_of_success.md` 的 `process_cmd` 小节，Windows 细节见 `tech_docs/windows_platform.md`。
 
 Session 进程崩溃后，尚未结束的逻辑工作仍由 Rust `SidecarManager` 持有，不能依附于某一次候选进程。候选进程创建或就绪失败只结束该次 generation；owner、恢复轮次和有界重试会保留到新 generation 就绪、owner 全部释放或 Session 被删除。`BackgroundCompletion` 每次轮询都在请求前后核对当前 generation，旧 generation 的迟到结果不能提交终态或释放当前 owner。完整状态机见 `tech_docs/session_architecture.md`。

@@ -168,8 +168,9 @@ pub fn stop_all_sidecars(manager: &ManagedSidecarManager, reason: &str) -> Resul
         );
         error
     })?;
-    manager_guard.stop_all();
+    let retirement = manager_guard.stop_all();
     drop(manager_guard);
+    retirement.finish();
 
     ulog_info!(
         "[sidecar] stop_all action=complete reason={} scope=application",

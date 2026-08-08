@@ -59,9 +59,17 @@ pub async fn cmd_start_sidecar<R: Runtime>(
         initial_prompt,
     };
 
-    match start_sidecar(&app_handle, &state, config) {
-        Ok(_) => {
-            let status = get_sidecar_status(&state)?;
+    let manager = state.inner().clone();
+    let start_app_handle = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        start_sidecar(&start_app_handle, &manager, config)?;
+        get_sidecar_status(&manager)
+    })
+    .await
+    .map_err(|error| format!("Sidecar start task failed: {error:?}"))?;
+
+    match result {
+        Ok(status) => {
             logger::info(
                 &app_handle,
                 format!("[sidecar] Started on port {}", status.port),
@@ -78,7 +86,10 @@ pub async fn cmd_start_sidecar<R: Runtime>(
 /// Command: Stop the sidecar (legacy)
 #[tauri::command]
 pub async fn cmd_stop_sidecar(state: State<'_, ManagedSidecar>) -> Result<(), String> {
-    stop_sidecar(&state)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || stop_sidecar(&manager))
+        .await
+        .map_err(|error| format!("Sidecar stop task failed: {error:?}"))?
 }
 
 /// Command: Get sidecar status (legacy)
@@ -108,9 +119,18 @@ pub async fn cmd_restart_sidecar<R: Runtime>(
 ) -> Result<SidecarStatus, String> {
     logger::info(&app_handle, "[sidecar] Restart requested".to_string());
 
-    match restart_sidecar(&app_handle, &state) {
-        Ok(port) => {
-            let status = get_sidecar_status(&state)?;
+    let manager = state.inner().clone();
+    let restart_app_handle = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let port = restart_sidecar(&restart_app_handle, &manager)?;
+        let status = get_sidecar_status(&manager)?;
+        Ok::<_, String>((port, status))
+    })
+    .await
+    .map_err(|error| format!("Sidecar restart task failed: {error:?}"))?;
+
+    match result {
+        Ok((port, status)) => {
             logger::info(&app_handle, format!("[sidecar] Restarted on port {}", port));
             Ok(status)
         }
@@ -127,9 +147,18 @@ pub async fn cmd_ensure_sidecar_running<R: Runtime>(
     app_handle: AppHandle<R>,
     state: State<'_, ManagedSidecar>,
 ) -> Result<SidecarStatus, String> {
-    match ensure_sidecar_running(&app_handle, &state) {
-        Ok(port) => {
-            let status = get_sidecar_status(&state)?;
+    let manager = state.inner().clone();
+    let ensure_app_handle = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let port = ensure_sidecar_running(&ensure_app_handle, &manager)?;
+        let status = get_sidecar_status(&manager)?;
+        Ok::<_, String>((port, status))
+    })
+    .await
+    .map_err(|error| format!("Sidecar ensure task failed: {error:?}"))?;
+
+    match result {
+        Ok((port, status)) => {
             logger::debug(
                 &app_handle,
                 format!("[sidecar] Ensured running on port {}", port),
@@ -199,7 +228,10 @@ pub async fn cmd_stop_tab_sidecar(
     tab_id: String,
 ) -> Result<(), String> {
     logger::info(&app_handle, format!("[sidecar] Stopping tab {}", tab_id));
-    stop_tab_sidecar(&state, &tab_id)
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || stop_tab_sidecar(&manager, &tab_id))
+        .await
+        .map_err(|error| format!("Sidecar stop task failed: {error:?}"))?
 }
 
 /// Command: Get server URL for a specific Tab
@@ -228,9 +260,18 @@ pub async fn cmd_start_global_sidecar<R: Runtime>(
 ) -> Result<SidecarStatus, String> {
     logger::info(&app_handle, "[sidecar] Starting global sidecar".to_string());
 
-    match start_global_sidecar(&app_handle, &state) {
-        Ok(port) => {
-            let status = get_tab_sidecar_status(&state, GLOBAL_SIDECAR_ID)?;
+    let manager = state.inner().clone();
+    let start_app_handle = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let port = start_global_sidecar(&start_app_handle, &manager)?;
+        let status = get_tab_sidecar_status(&manager, GLOBAL_SIDECAR_ID)?;
+        Ok::<_, String>((port, status))
+    })
+    .await
+    .map_err(|error| format!("Global Sidecar start task failed: {error:?}"))?;
+
+    match result {
+        Ok((port, status)) => {
             logger::info(
                 &app_handle,
                 format!("[sidecar] Global sidecar started on port {}", port),
@@ -260,7 +301,16 @@ pub async fn cmd_stop_all_sidecars(
     state: State<'_, ManagedSidecar>,
 ) -> Result<(), String> {
     logger::info(&app_handle, "[sidecar] Stopping all instances".to_string());
-    stop_all_sidecars(&state, "ipc-command")
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // The debug/admin stop is live-app reachable, so it must close process
+        // birth while old generations drain. Update/app-exit callers already
+        // own the same lifecycle gate before calling stop_all_sidecars.
+        let _shutdown_guard = crate::sidecar::begin_update_shutdown()?;
+        stop_all_sidecars(&manager, "ipc-command")
+    })
+    .await
+    .map_err(|error| format!("Sidecar stop-all task failed: {error:?}"))?
 }
 
 /// Command: Shutdown for update — blocks until all child processes are fully terminated.

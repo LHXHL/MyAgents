@@ -7,6 +7,10 @@ import { CUSTOM_EVENTS } from '../shared/constants';
 import { SessionDeletionContext } from '@/context/SessionDeletionContext';
 import { useTabStateOptional } from '@/context/TabContext';
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => undefined),
+}));
+
 const mocks = vi.hoisted(() => {
   const project = {
     id: 'helper-project',
@@ -68,6 +72,7 @@ const mocks = vi.hoisted(() => {
     releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
     hasSessionSidecar: vi.fn(async () => true),
+    getSessionGeneration: vi.fn(async () => 1 as number | null),
     startBackgroundCompletion: vi.fn(async () => ({ started: false, sessionId: 'session' })),
     querySessionHasPersistentOwners: vi.fn(async () => false),
     canRestoreSession: vi.fn(async () => true),
@@ -80,6 +85,8 @@ const mocks = vi.hoisted(() => {
     setAppActiveCorrelation: vi.fn(),
     setAppActiveTabId: vi.fn(),
     useRealTabProvider: false,
+    tauriEnvironment: false,
+    listeners: new Map<string, (event: { payload: unknown }) => void | Promise<void>>(),
     sessionSidecarFetch: vi.fn(),
     track: vi.fn(),
     chatProps: [] as Array<Record<string, unknown>>,
@@ -132,7 +139,7 @@ vi.mock('@/api/tauriClient', () => ({
   resetTabServerUrlCache: vi.fn(),
   setActiveCorrelation: vi.fn(),
   hasSessionSidecar: mocks.hasSessionSidecar,
-  getSessionGeneration: vi.fn(async () => 1),
+  getSessionGeneration: mocks.getSessionGeneration,
   stopSseProxy: vi.fn(async () => undefined),
   startBackgroundCompletion: mocks.startBackgroundCompletion,
   startBackgroundCompletionForDeletion: mocks.startBackgroundCompletion,
@@ -386,7 +393,7 @@ vi.mock('@/hooks/useSpaceBuildCapability', () => ({
 
 vi.mock('@/utils/browserMock', () => ({
   isBrowserDevMode: () => false,
-  isTauriEnvironment: () => false,
+  isTauriEnvironment: () => mocks.tauriEnvironment,
 }));
 
 vi.mock('@/utils/frontendLogger', () => ({
@@ -409,7 +416,12 @@ vi.mock('@/utils/tabPersistenceDurable', () => ({
 }));
 
 vi.mock('@/utils/tauriListen', () => ({
-  listenWithCleanup: vi.fn(async () => undefined),
+  listenWithCleanup: vi.fn(async (
+    eventName: string,
+    handler: (event: { payload: unknown }) => void | Promise<void>,
+  ) => {
+    mocks.listeners.set(eventName, handler);
+  }),
 }));
 
 vi.mock('@/config/configService', () => ({
@@ -442,6 +454,8 @@ describe('App helper launch', () => {
     mocks.durableTabs = null;
     mocks.lastExitWasClean = true;
     mocks.useRealTabProvider = false;
+    mocks.tauriEnvironment = false;
+    mocks.listeners.clear();
     mocks.sessionSidecarFetch.mockReset();
     mocks.agent.runtime = 'builtin';
     mocks.agent.permissionMode = 'auto';
@@ -449,6 +463,7 @@ describe('App helper launch', () => {
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
     mocks.hasSessionSidecar.mockResolvedValue(true);
+    mocks.getSessionGeneration.mockResolvedValue(1);
     mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
     mocks.activateSession.mockResolvedValue(undefined);
     mocks.reconcileSessionTabActivation.mockResolvedValue(true);
@@ -1272,6 +1287,64 @@ describe('App helper launch', () => {
       expect.objectContaining({ id: 'restored-first', sidecarConfigDisposition: 'adopt' }),
       expect.objectContaining({ id: 'restored-second', sidecarConfigDisposition: 'adopt' }),
     ]));
+  });
+
+  it('keeps a restored Tab when a predecessor terminal read spans the whole opening', async () => {
+    const sessionId = '22222222-3333-4444-8555-666666666666';
+    let resolveFirstGeneration!: (generation: number | null) => void;
+    mocks.tauriEnvironment = true;
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [{
+        id: 'restored-during-terminal-read',
+        agentDir: mocks.project.path,
+        sessionId,
+        title: 'Restored during terminal read',
+      }],
+      activeTabId: 'restored-during-terminal-read',
+    };
+    mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: false });
+    mocks.hasSessionSidecar.mockResolvedValue(false);
+    mocks.getSessionGeneration
+      .mockImplementationOnce(() => new Promise<number | null>((resolve) => {
+        resolveFirstGeneration = resolve;
+      }))
+      .mockResolvedValue(2);
+
+    render(<App />);
+
+    const restoreButton = await screen.findByTestId('restore-session');
+    await waitFor(() => {
+      expect(mocks.listeners.has('session:sidecar-terminal')).toBe(true);
+    });
+    const terminalHandler = mocks.listeners.get('session:sidecar-terminal');
+    expect(terminalHandler).toBeDefined();
+    const terminalResult = Promise.resolve(terminalHandler!({
+      payload: { sessionId, generation: 1 },
+    }));
+    await waitFor(() => expect(mocks.getSessionGeneration).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(restoreButton);
+    await waitFor(() => {
+      const restored = (mocks.tabbarProps.at(-1)?.tabs as Array<{
+        id: string;
+        sidecarConfigDisposition?: string;
+      }>).find((tab) => tab.id === 'restored-during-terminal-read');
+      expect(restored?.sidecarConfigDisposition).toBe('adopt');
+    });
+
+    await act(async () => {
+      resolveFirstGeneration(null);
+      await terminalResult;
+    });
+
+    expect(mocks.getSessionGeneration).toHaveBeenCalledTimes(2);
+    expect(mocks.tabbarProps.at(-1)?.tabs).toContainEqual(expect.objectContaining({
+      id: 'restored-during-terminal-read',
+      sessionId,
+      sidecarConfigDisposition: 'adopt',
+    }));
   });
 
   it('loads every restored history but projects inactive Chat only after selection', async () => {
