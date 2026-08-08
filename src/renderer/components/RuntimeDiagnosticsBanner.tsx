@@ -19,6 +19,7 @@
  *        is broken, not a single subsystem.
  *      • Extension snapshot failed, is waiting for a restart/idle boundary,
  *        or contains an unsupported component the user must resolve.
+ *        Invalid optional component entries are skipped and stay in logs.
  *
  * 2. **Always visible close button.** v1 made the X conditional on a
  *    `onDismiss` prop the caller forgot to pass — so the banner had no way
@@ -99,12 +100,9 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
       allProblems.push(`${issue.title}：${issue.message.slice(0, 100)}`);
     }
   }
-  const extensionProblems = d.extensions?.components.filter(component => (
-    component.state === 'failed'
-    || component.state === 'unsupported'
-    || component.state === 'pending_next_start'
-    || component.state === 'deferred_until_idle'
-  )) ?? [];
+  const hasUnsupportedExtensionComponent = d.extensions?.components.some(
+    component => component.state === 'unsupported',
+  ) ?? false;
 
   // ── Decide blocking ──
   const blockingIssue = d.issues?.find(issue => issue.severity === 'error');
@@ -115,7 +113,7 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
       allProblems,
     };
   }
-  if (d.extensions?.state === 'failed' || extensionProblems.some(item => item.state === 'failed')) {
+  if (d.extensions?.state === 'failed') {
     return {
       isBlocking: true,
       headline: t('shell.runtimeDiagnostics.headlines.extensionsFailed'),
@@ -136,7 +134,7 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
       allProblems,
     };
   }
-  if (extensionProblems.some(item => item.state === 'unsupported')) {
+  if (hasUnsupportedExtensionComponent) {
     return {
       isBlocking: true,
       headline: t('shell.runtimeDiagnostics.headlines.extensionsPartial'),

@@ -144,6 +144,55 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
     expect(screen.queryByRole('button', { name: /Ask helper to diagnose/ })).not.toBeInTheDocument();
   });
 
+  it('silently skips failed optional extension components when the snapshot is healthy', () => {
+    const { container } = render(
+      <RuntimeDiagnosticsBanner
+        diagnostics={{
+          ...blockingDiagnostics,
+          runtimeSource: 'managed-provider',
+          auth: { authMethod: 'chatgpt', requiresLogin: false },
+          extensions: {
+            desiredRevision: 'same-revision',
+            effectiveRevision: 'same-revision',
+            state: 'unchanged',
+            components: [
+              {
+                component: 'commands',
+                id: 'workspace:BOOTSTRAP.md',
+                state: 'failed',
+                code: 'command_invalid_name',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('still surfaces a failed extension snapshot', () => {
+    render(
+      <RuntimeDiagnosticsBanner
+        diagnostics={{
+          ...blockingDiagnostics,
+          runtimeSource: 'managed-provider',
+          auth: { authMethod: 'chatgpt', requiresLogin: false },
+          extensions: {
+            desiredRevision: 'desired-revision',
+            effectiveRevision: 'effective-revision',
+            state: 'failed',
+            components: [],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('button', {
+      name: /Managed Codex extension application failed/,
+    })).toBeInTheDocument();
+  });
+
   it('surfaces unsupported Managed Codex extension components with their reason', async () => {
     const diagnostics: RuntimeDiagnostics = {
       ...blockingDiagnostics,
