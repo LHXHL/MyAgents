@@ -11,7 +11,7 @@
 
 ## 边界（最重要的三句话）
 
-1. **MyAgents 不解释插件内组件**。`SKILL.md` 的 frontmatter 字段、`hooks.json` 的 30+ 种事件、`.mcp.json` 的 server 配置、`${CLAUDE_PLUGIN_ROOT}` 替换——**全部交给 SDK**。MyAgents 只把绝对路径喂给 `Options.plugins`。
+1. **Builtin Runtime 不解释插件内组件**。`SKILL.md` 的 frontmatter 字段、`hooks.json` 的 30+ 种事件、`.mcp.json` 的 server 配置、`${CLAUDE_PLUGIN_ROOT}` 替换——**全部交给 SDK**；MyAgents 只把绝对路径喂给 `Options.plugins`。Managed Codex 是下文明确登记的例外，由 Product Extension compiler 读取并转换可忠实映射的组件。
 2. **OpenClaw 的 `plugin` 和 Claude 的 `cc-plugin` 是两套独立体系**。前者是 IM 渠道 npm 包（飞书/微信适配器），存在 Rust Management API；后者是 Anthropic 协议的插件目录，存在 Node Sidecar 的 AppConfig + 磁盘。CLI 命名分别是 `myagents plugin *` vs `myagents cc-plugin *`，互不影响。HTTP 路径也分别是 `/api/plugin/*`（Rust）vs `/api/cc-plugin/*`（Node Sidecar），不会撞名。
 3. **两层启用模型，镜像 MCP**（PRD 0.2.17 重构）：
    - Layer 1（全局可见性）：`AppConfig.enabledPlugins` —— Settings 面板的开关，OFF 则各工作区都看不到此 plugin（"安装但隐藏"）

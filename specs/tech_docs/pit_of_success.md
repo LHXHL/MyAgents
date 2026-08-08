@@ -381,10 +381,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - Phases: `cleanup / skill-seed / socks-bridge / sdk-init / external-runtime-restore`
 - `GET /health` —— liveness alias（旧 watchdog 兼容）
 - `GET /health/live` —— 显式 liveness
-- `GET /health/ready` —— 200 only when `state=ready`；503 + `{ state, phase?, error?, retryable? }` + `Retry-After: 1` 否则
+- `GET /health/ready` —— 200 only when `state=ready`；否则返回 503 + `{ state, phase?, error?, retryable? }`
 - `GET /health/functional` —— sidecar 等同 ready；plugin bridge 检"过去 60s 是否成功 forward 到 Rust"
-- `POST /health/ready/retry` —— 重置 `failed → pending`
-- Route gate 改成查状态机返结构化 503，不再 await indefinitely 或 rethrow
+- failed readiness 不提供进程内 retry route；由 Sidecar 进程重启重新建立初始化 owner
+- 普通 Route gate 改成查状态机并返回结构化 503 + `Retry-After: 1`，不再 await indefinitely 或 rethrow
 - Rust `wait_for_readiness`（30s timeout / 250ms cadence）wired 到 `ensure_session_sidecar`，启动 loading 自然覆盖 warm-up
 
 **Invariants enforced.**
