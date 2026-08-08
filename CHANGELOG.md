@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.6] - 2026-08-08
+
+> MyAgents 0.4.6 让 Managed Codex 完整接入 MyAgents 的 Skills、Commands、Agents、Plugins、MCP 与产品工具，并在安全的 Runtime 生命周期边界应用配置变更。版本同时恢复经验证的文件路径交互，提升 Sidecar 锁恢复、支持日志脱敏与长上下文失败诊断的可靠性。
+
+### Added
+
+- **Managed Codex 完整接入 MyAgents 扩展能力**：工作区、全局和 Plugin Skills，Commands、Agents、外部 MCP 以及 MyAgents 进程内工具统一通过受管 Runtime 生效；配置变更在下一次启动或当前回合结束后的安全边界应用，正常等待状态保持安静，真实失败和不支持项仍提供明确诊断。
+
+### Changed
+
+- **回复中的文件路径按验证结果渐进增强**：AI 文本和工具输出里识别出的路径只有通过 Rust 的存在性与安全校验后才可点击；工作区变化会使旧验证失效，执行打开、预览或定位前还会再次检查，普通 URL 继续按链接处理。
+
+### Fixed
+
+- **Sidecar 可立即接管已死亡进程遗留的 Session 锁**：确认原 owner 进程退出后不再等待锁老化；存活或状态未知的 owner 仍保持保守保护，同时收敛 deferred readiness 的唯一终态来源，修复 [#522](https://github.com/hAcKlyc/MyAgents/issues/522)。
+- **小助理经链接 Skill 路径执行日志自检时仍会输出脱敏结果**：日志脱敏 CLI 不再因 symlink 路径与模块真实路径不同而静默跳过，真实路径与链接路径共用同一套脱敏核心。
+- **长上下文快速反复填满时展示正确的终态**：不再误报为会自动恢复的请求限流，而是明确提示减少文件或工具输出，或新建会话继续。
+- **Agent 工具目录移除不可靠的 `TaskOutput` 入口**：避免 Agent 进入无法稳定结算的等待路径；现有 Task、停止与协作能力保持不变。
+
+---
+
 ## [0.4.5] - 2026-08-06
 
 > MyAgents 0.4.5 带来“满足条件才唤醒 AI”的任务自动化、Codex 对话回退与分支，以及全新的 MyAgents Light 默认主题。任务中心、Agent CLI 和侧栏操作更顺手，并进一步提升配置、MCP、Provider 路由和长上下文会话的可靠性。
