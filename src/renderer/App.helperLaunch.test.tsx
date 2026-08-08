@@ -235,7 +235,7 @@ vi.mock('@/components/LinkContextMenuProvider', () => ({
 }));
 
 vi.mock('@/components/TabBar', () => ({
-  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void>; onNewTab: () => void }) => {
+  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onSelectTab: (tabId: string) => void; onCloseTab: (tabId: string) => Promise<void>; onNewTab: () => void }) => {
     mocks.tabbarProps.push(props);
     return <div data-testid="tabbar-active">{props.tabs.find(t => t.id === props.activeTabId)?.title ?? 'missing'}</div>;
   },
@@ -250,7 +250,7 @@ vi.mock('@/context/TabProvider', async () => {
       if (mocks.useRealTabProvider) {
         return <RealTabProvider {...props} />;
       }
-      return <div data-testid="tab-provider">{props.children}</div>;
+      return <div data-testid="tab-provider" data-tab-id={props.tabId}>{props.children}</div>;
     },
   };
 });
@@ -428,6 +428,7 @@ import App from './App';
 
 describe('App helper launch', () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
     localStorage.clear();
     mocks.chatProps.length = 0;
@@ -510,6 +511,7 @@ describe('App helper launch', () => {
     return props as {
       tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string }>;
       activeTabId: string | null;
+      onSelectTab: (tabId: string) => void;
       onNewTab: () => void;
     };
   }
@@ -1092,6 +1094,71 @@ describe('App helper launch', () => {
     });
   });
 
+  it('restores every Session lifecycle immediately but reveals Chat active-first', async () => {
+    const frames: FrameRequestCallback[] = [];
+    let nextFrameHandle = 1;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return nextFrameHandle++;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const flushQueuedFrame = (timestamp: number) => {
+      const callbacks = frames.splice(0);
+      callbacks.forEach((callback) => callback(timestamp));
+    };
+    mocks.lastExitWasClean = false;
+    mocks.durableTabs = {
+      version: 1,
+      tabs: [
+        {
+          id: 'restore-active',
+          agentDir: mocks.project.path,
+          sessionId: '11111111-2222-4333-8444-555555555551',
+          title: 'Active history',
+        },
+        {
+          id: 'restore-inactive',
+          agentDir: mocks.project.path,
+          sessionId: '11111111-2222-4333-8444-555555555552',
+          title: 'Inactive history',
+        },
+      ],
+      activeTabId: 'restore-active',
+    };
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId('restore-session'));
+    await waitFor(() => {
+      expect(mocks.ensureSessionSidecar).toHaveBeenCalledTimes(2);
+    });
+
+    const providers = screen.getAllByTestId('tab-provider');
+    expect(providers).toHaveLength(2);
+    expect(screen.getAllByTestId('chat-boot-overlay')).toHaveLength(2);
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument();
+    expect(frames.length).toBeGreaterThan(0);
+
+    act(() => flushQueuedFrame(0));
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument();
+    act(() => flushQueuedFrame(16));
+    await waitFor(() => {
+      expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
+    });
+    expect(
+      providers.find((provider) => provider.dataset.tabId === 'restore-active')
+        ?.querySelector('[data-testid="chat-page"]'),
+    ).not.toBeNull();
+
+    fireEvent.keyDown(window, { key: 'Tab', code: 'Tab', ctrlKey: true });
+    expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
+    expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Inactive history');
+    act(() => flushQueuedFrame(32));
+    act(() => flushQueuedFrame(48));
+    await waitFor(() => {
+      expect(screen.getAllByTestId('chat-page')).toHaveLength(2);
+    });
+  });
+
   it('keeps current work unchanged when an earlier deletion owns the Session transition', async () => {
     const sessionId = '66666666-7777-4888-8999-000000000000';
     let resolveOwnerCheck!: (value: boolean) => void;
@@ -1186,7 +1253,8 @@ describe('App helper launch', () => {
     expect(new Set(mocks.tabProviderProps.map((props) => props.sessionId))).toEqual(
       new Set([firstSessionId, secondSessionId]),
     );
-    expect(screen.getAllByTestId('chat-page')).toHaveLength(2);
+    expect(screen.getAllByTestId('tab-provider')).toHaveLength(2);
+    expect(screen.getAllByTestId('chat-page')).toHaveLength(1);
     expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Second restored history');
     expect(mocks.setAppActiveCorrelation).toHaveBeenCalledWith({
       tabId: 'restored-second',
@@ -1206,7 +1274,7 @@ describe('App helper launch', () => {
     ]));
   });
 
-  it('projects restored history through the real TabProvider without a Tab selection', async () => {
+  it('loads every restored history but projects inactive Chat only after selection', async () => {
     const firstSessionId = '33333333-2222-4333-8444-555555555551';
     const secondSessionId = '33333333-2222-4333-8444-555555555552';
     mocks.useRealTabProvider = true;
@@ -1267,8 +1335,8 @@ describe('App helper launch', () => {
     render(<App />);
     fireEvent.click(await screen.findByTestId('restore-session'));
 
-    expect(await screen.findByText('First persisted restore message')).toBeInTheDocument();
     expect(await screen.findByText('Second persisted restore message')).toBeInTheDocument();
+    expect(screen.queryByText('First persisted restore message')).not.toBeInTheDocument();
     expect(mocks.sessionSidecarFetch).toHaveBeenCalledWith(
       firstSessionId,
       { type: 'tab', id: 'history-first' },
@@ -1281,6 +1349,10 @@ describe('App helper launch', () => {
       expect.stringMatching(new RegExp(`^/sessions/${secondSessionId}\\?`)),
       expect.any(Object),
     );
+
+    act(() => latestTabbarProps().onSelectTab('history-first'));
+    expect(await screen.findByText('First persisted restore message')).toBeInTheDocument();
+    expect(screen.getByText('Second persisted restore message')).toBeInTheDocument();
   });
 
   it('isolates one restored owner failure and preserves successful/current Tabs', async () => {

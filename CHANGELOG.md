@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.6] - 2026-08-08
 
-> MyAgents 0.4.6 让 Managed Codex 完整接入 MyAgents 的 Skills、Commands、Agents、Plugins、MCP 与产品工具，并在安全的 Runtime 生命周期边界应用配置变更。版本同时恢复经验证的文件路径交互，提升 Sidecar 锁恢复、支持日志脱敏与长上下文失败诊断的可靠性。
+> MyAgents 0.4.6 让 Managed Codex 完整接入 MyAgents 的 Skills、Commands、Agents、Plugins、MCP 与产品工具，并在安全的 Runtime 生命周期边界应用配置变更。版本同时改善多会话恢复体验，并提升文件路径交互、Sidecar 锁恢复、支持日志脱敏与长上下文失败诊断的可靠性。
 
 ### Added
 
@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **一次恢复多个历史对话时不再卡住主窗口**：所有 Session 仍会立即建立独立运行生命周期，但界面会先显示当前对话，再在首次切换时加载其余 Chat 视图，避免多个完整界面同时挂载造成 macOS 彩虹球；历史消息保持完整。
 - **Sidecar 可立即接管已死亡进程遗留的 Session 锁**：确认原 owner 进程退出后不再等待锁老化；存活或状态未知的 owner 仍保持保守保护，同时收敛 deferred readiness 的唯一终态来源，修复 [#522](https://github.com/hAcKlyc/MyAgents/issues/522)。
 - **小助理经链接 Skill 路径执行日志自检时仍会输出脱敏结果**：日志脱敏 CLI 不再因 symlink 路径与模块真实路径不同而静默跳过，真实路径与链接路径共用同一套脱敏核心。
 - **长上下文快速反复填满时展示正确的终态**：不再误报为会自动恢复的请求限流，而是明确提示减少文件或工具输出，或新建会话继续。

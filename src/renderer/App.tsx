@@ -232,11 +232,13 @@ interface TabContentProps {
   isLoading: boolean;
   error: string | null;
   /**
-   * When true, render only a cheap placeholder instead of the (heavy) tab
-   * content. Set for a freshly created tab so its full subtree (e.g. the
-   * Launcher: BrandSection + SimpleChatInput + selectors) does NOT mount
-   * inside the synchronous click commit —
-   * that mount is what janked the "+" / Cmd+T action. handleNewTab clears
+   * When true, postpone the heavy view subtree. Non-Chat tabs render a cheap
+   * placeholder; Chat tabs still mount their real TabProvider so Session/SSE/
+   * owner lifecycle is live, but render only ChatBootOverlay until reveal.
+   * Set for a freshly created tab so its full subtree (e.g. the Launcher:
+   * BrandSection + SimpleChatInput + selectors) does NOT mount inside the
+   * synchronous click commit —
+   * that mount is what janked the "+" / Cmd+T action. Active-tab projection clears
    * the flag right after the placeholder paints (runAfterNextPaint), so React
    * mounts the real content in a prompt normal-priority commit off the click
    * frame. (NOT a low-priority transition — that gets starved by background
@@ -384,24 +386,28 @@ export const MemoizedTabContent = memo(function TabContent({
           onSessionIdChange={(newSessionId, options) => onUpdateSessionId(tab.id, newSessionId, options)}
           claimSessionOpeningTransition={claimTabSessionOpeningTransition}
         >
-          <Suspense fallback={<ChatBootOverlay />}>
-            <Chat
-              isWindowFocused={isWindowFocused}
-              onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
-              onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
-              onNewSession={() => onNewSession(tab.id)}
-              initialMessage={tab.initialMessage}
-              onInitialMessageConsumed={() => onClearInitialMessage(tab.id)}
-              sidecarConfigDisposition={tab.sidecarConfigDisposition}
-              onSidecarConfigAdopted={() => onSidecarConfigAdopted(tab.id)}
-              pendingFilePreview={tab.pendingFilePreview}
-              onFilePreviewIntentConsumed={(intentId) => onFilePreviewIntentConsumed?.(tab.id, intentId)}
-              sessionTitle={tab.title}
-              onRenameSession={(newTitle: string) => onRenameSession(tab.id, newTitle)}
-              onForkSession={(newSessionId: string, agentDir: string, title: string, initialMessage?: string) => onForkSession(tab.id, newSessionId, agentDir, title, initialMessage)}
-              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-            />
-          </Suspense>
+          {kind === 'deferred-chat' ? (
+            <ChatBootOverlay />
+          ) : (
+            <Suspense fallback={<ChatBootOverlay />}>
+              <Chat
+                isWindowFocused={isWindowFocused}
+                onOpenSession={(sessionId, title, historyEntrySource) => onOpenHistorySession(tab.id, sessionId, title, historyEntrySource)}
+                onOpenSessionInNewTab={(sessionId, title) => onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
+                onNewSession={() => onNewSession(tab.id)}
+                initialMessage={tab.initialMessage}
+                onInitialMessageConsumed={() => onClearInitialMessage(tab.id)}
+                sidecarConfigDisposition={tab.sidecarConfigDisposition}
+                onSidecarConfigAdopted={() => onSidecarConfigAdopted(tab.id)}
+                pendingFilePreview={tab.pendingFilePreview}
+                onFilePreviewIntentConsumed={(intentId) => onFilePreviewIntentConsumed?.(tab.id, intentId)}
+                sessionTitle={tab.title}
+                onRenameSession={(newTitle: string) => onRenameSession(tab.id, newTitle)}
+                onForkSession={(newSessionId: string, agentDir: string, title: string, initialMessage?: string) => onForkSession(tab.id, newSessionId, agentDir, title, initialMessage)}
+                sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+              />
+            </Suspense>
+          )}
         </TabProvider>
       )}
     </div>
@@ -537,6 +543,24 @@ export default function App() {
     });
   }, []);
 
+  // Deferred-view set. Non-Chat tabs in this set render a cheap placeholder;
+  // Chat tabs keep their live TabProvider but postpone the heavy Chat child.
+  // Activation is the single reveal owner: every entry path (mouse, keyboard,
+  // close fallback, history jump) gets the same post-paint behavior.
+  const [deferredMountTabIds, setDeferredMountTabIds] = useState<Set<string>>(() => new Set());
+  const revealDeferredActiveTabAfterPaint = useCallback((tabId: string | null) => {
+    if (!tabId) return;
+    runAfterNextPaint(() => {
+      if (activeTabIdRef.current !== tabId) return;
+      setDeferredMountTabIds((prev) => {
+        if (!prev.has(tabId)) return prev;
+        const next = new Set(prev);
+        next.delete(tabId);
+        return next;
+      });
+    });
+  }, []);
+
   const setActiveTabId = useCallback((
     next: string | null | ((current: string | null) => string | null),
     nextTabs: readonly Tab[] = tabsRef.current,
@@ -546,6 +570,7 @@ export default function App() {
         const resolved = next(current);
         activeTabIdRef.current = resolved;
         syncRendererCorrelationForTab(resolved, nextTabs);
+        revealDeferredActiveTabAfterPaint(resolved);
         return resolved;
       });
       return;
@@ -553,7 +578,8 @@ export default function App() {
     activeTabIdRef.current = next;
     syncRendererCorrelationForTab(next, nextTabs);
     setActiveTabIdState(next);
-  }, [syncRendererCorrelationForTab]);
+    revealDeferredActiveTabAfterPaint(next);
+  }, [revealDeferredActiveTabAfterPaint, syncRendererCorrelationForTab]);
 
   useEffect(() => {
     if (configLoading || spaceBuildCapability.isLoading || teamSpaceAvailable) return;
@@ -643,14 +669,6 @@ export default function App() {
     restoreCandidateRef.current = null;
   }, []);
 
-  // Deferred-mount set for freshly created tabs. A tab whose id is in here
-  // renders only a placeholder (see MemoizedTabContent), so clicking "+" /
-  // Cmd+T does not synchronously mount the heavy Launcher subtree in the
-  // click commit. handleNewTab adds the id urgently (instant chip + active
-  // highlight) then clears it AFTER the placeholder paints (runAfterNextPaint),
-  // so React mounts the real content in a prompt normal-priority commit.
-  const [deferredMountTabIds, setDeferredMountTabIds] = useState<Set<string>>(() => new Set());
-
   // Single source of truth for opening a NEW tab whose view mounts a large
   // renderer-only subtree (Launcher / Settings / TaskCenter). It appends and
   // activates the tab in the urgent commit — so the chip + active highlight
@@ -671,9 +689,10 @@ export default function App() {
   // mount runs off the click frame. See utils/afterPaint.ts for the double-rAF
   // rationale.
   //
-  // NOT for Chat / session opens (handleLaunchProject / fork / switch): those
-  // commit the Chat owner subtree with its real Session identity immediately;
-  // Chat's own loading/boot surface covers Sidecar ownership establishment.
+  // Normal Chat/session opens are never added to this deferred set: they commit
+  // the Chat owner subtree with its real Session identity immediately. Bulk
+  // restore is the deliberate exception and keeps TabProvider live underneath
+  // the lightweight boot surface.
   const openNewTabDeferred = useCallback((newTab: Tab) => {
     perfMark(RENDERER_PERF_PHASE.newTabReveal, { tabId: newTab.id }); // P0: new-tab timeline anchor
     const nextTabs = [...tabsRef.current, newTab];
@@ -685,14 +704,6 @@ export default function App() {
     });
     setTabs((prev) => [...prev, newTab]);
     setActiveTabId(newTab.id, nextTabs);
-    runAfterNextPaint(() => {
-      setDeferredMountTabIds((prev) => {
-        if (!prev.has(newTab.id)) return prev;
-        const next = new Set(prev);
-        next.delete(newTab.id);
-        return next;
-      });
-    });
   }, [setActiveTabId]);
 
   // Helper-overlay launches must hand `handleLaunchProject` a real, committed
@@ -1437,6 +1448,12 @@ export default function App() {
     // a later (unrelated) session_new — the analytics module keeps these
     // module-level until consumed.
     clearPendingSessionBirth(tabId);
+    setDeferredMountTabIds((current) => {
+      if (!current.has(tabId)) return current;
+      const next = new Set(current);
+      next.delete(tabId);
+      return next;
+    });
 
     // ========== IMMEDIATE UI UPDATE (non-blocking) ==========
     // Update UI state first for instant response
@@ -2208,9 +2225,11 @@ export default function App() {
   // "恢复对话" is a bulk entry into the same live existing-Session path used
   // by normal history navigation. Validate every candidate under its Session
   // opening admission first, then commit one final tabs/active projection so
-  // every restored Chat mounts TabProvider from its first render. Owner work is
-  // independent per target; failures are removed together from the latest Tab
-  // list so concurrent results cannot overwrite one another or newer user work.
+  // every restored Chat mounts TabProvider from its first render. Heavy Chat
+  // children stay deferred: only the active one reveals after the shell paints,
+  // while inactive ones reveal on first selection. Owner work is independent
+  // per target; failures are removed together from the latest Tab list so
+  // concurrent results cannot overwrite one another or newer user work.
   const handleRestoreLastSession = useCallback(async () => {
     const candidate = restoreCandidateRef.current;
     setRestorePillCount(0);
@@ -2268,6 +2287,11 @@ export default function App() {
 
     track('restore_last_session', { count: addedTargets.length });
     flushSync(() => {
+      setDeferredMountTabIds((current) => {
+        const next = new Set(current);
+        addedTargets.forEach(({ tab }) => next.add(tab.id));
+        return next;
+      });
       // Compose after any queued field-only updates (for example another
       // existing Tab settling pending → adopt) instead of replacing them with
       // the pre-await render mirror captured by the restore plan.
@@ -2294,15 +2318,20 @@ export default function App() {
     });
     if (failedTabIds.size === 0) return;
 
+    const remaining = tabsRef.current.filter((tab) => !failedTabIds.has(tab.id));
+    const nextTabs = remaining.length > 0 ? remaining : [createNewTab()];
+    const currentActiveTabId = activeTabIdRef.current;
+    const nextActiveTabId = currentActiveTabId && nextTabs.some((tab) => tab.id === currentActiveTabId)
+      ? currentActiveTabId
+      : (previousActiveTabId && nextTabs.some((tab) => tab.id === previousActiveTabId)
+          ? previousActiveTabId
+          : nextTabs.at(-1)!.id);
     flushSync(() => {
-      const remaining = tabsRef.current.filter((tab) => !failedTabIds.has(tab.id));
-      const nextTabs = remaining.length > 0 ? remaining : [createNewTab()];
-      const currentActiveTabId = activeTabIdRef.current;
-      const nextActiveTabId = currentActiveTabId && nextTabs.some((tab) => tab.id === currentActiveTabId)
-        ? currentActiveTabId
-        : (previousActiveTabId && nextTabs.some((tab) => tab.id === previousActiveTabId)
-            ? previousActiveTabId
-            : nextTabs.at(-1)!.id);
+      setDeferredMountTabIds((current) => {
+        const next = new Set(current);
+        failedTabIds.forEach((tabId) => next.delete(tabId));
+        return next;
+      });
       // Functional removal composes after each successful target's queued
       // pending → push/adopt update. A direct `setTabs(nextTabs)` from the
       // render mirror can overwrite that settlement in React's update queue.
