@@ -23,6 +23,7 @@ import { FileActionProvider } from '@/context/FileActionContext';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import { useToast } from '@/components/Toast';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
+import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { track } from '@/analytics';
 import { loadAppConfig, mergePresetCustomModels } from '@/config/services/appConfigService';
@@ -275,6 +276,10 @@ export default function CompanionWindow() {
 
     const session = useFloatingSession(modeRef);
     const fileService = useWorkspaceFileService(session.workspacePath);
+    const workspaceChangeSignal = useWorkspaceChangeSignal(
+        session.workspacePath,
+        fileService.isAvailable,
+    );
     const toast = useToast();
     const { openPreview } = useImagePreview();
     // ⚠️ 稳定性纪律（review critical）：`session` 是每渲染新对象——监听 effect
@@ -1335,6 +1340,7 @@ export default function CompanionWindow() {
             <FileActionProvider
                 workspacePath={session.workspacePath}
                 onInsertReference={insertReferencePaths}
+                refreshTrigger={workspaceChangeSignal}
                 menuProfile="floatingBall"
                 onOpenMyAgentsPreview={onOpenMyAgentsPreview}
             >

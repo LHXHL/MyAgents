@@ -6,9 +6,11 @@
 // System prompt: thread/start → developerInstructions
 // Session: thread/start (new) / thread/resume (continuing)
 
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
-import { writeFileSync , existsSync, readdirSync, unlinkSync, statSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
+import { dirname, join } from 'path';
 import type {
   RuntimeDetection, RuntimeModelInfo, RuntimePermissionMode, RuntimeType,
   RuntimeAuthStatus, RuntimeFeatureFlag, RuntimeMcpServerInfo, RuntimeAppInfo,
@@ -47,10 +49,58 @@ import {
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
+import { MYAGENTS_TOOL_CALL_TIMEOUT_MS } from '../session-core/tool-call-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
 import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
+import type {
+  ManagedCodexAgentRoleSpec,
+  ManagedCodexExtensionSnapshot,
+  ManagedCodexHostToolCall,
+  ManagedCodexHostToolResult,
+} from './managed-codex/extensions/contracts';
+import { MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION } from './managed-codex/extensions/contracts';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+
+/**
+ * Extension RPCs below are verified against this exact app-server schema.
+ * Keep this independent from the downloadable runtime lock: changing only the
+ * lock must fail closed until conformance and this contract advance together.
+ */
+export function assertManagedCodexExtensionProtocolVersion(version: string | undefined): void {
+  if (version !== MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION) {
+    throw new Error(
+      `Managed Codex extensions require app-server ${MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION}; `
+      + `resolved ${version ?? 'unknown'}. Re-run exact-version conformance before upgrading.`,
+    );
+  }
+}
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
+type CodexDynamicToolCallResult = {
+  success: boolean;
+  contentItems: Array<
+    | { type: 'inputText'; text: string }
+    | { type: 'inputImage'; imageUrl: string }
+    | { type: 'inputAudio'; audioUrl: string }
+  >;
+};
+
+const managedCodexHostInputValidator = new AjvJsonSchemaValidator();
+
+function toCodexDynamicToolCallResult(result: ManagedCodexHostToolResult): CodexDynamicToolCallResult {
+  return {
+    success: result.success,
+    contentItems: result.contentItems.map(item => {
+      if (item.type === 'text') return { type: 'inputText' as const, text: item.text };
+      if (item.type === 'image') return { type: 'inputImage' as const, imageUrl: item.dataUrl };
+      return { type: 'inputAudio' as const, audioUrl: item.dataUrl };
+    }),
+  };
+}
+
+function codexHostToolFailure(message: string): CodexDynamicToolCallResult {
+  return { success: false, contentItems: [{ type: 'inputText', text: message }] };
+}
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 type CodexApprovalPolicy =
   | 'untrusted'
@@ -445,6 +495,68 @@ function pushCodexConfigArg(target: string[], key: string, valueToml: string): v
   target.push('-c', `${key}=${valueToml}`);
 }
 
+type ManagedCodexExtensionMaterialization = {
+  configArgs: string[];
+  skillRoots: string[];
+  cleanup(): void;
+};
+
+export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec): string {
+  const lines = [
+    `developer_instructions = ${tomlString(role.prompt)}`,
+    ...(role.model ? [`model = ${tomlString(role.model)}`] : []),
+  ];
+  for (const skill of role.skills) {
+    lines.push('', '[[skills.config]]', `path = ${tomlString(skill.path)}`, 'enabled = true');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function materializeManagedCodexExtensions(
+  snapshot: ManagedCodexExtensionSnapshot | undefined,
+): ManagedCodexExtensionMaterialization {
+  if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
+    return { configArgs: [], skillRoots: [], cleanup() {} };
+  }
+  const root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  const configArgs: string[] = [];
+  const skillRoots: string[] = [];
+  let cleaned = false;
+  try {
+    if (snapshot.agents.length > 0) {
+      const rolesRoot = join(root, 'agents');
+      ensureDirSync(rolesRoot);
+      for (const role of snapshot.agents) {
+        const configPath = join(rolesRoot, `${role.name}.toml`);
+        writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
+        pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
+        pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+      }
+    }
+    if (snapshot.skills.length > 0) {
+      const skillsRoot = join(root, 'skills');
+      ensureDirSync(skillsRoot);
+      for (const [index, skill] of snapshot.skills.entries()) {
+        const folderName = `${String(index).padStart(3, '0')}-${skill.name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+        symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      skillRoots.push(skillsRoot);
+    }
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    configArgs,
+    skillRoots,
+    cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
 export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
   const projectSkillsDir = join(workspacePath, '.claude', 'skills');
   try {
@@ -460,20 +572,41 @@ export async function configureCodexSkillExtraRoots(
   rpc: Pick<JsonRpcClient, 'call'>,
   workspacePath: string,
   timeoutMs = 5_000,
+  requestedRoots?: readonly string[],
+  expectedSkillNames: readonly string[] = [],
 ): Promise<string[]> {
-  const extraRoots = resolveCodexSkillExtraRoots(workspacePath);
-  if (extraRoots.length === 0) return [];
+  const strictProjection = requestedRoots !== undefined;
+  const extraRoots = requestedRoots === undefined
+    ? resolveCodexSkillExtraRoots(workspacePath)
+    : [...new Set(requestedRoots)];
+  if (!strictProjection && extraRoots.length === 0) return [];
 
   try {
     await rpc.call('skills/extraRoots/set', { extraRoots }, timeoutMs);
-    console.log(`[codex] skills extra roots injected: ${extraRoots.join(',')}`);
+    const listed = await rpc.call('skills/list', {
+      cwds: [workspacePath],
+      forceReload: true,
+    }, timeoutMs) as { data?: Array<{ skills?: Array<{ name?: string; enabled?: boolean }> }> };
+    const visible = new Set(
+      (listed.data ?? []).flatMap(entry => entry.skills ?? [])
+        .filter(skill => skill.enabled !== false && typeof skill.name === 'string')
+        .map(skill => skill.name as string),
+    );
+    const missing = expectedSkillNames.filter(name => !visible.has(name));
+    if (missing.length > 0) {
+      throw new Error(`Codex skills/list did not report expected Skills: ${missing.join(', ')}`);
+    }
+    console.log(`[codex] skills extra roots applied and verified: roots=${extraRoots.length} skills=${expectedSkillNames.length}`);
     return extraRoots;
   } catch (err) {
-    console.warn(
-      '[codex] skills extra roots injection failed; continuing without .claude/skills:',
-      err instanceof Error ? err.message : String(err),
-    );
-    return [];
+    if (!strictProjection) {
+      console.warn(
+        '[codex] skills extra roots injection failed; continuing without .claude/skills:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+    throw new Error(`Managed Codex Skill projection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -486,7 +619,11 @@ function buildManagedCodexMcpConfigArgs(
   const args: string[] = [];
   const usedNames = new Set<string>();
   const usedGeneratedEnvNames = new Set<string>();
-  let skipped = 0;
+  const assignedServerEnv = new Map<string, { value: string; serverId: string }>();
+
+  const reject = (serverId: string, reason: string): never => {
+    throw new Error(`Managed Codex MCP ${serverId} cannot be applied: ${reason}`);
+  };
 
   codexEnv.NO_PROXY = CODEX_MCP_NO_PROXY_VAL;
   codexEnv.no_proxy = CODEX_MCP_NO_PROXY_VAL;
@@ -494,51 +631,43 @@ function buildManagedCodexMcpConfigArgs(
   for (const server of servers) {
     const name = codexMcpServerName(server.id);
     if (!name || usedNames.has(name)) {
-      skipped += 1;
-      console.warn(`[codex] managed MCP skipped id=${server.id}: invalid or duplicate Codex MCP server name`);
-      continue;
+      reject(server.id, 'invalid or duplicate Codex MCP server name');
     }
+    const serverName = name ?? reject(server.id, 'invalid Codex MCP server name');
 
     if (server.type === 'stdio') {
       let command = server.command;
       if (command === '__builtin__') {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: SDK in-process MCP cannot be passed to Codex app-server`);
+        // In-process MCP is exposed through the Host tool dispatcher instead.
         continue;
       }
       if (command === '__bundled_cuse__') {
         command = getBundledCusePath() ?? undefined;
         if (!command) {
-          skipped += 1;
-          console.warn(`[codex] managed MCP ${server.id} skipped: bundled cuse binary not found`);
-          continue;
+          reject(server.id, 'bundled cuse binary not found');
         }
       }
       if (!command) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: missing stdio command`);
-        continue;
+        reject(server.id, 'missing stdio command');
       }
+      const resolvedCommand = command ?? reject(server.id, 'missing stdio command');
       let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-      if (command === 'npx') {
+      let projectedCommand = resolvedCommand;
+      if (projectedCommand === 'npx') {
         const invocation = resolveNpxMcpInvocation(stdioArgs, {
           pinPresetPackages: server.isBuiltin === true,
         });
-        command = invocation.command;
+        projectedCommand = invocation.command;
         stdioArgs = invocation.args;
-        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
+        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${projectedCommand})`);
       }
-      const commandReason = unsafeCodexMcpStdioValueReason(command);
+      const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
       if (commandReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: stdio command ${commandReason}`);
-        continue;
+        reject(server.id, `stdio command ${commandReason}`);
       }
       const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
       if (argsReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: stdio args unsafe for Codex argv (${argsReason})`);
-        continue;
+        reject(server.id, `stdio args unsafe for Codex argv (${argsReason})`);
       }
 
       const serverEnv = Object.entries(server.env ?? {});
@@ -546,14 +675,19 @@ function buildManagedCodexMcpConfigArgs(
         .map(([key]) => key)
         .filter(key => !canExposeMcpEnvKeyToCodexParent(key));
       if (unsafeEnvKeys.length > 0) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
-        continue;
+        reject(server.id, `env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
+      }
+      for (const [key, value] of serverEnv) {
+        const assigned = assignedServerEnv.get(key);
+        if (assigned && assigned.value !== value) {
+          reject(server.id, `env key ${key} conflicts with server ${assigned.serverId}`);
+        }
+        assignedServerEnv.set(key, { value, serverId: server.id });
       }
 
-      usedNames.add(name);
-      pushCodexConfigArg(args, `mcp_servers.${name}.command`, tomlString(command));
-      pushCodexConfigArg(args, `mcp_servers.${name}.args`, tomlArray(stdioArgs));
+      usedNames.add(serverName);
+      pushCodexConfigArg(args, `mcp_servers.${serverName}.command`, tomlString(projectedCommand));
+      pushCodexConfigArg(args, `mcp_servers.${serverName}.args`, tomlArray(stdioArgs));
 
       const envVars = new Set<string>();
       for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
@@ -566,10 +700,10 @@ function buildManagedCodexMcpConfigArgs(
         codexEnv[key] = value;
         envVars.add(key);
       }
-      pushCodexConfigArg(args, `mcp_servers.${name}.env_vars`, tomlArray([...envVars].sort()));
+      pushCodexConfigArg(args, `mcp_servers.${serverName}.env_vars`, tomlArray([...envVars].sort()));
       pushCodexConfigArg(
         args,
-        `mcp_servers.${name}.startup_timeout_sec`,
+        `mcp_servers.${serverName}.startup_timeout_sec`,
         String(MCP_PREWARM_GRACE_MS / 1_000),
       );
       continue;
@@ -577,57 +711,48 @@ function buildManagedCodexMcpConfigArgs(
 
     if (server.type === 'http') {
       if (!server.url) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: missing HTTP MCP URL`);
-        continue;
+        reject(server.id, 'missing HTTP MCP URL');
       }
-      const urlReason = unsafeCodexMcpUrlReason(server.url);
+      const url = server.url ?? reject(server.id, 'missing HTTP MCP URL');
+      const urlReason = unsafeCodexMcpUrlReason(url);
       if (urlReason) {
-        skipped += 1;
-        console.warn(`[codex] managed MCP ${server.id} skipped: HTTP MCP URL unsafe for Codex argv (${urlReason})`);
-        continue;
+        reject(server.id, `HTTP MCP URL unsafe for Codex argv (${urlReason})`);
       }
 
       const envHeaderMap: Record<string, string> = {};
       const pendingHeaderEnv: Record<string, string> = {};
-      let headerConfigInvalid = false;
       if (server.headers && Object.keys(server.headers).length > 0) {
         for (const [header, value] of Object.entries(server.headers)) {
           if (!header || value === undefined) continue;
           const resolvedHeaderValue = resolveMcpTemplateValue(value, server.env);
           if (resolvedHeaderValue === null) {
-            skipped += 1;
-            console.warn(`[codex] managed MCP ${server.id} skipped: HTTP header ${header} references missing env placeholder`);
-            headerConfigInvalid = true;
-            break;
+            reject(server.id, `HTTP header ${header} references missing env placeholder`);
           }
-          const envName = uniqueCodexMcpEnvVarName(name, header, usedGeneratedEnvNames);
-          pendingHeaderEnv[envName] = resolvedHeaderValue;
+          const envName = uniqueCodexMcpEnvVarName(serverName, header, usedGeneratedEnvNames);
+          pendingHeaderEnv[envName] = resolvedHeaderValue ?? reject(server.id, `HTTP header ${header} references missing env placeholder`);
           envHeaderMap[header] = envName;
         }
       }
-      if (headerConfigInvalid) continue;
 
-      usedNames.add(name);
+      usedNames.add(serverName);
       Object.assign(codexEnv, pendingHeaderEnv);
-      pushCodexConfigArg(args, `mcp_servers.${name}.url`, tomlString(server.url));
+      pushCodexConfigArg(args, `mcp_servers.${serverName}.url`, tomlString(url));
       if (Object.keys(envHeaderMap).length > 0) {
-        pushCodexConfigArg(args, `mcp_servers.${name}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
+        pushCodexConfigArg(args, `mcp_servers.${serverName}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
       }
       pushCodexConfigArg(
         args,
-        `mcp_servers.${name}.startup_timeout_sec`,
+        `mcp_servers.${serverName}.startup_timeout_sec`,
         String(MCP_PREWARM_GRACE_MS / 1_000),
       );
       continue;
     }
 
-    skipped += 1;
-    console.warn(`[codex] managed MCP ${server.id} skipped: Codex app-server does not support MyAgents MCP type ${server.type}`);
+    reject(server.id, `Codex app-server does not support MyAgents MCP type ${server.type}`);
   }
 
-  if (args.length > 0 || skipped > 0) {
-    console.log(`[codex] managed MCP startup config: injected=${usedNames.size} skipped=${skipped}`);
+  if (args.length > 0) {
+    console.log(`[codex] managed MCP startup config: injected=${usedNames.size}`);
   }
   return { args, serverNames: [...usedNames] };
 }
@@ -637,6 +762,7 @@ export function buildCodexAppServerLaunchConfig(args: {
   runtimeSource: RuntimeSource;
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
+  extensionConfigArgs?: readonly string[];
 }): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
   const codexArgs = [
     args.commandPath,
@@ -656,6 +782,7 @@ export function buildCodexAppServerLaunchConfig(args: {
     codexArgs.push(...mcpConfig.args);
     mcpServerNames = mcpConfig.serverNames;
   }
+  codexArgs.push(...(args.extensionConfigArgs ?? []));
   codexArgs.push('app-server');
   return { args: codexArgs, mcpServerNames, modelProvider };
 }
@@ -705,7 +832,19 @@ export type PendingCodexRequest =
   | { kind: 'file_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
   | { kind: 'tool_user_input'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
   | { kind: 'mcp_elicitation'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
-  | { kind: 'permissions_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> };
+  | { kind: 'permissions_approval'; rpcId: JsonRpcRequestId; method: KnownCodexServerRequestMethod; params: Record<string, unknown> }
+  | { kind: 'host_tool_approval'; rpcId: JsonRpcRequestId; method: 'item/tool/call'; params: Record<string, unknown>; callId: string };
+
+type PendingManagedCodexHostCall = {
+  rpcId: JsonRpcRequestId;
+  callId: string;
+  threadId: string;
+  turnId: string;
+  params: Record<string, unknown>;
+  controller: AbortController;
+  settled: boolean;
+  timeout?: ReturnType<typeof setTimeout>;
+};
 
 type CodexResponseAction =
   | { type: 'result'; result: unknown }
@@ -1205,6 +1344,19 @@ export function serializeCodexPermissionResponse(
           permissions: buildGrantedPermissionProfile(pending.params),
           scope: decision === 'always_allow' ? 'session' : 'turn',
         },
+      };
+    case 'host_tool_approval':
+      return {
+        type: 'result',
+        result: {
+          success: false,
+          contentItems: [{
+            type: 'inputText',
+            text: decision === 'deny'
+              ? 'User denied the Managed Codex Host tool request.'
+              : 'Managed Codex Host tool approval was not dispatched.',
+          }],
+        } satisfies CodexDynamicToolCallResult,
       };
   }
 }
@@ -2148,6 +2300,7 @@ export class JsonRpcClient {
 
 class CodexProcess implements RuntimeProcess {
   readonly pid: number;
+  readonly runtimeGeneration: string;
   exited = false;
   private proc: Subprocess;
 
@@ -2165,6 +2318,11 @@ class CodexProcess implements RuntimeProcess {
   rootEventHandler: UnifiedEventCallback | null = null;
   agentMessageTextById = new Map<string, string>();
   pendingRequests = new Map<string, PendingCodexRequest>();
+  readonly processGeneration = randomUUID();
+  extensionSnapshot: ManagedCodexExtensionSnapshot | null = null;
+  pendingHostCalls = new Map<string, PendingManagedCodexHostCall>();
+  settledHostCallIds = new Set<string>();
+  cleanupExtensionResources: () => void = () => {};
 
   // ── Sub-agent (collab-agent) thread correlation ──
   // Child threadId → the spawnAgent collabAgentToolCall id that created it
@@ -2255,6 +2413,7 @@ class CodexProcess implements RuntimeProcess {
   constructor(proc: Subprocess) {
     this.proc = proc;
     this.pid = proc.pid;
+    this.runtimeGeneration = this.processGeneration;
     this.rpc = new JsonRpcClient(proc);
   }
 
@@ -2284,6 +2443,45 @@ class CodexProcess implements RuntimeProcess {
     try {
       await stdin.end();
     } catch { /* already closed / EPIPE */ }
+  }
+
+  abortPendingHostCalls(reason: string, turnId?: string): void {
+    for (const pending of [...this.pendingHostCalls.values()]) {
+      if (turnId && pending.turnId !== turnId) continue;
+      this.abortPendingHostCall(pending.callId, reason);
+    }
+  }
+
+  abortPendingHostCall(callId: string, reason: string): void {
+    const pending = this.pendingHostCalls.get(callId);
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.controller.abort(new Error(reason));
+    this.pendingHostCalls.delete(pending.callId);
+    const resolvedRequestIds: string[] = [];
+    for (const [requestId, request] of this.pendingRequests) {
+      if (request.kind === 'host_tool_approval' && request.callId === callId) {
+        this.pendingRequests.delete(requestId);
+        resolvedRequestIds.push(requestId);
+      }
+    }
+    for (const requestId of resolvedRequestIds) {
+      try {
+        this.rootEventHandler?.({ kind: 'interactive_request_resolved', requestId });
+      } catch { /* UI expiry must not prevent the protocol response */ }
+    }
+    this.settledHostCallIds.add(pending.callId);
+    this.rpc.respond(pending.rpcId, {
+      ...codexHostToolFailure(reason),
+    });
+  }
+
+  disposeExtensionResources(reason: string): void {
+    this.abortPendingHostCalls(reason);
+    this.extensionSnapshot?.hostToolDispatcher?.dispose(reason);
+    this.cleanupExtensionResources();
+    this.cleanupExtensionResources = () => {};
   }
 }
 
@@ -3008,23 +3206,33 @@ export class CodexRuntime implements AgentRuntime {
     // workspace, not the sidecar's launch directory. Codex review SM finding.
     codexEnv.PWD = options.workspacePath;
     codexEnv.MYAGENTS_SESSION_ID = options.sessionId;
+    const extensionSnapshot = runtimeSource === 'managed-provider'
+      ? options.managedCodexExtensions
+      : undefined;
+    if (extensionSnapshot) {
+      assertManagedCodexExtensionProtocolVersion(context.version);
+    }
+    const extensionMaterialization = materializeManagedCodexExtensions(extensionSnapshot);
     const launchConfig = buildCodexAppServerLaunchConfig({
       commandPath: context.commandPath,
       runtimeSource,
       codexEnv,
-      mcpServers: options.mcpServers,
+      mcpServers: extensionSnapshot?.mcpServers ?? options.mcpServers,
+      extensionConfigArgs: extensionMaterialization.configArgs,
     });
     const mcpStartup = createCodexMcpStartupBarrier(launchConfig.mcpServerNames);
     console.log(
       `[codex] spawn source=${runtimeSource} version=${context.version ?? 'system-cli'} ` +
       `platform=${context.platform ?? process.platform} codexHome=${context.codexHome ? '<managed>' : '<default>'}`,
     );
-    const proc = spawn(launchConfig.args, {
-      stdout: 'pipe',
-      stderr: 'pipe',
-      stdin: 'pipe',
-      cwd: options.workspacePath,
-      env: codexEnv,
+    let proc: Subprocess;
+    try {
+      proc = spawn(launchConfig.args, {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        stdin: 'pipe',
+        cwd: options.workspacePath,
+        env: codexEnv,
       // Detached → child becomes its own process-group leader on POSIX so
       // killWithEscalation({ killTree: true }) below can take down the entire
       // model/tool tree, not just the wrapper.
@@ -3034,11 +3242,17 @@ export class CodexRuntime implements AgentRuntime {
       // doesn't have process groups; tree-kill uses `taskkill /F /T /PID` which
       // works regardless of detached. `windowsHide: true` suppresses the console
       // window flash from cmd.exe wrapping the codex.cmd shim.
-      detached: process.platform !== 'win32',
-      windowsHide: true,
-    });
+        detached: process.platform !== 'win32',
+        windowsHide: true,
+      });
+    } catch (error) {
+      extensionMaterialization.cleanup();
+      throw error;
+    }
 
     const codexProc = new CodexProcess(proc);
+    codexProc.extensionSnapshot = extensionSnapshot ?? null;
+    codexProc.cleanupExtensionResources = extensionMaterialization.cleanup;
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
     codexProc.scenario = options.scenario;
@@ -3062,15 +3276,17 @@ export class CodexRuntime implements AgentRuntime {
 
     const readyMcpServerNames = new Set<string>();
     let lastMcpToolCatalog: string[] = [];
+    const extensionToolCatalog = extensionSnapshot?.dynamicTools.map(tool => tool.name) ?? [];
     let mcpCatalogRevision = 0;
     let mcpCatalogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const publishMcpToolCatalog = (tools: string[]): void => {
+      const combinedTools = [...new Set([...tools, ...extensionToolCatalog])].sort();
       if (
-        tools.length === lastMcpToolCatalog.length
-        && tools.every((tool, index) => tool === lastMcpToolCatalog[index])
+        combinedTools.length === lastMcpToolCatalog.length
+        && combinedTools.every((tool, index) => tool === lastMcpToolCatalog[index])
       ) return;
-      lastMcpToolCatalog = tools;
-      wrappedOnEvent({ kind: 'runtime_tool_catalog', tools });
+      lastMcpToolCatalog = combinedTools;
+      wrappedOnEvent({ kind: 'runtime_tool_catalog', tools: combinedTools });
     };
     const emitMcpToolCatalog = (servers: readonly CodexMcpServerStatus[]): void => {
       publishMcpToolCatalog(buildCodexMcpToolCatalog(servers, readyMcpServerNames));
@@ -3213,6 +3429,7 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      codexProc.disposeExtensionResources(`Codex process exited with code ${code}`);
       if (mcpCatalogRefreshTimer) {
         clearTimeout(mcpCatalogRefreshTimer);
         mcpCatalogRefreshTimer = null;
@@ -3272,7 +3489,13 @@ export class CodexRuntime implements AgentRuntime {
       const enableManagedRawEvents = runtimeSource === 'managed-provider'
         && !options.resumeSessionId;
       await initializeCodexRpc(codexProc.rpc, 15_000, enableManagedRawEvents);
-      await configureCodexSkillExtraRoots(codexProc.rpc, options.workspacePath);
+      await configureCodexSkillExtraRoots(
+        codexProc.rpc,
+        options.workspacePath,
+        5_000,
+        extensionSnapshot ? extensionMaterialization.skillRoots : undefined,
+        extensionSnapshot?.skills.map(skill => skill.name) ?? [],
+      );
 
       // 2. Determine permission mode
       const isHeadlessAutomation =
@@ -3324,6 +3547,7 @@ export class CodexRuntime implements AgentRuntime {
           model: options.model || '',
           tools: [],
         });
+        publishMcpToolCatalog([]);
         scheduleMcpToolCatalogRefresh();
       } else {
         // New thread
@@ -3335,6 +3559,9 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
           ephemeral: options.ephemeral ?? false,
+          ...(extensionSnapshot?.dynamicTools.length
+            ? { dynamicTools: extensionSnapshot.dynamicTools }
+            : {}),
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
         console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
@@ -3348,6 +3575,7 @@ export class CodexRuntime implements AgentRuntime {
           model: result.model || '',
           tools: [],
         });
+        publishMcpToolCatalog([]);
         scheduleMcpToolCatalogRefresh();
       }
 
@@ -3431,6 +3659,7 @@ export class CodexRuntime implements AgentRuntime {
       }
       // Flag must be set BEFORE proc.kill so proc.exited.then observes it.
       codexProc.intentionalKillDuringStartup = true;
+      codexProc.disposeExtensionResources('Codex startup failed');
       try { proc.kill(); } catch { /* ignore */ }
       codexProc.exited = true;
 
@@ -3806,6 +4035,18 @@ export class CodexRuntime implements AgentRuntime {
     }
     codexProc.pendingRequests.delete(requestId);
 
+    if (pending.kind === 'host_tool_approval') {
+      if (decision === 'deny') {
+        codexProc.abortPendingHostCall(
+          pending.callId,
+          _reason || 'User denied the Managed Codex Host tool request.',
+        );
+      } else {
+        this.dispatchManagedCodexHostToolCall(codexProc, pending.callId);
+      }
+      return;
+    }
+
     const action = serializeCodexPermissionResponse(pending, decision, updatedInput, interrupt);
     if (action.type === 'error') {
       codexProc.rpc.respondError(pending.rpcId, action.code, action.message);
@@ -3817,6 +4058,7 @@ export class CodexRuntime implements AgentRuntime {
   async stopSession(process: RuntimeProcess): Promise<void> {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) return;
+    codexProc.abortPendingHostCalls('Managed Codex Host tool call interrupted because the Session stopped');
 
     try {
       // 1. Interrupt current turn if any
@@ -3843,6 +4085,7 @@ export class CodexRuntime implements AgentRuntime {
       });
     } catch { /* ignore */ } finally {
       codexProc.pendingRequests.clear();
+      codexProc.disposeExtensionResources('Managed Codex Session stopped');
       codexProc.rpc.destroy();
     }
   }
@@ -4010,6 +4253,12 @@ export class CodexRuntime implements AgentRuntime {
         const completedTurnId = stringValue(objectValue(turn).id)
           ?? stringValue(p.turnId)
           ?? codexProc.currentTurnId;
+        if (completedTurnId) {
+          codexProc.abortPendingHostCalls?.(
+            'Managed Codex Host tool call expired at the turn boundary',
+            completedTurnId,
+          );
+        }
         if (completedTurnId && !this.observeRootTurnId(codexProc, completedTurnId)) {
           return {
             kind: 'turn_complete',
@@ -4271,7 +4520,7 @@ export class CodexRuntime implements AgentRuntime {
           text?: string; summary?: string[];
           query?: string; action?: { type: string; url?: string; queries?: string[]; pattern?: string };
           path?: string; revisedPrompt?: string; savedPath?: string;
-          contentItems?: Array<{ type: string; text?: string; imageUrl?: string }>;
+          contentItems?: Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>;
           success?: boolean; review?: string;
           senderThreadId?: string; receiverThreadIds?: string[];
           prompt?: string; model?: string;
@@ -4389,6 +4638,13 @@ export class CodexRuntime implements AgentRuntime {
                 const ctx = attachCtx('image/png', undefined, `codex.dynamic.${item.namespace ?? ''}.${item.tool ?? ''}`);
                 attachments.push(this.scheduleAttachmentSave(
                   { kind: 'url', url: ci.imageUrl },
+                  ctx,
+                  asyncEmit,
+                ));
+              } else if (ci.type === 'inputAudio' && typeof ci.audioUrl === 'string') {
+                const ctx = attachCtx('audio/mpeg', undefined, `codex.dynamic.${item.namespace ?? ''}.${item.tool ?? ''}`);
+                attachments.push(this.scheduleAttachmentSave(
+                  { kind: 'url', url: ci.audioUrl },
                   ctx,
                   asyncEmit,
                 ));
@@ -4723,6 +4979,133 @@ export class CodexRuntime implements AgentRuntime {
 
   // ─── Server-initiated request handling (approval) ───
 
+  private handleManagedCodexHostToolCall(
+    codexProc: CodexProcess,
+    rpcId: JsonRpcRequestId,
+    params: Record<string, unknown>,
+    onEvent: UnifiedEventCallback,
+  ): void {
+    const snapshot = codexProc.extensionSnapshot;
+    const dispatcher = snapshot?.hostToolDispatcher;
+    const threadId = stringValue(params.threadId);
+    const turnId = stringValue(params.turnId);
+    const callId = stringValue(params.callId);
+    const tool = stringValue(params.tool);
+    const reject = (message: string): void => {
+      codexProc.rpc.respond(rpcId, codexHostToolFailure(message));
+    };
+    if (!snapshot || !dispatcher) {
+      reject('Managed Codex Host tools are not enabled for this Session.');
+      return;
+    }
+    if (!threadId || threadId !== codexProc.threadId || !turnId || turnId !== codexProc.currentTurnId) {
+      reject('Stale Managed Codex Host tool request.');
+      return;
+    }
+    if (!callId || !tool || codexProc.pendingHostCalls.has(callId) || codexProc.settledHostCallIds.has(callId)) {
+      reject('Duplicate or invalid Managed Codex Host tool request.');
+      return;
+    }
+    const descriptor = dispatcher.descriptors.find(candidate => candidate.name === tool);
+    if (!descriptor) {
+      reject(`Unknown Managed Codex Host tool: ${tool}`);
+      return;
+    }
+    try {
+      const validation = managedCodexHostInputValidator
+        .getValidator(descriptor.inputSchema)(params.arguments);
+      if (!validation.valid) {
+        reject(`Invalid arguments for Managed Codex Host tool: ${tool}`);
+        return;
+      }
+    } catch {
+      reject(`Invalid schema for Managed Codex Host tool: ${tool}`);
+      return;
+    }
+
+    const controller = new AbortController();
+    const pending: PendingManagedCodexHostCall = {
+      rpcId,
+      callId,
+      threadId,
+      turnId,
+      params,
+      controller,
+      settled: false,
+    };
+    codexProc.pendingHostCalls.set(callId, pending);
+    if (codexProc.approvalPolicy !== 'never') {
+      const requestId = String(rpcId);
+      codexProc.pendingRequests.set(requestId, {
+        kind: 'host_tool_approval',
+        rpcId,
+        method: 'item/tool/call',
+        params,
+        callId,
+      });
+      onEvent({
+        kind: 'permission_request',
+        requestId,
+        toolName: tool,
+        toolUseId: callId,
+        input: objectValue(params.arguments),
+      });
+      return;
+    }
+    this.dispatchManagedCodexHostToolCall(codexProc, callId);
+  }
+
+  private dispatchManagedCodexHostToolCall(codexProc: CodexProcess, callId: string): void {
+    const pending = codexProc.pendingHostCalls.get(callId);
+    const snapshot = codexProc.extensionSnapshot;
+    const dispatcher = snapshot?.hostToolDispatcher;
+    if (!pending || pending.settled || !dispatcher) {
+      codexProc.abortPendingHostCall(callId, 'Managed Codex Host tool generation is unavailable.');
+      return;
+    }
+    const requestParams = pending.params;
+    const tool = stringValue(requestParams.tool);
+    if (!tool || !dispatcher.descriptors.some(candidate => candidate.name === tool)) {
+      codexProc.abortPendingHostCall(callId, 'Managed Codex Host tool request payload is unavailable.');
+      return;
+    }
+    pending.timeout = setTimeout(() => {
+      codexProc.abortPendingHostCall(callId, `Managed Codex Host tool timed out: ${tool}`);
+    }, MYAGENTS_TOOL_CALL_TIMEOUT_MS);
+    const call: ManagedCodexHostToolCall = {
+      processGeneration: codexProc.processGeneration,
+      threadId: pending.threadId,
+      turnId: pending.turnId,
+      callId: pending.callId,
+      tool,
+      arguments: requestParams.arguments,
+      signal: pending.controller.signal,
+    };
+    void dispatcher.dispatch(call).then(
+      result => {
+        const current = codexProc.pendingHostCalls.get(callId);
+        if (current !== pending || pending.settled || pending.controller.signal.aborted) return;
+        pending.settled = true;
+        codexProc.pendingHostCalls.delete(callId);
+        codexProc.settledHostCallIds.add(callId);
+        codexProc.rpc.respond(pending.rpcId, toCodexDynamicToolCallResult(result));
+      },
+      error => {
+        const current = codexProc.pendingHostCalls.get(callId);
+        if (current !== pending || pending.settled || pending.controller.signal.aborted) return;
+        pending.settled = true;
+        codexProc.pendingHostCalls.delete(callId);
+        codexProc.settledHostCallIds.add(callId);
+        codexProc.rpc.respond(
+          pending.rpcId,
+          codexHostToolFailure(error instanceof Error ? error.message : String(error)),
+        );
+      },
+    ).finally(() => {
+      if (pending.timeout) clearTimeout(pending.timeout);
+    });
+  }
+
   private handleServerRequest(
     codexProc: CodexProcess,
     rpcId: JsonRpcRequestId,
@@ -4870,7 +5253,7 @@ export class CodexRuntime implements AgentRuntime {
       }
 
       case 'item/tool/call':
-        codexProc.rpc.respondError(rpcId, -32000, 'Codex dynamic tool host is not supported by MyAgents yet');
+        this.handleManagedCodexHostToolCall(codexProc, rpcId, p, onEvent);
         break;
 
       case 'account/chatgptAuthTokens/refresh':

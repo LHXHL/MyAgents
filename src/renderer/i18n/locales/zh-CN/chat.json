@@ -530,11 +530,14 @@
         "mcpStatusFailed": "MCP 状态查询失败：{{error}}",
         "featureFlagFailed": "feature flag 查询失败：{{error}}",
         "appsInaccessible": "{{count}} 个 app 启用但不可达：{{names}}",
-        "mcpServersFailed": "MCP server 失败：{{names}}"
+        "mcpServersFailed": "MCP server 失败：{{names}}",
+        "extensionComponent": "扩展 {{component}}{{id}} 为 {{state}}：{{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "需要登录 Codex 才能继续使用",
-        "allDiagnosticsFailed": "Codex 自诊断全部失败，runtime 可能未启动"
+        "allDiagnosticsFailed": "Codex 自诊断全部失败，runtime 可能未启动",
+        "extensionsFailed": "Managed Codex 扩展应用失败",
+        "extensionsPartial": "部分 Managed Codex 扩展不受支持"
       },
       "status": {
         "unsupported": "不支持",
@@ -547,7 +550,8 @@
         "featureFlags": "Feature flags",
         "mcpServers": "MCP servers",
         "apps": "Apps",
-        "effectiveEnv": "Effective env"
+        "effectiveEnv": "Effective env",
+        "extensions": "MyAgents 扩展"
       },
       "requiresLoginSuffix": " • 需登录",
       "appAccessible": "可访问 ",
@@ -945,6 +949,8 @@
       "syncFailed": "同步失败",
       "syncFailedRetry": "同步失败，请重试",
       "configPartiallySaved": "配置未能完全保存，重启后可能恢复旧值",
+      "extensionsDeferred": "扩展变更将在当前回合结束后应用",
+      "extensionsUnsupported": "部分所选扩展能力暂不受 Managed Codex 支持",
       "searchUnsupported": "当前环境不支持页内搜索（缺少 CSS Highlight API）",
       "codexSubscriptionNeedsSession": "Codex 订阅需要新开 Codex 会话后使用，请先在模型选择器中切换并确认创建新会话。",
       "queueLimit": "最多排队 5 条消息",
@@ -1017,8 +1023,8 @@
           "detail": "供应商返回 rate limit / quota 命中。请检查供应商后台配额或等待重置。"
         },
         "rapid_refill_breaker": {
-          "label": "请求过于频繁，已自动退避",
-          "detail": "SDK 触发快速补发熔断器，正在自动退避重试。稍后会自行恢复。"
+          "label": "上下文反复填满，本轮已停止",
+          "detail": "自动压缩后，上下文仍在短时间内多次达到上限。请缩小文件或工具输出后重试；若仍失败，可新开会话继续。"
         },
         "aborted_tools": {
           "label": "工具执行被中断",

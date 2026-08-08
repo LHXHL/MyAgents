@@ -2,11 +2,9 @@
  * manifest.ts — Read & validate .claude-plugin/plugin.json + scan a plugin
  * directory for a lightweight component inventory.
  *
- * MyAgents does NOT interpret plugin components at runtime — that's the
- * Claude Agent SDK's job once we hand it `Options.plugins: [{ type: 'local', path }]`.
- * This module exists only to (a) validate the manifest at install time and
- * (b) surface component counts in the Plugins UI panel. Everything else
- * stays opaque.
+ * This module validates persisted plugin metadata and surfaces component
+ * counts. Builtin Runtime hands the directory to Claude Agent SDK; Managed
+ * Codex interprets its supported runtime fields in the extension compiler.
  */
 
 import {
@@ -54,8 +52,9 @@ export class PluginManifestError extends Error {
  * Read & validate plugin.json from a tree (in-memory) or directory (on-disk).
  *
  * Validates only the fields MyAgents persists: `name` (required, kebab-case)
- * + the optional metadata. Component path fields (`skills` / `agents` /
- * `hooks` / `mcpServers`) are left untouched — the SDK validates those.
+ * + optional metadata. Runtime component fields are intentionally omitted
+ * from this returned persistence shape; their installed-file authority stays
+ * in the consuming Runtime (SDK or Managed Codex extension compiler).
  */
 export function parsePluginManifest(raw: string): PluginManifest {
   let parsed: unknown;

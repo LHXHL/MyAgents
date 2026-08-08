@@ -530,11 +530,14 @@
         "mcpStatusFailed": "MCP status query failed: {{error}}",
         "featureFlagFailed": "feature flag query failed: {{error}}",
         "appsInaccessible": "{{count}} enabled app(s) inaccessible: {{names}}",
-        "mcpServersFailed": "MCP server failed: {{names}}"
+        "mcpServersFailed": "MCP server failed: {{names}}",
+        "extensionComponent": "Extension {{component}}{{id}} is {{state}}: {{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "Sign in to Codex to continue",
-        "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running"
+        "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running",
+        "extensionsFailed": "Managed Codex extension application failed",
+        "extensionsPartial": "Some Managed Codex extensions are unsupported"
       },
       "status": {
         "unsupported": "Unsupported",
@@ -547,7 +550,8 @@
         "featureFlags": "Feature flags",
         "mcpServers": "MCP servers",
         "apps": "Apps",
-        "effectiveEnv": "Effective env"
+        "effectiveEnv": "Effective env",
+        "extensions": "MyAgents extensions"
       },
       "requiresLoginSuffix": " • login required",
       "appAccessible": "accessible ",
@@ -945,6 +949,8 @@
       "syncFailed": "Sync failed",
       "syncFailedRetry": "Sync failed. Please try again.",
       "configPartiallySaved": "Configuration was not fully saved and may revert after restart.",
+      "extensionsDeferred": "This extension change will apply after the active turn.",
+      "extensionsUnsupported": "Some selected extension capabilities are not supported by Managed Codex.",
       "searchUnsupported": "In-page search is not supported in this environment because the CSS Highlight API is missing.",
       "codexSubscriptionNeedsSession": "Codex subscription requires a new Codex session. Switch in the model picker and confirm the new session first.",
       "queueLimit": "You can queue at most 5 messages.",
@@ -1017,8 +1023,8 @@
           "detail": "The provider returned a rate-limit or quota error. Check the provider quota or wait for it to reset."
         },
         "rapid_refill_breaker": {
-          "label": "Requests are too frequent; backing off",
-          "detail": "The SDK triggered its rapid refill breaker and is backing off before retrying. It should recover automatically."
+          "label": "Context repeatedly refilled; this turn stopped",
+          "detail": "The context reached its limit several times shortly after automatic compaction. Reduce file or tool output and try again; if it still fails, start a new chat."
         },
         "aborted_tools": {
           "label": "Tool execution was interrupted",

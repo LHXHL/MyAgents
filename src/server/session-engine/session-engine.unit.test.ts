@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => {
     builtinDispatchedQueueId: null as string | null,
     externalTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     externalCurrentQueueId: null as string | null,
+    builtinImContext: null as { senderId: string } | null,
+    externalImContext: null as { senderId: string } | null,
     pendingExternalAsk: false,
     providerDisabled: false,
     sessionMetadata: new Map<string, Record<string, unknown>>(),
@@ -94,6 +96,7 @@ const mocks = vi.hoisted(() => {
     forceExecuteQueueItem: vi.fn(async () => true),
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
     getCurrentTurnIdentity: vi.fn(() => state.builtinTurnIdentity),
+    getCurrentImBridgeTurnContext: vi.fn(() => state.builtinImContext),
     getDispatchedTurnIdentity: vi.fn(() => (
       state.builtinDispatchedQueueId
         ? { queueId: state.builtinDispatchedQueueId }
@@ -237,6 +240,29 @@ const mocks = vi.hoisted(() => {
     shouldUseExternalRuntime: vi.fn(() => state.useExternal),
     stopExternalSession: vi.fn(async () => true),
     handleExternalOfficialToolIdsChange: vi.fn(async () => ({ success: true })),
+    handleExternalAgentsChange: vi.fn(async () => ({
+      success: true,
+      extensionStatus: { desiredRevision: 'desired', effectiveRevision: 'desired', state: 'applied', components: [] },
+    })),
+    handleExternalDesktopInteractionScenarioChange: vi.fn(async () => ({
+      success: true,
+      extensionStatus: { desiredRevision: 'desired', effectiveRevision: 'desired', state: 'applied', components: [] },
+    })),
+    handleExternalMcpServersChange: vi.fn(async (servers: Array<{ id: string }>) => ({
+      success: true,
+      servers: servers.map(server => server.id),
+      extensionStatus: { desiredRevision: 'desired', effectiveRevision: 'desired', state: 'applied', components: [] },
+    })),
+    handleExternalSessionEnabledPluginsChange: vi.fn(async () => ({
+      success: true,
+      extensionStatus: { desiredRevision: 'desired', effectiveRevision: 'desired', state: 'applied', components: [] },
+    })),
+    getManagedCodexExtensionConfigSnapshot: vi.fn(() => ({
+      mcpServerIds: null,
+      agentNames: null,
+      enabledPluginIds: null,
+    })),
+    getActiveExternalImBridgeTurnContext: vi.fn(() => state.externalImContext),
     updateExternalRuntimeConfig: vi.fn(async () => ({
       success: true,
       runtime: 'codex' as const,
@@ -319,6 +345,7 @@ vi.mock('../agent-session', () => ({
   forceExecuteQueueItem: mocks.forceExecuteQueueItem,
   getAndClearLastAgentError: mocks.getAndClearLastAgentError,
   getCurrentTurnIdentity: mocks.getCurrentTurnIdentity,
+  getCurrentImBridgeTurnContext: mocks.getCurrentImBridgeTurnContext,
   getDispatchedTurnIdentity: mocks.getDispatchedTurnIdentity,
   getAgentState: mocks.getAgentState,
   getBuiltinLiveSessionSnapshot: mocks.getBuiltinLiveSessionSnapshot,
@@ -376,6 +403,7 @@ vi.mock('../runtimes/external-session', () => ({
   forceExecuteExternalQueueItem: mocks.forceExecuteExternalQueueItem,
   getActiveRuntimeSource: mocks.getActiveRuntimeSource,
   getActiveRuntimeType: mocks.getActiveRuntimeType,
+  getActiveExternalImBridgeTurnContext: mocks.getActiveExternalImBridgeTurnContext,
   getCurrentBoundSessionId: mocks.getCurrentBoundSessionId,
   getExternalCurrentTurnIdentity: mocks.getExternalCurrentTurnIdentity,
   getExternalLiveAssistantMessage: mocks.getExternalLiveAssistantMessage,
@@ -392,6 +420,11 @@ vi.mock('../runtimes/external-session', () => ({
   getExternalSystemInitPayload: mocks.getExternalSystemInitPayload,
   getLastExternalAssistantText: mocks.getLastExternalAssistantText,
   handleExternalOfficialToolIdsChange: mocks.handleExternalOfficialToolIdsChange,
+  handleExternalAgentsChange: mocks.handleExternalAgentsChange,
+  handleExternalDesktopInteractionScenarioChange: mocks.handleExternalDesktopInteractionScenarioChange,
+  handleExternalMcpServersChange: mocks.handleExternalMcpServersChange,
+  handleExternalSessionEnabledPluginsChange: mocks.handleExternalSessionEnabledPluginsChange,
+  getManagedCodexExtensionConfigSnapshot: mocks.getManagedCodexExtensionConfigSnapshot,
   hasExternalRuntimeProcess: mocks.hasExternalRuntimeProcess,
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
@@ -488,6 +521,8 @@ describe('session-engine selector and adapters', () => {
     mocks.state.builtinDispatchedQueueId = null;
     mocks.state.externalTurnIdentity = null;
     mocks.state.externalCurrentQueueId = null;
+    mocks.state.builtinImContext = null;
+    mocks.state.externalImContext = null;
     mocks.state.pendingExternalAsk = false;
     mocks.state.providerDisabled = false;
     mocks.state.sessionMetadata.clear();
@@ -512,6 +547,15 @@ describe('session-engine selector and adapters', () => {
     mocks.popLastUserMessageForRetry.mockResolvedValue({ success: true, content: 'retry' });
     mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(null);
     mocks.getExternalLiveSessionSnapshot.mockReturnValue(null);
+  });
+
+  it('resolves IM Bridge caller identity through the selected Runtime adapter', () => {
+    mocks.state.builtinImContext = { senderId: 'builtin-sender' };
+    expect(getSessionEngine().getActiveImBridgeTurnContext()).toEqual({ senderId: 'builtin-sender' });
+
+    mocks.state.useExternal = true;
+    mocks.state.externalImContext = { senderId: 'external-sender' };
+    expect(getSessionEngine().getActiveImBridgeTurnContext()).toEqual({ senderId: 'external-sender' });
   });
 
   it('routes desktop sends through builtin while preserving desktop metadata', async () => {
@@ -907,6 +951,7 @@ describe('session-engine selector and adapters', () => {
       model: 'gpt-5',
       mcpServerIds: null,
       agentNames: null,
+      enabledPluginIds: null,
       enabledOfficialToolIds: ['image-understanding'],
       permissionMode: 'no-restrictions',
       providerId: null,

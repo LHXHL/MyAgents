@@ -947,7 +947,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "24";
+const ADMIN_AGENT_VERSION: &str = "25";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1864,8 +1864,8 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v24_helper_routes_product_knowledge_and_diagnosis() {
-        assert_eq!(ADMIN_AGENT_VERSION, "24");
+    fn v25_helper_routes_product_knowledge_and_diagnosis() {
+        assert_eq!(ADMIN_AGENT_VERSION, "25");
         let helper = include_str!("../../bundled-agents/myagents_helper/CLAUDE.md");
         let support =
             include_str!("../../bundled-agents/myagents_helper/.claude/skills/support/SKILL.md");
@@ -1920,10 +1920,15 @@ mod system_skills_tests {
         assert_reference_closure("bundled-skills/myagents-task-automation");
         assert_reference_closure("bundled-agents/myagents_helper/.claude/skills/support");
 
-        let redactor = include_str!(
+        let redactor_cli = include_str!(
             "../../bundled-agents/myagents_helper/.claude/skills/support/scripts/redact-log-output.mjs"
         );
-        assert!(redactor.contains("<redacted-token>"));
+        let redactor_core = include_str!(
+            "../../bundled-agents/myagents_helper/.claude/skills/support/scripts/redact-log-core.mjs"
+        );
+        assert!(redactor_cli.contains("./redact-log-core.mjs"));
+        assert!(redactor_cli.contains("runCli().catch"));
+        assert!(redactor_core.contains("<redacted-token>"));
     }
 
     #[test]

@@ -123,7 +123,7 @@ import {
   getDefaultRuntimePermissionMode,
   projectPermissionModeForRuntime,
 } from '../../shared/types/runtime';
-import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics, RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
 import type { FilePreviewFocusTarget } from '@/types/filePreview';
 import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
@@ -140,6 +140,7 @@ import {
 import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBirth';
 import {
   projectInputChromeRuntime,
+  projectRuntimeExtensionUpdateNotice,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
 import {
@@ -161,6 +162,12 @@ import { getRichDocKind, isPreviewable, type RichDocKind } from '../../shared/fi
 
 const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = { kind: 'desktop', surface: 'session_fork' };
 const WORKSPACE_PANEL_TRANSITION_MS = 200;
+
+type ExtensionUpdateResponse = {
+  success?: boolean;
+  error?: string;
+  extensionStatus?: RuntimeExtensionDiagnostics;
+};
 
 type SplitPreviewFile = {
   name: string;
@@ -2613,6 +2620,18 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     enabledOfficialToolIds?: OfficialToolId[];
   }) => {
     if (!currentProject) return false;
+    const handleExtensionUpdateResponse = (response: ExtensionUpdateResponse): void => {
+      const status = response.extensionStatus;
+      if (response.success === false || status?.state === 'failed') {
+        throw new Error(response.error ?? 'Managed Codex extension update failed');
+      }
+      const notice = projectRuntimeExtensionUpdateNotice(status);
+      if (notice === 'deferred') {
+        toastRef.current.info(t('shell.toasts.extensionsDeferred'));
+      } else if (notice === 'unsupported') {
+        toastRef.current.warning(t('shell.toasts.extensionsUnsupported'));
+      }
+    };
     const result = await persistInputOptionChange({
       workspaceId: currentProject.id,
       agentId: currentProject.agentId ?? null,
@@ -2651,7 +2670,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // 'adopt' the user's choice is persisted for future sessions. Post-resolution
         // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
         if (configDispositionRef.current === 'pending') return;
-        await apiPost('/api/mcp/set', { servers });
+        const response = await apiPost<ExtensionUpdateResponse>('/api/mcp/set', { servers });
+        handleExtensionUpdateResponse(response);
       },
       getAllMcpServers,
       getGlobalMcpEnabled: getEnabledMcpServerIds,
@@ -2660,7 +2680,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       // mirroring the MCP push above.
       pushPluginsToSidecar: async (enabledIds) => {
         if (configDispositionRef.current === 'pending') return; // defer while unresolved; disk write still happens
-        await apiPost('/api/cc-plugin/session-enable', { enabledIds });
+        const response = await apiPost<ExtensionUpdateResponse>('/api/cc-plugin/session-enable', { enabledIds });
+        handleExtensionUpdateResponse(response);
       },
       pushOfficialToolsToSidecar: async (enabledIds) => {
         if (configDispositionRef.current === 'pending') return;
@@ -5134,8 +5155,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           />
 
           {/* Issue #194 — external-runtime self-diagnostic banner. Only renders
-              when the runtime reports something actionable (auth/app/MCP
-              failures). Healthy runtimes don't draw attention here. */}
+              for actionable auth/runtime/extension failures. Normal lifecycle
+              and isolated diagnostic failures stay in diagnostics/logs. */}
           <RuntimeDiagnosticsBanner
             diagnostics={runtimeDiagnostics}
             onDiagnose={handleDiagnoseRuntimeDiagnostics}
@@ -5227,22 +5248,16 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           {/*
             FileActionProvider.refreshTrigger intentionally excludes
             toolCompleteCount. toolCompleteCount bumps when AI file-modifying
-            tools complete, and workspace filesystem changes also arrive via
-            the Rust workspace watcher in the surfaces that need live data.
-            Tying the path-existence cache to those coarse invalidation
-            signals caused full wipe-and-requery storms on active dev
-            workspaces.
-
-            The path cache is safe to keep across file changes: inline-code
-            path annotations are rendered once from history and rarely
-            become stale in a way the user notices. Explicit UI refreshes
-            (workspaceRefreshTrigger — drag-drop, tab activate, save-config
-            callbacks) still clear the cache.
+            tools complete, and tying every completion to a full cache wipe
+            caused requery storms. The ref-counted workspace watcher is the
+            filesystem mutation authority; FileActionProvider invalidates the
+            old affordance and mounted consumers lazily re-request in batches.
+            Explicit UI refreshes remain a second controlled source.
           */}
           <FileActionProvider
             workspacePath={agentDir}
             onInsertReference={handleInsertReference}
-            refreshTrigger={workspaceRefreshTrigger}
+            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
             onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
             onQuoteFile={handleQuoteFile}
             onQuoteSelection={handleQuoteFileSelection}

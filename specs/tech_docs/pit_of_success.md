@@ -238,8 +238,8 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Invariants enforced.**
 - Atomic-mkdir-based 协议，跨进程互斥
-- Owner sentinel `<runtime>:<pid>:<startMs>`，stale recovery 通过 `/proc/<pid>/stat`(Linux) 或 `ps -p ... -o lstart=`(macOS) 检测 pid reuse；Windows fallback 到 age-only
-- Rust 端 parser 支持 2-tuple（旧）和 3-tuple（新）owner，混部署期不会误删 live lock
+- Owner sentinel `<runtime>:<pid>:<startMs>`；确认 PID 已死亡时立即回收，不等待 stale age。合法进程 owner 只要仍存活或 liveness 不确定就必须保守保留；v1 `startMs` 受墙上时间与平台 probe 差异影响，只用于兼容和 release fencing，mismatch 不能授权删除 live writer
+- Node/Rust parser 只接受严格 ASCII 十进制的 2-tuple（旧）与 3-tuple（新）owner，并共享 PID / `startMs` 数值范围；owner 缺失、格式不可识别或 `renderer:*` 时才等待 stale age
 - `delay()` **不** `unref`——unref 会让进程在 acquire 等待中提前退出
 - Async 实现，零 sync busy-wait
 
@@ -381,10 +381,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - Phases: `cleanup / skill-seed / socks-bridge / sdk-init / external-runtime-restore`
 - `GET /health` —— liveness alias（旧 watchdog 兼容）
 - `GET /health/live` —— 显式 liveness
-- `GET /health/ready` —— 200 only when `state=ready`；503 + `{ state, phase?, error?, retryable? }` + `Retry-After: 1` 否则
+- `GET /health/ready` —— 200 only when `state=ready`；否则返回 503 + `{ state, phase?, error?, retryable? }`
 - `GET /health/functional` —— sidecar 等同 ready；plugin bridge 检"过去 60s 是否成功 forward 到 Rust"
-- `POST /health/ready/retry` —— 重置 `failed → pending`
-- Route gate 改成查状态机返结构化 503，不再 await indefinitely 或 rethrow
+- failed readiness 不提供进程内 retry route；由 Sidecar 进程重启重新建立初始化 owner
+- 普通 Route gate 改成查状态机并返回结构化 503 + `Retry-After: 1`，不再 await indefinitely 或 rethrow
 - Rust `wait_for_readiness`（30s timeout / 250ms cadence）wired 到 `ensure_session_sidecar`，启动 loading 自然覆盖 warm-up
 
 **Invariants enforced.**

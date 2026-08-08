@@ -561,7 +561,8 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `codex.ts` | Codex Runtime：JSON-RPC 2.0 over stdio，`app-server` 持久进程 |
 | `gemini.ts` | Gemini Runtime：ACP JSON-RPC 2.0 over stdio，`gemini --acp` |
 | `external-session.ts` | 外部 runtime public facade：start/send/prewarm/stop、UnifiedEvent shell、SessionEngine-facing exports |
-| `external-session/*` | 外部 runtime owner modules：lifecycle、runtime config、operation queue、turn lifecycle、content blocks、transcript persistence、interactive requests |
+| `external-session/*` | 外部 runtime owner modules：lifecycle、runtime config、operation queue、turn lifecycle、content blocks、transcript persistence、interactive requests；`extensions.ts` 额外拥有 Managed Codex 的 Session-local MCP/Plugin 选择、desired/effective generation、replacement latch 与 Host catalog generation |
+| `managed-codex/extensions/*` | `runtimeSource:'managed-provider'` 的 Product Extension compiler 与 runtime-neutral Host tool dispatcher；把 MyAgents 权威配置投影成 Codex 原生 Skill/Agent/MCP/dynamic-tool 能力，不持久化第二份产品状态 |
 
 `external-session.ts` 不再是 external runtime 的 state owner。真实 mutable state 归 `src/server/runtimes/external-session/`：
 
@@ -576,6 +577,8 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
 
 Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `SessionEngine` → external adapter 路径，不建立 Codex 专用 route 或第二套 Session。`codex.ts` 独占 `thread/read(includeTurns:true)`、`thread/fork(lastTurnId)`、`thread/unsubscribe` 与 root `turn/start` admission；`external-session.ts` 在既有 operation serialization 边界内编排 native branch、进程切换和产品 Session；`SessionStore` 独占 transcript/metadata 的可恢复提交。成功 root terminal assistant 才持久化 `{turnId, rootUserMessageId}` 锚点。Rewind 只改变对话上下文，不恢复工作区文件；有 replacement native thread 时在 durable rebind 和 mutation lease 释放后异步复用既有 prewarm，失败只影响下一次 send 的启动延迟；第一 native Turn 之前继续用“无 runtimeSessionId”表示，不预热空 thread，下一次发送复用既有 fresh-start。Claude Code / Gemini 继续明确不支持该能力。
+
+Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用 `SessionEngine` config 方法，external adapter 交给 `external-session` 从服务端权威配置编译一份 immutable Session Extension Snapshot，并在 idle/terminal 边界 replacement process。只有 Codex 进程启动成功、严格 Skill read-back 通过，且 MCP startup barrier 已完成 terminal/timeout 观察后，desired revision 才提升为该 process generation 的 effective revision；单个 MCP 的连接失败由既有 `RuntimeDiagnostics.mcpServers` 表达，不伪装成未投影配置。Codex adapter 只拥有 app-server 协议投影；外部 MCP 使用启动配置，Agent 使用原生 role config，合并后的有效 Workspace/全局/Plugin Skill 通过临时 extra-root 精确投影，SDK in-process MCP 与 IM Bridge 通过 runtime-neutral Host dispatcher 暴露为 `thread/start.dynamicTools`。Codex 0.146.0 的 dynamic-tool catalog 不能在 native thread resume 时更换，因此 Session metadata 只持久化协议版本与非敏感 catalog fingerprint：catalog 未变可 resume，变化或 legacy 未证明一致时必须新建 Product Session；历史 Session 的 desired/legacy catalog 都为空时允许 resume。不能偷偷恢复旧目录或建立第二套 bridge。`system-cli` Codex 不进入这套 MyAgents-owned 投影。
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
@@ -642,7 +645,7 @@ Chat / Tab 自己持有的 URL 预览器（Tauri Multi-Webview）。AI Markdown 
 **关键设计：**
 - 依赖 Tauri `"unstable"` feature（`Window::add_child()` 多 Webview API）
 - **安全隔离**：`browser.json` Capability 零权限，Webview 无法访问 Tauri IPC；`on_navigation` 限制 http/https scheme
-- **链接动作 owner**：Markdown、`ExternalLink`、WebSearch / WebFetch 与文件工具不各自解释点击。HTTP(S) 统一走 `useOpenWebLink()`：Chat 普通点击进入当前 Tab 的 `BrowserPanel`，Cmd/Ctrl 点击或 Chat 外 surface 才交给系统浏览器。文件链接、inline path 与工具 path 统一走 `FileActionContext`：可预览文件内部打开、工作区目录 reveal 到文件树、Cmd/Ctrl 显式外部打开；不存在或不支持的目标必须给出明确反馈，不能静默交给 OS 或退化成无动作文本。
+- **链接动作 owner**：Markdown、`ExternalLink`、WebSearch / WebFetch 与文件工具不各自解释点击。HTTP(S) 统一走 `useOpenWebLink()`：Chat 普通点击进入当前 Tab 的 `BrowserPanel`，Cmd/Ctrl 点击或 Chat 外 surface 才交给系统浏览器；反引号 HTTP(S) 仅做标准 URL 格式校验，不探测网络可达性。文件链接、inline path 与工具 path 统一走 `FileActionContext`：显式 Markdown file link 保留作者声明的链接样式并在动作时复核；系统推断的 inline/tool path 只有 Rust existence + safety check 为 `exists:true` 时才获得下划线和左右键动作。只有当前挂载的 inferred target 才订阅校验，按 target 去重并以最多 200 条分批；工作区 watcher 使 workspace cache 失效，workspace 外 local target 使用 30 秒临时验证租约。workspace identity / generation fence 与单 target request sequence 共同拒绝跨工作区、跨代次和乱序迟到结果，左右键动作均再次复核。目标在动作前失效时撤销资格并明确反馈，不能静默交给 OS。
 - **Overlay 协调**：原生 Webview 浮于 React DOM 之上，Overlay 出现时通过 `closeLayer.hasOverlayLayer()` 自动 hide
 - **呈现与关闭 owner**：全屏条件只由“Browser 是当前 active split view”派生，不能由残留 `browserUrl` 单独决定；分屏、全屏、工具栏和 Tab × 共用同一个资源清理与剩余 view handoff callback
 - **Cookie 持久化**：同 App 所有 Webview 共享，默认持久化磁盘

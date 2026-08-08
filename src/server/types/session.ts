@@ -72,6 +72,10 @@ export interface SessionMetadata {
     /** Runtime's own session/thread ID (Codex: threadId, CC: session_id from hook).
      *  Different from our session `id` — used for resume across Sidecar restarts. */
     runtimeSessionId?: string;
+    /** Exact app-server contract that declared native Managed Codex Host tools for this thread. */
+    managedCodexExtensionProtocolVersion?: string;
+    /** Secret-free hash of the immutable dynamic-tool catalog declared at native thread birth. */
+    managedCodexHostCatalogFingerprint?: string;
     /** Crash-recoverable, single-purpose commit intent for Codex conversation rewind. */
     pendingConversationMutation?: PendingConversationMutation;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */

@@ -145,6 +145,41 @@ import {
   setExternalRuntimeLiveReportedModel,
 } from './external-session/runtime-config';
 import {
+  compileManagedCodexCommand,
+  compileManagedCodexExtensionSnapshot,
+} from './managed-codex/extensions/compiler';
+import type {
+  ManagedCodexExtensionSnapshot,
+  ManagedCodexExtensionUpdateResult,
+} from './managed-codex/extensions/contracts';
+import { MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION } from './managed-codex/extensions/contracts';
+import {
+  attachManagedCodexHostTools,
+  managedCodexHostCatalogFingerprint,
+} from './managed-codex/extensions/host-dispatcher';
+import {
+  getActiveManagedCodexHostCatalog,
+  getManagedCodexDesiredSnapshot,
+  getManagedCodexExtensionStatus,
+  getManagedCodexSessionEnabledPluginIds,
+  getManagedCodexSessionMcpServers,
+  getManagedCodexRuntimeDiagnostics,
+  isManagedCodexExtensionRestartPending,
+  markManagedCodexExtensionEffective,
+  markManagedCodexExtensionFailed,
+  releaseManagedCodexExtensionGeneration,
+  resolveManagedCodexMcpSelection,
+  resetManagedCodexExtensionState,
+  setManagedCodexDesiredSnapshot,
+  setActiveManagedCodexHostCatalog,
+  setManagedCodexExtensionRestartPending,
+  setManagedCodexSessionEnabledPluginIds,
+  setManagedCodexSessionMcpServers,
+  setManagedCodexRuntimeDiagnostics,
+  setPendingManagedCodexHostCatalogBirth,
+  takePendingManagedCodexHostCatalogBirth,
+} from './external-session/extensions';
+import {
   canDrainExternalOperations,
   cancelExternalQueuedMessageByRequestId,
   cancelExternalQueuedMessageOperation,
@@ -216,6 +251,7 @@ import {
   setExternalLifecycleAnalyticsOrigin,
   setExternalLifecycleAnalyticsSource,
   setExternalLifecycleRunning,
+  setExternalLifecycleScenario,
   setExternalLifecycleState,
   setExternalPrewarmingSession,
   setExternalRuntimeSessionId,
@@ -359,6 +395,7 @@ import {
   finalizeExternalQueuedImRequest,
   fireExternalImCallback,
   getExternalActiveRequestId,
+  getExternalImBridgeTurnContext,
   getExternalAskUserQuestion,
   getExternalInteractiveRequest,
   getExternalInteractiveRequestEntries,
@@ -455,21 +492,24 @@ let pendingExternalProxyRestart = false;
 let pendingExternalProxyRestartOriginalKey: string | null = null;
 let pendingExternalOfficialToolsRestart = false;
 let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
-
 function clearPendingExternalProcessConfigRestarts(): void {
   pendingExternalProxyRestart = false;
   pendingExternalProxyRestartOriginalKey = null;
   pendingExternalOfficialToolsRestart = false;
+  setManagedCodexExtensionRestartPending(false);
 }
 
 function pendingExternalProcessConfigRestartReasons(): string[] {
   return [
     ...(pendingExternalProxyRestart ? ['proxy'] : []),
     ...(pendingExternalOfficialToolsRestart ? ['official-tools'] : []),
+    ...(isManagedCodexExtensionRestartPending() ? ['managed-codex-extensions'] : []),
   ];
 }
 
-function applyPendingExternalProcessConfigInvalidation(): Promise<void> {
+function applyPendingExternalProcessConfigInvalidation(
+  preservePromotion?: ExternalTurnPromotionToken | null,
+): Promise<void> {
   if (externalProcessConfigInvalidationInFlight) {
     return externalProcessConfigInvalidationInFlight;
   }
@@ -483,25 +523,45 @@ function applyPendingExternalProcessConfigInvalidation(): Promise<void> {
     // this boundary. The in-flight promise remains observable to every send;
     // if termination cannot be confirmed, restore the latch before rejecting.
     clearPendingExternalProcessConfigRestarts();
+    const promoteManagedCodexScenario = (): void => {
+      if (!reasons.includes('managed-codex-extensions')) return;
+      const desired = getManagedCodexDesiredSnapshot();
+      if (desired) setExternalLifecycleScenario(desired.scenario);
+    };
     if (!hasExternalRuntimeProcess()) {
+      promoteManagedCodexScenario();
       console.log(`[external-session] External runtime config invalidation already satisfied by process exit: ${reasons.join(',')}`);
       return;
     }
 
     console.log(`[external-session] Applying external runtime config restart at idle boundary: ${reasons.join(',')}`);
     try {
-      const stopped = await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+      const stopped = await stopExternalSession({
+        reason: 'config-restart',
+        preserveQueue: true,
+        preservePromotion,
+      });
       if (!stopped && hasExternalRuntimeProcess()) {
         throw new Error(`External runtime process did not stop for config change: ${reasons.join(',')}`);
       }
+      promoteManagedCodexScenario();
     } catch (error) {
-      if (!hasExternalRuntimeProcess()) return;
+      if (!hasExternalRuntimeProcess()) {
+        promoteManagedCodexScenario();
+        return;
+      }
       if (reasons.includes('proxy')) {
         pendingExternalProxyRestart = true;
         pendingExternalProxyRestartOriginalKey ??= proxyOriginalKey;
       }
       if (reasons.includes('official-tools')) {
         pendingExternalOfficialToolsRestart = true;
+      }
+      if (reasons.includes('managed-codex-extensions')) {
+        setManagedCodexExtensionRestartPending(true);
+        markManagedCodexExtensionFailed(
+          error instanceof Error ? error.message : String(error),
+        );
       }
       throw error;
     }
@@ -870,6 +930,18 @@ function broadcast(event: string, data: unknown): void {
   broadcastSse(event, data);
 }
 
+function broadcastManagedCodexExtensionDiagnostics(): void {
+  const runtimeDiagnostics = getManagedCodexRuntimeDiagnostics();
+  if (!runtimeDiagnostics || !isManagedCodexProductRuntime()) return;
+  const diagnostics = {
+    ...runtimeDiagnostics,
+    extensions: getManagedCodexExtensionStatus(),
+    timestamp: new Date().toISOString(),
+  };
+  setManagedCodexRuntimeDiagnostics(diagnostics);
+  broadcast('chat:runtime-diagnostics', diagnostics);
+}
+
 type ExternalActivePair = NonNullable<ReturnType<typeof getExternalActivePair>>;
 type SteerCapableActivePair = {
   runtime: ExternalActivePair['runtime'] & {
@@ -900,6 +972,7 @@ function resetModuleState(): void {
   pendingExternalToolInputTransports.clear();
   activeExternalEnvPolicy = undefined;
   clearPendingExternalProcessConfigRestarts();
+  resetManagedCodexExtensionState();
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
@@ -1291,14 +1364,38 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
 
   const pendingBirth = pendingBirthForSession(sessionId);
   const existing = getSessionMetadata(sessionId);
+  const nativeThreadId = getExternalRuntimeSessionId();
+  const activeHostCatalog = getActiveManagedCodexHostCatalog();
+  const bornHostCatalog = activeHostCatalog?.threadId === nativeThreadId
+    ? activeHostCatalog
+    : null;
   if (existing) {
     const runtimeSessionId = pendingBirth?.runtimeSessionId;
     if (existing.materializationState === 'prepared') {
+      if (bornHostCatalog) {
+        await updateSessionMetadata(sessionId, {
+          managedCodexExtensionProtocolVersion: MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION,
+          managedCodexHostCatalogFingerprint: bornHostCatalog.fingerprint,
+        });
+      }
       clearPendingExternalSessionBirth(sessionId);
       return { preparedExisting: true, runtimeSessionId };
-    } else if (runtimeSessionId && existing.runtimeSessionId !== runtimeSessionId) {
+    } else if (
+      (runtimeSessionId && existing.runtimeSessionId !== runtimeSessionId)
+      || (bornHostCatalog
+        && (existing.managedCodexExtensionProtocolVersion !== MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION
+          || existing.managedCodexHostCatalogFingerprint !== bornHostCatalog.fingerprint))
+    ) {
       try {
-        const updated = await updateSessionMetadata(sessionId, { runtimeSessionId });
+        const updated = await updateSessionMetadata(sessionId, {
+          ...(runtimeSessionId ? { runtimeSessionId } : {}),
+          ...(bornHostCatalog
+            ? {
+                managedCodexExtensionProtocolVersion: MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION,
+                managedCodexHostCatalogFingerprint: bornHostCatalog.fingerprint,
+              }
+            : {}),
+        });
         if (!updated) {
           console.warn(`[external-session] runtimeSessionId patch skipped for ${sessionId}: metadata disappeared during ${origin}`);
         }
@@ -1350,6 +1447,10 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   });
   if (pendingBirth?.runtimeSessionId) {
     meta.runtimeSessionId = pendingBirth.runtimeSessionId;
+  }
+  if (bornHostCatalog) {
+    meta.managedCodexExtensionProtocolVersion = MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION;
+    meta.managedCodexHostCatalogFingerprint = bornHostCatalog.fingerprint;
   }
 
   await saveSessionMetadata(meta);
@@ -2229,8 +2330,224 @@ export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSou
   return getCurrentRuntimeSource();
 }
 
+export function getActiveExternalImBridgeTurnContext(): ReturnType<typeof getExternalImBridgeTurnContext> {
+  return getExternalImBridgeTurnContext();
+}
+
 function isExternalTurnBusy(): boolean {
   return getExternalLifecycleState() === 'running' || isExternalTurnPromotionInFlight();
+}
+
+function isManagedCodexProductRuntime(): boolean {
+  return getCurrentRuntimeType() === 'codex'
+    && getCurrentRuntimeSource() === 'managed-provider';
+}
+
+function buildCurrentManagedCodexExtensionSnapshot(input?: {
+  workspacePath?: string;
+  scenario?: InteractionScenario;
+  mcpServers?: readonly import('../../shared/config-types').McpServerDefinition[];
+}): ManagedCodexExtensionSnapshot {
+  const workspacePath = input?.workspacePath ?? getExternalLifecycleWorkspacePath();
+  if (!workspacePath) {
+    throw new Error('Managed Codex extension configuration has no workspace owner');
+  }
+  const sessionId = getExternalLifecycleSessionId();
+  const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+  const sessionMcpServers = input?.mcpServers
+    ? [...input.mcpServers]
+    : getManagedCodexSessionMcpServers();
+  const mcpServers = sessionMcpServers
+    ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
+  return compileManagedCodexExtensionSnapshot({
+    workspacePath,
+    scenario: input?.scenario ?? getExternalLifecycleScenario(),
+    enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
+      ?? metadata?.enabledPluginIds
+      ?? null,
+    mcpServers,
+  });
+}
+
+function notApplicableManagedCodexExtensionResult(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+): ManagedCodexExtensionUpdateResult {
+  return {
+    success: true,
+    extensionStatus: {
+      desiredRevision: '',
+      effectiveRevision: null,
+      state: 'not_applicable',
+      components: [{
+        component: componentName,
+        state: 'not_applicable',
+        code: 'not_managed_codex',
+      }],
+    },
+  };
+}
+
+async function reconcileManagedCodexExtensionSnapshot(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+  build: () => ManagedCodexExtensionSnapshot = buildCurrentManagedCodexExtensionSnapshot,
+  preservePromotion?: ExternalTurnPromotionToken | null,
+): Promise<ManagedCodexExtensionUpdateResult> {
+  await awaitExternalLifecycleStarting();
+  if (!isManagedCodexProductRuntime()) {
+    return notApplicableManagedCodexExtensionResult(componentName);
+  }
+
+  let snapshot: ManagedCodexExtensionSnapshot;
+  try {
+    snapshot = build();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const extensionStatus = markManagedCodexExtensionFailed(message);
+    broadcastManagedCodexExtensionDiagnostics();
+    return {
+      success: false,
+      error: message,
+      extensionStatus,
+    };
+  }
+
+  const process = getExternalActiveProcess();
+  const hasLiveProcess = Boolean(process && !process.exited);
+  const admissionOwnsPromotion = Boolean(
+    preservePromotion && isExternalTurnPromotionCurrent(preservePromotion),
+  );
+  const hasBusyTurn = getExternalLifecycleState() === 'running'
+    || (isExternalTurnPromotionInFlight() && !admissionOwnsPromotion);
+  const status = setManagedCodexDesiredSnapshot(
+    snapshot,
+    !hasLiveProcess
+      ? 'no-live-process'
+      : hasBusyTurn
+        ? 'busy-process'
+        : 'idle-process',
+  );
+  broadcastManagedCodexExtensionDiagnostics();
+  if (
+    status.effectiveRevision === snapshot.revision
+    && (status.state === 'applied' || status.state === 'unchanged')
+  ) {
+    setManagedCodexExtensionRestartPending(false);
+    return { success: true, extensionStatus: status };
+  }
+  if (!hasLiveProcess) {
+    setManagedCodexExtensionRestartPending(false);
+    return { success: true, extensionStatus: status };
+  }
+
+  setManagedCodexExtensionRestartPending(true);
+  if (hasBusyTurn) {
+    console.log('[external-session] Managed Codex extension change deferred until the active turn completes');
+    return { success: true, extensionStatus: status };
+  }
+  try {
+    await applyPendingExternalProcessConfigInvalidation(preservePromotion);
+    return { success: true, extensionStatus: getManagedCodexExtensionStatus() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const extensionStatus = markManagedCodexExtensionFailed(message);
+    broadcastManagedCodexExtensionDiagnostics();
+    return {
+      success: false,
+      error: message,
+      extensionStatus,
+    };
+  }
+}
+
+export async function handleExternalMcpServersChange(
+  servers: readonly import('../../shared/config-types').McpServerDefinition[],
+): Promise<ManagedCodexExtensionUpdateResult & { servers?: string[] }> {
+  if (!isManagedCodexProductRuntime()) {
+    const result = notApplicableManagedCodexExtensionResult('mcp');
+    return { ...result, servers: servers.map(server => server.id) };
+  }
+  const requestedIds = [...new Set(servers.map(server => server.id))];
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  const sessionId = getExternalLifecycleSessionId();
+  try {
+    if (!workspacePath) throw new Error('Managed Codex MCP configuration has no workspace owner');
+    const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+    const authoritative = resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
+    const resolvedServers = resolveManagedCodexMcpSelection(requestedIds, authoritative);
+    setManagedCodexSessionMcpServers(resolvedServers);
+    const result = await reconcileManagedCodexExtensionSnapshot('mcp', () => (
+      buildCurrentManagedCodexExtensionSnapshot({ mcpServers: resolvedServers })
+    ));
+    return { ...result, servers: requestedIds };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const current = getManagedCodexExtensionStatus();
+    const extensionStatus = {
+      ...current,
+      components: [
+        ...current.components,
+        {
+          component: 'mcp' as const,
+          state: 'failed' as const,
+          code: 'mcp_selection_rejected',
+          message,
+        },
+      ],
+    };
+    return { success: false, error: message, extensionStatus, servers: requestedIds };
+  }
+}
+
+export async function handleExternalAgentsChange(): Promise<ManagedCodexExtensionUpdateResult> {
+  return reconcileManagedCodexExtensionSnapshot('agents');
+}
+
+export async function handleExternalDesktopInteractionScenarioChange(
+  scenario: Extract<InteractionScenario, { type: 'desktop' }>,
+): Promise<ManagedCodexExtensionUpdateResult> {
+  if (!isManagedCodexProductRuntime()) {
+    return notApplicableManagedCodexExtensionResult('scenario');
+  }
+  const wasBusy = isExternalTurnBusy();
+  const result = await reconcileManagedCodexExtensionSnapshot('scenario', () => (
+    buildCurrentManagedCodexExtensionSnapshot({ scenario })
+  ));
+  if (result.success && !wasBusy) setExternalLifecycleScenario(scenario);
+  return result;
+}
+
+export async function handleExternalSessionEnabledPluginsChange(
+  enabledIds: readonly string[] | null,
+): Promise<ManagedCodexExtensionUpdateResult> {
+  if (!isManagedCodexProductRuntime()) {
+    return notApplicableManagedCodexExtensionResult('plugins');
+  }
+  setManagedCodexSessionEnabledPluginIds(enabledIds);
+  return reconcileManagedCodexExtensionSnapshot('plugins');
+}
+
+export function getManagedCodexExtensionConfigSnapshot(): {
+  mcpServerIds: string[] | null;
+  agentNames: string[] | null;
+  enabledPluginIds: string[] | null;
+  extensionStatus?: ReturnType<typeof getManagedCodexExtensionStatus>;
+} {
+  if (!isManagedCodexProductRuntime()) {
+    return {
+      mcpServerIds: null,
+      agentNames: null,
+      enabledPluginIds: null,
+    };
+  }
+  const snapshot = getManagedCodexDesiredSnapshot();
+  return {
+    mcpServerIds: snapshot?.mcpServers.map(server => server.id) ?? [],
+    agentNames: snapshot?.agents.map(agent => agent.name) ?? [],
+    enabledPluginIds: snapshot?.enabledPluginIds
+      ?? getManagedCodexSessionEnabledPluginIds()
+      ?? [],
+    extensionStatus: getManagedCodexExtensionStatus(),
+  };
 }
 
 export async function handleExternalProxyConfigChange(input: {
@@ -2439,6 +2756,8 @@ export async function startExternalSession(options: {
   sessionId: string;
   workspacePath: string;
   initialMessage?: string;
+  /** Runtime-facing expansion; transcript/persistence always use initialMessage. */
+  initialRuntimeMessage?: string;
   initialImages?: ResolvedImagePayload[];
   model?: string;
   permissionMode?: string;
@@ -2488,6 +2807,7 @@ async function _doStartExternalSession(options: {
   sessionId: string;
   workspacePath: string;
   initialMessage?: string;
+  initialRuntimeMessage?: string;
   initialImages?: ResolvedImagePayload[];
   model?: string;
   permissionMode?: string;
@@ -2609,8 +2929,69 @@ async function _doStartExternalSession(options: {
     : startPermissionMode;
 
   const managedCodexMcpServers = runtimeType === 'codex' && runtimeSource === 'managed-provider'
-    ? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
+    ? getManagedCodexSessionMcpServers()
+      ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
+  let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
+    ? compileManagedCodexExtensionSnapshot({
+        workspacePath: options.workspacePath,
+        scenario: options.scenario,
+        enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
+          ?? existingMetadataAtStart?.enabledPluginIds
+          ?? null,
+        mcpServers: managedCodexMcpServers ?? [],
+      })
+    : undefined;
+  if (managedCodexExtensionSnapshot) {
+    managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
+      snapshot: managedCodexExtensionSnapshot,
+      sessionId: options.sessionId,
+      workspacePath: options.workspacePath,
+    });
+    const desiredHostCatalogFingerprint = managedCodexHostCatalogFingerprint(
+      managedCodexExtensionSnapshot.dynamicTools,
+    );
+    const emptyHostCatalogFingerprint = managedCodexHostCatalogFingerprint([]);
+    const resumeHostCatalogMismatch = Boolean(
+      options.resumeSessionId
+      && (
+        existingMetadataAtStart?.managedCodexExtensionProtocolVersion
+          !== MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION
+        || existingMetadataAtStart?.managedCodexHostCatalogFingerprint
+          !== desiredHostCatalogFingerprint
+      )
+      && (
+        managedCodexExtensionSnapshot.dynamicTools.length > 0
+        || (existingMetadataAtStart?.managedCodexHostCatalogFingerprint
+          && existingMetadataAtStart.managedCodexHostCatalogFingerprint
+            !== emptyHostCatalogFingerprint)
+      ),
+    );
+    if (resumeHostCatalogMismatch) {
+      managedCodexExtensionSnapshot.hostToolDispatcher?.dispose(
+        'Native thread Host tool catalog differs from the desired Session catalog',
+      );
+      managedCodexExtensionSnapshot = {
+        ...managedCodexExtensionSnapshot,
+        dynamicTools: [],
+        hostToolDispatcher: undefined,
+        components: [
+          ...managedCodexExtensionSnapshot.components.filter(result => result.component !== 'host_tools'),
+          {
+            component: 'host_tools',
+            state: 'unsupported',
+            code: 'host_tools_catalog_immutable',
+            message: 'Start a new Product Session to apply the changed Host tool catalog.',
+          },
+        ],
+      };
+    } else if (!options.resumeSessionId) {
+      setPendingManagedCodexHostCatalogBirth({
+        fingerprint: desiredHostCatalogFingerprint,
+      });
+    }
+    setManagedCodexDesiredSnapshot(managedCodexExtensionSnapshot, 'no-live-process');
+  }
   if (shouldTrackPendingExternalSessionBirth({
     hasInitialMessage: Boolean(options.initialMessage),
     hasResumeSessionId: Boolean(options.resumeSessionId),
@@ -2762,7 +3143,9 @@ async function _doStartExternalSession(options: {
         // Guarded turns split process startup from prompt transport. This lets
         // Stop invalidate the promotion while initialize/resume is still
         // awaiting and before any runtime can consume the prompt.
-        initialMessage: options.dispatchPromotion ? undefined : options.initialMessage,
+        initialMessage: options.dispatchPromotion
+          ? undefined
+          : (options.initialRuntimeMessage ?? options.initialMessage),
         initialClientUserMessageId: options.dispatchPromotion
           ? undefined
           : options.messageOperation?.userProjection.message.id,
@@ -2777,6 +3160,7 @@ async function _doStartExternalSession(options: {
         envPolicy: resolvedEnvPolicy,
         runtimeSource,
         mcpServers: managedCodexMcpServers,
+        managedCodexExtensions: managedCodexExtensionSnapshot,
       },
       handleUnifiedEvent,
     );
@@ -2820,6 +3204,26 @@ async function _doStartExternalSession(options: {
             runtimeSessionId: undefined,
           };
         }
+        if (runtimeType === 'codex' && runtimeSource === 'managed-provider') {
+          managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
+            snapshot: compileManagedCodexExtensionSnapshot({
+              workspacePath: options.workspacePath,
+              scenario: options.scenario,
+              enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
+                ?? existingMetadataAtStart?.enabledPluginIds
+                ?? null,
+              mcpServers: managedCodexMcpServers ?? [],
+            }),
+            sessionId: options.sessionId,
+            workspacePath: options.workspacePath,
+          });
+          setPendingManagedCodexHostCatalogBirth({
+            fingerprint: managedCodexHostCatalogFingerprint(
+              managedCodexExtensionSnapshot.dynamicTools,
+            ),
+          });
+          setManagedCodexDesiredSnapshot(managedCodexExtensionSnapshot, 'no-live-process');
+        }
         assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
         process = await startOnce(undefined);
         console.log(`[external-session] ${runtimeType} recovered via fresh start after stale resume`);
@@ -2833,6 +3237,13 @@ async function _doStartExternalSession(options: {
     }
     startedProcess = process;
     setExternalActiveProcess(process, enabledOfficialToolIds);
+    if (managedCodexExtensionSnapshot) {
+      markManagedCodexExtensionEffective(
+        managedCodexExtensionSnapshot,
+        process.runtimeGeneration ?? `${runtimeType}:${process.pid}`,
+      );
+      broadcastManagedCodexExtensionDiagnostics();
+    }
     if (options.dispatchPromotion && !isExternalTurnPromotionCurrent(options.dispatchPromotion)) {
       throw new ExternalTurnPromotionCanceledError();
     }
@@ -2842,13 +3253,14 @@ async function _doStartExternalSession(options: {
       finishExternalTurnPromotion(options.dispatchPromotion, { status: 'dispatched' });
       await runtime.sendMessage(
         process,
-        options.initialMessage,
+        options.initialRuntimeMessage ?? options.initialMessage,
         options.initialImages,
         { clientUserMessageId: options.messageOperation?.userProjection.message.id },
       );
     }
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
+    setPendingManagedCodexHostCatalogBirth(null);
     const failure = options.dispatchPromotion?.signal.aborted
       && !(err instanceof ExternalTurnPromotionCanceledError)
       ? new ExternalTurnPromotionCanceledError()
@@ -2907,6 +3319,10 @@ async function _doStartExternalSession(options: {
       return;
     }
     const message = failure instanceof Error ? failure.message : String(failure);
+    if (managedCodexExtensionSnapshot) {
+      markManagedCodexExtensionFailed(message);
+      broadcastManagedCodexExtensionDiagnostics();
+    }
     if (!(failure instanceof ExternalTurnPromotionCanceledError)) {
       console.error(`[external-session] Failed to start ${runtimeType}:`, message);
     }
@@ -3277,6 +3693,33 @@ async function dispatchExternalMessageOperation(
     return canceledBeforeDispatch();
   }
 
+  let runtimeText = text;
+  if (isManagedCodexProductRuntime()) {
+    const extensionResult = await reconcileManagedCodexExtensionSnapshot('commands', () => (
+      buildCurrentManagedCodexExtensionSnapshot({
+        scenario: context?.scenario ?? getExternalLifecycleScenario(),
+      })
+    ), dispatchPromotion);
+    if (!extensionResult.success) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return {
+        queued: false,
+        error: extensionResult.error ?? 'Managed Codex extension reconciliation failed',
+      };
+    }
+    const snapshot = getManagedCodexDesiredSnapshot();
+    if (!snapshot) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return { queued: false, error: 'Managed Codex extension snapshot is unavailable' };
+    }
+    try {
+      runtimeText = compileManagedCodexCommand(text, snapshot)?.runtimeText ?? text;
+    } catch (error) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return { queued: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   // A previous config change may have reached a terminal boundary while the
   // old process could not be stopped. Never let a later send silently reuse
   // that invalid prompt/env owner: retry invalidation before selecting Case 3.
@@ -3371,6 +3814,7 @@ async function dispatchExternalMessageOperation(
         sessionId: context.sessionId,
         workspacePath: context.workspacePath,
         initialMessage: text,
+        initialRuntimeMessage: runtimeText,
         initialImages: hasImages ? resolvedImages : undefined,
         model: context.model ?? getExternalRuntimeDesiredModel(),
         permissionMode: context.permissionMode ?? getExternalRuntimeDesiredPermissionMode(),
@@ -3434,6 +3878,7 @@ async function dispatchExternalMessageOperation(
         sessionId: lifecycleSessionId,
         workspacePath: getExternalLifecycleWorkspacePath(),
         initialMessage: text,
+        initialRuntimeMessage: runtimeText,
         initialImages: hasImages ? resolvedImages : undefined,
         model: nextModel,
         permissionMode: nextPermissionMode,
@@ -3577,7 +4022,7 @@ async function dispatchExternalMessageOperation(
     runtimeDispatchStarted = true;
     await activeRuntime.sendMessage(
       activeProcess,
-      text,
+      runtimeText,
       hasImages ? resolvedImages : undefined,
       { clientUserMessageId: userMsg.id },
     );
@@ -4351,10 +4796,18 @@ type ExternalStopReason = 'user' | 'config-restart' | 'conversation-mutation';
 export async function stopExternalSession(options?: {
   reason?: ExternalStopReason;
   preserveQueue?: boolean;
+  /** Config restart may stop an idle process while the next admitted turn owns this token. */
+  preservePromotion?: ExternalTurnPromotionToken | null;
 }): Promise<boolean> {
   clearWatchdog();
   const preserveQueue = options?.preserveQueue === true;
-  const canceledPromotion = cancelExternalTurnPromotion({ preserveQueue });
+  const preserveCurrentPromotion = Boolean(
+    options?.preservePromotion
+    && isExternalTurnPromotionCurrent(options.preservePromotion),
+  );
+  const canceledPromotion = preserveCurrentPromotion
+    ? null
+    : cancelExternalTurnPromotion({ preserveQueue });
   const active = getExternalActivePair();
   const reason = options?.reason ?? 'user';
   const isConfigRestart = reason !== 'user';
@@ -4503,6 +4956,7 @@ export async function stopExternalSession(options?: {
   );
   finalizeExternalLiveAssistantInMemory();
   resetTurnAccumulators();
+  releaseManagedCodexExtensionGeneration(active.process.runtimeGeneration);
   clearExternalActiveRuntimeProcess();
   clearPendingExternalProcessConfigRestarts();
   activeExternalEnvPolicy = undefined;
@@ -5986,6 +6440,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // CC: session_id from hook; Codex: threadId from thread/start response; Gemini: from session/new
       if (event.sessionId) {
         setExternalRuntimeSessionId(event.sessionId);
+        const bornHostCatalog = isManagedCodexProductRuntime()
+          ? takePendingManagedCodexHostCatalogBirth()
+          : null;
+        if (bornHostCatalog) {
+          setActiveManagedCodexHostCatalog({
+            threadId: event.sessionId,
+            fingerprint: bornHostCatalog.fingerprint,
+          });
+        }
         // Persist to SessionMetadata for cross-restart resume.
         // During pre-warm, metadata may not exist yet. Attempt update; if
         // metadata doesn't exist yet, store the ID in the pending birth record
@@ -6010,6 +6473,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             runtime: getCurrentRuntimeType(),
             runtimeSource: getCurrentRuntimeSource(),
             runtimeSessionId: targetRuntimeId,
+            ...(bornHostCatalog
+              ? {
+                  managedCodexExtensionProtocolVersion: MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION,
+                  managedCodexHostCatalogFingerprint: bornHostCatalog.fingerprint,
+                }
+              : {}),
           })
             .then((updated) => {
               if (
@@ -6075,17 +6544,21 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // Issue #194: runtime's self-report (auth, features, MCP, apps, effective env).
       // Sidecar log keeps a snapshot for unified-log triage; renderer renders the
       // diagnostic strip / details panel.
-      console.log(`[external-session] runtime_diagnostics: runtime=${event.diagnostics.runtime} features=${event.diagnostics.features?.length ?? 0} mcp=${event.diagnostics.mcpServers?.length ?? 0} apps=${event.diagnostics.apps?.length ?? 0} auth=${event.diagnostics.auth?.authMethod ?? 'none'}`);
-      broadcast('chat:runtime-diagnostics', event.diagnostics);
+      const diagnostics = isManagedCodexProductRuntime()
+        ? { ...event.diagnostics, extensions: getManagedCodexExtensionStatus() }
+        : event.diagnostics;
+      if (isManagedCodexProductRuntime()) setManagedCodexRuntimeDiagnostics(diagnostics);
+      console.log(`[external-session] runtime_diagnostics: runtime=${diagnostics.runtime} features=${diagnostics.features?.length ?? 0} mcp=${diagnostics.mcpServers?.length ?? 0} apps=${diagnostics.apps?.length ?? 0} auth=${diagnostics.auth?.authMethod ?? 'none'}`);
+      broadcast('chat:runtime-diagnostics', diagnostics);
 
-      // Banner v2 only renders BLOCKING issues (auth.requiresLogin + total
-      // RPC failure). Non-blocking signals — app/list 403, individual MCP
+      // Banner renders blocking Runtime failures plus actionable extension
+      // lifecycle states. Other non-blocking signals — app/list 403, individual MCP
       // server failure, feature-flag query error — used to show up in the
       // yellow banner too; users (rightly) complained about chronic noise
       // from transient Codex backend hiccups. Route them through chat:log
       // instead so the Logs panel shows them but the chat header stays
       // clean. Sidecar console / unified log still has the full snapshot.
-      const d = event.diagnostics;
+      const d = diagnostics;
       const emitDiagnosticLog = (level: 'warn' | 'error', message: string): void => {
         broadcast('chat:log', {
           source: 'bun',
@@ -6377,6 +6850,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         }
       }
       // Clean up module state — prevents stuck sessions on CC crash
+      releaseManagedCodexExtensionGeneration(getExternalActiveProcess()?.runtimeGeneration);
       clearExternalActiveRuntimeProcess();
       break;
     }

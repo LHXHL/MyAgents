@@ -116,9 +116,9 @@ function dedupeSessionMetadata(sessions: SessionMetadata[]): SessionMetadata[] {
  * paths in SessionStore to be async, and callers cascade `await` accordingly.
  *
  * Stale-recovery rules (delegated to withFileLock):
- *   - lockdir owner file format: `node:<pid>` / `rust:<pid>` / `renderer:<ts>`
- *   - lockdir age > LOCK_STALE_MS AND owner pid dead → broken automatically.
- *   - renderer:* owners (no observable pid) → age-only break.
+ *   - valid Node/Rust owner with a confirmed-dead PID → break immediately.
+ *   - valid live or liveness-unknown process owner → retain regardless of age.
+ *   - missing, renderer, or malformed owner → break only after LOCK_STALE_MS.
  *
  * Lock hold time is ~1ms per call (single append + sessions.json stats update).
  */
@@ -1691,6 +1691,8 @@ export async function updateSessionMetadata(
         | 'runtime'
         | 'runtimeSource'
         | 'runtimeSessionId'
+        | 'managedCodexExtensionProtocolVersion'
+        | 'managedCodexHostCatalogFingerprint'
         | 'runtimeUsageTotals'
         | 'lastContextUsage'
         | 'model'

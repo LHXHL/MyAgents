@@ -23,6 +23,8 @@ import type {
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
 import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
+import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
+import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -281,6 +283,8 @@ export type SessionEngineConfigSnapshot = {
   model: string | null;
   mcpServerIds: string[] | null;
   agentNames: string[] | null;
+  enabledPluginIds?: string[] | null;
+  extensionStatus?: RuntimeExtensionDiagnostics;
   enabledOfficialToolIds: OfficialToolId[] | null;
   permissionMode: string | null;
   providerId: string | null;
@@ -379,6 +383,7 @@ export interface SessionEngine {
     expected: RegisteredAgentSessionOrigin,
   ): Promise<{ success: boolean; metadataExists?: boolean; adoptedLegacyOrigin?: boolean; error?: string }>;
   getCurrentTurnIdentity(): TurnIdentity | null;
+  getActiveImBridgeTurnContext(): ImBridgeTurnContext | null;
   getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;
   getHeldImConfigSnapshot(): SessionEngineHeldImConfigSnapshot;
@@ -428,6 +433,7 @@ export interface SessionEngine {
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;
+  updateEnabledPluginIds(ids: string[] | null): Promise<{ success: boolean; enabledIds?: string[] | null; skipped?: string; error?: string }>;
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
