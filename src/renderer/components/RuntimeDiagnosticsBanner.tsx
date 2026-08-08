@@ -17,9 +17,9 @@
  *        will 401 immediately. User must `codex login` (or equivalent).
  *      • All four diagnostic RPCs returned errors — suggests Codex itself
  *        is broken, not a single subsystem.
- *      • Extension snapshot failed, is waiting for a restart/idle boundary,
- *        or contains an unsupported component the user must resolve.
- *        Invalid optional component entries are skipped and stay in logs.
+ *      • Extension snapshot failed or contains an unsupported component the
+ *        user must resolve. Normal pending/deferred lifecycle stays out of the
+ *        banner; invalid optional entries are skipped and stay in logs.
  *
  * 2. **Always visible close button.** v1 made the X conditional on a
  *    `onDismiss` prop the caller forgot to pass — so the banner had no way
@@ -117,20 +117,6 @@ function assessBlocking(d: RuntimeDiagnostics, t: ChatTranslator): BlockingAsses
     return {
       isBlocking: true,
       headline: t('shell.runtimeDiagnostics.headlines.extensionsFailed'),
-      allProblems,
-    };
-  }
-  if (d.extensions?.state === 'deferred_until_idle') {
-    return {
-      isBlocking: true,
-      headline: t('shell.runtimeDiagnostics.headlines.extensionsDeferred'),
-      allProblems,
-    };
-  }
-  if (d.extensions?.state === 'pending_next_start') {
-    return {
-      isBlocking: true,
-      headline: t('shell.runtimeDiagnostics.headlines.extensionsPending'),
       allProblems,
     };
   }

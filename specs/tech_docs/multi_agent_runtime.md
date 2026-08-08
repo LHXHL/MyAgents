@@ -312,7 +312,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 
 这套投影仅适用于 `runtime:'codex' + runtimeSource:'managed-provider'`。MyAgents 仍是 Product Session、配置、Plugin Store、权限与 transcript 的 authority；Codex app-server 只是 Runtime kernel，`system-cli` Codex 继续使用用户自己的配置，不接管其扩展体系。
 
-`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。只有新进程启动成功、严格 Skill read-back 通过且 MCP startup barrier 完成 terminal/timeout 观察后才更新 effective；单个 server 的连接失败继续由 `RuntimeDiagnostics.mcpServers` 表达。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；Chat banner 只展示会影响 Session 或需要用户动作的顶层生命周期状态和 unsupported 组件，已被安全跳过的单个无效组件只记入日志。
+`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。只有新进程启动成功、严格 Skill read-back 通过且 MCP startup barrier 完成 terminal/timeout 观察后才更新 effective；单个 server 的连接失败继续由 `RuntimeDiagnostics.mcpServers` 表达。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；`pending_next_start` 是下次 send/pre-warm 会自然消费的正常状态，不额外提示，`deferred_until_idle` 只在用户操作入口显示一次等待提示。Chat banner 仅展示顶层失败和确需用户处理的 unsupported 组件；已被安全跳过的单个无效组件只记入日志。
 
 | MyAgents 组件 | Managed Codex 投影 | 关键边界 |
 |---|---|---|
@@ -758,7 +758,7 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
-Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 依据顶层 pending/deferred/failed 生命周期和确需用户处理的 unsupported 组件决定是否展示；当顶层仍为 applied/unchanged 时，单个 failed 组件表示该可选条目已被安全跳过，只保留结构化诊断与日志，不打扰普通对话。
+Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期和确需用户处理的 unsupported 组件决定是否展示；`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 仅由本次配置操作的轻量提示表达。当顶层仍为 applied/unchanged 时，单个 failed 组件表示该可选条目已被安全跳过，只保留结构化诊断与日志，不打扰普通对话。
 
 Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
 
@@ -766,7 +766,7 @@ Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的
 
 ### `chat:runtime-diagnostics` SSE 事件
 
-注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——只在 `status` 任一字段非 `'ok'` 或 `apps` 有 `isAccessible:false` 时才显示。
+注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——仅在确需用户处理时显示：认证阻断、severity error、四项诊断全部失败、顶层扩展应用失败或 unsupported 组件。单项 RPC、App、MCP 异常仍进入展开数据与日志，不单独打断对话。
 
 **MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生。当前 Codex schema 的 `notLoggedIn` 是不可用态；`oAuth` / `bearerToken` 是已认证态，不能按字符串含 `oauth` 误判失败。兼容旧 payload 时仅把明确的 `failed / error / unauthenticated / needs / required` marker 视为 unhealthy。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
 

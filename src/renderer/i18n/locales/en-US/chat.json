@@ -537,8 +537,6 @@
         "needsCodexLogin": "Sign in to Codex to continue",
         "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running",
         "extensionsFailed": "Managed Codex extension application failed",
-        "extensionsDeferred": "Extensions will update after the active turn",
-        "extensionsPending": "Extensions will update on the next Runtime start",
         "extensionsPartial": "Some Managed Codex extensions are unsupported"
       },
       "status": {
@@ -952,7 +950,6 @@
       "syncFailedRetry": "Sync failed. Please try again.",
       "configPartiallySaved": "Configuration was not fully saved and may revert after restart.",
       "extensionsDeferred": "This extension change will apply after the active turn.",
-      "extensionsPending": "This extension change will apply when the Runtime starts.",
       "extensionsUnsupported": "Some selected extension capabilities are not supported by Managed Codex.",
       "searchUnsupported": "In-page search is not supported in this environment because the CSS Highlight API is missing.",
       "codexSubscriptionNeedsSession": "Codex subscription requires a new Codex session. Switch in the model picker and confirm the new session first.",

@@ -193,6 +193,29 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
     })).toBeInTheDocument();
   });
 
+  it.each(['pending_next_start', 'deferred_until_idle'] as const)(
+    'does not turn the normal %s extension lifecycle into a banner',
+    (state) => {
+      const { container } = render(
+        <RuntimeDiagnosticsBanner
+          diagnostics={{
+            ...blockingDiagnostics,
+            runtimeSource: 'managed-provider',
+            auth: { authMethod: 'chatgpt', requiresLogin: false },
+            extensions: {
+              desiredRevision: 'desired-revision',
+              effectiveRevision: null,
+              state,
+              components: [],
+            },
+          }}
+        />,
+      );
+
+      expect(container).toBeEmptyDOMElement();
+    },
+  );
+
   it('surfaces unsupported Managed Codex extension components with their reason', async () => {
     const diagnostics: RuntimeDiagnostics = {
       ...blockingDiagnostics,

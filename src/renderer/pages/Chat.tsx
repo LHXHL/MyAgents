@@ -140,6 +140,7 @@ import {
 import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBirth';
 import {
   projectInputChromeRuntime,
+  projectRuntimeExtensionUpdateNotice,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
 import {
@@ -2624,11 +2625,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       if (response.success === false || status?.state === 'failed') {
         throw new Error(response.error ?? 'Managed Codex extension update failed');
       }
-      if (status?.state === 'deferred_until_idle') {
+      const notice = projectRuntimeExtensionUpdateNotice(status);
+      if (notice === 'deferred') {
         toastRef.current.info(t('shell.toasts.extensionsDeferred'));
-      } else if (status?.state === 'pending_next_start') {
-        toastRef.current.info(t('shell.toasts.extensionsPending'));
-      } else if (status?.components.some(component => component.state === 'unsupported')) {
+      } else if (notice === 'unsupported') {
         toastRef.current.warning(t('shell.toasts.extensionsUnsupported'));
       }
     };
@@ -5155,8 +5155,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           />
 
           {/* Issue #194 — external-runtime self-diagnostic banner. Only renders
-              when the runtime reports something actionable (auth/app/MCP
-              failures). Healthy runtimes don't draw attention here. */}
+              for actionable auth/runtime/extension failures. Normal lifecycle
+              and isolated diagnostic failures stay in diagnostics/logs. */}
           <RuntimeDiagnosticsBanner
             diagnostics={runtimeDiagnostics}
             onDiagnose={handleDiagnoseRuntimeDiagnostics}
