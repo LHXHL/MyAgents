@@ -96,7 +96,7 @@ describe('Codex app-server protocol helpers', () => {
       settledHostCallIds: new Set(),
       extensionSnapshot: {
         hostToolDispatcher: {
-          descriptors: [{ name: 'mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
+          descriptors: [{ name: 'myagents__mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
           dispatch,
           dispose: vi.fn(),
         },
@@ -128,7 +128,7 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'thread-one',
       turnId: 'turn-one',
       callId: 'call-one',
-      tool: 'mcp__local__write',
+      tool: 'myagents__mcp__local__write',
       arguments: { path: 'README.md' },
     }, event => events.push(event));
 
@@ -136,7 +136,7 @@ describe('Codex app-server protocol helpers', () => {
     expect(events).toEqual([expect.objectContaining({
       kind: 'permission_request',
       requestId: '41',
-      toolName: 'mcp__local__write',
+      toolName: 'myagents__mcp__local__write',
     })]);
     await runtime.respondPermission(
       process as unknown as import('../runtimes/types').RuntimeProcess,
@@ -167,7 +167,7 @@ describe('Codex app-server protocol helpers', () => {
       extensionSnapshot: {
         hostToolDispatcher: {
           descriptors: [{
-            name: 'mcp__local__write',
+            name: 'myagents__mcp__local__write',
             description: 'Write',
             inputSchema: {
               type: 'object',
@@ -194,7 +194,7 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'thread-one',
       turnId: 'turn-one',
       callId: 'call-invalid',
-      tool: 'mcp__local__write',
+      tool: 'myagents__mcp__local__write',
       arguments: { unexpected: true },
     }, event => events.push(event));
 

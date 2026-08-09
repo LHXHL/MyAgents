@@ -90,7 +90,7 @@ describe('Managed Codex extension generation state', () => {
     const dispose = vi.fn();
     const withHost: ManagedCodexExtensionSnapshot = {
       ...snapshot('one'),
-      dynamicTools: [{ name: 'mcp__local__echo', description: 'Echo', inputSchema: {} }],
+      dynamicTools: [{ name: 'myagents__mcp__local__echo', description: 'Echo', inputSchema: {} }],
       hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose },
       components: [{ component: 'host_tools', state: 'applied', code: 'connected' }],
     };
@@ -98,7 +98,7 @@ describe('Managed Codex extension generation state', () => {
     setManagedCodexDesiredSnapshot(snapshot('one'), 'idle-process');
 
     expect(getManagedCodexDesiredSnapshot()).toMatchObject({
-      dynamicTools: [{ name: 'mcp__local__echo' }],
+      dynamicTools: [{ name: 'myagents__mcp__local__echo' }],
       hostToolDispatcher: withHost.hostToolDispatcher,
       components: [{ component: 'commands' }, { component: 'host_tools' }],
     });
