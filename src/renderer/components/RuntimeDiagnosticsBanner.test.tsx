@@ -144,6 +144,59 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
     expect(screen.queryByRole('button', { name: /Ask helper to diagnose/ })).not.toBeInTheDocument();
   });
 
+  it('keeps warning RPC failures and safely skipped unsupported extensions log-only', () => {
+    const { container } = render(
+      <RuntimeDiagnosticsBanner
+        diagnostics={{
+          ...blockingDiagnostics,
+          runtimeSource: 'managed-provider',
+          auth: { authMethod: 'chatgpt', requiresLogin: false },
+          status: {
+            auth: 'ok',
+            features: 'ok',
+            mcpServers: { error: 'mcpServerStatus/list timed out' },
+            apps: { error: 'app/list returned 403 Forbidden' },
+          },
+          issues: [
+            {
+              code: 'codex_mcp_status_failed',
+              severity: 'warn',
+              title: 'Codex MCP status failed',
+              message: 'mcpServerStatus/list timed out',
+            },
+            {
+              code: 'codex_app_status_failed',
+              severity: 'warn',
+              title: 'Codex app discovery failed',
+              message: 'app/list returned 403 Forbidden',
+            },
+          ],
+          extensions: {
+            desiredRevision: 'same-revision',
+            effectiveRevision: 'same-revision',
+            state: 'unchanged',
+            components: [
+              {
+                component: 'skills',
+                id: 'workspace:claude-only-skill',
+                state: 'unsupported',
+                code: 'skill_unsupported_fields',
+              },
+              {
+                component: 'plugins',
+                id: 'plugin-with-hooks',
+                state: 'unsupported',
+                code: 'plugin_hooks_unsupported',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('silently skips failed optional extension components when the snapshot is healthy', () => {
     const { container } = render(
       <RuntimeDiagnosticsBanner
@@ -236,6 +289,7 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
             state: 'unsupported',
             code: 'host_tools_catalog_immutable',
             message: 'Start a new Product Session.',
+            requiresUserAction: true,
           },
         ],
       },

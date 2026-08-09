@@ -2981,6 +2981,7 @@ async function _doStartExternalSession(options: {
             state: 'unsupported',
             code: 'host_tools_catalog_immutable',
             message: 'Start a new Product Session to apply the changed Host tool catalog.',
+            requiresUserAction: true,
           },
         ],
       };

@@ -708,6 +708,8 @@ export interface RuntimeExtensionComponentStatus {
   state: RuntimeExtensionApplyState;
   code: string;
   message?: string;
+  /** True only when this component's degradation needs an explicit user action. */
+  requiresUserAction?: boolean;
 }
 
 export interface RuntimeExtensionDiagnostics {

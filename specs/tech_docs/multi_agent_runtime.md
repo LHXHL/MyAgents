@@ -772,7 +772,7 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
-Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期和确需用户处理的 unsupported 组件决定是否展示；`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 仅由本次配置操作的轻量提示表达。当顶层仍为 applied/unchanged 时，单个 failed 组件表示该可选条目已被安全跳过，只保留结构化诊断，不打扰普通对话。
+Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期和由生产方通过 `requiresUserAction` 明确标记、确需用户处理的 unsupported 组件决定是否展示；Renderer 不得从通用 `state` 或 `code` 猜测 actionability。`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 仅由本次配置操作的轻量提示表达。当顶层仍为 applied/unchanged 时，未标记 actionability 的单个 failed / unsupported 组件表示该可选条目已被安全跳过，只保留结构化诊断，不打扰普通对话。
 
 Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
 

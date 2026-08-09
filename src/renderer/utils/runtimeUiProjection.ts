@@ -25,10 +25,18 @@ export function shouldShowBuiltinSdkSlashCommands(currentRuntime: RuntimeType): 
 
 export type RuntimeExtensionUpdateNotice = 'deferred' | 'unsupported' | null;
 
+export function requiresExtensionUserAction(
+  status: RuntimeExtensionDiagnostics | undefined,
+): boolean {
+  return status?.components.some(component => (
+    component.state === 'unsupported' && component.requiresUserAction === true
+  )) ?? false;
+}
+
 export function projectRuntimeExtensionUpdateNotice(
   status: RuntimeExtensionDiagnostics | undefined,
 ): RuntimeExtensionUpdateNotice {
   if (status?.state === 'deferred_until_idle') return 'deferred';
-  if (status?.components.some(component => component.state === 'unsupported')) return 'unsupported';
+  if (requiresExtensionUserAction(status)) return 'unsupported';
   return null;
 }
