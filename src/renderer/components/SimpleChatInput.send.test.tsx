@@ -215,11 +215,19 @@ describe('SimpleChatInput send paths', () => {
       renderInput({
         showBuiltinSdkSlashCommands: false,
         onSlashAction: vi.fn(),
-        workspaceSlashCommands: [{
-          name: 'ship-it',
-          description: 'Workspace command',
-          source: 'custom',
-        }],
+        workspaceSlashCommands: [
+          {
+            name: 'ship-it',
+            description: 'Workspace command',
+            source: 'custom',
+          },
+          {
+            name: 'apple-notes',
+            description: 'Project Skill',
+            source: 'skill',
+            scope: 'project',
+          },
+        ],
       });
 
       const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
@@ -227,6 +235,9 @@ describe('SimpleChatInput send paths', () => {
 
       expect(await screen.findByText('/goal')).toBeInTheDocument();
       expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.getByText('skill')).toBeInTheDocument();
+      expect(screen.queryByText('plugin')).not.toBeInTheDocument();
       expect(screen.queryByText('/compact')).not.toBeInTheDocument();
       expect(screen.queryByText('/context')).not.toBeInTheDocument();
     } finally {

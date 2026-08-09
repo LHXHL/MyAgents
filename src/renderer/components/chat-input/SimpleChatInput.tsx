@@ -27,7 +27,12 @@ import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVerifyStatus, getModelDisplayName } from '@/config/types';
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
-import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashCommands } from '../SlashCommandMenu';
+import SlashCommandMenu, {
+  type SlashCommand,
+  filterAndSortCommands,
+  mergeLocalSlashCommands,
+  mergeSdkSlashCommands,
+} from '../SlashCommandMenu';
 import {
   CLIENT_ACTION_SLASH_COMMANDS,
   isClientActionCommand,
@@ -512,7 +517,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   );
   const mergedSlashCommands = useMemo(
     () => withClientActionCommands(
-      mergeSlashCommands(slashCommands, sdkSlashCommands),
+      mergeSdkSlashCommands(slashCommands, sdkSlashCommands),
       clientActionsEnabled,
       clientActionSlashCommands ?? [],
     ),
@@ -622,7 +627,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     if (workspaceSlashCommands !== undefined) {
       // Product builtins own their reserved names; disk-backed capabilities
       // fill only the remaining namespace.
-      apply(mergeSlashCommands(localizedFallbackSlashCommands, workspaceSlashCommands));
+      apply(mergeLocalSlashCommands(localizedFallbackSlashCommands, workspaceSlashCommands));
       return;
     }
     if (!fileService.isAvailable) {
