@@ -513,8 +513,8 @@ export default function SkillsCommandsList({
 // Skill Card Component — V2 "compact" layout (v0.1.69 polish):
 //   • padding trimmed to px-3.5 py-3 (from p-4)
 //   • title 14px (from 15px)
-//   • toggle moved INLINE with the title row so state reads at a glance
-//   • author folded into a tiny chip next to the toggle
+//   • type icon leads the title; author stays adjacent as quiet metadata
+//   • scope/system state and the toggle remain right-aligned
 //   • description block keeps line-clamp-2 with a min-h reserve so cards in
 //     the same row stay the same height regardless of desc length
 // Exported for reuse in GlobalSkillsPanel.
@@ -531,55 +531,56 @@ export function SkillCard({ skill, onClick, onToggleEnabled, saving = false }: {
             className={`group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 transition-shadow hover:shadow-sm ${isDisabled ? 'opacity-55' : ''}`}
             onClick={onClick}
         >
-            {/* Top row — title + decorative icon + (author chip) + toggle.
-                All the state-bearing affordances sit on the same line as
-                the name, so the eye doesn't have to travel to the footer
-                to read "is this on?". */}
+            {/* Top row — type identity on the left, state and controls on the right. */}
             <div className="flex items-center gap-2">
-                <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
-                    {skill.name}
-                </h4>
-                <Sparkles className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                {skill.author && (
-                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
-                        {skill.author}
-                    </span>
-                )}
-                {skill.origin && (
-                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
-                        {skill.origin === 'global'
-                            ? t('agentSettings.capabilities.scopeUser')
-                            : t('agentSettings.capabilities.scopeProject')}
-                    </span>
-                )}
-                {skill.required && (
-                    <span className="shrink-0 text-xs text-[var(--ink-muted)]">
-                        {t('agentSettings.skillCommandList.systemRequired')}
-                    </span>
-                )}
-                {onToggleEnabled && (
-                    <button
-                        type="button"
-                        role="switch"
-                        aria-checked={!isDisabled}
-                        aria-label={t('agentSettings.skillCommandList.toggleSkill', { name: skill.name })}
-                        aria-busy={saving}
-                        disabled={saving}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            onToggleEnabled(skill.capabilityId ?? skill.folderName, isDisabled);
-                        }}
-                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
-                            !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                        }`}
-                    >
-                        <span
-                            className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm ring-0 transition-transform ${
-                                !isDisabled ? 'translate-x-4' : 'translate-x-0.5'
+                <Sparkles data-capability-type-icon="skill" className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                    <h4 className="min-w-0 truncate text-sm font-semibold text-[var(--ink)]">
+                        {skill.name}
+                    </h4>
+                    {skill.author && (
+                        <span data-capability-author className="shrink-0 text-xs text-[var(--ink-muted)]">
+                            {skill.author}
+                        </span>
+                    )}
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                    {skill.origin && (
+                        <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
+                            {skill.origin === 'global'
+                                ? t('agentSettings.capabilities.scopeUser')
+                                : t('agentSettings.capabilities.scopeProject')}
+                        </span>
+                    )}
+                    {skill.required && (
+                        <span data-capability-system-status className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
+                            {t('agentSettings.skillCommandList.systemRequired')}
+                        </span>
+                    )}
+                    {onToggleEnabled && (
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!isDisabled}
+                            aria-label={t('agentSettings.skillCommandList.toggleSkill', { name: skill.name })}
+                            aria-busy={saving}
+                            disabled={saving}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleEnabled(skill.capabilityId ?? skill.folderName, isDisabled);
+                            }}
+                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
+                                !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
                             }`}
-                        />
-                    </button>
-                )}
+                        >
+                            <span
+                                className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm ring-0 transition-transform ${
+                                    !isDisabled ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                            />
+                        </button>
+                    )}
+                </div>
             </div>
             {/* Description — `min-h-[2.6em]` reserves the 2-line height even
                 for short descriptions so cards in the same grid row align. */}
@@ -606,45 +607,49 @@ export function CommandCard({ command, onClick, onToggleEnabled, saving = false 
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
-                <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">
-                    {command.name}
-                </h4>
-                <Terminal className="h-3.5 w-3.5 shrink-0 text-sky-500" />
-                {command.author && (
-                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
-                        {command.author}
-                    </span>
-                )}
-                {command.origin && (
-                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
-                        {command.origin === 'global'
-                            ? t('agentSettings.capabilities.scopeUser')
-                            : t('agentSettings.capabilities.scopeProject')}
-                    </span>
-                )}
-                {onToggleEnabled && (
-                    <button
-                        type="button"
-                        role="switch"
-                        aria-checked={!isDisabled}
-                        aria-label={t('agentSettings.skillCommandList.toggleCommand', { name: command.name })}
-                        aria-busy={saving}
-                        disabled={saving}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onToggleEnabled(command.capabilityId ?? command.fileName, isDisabled);
-                        }}
-                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
-                            !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                        }`}
-                    >
-                        <span
-                            className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm transition-transform ${
-                                !isDisabled ? 'translate-x-4' : 'translate-x-0.5'
+                <Terminal data-capability-type-icon="command" className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                    <h4 className="min-w-0 truncate text-sm font-semibold text-[var(--ink)]">
+                        {command.name}
+                    </h4>
+                    {command.author && (
+                        <span data-capability-author className="shrink-0 text-xs text-[var(--ink-muted)]">
+                            {command.author}
+                        </span>
+                    )}
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                    {command.origin && (
+                        <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
+                            {command.origin === 'global'
+                                ? t('agentSettings.capabilities.scopeUser')
+                                : t('agentSettings.capabilities.scopeProject')}
+                        </span>
+                    )}
+                    {onToggleEnabled && (
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!isDisabled}
+                            aria-label={t('agentSettings.skillCommandList.toggleCommand', { name: command.name })}
+                            aria-busy={saving}
+                            disabled={saving}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                onToggleEnabled(command.capabilityId ?? command.fileName, isDisabled);
+                            }}
+                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
+                                !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
                             }`}
-                        />
-                    </button>
-                )}
+                        >
+                            <span
+                                className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm transition-transform ${
+                                    !isDisabled ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                            />
+                        </button>
+                    )}
+                </div>
             </div>
             <p className="line-clamp-2 min-h-[2.6em] text-sm leading-relaxed text-[var(--ink-muted)]">
                 {command.description || t('agentSettings.common.noDescription')}

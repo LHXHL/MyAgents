@@ -395,7 +395,7 @@
       "exportMarkdown": "Export as Markdown",
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
-      "bindBot": "Bind chat bot",
+      "continueInBot": "Continue in chat bot",
       "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
       "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
       "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment.",

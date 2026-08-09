@@ -395,7 +395,7 @@
       "exportMarkdown": "导出为 md 文件",
       "tokenStats": "会话 Token 消耗统计",
       "contextUsage": "上下文 Token 使用详情",
-      "bindBot": "绑定聊天机器人",
+      "continueInBot": "在聊天机器人继续此对话",
       "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
       "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
       "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试",

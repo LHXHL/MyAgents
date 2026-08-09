@@ -618,7 +618,7 @@
       "skillImportSuccessNamed": "Imported skill \"{{name}}\"",
       "commandCreateSuccess": "Command created",
       "enabledCount": "{{enabled}} / {{total}} enabled",
-      "systemRequired": "Required",
+      "systemRequired": "System",
       "toggleSkill": "Toggle skill {{name}}",
       "toggleCommand": "Toggle command {{name}}",
       "projectSkillsTitle": "Workspace Skills",

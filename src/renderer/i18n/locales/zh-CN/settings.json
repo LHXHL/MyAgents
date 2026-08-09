@@ -618,7 +618,7 @@
       "skillImportSuccessNamed": "已导入技能 \"{{name}}\"",
       "commandCreateSuccess": "指令创建成功",
       "enabledCount": "{{enabled}} / {{total}} 已启用",
-      "systemRequired": "系统必需",
+      "systemRequired": "系统",
       "toggleSkill": "切换技能 {{name}}",
       "toggleCommand": "切换指令 {{name}}",
       "projectSkillsTitle": "工作区可用技能",

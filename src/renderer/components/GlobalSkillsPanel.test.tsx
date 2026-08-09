@@ -96,7 +96,14 @@ describe('GlobalSkillsPanel required skill controls', () => {
     expect(requiredCard?.querySelector('[role="switch"]')).toBeNull();
     expect(optionalCard?.querySelector('[role="switch"]')).not.toBeNull();
     expect(screen.getAllByRole('switch')).toHaveLength(1);
-    expect(screen.getByText('MyAgents')).toBeInTheDocument();
+
+    const typeIcon = requiredCard?.querySelector('[data-capability-type-icon="skill"]');
+    const author = screen.getByText('MyAgents');
+    const systemStatus = screen.getByText('系统');
+    expect(typeIcon?.nextElementSibling).toContainElement(requiredTitle);
+    expect(requiredTitle.nextElementSibling).toBe(author);
+    expect(author).not.toHaveClass('rounded-full', 'bg-[var(--paper-inset)]');
+    expect(systemStatus).toHaveClass('rounded-full', 'bg-[var(--paper-inset)]');
 
     fireEvent.click(requiredCard!);
     await waitFor(() => expect(onDetailChange).toHaveBeenLastCalledWith(true));

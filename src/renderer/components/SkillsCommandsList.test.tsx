@@ -59,6 +59,7 @@ const globalCommand: CommandItem = {
   enabled: false,
   capabilityId: 'global:command:ship',
   origin: 'global',
+  author: 'MyAgents',
 };
 
 describe('SkillsCommandsList project capability controls', () => {
@@ -95,7 +96,17 @@ describe('SkillsCommandsList project capability controls', () => {
     expect(apiMocks.get).toHaveBeenCalledWith('/api/project-capabilities?agentDir=%2Fworkspace');
     expect(requiredCard?.querySelector('[role="switch"]')).toBeNull();
     expect(reviewCard?.querySelector('[role="switch"]')).not.toBeNull();
-    expect(screen.getByText('ship')).toBeInTheDocument();
+    const requiredTitle = screen.getByText('myagents-cli');
+    const systemStatus = screen.getByText('系统');
+    const commandTitle = screen.getByText('ship');
+    const commandCard = commandTitle.closest('.group');
+    const commandIcon = commandCard?.querySelector('[data-capability-type-icon="command"]');
+    const commandAuthor = commandCard?.querySelector('[data-capability-author]');
+    expect(requiredCard?.querySelector('[data-capability-type-icon="skill"]')?.nextElementSibling).toContainElement(requiredTitle);
+    expect(systemStatus).toHaveClass('rounded-full', 'bg-[var(--paper-inset)]');
+    expect(commandIcon?.nextElementSibling).toContainElement(commandTitle);
+    expect(commandTitle.nextElementSibling).toBe(commandAuthor);
+    expect(commandAuthor).not.toHaveClass('rounded-full', 'bg-[var(--paper-inset)]');
 
     fireEvent.click(reviewCard!.querySelector('[role="switch"]')!);
 
