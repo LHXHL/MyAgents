@@ -28,7 +28,7 @@ export interface ManagedCodexExtensionComponentResult {
   state: ManagedCodexExtensionApplyState;
   code: string;
   message?: string;
-  /** Explicit UI actionability; unsupported optional entries leave this unset. */
+  /** Direct configuration actionability; passive Chat diagnostics remain log-only. */
   requiresUserAction?: boolean;
 }
 

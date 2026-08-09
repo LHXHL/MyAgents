@@ -25,6 +25,7 @@ export function shouldShowBuiltinSdkSlashCommands(currentRuntime: RuntimeType): 
 
 export type RuntimeExtensionUpdateNotice = 'deferred' | 'unsupported' | null;
 
+/** One-shot feedback for a user-initiated extension configuration change. */
 export function requiresExtensionUserAction(
   status: RuntimeExtensionDiagnostics | undefined,
 ): boolean {

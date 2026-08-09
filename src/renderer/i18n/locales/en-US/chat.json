@@ -525,19 +525,11 @@
     "runtimeDiagnostics": {
       "problems": {
         "needsCodexLogin": "Codex login required (click the account avatar or run codex login)",
-        "authQueryFailed": "auth query failed: {{error}}",
-        "appListFailed": "app list failed: {{error}}",
-        "mcpStatusFailed": "MCP status query failed: {{error}}",
-        "featureFlagFailed": "feature flag query failed: {{error}}",
-        "appsInaccessible": "{{count}} enabled app(s) inaccessible: {{names}}",
-        "mcpServersFailed": "MCP server failed: {{names}}",
         "extensionComponent": "Extension {{component}}{{id}} is {{state}}: {{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "Sign in to Codex to continue",
-        "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running",
-        "extensionsFailed": "Managed Codex extension application failed",
-        "extensionsPartial": "Some Managed Codex extensions are unsupported"
+        "extensionsFailed": "Managed Codex extension application failed"
       },
       "status": {
         "unsupported": "Unsupported",

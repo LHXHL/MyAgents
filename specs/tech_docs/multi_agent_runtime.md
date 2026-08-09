@@ -326,7 +326,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 
 这套投影仅适用于 `runtime:'codex' + runtimeSource:'managed-provider'`。MyAgents 仍是 Product Session、配置、Plugin Store、权限与 transcript 的 authority；Codex app-server 只是 Runtime kernel，`system-cli` Codex 继续使用用户自己的配置，不接管其扩展体系。
 
-`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。只有新进程启动成功、严格 Skill read-back 通过且 MCP startup barrier 完成 terminal/timeout 观察后才更新 effective；单个 server 的连接失败继续由 `RuntimeDiagnostics.mcpServers` 表达。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；`pending_next_start` 是下次 send/pre-warm 会自然消费的正常状态，不额外提示，`deferred_until_idle` 只在用户操作入口显示一次等待提示。Chat banner 仅展示顶层失败和确需用户处理的 unsupported 组件；已被安全跳过的单个无效组件只保留在结构化诊断中。
+`SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。只有新进程启动成功、严格 Skill read-back 通过且 MCP startup barrier 完成 terminal/timeout 观察后才更新 effective；单个 server 的连接失败继续由 `RuntimeDiagnostics.mcpServers` 表达。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；`pending_next_start` 是下次 send/pre-warm 会自然消费的正常状态，不额外提示，`deferred_until_idle` 只在用户操作入口显示一次等待提示。Chat banner 只展示顶层扩展应用失败；逐组件 `failed` / `unsupported` 是可选能力降级，进入结构化诊断与 Logs panel。生产方的 `requiresUserAction` 仅供用户主动修改扩展配置后的单次 toast 使用，不能作为被动 Chat banner 的 severity。
 
 | MyAgents 组件 | Managed Codex 投影 | 关键边界 |
 |---|---|---|
@@ -337,7 +337,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | SDK in-process MCP / IM Bridge | `thread/start.dynamicTools` +反向 `item/tool/call` | Dispatcher 复用标准 MCP handler、现有权限 owner、AbortSignal、timeout、附件与 large-value spill；exactly-once 且绑定 process generation |
 | Plugin | 按 `plugin.json` 的 `skills`/`commands`/`agents`/`mcpServers` 路径与默认目录编译 | 命名组件使用 project > user > plugin；MCP 按 server id 独立合并并显式报告冲突。Hooks/LSP/monitors/bin 和不可表示 transport 逐组件 unsupported，不阻断其它可转换组件 |
 
-协议契约锁定在 app-server `0.146.0`，升级下载锁不能自动放开扩展路径，必须先重新生成 schema 并跑 exact-binary conformance。`thread/start.dynamicTools` 的目录属于 native thread birth：resume 没有替换目录的协议字段。Session metadata 因此只保存 protocol version 与 secret-free catalog fingerprint；相同目录可原生 resume，目录改变或 legacy Session 无法证明一致时返回 `host_tools_catalog_immutable`，要求新建 Product Session。唯一兼容例外是历史 metadata 与当前 desired catalog 都为空，此时没有可漂移的 Host 能力，可继续 resume。不得以 MCP fallback、额外 Extension Host 或第二套 Agent loop 绕过这个限制。
+协议契约锁定在 app-server `0.146.0`，升级下载锁不能自动放开扩展路径，必须先重新生成 schema 并跑 exact-binary conformance。`thread/start.dynamicTools` 的目录属于 native thread birth：resume 没有替换目录的协议字段。Session metadata 因此只保存 protocol version 与 secret-free catalog fingerprint；相同目录可原生 resume，目录改变或 legacy Session 无法证明一致时返回 `host_tools_catalog_immutable`，要求新建 Product Session。该降级不阻断基础对话：被动恢复时进入结构化诊断与 Logs panel；用户主动配置扩展时可用一次 warning toast 说明新建 Product Session 才能应用。唯一兼容例外是历史 metadata 与当前 desired catalog 都为空，此时没有可漂移的 Host 能力，可继续 resume。不得以 MCP fallback、额外 Extension Host 或第二套 Agent loop 绕过这个限制。
 
 ### 事件映射
 
@@ -772,7 +772,7 @@ Codex middle-turn Rewind 是同一 Tab / Session / Runtime identity，Renderer �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
-Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期和由生产方通过 `requiresUserAction` 明确标记、确需用户处理的 unsupported 组件决定是否展示；Renderer 不得从通用 `state` 或 `code` 猜测 actionability。`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 仅由本次配置操作的轻量提示表达。当顶层仍为 applied/unchanged 时，未标记 actionability 的单个 failed / unsupported 组件表示该可选条目已被安全跳过，只保留结构化诊断，不打扰普通对话。
+Managed Codex 还把 Product Extension 的 desired/effective revision 与逐组件结果合并进同一个 `RuntimeDiagnostics.extensions`，不建立第二条状态通道。Chat banner 只依据顶层 failed 生命周期决定是否展示；Renderer 不得把逐组件 `failed` / `unsupported` 或 `requiresUserAction` 猜成被动阻断。`pending_next_start` 静默等待下一次 Runtime 启动，`deferred_until_idle` 与生产方标记的 `requiresUserAction` 仅由本次配置操作的轻量提示表达。当顶层仍为 applied/unchanged 时，单个 failed / unsupported 组件表示该可选条目已被安全跳过，只保留结构化诊断和有界 Logs panel 摘要，不打扰普通对话。
 
 Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
 
@@ -780,7 +780,7 @@ Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的
 
 ### `chat:runtime-diagnostics` SSE 事件
 
-注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——仅在确需用户处理时显示：认证阻断、severity error、四项诊断全部失败、顶层扩展应用失败或 unsupported 组件。单项 RPC、App、MCP 异常仍进入展开数据与日志，不单独打断对话。
+注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——仅在真正阻断时显示：认证阻断、producer 标记的 severity error 或顶层扩展应用失败。Renderer 不得按失败数量、逐组件状态或 actionability 自行提升 severity。单项 RPC、App、MCP、逐组件扩展异常进入结构化诊断与 Logs panel，不单独打断对话；展开区也只把实际触发顶条的问题列为 Problems，不把成功组件冒充故障上下文。
 
 **MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生。当前 Codex schema 的 `notLoggedIn` 是不可用态；`oAuth` / `bearerToken` 是已认证态，不能按字符串含 `oauth` 误判失败。兼容旧 payload 时仅把明确的 `failed / error / unauthenticated / needs / required` marker 视为 unhealthy。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
 

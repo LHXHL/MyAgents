@@ -152,6 +152,11 @@ import {
   setExternalRuntimeLiveReportedModel,
 } from './external-session/runtime-config';
 import {
+  projectRuntimeDiagnosticLogEntries,
+  projectRuntimeExtensionDiagnosticLogEntry,
+  type RuntimeDiagnosticLogEntry,
+} from './external-session/runtime-diagnostics';
+import {
   compileManagedCodexCommand,
   compileManagedCodexExtensionSnapshot,
 } from './managed-codex/extensions/compiler';
@@ -943,12 +948,28 @@ function broadcast(event: string, data: unknown): void {
   broadcastSse(event, data);
 }
 
-function broadcastManagedCodexExtensionDiagnostics(): void {
+function emitRuntimeDiagnosticLogEntry(entry: RuntimeDiagnosticLogEntry): void {
+  broadcast('chat:log', {
+    source: 'bun',
+    level: entry.level,
+    message: entry.message,
+    timestamp: new Date().toISOString(),
+    runtime: getCurrentRuntimeType(),
+  });
+}
+
+function broadcastManagedCodexExtensionDiagnostics(emitExtensionLog = false): void {
+  if (!isManagedCodexProductRuntime()) return;
+  const extensions = getManagedCodexExtensionStatus();
+  if (emitExtensionLog) {
+    const entry = projectRuntimeExtensionDiagnosticLogEntry(extensions);
+    if (entry) emitRuntimeDiagnosticLogEntry(entry);
+  }
   const runtimeDiagnostics = getManagedCodexRuntimeDiagnostics();
-  if (!runtimeDiagnostics || !isManagedCodexProductRuntime()) return;
+  if (!runtimeDiagnostics) return;
   const diagnostics = {
     ...runtimeDiagnostics,
-    extensions: getManagedCodexExtensionStatus(),
+    extensions,
     timestamp: new Date().toISOString(),
   };
   setManagedCodexRuntimeDiagnostics(diagnostics);
@@ -2445,7 +2466,7 @@ async function reconcileManagedCodexExtensionSnapshot(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const extensionStatus = markManagedCodexExtensionFailed(message);
-    broadcastManagedCodexExtensionDiagnostics();
+    broadcastManagedCodexExtensionDiagnostics(true);
     return {
       success: false,
       error: message,
@@ -2468,7 +2489,7 @@ async function reconcileManagedCodexExtensionSnapshot(
         ? 'busy-process'
         : 'idle-process',
   );
-  broadcastManagedCodexExtensionDiagnostics();
+  broadcastManagedCodexExtensionDiagnostics(true);
   if (
     status.effectiveRevision === snapshot.revision
     && (status.state === 'applied' || status.state === 'unchanged')
@@ -2492,7 +2513,7 @@ async function reconcileManagedCodexExtensionSnapshot(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const extensionStatus = markManagedCodexExtensionFailed(message);
-    broadcastManagedCodexExtensionDiagnostics();
+    broadcastManagedCodexExtensionDiagnostics(true);
     return {
       success: false,
       error: message,
@@ -3366,7 +3387,7 @@ async function _doStartExternalSession(options: {
     const message = failure instanceof Error ? failure.message : String(failure);
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionFailed(message);
-      broadcastManagedCodexExtensionDiagnostics();
+      broadcastManagedCodexExtensionDiagnostics(true);
     }
     if (!(failure instanceof ExternalTurnPromotionCanceledError)) {
       console.error(`[external-session] Failed to start ${runtimeType}:`, message);
@@ -6696,61 +6717,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       console.log(`[external-session] runtime_diagnostics: runtime=${diagnostics.runtime} features=${diagnostics.features?.length ?? 0} mcp=${diagnostics.mcpServers?.length ?? 0} apps=${diagnostics.apps?.length ?? 0} auth=${diagnostics.auth?.authMethod ?? 'none'}`);
       broadcast('chat:runtime-diagnostics', diagnostics);
 
-      // Banner renders blocking Runtime failures plus actionable extension
-      // lifecycle states. Other non-blocking signals — app/list 403, individual MCP
-      // server failure, feature-flag query error — used to show up in the
-      // yellow banner too; users (rightly) complained about chronic noise
-      // from transient Codex backend hiccups. Route them through chat:log
-      // instead so the Logs panel shows them but the chat header stays
-      // clean. Sidecar console / unified log still has the full snapshot.
-      const d = diagnostics;
-      const emitDiagnosticLog = (level: 'warn' | 'error', message: string): void => {
-        broadcast('chat:log', {
-          source: 'bun',
-          level,
-          message,
-          timestamp: new Date().toISOString(),
-          runtime: getCurrentRuntimeType(),
-        });
-      };
-      const errOf = (s: typeof d.status.auth): string | null =>
-        s && typeof s === 'object' && 'error' in s ? String(s.error) : null;
-      const authErr = errOf(d.status.auth);
-      const appsErr = errOf(d.status.apps);
-      const mcpErr = errOf(d.status.mcpServers);
-      const featErr = errOf(d.status.features);
-      // `error` for ones the banner would have considered "warn-tier" in v1;
-      // `warn` for purely informational. Severity here drives Logs panel
-      // sort/filter — it isn't what makes the banner appear.
-      if (authErr) emitDiagnosticLog('error', `[codex-diag] auth status query failed: ${authErr.slice(0, 200)}`);
-      if (appsErr) emitDiagnosticLog('warn', `[codex-diag] app/list failed: ${appsErr.slice(0, 200)}`);
-      if (mcpErr) emitDiagnosticLog('warn', `[codex-diag] mcpServerStatus/list failed: ${mcpErr.slice(0, 200)}`);
-      if (featErr) emitDiagnosticLog('warn', `[codex-diag] experimentalFeature/list failed: ${featErr.slice(0, 200)}`);
-      if (d.apps) {
-        const inaccessible = d.apps.filter(a => a.isEnabled && !a.isAccessible);
-        if (inaccessible.length > 0) {
-          emitDiagnosticLog(
-            'warn',
-            `[codex-diag] ${inaccessible.length} app(s) enabled but not accessible: ${inaccessible.map(a => a.id).slice(0, 5).join(', ')}`,
-          );
-        }
-      }
-      if (d.mcpServers) {
-        const failed = d.mcpServers.filter(s => s.state === 'failed');
-        if (failed.length > 0) {
-          emitDiagnosticLog(
-            'warn',
-            `[codex-diag] MCP server(s) in failed state: ${failed.map(s => s.name).join(', ')}`,
-          );
-        }
-      }
-      if (d.issues) {
-        for (const issue of d.issues) {
-          emitDiagnosticLog(
-            issue.severity === 'error' ? 'error' : 'warn',
-            `[codex-diag] ${issue.code}: ${issue.message}`,
-          );
-        }
+      // The header only owns blocking failures. Optional degradation belongs
+      // to the Logs panel; project one bounded summary here instead of making
+      // the Renderer infer severity from raw extension component states.
+      for (const entry of projectRuntimeDiagnosticLogEntries(diagnostics)) {
+        emitRuntimeDiagnosticLogEntry(entry);
       }
       break;
     }
