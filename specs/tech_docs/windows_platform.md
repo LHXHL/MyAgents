@@ -87,6 +87,10 @@ Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgent
 
 **PATH 注入策略**：SDK 子进程（AI Bash 工具）实际看到的 PATH 优先**系统**，其次 bundled —— 用户自己维护的 Node 往往比我们 bundle 的版本新，npm 也更可靠（见 `buildClaudeSessionEnv`）。详见 `bundled_node.md`。
 
+`myagents` 是例外的产品保留命令：app-owned Session、external runtime fallback 和内嵌终端都把 `%USERPROFILE%\.myagents\bin` 放在 AppData npm、MyAgents npm-global 与 inherited PATH 之前。这里的 `myagents.cmd` 不直接调用 Node，也不包含 CLI 路由；它 quote 当前 `MyAgents.exe` 的规范路径、传入私有 CLI marker、用 `%*` 透明转交 argv，并返回 child `%ERRORLEVEL%`。extensionless `myagents` 同时服务 Git Bash，使用 POSIX `exec`。两者都由 Rust no-follow + 原子替换，旧全量 payload 与 `.cli-version` 不再可信。
+
+Windows CLI mode 继续 `AttachConsole(ATTACH_PARENT_PROCESS)` 继承 cmd / PowerShell 控制台；随后只使用当前安装目录 `resources\nodejs\node.exe` 和 `resources\cli\myagents.cjs`。路径离开 Rust 前必须去掉 `\\?\` verbatim 前缀，安装路径的空格、Unicode 与 `%` 必须由 launcher builder 的平台 quoting 处理。bundle 缺失或 launcher 因 Defender / indexer 短暂占用而无法 replace 时有界退避后 fail closed，不得回退系统 Node、AppData 同名命令或旧 HOME JS。
+
 Task command Detector 不经过 SDK shell：bare `node` / `node.exe` 固定解析到 bundled Node.js v24，其他 bare executable 走 `system_binary::find()`；`executable + args + cwd` 分开传递，不经 `cmd /c` 或字符串重拼。Rust 进入进程边界前对绝对路径使用现有 external-path normalize，不能把 Windows verbatim/长路径前缀直接泄漏给 Node。
 
 ### 进程清理
@@ -228,6 +232,7 @@ Remove-Item src-tauri\target\x86_64-pc-windows-msvc\release\resources -Recurse -
 **构建前**：
 - [ ] 版本号同步（`package.json`, `tauri.conf.json`, `Cargo.toml`）
 - [ ] TypeScript 类型检查通过
+- [ ] `npm run build:cli` 后 `resources/cli/` 只有当前 `myagents.cjs`（以及 tracked `.gitkeep`），没有旧 `myagents.cmd` staging 残留
 - [ ] `.env` 文件包含 `TAURI_SIGNING_PRIVATE_KEY`
 - [ ] Rust 工具链已安装目标 `x86_64-pc-windows-msvc`
 

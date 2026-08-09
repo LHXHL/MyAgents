@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 const repoRoot = resolve(import.meta.dirname, '..');
 const buildDev = readFileSync(resolve(repoRoot, 'build_dev.sh'), 'utf8');
 const buildMacos = readFileSync(resolve(repoRoot, 'build_macos.sh'), 'utf8');
+const esbuildBundle = readFileSync(resolve(repoRoot, 'scripts/esbuild-bundle.mjs'), 'utf8');
 
 test('macOS dev build replaces every mutable native resource staging directory', () => {
   for (const resource of ['claude-agent-sdk', 'sharp-runtime', 'tsx-runtime']) {
@@ -57,4 +58,18 @@ test('macOS release prepares and validates Sharp inside each target build', () =
     /@img\/sharp-darwin-arm64@[^\n]*@img\/sharp-darwin-x64@/,
     'a thin target must not install both Sharp architectures',
   );
+});
+
+test('CLI bundle staging owns its complete mutable resource inventory', () => {
+  const cliTargetAt = esbuildBundle.indexOf('cli: {');
+  const cleanAt = esbuildBundle.indexOf("if (targetName === 'cli')");
+  const buildAt = esbuildBundle.indexOf('await build({');
+
+  assert.notEqual(cliTargetAt, -1, 'CLI esbuild target must exist');
+  assert.notEqual(cleanAt, -1, 'CLI target must clear stale resource artifacts');
+  assert.ok(cleanAt < buildAt, 'stale CLI resources must be removed before esbuild emits the bundle');
+  assert.match(esbuildBundle, /entry !== '\.gitkeep'/);
+  assert.match(esbuildBundle, /resources\/cli\/myagents\.cjs/);
+  assert.doesNotMatch(esbuildBundle, /resources\/cli\/myagents\.js/);
+  assert.doesNotMatch(esbuildBundle, /copyFile|src\/cli\/myagents\.cmd/);
 });

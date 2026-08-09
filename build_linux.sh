@@ -120,9 +120,9 @@ echo -e "${GREEN}✓ 通过${NC}"
 echo ""
 
 # Sidecar + Bridge + CLI 打包 —— 三件套统一通过 `npm run build:*`
-# (`node scripts/esbuild-bundle.mjs <target>`)。Driver 内部 post-build：
-# - cli: 复制 myagents.cmd 到 resources/cli/
-# - server: 校验产物不含硬编码 __dirname 路径
+# (`node scripts/esbuild-bundle.mjs <target>`)。Driver 内部职责：
+# - cli: 构建前清理 CLI staging，随后只产出 bundle authority myagents.cjs
+# - server: 构建后校验产物不含硬编码 __dirname 路径
 echo -e "${BLUE}[3/6] 打包 Sidecar / Bridge / CLI ...${NC}"
 npm run build:server
 npm run build:bridge

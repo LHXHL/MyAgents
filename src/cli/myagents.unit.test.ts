@@ -21,6 +21,7 @@ import {
   sessionTransportExitCode,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
+  resolveCliPort,
 } from './myagents';
 
 const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
@@ -32,6 +33,14 @@ beforeEach(() => {
 afterEach(() => {
   if (inheritedMyAgentsSessionId === undefined) delete process.env.MYAGENTS_SESSION_ID;
   else process.env.MYAGENTS_SESSION_ID = inheritedMyAgentsSessionId;
+});
+
+describe('myagents CLI port authority', () => {
+  it('keeps --port above inherited Session or Rust-injected Global ports', () => {
+    expect(resolveCliPort('32003', '32002')).toBe('32003');
+    expect(resolveCliPort(undefined, '32002')).toBe('32002');
+    expect(resolveCliPort(undefined, '')).toBe('');
+  });
 });
 
 describe('myagents CLI Task notification updates', () => {
@@ -498,6 +507,66 @@ describe('myagents CLI Space issue contracts', () => {
       title: 'No Goal change',
     });
     expect(titleOnly).not.toHaveProperty('goalUpdate');
+  });
+
+  it.each([
+    {
+      action: 'issue',
+      rest: ['list'],
+      route: 'space/issue-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'goal',
+      rest: ['list'],
+      route: 'space/goal-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace', includeArchived: false },
+      flags: {},
+    },
+    {
+      action: 'assignee',
+      rest: ['list'],
+      route: 'space/assignee-list',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'whoami',
+      rest: [],
+      route: 'space/whoami',
+      body: { spaceSlug: 'official', workspacePath: '/workspace' },
+      flags: {},
+    },
+    {
+      action: 'issue',
+      rest: ['attachment', 'add', 'iss_523'],
+      route: 'space/attachment-add',
+      body: {
+        spaceSlug: 'official',
+        workspacePath: '/workspace',
+        issueId: 'iss_523',
+        filePaths: ['evidence.png'],
+      },
+      flags: { file: ['evidence.png'] },
+    },
+  ])('keeps #523/#524 $route requests on exact leaf contracts', ({
+    action,
+    rest,
+    route,
+    body,
+    flags,
+  }) => {
+    const actualRoute = buildRoute('space', action, rest);
+    const actualBody = buildRequestBody('space', action, rest, {
+      space: 'official',
+      workspacePath: '/workspace',
+      ...flags,
+    });
+
+    expect(actualRoute).toBe(route);
+    expect(actualRoute).not.toMatch(/^space\/(issue|goal|assignee|attachment)$/);
+    expect(actualBody).toMatchObject(body);
   });
 
   it('parses presence flags and explicit human-only booleans without swallowing later flags', () => {

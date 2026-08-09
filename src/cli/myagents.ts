@@ -1,15 +1,16 @@
 /**
  * myagents — Self-Configuration CLI for MyAgents
  *
- * A thin wrapper that parses CLI arguments and forwards them as HTTP requests
- * to the Sidecar's Admin API. All business logic lives in the Sidecar.
+ * Parses local CLI concerns and forwards stateful work to the Sidecar Admin
+ * API. This source is bundled into the app; HOME launchers contain no copy of
+ * these route/body/output contracts.
  *
  * Environment:
  *   MYAGENTS_PORT — Sidecar port (injected by buildClaudeSessionEnv)
  *   MYAGENTS_SESSION_ID — current MyAgents session id for attached-session tasks
  *
  * No shebang here. `npm run build:cli` (esbuild) injects `#!/usr/bin/env node`
- * through `--banner:js` so the *built* `myagents.js` artifact is what carries
+ * through `--banner:js` so the *built* `myagents.cjs` artifact is what carries
  * the shebang. A leftover `#!/usr/bin/env bun` on this source file used to
  * stack with the banner and produced a TWO-shebang artifact (issue #107):
  * bun parses the first line as shebang, the second line `#!/usr/bin/env node`
@@ -23,6 +24,12 @@
 // Port is resolved after arg parsing (--port flag can override env)
 let PORT = process.env.MYAGENTS_PORT ?? '';
 let BASE = '';
+
+export function resolveCliPort(portFlag: unknown, inheritedPort: string): string {
+  return typeof portFlag === 'string' && portFlag.length > 0
+    ? portFlag
+    : inheritedPort;
+}
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -2400,7 +2407,7 @@ async function main(): Promise<void> {
   if (!flags.help) rejectUnsupportedSpaceDryRun(positional, flags);
 
   // Resolve port: --port flag overrides env
-  PORT = (flags.port as string) || PORT;
+  PORT = resolveCliPort(flags.port, PORT);
   if (!PORT) {
     if (groupIsSpaceCommand(positional[0]) && jsonMode) {
       return exitAgentCliError(flags, {

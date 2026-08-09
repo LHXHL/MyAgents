@@ -403,6 +403,12 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             session_id, MAX_ENSURE_ATTEMPTS
         ));
     }
+    if attempt == 0 {
+        // Session Sidecars use this lifecycle path rather than the tab/global
+        // instance path. Apply the same CLI admission contract before any
+        // existing Session is reused or a new process is born.
+        crate::cli::ensure_launcher()?;
+    }
     ulog_info!(
         "[sidecar] ensure_session_sidecar called for session: {}, owner: {:?} (attempt {})",
         session_id,

@@ -403,9 +403,9 @@ pre-warm 不可变语义见
 | 场景 | 调用方式 | 端口来源 |
 |------|---------|---------|
 | AI 内部调用（主要） | SDK Bash 工具 → `myagents mcp add ...` | `MYAGENTS_PORT` 环境变量 |
-| 用户终端调用 | `MyAgents mcp list` | `~/.myagents/sidecar.port` 文件 |
+| 用户终端调用 | `myagents mcp list`（兼容直接调用 `MyAgents mcp list`） | `~/.myagents/sidecar.port` 文件 |
 
-为什么 CLI 放在 `~/.myagents/bin/` 而非 app bundle：SDK 子进程 PATH 不含 app bundle 内部路径；shebang 执行需要可执行权限和去掉 `.ts` 后缀；`~/.myagents/bin/` 是跨平台稳定的工具投放点。
+CLI 业务 bundle 只位于当前 app。由于 SDK 子进程与用户 shell 的 PATH 不应依赖 app 内部路径，Rust 在 `~/.myagents/bin/` 投影确定性的薄启动器；launcher 回到当前 MyAgents executable，再由 Rust 直达同一安装树的 bundled Node + CLI CJS。HOME 不保存第二份 route、help 或请求体实现。
 
 详见 `tech_docs/cli_architecture.md`。
 
@@ -1024,7 +1024,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### PATH 注入
 
-`buildClaudeSessionEnv()` 优先级：`systemNodeDirs`（用户安装的 Node.js） → `bundledNodeDir` → `~/.myagents/npm-global/bin` → `~/.myagents/bin` → 系统路径。SDK shell env 不全局设置 `npm_config_prefix`；需要固定 npm 安装落点时使用命令级 env。
+`buildClaudeSessionEnv()` 的 app-owned executable layer 优先级：`~/.myagents/bin` → `systemNodeDirs`（用户安装的 Node.js） → `bundledNodeDir` → `~/.myagents/npm-global/bin` → 其它显式目录 → 去重后的继承 PATH。这样产品保留命令 `myagents` 不会被 npm / AppData 同名脚本遮蔽；Tool Registry 对 `node` / `npm` / `bun` 等运行时名称的保留名校验继续保护既有 Node 选择策略。SDK shell env 不全局设置 `npm_config_prefix`；需要固定 npm 安装落点时使用命令级 env。
 
 详见 `tech_docs/bundled_node.md`。
 

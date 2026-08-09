@@ -65,7 +65,12 @@ MyAgents.app/
         ├── plugin-bridge-dist.mjs     # Plugin Bridge 打包产物
         ├── plugin-bridge-sdk-shim/    # OpenClaw SDK shim（ESM, v2026.4.24+）
         ├── claude-agent-sdk/          # SDK native binary（独立运行时）
-        └── cli/myagents.js            # myagents CLI（esbuild bundle）
+        └── cli/myagents.cjs           # myagents CLI（esbuild CommonJS bundle）
+
+~/.myagents/bin/{myagents,myagents.cmd} 只是一对由 Rust 生成的薄启动器：它们回到当前
+MyAgents executable，再由 `src-tauri/src/cli.rs` 同时定位上面的 bundled Node 与 CLI bundle。
+HOME 不保存 CLI 业务脚本，也不使用系统 Node fallback；bundle 资源缺失会在 Sidecar
+admission 前 fail closed。
 
 注：v0.2.0+ 起 `agent-browser` 不再 bundle —— 改由 bundled-skills/agent-browser/SKILL.md
 教 AI 在首次使用时通过命令级 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_PREFIX" npm install -g agent-browser@<pinned>`
@@ -97,13 +102,13 @@ getSystemNodeDirs(): string[]
 ### PATH 注入（`buildClaudeSessionEnv`）
 
 SDK 子进程（AI Bash 工具）看到的 PATH 优先级：
-1. 用户系统安装的 Node.js 目录（`getSystemNodeDirs()`）—— 用户自己维护，npm 更可靠
-2. bundled Node.js 目录（`resources/nodejs/bin`）—— fallback
-3. `~/.myagents/npm-global/bin`（MyAgents-localized npm installs / legacy AI-installed CLIs）
-4. `~/.myagents/bin`（`myagents` CLI 所在）
+1. `~/.myagents/bin`（官方 `myagents` launcher + Tool Registry shims）
+2. 用户系统安装的 Node.js 目录（`getSystemNodeDirs()`）—— 用户自己维护，npm 更可靠
+3. bundled Node.js 目录（`resources/nodejs/bin`）—— fallback
+4. `~/.myagents/npm-global/bin`（MyAgents-localized npm installs / legacy AI-installed CLIs）
 5. 系统 PATH
 
-规则：**系统优先，bundled 兜底**。这让用户既能享受零依赖分发，又不会让 bundled Node 干扰其专业环境。
+规则：产品保留的 `myagents` 必须先命中官方 launcher；Node 的内部选择策略仍是**系统优先，bundled 兜底**，需要确定 bundled Node 的 MyAgents 自身入口继续使用绝对 locator，不靠 PATH。也就是说，CLI shadow 修复不改变系统 Node / bundled Node 的相对策略。
 
 注意：SDK shell env **不设置** `npm_config_prefix` / `NPM_CONFIG_PREFIX` / `PREFIX`。
 nvm 会在 shell 初始化时检测这些变量并输出兼容性警告。需要固定 npm 全局安装落点的
@@ -137,7 +142,7 @@ Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/s
 1. **TypeScript 类型检查**：`npm run typecheck`
 2. **服务端打包**：esbuild bundle `src/server/index.ts` → `server-dist.js`
 3. **Plugin Bridge 打包**：esbuild bundle `src/server/plugin-bridge/index.ts` → `plugin-bridge-dist.mjs`
-4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.js`
+4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.cjs`；扩展名固定 CommonJS 语义，不受安装目录上层 `package.json` 影响
 5. **SDK native binary**：按 target triple 拷贝 + codesign
 6. **Tauri 构建**：`npm run tauri:build -- --target <triple>`
 

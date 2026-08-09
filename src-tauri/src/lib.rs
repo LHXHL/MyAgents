@@ -445,8 +445,6 @@ pub fn run() {
             commands::cmd_remove_template_folder,
             // Admin agent sync
             commands::cmd_sync_admin_agent,
-            // CLI sync (independent version gate)
-            commands::cmd_sync_cli,
             // System skills sync (task-alignment / task-implement etc.)
             commands::cmd_sync_system_skills,
             memory_evolution::cmd_configure_memory_evolution_tasks,
@@ -742,6 +740,15 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            // The app bundle owns CLI business code. HOME only contains
+            // deterministic launchers pointing back to this executable. A
+            // failure must not brick the Desktop; Sidecar admission retries
+            // this same reconciler and fails closed before any Agent starts.
+            tauri::async_runtime::spawn_blocking(|| match cli::ensure_launcher() {
+                Ok(true) => ulog_info!("[cli] Reconciled HOME launchers"),
+                Ok(false) => ulog_info!("[cli] HOME launchers already current"),
+                Err(error) => ulog_error!("[cli] Startup launcher preflight failed: {}", error),
+            });
             // Tauri is the only process guaranteed to exist for the whole app
             // lifetime, so it owns shared crash-artifact cleanup. The first
             // sweep handles upgrade backlog without requiring any Sidecar.

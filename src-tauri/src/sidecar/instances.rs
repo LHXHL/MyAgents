@@ -127,6 +127,11 @@ fn start_tab_sidecar_admitted<R: Runtime>(
 ) -> Result<(u16, u64), String> {
     let is_global = process_role == SidecarProcessRole::Global;
 
+    // Every Sidecar birth is an admission boundary for app-owned runtimes.
+    // Reconcile here as well as at app startup so a transient filesystem
+    // failure cannot leave a Session running with a stale HOME CLI payload.
+    crate::cli::ensure_launcher()?;
+
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
 
