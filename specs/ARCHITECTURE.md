@@ -308,7 +308,9 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_delete_session_if_unowned` | 在同一 Session lifecycle guard 内检查所有持久和临时 owner；只有不存在未授权 owner 时才删除 Node Session 数据并释放调用方提交的 Tab owner。完整删除事务见 `tech_docs/session_architecture.md` |
 | `cmd_get_session_port` | 查询已就绪 Session Sidecar 的端口，仅供登记的数据面和就绪状态调用方使用 |
 | `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后确认当前 generation 仍由该 Tab owner 持有，并释放临时 `BackgroundCompletion` 交接 owner |
-| `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认的 Session 迁移）；旧或新 Session ID 被持久 owner 占用时拒绝改名，历史导航不得调用 |
+| `cmd_upgrade_session_id` | exact Tab owner 的 pending→real / desktop reset 升级；旧或新 Session ID 被持久 owner 占用时拒绝改名，历史导航不得调用 |
+
+Sidecar 的 raw HashMap rekey 是 manager 内部实现，不是通用 Session 操作。生产入口必须证明完整参与 owner 集合：普通 birth/reset 只允许 exact `Tab(tabId)`；桌面“新对话并保留绑定”只允许 exact `Tab(tabId) + Agent(sessionKey)`；Runtime terminal 返回新 ID 时只允许 exact `Agent(sessionKey)`。任何额外 owner 都在 Node 改变逻辑身份前 fail closed。IM `/new` 不做 rekey：它只把 peer binding 轮换到一个 `sidecar_port=0` 的新 ID，并从旧 Session 释放目标 Agent owner，其它 owner 和旧 Sidecar identity 原地不动。
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
 | `cmd_stop_all_sidecars` | 显式 IPC / debug stop；不拥有应用生命周期 |
 
@@ -588,7 +590,7 @@ Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
-新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
+新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、proof-bearing `/api/session/surface-migration`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。IM `/new` 只在 Rust owner/binding authority 内轮换，不调用 Node reset endpoint。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
 
 **测试防线：** server 测试必须显式后缀分层：`*.unit.test.ts`（pure policy / parser / boundary）、`*.integration.test.ts`（credential-free stateful server 集成，singleFork）、`*.credentialed.test.ts`（真实 Provider / SDK / upstream smoke，显式本地跑）。`unit` / `integration` 都加载 `src/test/setup-no-egress.ts`，阻断 fetch / undici / http(s) / net / tls / dns 非 loopback 出站；`npm run test:classification` 用实际 Vitest project list 扫描并禁止裸 `src/server/**/*.test.ts`。External runtime 的回归主路径通过 `external-session-mock.integration.test.ts` 在测试层 mock `runtimes/factory.ts`，fake runtime 伪装为真实 `RuntimeType`（如 `codex`），穿过 `SessionEngine` 覆盖正常 turn、failed turn、queue、permission response，不在生产代码里增加 mock runtime 类型。
 

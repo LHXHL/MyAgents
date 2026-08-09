@@ -931,16 +931,23 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return { success: true, sessionId: getSessionId() };
     },
 
-    async resetForNewImSession(_workspacePath, options) {
+    async migrateBoundSurfaceSession(_workspacePath, options) {
       const freeze = await freezeCurrentSessionMetadataForImDetach(undefined, {
         allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
       if (!freeze.success) {
-        return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+        return { success: false, error: freeze.error ?? 'Failed to freeze current Session before surface migration' };
       }
-      await resetSession();
-      await materializeCurrentSessionMetadataForPublishedReset();
-      return { success: true, sessionId: getSessionId() };
+      await resetSession({ sessionId: options.targetSessionId });
+      // resetSession() is the identity commit point. Metadata publication is
+      // recoverable preparation; surfacing a failure after the commit would
+      // make Rust roll Router/manager back to A while this Runtime remains B.
+      try {
+        await materializeCurrentSessionMetadataForPublishedReset();
+      } catch (error) {
+        console.warn('[session-engine] Surface migration post-commit metadata publication deferred:', error);
+      }
+      return { success: true, sessionId: options.targetSessionId };
     },
   };
 }

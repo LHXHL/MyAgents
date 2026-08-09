@@ -440,8 +440,12 @@ export interface SessionEngine {
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
-  resetForNewImSession(
+  migrateBoundSurfaceSession(
     workspacePath: string,
-    options?: { metadataBirthPending?: boolean; metadataIndexed?: boolean },
+    options: {
+      targetSessionId: string;
+      metadataBirthPending?: boolean;
+      metadataIndexed?: boolean;
+    },
   ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
 }

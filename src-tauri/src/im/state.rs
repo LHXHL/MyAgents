@@ -1061,6 +1061,9 @@ pub struct ImBotInstance {
     pub(super) shutdown_tx: watch::Sender<bool>,
     pub(crate) health: Arc<HealthManager>,
     pub(crate) router: Arc<Mutex<SessionRouter>>,
+    /// Existing per-peer enqueue fence, also reused by explicit binding
+    /// mutations so desktop migration cannot race `/new` or a normal IM turn.
+    pub(crate) peer_locks: PeerLocks,
     pub(crate) im_consumers: ImConsumers,
     /// Covers enqueue setup, heartbeat turns, cron hand-off, and terminal
     /// finalization across a proxy-triggered transport restart boundary.

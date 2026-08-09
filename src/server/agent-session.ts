@@ -7244,7 +7244,7 @@ function pushInboxAbortReplyForQueuedItem(
  * IMPORTANT: Must properly terminate SDK session to prevent context leakage.
  * Simply interrupting is not enough - we must wait for the session to fully end.
  */
-export async function resetSession(): Promise<void> {
+export async function resetSession(options?: { sessionId?: string }): Promise<void> {
   return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
   // 1. Properly terminate the SDK session (same pattern as switchToSession)
@@ -7283,8 +7283,10 @@ export async function resetSession(): Promise<void> {
   clearMessageState();
   clearImBridgeToolsContext();
 
-  // 3. Generate new session ID (don't persist yet - wait for first message)
-  setCurrentSessionId(randomUUID());
+  // 3. Bind the caller-proven target identity, or mint one for ordinary
+  // desktop reset. Surface migration passes its Rust-generated target so
+  // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
+  setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 

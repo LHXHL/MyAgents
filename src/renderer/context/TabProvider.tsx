@@ -1265,8 +1265,8 @@ export default function TabProvider({
      * Local-only session swap for the IM-handover "新对话保留绑定" flow.
      *
      * The Rust handover (`cmd_session_new_with_surface_migration`) has already
-     * minted `newSessionId` on the running sidecar via `/api/im/session/new`
-     * AND rotated `peer_sessions[*].session_id` to it. Calling resetSession()
+     * migrated the exact Tab + Agent owners and minted `newSessionId` through
+     * the surface-migration endpoint. Calling resetSession()
      * here would post `/chat/reset` and mint a SECOND id — leaving the binding
      * pointing at the migrate-minted id while the tab adopts the second mint
      * (the v0.2.14 "tag disappears after 新对话" bug).

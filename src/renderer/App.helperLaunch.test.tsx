@@ -1885,6 +1885,66 @@ describe('App helper launch', () => {
     expect(adopted).toBe(true);
   });
 
+  it('does not repeat a Tab-only Rust rekey after proof-bearing surface migration', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+
+    await expect(providerProps.onSessionIdChange('session-a')).resolves.toBe(true);
+    mocks.upgradeSessionId.mockClear();
+
+    await expect(providerProps.onSessionIdChange(
+      'session-b',
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(true);
+
+    expect(mocks.upgradeSessionId).not.toHaveBeenCalled();
+    const currentTabs = mocks.tabbarProps.at(-1)?.tabs as Array<{
+      sessionId?: string | null;
+    }>;
+    expect(currentTabs).toContainEqual(expect.objectContaining({ sessionId: 'session-b' }));
+  });
+
+  it('releases the migrated Tab owner when the initiating Tab closed before adoption', async () => {
+    render(<App />);
+    await act(async () => {
+      await latestLauncherProps().onLaunchProject(mocks.project);
+    });
+    const providerProps = [...mocks.tabProviderProps]
+      .reverse()
+      .find((props) => typeof props.onSessionIdChange === 'function') as {
+        tabId: string;
+        onSessionIdChange: (
+          newSessionId: string,
+          options?: { sidecarAlreadyMigrated?: boolean },
+        ) => Promise<boolean>;
+      };
+    await expect(providerProps.onSessionIdChange('session-a')).resolves.toBe(true);
+
+    await act(async () => {
+      await (mocks.tabbarProps.at(-1)?.onCloseTab as (tabId: string) => Promise<void>)(
+        providerProps.tabId,
+      );
+    });
+    mocks.releaseTabSession.mockClear();
+
+    await expect(providerProps.onSessionIdChange(
+      'session-b',
+      { sidecarAlreadyMigrated: true },
+    )).resolves.toBe(false);
+
+    expect(mocks.releaseTabSession).toHaveBeenCalledWith('session-b', providerProps.tabId);
+  });
+
   it('serializes identity adoption per Tab and advances from the committed predecessor', async () => {
     render(<App />);
     await act(async () => {

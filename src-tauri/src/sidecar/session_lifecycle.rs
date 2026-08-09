@@ -1305,7 +1305,13 @@ pub(crate) fn finish_session_owner_release(
         // closed while this waits. No global manager mutex is held here.
         drain.wait();
         let retired = {
-            let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+            // Owner removal already committed before the drain. Recovering a
+            // poisoned lock here is required to finish that same transition;
+            // returning an error would strand a half-retired Sidecar that no
+            // caller can safely roll back.
+            let mut manager_guard = manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             manager_guard.finish_unowned_session_retirement(&drain)
         };
         // SessionSidecar::drop terminates the already-drained process. Keep it
@@ -1321,7 +1327,9 @@ pub fn release_session_sidecar(
     owner: &SidecarOwner,
 ) -> Result<bool, String> {
     let release = {
-        let mut manager_guard = manager.lock().map_err(|e| e.to_string())?;
+        let mut manager_guard = manager
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         manager_guard.remove_session_owner(session_id, owner)
     };
     let (removed, stopped) = finish_session_owner_release(manager, release)?;

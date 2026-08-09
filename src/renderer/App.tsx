@@ -1382,6 +1382,12 @@ export default function App() {
     const currentTab = tabsRef.current.find(t => t.id === tabId);
     if (!currentTab) {
       console.error(`[App] Refusing to update missing tab ${tabId} sessionId to ${newSessionId}`);
+      if (options?.sidecarAlreadyMigrated) {
+        await Promise.allSettled([
+          stopSseProxy(tabId),
+          releaseTabSession(newSessionId, tabId),
+        ]);
+      }
       return false;
     }
     const oldSessionId = currentTab?.sessionId;
@@ -1399,15 +1405,21 @@ export default function App() {
       // cannot be adopted by this creator. Pending sidecars have no safe old
       // identity to resume, so terminate that exact Tab/owner instead of
       // leaving a continuation that can republish the contested Session.
-      if (oldSessionId && isPendingSessionId(oldSessionId)) {
-        clearPendingSessionBirth(tabId);
-        setTabs((current) => [...applyTerminalSessionToTabs(current, oldSessionId)]);
-        const rustOwnerSessionId = options?.sidecarAlreadyMigrated
-          ? newSessionId
-          : oldSessionId;
+      if (options?.sidecarAlreadyMigrated) {
+        if (oldSessionId && isPendingSessionId(oldSessionId)) {
+          clearPendingSessionBirth(tabId);
+          setTabs((current) => [...applyTerminalSessionToTabs(current, oldSessionId)]);
+        }
         await Promise.allSettled([
           stopSseProxy(tabId),
-          releaseTabSession(rustOwnerSessionId, tabId),
+          releaseTabSession(newSessionId, tabId),
+        ]);
+      } else if (oldSessionId && isPendingSessionId(oldSessionId)) {
+        clearPendingSessionBirth(tabId);
+        setTabs((current) => [...applyTerminalSessionToTabs(current, oldSessionId)]);
+        await Promise.allSettled([
+          stopSseProxy(tabId),
+          releaseTabSession(oldSessionId, tabId),
         ]);
       }
       return false;
@@ -1416,16 +1428,18 @@ export default function App() {
     try {
       console.log(`[App] Tab ${tabId} sessionId updating: ${oldSessionId} -> ${newSessionId}`);
 
-      // Upgrade the manager-owned Session identity in Rust.
-      // This is a no-op if oldSessionId is null or same as newSessionId
-      if (oldSessionId && oldSessionId !== newSessionId) {
+      // Ordinary Session birth upgrades the exact Tab owner here. A joint
+      // channel migration has already moved the exact Tab + Agent owner set in
+      // the proof-bearing Rust command, so repeating a weaker Tab-only upgrade
+      // would both be redundant and violate the owner contract.
+      if (oldSessionId && oldSessionId !== newSessionId && !options?.sidecarAlreadyMigrated) {
         const upgraded = await upgradeSessionId(oldSessionId, newSessionId, tabId);
         console.log(`[App] Rust HashMap upgrade: ${oldSessionId} -> ${newSessionId}, success=${upgraded}`);
         if (!upgraded) {
           console.error(`[App] Refusing to update tab ${tabId} sessionId because Rust sidecar upgrade failed: ${oldSessionId} -> ${newSessionId}`);
           return false;
         }
-        if (upgraded && !options?.sidecarAlreadyMigrated) {
+        if (upgraded) {
           const fbResult = await migrateFloatingBallSessionBinding(oldSessionId, newSessionId);
           if (fbResult.migrated) {
             console.log(`[App] Floating ball session binding migrated: ${oldSessionId} -> ${newSessionId}, notified=${fbResult.notified}`);

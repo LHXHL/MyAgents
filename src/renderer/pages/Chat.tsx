@@ -60,7 +60,7 @@ import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroducti
 import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
 import { getSessionCronTask, isTaskExecuting, createCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
-import { sessionHasPersistentOwners } from '@/api/tauriClient';
+import { releaseTabSession, sessionHasPersistentOwners } from '@/api/tauriClient';
 import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
 import { materializePendingSessionConfig } from '@/api/sessionMaterialize';
 import type { CronTask } from '@/types/cronTask';
@@ -5024,23 +5024,20 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
    * SessionMenuButton's "新会话（保留绑定）" submenu item can drive the
    * exact same flow without re-running the unbound fallback paths.
    */
-  const newSessionKeepingBinding = useCallback(async (
-    options: { allowPlainResetFallback?: boolean } = {},
-  ): Promise<boolean> => {
-    const allowPlainResetFallback = options.allowPlainResetFallback ?? true;
+  const newSessionKeepingBinding = useCallback(async (): Promise<boolean> => {
     const boundChannel = surfaces.channel;
     if (!boundChannel || !sessionId) return false;
     const { migrateChannelToNewSession } = await import('@/api/sessionHandoverClient');
     return await transitionChannelBoundSession({
       sessionId,
+      tabId,
       boundChannel,
       migrateChannelToNewSession,
       adoptMigratedSession,
-      resetSession,
+      releaseMigratedTabOwner: releaseTabSession,
       reportError: (message) => toastRef.current.error(message),
-      allowPlainResetFallback,
     });
-  }, [surfaces.channel, sessionId, resetSession, adoptMigratedSession]);
+  }, [surfaces.channel, sessionId, tabId, adoptMigratedSession]);
 
   const showIntroductionOverlay = shouldShowIntroductionOverlay({
     content: introductionContent,
@@ -5056,7 +5053,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // If AI is running, App.tsx handles it via background completion (returns true).
   // If AI is idle, falls back to resetSession (reuses Sidecar).
   // PRD 0.2.14: when current session is IM-channel-bound, migrate the binding
-  // to the new session so the IM channel keeps routing here (matches IM `/new`).
+  // to the new session so the IM channel keeps routing here. Unlike IM `/new`,
+  // this is an explicit Tab + Agent joint migration.
   const handleNewSession = useCallback(async (): Promise<boolean> => {
     if (surfaces.channel && sessionId) {
       return await newSessionKeepingBinding();

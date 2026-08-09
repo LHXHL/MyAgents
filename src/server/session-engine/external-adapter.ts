@@ -1004,7 +1004,7 @@ export function createExternalSessionEngine(): SessionEngine {
       }
     },
 
-    async resetForNewImSession(workspacePath, options) {
+    async migrateBoundSurfaceSession(workspacePath, options) {
       await awaitExternalSessionStarting();
       const lease = tryAcquireExternalSessionMutationLease();
       if (!lease) {
@@ -1017,18 +1017,36 @@ export function createExternalSessionEngine(): SessionEngine {
           allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
         });
         if (!freeze.success) {
-          return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+          return { success: false, error: freeze.error ?? 'Failed to freeze current Session before surface migration' };
         }
         if (hasExternalRuntimeProcess()) {
-          await stopExternalSession();
+          const stopped = await stopExternalSession();
+          if (!stopped && hasExternalRuntimeProcess()) {
+            return { success: false, error: 'External runtime process did not stop' };
+          }
         }
-        const newSessionId = resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
-        await publishCurrentProductSessionMetadata(sessionId =>
-          createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
-        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
-        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-        if (!restored.success) return { success: false, error: restored.error };
-        return { success: true, sessionId: newSessionId };
+        resetProductSessionBinding({
+          sessionId: options.targetSessionId,
+          workspacePath,
+          hasInitialPrompt: false,
+        });
+
+        // The target binding is committed above. Metadata publication and
+        // pre-warm are recoverable preparation, not transaction admission;
+        // reporting a failure after identity changed would make Rust roll back
+        // a migration that Node already accepted.
+        try {
+          await publishCurrentProductSessionMetadata(sessionId =>
+            createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
+          broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
+          const restored = await restoreExternalSessionState(options.targetSessionId, workspacePath, { type: 'desktop' });
+          if (!restored.success) {
+            console.warn('[session-engine] Surface migration pre-warm deferred:', restored.error);
+          }
+        } catch (error) {
+          console.warn('[session-engine] Surface migration post-commit preparation deferred:', error);
+        }
+        return { success: true, sessionId: options.targetSessionId };
       } finally {
         lease.release();
       }
