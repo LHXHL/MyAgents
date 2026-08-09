@@ -77,6 +77,7 @@ import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { createDefaultSessionGoalDraftConfig } from '@/utils/sessionGoalDraft';
+import { MANAGED_CODEX_COMPACT_SLASH_COMMAND } from '@/utils/slashActions';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
@@ -4281,9 +4282,69 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setShowCronSettings(true);
   }, []);
 
+  const managedCodexCompactSupported = currentRuntime === 'codex' && managedProviderRuntimeActive;
+  const manualContextCompactSupported = currentRuntime === 'builtin' || managedCodexCompactSupported;
+  const runtimeClientActionSlashCommands = useMemo(
+    () => managedCodexCompactSupported ? [MANAGED_CODEX_COMPACT_SLASH_COMMAND] : [],
+    [managedCodexCompactSupported],
+  );
+
+  // Both the context card and `/compact` dispatch this action. Builtin keeps
+  // the Claude SDK command path; Managed Codex uses its native SessionEngine
+  // control operation so no synthetic user message enters the transcript.
+  const handleCompactContext = useCallback(() => {
+    if (managedCodexCompactSupported) {
+      void apiPost<{ success: boolean; error?: string }>('/api/session/compact')
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          toastRef.current.error(`${t('input.operationFailed')}: ${message}`);
+        });
+      return;
+    }
+    if (currentRuntime !== 'builtin') return;
+    if (pinnedProviderUnavailable) {
+      showPinnedProviderUnavailableToast();
+      return;
+    }
+    if (builtinSnapshotProviderSelectionIncomplete) {
+      showSnapshotProviderIncompleteToast();
+      return;
+    }
+    const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
+    const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
+    void sendMessage(
+      '/compact',
+      undefined,
+      effectivePermissionMode,
+      effectiveModel,
+      providerEnv,
+      undefined,
+      reasoningEffort,
+      providerRoute,
+    );
+  }, [
+    apiPost,
+    buildProviderEnv,
+    builtinSnapshotProviderSelectionIncomplete,
+    currentRuntime,
+    effectiveModel,
+    effectivePermissionMode,
+    managedCodexCompactSupported,
+    pinnedProviderUnavailable,
+    reasoningEffort,
+    sendMessage,
+    showPinnedProviderUnavailableToast,
+    showSnapshotProviderIncompleteToast,
+    t,
+  ]);
+
   // `/goal` is a product action, not a Runtime command. Arm the lightweight
   // composer draft immediately; the bar's settings button owns optional tuning.
   const handleSlashAction = useCallback((name: string) => {
+    if (name === 'compact') {
+      handleCompactContext();
+      return;
+    }
     if (name === 'goal' || name === 'loop') {
       setStoppedCronRecovery(null);
       if (!cronStateRef.current.task) disableCronMode();
@@ -4304,6 +4365,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     currentProvider,
     disableCronMode,
     effectiveRuntimePermissionMode,
+    handleCompactContext,
     isExternalRuntime,
     permissionMode,
     selectedModel,
@@ -4491,32 +4553,19 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     [supportsAgentStatusPanel, handleJumpToTool],
   );
 
-  // PRD 0.2.32 — 智能压缩入口（builtin only）。用与正常发送完全相同的已解析
-  // model/permission/providerEnv 发送 `/compact`（实测可触发内置压缩），避免误切 provider。
-  const handleCompactContext = useCallback(() => {
-    if (pinnedProviderUnavailable) {
-      showPinnedProviderUnavailableToast();
-      return;
-    }
-    if (builtinSnapshotProviderSelectionIncomplete) {
-      showSnapshotProviderIncompleteToast();
-      return;
-    }
-    const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
-    const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
-    void sendMessage('/compact', undefined, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
-      isExternalRuntime ? undefined : reasoningEffort,
-      isExternalRuntime ? undefined : providerRoute);
-  }, [sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, buildProviderEnv, builtinSnapshotProviderSelectionIncomplete, pinnedProviderUnavailable, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast]);
-
   // PRD 0.2.32 — context 用量指示器 slot。自取数（内部 useTabState 订阅 contextUsage），
   // 数据不经 SimpleChatInput props；useMemo 让 slot identity 在流式期间稳定，不打穿
   // SimpleChatInput 的 React.memo（与 agentStatusSlot 同款）。
   const contextIndicatorSlot = useMemo(
     // key on sessionId → remount on session switch resets local open/timer state
     // (review #W3). sessionId is stable during streaming, so the memo still holds.
-    () => <ContextUsageIndicator key={sessionId ?? 'none'} onCompact={handleCompactContext} />,
-    [handleCompactContext, sessionId],
+    () => (
+      <ContextUsageIndicator
+        key={sessionId ?? 'none'}
+        onCompact={manualContextCompactSupported ? handleCompactContext : undefined}
+      />
+    ),
+    [handleCompactContext, manualContextCompactSupported, sessionId],
   );
 
   // P3 (second memo-breaker): this list was computed inline in the SimpleChatInput
@@ -5423,6 +5472,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
             workspacePath={agentDir}
             sessionId={sessionId}
             showBuiltinSdkSlashCommands={showBuiltinSdkSlashCommands}
+            clientActionSlashCommands={runtimeClientActionSlashCommands}
             workspaceSlashCommands={workspaceCapabilitySlashCommands}
             sdkSlashCommands={visibleSdkSlashCommands}
             provider={currentProvider}

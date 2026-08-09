@@ -5014,6 +5014,89 @@ export function isExternalSessionBusy(): boolean {
     || isExternalOperationDrainInFlight();
 }
 
+/**
+ * Run Managed Codex's native compact control turn. The Session owns admission
+ * and status projection; the runtime adapter owns the app-server protocol.
+ * No user or assistant message is created for this operation.
+ */
+export async function compactExternalContext(): Promise<{
+  success: boolean;
+  status?: number;
+  error?: string;
+}> {
+  await awaitExternalLifecycleStarting();
+  if (!isManagedCodexProductRuntime()) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Native context compaction is only available for Managed Codex',
+    };
+  }
+  if (isExternalSessionBusy()) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+
+  const lease = tryAcquireExternalSessionMutationLease();
+  if (!lease) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+
+  let started = false;
+  try {
+    const active = await getCodexConversationBranchPair();
+    if (!active || active.process.exited || active.runtime.type !== 'codex' || !active.runtime.compactContext) {
+      return {
+        success: false,
+        status: 409,
+        error: 'Managed Codex Session is not ready for context compaction',
+      };
+    }
+
+    started = true;
+    setExternalSessionState('running');
+    broadcast('chat:system-status', { status: 'compacting' });
+    await active.runtime.compactContext(active.process);
+    const contextUsage = getExternalCurrentTurnContextUsage();
+    const sessionId = getExternalLifecycleSessionId();
+    if (contextUsage && sessionId) {
+      try {
+        await updateSessionMetadata(sessionId, { lastContextUsage: contextUsage });
+      } catch (error) {
+        console.warn(
+          '[external-session] Failed to persist post-compact context usage:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    broadcast('chat:system-status', { status: null, compactResult: 'success' });
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[external-session] Managed Codex context compaction failed: ${message}`);
+    if (started) {
+      broadcast('chat:system-status', {
+        status: null,
+        compactResult: 'failed',
+        compactError: message,
+      });
+    }
+    return { success: false, status: 500, error: message };
+  } finally {
+    setExternalCurrentTurnContextUsage(null);
+    if (started) setExternalSessionState('idle');
+    lease.release();
+    scheduleExternalQueueDrainAfterTurnBoundary();
+  }
+}
+
 /** Single atomic owner for reset, rewind, and fork Session-boundary mutations. */
 export function tryAcquireExternalSessionMutationLease(): { release: () => void } | null {
   if (externalSessionMutationInFlight) return null;

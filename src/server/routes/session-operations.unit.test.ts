@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   engine: {
     resetForNewDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'new-desktop' })),
+    compactContext: vi.fn(async () => ({ success: true })),
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, content: 'removed' }),
     ),
@@ -31,6 +32,7 @@ describe('handleSessionOperationRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.engine.resetForNewDesktopSession.mockResolvedValue({ success: true, sessionId: 'new-desktop' });
+    mocks.engine.compactContext.mockResolvedValue({ success: true });
     mocks.engine.rewindToUserMessage.mockResolvedValue({ success: true, content: 'removed' });
     mocks.retryLastExternalUserMessageAtSelector.mockResolvedValue({ success: true, content: 'retry text' });
     mocks.engine.forkAtAssistantMessage.mockResolvedValue({ success: true, newSessionId: 'forked' });
@@ -47,6 +49,18 @@ describe('handleSessionOperationRoute', () => {
     expect(response?.status).toBe(200);
     expect(await readJson(response as Response)).toEqual({ success: true, sessionId: 'new-desktop' });
     expect(mocks.engine.resetForNewDesktopSession).toHaveBeenCalledWith('/workspace');
+  });
+
+  it('routes native context compaction through the active SessionEngine', async () => {
+    const response = await handleSessionOperationRoute(
+      '/api/session/compact',
+      new Request('http://local/api/session/compact', { method: 'POST' }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toEqual({ success: true });
+    expect(mocks.engine.compactContext).toHaveBeenCalledOnce();
   });
 
   it('requires a userMessageId before calling rewind', async () => {

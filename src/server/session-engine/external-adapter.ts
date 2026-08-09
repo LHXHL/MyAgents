@@ -5,6 +5,7 @@ import {
   cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
   clearExternalTurnBinding,
+  compactExternalContext,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
   enqueueExternalSendForIm,
@@ -440,6 +441,10 @@ export function createExternalSessionEngine(): SessionEngine {
         canForceExecute: sent.canForceExecute,
         dispatchAcceptance,
       };
+    },
+
+    compactContext() {
+      return compactExternalContext();
     },
 
     async enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult> {

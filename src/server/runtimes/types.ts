@@ -382,6 +382,13 @@ export interface AgentRuntime {
     options?: { clientUserMessageId?: string },
   ): Promise<void>;
 
+  /**
+   * Compact the active conversation through the runtime's native control
+   * plane. This is intentionally separate from sendMessage(): compaction is a
+   * control turn and must never create user/assistant transcript messages.
+   */
+  compactContext?(process: RuntimeProcess): Promise<void>;
+
   /** Create a runtime-native conversation branch at a stable root-turn boundary. */
   branchConversation?(
     process: RuntimeProcess,

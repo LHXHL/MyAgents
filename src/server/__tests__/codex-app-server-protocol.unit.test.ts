@@ -957,6 +957,59 @@ describe('Codex app-server protocol helpers', () => {
     });
   });
 
+  it('runs native Managed Codex compaction as a transcript-free control turn', async () => {
+    const runtime = new CodexRuntime();
+    const rpc = { call: vi.fn(async () => ({})) };
+    const codexProc = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      threadId: 'thread-1',
+      currentTurnId: '',
+      compactControl: null,
+      activeRootTurnAdmission: null,
+      exactUsageByTurn: new Map(),
+      rpc,
+    };
+    const parseNotification = (method: string, params: unknown) => (
+      runtime as unknown as {
+        parseNotification(
+          proc: typeof codexProc,
+          notificationMethod: string,
+          notificationParams: unknown,
+          asyncEmit: () => void,
+        ): unknown;
+      }
+    ).parseNotification(codexProc, method, params, () => {});
+
+    const compact = runtime.compactContext(
+      codexProc as unknown as import('../runtimes/types').RuntimeProcess,
+    );
+    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledWith(
+      'thread/compact/start',
+      { threadId: 'thread-1' },
+      15_000,
+    ));
+
+    expect(parseNotification('turn/started', {
+      threadId: 'thread-1',
+      turn: { id: 'compact-turn', status: 'inProgress' },
+    })).toBeNull();
+    expect(codexProc.currentTurnId).toBe('compact-turn');
+    expect(parseNotification('item/started', {
+      threadId: 'thread-1',
+      turnId: 'compact-turn',
+      item: { type: 'contextCompaction', id: 'compact-item' },
+    })).toBeNull();
+    expect(parseNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'compact-turn', status: 'completed', error: null },
+    })).toBeNull();
+
+    await expect(compact).resolves.toBeUndefined();
+    expect(codexProc.compactControl).toBeNull();
+    expect(codexProc.currentTurnId).toBe('');
+  });
+
   it('keeps thread status snapshots separate from turn activity', () => {
     const runtime = new CodexRuntime();
     const codexProc = {

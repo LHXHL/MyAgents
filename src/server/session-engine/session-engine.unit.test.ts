@@ -157,6 +157,7 @@ const mocks = vi.hoisted(() => {
     clearExternalTurnBinding: vi.fn((queueId: string) => {
       if (state.externalCurrentQueueId === queueId) state.externalCurrentQueueId = null;
     }),
+    compactExternalContext: vi.fn(async () => ({ success: true })),
     didLastTurnSucceed: vi.fn(() => true),
     enqueueExternalSendForDesktop: vi.fn(() => ({
       queued: true,
@@ -397,6 +398,7 @@ vi.mock('../runtimes/external-session', () => ({
   cancelExternalQueueItem: mocks.cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner: mocks.cancelExternalQueuedTurnsByOwner,
   clearExternalTurnBinding: mocks.clearExternalTurnBinding,
+  compactExternalContext: mocks.compactExternalContext,
   didLastTurnSucceed: mocks.didLastTurnSucceed,
   enqueueExternalSendForDesktop: mocks.enqueueExternalSendForDesktop,
   enqueueExternalSendForIm: mocks.enqueueExternalSendForIm,

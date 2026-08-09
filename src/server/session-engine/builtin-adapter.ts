@@ -426,6 +426,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    async compactContext() {
+      return {
+        success: false,
+        status: 409,
+        error: 'Native context compaction is only available for Managed Codex',
+      };
+    },
+
     async enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult> {
       await setInteractionScenario(request.scenario);
       const routed = providerEnvForRouteRequest(request);

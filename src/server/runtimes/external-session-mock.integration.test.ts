@@ -58,6 +58,7 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
+  compactCalls = 0;
   readonly permissionResponses: Array<{ requestId: string; decision: string; reason?: string }> = [];
   steerMessage?: AgentRuntime['steerMessage'];
   branchConversation?: AgentRuntime['branchConversation'];
@@ -217,6 +218,10 @@ class FakeRuntime implements AgentRuntime {
     }
     this.emitRootTurnAdmission(options?.clientUserMessageId);
     this.playTurn(message);
+  }
+
+  async compactContext(): Promise<void> {
+    this.compactCalls += 1;
   }
 
   async setModel(): Promise<void> {
@@ -397,6 +402,7 @@ async function createHarness(
     deferMessagePersist?: boolean;
     deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
+    runtimeSource?: 'system-cli' | 'managed-provider';
     config?: Record<string, unknown>;
   } = {},
 ): Promise<Harness> {
@@ -467,7 +473,7 @@ async function createHarness(
     }));
   }
   vi.doMock('./factory', () => ({
-    getCurrentRuntimeSource: () => 'system-cli',
+    getCurrentRuntimeSource: () => options.runtimeSource ?? 'system-cli',
     getCurrentRuntimeType: () => 'codex',
     getExternalRuntime: () => runtime,
     isExternalRuntime: (type: RuntimeType | undefined) => Boolean(type && type !== 'builtin'),
@@ -594,6 +600,42 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('projects Managed Codex native compaction through Session status without transcript messages', async () => {
+    const harness = await createHarness([], { runtimeSource: 'managed-provider' });
+    const sessionId = 'session-managed-codex-compact';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{ id: 'agent-managed-compact', path: workspacePath }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([{
+      id: 'project-managed-compact',
+      path: workspacePath,
+      agentId: 'agent-managed-compact',
+    }]));
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'Managed Codex prewarm');
+    const messagesBefore = harness.engine.getStreamReplaySnapshot().replayMessages;
+    broadcastEvents.length = 0;
+
+    await expect(harness.engine.compactContext()).resolves.toEqual({ success: true });
+
+    expect(harness.runtime.compactCalls).toBe(1);
+    expect(harness.engine.getStreamReplaySnapshot().replayMessages).toEqual(messagesBefore);
+    expect(broadcastEvents.filter(({ event }) => event === 'chat:system-status')).toEqual([
+      { event: 'chat:system-status', data: { status: 'compacting' } },
+      { event: 'chat:system-status', data: { status: null, compactResult: 'success' } },
+    ]);
+    expect(broadcastEvents.filter(({ event }) => event === 'chat:status')).toEqual([
+      { event: 'chat:status', data: { sessionState: 'running' } },
+      { event: 'chat:status', data: { sessionState: 'idle' } },
+    ]);
+  });
+
   it('broadcasts attachment updates only when a top-level placeholder owns them', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'ready for attachment routing' },

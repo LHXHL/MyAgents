@@ -307,9 +307,9 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 
 #### 输入框斜杠菜单能力投影
 
-斜杠菜单必须按 Session 的真实 Runtime 能力投影，不能按视觉 chrome 推断。`/goal` 是 MyAgents 自己的 runtime-neutral 客户端动作，所有 Runtime 都保留；工作区 Skill / Command 继续消费各自既有的能力快照。静态 `compact/context/cost/init/pr-comments/release-notes/review/security-review` 列表属于 Claude Agent SDK，只在 `runtime:'builtin'` 的 Session 展示。Managed Codex 即使为了产品一致性使用 builtin 输入 chrome，也不得继承这份列表；其他 external Runtime 同样隐藏。
+斜杠菜单必须按 Session 的真实 Runtime 能力投影，不能按视觉 chrome 推断。`/goal` 是 MyAgents 自己的 runtime-neutral 客户端动作，所有 Runtime 都保留；工作区 Skill / Command 继续消费各自既有的能力快照。静态 `compact/context/cost/init/pr-comments/release-notes/review/security-review` 列表属于 Claude Agent SDK，只在 `runtime:'builtin'` 的 Session 展示。Managed Codex 即使为了产品一致性使用 builtin 输入 chrome，也不继承这份列表，而是仅额外投影已适配的原生 `/compact`；其他 external Runtime 隐藏全部 Claude SDK 系统指令。
 
-锁定的 Codex app-server `0.146.0` 中，`thread/compact/start` 与 `review/start` 分别提供了原生压缩和审查 RPC，但两者都会创建 Codex 控制回合。当前 SessionEngine 没有承接这类 native control turn 的语义入口、队列 owner 与 terminal 持久化契约，因此暂不在菜单中暴露，不能绕过 facade 从 Renderer 或 route 直接调用。`context` 已由实时上下文指标承担只读展示，但没有等价管理 RPC；`cost` 只有 token usage、没有费用语义；其余 Claude 系统指令没有可忠实映射的 Codex RPC。未来若适配 `compact` 或 `review`，必须先在 SessionEngine 建立控制回合 owner，并复用 external turn lifecycle 的 admission、stop 与真实成功终态。
+锁定的 Codex app-server `0.146.0` 中，`thread/compact/start` 与 `review/start` 分别提供原生压缩和审查 RPC，但两者都会创建 Codex 控制回合。当前仅 `compact` 已接入：Renderer 的 `/compact` 与上下文卡片按钮共用 `/api/session/compact`，route 只调用 SessionEngine facade；external Session owner 负责 idle admission、mutation lease、`chat:status`/`chat:system-status` 与排队消息恢复，Codex adapter 负责 RPC、control turn terminal 及隔离其 item/turn 事件，禁止把压缩写成用户/助手 transcript。RPC/timeout 等不确定失败会重启 runtime 进程边界，明确失败 terminal 则保留进程。`review` 尚未建立对应产品语义，继续隐藏；`context` 已由实时上下文指标承担只读展示但没有等价管理 RPC，`cost` 只有 token usage、没有费用语义，其余 Claude 系统指令没有可忠实映射的 Codex RPC。
 
 Required System Skill 只由全局 system source identity 决定；项目文件不得冒充 Required 名称。投影 helper 只替换可证明指向 `~/.myagents` 的 managed symlink，foreign symlink 在 Runtime admission fail closed，真实项目文件保持原样并占有对应物理 source slot。
 
@@ -882,7 +882,7 @@ config.multiAgentRuntime (磁盘/React state)
 
 **持久化 + 重开恢复**：turn 末算的同一快照既 broadcast、也写进 `SessionMetadata.lastContextUsage`（builtin 在 `updateSessionMetadata`；external 在 `persistTurnResult` 末——turn-scoped 快照须在**同步函数入口**捕获，否则背靠背 `sendExternalMessage` 会在 await 窗口被 `resetTurnAccumulators` 清空而丢盘）。重开会话由 `restorePersistedSession` 从后端 seed，前端规则即「进入会话 `display = lastContextUsage ?? null`」（reset/adopt 才 clear，不再无脑清 null）；seed **仅当 `lastContextUsage.source === session.runtime`** 生效，防 stale builtin 快照把压缩按钮显示到 external 会话。
 
-**智能压缩入口**：卡片内按钮，仅 builtin（`source==='builtin'`）显示；复用 `Chat.tsx` 正常发送链路发 `/compact`（`effectiveModel`/`effectivePermissionMode`/`providerEnv` 同参，turn 中 `disabled`）。external runtime 隐藏（无可靠程序化压缩入口）。纯函数 `computeContextUsage` 见 `src/shared/contextUsage.ts`，单测 `contextUsage.test.ts` + `codex-token-usage.unit.test.ts`。
+**智能压缩入口**：卡片按钮按 Runtime capability 注入，builtin 复用 `Chat.tsx` 正常发送链路发 SDK `/compact`（`effectiveModel`/`effectivePermissionMode`/`providerEnv` 同参）；Managed Codex 与斜杠菜单共用 SessionEngine 原生 compact 控制操作。两条路径都复用既有 `chat:system-status` 的 compacting/success/failed 投影，运行中禁用按钮。Claude Code、System Codex 与 Gemini 不注入按钮。纯函数 `computeContextUsage` 见 `src/shared/contextUsage.ts`，单测 `contextUsage.test.ts` + `codex-token-usage.unit.test.ts`。
 
 ## 文件索引
 

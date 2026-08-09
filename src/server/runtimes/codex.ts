@@ -86,6 +86,7 @@ type CodexDynamicToolCallResult = {
 };
 
 const managedCodexHostInputValidator = new AjvJsonSchemaValidator();
+const CODEX_COMPACT_TIMEOUT_MS = 120_000;
 
 function toCodexDynamicToolCallResult(result: ManagedCodexHostToolResult): CodexDynamicToolCallResult {
   return {
@@ -2298,6 +2299,13 @@ export class JsonRpcClient {
 
 // ─── CodexProcess wrapper ───
 
+type CodexCompactControl = {
+  turnId: string;
+  restartRequired: boolean;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
 class CodexProcess implements RuntimeProcess {
   readonly pid: number;
   readonly runtimeGeneration: string;
@@ -2308,6 +2316,7 @@ class CodexProcess implements RuntimeProcess {
   rpc: JsonRpcClient;
   threadId = '';
   currentTurnId = '';
+  compactControl: CodexCompactControl | null = null;
   version = '';
   activeRootTurnAdmission: {
     clientUserMessageId: string;
@@ -3429,6 +3438,10 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      this.rejectCompactControl(
+        codexProc,
+        new Error(`Codex process exited during context compaction with code ${code}`),
+      );
       codexProc.disposeExtensionResources(`Codex process exited with code ${code}`);
       if (mcpCatalogRefreshTimer) {
         clearTimeout(mcpCatalogRefreshTimer);
@@ -3710,6 +3723,66 @@ export class CodexRuntime implements AgentRuntime {
     } catch (error) {
       codexProc.activeRootTurnAdmission = null;
       throw error;
+    }
+  }
+
+  /**
+   * Managed Codex exposes compaction as a native control turn. Keep that turn
+   * out of the UnifiedEvent transcript and wait for its authoritative
+   * turn/completed terminal before resolving the Session operation.
+   */
+  async compactContext(process: RuntimeProcess): Promise<void> {
+    const codexProc = process as CodexProcess;
+    if (codexProc.exited) throw new Error('Codex process has exited');
+    if (codexProc.runtimeSource !== 'managed-provider') {
+      throw new Error('Native context compaction is only available for Managed Codex');
+    }
+    if (!codexProc.threadId) throw new Error('Managed Codex has no active thread to compact');
+    if (codexProc.compactControl || codexProc.activeRootTurnAdmission) {
+      throw new Error('Managed Codex is already running a Session operation');
+    }
+
+    let resolveTerminal!: () => void;
+    let rejectTerminal!: (error: Error) => void;
+    const terminal = new Promise<void>((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
+    // Process-exit or protocol notifications may reject before rpc.call()
+    // settles. Attach a handler immediately so Node never observes a transient
+    // unhandled rejection; the awaited promise below still carries the error.
+    void terminal.catch(() => undefined);
+    const control: CodexCompactControl = {
+      turnId: '',
+      restartRequired: false,
+      resolve: resolveTerminal,
+      reject: rejectTerminal,
+    };
+    codexProc.compactControl = control;
+
+    const timeout = setTimeout(() => {
+      if (codexProc.compactControl === control) {
+        control.reject(new Error('Managed Codex context compaction timed out'));
+      }
+    }, CODEX_COMPACT_TIMEOUT_MS);
+
+    try {
+      await codexProc.rpc.call('thread/compact/start', {
+        threadId: codexProc.threadId,
+      }, 15_000);
+      await terminal;
+    } catch (error) {
+      // If the terminal handler already cleared ownership, the protocol gave
+      // us a definitive failed terminal and the process remains reusable. An
+      // RPC/timeout failure while we still own the control turn is ambiguous,
+      // so restart the process boundary before another user turn can enter.
+      if (codexProc.compactControl === control || control.restartRequired) {
+        if (codexProc.compactControl === control) codexProc.compactControl = null;
+        await this.stopSession(codexProc);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -4058,6 +4131,7 @@ export class CodexRuntime implements AgentRuntime {
   async stopSession(process: RuntimeProcess): Promise<void> {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) return;
+    this.rejectCompactControl(codexProc, new Error('Managed Codex context compaction was interrupted'));
     codexProc.abortPendingHostCalls('Managed Codex Host tool call interrupted because the Session stopped');
 
     try {
@@ -4132,6 +4206,87 @@ export class CodexRuntime implements AgentRuntime {
     return attachment;
   }
 
+  private rejectCompactControl(codexProc: CodexProcess, error: Error): void {
+    const control = codexProc.compactControl;
+    if (!control) return;
+    codexProc.compactControl = null;
+    if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+      codexProc.currentTurnId = '';
+    }
+    control.reject(error);
+  }
+
+  /**
+   * Consume the native compact turn before ordinary root-turn parsing can
+   * create transcript events. Context usage notifications remain visible so
+   * the ring refreshes as soon as Codex reports the post-compact window.
+   */
+  private handleCompactControlNotification(
+    codexProc: CodexProcess,
+    method: string,
+    p: Record<string, unknown>,
+  ): boolean {
+    const control = codexProc.compactControl;
+    if (!control) return false;
+    const threadId = stringValue(p.threadId);
+    if (threadId && codexProc.threadId && threadId !== codexProc.threadId) return false;
+
+    if (method === 'turn/started') {
+      const turnId = stringValue(p.turnId) ?? stringValue(objectValue(p.turn).id);
+      if (!turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn has no id'));
+        return true;
+      }
+      if (control.turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn id changed unexpectedly'));
+        return true;
+      }
+      control.turnId = turnId;
+      codexProc.currentTurnId = turnId;
+      return true;
+    }
+
+    if (method === 'turn/completed') {
+      const turn = objectValue(p.turn);
+      const turnId = stringValue(turn.id) ?? stringValue(p.turnId) ?? control.turnId;
+      if (control.turnId && turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact terminal does not match its turn'));
+        return true;
+      }
+      control.turnId = turnId ?? control.turnId;
+      takeCodexExactTurnUsage(codexProc.exactUsageByTurn, control.turnId);
+      codexProc.compactControl = null;
+      if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+        codexProc.currentTurnId = '';
+      }
+      const status = stringValue(turn.status) ?? 'completed';
+      if (status === 'completed') {
+        control.resolve();
+      } else {
+        const message = stringValue(objectValue(turn.error).message)
+          ?? `Managed Codex context compaction ended with status ${status}`;
+        control.reject(new Error(message));
+      }
+      return true;
+    }
+
+    if (method === 'thread/compacted') return true;
+    if (method === 'thread/tokenUsage/updated') return false;
+
+    // Compaction is not a conversational turn. Fail closed for any root-turn
+    // content emitted by a future app-server schema while keeping unrelated
+    // session/account/MCP notifications flowing normally.
+    return method.startsWith('item/')
+      || method.startsWith('command/')
+      || method.startsWith('process/')
+      || method.startsWith('rawResponse')
+      || method === 'turn/diff/updated'
+      || method === 'turn/plan/updated';
+  }
+
   private parseNotification(
     codexProc: CodexProcess,
     method: string,
@@ -4189,6 +4344,8 @@ export class CodexRuntime implements AgentRuntime {
         return null; // child lifecycle informs ownership but never drives it directly
       }
     }
+
+    if (this.handleCompactControlNotification(codexProc, method, p)) return null;
 
     switch (method) {
       // ── Thread lifecycle ──

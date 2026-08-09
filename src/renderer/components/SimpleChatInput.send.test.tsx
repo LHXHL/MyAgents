@@ -238,6 +238,42 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('dispatches the Managed Codex compact command as a client action', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onSlashAction = vi.fn();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      const onSend = renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction,
+        clientActionSlashCommands: [{
+          name: 'compact',
+          description: 'Compact',
+          source: 'client',
+        }],
+      });
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+      await user.click(await screen.findByText('/compact'));
+
+      expect(onSlashAction).toHaveBeenCalledWith('compact');
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea).toHaveValue('');
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();

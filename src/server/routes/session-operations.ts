@@ -39,6 +39,11 @@ export async function handleSessionOperationRoute(
     }
   }
 
+  if (pathname === '/api/session/compact' && request.method === 'POST') {
+    const result = await getSessionEngine().compactContext();
+    return operationResponse(result);
+  }
+
   if (pathname === '/chat/rewind' && request.method === 'POST') {
     const body = await parseJsonObject(request);
     const userMessageId = typeof body.userMessageId === 'string' ? body.userMessageId : '';

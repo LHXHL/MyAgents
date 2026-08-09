@@ -28,7 +28,12 @@ import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVeri
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
 import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashCommands } from '../SlashCommandMenu';
-import { isClientActionCommand, resolveClientActionName, withClientActionCommands } from '@/utils/slashActions';
+import {
+  CLIENT_ACTION_SLASH_COMMANDS,
+  isClientActionCommand,
+  resolveClientActionName,
+  withClientActionCommands,
+} from '@/utils/slashActions';
 import QueuedMessagesPanel from '../QueuedMessageBubble';
 import CronTaskStatusBar from '../cron/CronTaskStatusBar';
 import GoalStatusBar from '../goal/GoalStatusBar';
@@ -199,6 +204,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onGoalCancel,
   onGoalDismiss,
   onSlashAction,
+  clientActionSlashCommands,
   showBuiltinSdkSlashCommands = true,
   workspaceSlashCommands,
   sdkSlashCommands = [],
@@ -489,6 +495,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
 
   const clientActionsEnabled = !!onSlashAction;
+  const enabledClientActionCommands = useMemo(
+    () => clientActionsEnabled
+      ? [...CLIENT_ACTION_SLASH_COMMANDS, ...(clientActionSlashCommands ?? [])]
+      : [],
+    [clientActionSlashCommands, clientActionsEnabled],
+  );
   const localizedFallbackSlashCommands = useMemo(
     () => showBuiltinSdkSlashCommands
       ? BUILTIN_FALLBACK_SLASH_COMMANDS.map(cmd => ({
@@ -502,8 +514,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     () => withClientActionCommands(
       mergeSlashCommands(slashCommands, sdkSlashCommands),
       clientActionsEnabled,
+      clientActionSlashCommands ?? [],
     ),
-    [slashCommands, sdkSlashCommands, clientActionsEnabled],
+    [slashCommands, sdkSlashCommands, clientActionsEnabled, clientActionSlashCommands],
   );
 
   // Compute filtered slash commands once per render (used in both handleKeyDown and JSX)
@@ -1007,7 +1020,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     const text = inputValue.trim();
     if (!text && images.length === 0) return;
     if (onSlashAction && images.length === 0 && text.startsWith('/')) {
-      const actionName = resolveClientActionName(text);
+      const actionName = resolveClientActionName(text, enabledClientActionCommands);
       if (actionName) {
         if (showConfigLockedReason()) return;
         setInputValue('');
@@ -1073,7 +1086,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, showConfigLockedReason]);
+  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path
@@ -1099,7 +1112,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       setInputValue(`${before}${after}`);
       setShowSlashMenu(false);
       setSlashPosition(null);
-      onSlashAction(resolveClientActionName(cmd.name) ?? cmd.name);
+      onSlashAction(resolveClientActionName(cmd.name, enabledClientActionCommands) ?? cmd.name);
       return;
     }
 
@@ -1108,7 +1121,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     setShowSlashMenu(false);
     setSlashPosition(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is a stable ref
-  }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, showConfigLockedReason]);
+  }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Tab to cycle permission mode
