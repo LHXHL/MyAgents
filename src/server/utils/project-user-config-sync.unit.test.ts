@@ -52,7 +52,7 @@ describe('project-user-config-sync', () => {
     const { home, workspace } = makeEnv();
     writeUserSkill(home, 'review-helper');
 
-    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
 
     const linkPath = join(workspace, '.claude', 'skills', 'review-helper');
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
@@ -107,19 +107,19 @@ describe('project-user-config-sync', () => {
     mkdirSync(projectSkillDir, { recursive: true });
     writeFileSync(join(projectSkillDir, 'SKILL.md'), 'project-owned');
 
-    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
 
     expect(lstatSync(projectSkillDir).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(projectSkillDir, 'SKILL.md'), 'utf-8')).toBe('project-owned');
   });
 
   itNonWindows('replaces broken managed skill symlinks with current user skills', () => {
-    const { home, root, workspace } = makeEnv();
+    const { home, workspace } = makeEnv();
     writeUserSkill(home, 'review-helper');
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
     const linkPath = join(projectSkillsDir, 'review-helper');
-    symlinkSync(join(root, 'missing-old-skill'), linkPath, 'dir');
+    symlinkSync(join(home, '.myagents', 'skills', 'missing-old-skill'), linkPath, 'dir');
     expect(existsSync(linkPath)).toBe(false);
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
@@ -139,19 +139,69 @@ describe('project-user-config-sync', () => {
     expect(readFileSync(linkPath, 'utf-8')).toBe('# ship-it\n');
   });
 
-  itNonWindows('replaces broken managed command symlinks with current user commands', () => {
+  itNonWindows('keeps already-correct managed links stable across strict Session births', () => {
+    const { home, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    writeUserCommand(home, 'ship-it');
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
+    const skillLink = join(workspace, '.claude', 'skills', 'review-helper');
+    const commandLink = join(workspace, '.claude', 'commands', 'ship-it.md');
+    const before = { skill: lstatSync(skillLink).ino, command: lstatSync(commandLink).ino };
+
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
+
+    expect(lstatSync(skillLink).ino).toBe(before.skill);
+    expect(lstatSync(commandLink).ino).toBe(before.command);
+  });
+
+  itNonWindows('does not project symlinked global Skill sources', () => {
     const { home, root, workspace } = makeEnv();
+    const globalSkills = join(home, '.myagents', 'skills');
+    const outsideSkill = join(root, 'outside-skill');
+    writeUserSkill(home, 'real-skill');
+    mkdirSync(outsideSkill, { recursive: true });
+    writeFileSync(join(outsideSkill, 'SKILL.md'), 'outside');
+    symlinkSync(join(globalSkills, 'real-skill'), join(globalSkills, 'inside-alias'), 'dir');
+    symlinkSync(outsideSkill, join(globalSkills, 'outside-alias'), 'dir');
+
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
+
+    expect(existsSync(join(workspace, '.claude', 'skills', 'real-skill'))).toBe(true);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'inside-alias'))).toBe(false);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'outside-alias'))).toBe(false);
+  });
+
+  itNonWindows('replaces broken managed command symlinks with current user commands', () => {
+    const { home, workspace } = makeEnv();
     writeUserCommand(home, 'ship-it');
     const projectCommandsDir = join(workspace, '.claude', 'commands');
     mkdirSync(projectCommandsDir, { recursive: true });
     const linkPath = join(projectCommandsDir, 'ship-it.md');
-    symlinkSync(join(root, 'missing-old-command.md'), linkPath);
+    symlinkSync(join(home, '.myagents', 'commands', 'missing-old-command.md'), linkPath);
     expect(existsSync(linkPath)).toBe(false);
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
 
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
     expect(readFileSync(linkPath, 'utf-8')).toBe('# ship-it\n');
+  });
+
+  itNonWindows('preserves foreign project symlinks and fails strict projection', () => {
+    const { home, root, workspace } = makeEnv();
+    writeUserSkill(home, 'review-helper');
+    const foreignTarget = join(root, 'foreign-skill');
+    mkdirSync(foreignTarget, { recursive: true });
+    writeFileSync(join(foreignTarget, 'SKILL.md'), 'foreign-project-skill', 'utf8');
+    const projectSkillsDir = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    const linkPath = join(projectSkillsDir, 'review-helper');
+    symlinkSync(foreignTarget, linkPath, 'dir');
+
+    expect(() => syncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+      strict: true,
+    })).toThrow('Foreign project symlink');
+    expect(readFileSync(join(linkPath, 'SKILL.md'), 'utf8')).toBe('foreign-project-skill');
   });
 
   it('reports sync failures without throwing from the tolerant wrapper', () => {

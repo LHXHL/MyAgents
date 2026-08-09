@@ -498,7 +498,7 @@ MyAgents CLI 同时承载两类“工具”：
 - Settings 不渲染工具箱里的 CLI 工具模块。
 - `/api/admin/tool/*` 全部返回门控错误；`myagents tool --help` 只显示开启指引。
 - `buildSystemPromptAppend(..., { userCliToolsEnabled: false })` 不读取 `~/.myagents/tools/registry.json`，因此新会话不会自动发现用户注册工具。
-- `syncProjectUserConfig()` 和 Rust `workspace_files::skill_sync` 不把 `tool-creator` symlink 到工作区 `.claude/skills/`；slash picker 的用户级 skill 扫描同样把它视为 disabled。
+- Node `syncProjectUserConfig()` 不把 `tool-creator` symlink 到工作区 `.claude/skills/`；Rust Launcher 的只读 slash picker 同样把它视为 disabled。
 
 不受影响：
 - 稳定内置 `myagents` CLI 能力（cron / task / thought / im / widget / runtime 等）仍然注入并可用。

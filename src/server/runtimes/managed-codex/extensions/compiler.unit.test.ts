@@ -243,6 +243,86 @@ describe('Managed Codex extension compiler', () => {
     }));
   });
 
+  it('uses the shared project winner snapshot for Skills and Commands without falling back', () => {
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    write(join(workspace, '.claude', 'skills', 'local-review', 'SKILL.md'), '---\nname: review\ndescription: Local review\n---\nLocal.');
+    write(join(userRoot, 'skills', 'global-review', 'SKILL.md'), '---\nname: review\ndescription: Global review\n---\nGlobal.');
+    write(join(workspace, '.claude', 'commands', 'ship.md'), '---\nname: ship\n---\nLocal ship.');
+    write(join(userRoot, 'commands', 'ship.md'), '---\nname: ship\n---\nGlobal ship.');
+
+    const disabledSkill = {
+      id: 'project:skill:local-review',
+      kind: 'skill' as const,
+      source: 'project' as const,
+      sourceLocalId: 'local-review',
+      canonicalName: 'review',
+      name: 'review',
+      description: 'Local review',
+      path: join(workspace, '.claude', 'skills', 'local-review', 'SKILL.md'),
+      required: false,
+      systemOwned: false,
+      enabled: false,
+      contentSha256: 'disabled-skill',
+    };
+    const enabledCommand = {
+      id: 'project:command:ship',
+      kind: 'command' as const,
+      source: 'project' as const,
+      sourceLocalId: 'ship',
+      canonicalName: 'ship',
+      name: 'ship',
+      description: '',
+      path: join(workspace, '.claude', 'commands', 'ship.md'),
+      required: false,
+      systemOwned: false,
+      enabled: true,
+      contentSha256: 'enabled-command',
+    };
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+      capabilitySnapshot: {
+        workspacePath: workspace,
+        agentId: 'agent-1',
+        revision: 'selection',
+        candidates: [disabledSkill, enabledCommand],
+        enabledSkills: [],
+        enabledCommands: [enabledCommand],
+      },
+    });
+
+    expect(snapshot.skills).toEqual([]);
+    expect(snapshot.commands).toEqual([
+      expect.objectContaining({ name: 'ship', scope: 'project', body: 'Local ship.' }),
+    ]);
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'skills',
+      code: 'skill_project_disabled',
+      id: 'workspace:review',
+    }));
+
+    const changedSelectionRevision = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+      capabilitySnapshot: {
+        workspacePath: workspace,
+        agentId: 'agent-1',
+        revision: 'selection-changed-with-same-effective-output',
+        candidates: [disabledSkill, enabledCommand],
+        enabledSkills: [],
+        enabledCommands: [enabledCommand],
+      },
+    });
+    expect(changedSelectionRevision.revision).not.toBe(snapshot.revision);
+  });
+
   it('honors trusted plugin manifest component paths without loading replaced defaults', () => {
     const workspace = tempRoot();
     const pluginRoot = tempRoot();

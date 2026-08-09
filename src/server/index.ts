@@ -452,6 +452,12 @@ import {
   getAttachmentPath,
 } from './SessionStore';
 import { findProjectAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
+import {
+  projectCapabilitySnapshotForWire,
+  resolveEffectiveProjectCapabilities,
+  setProjectCapabilityEnabled,
+} from './project-capabilities';
+import { managementApi } from './utils/management-api-client';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 import {
   isManagedCodexProviderReady,
@@ -913,7 +919,7 @@ function writeSkillsConfig(config: SkillsConfig): void {
  * Bump skills generation counter without changing seeded/disabled lists.
  * Called after skill CRUD operations (create/update/delete/upload/import)
  * that don't go through writeSkillsConfig but DO change the available skill set.
- * Tab Sidecars detect this change and re-sync symlinks on next /api/commands fetch.
+ * Sessions observe the generation through their next capability resolution.
  */
 function bumpSkillsGeneration(): void {
   const config = readSkillsConfig();
@@ -921,19 +927,11 @@ function bumpSkillsGeneration(): void {
 }
 
 /**
- * Lazy skill sync: Track the last generation we synced to avoid redundant sync work.
- * When a Tab Sidecar's /api/commands or /api/skills is called, we compare the current
- * generation in skills-config.json against this value. Only if they differ do we run
- * syncProjectUserConfig(). This covers the case where the Global Sidecar modified
- * global skills (create/toggle/delete) without the Tab Sidecar knowing.
+ * Capability reads are side-effect free. Each Session reconciles the latest
+ * AgentConfig selection at its next turn boundary; shared disk inventory is
+ * maintained independently for runtime compatibility.
  */
-// Phase E (PRD 0.2.7): the `syncSkillsIfNeeded` wrapper + generation-tracking
-// optimization is gone. Rust `cmd_list_slash_commands` is the canonical UI
-// path and runs `sync_workspace_skills` (idempotent) every call. The sidecar
-// only syncs as a side-effect of skill/command CRUD via direct
-// `syncProjectUserConfig(...)` calls; CRUD-time correctness is what matters
-// (the picker UI lives in Rust now). `markSkillsSynced` is also gone — there's
-// no longer a generation-cached fast-path to invalidate.
+// Phase E (PRD 0.2.7): the old generation-cached fast path remains removed.
 
 /**
  * Resolve bundled-skills directory.
@@ -4695,14 +4693,84 @@ async function main() {
       const projectSkillsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'skills') : '';
       const projectCommandsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'commands') : '';
 
+      // GET /api/project-capabilities - authoritative candidate + effective set
+      // for the current workspace. Unlike the legacy per-directory endpoints,
+      // this resolves MyAgents-managed symlinks back to their global origin,
+      // applies project-over-global winner semantics, and keeps disabled cards.
+      if (pathname === '/api/project-capabilities' && request.method === 'GET') {
+        try {
+          const queryAgentDir = url.searchParams.get('agentDir');
+          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
+            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+          }
+          const workspacePath = queryAgentDir || currentAgentDir;
+          if (!workspacePath) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
+          return jsonResponse(projectCapabilitySnapshotForWire(
+            resolveEffectiveProjectCapabilities(workspacePath),
+          ));
+        } catch (error) {
+          console.error('[api/project-capabilities] Error:', error);
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to resolve project capabilities',
+          }, 500);
+        }
+      }
+
+      // POST /api/project-capability/toggle - persist one disabled override on
+      // the exact AgentConfig selected by Project.agentId. Runtime replacement
+      // intentionally waits for each Session's next turn.
+      if (pathname === '/api/project-capability/toggle' && request.method === 'POST') {
+        try {
+          const body = await request.json() as {
+            capabilityId?: unknown;
+            enabled?: unknown;
+            agentDir?: unknown;
+          };
+          if (typeof body.capabilityId !== 'string' || typeof body.enabled !== 'boolean') {
+            return jsonResponse({ success: false, error: 'Invalid capability toggle request' }, 400);
+          }
+          const queryAgentDir = typeof body.agentDir === 'string' ? body.agentDir : null;
+          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
+            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+          }
+          const workspacePath = queryAgentDir || currentAgentDir;
+          if (!workspacePath) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
+          const snapshot = await setProjectCapabilityEnabled({
+            workspacePath,
+            capabilityId: body.capabilityId,
+            enabled: body.enabled,
+          });
+          broadcast('config:changed', {
+            section: 'agent',
+            action: 'project-capability-toggle',
+            id: snapshot.agentId,
+          });
+          // App-wide invalidation is advisory here: every Session resolves the
+          // disk authority again at its own turn admission, so a renderer fanout
+          // outage must not turn a committed save into a false rollback.
+          if (process.env.MYAGENTS_MANAGEMENT_PORT) {
+            void managementApi('/api/app/config-changed', 'POST', {}, { timeoutMs: 2_000 })
+              .catch(error => console.warn('[api/project-capability/toggle] app refresh failed:', error));
+          }
+          return jsonResponse(projectCapabilitySnapshotForWire(snapshot));
+        } catch (error) {
+          console.error('[api/project-capability/toggle] Error:', error);
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to save project capability',
+          }, 500);
+        }
+      }
+
       // GET /api/skills - List all skills (with scope filter)
       // Supports ?agentDir= for listing skills from a specific workspace (e.g. from Launcher)
       if (pathname === '/api/skills' && request.method === 'GET') {
         try {
-          // Phase E (PRD 0.2.7): always-sync (cheap when nothing changed) —
-          // the gen-tracking wrapper is gone.
-          if (currentAgentDir) syncProjectUserConfig(currentAgentDir);
-
           const scope = url.searchParams.get('scope') || 'all';
           const queryAgentDir = url.searchParams.get('agentDir');
           const { skillsDir: effectiveSkillsDir } = getProjectBaseDirs(queryAgentDir);

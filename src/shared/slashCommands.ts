@@ -67,6 +67,23 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
     { name: 'security-review', description: '进行安全相关的代码审查', source: 'builtin' },
 ];
 
+const SLASH_COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+const RESERVED_PRODUCT_COMMAND_NAMES = new Set([
+    ...BUILTIN_SLASH_COMMANDS.map(command => command.name),
+    // Renderer client action plus its public alias. Their behavior remains in
+    // slashActions.ts; the shared capability contract only reserves names.
+    'goal',
+    'loop',
+]);
+
+export function isValidSlashCommandName(name: string): boolean {
+    return SLASH_COMMAND_NAME_RE.test(name);
+}
+
+export function isReservedSlashCommandName(name: string): boolean {
+    return RESERVED_PRODUCT_COMMAND_NAMES.has(name);
+}
+
 /**
  * Extract YAML frontmatter string from markdown content
  */

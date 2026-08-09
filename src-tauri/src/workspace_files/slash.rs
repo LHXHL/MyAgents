@@ -11,13 +11,9 @@
 //! `SlashCommand[]` so the frontend can swap between the two without code
 //! changes.
 //!
-//! Phase E (PRD 0.2.7): this command now ALSO performs the symlink sync
-//! that `/api/commands` used to do — `sync_workspace_skills` runs before the
-//! scan so launcher (no sidecar) keeps `<workspace>/.claude/skills` symlinks
-//! fresh just like a chat tab does. The sync is idempotent and cheap when
-//! nothing has changed (just stat ops). The sidecar's
-//! `syncSkillsIfNeeded` wrapper is removed; CRUD-time sync still happens
-//! sidecar-side via `syncProjectUserConfig` for tab-local immediacy.
+//! This path is deliberately read-only. Runtime projection is owned by the
+//! Sidecar at Query/turn admission; opening a picker must never mutate the
+//! active Runtime's `.claude` view.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,7 +22,6 @@ use serde::Serialize;
 
 use super::path_safety::validate_external_read_path;
 use super::platform_blocks::is_skill_blocked_on_platform;
-use super::skill_sync::sync_workspace_skills;
 use super::skills_config::{read_cli_tool_registry_enabled, read_disabled_list};
 
 // These are *text-insertion* builtins: selecting one inserts `/name ` and the
@@ -93,21 +88,6 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
     };
     let workspace_exists = workspace_root.is_dir();
 
-    // Sync user-level skills/commands into the workspace's `.claude/`
-    // BEFORE scanning, so skills the user enabled in another tab / global
-    // settings show up immediately. Best-effort — failures are logged inside
-    // `sync_workspace_skills` and don't block the scan (worst case the user
-    // sees a slightly stale picker, not a crash).
-    if workspace_exists {
-        if let Err(e) = sync_workspace_skills(&workspace_root) {
-            crate::ulog_warn!(
-                "[slash] skill sync failed for {}: {}",
-                workspace_root.display(),
-                e
-            );
-        }
-    }
-
     let home_dir = dirs::home_dir().ok_or_else(|| "home dir unavailable".to_string())?;
     let myagents_root = home_dir.join(".myagents");
 
@@ -155,8 +135,6 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
         });
     }
 
-    // Capture user-level skill folder names BEFORE dedup so the frontend can
-    // distinguish "not a skill" from "skill shadowed by project version".
     let global_skill_folder_names: Vec<String> = commands
         .iter()
         .filter(|c| {

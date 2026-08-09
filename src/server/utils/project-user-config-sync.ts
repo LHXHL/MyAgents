@@ -3,9 +3,10 @@ import type { Stats } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 
 import { isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './admin-config';
-import { ensureDirSync, isDirEntry } from './fs-utils';
+import { ensureDirSync } from './fs-utils';
 import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './platform';
 import { isRequiredSystemSkill } from '../../shared/systemSkills';
+import { workspacePathsEqual } from '../../shared/workspacePath';
 
 const MYAGENTS_USER_DIR = '.myagents';
 
@@ -21,6 +22,8 @@ export function getMyAgentsUserDir(): string {
 
 export interface ProjectUserConfigSyncOptions {
   cliToolRegistryEnabled?: boolean;
+  /** Runtime admission uses strict mode: an unconfirmed projection must fail closed. */
+  strict?: boolean;
 }
 
 function lstatIfPresent(path: string): Stats | null {
@@ -38,6 +41,39 @@ function removeSymlinkPath(path: string): void {
 function isInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function resolvedSymlinkTarget(linkPath: string): string | null {
+  try {
+    const target = readlinkSync(linkPath);
+    return resolve(join(linkPath, '..'), target);
+  } catch {
+    return null;
+  }
+}
+
+function isManagedSymlink(linkPath: string, managedRoot: string): boolean {
+  const meta = lstatIfPresent(linkPath);
+  if (!meta?.isSymbolicLink()) return false;
+  const target = resolvedSymlinkTarget(linkPath);
+  return target !== null && isInside(managedRoot, target);
+}
+
+function symlinkPointsTo(linkPath: string, expectedTarget: string): boolean {
+  const target = resolvedSymlinkTarget(linkPath);
+  return target !== null && workspacePathsEqual(target, resolve(expectedTarget));
+}
+
+function handleProjectionFailure(options: ProjectUserConfigSyncOptions, message: string, error?: unknown): void {
+  const reason = error instanceof Error ? error.message : error ? String(error) : '';
+  if (options.strict) throw new Error(`${message}${reason ? `: ${reason}` : ''}`);
+  if (reason) console.warn(`${message}: ${reason}`);
+  else console.warn(message);
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error
+    && (error as { code?: unknown }).code === 'ENOENT';
 }
 
 export function trySyncProjectUserConfigFiles(
@@ -94,7 +130,7 @@ export function syncProjectUserConfigFiles(
 
     for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
       const target = join(userSkillsDir, entry.name);
-      if (!isDirEntry(entry, target)) continue;
+      if (!entry.isDirectory()) continue;
       if (entry.name.startsWith('.')) continue;
       if (isSkillBlockedOnPlatform(entry.name)) continue;
       if (!existsSync(join(target, 'SKILL.md'))) continue;
@@ -107,12 +143,11 @@ export function syncProjectUserConfigFiles(
         || (!cliToolRegistryEnabled && entry.name === 'tool-creator')
       ) {
         try {
-          const linkMeta = lstatIfPresent(linkPath);
-          if (linkMeta?.isSymbolicLink()) {
+          if (isManagedSymlink(linkPath, userSkillsDir)) {
             removeSymlinkPath(linkPath);
           }
-        } catch {
-          // Ignore individual cleanup failures.
+        } catch (error) {
+          handleProjectionFailure(options, `[skill-sync] Failed to remove disabled Skill link ${entry.name}`, error);
         }
         continue;
       }
@@ -121,16 +156,25 @@ export function syncProjectUserConfigFiles(
         const linkMeta = lstatIfPresent(linkPath);
         if (linkMeta) {
           if (!linkMeta.isSymbolicLink()) continue;
+          if (!isManagedSymlink(linkPath, userSkillsDir)) {
+            handleProjectionFailure(options, `[skill-sync] Foreign project symlink blocks global Skill ${entry.name}`);
+            continue;
+          }
+          if (symlinkPointsTo(linkPath, target)) continue;
           removeSymlinkPath(linkPath);
         }
-      } catch {
-        // Missing or racing path; recreate below.
+      } catch (error) {
+        handleProjectionFailure(options, `[skill-sync] Failed to prepare Skill link ${entry.name}`, error);
       }
 
       try {
         symlinkSync(target, linkPath, isWin ? 'junction' : undefined);
       } catch (err) {
-        console.warn(`[skill-sync] Failed to symlink skill ${entry.name}:`, err);
+        // Another Sidecar may have won the same create race. Convergence on
+        // the exact managed target is success; any other occupant still fails.
+        if (!symlinkPointsTo(linkPath, target)) {
+          handleProjectionFailure(options, `[skill-sync] Failed to symlink Skill ${entry.name}`, err);
+        }
       }
     }
 
@@ -141,15 +185,21 @@ export function syncProjectUserConfigFiles(
           if (!lstatSync(linkPath).isSymbolicLink()) continue;
           const target = readlinkSync(linkPath);
           const resolvedTarget = resolve(projectSkillsDir, target);
+          if (!isInside(userSkillsDir, resolvedTarget)) {
+            handleProjectionFailure(options, `[skill-sync] Foreign project Skill symlink is not a trusted capability: ${entry.name}`);
+            continue;
+          }
           if (isInside(userSkillsDir, resolvedTarget) && !managedSkillNames.has(entry.name)) {
             removeSymlinkPath(linkPath);
           }
-        } catch {
-          // Ignore individual cleanup failures.
+        } catch (error) {
+          if (!isMissingPathError(error)) {
+            handleProjectionFailure(options, `[skill-sync] Failed to clean stale Skill link ${entry.name}`, error);
+          }
         }
       }
-    } catch {
-      // Ignore — projectSkillsDir may have been removed externally.
+    } catch (error) {
+      handleProjectionFailure(options, '[skill-sync] Failed to inspect project Skill links', error);
     }
   }
 
@@ -172,16 +222,23 @@ export function syncProjectUserConfigFiles(
         const linkMeta = lstatIfPresent(linkPath);
         if (linkMeta) {
           if (!linkMeta.isSymbolicLink()) continue;
+          if (!isManagedSymlink(linkPath, userCommandsDir)) {
+            handleProjectionFailure(options, `[command-sync] Foreign project symlink blocks global Command ${entry.name}`);
+            continue;
+          }
+          if (symlinkPointsTo(linkPath, target)) continue;
           removeSymlinkPath(linkPath);
         }
-      } catch {
-        // Missing or racing path; recreate below.
+      } catch (error) {
+        handleProjectionFailure(options, `[command-sync] Failed to prepare Command link ${entry.name}`, error);
       }
 
       try {
         symlinkSync(target, linkPath);
       } catch (err) {
-        console.warn(`[command-sync] Failed to symlink command ${entry.name}:`, err);
+        if (!symlinkPointsTo(linkPath, target)) {
+          handleProjectionFailure(options, `[command-sync] Failed to symlink Command ${entry.name}`, err);
+        }
       }
     }
 
@@ -192,15 +249,21 @@ export function syncProjectUserConfigFiles(
           if (!lstatSync(linkPath).isSymbolicLink()) continue;
           const target = readlinkSync(linkPath);
           const resolvedTarget = resolve(projectCommandsDir, target);
+          if (!isInside(userCommandsDir, resolvedTarget)) {
+            handleProjectionFailure(options, `[command-sync] Foreign project Command symlink is not a trusted capability: ${entry.name}`);
+            continue;
+          }
           if (isInside(userCommandsDir, resolvedTarget) && !managedCommandFiles.has(entry.name)) {
             removeSymlinkPath(linkPath);
           }
-        } catch {
-          // Ignore individual cleanup failures.
+        } catch (error) {
+          if (!isMissingPathError(error)) {
+            handleProjectionFailure(options, `[command-sync] Failed to clean stale Command link ${entry.name}`, error);
+          }
         }
       }
-    } catch {
-      // Ignore — projectCommandsDir may have been removed externally.
+    } catch (error) {
+      handleProjectionFailure(options, '[command-sync] Failed to inspect project Command links', error);
     }
   }
 }

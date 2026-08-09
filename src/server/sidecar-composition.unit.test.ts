@@ -44,6 +44,8 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/admin/mcp/remove', 'common'],
     ['POST', '/api/cc-plugin/session-enable', 'session'],
     ['GET', '/api/cc-plugin/list', 'common'],
+    ['GET', '/api/project-capabilities', 'common'],
+    ['POST', '/api/project-capability/toggle', 'common'],
   ] as const)('%s %s is owned by %s', (method, path, capability) => {
     expect(classifySidecarRequest(request(path, method))).toBe(capability);
   });

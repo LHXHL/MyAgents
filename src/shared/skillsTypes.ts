@@ -2,6 +2,7 @@
  * Shared types for Skills & Commands management
  */
 import type { SkillFrontmatter, CommandFrontmatter } from './slashCommands';
+import type { ProjectCapabilitySource } from './projectCapabilities';
 
 // Re-export frontmatter types
 export type { SkillFrontmatter, CommandFrontmatter };
@@ -22,6 +23,10 @@ export interface SkillItem {
     required: boolean;
     /** Effective enablement (always true for project and required skills). */
     enabled: boolean;
+    /** Present in the workspace capability list; stable project override key. */
+    capabilityId?: string;
+    /** Physical origin after resolving MyAgents-managed project symlinks. */
+    origin?: ProjectCapabilitySource;
 }
 
 /**
@@ -34,6 +39,10 @@ export interface CommandItem {
     scope: 'user' | 'project';
     path: string;
     author?: string;
+    enabled?: boolean;
+    required?: boolean;
+    capabilityId?: string;
+    origin?: ProjectCapabilitySource;
 }
 
 /**

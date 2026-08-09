@@ -25,6 +25,7 @@ import SessionSurfaceTags from '@/components/SessionSurfaceTags';
 import SessionMenuButton, { type BotChannelCandidate } from '@/components/SessionMenuButton';
 import { FileActionProvider } from '@/context/FileActionContext';
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
+import type { SlashCommand as InputSlashCommand } from '@/components/SlashCommandMenu';
 import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
 import ContextUsageIndicator from '@/components/ContextUsageIndicator';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
@@ -533,12 +534,9 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   const tRef = useRef(t);
   tRef.current = t;
 
-  // Workspace file service — Phase D coherence fix: SimpleChatInput already
-  // sources its slash menu from `cmd_list_slash_commands`; the chat sidebar
-  // (loadSkillsAndCommands below) used to hit the sidecar `/api/commands`
-  // route, so the two surfaces could drift when sidecar fingerprint and Rust
-  // scan disagreed (different builtin tables, different filter rules). Routing
-  // both through one Rust source of truth removes the drift class.
+  // Workspace file service owns ordinary workspace IO. Capability policy is
+  // resolved once by the Sidecar endpoint below; Chat injects that same
+  // effective snapshot into its sidebar and slash picker.
   const fileService = useWorkspaceFileService(agentDir);
 
   // Get config to find current project provider
@@ -1289,6 +1287,22 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<WorkspaceTab | undefined>();
   // Initial item selection — when set, WorkspaceConfigPanel opens already showing that item's detail.
   const [workspaceConfigInitialSelect, setWorkspaceConfigInitialSelect] = useState<CapabilityInitialSelect | undefined>();
+  const workspaceCapabilitySlashCommands = useMemo<InputSlashCommand[]>(() => [
+    ...enabledCommands.map(command => ({
+      name: command.name,
+      description: command.description,
+      source: 'custom' as const,
+      scope: command.scope,
+      fileName: command.fileName,
+    })),
+    ...enabledSkills.map(skill => ({
+      name: skill.name,
+      description: skill.description,
+      source: 'skill' as const,
+      scope: skill.scope,
+      folderName: skill.folderName,
+    })),
+  ], [enabledCommands, enabledSkills]);
 
   // Agent Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
@@ -2466,22 +2480,39 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiGet, apiPost, configPending]);
 
-  // Load skills/commands for sidebar display.
-  // Sources the same Rust scan that SimpleChatInput's slash menu uses so the
-  // sidebar list and the slash-menu list cannot disagree.
+  // Load the authoritative enabled project capability snapshot. The settings
+  // page uses the same endpoint for all candidates; the sidebar projects only
+  // enabled winners from that shared source of truth.
   const loadSkillsAndCommands = useCallback(async () => {
-    if (!fileService.isAvailable) return;
     try {
-      const response = await fileService.listSlashCommands();
-      if (response.success && response.commands) {
-        setEnabledSkills(response.commands.filter(c => c.source === 'skill').map(c => ({ name: c.name, description: c.description, scope: c.scope, folderName: c.folderName })));
-        setEnabledCommands(response.commands.filter(c => c.source === 'custom').map(c => ({ name: c.name, description: c.description, scope: c.scope, fileName: c.fileName })));
-        setGlobalSkillFolderNames(new Set(response.globalSkillFolderNames || []));
+      const response = await apiGet<{
+        success: boolean;
+        skills?: Array<{ name: string; description: string; scope: 'user' | 'project'; folderName: string; enabled: boolean; origin?: 'global' | 'project' }>;
+        commands?: Array<{ name: string; description: string; scope: 'user' | 'project'; fileName: string; enabled?: boolean }>;
+      }>('/api/project-capabilities');
+      if (response.success) {
+        const skills = response.skills ?? [];
+        const commands = response.commands ?? [];
+        setEnabledSkills(skills.filter(item => item.enabled).map(item => ({
+          name: item.name,
+          description: item.description,
+          scope: item.scope,
+          folderName: item.folderName,
+        })));
+        setEnabledCommands(commands.filter(item => item.enabled !== false).map(item => ({
+          name: item.name,
+          description: item.description,
+          scope: item.scope,
+          fileName: item.fileName,
+        })));
+        setGlobalSkillFolderNames(new Set(
+          skills.filter(item => item.origin === 'global').map(item => item.folderName),
+        ));
       }
     } catch (err) {
       console.error('[Chat] Failed to load skills/commands:', err);
     }
-  }, [fileService]);
+  }, [apiGet]);
 
   // Sync project skill to global
   const loadSkillsAndCommandsRef = useRef(loadSkillsAndCommands);
@@ -2506,7 +2537,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   useEffect(() => {
     loadAndSyncAgents();
     loadSkillsAndCommands();
-  }, [loadAndSyncAgents, loadSkillsAndCommands, workspaceRefreshTrigger]);
+  }, [
+    currentAgent?.capabilitySelection,
+    loadAndSyncAgents,
+    loadSkillsAndCommands,
+    workspaceRefreshTrigger,
+  ]);
 
   // Sync workspace MCP to project config when it changes
   useEffect(() => {
@@ -5368,6 +5404,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
             agentDir={agentDir}
             workspacePath={agentDir}
             sessionId={sessionId}
+            workspaceSlashCommands={workspaceCapabilitySlashCommands}
             sdkSlashCommands={visibleSdkSlashCommands}
             provider={currentProvider}
             providers={providers}

@@ -299,6 +299,14 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 
 **Codex 0.144.1 models refresh 历史已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
 
+### 项目级 Skill / Command 选择（0.4.7）
+
+`AgentConfig.capabilitySelection` 是唯一持久化 authority；当前 workspace 必须经唯一 `Project.agentId` 精确找到唯一 Agent，重复 workspace、重复 Agent ID 或同一 Agent 被多个 Project claim 都 fail closed。`src/server/project-capabilities.ts` 统一扫描项目与 `~/.myagents` 候选，按物理 source slot、再按 canonical name 执行 project > global winner，最后应用 disabled override。设置页展示全部 winner；Chat Sidebar 与输入框只消费同一 Sidecar snapshot 的 enabled 集合。Rust slash scanner只保留无 Sidecar 的 Launcher 兼容读取，不解释项目 selection，也不在读取时改动 projection。
+
+`.claude` symlink 只是跨 Runtime 共用的全局安装兼容投影，不是项目选择的执行 authority，因此项目开关不按 Runtime 改写这份共享磁盘视图。Builtin 在每个 Query birth 将 enabled Skill canonical name 写入 SDK `Options.skills`，并在消息跨 SDK 边界前拒绝 disabled custom Command；revision 变化复用既有 deferred Query replacement，当前 turn 不变。Managed Codex 在每次 turn admission 编译同一 snapshot，在 merge 前过滤 project/global Skill 与 Command，并把 capability revision 纳入 desired/effective revision。System Codex、Claude Code、Gemini 与 Plugin selection 不消费该项目 override。
+
+Required System Skill 只由全局 system source identity 决定；项目文件不得冒充 Required 名称。投影 helper 只替换可证明指向 `~/.myagents` 的 managed symlink，foreign symlink 在 Runtime admission fail closed，真实项目文件保持原样并占有对应物理 source slot。
+
 ### Skills 加载
 
 Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区协议使用 `.claude/skills`。为保持产品层一致性，Codex adapter 在 `startSession()` 中做两步桥接：

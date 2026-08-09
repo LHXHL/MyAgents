@@ -240,6 +240,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onGoalCancel,
   onGoalDismiss,
   onSlashAction,
+  workspaceSlashCommands,
   sdkSlashCommands = [],
   mode = 'chat',
   toolbarPrefix,
@@ -637,13 +638,18 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, []);
 
   // Fetch slash commands function (extracted for reuse).
-  // PRD 0.2.7: routed through fileService.listSlashCommands (Rust scan +
-  // frontmatter parse), not the sidecar /api/commands. Launcher gets the
-  // exact same menu as chat-tab — no more "ah, the launcher has no apiGet"
-  // empty-menu bug.
+  // Chat tabs inject the same effective capability winners used by their
+  // sidebar and Runtime. Launcher has no Sidecar and retains the read-only
+  // workspace scan fallback.
   const fetchCommands = useCallback(async () => {
     const apply = (list: SlashCommand[]) =>
       setSlashCommands(list);
+    if (workspaceSlashCommands !== undefined) {
+      // Product builtins own their reserved names; disk-backed capabilities
+      // fill only the remaining namespace.
+      apply(mergeSlashCommands(localizedFallbackSlashCommands, workspaceSlashCommands));
+      return;
+    }
     if (!fileService.isAvailable) {
       // Fall back to builtins so the menu isn't empty in browser dev mode.
       apply(localizedFallbackSlashCommands);
@@ -661,7 +667,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       console.error('Failed to fetch slash commands, using fallback:', err);
       apply(localizedFallbackSlashCommands);
     }
-  }, [fileService, localizedFallbackSlashCommands]);
+  }, [fileService, localizedFallbackSlashCommands, workspaceSlashCommands]);
 
   // Fetch slash commands on mount or when workspacePath changes (so launcher
   // workspace switching reloads project-level skills).
@@ -681,9 +687,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
   }, [fetchCommands]);
 
-  // Handle user-level skill selection
-  // No-op: user-level skills/commands are synced as symlinks into project .claude/
-  // by syncProjectUserConfig() at session startup. No per-invocation copy needed.
+  // Selection is already represented by the injected effective snapshot (or
+  // the Launcher's read-only inventory); no per-invocation file copy is needed.
   const handleSkillSelect = useCallback((_cmd: SlashCommand) => {}, []);
 
   const {

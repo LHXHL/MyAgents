@@ -78,6 +78,7 @@ import {
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { findProjectAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
 import type { AgentConfig } from '../../shared/types/agent';
+import { resolveEffectiveProjectCapabilities } from '../project-capabilities';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
@@ -2366,6 +2367,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
       ?? metadata?.enabledPluginIds
       ?? null,
     mcpServers,
+    capabilitySnapshot: resolveEffectiveProjectCapabilities(workspacePath),
   });
 }
 
@@ -2933,12 +2935,9 @@ async function _doStartExternalSession(options: {
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
   let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
-    ? compileManagedCodexExtensionSnapshot({
+    ? buildCurrentManagedCodexExtensionSnapshot({
         workspacePath: options.workspacePath,
         scenario: options.scenario,
-        enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
-          ?? existingMetadataAtStart?.enabledPluginIds
-          ?? null,
         mcpServers: managedCodexMcpServers ?? [],
       })
     : undefined;
@@ -3206,12 +3205,9 @@ async function _doStartExternalSession(options: {
         }
         if (runtimeType === 'codex' && runtimeSource === 'managed-provider') {
           managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
-            snapshot: compileManagedCodexExtensionSnapshot({
+            snapshot: buildCurrentManagedCodexExtensionSnapshot({
               workspacePath: options.workspacePath,
               scenario: options.scenario,
-              enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
-                ?? existingMetadataAtStart?.enabledPluginIds
-                ?? null,
               mcpServers: managedCodexMcpServers ?? [],
             }),
             sessionId: options.sessionId,

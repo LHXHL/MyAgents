@@ -156,8 +156,8 @@ pub fn validate_external_read_path(absolute_path: &str) -> WfResult<PathBuf> {
 /// MyAgents-managed directory (see `is_trusted_managed_target`). Blocks the
 /// "malicious `evil_link → /etc/passwd` checked into a repo" attack from
 /// leaking content out of the workspace, while still allowing the
-/// junctions / symlinks we sync ourselves from `~/.myagents/skills` etc.
-/// into `<workspace>/.claude/skills/` (see `agent-session.ts:syncProjectSkillSymlinks`).
+/// junctions / symlinks MyAgents projects from `~/.myagents/skills` etc.
+/// into `<workspace>/.claude/skills/` (see Node `syncProjectUserConfigFiles`).
 ///
 /// Behavior:
 /// - If the resolved path doesn't exist, returns `Err("File not found")` (the
@@ -2033,7 +2033,7 @@ mod tests {
     // pointing into a trusted root MUST resolve successfully even though the
     // target is outside the canonical workspace. This unblocks Windows users
     // hitting "文件预览失败" on user-level skill links synced by
-    // `agent-session.ts:syncProjectSkillSymlinks`.
+    // Node `syncProjectUserConfigFiles`.
     #[cfg(unix)]
     #[test]
     fn resolve_existing_allows_symlink_into_trusted_root() {

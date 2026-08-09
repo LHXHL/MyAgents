@@ -12,9 +12,19 @@ import type { Dirent } from 'node:fs';
 import type { McpServerDefinition } from '../../../../shared/config-types';
 import { parseFullAgentContent } from '../../../../shared/agentCommands';
 import type { AgentWorkspaceConfig } from '../../../../shared/agentTypes';
-import { BUILTIN_SLASH_COMMANDS, parseFullCommandContent, parseFullSkillContent } from '../../../../shared/slashCommands';
+import {
+  isReservedSlashCommandName,
+  isValidSlashCommandName,
+  parseFullCommandContent,
+  parseFullSkillContent,
+} from '../../../../shared/slashCommands';
 import type { InteractionScenario } from '../../../system-prompt';
 import { isRequiredSystemSkill } from '../../../../shared/systemSkills';
+import {
+  projectCapabilityId,
+  type EffectiveProjectCapabilitySnapshot,
+  type ProjectCapabilityKind,
+} from '../../../../shared/projectCapabilities';
 import {
   getDefaultEnabledPluginIdsForWorkspace,
   getEnabledPluginSdkConfigs,
@@ -32,10 +42,8 @@ import type {
 
 const MAX_EXTENSION_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_DEPTH = 8;
-const COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const AGENT_ROLE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const CLAUDE_MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
-const RESERVED_COMMANDS = new Set(BUILTIN_SLASH_COMMANDS.map(command => command.name));
 
 type ExtensionScope = 'project' | 'user' | 'plugin';
 
@@ -52,6 +60,8 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   mcpServers: readonly McpServerDefinition[];
   /** Test-only/home-independent override. Production uses ~/.myagents. */
   userConfigRoot?: string | null;
+  /** Exact project/global winner selection resolved by the shared owner. */
+  capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
 }
 
 function component(
@@ -98,8 +108,12 @@ function secretSafeMcpProjection(server: McpServerDefinition): unknown {
   };
 }
 
-function revisionOf(snapshot: Omit<ManagedCodexExtensionSnapshot, 'revision' | 'hostToolDispatcher'>): string {
+function revisionOf(
+  snapshot: Omit<ManagedCodexExtensionSnapshot, 'revision' | 'hostToolDispatcher'>,
+  capabilityRevision?: string,
+): string {
   const projection = {
+    capabilityRevision,
     workspacePath: snapshot.workspacePath,
     scenario: snapshot.scenario,
     enabledPluginIds: snapshot.enabledPluginIds,
@@ -269,6 +283,7 @@ function readSkillFolder(
       path: skillPath,
       scope,
       sourceId,
+      sourceLocalId: fallbackName,
     };
   } catch {
     reports.push(component('skills', 'failed', 'skill_read_failed', `${sourceId}:${fallbackName}`));
@@ -379,11 +394,11 @@ function readCommandFile(
     const content = readFileSync(safePath, 'utf8');
     const parsed = parseFullCommandContent(content);
     const name = parsed.frontmatter.name?.trim() || fallbackName;
-    if (!COMMAND_NAME_RE.test(name)) {
+    if (!isValidSlashCommandName(name)) {
       reports.push(component('commands', 'failed', 'command_invalid_name', `${sourceId}:${fallbackName}`));
       return null;
     }
-    if (RESERVED_COMMANDS.has(name)) {
+    if (isReservedSlashCommandName(name)) {
       reports.push(component('commands', 'unsupported', 'command_reserved_name', `${sourceId}:${name}`));
       return null;
     }
@@ -397,6 +412,7 @@ function readCommandFile(
       body: parsed.body.trim(),
       scope,
       sourceId,
+      sourceLocalId: relative(root, safePath).split(sep).join('/').replace(/\.md$/i, ''),
     };
   } catch {
     reports.push(component('commands', 'failed', 'command_read_failed', `${sourceId}:${fallbackName}`));
@@ -932,10 +948,44 @@ export function compileManagedCodexExtensionSnapshot(
   }
   reportUnsupportedPluginComponents(plugins, reports);
 
-  const projectSkills = scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports);
+  const filterSelected = <T extends { scope: ExtensionScope; sourceId: string; sourceLocalId?: string; name: string }>(
+    items: T[],
+    kind: ProjectCapabilityKind,
+  ): T[] => {
+    if (!input.capabilitySnapshot) return items;
+    const enabledIds = new Set(
+      (kind === 'skill'
+        ? input.capabilitySnapshot.enabledSkills
+        : input.capabilitySnapshot.enabledCommands
+      ).map(item => item.id),
+    );
+    return items.filter(item => {
+      if (item.scope === 'plugin') return true;
+      if (!item.sourceLocalId) return false;
+      const source = item.scope === 'project' ? 'project' : 'global';
+      const enabled = enabledIds.has(projectCapabilityId(source, kind, item.sourceLocalId));
+      if (!enabled) {
+        reports.push(component(
+          kind === 'skill' ? 'skills' : 'commands',
+          'not_applicable',
+          kind === 'skill' ? 'skill_project_disabled' : 'command_project_disabled',
+          `${item.sourceId}:${item.name}`,
+        ));
+      }
+      return enabled;
+    });
+  };
+
+  const projectSkills = filterSelected(
+    scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports),
+    'skill',
+  );
   const disabledUserSkillNames = readDisabledUserSkillNames(userConfigRoot);
   const userSkills = userConfigRoot
-    ? scanSkillsAtRoot(join(userConfigRoot, 'skills'), 'user', 'global', reports, disabledUserSkillNames)
+    ? filterSelected(
+        scanSkillsAtRoot(join(userConfigRoot, 'skills'), 'user', 'global', reports, disabledUserSkillNames),
+        'skill',
+      )
     : [];
   const pluginSkillGroups = plugins.map(plugin => ({
     rank: 1,
@@ -947,9 +997,15 @@ export function compileManagedCodexExtensionSnapshot(
     ...pluginSkillGroups,
   ], reports);
 
-  const projectCommands = scanCommandsAtRoot(join(input.workspacePath, '.claude', 'commands'), 'project', 'workspace', reports);
+  const projectCommands = filterSelected(
+    scanCommandsAtRoot(join(input.workspacePath, '.claude', 'commands'), 'project', 'workspace', reports),
+    'command',
+  );
   const userCommands = userConfigRoot
-    ? scanCommandsAtRoot(join(userConfigRoot, 'commands'), 'user', 'global', reports)
+    ? filterSelected(
+        scanCommandsAtRoot(join(userConfigRoot, 'commands'), 'user', 'global', reports),
+        'command',
+      )
     : [];
   const pluginCommandGroups = plugins.map(plugin => ({
     rank: 1,
@@ -991,7 +1047,7 @@ export function compileManagedCodexExtensionSnapshot(
   };
   return {
     ...snapshotWithoutRevision,
-    revision: revisionOf(snapshotWithoutRevision),
+    revision: revisionOf(snapshotWithoutRevision, input.capabilitySnapshot?.revision),
   };
 }
 
@@ -1002,7 +1058,7 @@ export function compileManagedCodexCommand(
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(rawText);
   if (!match) return null;
   const commandName = match[1]!;
-  if (RESERVED_COMMANDS.has(commandName)) return null;
+  if (isReservedSlashCommandName(commandName)) return null;
   const command = snapshot.commands.find(candidate => candidate.name === commandName);
   if (!command) {
     throw new Error(`Unknown Managed Codex command: /${commandName}`);

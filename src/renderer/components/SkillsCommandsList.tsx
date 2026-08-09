@@ -4,7 +4,7 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalSkillsPanel in Settings).
  */
-import { Plus, Sparkles, Terminal, Loader2, ExternalLink } from 'lucide-react';
+import { Plus, Sparkles, Terminal, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -22,8 +22,6 @@ interface SkillsCommandsListProps {
     onSelectSkill: (name: string, scope: 'user' | 'project', isNewSkill?: boolean) => void;
     onSelectCommand: (name: string, scope: 'user' | 'project') => void;
     refreshKey?: number;
-    /** Callback to close parent modal (used when navigating to Settings) */
-    onClose?: () => void;
 }
 
 export default function SkillsCommandsList({
@@ -32,7 +30,6 @@ export default function SkillsCommandsList({
     onSelectSkill,
     onSelectCommand,
     refreshKey = 0,
-    onClose
 }: SkillsCommandsListProps) {
     const { t } = useTranslation('settings');
     const toast = useToast();
@@ -64,6 +61,7 @@ export default function SkillsCommandsList({
     const [loading, setLoading] = useState(true);
     const [skills, setSkills] = useState<SkillItem[]>([]);
     const [commands, setCommands] = useState<CommandItem[]>([]);
+    const [savingCapabilityIds, setSavingCapabilityIds] = useState<Set<string>>(() => new Set());
     const [showNewSkillDialog, setShowNewSkillDialog] = useState(false);
     const [showInstallFromUrlDialog, setShowInstallFromUrlDialog] = useState(false);
     const [showNewCommandDialog, setShowNewCommandDialog] = useState(false);
@@ -81,21 +79,28 @@ export default function SkillsCommandsList({
         return `${path}${sep}agentDir=${encodeURIComponent(agentDir)}`;
     }, [isInTabContext, agentDir]);
 
-    // Load skills and commands
-    // When scope is 'project', only load project-level data (user-level shown in Settings)
+    // Project scope is the effective project view: local plus global
+    // candidates after winner resolution and persisted overrides.
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [skillsRes, commandsRes] = await Promise.all([
-                api.get<{ success: boolean; skills: SkillItem[] }>(buildEndpoint(`/api/skills?scope=${scope}`)),
-                api.get<{ success: boolean; commands: CommandItem[] }>(buildEndpoint(`/api/command-items?scope=${scope}`))
-            ]);
-
-            if (skillsRes.success) {
-                setSkills(skillsRes.skills);
-            }
-            if (commandsRes.success) {
-                setCommands(commandsRes.commands);
+            if (scope === 'project') {
+                const response = await api.get<{
+                    success: boolean;
+                    skills: SkillItem[];
+                    commands: CommandItem[];
+                }>(buildEndpoint('/api/project-capabilities'));
+                if (response.success) {
+                    setSkills(response.skills);
+                    setCommands(response.commands);
+                }
+            } else {
+                const [skillsRes, commandsRes] = await Promise.all([
+                    api.get<{ success: boolean; skills: SkillItem[] }>(buildEndpoint(`/api/skills?scope=${scope}`)),
+                    api.get<{ success: boolean; commands: CommandItem[] }>(buildEndpoint(`/api/command-items?scope=${scope}`)),
+                ]);
+                if (skillsRes.success) setSkills(skillsRes.skills);
+                if (commandsRes.success) setCommands(commandsRes.commands);
             }
         } catch {
             toastRef.current.error(tRef.current('agentSettings.common.loadFailed'));
@@ -103,6 +108,46 @@ export default function SkillsCommandsList({
             setLoading(false);
         }
     }, [scope, api, buildEndpoint]);
+
+    const handleProjectCapabilityToggle = useCallback(async (capabilityId: string, enabled: boolean) => {
+        if (scope !== 'project' || savingCapabilityIds.size > 0) return;
+        const previousSkills = skills;
+        const previousCommands = commands;
+        setSkills(current => current.map(item => item.capabilityId === capabilityId ? { ...item, enabled } : item));
+        setCommands(current => current.map(item => item.capabilityId === capabilityId ? { ...item, enabled } : item));
+        setSavingCapabilityIds(current => new Set(current).add(capabilityId));
+        try {
+            const response = await api.post<{
+                success: boolean;
+                error?: string;
+                skills?: SkillItem[];
+                commands?: CommandItem[];
+            }>('/api/project-capability/toggle', {
+                capabilityId,
+                enabled,
+                ...(!isInTabContext && agentDir ? { agentDir } : {}),
+            });
+            if (!response.success || !response.skills || !response.commands) {
+                throw new Error(response.error || tRef.current('agentSettings.common.saveFailed'));
+            }
+            setSkills(response.skills);
+            setCommands(response.commands);
+        } catch (error) {
+            // Roll back synchronously to the last authoritative response. A
+            // best-effort refresh follows, but a second network failure must
+            // never leave the optimistic value looking committed.
+            setSkills(previousSkills);
+            setCommands(previousCommands);
+            void loadData();
+            toastRef.current.error(error instanceof Error ? error.message : tRef.current('agentSettings.common.saveFailed'));
+        } finally {
+            setSavingCapabilityIds(current => {
+                const next = new Set(current);
+                next.delete(capabilityId);
+                return next;
+            });
+        }
+    }, [agentDir, api, commands, isInTabContext, loadData, savingCapabilityIds.size, scope, skills]);
 
     useEffect(() => {
         loadData();
@@ -280,15 +325,6 @@ export default function SkillsCommandsList({
         }
     }, [deleteTarget, loadData, api, buildEndpoint]);
 
-    // Open Settings tab with Skills section (close modal first if in modal context)
-    const handleOpenUserSkills = useCallback(() => {
-        // Close parent modal first so user can see the Settings page
-        onClose?.();
-        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
-            detail: { section: 'skills' }
-        }));
-    }, [onClose]);
-
     if (loading) {
         return (
             <div className="flex h-full items-center justify-center">
@@ -308,7 +344,9 @@ export default function SkillsCommandsList({
                             {scope === 'project' ? t('agentSettings.skillCommandList.projectSkillsTitle') : t('agentSettings.skillCommandList.skillsTitle')}
                         </h3>
                         <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
-                            {skills.length}
+                            {scope === 'project'
+                                ? t('agentSettings.skillCommandList.enabledCount', { enabled: skills.filter(item => item.enabled).length, total: skills.length })
+                                : skills.length}
                         </span>
                     </div>
                     <button
@@ -329,6 +367,10 @@ export default function SkillsCommandsList({
                                 key={`${skill.scope}-${skill.folderName}`}
                                 skill={skill}
                                 onClick={() => onSelectSkill(skill.folderName, skill.scope)}
+                                onToggleEnabled={scope === 'project' && skill.capabilityId && !skill.required
+                                    ? handleProjectCapabilityToggle
+                                    : undefined}
+                                saving={savingCapabilityIds.size > 0}
                             />
                         ))}
                     </div>
@@ -340,17 +382,6 @@ export default function SkillsCommandsList({
                     />
                 )}
 
-                {/* Link to user skills (only in project scope) */}
-                {scope === 'project' && (
-                    <button
-                        type="button"
-                        onClick={handleOpenUserSkills}
-                        className="mt-4 flex w-full items-center justify-center gap-1.5 py-2 text-sm text-[var(--ink-muted)] transition-colors hover:text-[var(--accent)]"
-                    >
-                        <span>{t('agentSettings.skillCommandList.viewUserSkills')}</span>
-                        <ExternalLink className="h-3.5 w-3.5" />
-                    </button>
-                )}
             </div>
 
             {/* Commands Section */}
@@ -362,7 +393,9 @@ export default function SkillsCommandsList({
                             {scope === 'project' ? t('agentSettings.skillCommandList.projectCommandsTitle') : t('agentSettings.skillCommandList.commandsTitle')}
                         </h3>
                         <span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
-                            {commands.length}
+                            {scope === 'project'
+                                ? t('agentSettings.skillCommandList.enabledCount', { enabled: commands.filter(item => item.enabled !== false).length, total: commands.length })
+                                : commands.length}
                         </span>
                     </div>
                     <button
@@ -383,6 +416,10 @@ export default function SkillsCommandsList({
                                 key={`${cmd.scope}-${cmd.fileName}`}
                                 command={cmd}
                                 onClick={() => onSelectCommand(cmd.fileName, cmd.scope)}
+                                onToggleEnabled={scope === 'project' && cmd.capabilityId
+                                    ? handleProjectCapabilityToggle
+                                    : undefined}
+                                saving={savingCapabilityIds.size > 0}
                             />
                         ))}
                     </div>
@@ -394,17 +431,6 @@ export default function SkillsCommandsList({
                     />
                 )}
 
-                {/* Link to user commands (only in project scope) */}
-                {scope === 'project' && (
-                    <button
-                        type="button"
-                        onClick={handleOpenUserSkills}
-                        className="mt-4 flex w-full items-center justify-center gap-1.5 py-2 text-sm text-[var(--ink-muted)] transition-colors hover:text-[var(--accent)]"
-                    >
-                        <span>{t('agentSettings.skillCommandList.viewUserCommands')}</span>
-                        <ExternalLink className="h-3.5 w-3.5" />
-                    </button>
-                )}
             </div>
 
             {/* New Skill Dialog - Choice Mode */}
@@ -492,10 +518,11 @@ export default function SkillsCommandsList({
 //   • description block keeps line-clamp-2 with a min-h reserve so cards in
 //     the same row stay the same height regardless of desc length
 // Exported for reuse in GlobalSkillsPanel.
-export function SkillCard({ skill, onClick, onToggleEnabled }: {
+export function SkillCard({ skill, onClick, onToggleEnabled, saving = false }: {
     skill: SkillItem;
     onClick: () => void;
-    onToggleEnabled?: (folderName: string, enabled: boolean) => void;
+    onToggleEnabled?: (id: string, enabled: boolean) => void;
+    saving?: boolean;
 }) {
     const { t } = useTranslation('settings');
     const isDisabled = skill.enabled === false;
@@ -518,16 +545,31 @@ export function SkillCard({ skill, onClick, onToggleEnabled }: {
                         {skill.author}
                     </span>
                 )}
+                {skill.origin && (
+                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
+                        {skill.origin === 'global'
+                            ? t('agentSettings.capabilities.scopeUser')
+                            : t('agentSettings.capabilities.scopeProject')}
+                    </span>
+                )}
+                {skill.required && (
+                    <span className="shrink-0 text-xs text-[var(--ink-muted)]">
+                        {t('agentSettings.skillCommandList.systemRequired')}
+                    </span>
+                )}
                 {onToggleEnabled && (
                     <button
                         type="button"
                         role="switch"
                         aria-checked={!isDisabled}
+                        aria-label={t('agentSettings.skillCommandList.toggleSkill', { name: skill.name })}
+                        aria-busy={saving}
+                        disabled={saving}
                         onClick={(e) => {
                             e.stopPropagation();
-                            onToggleEnabled(skill.folderName, isDisabled);
+                            onToggleEnabled(skill.capabilityId ?? skill.folderName, isDisabled);
                         }}
-                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
                             !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
                         }`}
                     >
@@ -549,13 +591,18 @@ export function SkillCard({ skill, onClick, onToggleEnabled }: {
 }
 
 // Command Card Component — V2 "compact" layout, same spec as SkillCard
-// minus the toggle (commands have no enabled/disabled state).
 // Exported for reuse in GlobalSkillsPanel.
-export function CommandCard({ command, onClick }: { command: CommandItem; onClick: () => void }) {
+export function CommandCard({ command, onClick, onToggleEnabled, saving = false }: {
+    command: CommandItem;
+    onClick: () => void;
+    onToggleEnabled?: (id: string, enabled: boolean) => void;
+    saving?: boolean;
+}) {
     const { t } = useTranslation('settings');
+    const isDisabled = command.enabled === false;
     return (
         <div
-            className="group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 transition-shadow hover:shadow-sm"
+            className={`group flex cursor-pointer flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 transition-shadow hover:shadow-sm ${isDisabled ? 'opacity-55' : ''}`}
             onClick={onClick}
         >
             <div className="flex items-center gap-2">
@@ -567,6 +614,36 @@ export function CommandCard({ command, onClick }: { command: CommandItem; onClic
                     <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium tracking-[0.04em] text-[var(--ink-muted)]">
                         {command.author}
                     </span>
+                )}
+                {command.origin && (
+                    <span className="shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]">
+                        {command.origin === 'global'
+                            ? t('agentSettings.capabilities.scopeUser')
+                            : t('agentSettings.capabilities.scopeProject')}
+                    </span>
+                )}
+                {onToggleEnabled && (
+                    <button
+                        type="button"
+                        role="switch"
+                        aria-checked={!isDisabled}
+                        aria-label={t('agentSettings.skillCommandList.toggleCommand', { name: command.name })}
+                        aria-busy={saving}
+                        disabled={saving}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleEnabled(command.capabilityId ?? command.fileName, isDisabled);
+                        }}
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 disabled:cursor-wait ${
+                            !isDisabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                        }`}
+                    >
+                        <span
+                            className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm transition-transform ${
+                                !isDisabled ? 'translate-x-4' : 'translate-x-0.5'
+                            }`}
+                        />
+                    </button>
                 )}
             </div>
             <p className="line-clamp-2 min-h-[2.6em] text-sm leading-relaxed text-[var(--ink-muted)]">

@@ -125,6 +125,8 @@ export interface SimpleChatInputProps {
   onGoalCancel?: () => void;
   onGoalDismiss?: () => void;
   onSlashAction?: (name: string) => void;
+  /** Effective project Skill/Command winners supplied by the owning Chat tab. */
+  workspaceSlashCommands?: SlashCommand[];
   sdkSlashCommands?: SlashCommand[];
   mode?: 'chat' | 'launcher';
   toolbarPrefix?: React.ReactNode;
