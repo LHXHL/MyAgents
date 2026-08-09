@@ -1,26 +1,19 @@
 import {
   AlertCircle,
   AtSign,
-  Ban,
   ChevronRight,
   ChevronUp,
-  Eye,
-  FilePenLine,
   FileText,
   Gauge,
   Loader,
-  LockOpen,
   Paperclip,
   Plus,
   Send,
   Settings2,
-  ShieldCheck,
-  ShieldQuestion,
   Square,
   Timer,
   Wrench,
   X,
-  type LucideIcon,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -65,6 +58,7 @@ import { imageAttachmentName } from './attachmentNames';
 import { MentionTabButton } from './components/MentionTabButton';
 import { ThoughtPickerRow } from './components/ThoughtPickerRow';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
+import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
 
 // ===== Module-level pure helpers (extracted from render body) =====
 
@@ -91,41 +85,6 @@ function getCurrentModelLabel(
 ): string {
   if (!modelId) return fallbackLabel;
   return provider ? getModelDisplayName(provider, modelId) : modelId;
-}
-
-const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
-  auto: ShieldCheck,
-  plan: Eye,
-  fullAgency: LockOpen,
-  default: ShieldQuestion,
-  manual: ShieldQuestion,
-  dontAsk: Ban,
-  acceptEdits: FilePenLine,
-  bypassPermissions: LockOpen,
-  autoEdit: FilePenLine,
-  yolo: LockOpen,
-  suggest: ShieldQuestion,
-  'auto-edit': FilePenLine,
-  'full-auto': ShieldCheck,
-  'no-restrictions': LockOpen,
-};
-
-function PermissionModeIcon({
-  value,
-  fallback,
-  className,
-}: {
-  value: string | undefined;
-  fallback: string | undefined;
-  className: string;
-}) {
-  if (value) {
-    const Icon = PERMISSION_MODE_ICONS[value];
-    if (!Icon) return <span>{fallback}</span>;
-    return <Icon aria-hidden="true" className={className} strokeWidth={1.75} />;
-  }
-
-  return <span>{fallback}</span>;
 }
 
 function runtimeMcpServerId(toolName: string): string | null {
@@ -1915,51 +1874,25 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 placement="top-start"
                 className="composer-toolbar-menu-enter w-72 py-1"
               >
-                <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--line)]">
-                  <span className="text-xs font-medium text-[var(--ink-muted)]">{t('input.permissionModeHeader')}</span>
-                  {onOpenAgentSettings && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowModeMenu(false);
-                        onOpenAgentSettings();
-                      }}
-                      className="text-xs font-medium text-[var(--accent)] hover:text-[var(--accent-warm-hover)] transition-colors"
-                    >
-                      {t('input.agentSettings')}
-                    </button>
-                  )}
-                </div>
-                {displayPermissionModes.map((mode) => (
-                  <button
-                    key={mode.value}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (mode.value === 'fullAgency' || (mode.value as string) === 'bypassPermissions') {
-                        toastRef.current.warning(t('input.autonomyWarning'), 5000);
-                      }
-                      onPermissionModeChange?.(mode.value);
+                <PermissionModeMenuContent
+                  items={displayPermissionModes}
+                  selectedValue={permissionMode}
+                  header={t('input.permissionModeHeader')}
+                  headerAction={onOpenAgentSettings ? {
+                    label: t('input.agentSettings'),
+                    onClick: () => {
                       setShowModeMenu(false);
-                    }}
-                    className={`flex w-full flex-col items-start px-3 py-2 text-left ${permissionMode === mode.value
-                      ? 'bg-[var(--accent)]/10'
-                      : 'hover:bg-[var(--hover-bg)]'
-                      }`}
-                  >
-                    <span className={`text-sm font-medium flex items-center gap-1.5 ${permissionMode === mode.value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'
-                      }`}>
-                      <PermissionModeIcon
-                        value={mode.value}
-                        fallback={mode.icon}
-                        className="h-4 w-4 shrink-0"
-                      />
-                      {mode.label}
-                    </span>
-                    <span className="text-xs text-[var(--ink-muted)] mt-0.5">{mode.description}</span>
-                  </button>
-                ))}
+                      onOpenAgentSettings();
+                    },
+                  } : undefined}
+                  onSelect={(value) => {
+                    if (value === 'fullAgency' || value === 'bypassPermissions') {
+                      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+                    }
+                    onPermissionModeChange?.(value as PermissionMode);
+                    setShowModeMenu(false);
+                  }}
+                />
               </Popover>
 
               {/* Tool/MCP Dropdown */}

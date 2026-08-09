@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   getAllMcpServers: vi.fn(),
   getEnabledMcpServerIds: vi.fn(),
   getWorkspaceCronTasks: vi.fn(),
+  agentRuntime: 'codex',
+  agentPermissionMode: 'plan',
 }));
 
 vi.mock('@/hooks/useCloseLayer', () => ({
@@ -129,7 +132,8 @@ vi.mock('@/hooks/useConfig', () => ({
         name: 'mino',
         enabled: true,
         workspacePath: '/Users/me/mino',
-        runtime: 'codex',
+        runtime: mocks.agentRuntime,
+        permissionMode: mocks.agentPermissionMode,
         runtimeConfig: { envPolicy: { proxy: 'myagents' } },
         channels: [],
         mcpEnabledServers: [],
@@ -159,6 +163,8 @@ vi.mock('@/hooks/useConfig', () => ({
 describe('WorkspaceConfigPanel i18n', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.agentRuntime = 'codex';
+    mocks.agentPermissionMode = 'plan';
     await i18n.changeLanguage('en-US');
     mocks.invoke.mockResolvedValue({
       builtin: { installed: true },
@@ -194,5 +200,21 @@ describe('WorkspaceConfigPanel i18n', () => {
     await waitFor(() => expect(mocks.getWorkspaceCronTasks).toHaveBeenCalledWith('/Users/me/mino'));
     expect(screen.queryByText('Agent 设置')).not.toBeInTheDocument();
     expect(screen.queryByText('基础设置')).not.toBeInTheDocument();
+  });
+
+  it('uses the conversation permission menu style in Agent settings', async () => {
+    mocks.agentRuntime = 'builtin';
+    const user = userEvent.setup();
+    render(<WorkspaceConfigPanel agentDir="/Users/me/mino" onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Plan' }));
+
+    expect(screen.getByText('Session mode')).toBeInTheDocument();
+    expect(document.querySelector('.composer-toolbar-menu-enter')).toBeInTheDocument();
+    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
+    expect(document.querySelector('.lucide-lock-open')).toBeInTheDocument();
+    expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /PlanAgent only researches information/ })).toHaveAttribute('aria-current', 'true');
   });
 });
