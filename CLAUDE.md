@@ -30,7 +30,7 @@
 | `src/renderer/` | React 19 + TypeScript + Vite + TailwindCSS；桌面 WebView UI |
 | `src/server/` | Node.js v24 Sidecar；Claude Agent SDK；每 Session 独立实例 |
 | `src/server/plugin-bridge/` | 独立 Node 进程；OpenClaw Plugin Bridge |
-| `src/cli/` | `myagents` CLI，同步到 `~/.myagents/bin/` |
+| `src/cli/` | `myagents` CLI 源码；业务 bundle 随 app 发布，`~/.myagents/bin/` 仅投影薄启动器 |
 | `src/shared/` | renderer / server 共用的纯类型与逻辑 |
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
