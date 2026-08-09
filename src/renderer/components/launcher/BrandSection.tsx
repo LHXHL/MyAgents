@@ -695,7 +695,7 @@ export default memo(function BrandSection({
                      *  shows recent thoughts. */}
                     {mode === 'task' && (
                         <div
-                            className="launcher-below-input-stack absolute left-0 right-0 top-full mt-3 flex flex-col gap-4"
+                            className="launcher-below-input-stack absolute left-0 right-0 top-full mt-2 flex flex-col gap-4"
                         >
                             <div className="w-full">
                                 <LauncherInputContextRow

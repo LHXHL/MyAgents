@@ -237,6 +237,7 @@ describe('BrandSection', () => {
     const stack = container.querySelector('.launcher-below-input-stack');
 
     expect(stack).not.toBeNull();
+    expect(stack).toHaveClass('mt-2');
     expect(screen.getByTestId('launcher-context-row')).toBeInTheDocument();
     expect(stack as HTMLElement).toContainElement(screen.getByTestId('launcher-context-row'));
     expect(stack as HTMLElement).toContainElement(screen.getByRole('button', { name: /配置模型供应商/ }));
