@@ -305,6 +305,12 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 
 `.claude` symlink 只是跨 Runtime 共用的全局安装兼容投影，不是项目选择的执行 authority，因此项目开关不按 Runtime 改写这份共享磁盘视图。Builtin 在每个 Query birth 将 enabled Skill canonical name 写入 SDK `Options.skills`，并在消息跨 SDK 边界前拒绝 disabled custom Command；revision 变化复用既有 deferred Query replacement，当前 turn 不变。Managed Codex 在每次 turn admission 编译同一 snapshot，在 merge 前过滤 project/global Skill 与 Command，并把 capability revision 纳入 desired/effective revision。System Codex、Claude Code、Gemini 与 Plugin selection 不消费该项目 override。
 
+#### 输入框斜杠菜单能力投影
+
+斜杠菜单必须按 Session 的真实 Runtime 能力投影，不能按视觉 chrome 推断。`/goal` 是 MyAgents 自己的 runtime-neutral 客户端动作，所有 Runtime 都保留；工作区 Skill / Command 继续消费各自既有的能力快照。静态 `compact/context/cost/init/pr-comments/release-notes/review/security-review` 列表属于 Claude Agent SDK，只在 `runtime:'builtin'` 的 Session 展示。Managed Codex 即使为了产品一致性使用 builtin 输入 chrome，也不得继承这份列表；其他 external Runtime 同样隐藏。
+
+锁定的 Codex app-server `0.146.0` 中，`thread/compact/start` 与 `review/start` 分别提供了原生压缩和审查 RPC，但两者都会创建 Codex 控制回合。当前 SessionEngine 没有承接这类 native control turn 的语义入口、队列 owner 与 terminal 持久化契约，因此暂不在菜单中暴露，不能绕过 facade 从 Renderer 或 route 直接调用。`context` 已由实时上下文指标承担只读展示，但没有等价管理 RPC；`cost` 只有 token usage、没有费用语义；其余 Claude 系统指令没有可忠实映射的 Codex RPC。未来若适配 `compact` 或 `review`，必须先在 SessionEngine 建立控制回合 owner，并复用 external turn lifecycle 的 admission、stop 与真实成功终态。
+
 Required System Skill 只由全局 system source identity 决定；项目文件不得冒充 Required 名称。投影 helper 只替换可证明指向 `~/.myagents` 的 managed symlink，foreign symlink 在 Runtime admission fail closed，真实项目文件保持原样并占有对应物理 source slot。
 
 ### Skills 加载

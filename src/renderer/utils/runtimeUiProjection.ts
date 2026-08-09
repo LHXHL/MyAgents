@@ -14,6 +14,15 @@ export function shouldUseExternalRuntimeInputControls(args: {
   return args.currentRuntime !== 'builtin' && !args.managedProviderRuntimeActive;
 }
 
+/**
+ * The static `/compact`, `/context`, etc. catalog describes Claude Agent SDK
+ * commands, not the visual chrome used by the composer. Managed Codex keeps
+ * builtin chrome, but must still project the capabilities of its real runtime.
+ */
+export function shouldShowBuiltinSdkSlashCommands(currentRuntime: RuntimeType): boolean {
+  return currentRuntime === 'builtin';
+}
+
 export type RuntimeExtensionUpdateNotice = 'deferred' | 'unsupported' | null;
 
 export function projectRuntimeExtensionUpdateNotice(

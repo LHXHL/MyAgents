@@ -199,6 +199,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onGoalCancel,
   onGoalDismiss,
   onSlashAction,
+  showBuiltinSdkSlashCommands = true,
   workspaceSlashCommands,
   sdkSlashCommands = [],
   mode = 'chat',
@@ -489,11 +490,13 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
 
   const clientActionsEnabled = !!onSlashAction;
   const localizedFallbackSlashCommands = useMemo(
-    () => BUILTIN_FALLBACK_SLASH_COMMANDS.map(cmd => ({
-      ...cmd,
-      description: t(`input.slashCommands.${cmd.name}`, { defaultValue: cmd.description }),
-    })),
-    [t],
+    () => showBuiltinSdkSlashCommands
+      ? BUILTIN_FALLBACK_SLASH_COMMANDS.map(cmd => ({
+        ...cmd,
+        description: t(`input.slashCommands.${cmd.name}`, { defaultValue: cmd.description }),
+      }))
+      : [],
+    [showBuiltinSdkSlashCommands, t],
   );
   const mergedSlashCommands = useMemo(
     () => withClientActionCommands(

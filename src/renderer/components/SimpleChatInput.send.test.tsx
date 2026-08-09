@@ -202,6 +202,42 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('keeps product and workspace actions while hiding SDK system commands', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        workspaceSlashCommands: [{
+          name: 'ship-it',
+          description: 'Workspace command',
+          source: 'custom',
+        }],
+      });
+
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();

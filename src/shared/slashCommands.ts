@@ -51,11 +51,11 @@ export interface CommandFrontmatter {
     author?: string;
 }
 
-// Built-in Claude Code slash commands with descriptions.
+// Built-in Claude Agent SDK slash commands with descriptions.
 // These are *text-insertion* builtins (selecting one inserts `/name ` and sends
-// it to the AI/CLI). UI-action commands that open a panel instead of sending
-// text (e.g. `goal`) are NOT listed here — they are renderer-only and defined
-// in `src/renderer/utils/slashActions.ts` (and their names are reserved there).
+// it to the builtin SDK). UI-action commands that change product state instead
+// of sending text (e.g. `goal`) are NOT listed here — they are renderer-only
+// and defined in `src/renderer/utils/slashActions.ts` (their names are reserved there).
 export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
     { name: 'compact', description: '压缩对话历史，释放上下文空间', source: 'builtin' },
     { name: 'context', description: '显示或管理当前上下文', source: 'builtin' },

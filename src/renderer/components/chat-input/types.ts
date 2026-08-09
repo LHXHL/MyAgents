@@ -125,6 +125,8 @@ export interface SimpleChatInputProps {
   onGoalCancel?: () => void;
   onGoalDismiss?: () => void;
   onSlashAction?: (name: string) => void;
+  /** Whether Claude Agent SDK system slash commands belong to this Session. */
+  showBuiltinSdkSlashCommands?: boolean;
   /** Effective project Skill/Command winners supplied by the owning Chat tab. */
   workspaceSlashCommands?: SlashCommand[];
   sdkSlashCommands?: SlashCommand[];

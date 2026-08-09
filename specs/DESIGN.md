@@ -1405,6 +1405,8 @@ AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样�
 
 AI 输入框的“定时任务”属于低频创建动作，和引用文件、使用技能、上传文件一起收纳在 `+` 菜单内，不单独占用工具栏位置；Launcher 与 Chat 共用同一结构和 handler。`+`、会话模式与工具菜单统一使用 200ms 的 opacity + 纵向 translate（6px → 0）入场，不使用 scale，并在 `prefers-reduced-motion` 下取消动画；动效不得覆盖 Floating UI 的定位 transform。`@` 文件引用与 `/` 技能选择弹窗使用 `shadow-md`，与 AI 输入框本体保持同一悬浮层级。
 
+Chat 中选择 `/goal` 后立即在输入框上方进入 Goal 草稿横条，不先打开设置弹窗；目标正文继续在输入框输入并随首次发送启动。横条的设置按钮是结束条件、通知等低频参数的二级入口，关闭按钮取消草稿。斜杠菜单按真实 Runtime 能力投影，而不是按输入框视觉 chrome 投影：MyAgents 客户端动作与当前工作区能力保留，Claude Agent SDK 系统指令只在实际 builtin Session 展示。
+
 ### 15.8 任务创建面板
 
 任务中心“新建任务”与“从想法派发”共用同一创建面板。面板不展示手工标签输入，优先保留任务需求、验收清单、工作区、执行模式与通知等直接影响执行的配置；空白新建提交空标签，从想法派发仅在数据层继承来源想法已有标签。标签仍可在既有 Task 编辑与管理表面维护，不删除持久化字段或历史筛选兼容。
@@ -1415,6 +1417,7 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.48 | 2026-08-09 | **Goal 快捷启动与斜杠菜单能力归属**：Chat 的 `/goal` 选择后直接进入输入框上方草稿横条，设置弹窗降为横条内二级入口；Claude Agent SDK 系统斜杠指令只随真实 builtin Runtime 展示，不再因 Managed Codex 复用 builtin 输入 chrome 而误露出 |
 | 2.8.47 | 2026-08-04 | **MyAgents Light 默认主题**：新增基于 Claude 完整 light/dark package 的 MyAgents Light，仅将 light Primary CTA 改为中性黑，并置于主题列表第一项成为未显式选择用户的新默认；MyAgents Default / Default Black 的用户可见名分别调整为 MyAgents Classic / MyAgents Classic2，稳定 ID 与显式选择兼容不变；Registry 产品顺序与 canonical fallback 注册顺序解耦，两组受控按钮差异由逐 Token 测试锁定 |
 | 2.8.46 | 2026-07-29 | **Session 恢复单次揭示**：已有 Session 从 active cold Tab 首帧起即由同一 Chat shell 覆盖，REST history restore 前不投影 SSE cold replay，消除 raw Markdown 中间态；最终历史同帧提交，移除 MessageList 的 600ms 二次淡入与重复 spinner；恢复失败继续隔离旧内容和迟到 replay，revision/generation 修复成功后一次释放，target 变更会取消旧 REST/timer；恢复期间发送 fail closed，同 Tab UI intent、renderer 已确认 Node binding 与服务端全部 binding mutation 分层串行，并以有限 predecessor 候选做 CAS，保证快速切换/reset 的最终 identity |
 | 2.8.45 | 2026-07-29 | **Markdown 代码横滑归属修复**：非换行代码正文显式声明 `overflow-x-auto`，让 user/query、assistant、文档等共享代码块及 Mermaid 源码视图恢复原生横向滚动，并在到达边缘时继续持有手势；普通正文的双指左右切 Tab 保持不变 |

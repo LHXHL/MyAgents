@@ -3,7 +3,7 @@
 // Most slash commands either insert text into the input (and get sent to the
 // AI, e.g. `/compact`) or are disk-backed skills/commands discovered by the
 // Rust scanner. A *client-action* command is different: selecting it triggers
-// a renderer-side UI action (e.g. opening the goal/cron panel) and is never
+// a renderer-side UI action (e.g. arming the Goal composer draft) and is never
 // sent to the AI.
 //
 // Such a command's behavior lives entirely in the renderer, so it is also

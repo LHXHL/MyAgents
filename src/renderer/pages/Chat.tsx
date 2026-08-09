@@ -53,7 +53,7 @@ import { useConfig } from '@/hooks/useConfig';
 import { useFileDropZone } from '@/hooks/useFileDropZone';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { useCronTask } from '@/hooks/useCronTask';
-import { useSessionGoal, type SessionGoalDraftConfig } from '@/hooks/useSessionGoal';
+import { useSessionGoal } from '@/hooks/useSessionGoal';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroductionContent } from '@/hooks/useIntroductionContent';
@@ -64,7 +64,7 @@ import { sessionHasPersistentOwners } from '@/api/tauriClient';
 import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
 import { materializePendingSessionConfig } from '@/api/sessionMaterialize';
 import type { CronTask } from '@/types/cronTask';
-import type { SessionGoal } from '@/types/sessionGoal';
+import type { SessionGoal, SessionGoalDraftConfig } from '@/types/sessionGoal';
 import { isTerminalGoalStatus } from '@/types/sessionGoal';
 import { formatCronScheduleDescription } from '@/utils/cronTaskI18n';
 import CronTaskCard from '@/components/scheduled-tasks/CronTaskCard';
@@ -76,6 +76,7 @@ import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
+import { createDefaultSessionGoalDraftConfig } from '@/utils/sessionGoalDraft';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
@@ -142,6 +143,7 @@ import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBi
 import {
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
+  shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
 import {
@@ -1135,9 +1137,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // Cron task state
   const [showCronSettings, setShowCronSettings] = useState(false);
   const [cronPrompt, setCronPrompt] = useState('');
-  // Preset applied when opening the cron modal via a slash command (e.g.
-  // `/goal`). Wins over `cronState.config` only for a fresh open (no running
-  // task); cleared on open-via-定时-button / close / confirm so it never leaks.
+  // Preset applied when Goal's draft bar opens the optional settings modal.
+  // Cleared on open-via-定时-button / close / confirm so it never leaks.
   const [cronOpenPreset, setCronOpenPreset] = useState<CronInitialConfig | null>(null);
   const [goalDraftConfig, setGoalDraftConfig] = useState<SessionGoalDraftConfig | null>(null);
   const goalDraftConfigRef = useRef<SessionGoalDraftConfig | null>(null);
@@ -1371,9 +1372,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     managedProviderRuntimeActive,
   });
   const showLegacyRuntimeSelector = multiAgentRuntimeEnabled;
+  const showBuiltinSdkSlashCommands = shouldShowBuiltinSdkSlashCommands(currentRuntime);
   const visibleSdkSlashCommands = useMemo(
-    () => inputUsesExternalRuntimeControls ? [] : sdkSlashCommands,
-    [inputUsesExternalRuntimeControls, sdkSlashCommands],
+    () => showBuiltinSdkSlashCommands ? sdkSlashCommands : [],
+    [showBuiltinSdkSlashCommands, sdkSlashCommands],
   );
 
   // Detect installed runtimes once on mount
@@ -4279,17 +4281,33 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setShowCronSettings(true);
   }, []);
 
-  // Dispatch a client-action slash command from the chat input. `/goal` opens
-  // the shared settings modal preset to Goal mode; the objective is entered in
-  // the input after confirming.
+  // `/goal` is a product action, not a Runtime command. Arm the lightweight
+  // composer draft immediately; the bar's settings button owns optional tuning.
   const handleSlashAction = useCallback((name: string) => {
     if (name === 'goal' || name === 'loop') {
       setStoppedCronRecovery(null);
-      setCronPrompt(''); // task is entered after confirm, not snapshotted here
-      setCronOpenPreset(GOAL_SLASH_PRESET);
-      setShowCronSettings(true);
+      if (!cronStateRef.current.task) disableCronMode();
+      const goalExecution = buildCronExecutionOverrides({
+        providerId: !isExternalRuntime && currentProvider ? currentProvider.id : undefined,
+        model: isExternalRuntime ? undefined : selectedModel,
+      });
+      setGoalDraftConfig(createDefaultSessionGoalDraftConfig({
+        permissionMode: isExternalRuntime ? effectiveRuntimePermissionMode : permissionMode,
+        runtime: goalExecution.runtime,
+      }));
+      setCronPrompt('');
+      setCronOpenPreset(null);
+      setShowCronSettings(false);
     }
-  }, []);
+  }, [
+    buildCronExecutionOverrides,
+    currentProvider,
+    disableCronMode,
+    effectiveRuntimePermissionMode,
+    isExternalRuntime,
+    permissionMode,
+    selectedModel,
+  ]);
 
   const handleCronStop = useCallback(async () => {
     const stopSessionId = sessionIdRef.current;
@@ -5404,6 +5422,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
             agentDir={agentDir}
             workspacePath={agentDir}
             sessionId={sessionId}
+            showBuiltinSdkSlashCommands={showBuiltinSdkSlashCommands}
             workspaceSlashCommands={workspaceCapabilitySlashCommands}
             sdkSlashCommands={visibleSdkSlashCommands}
             provider={currentProvider}
@@ -6003,10 +6022,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         isOpen={showCronSettings}
         onClose={() => { setShowCronSettings(false); setCronOpenPreset(null); }}
         initialPrompt={cronPrompt}
-        // Editing a RUNNING task always wins (cronState.task). Otherwise a slash
-        // preset (e.g. /goal) applies — including over an armed-but-unsent
-        // config, so /goal reliably forces Goal mode. Plain 定时-button opens
-        // (no preset) fall back to cronState.config either way.
+        // Editing a RUNNING task always wins (cronState.task). Otherwise the
+        // Goal bar's optional settings preset applies over an armed-but-unsent
+        // config. Plain 定时-button opens (no preset) fall back to
+        // cronState.config either way.
         initialConfig={cronOpenPreset?.taskKind === 'goal'
           ? cronOpenPreset
           : (cronState.task ? cronState.config : (cronOpenPreset ?? cronState.config))}
