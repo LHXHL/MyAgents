@@ -115,6 +115,7 @@ import {
 import {
     MYAGENTS_GITHUB_URL,
     MYAGENTS_RELEASES_URL,
+    MYAGENTS_SOURCE_CODE_URL,
     PLAYWRIGHT_DEVICE_PRESETS,
 } from './settingsSections';
 import {
@@ -602,7 +603,6 @@ export default function Settings({ mode = 'settings', initialSection, navigation
     const sourceRevision = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(appVersion)
         ? `v${appVersion}`
         : 'main';
-    const sourceTreeUrl = `${MYAGENTS_GITHUB_URL}/tree/${sourceRevision}`;
     const sourceLicenseUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/LICENSE`;
     const sourceNoticesUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/THIRD_PARTY_NOTICES.md`;
     useEffect(() => {
@@ -5162,7 +5162,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         {tSettings('about.communityLicense')}
                                     </ExternalLink>
                                     <ExternalLink
-                                        href={sourceTreeUrl}
+                                        href={MYAGENTS_SOURCE_CODE_URL}
                                         className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
                                     >
                                         {tSettings('about.sourceCode')}

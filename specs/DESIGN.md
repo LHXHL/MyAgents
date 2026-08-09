@@ -1397,7 +1397,8 @@ Settings 内部导航顺序固定为：模型供应商、通用设置、聊天�
 About 页必须把软件授权作为用户可达的一等产品信息：在联系方式之后使用标准
 `paper-elevated` 卡片说明 `AGPL-3.0-only` 社区许可与闭源商业授权的边界，并提供许可证、
 对应源码、第三方声明和商业授权邮件四个入口。开源入口使用 inset 次按钮，商业授权使用
-Primary CTA；所有链接复用 `ExternalLink`，不得由 WebView 原生导航接管。
+Primary CTA；“获取源代码”固定打开 GitHub 仓库默认页，不跟随应用版本、tag 或开发分支；
+所有链接复用 `ExternalLink`，不得由 WebView 原生导航接管。
 
 AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前模型居中放入可视范围，模型供应商或外部 Runtime 模型异步刷新后再次校正，不得调用会牵动页面滚动的全局 `scrollIntoView`。底部“管理自定义模型服务”入口仅在 AgentSDK 输入 chrome 显示：builtin 与 Managed Codex 均显示，用户自管 Claude Code / Codex CLI / Gemini CLI 不显示；点击后关闭模型菜单并打开或聚焦 `设置 → 模型供应商`。
 
