@@ -374,23 +374,25 @@ macOS 的 renderer 崩溃恢复由 Tauri `on_web_content_process_terminate` 回�
 
 ### 3. 系统提示词组装 (`src/server/system-prompt.ts`)
 
-三层 Prompt 架构：
+对话 Session 的系统上下文由四类来源共同组成：Runtime 原生 base/preset、MyAgents
+产品级 Prompt append、Workspace 指令文件，以及按 Turn 注入的 `system-reminder`。
+它们共享最终模型上下文，但 owner、权限层级和生命周期不同，不能当成一个字符串维护。
+
+MyAgents 产品级 append 由 `buildSystemPromptAppend()` 统一组装：
 
 | 层 | 用途 | 何时包含 |
 |----|------|---------|
 | **L1** 基础身份 | 告诉 AI 运行在 MyAgents 产品中 | 始终 |
 | **L2** 交互方式 | 桌面客户端 / IM Bot / Agent Channel | 互斥选一 |
-| **L3** 场景指令 | Cron 定时任务上下文 / IM 心跳 / 浮球小窗 / Browser Storage | 按需叠加 |
+| **L3** 场景与产品交互 | Task / IM 心跳 / Registered Agent / 浮球 / Widget / Session 协作 / Browser Storage | 按需叠加 |
+| **L4** CLI 能力发现 | Task / Goal / Thought / IM 媒体 / Vision / 用户注册工具 | 按场景与能力开关叠加 |
 
-```typescript
-type InteractionScenario =
-  | { type: 'desktop'; surface?: 'chat' | 'floating-ball' }
-  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
-  | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string }
-  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean };
-```
-
-`desktop.surface` 区分同一桌面渠道下的入口形态：默认 Chat 不额外指定；浮球入口使用 `surface: 'floating-ball'`，系统提示词追加小窗交互约束，同时每条浮球消息自带 `system-reminder` 上下文，覆盖已预热 session 不能重组 systemPrompt 的情况。
+当前 `InteractionScenario` 包含 desktop、im、agent-channel、cron 和 registeredAgent；
+精确字段、预设片段条件矩阵、四种 Runtime 的投送方式、Workspace 指令兼容和
+pre-warm 不可变语义见
+[`tech_docs/system_prompt_architecture.md`](./tech_docs/system_prompt_architecture.md)。
+逐轮隐藏消息的 wire/display 协议由
+[`tech_docs/system_reminder_protocol.md`](./tech_docs/system_reminder_protocol.md) 单独拥有。
 
 ### 4. 自配置 CLI (`src/cli/` + `src-tauri/src/cli.rs`)
 
@@ -1070,6 +1072,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 通信与会话
 - [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步、Goal Mode session 状态
+- [MyAgents 系统提示词架构](./tech_docs/system_prompt_architecture.md) — 产品 Prompt、Workspace 指令、Runtime 投送、场景片段与 `system-reminder` 边界
 - [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
 - [统一日志](./tech_docs/unified_logging.md) — 日志格式、来源、排查指南
