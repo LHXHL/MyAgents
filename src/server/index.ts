@@ -457,6 +457,8 @@ import {
   resolveEffectiveProjectCapabilities,
   setProjectCapabilityEnabled,
 } from './project-capabilities';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
+import { isManagedSymlink } from './utils/project-user-config-sync';
 import { managementApi } from './utils/management-api-client';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 import {
@@ -4707,8 +4709,12 @@ async function main() {
           if (!workspacePath) {
             return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
           }
+          const globalSkillInventory = createGlobalSkillInventorySnapshot();
           return jsonResponse(projectCapabilitySnapshotForWire(
-            resolveEffectiveProjectCapabilities(workspacePath),
+            resolveEffectiveProjectCapabilities(workspacePath, {
+              globalSkillInventory,
+              enforceRequiredIntegrity: false,
+            }),
           ));
         } catch (error) {
           console.error('[api/project-capabilities] Error:', error);
@@ -4775,6 +4781,9 @@ async function main() {
           const queryAgentDir = url.searchParams.get('agentDir');
           const { skillsDir: effectiveSkillsDir } = getProjectBaseDirs(queryAgentDir);
           const skillsConfigForList = readSkillsConfig();
+          const globalSkillInventory = (scope === 'all' || scope === 'user')
+            ? createGlobalSkillInventorySnapshot({ rootPath: userSkillsBaseDir })
+            : null;
           const skills: Array<{
             name: string;
             description: string;
@@ -4792,10 +4801,14 @@ async function main() {
             try {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
+                const folderPath = join(dir, folder.name);
+                if (scopeType === 'project' && isManagedSymlink(folderPath, userSkillsBaseDir)) {
+                  continue;
+                }
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
-                if (!isDirEntry(folder, join(dir, folder.name))) continue;
+                if (!isDirEntry(folder, folderPath)) continue;
                 if (isSkillBlockedOnPlatform(folder.name)) continue;
-                const skillMdPath = join(dir, folder.name, 'SKILL.md');
+                const skillMdPath = join(folderPath, 'SKILL.md');
                 if (!existsSync(skillMdPath)) continue;
 
                 const content = readFileSync(skillMdPath, 'utf-8');
@@ -4826,10 +4839,29 @@ async function main() {
             scanSkills(resolvedProjectSkillsDir, 'project');
           }
           if (scope === 'all' || scope === 'user') {
-            scanSkills(userSkillsBaseDir, 'user');
+            for (const entry of globalSkillInventory?.entries ?? []) {
+              const systemOwned = SYSTEM_SKILLS.includes(entry.folderName);
+              skills.push({
+                name: entry.name,
+                description: entry.description,
+                scope: 'user',
+                path: entry.skillPath,
+                folderName: entry.folderName,
+                ...(entry.author ? { author: entry.author } : {}),
+                systemOwned,
+                required: entry.required,
+                enabled: entry.enabledForProjection,
+              });
+            }
           }
 
-          return jsonResponse({ success: true, skills });
+          return jsonResponse({
+            success: true,
+            skills,
+            ...(globalSkillInventory
+              ? { integrityIssues: globalSkillInventory.integrityIssues }
+              : {}),
+          });
         } catch (error) {
           console.error('[api/skills] Error:', error);
           return jsonResponse(

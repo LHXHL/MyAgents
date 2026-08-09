@@ -562,6 +562,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 | `validate_workspace_root(path)` | 工作区根校验：必须是绝对路径 + 存在 + 通过 `commands::validate_file_path` 黑名单 | 所有 cmd 入口（读+写）|
 | `resolve_inside_workspace(root, rel)` | **写侧** 路径解析：lexical resolve `..`/`.` + `starts_with(root)` 校验。允许目标不存在（write/create cmd 必须） | `crud`、`gitignore`、`transfer`、`save_file` 等创建/重命名场景 |
 | `resolve_existing_inside_workspace(root, rel)` | **读侧** 路径解析：先调 lexical 版本，再 `fs::canonicalize` 把整条 symlink 链解开，最终路径必须 `starts_with(canonicalize(root))`。不存在 → 返回 `File not found` | `read_preview`、`download`、`save_file`（require existing）、`check_paths`、`claude_md` |
+| `reject_managed_global_skill_mutation(root, target)` | **mutation-only**：逐组件检查 canonical target、junction/symlink payload 与最近存在祖先，拒绝写入 `.claude/skills/*` 中指向 `~/.myagents/skills` 的链接叶子或后代（含目标尚不存在、断链） | `save_file`、`crud`、`delete`、`transfer` destination、`files_b64` destination |
 | `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
 | `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |
 | `validate_external_read_path(abs)` | 绝对路径外部读校验（drag-drop / launcher 工作区根）：lexical blacklist；路径**存在**时再 `fs::canonicalize` 复查一遍 blacklist（0.2.33 cross-review：中间 symlink 组件 `lure → ~/.ssh` 可穿透纯 lexical 检查）；不存在时仅 lexical 放行（slash.rs 要校验尚未创建的新工作区根）。返回 **lexical** 路径，保住调用方的 leaf-symlink 拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
@@ -575,6 +576,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - **写侧不存在路径可解析**：`resolve_inside_workspace` 是纯 lexical，不调 fs，可处理 `new_file` 这种"目标不存在"场景。
 - **读侧 symlink 逃逸防护**：`resolve_existing_inside_workspace` canonicalize 双侧（path + workspace_root），通过 `starts_with` 拦截 `evil_link → /etc/passwd`。读 `read_preview`/`download`/`save_file` 必须用此 helper；只用 lexical 版会被穿透。
 - **destructive 写用 `fs::symlink_metadata`**：`crud.rs::slot_occupied`、`transfer.rs::slot_occupied` 都是 `fs::symlink_metadata(p).is_ok()`，**不**是 `Path::exists()`——断链 symlink 必须报告为占用，否则后续 `fs::write` / `fs::rename` 会写穿或报莫名错误。
+- **managed Skill 投影是 mutation-only 只读边界**：读取、揭示路径和从 Skill 向工作区 copy-out 继续允许；保存、新建、重命名、移动、删除、copy/import destination 必须经过 `reject_managed_global_skill_mutation`。不要把它并入通用 read resolver，也不要给 Node 投影增加 bypass flag。
 - **bounded read 防 TOCTOU**：所有读取大文件命令（`read_preview` 512KB cap、`download` 25MB、`files_b64::read_one_image_as_b64` 10MB）用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，bounded read 是唯一可靠防御。
 - **validate 与 open 必须是一体的**：workspace attachment 不得退回 `metadata/canonicalize → File::open(path)`；Windows 的 share flags 不约束 `FILE_WRITE_ATTRIBUTES`，攻击者仍可把空目录原地设为 junction。必须由 `read_workspace_file_no_follow` 从已验证 parent handle 做 handle-relative child open/create，leaf 与 temp/final rename 也不得重新解析可变路径。
 
@@ -583,6 +585,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 读侧 cmd 用 `resolve_inside_workspace`（lexical 版）——symlink 逃逸不被拦。MUST 用 `resolve_existing_inside_workspace`。
 - 读取大文件用 `fs::read_to_string` 不带 cap——TOCTOU 增长直接 OOM。MUST 用 `take(MAX+1).read_to_end`。
 - 把 workspace 路径 hardcode 在 cmd 内部——renderer 端 `useWorkspaceFileService(workspacePath)` 传入，不要在 Rust 侧再 hardcode `dirs::home_dir().join(".myagents/workspaces")`。
+- 在单个 mutation command 里自行判断 `.claude/skills` 字符串前缀——Windows junction、大小写与断链会绕过。MUST 调用共享 mutation guard；普通项目 Skill 物理目录不应被误伤。
 - watcher 用 path-derived key 做 stop 索引——重命名/删除/symlink swap 后 stop 失效。MUST 用 `watch_start` 返回的 opaque token；`watch_stop({token})` 索引；进程 nonce 防跨重启 token 碰撞。
 
 **Phase E（PRD 0.2.7）状态**：18 个 sidecar HTTP workspace IO endpoint 已全部下线，renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁了被删 endpoint 的字符串字面量。
@@ -659,8 +662,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 版本戳 `complete = missing.is_empty() && incomplete.is_empty()` 时才写；任一缺/不完整 → 不写戳 → 下次启动重试。平台跳过的 skill 是有意的、不算缺陷、不阻塞。
 - Rust `cmd_sync_system_skills` 与 Node `seedBundledSkills` 两条 seed 路径**同款逻辑**。
 - `SYSTEM_SKILLS` 是版本化安装集合；`src/shared/systemSkills.ts::REQUIRED_SYSTEM_SKILLS` 是其中始终启用的 canonical 产品契约子集，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定。读取/写回 `skills-config.json` 都会移除 Required 的 stale disabled 项，list 投影固定为 `required:true, enabled:true`，disable API fail closed；普通系统/用户 Skill 仍保留可禁用语义。
+- 同步之后的 Runtime admission 不再把“目录存在”当“Skill 完整”。`global-skill-inventory.ts` 每个业务边界完整扫描一次，只把可信物理目录、可读 canonical `SKILL.md` 且未命中强冲突证据的项交给 resolver / workspace projection。`SKILL(N).md` sibling 与无其它证据的 `(N)` 目录只 warning；缺 canonical、collision identity/sibling、global symlink/junction 与扫描竞态 blocked。Required blocked/missing 拒绝 Runtime；optional blocked 只移除当前工作区 managed link，所有原始文件保留。
+- `EffectiveProjectCapabilitySnapshot.revision` 仍只表示 effective Runtime 内容；`integrityRevision` 单独表示诊断与 desired managed-link set。纯 warning/no-op reconcile 不换代，只有实际 unlink/create 才复用既有 deferred replacement。二者不进入持久 cache。Rust Launcher 使用共享 JSON fixtures 镜像 classifier，并先跳过指向 global root 的 project junction，避免同一 Skill 被误认成 project winner。
 
-**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
+**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。不要用 watcher、后台 timer、持久 registry 或全工作区 sweep 代替 admission snapshot，也不要自动 rename/delete/merge 可疑目录。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
 
 ---
 

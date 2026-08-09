@@ -16,8 +16,13 @@ vi.mock('../../../plugins/store', () => ({
 }));
 import {
   compileManagedCodexCommand,
-  compileManagedCodexExtensionSnapshot,
+  compileManagedCodexExtensionSnapshot as compileManagedCodexExtensionSnapshotWithInventory,
+  type CompileManagedCodexExtensionSnapshotInput,
 } from './compiler';
+import {
+  createGlobalSkillInventorySnapshot,
+  type GlobalSkillInventorySnapshot,
+} from '../../../global-skill-inventory';
 
 const roots: string[] = [];
 
@@ -30,6 +35,24 @@ function tempRoot(): string {
 function write(path: string, content: string): void {
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, content, 'utf8');
+}
+
+function compileManagedCodexExtensionSnapshot(
+  input: Omit<CompileManagedCodexExtensionSnapshotInput, 'globalSkillInventory'> & {
+    globalSkillInventory?: GlobalSkillInventorySnapshot;
+  },
+) {
+  const globalSkillInventory = input.globalSkillInventory
+    ?? createGlobalSkillInventorySnapshot({
+      rootPath: input.userConfigRoot
+        ? join(input.userConfigRoot, 'skills')
+        : join(input.workspacePath, '.test-global-skills'),
+      cliToolRegistryEnabled: true,
+    });
+  return compileManagedCodexExtensionSnapshotWithInventory({
+    ...input,
+    globalSkillInventory,
+  });
 }
 
 afterEach(() => {
@@ -219,6 +242,59 @@ describe('Managed Codex extension compiler', () => {
     expect(first.revision).not.toBe(second.revision);
   });
 
+  it('compiles global Skill bytes from the admitted inventory without rereading disk', () => {
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    const skillPath = join(userRoot, 'skills', 'review', 'SKILL.md');
+    const admitted = '---\nname: review\ndescription: Admitted review\n---\nOriginal instructions.';
+    write(skillPath, admitted);
+    const globalSkillInventory = createGlobalSkillInventorySnapshot({
+      rootPath: join(userRoot, 'skills'),
+      cliToolRegistryEnabled: true,
+      disabledSkillNames: new Set(),
+    });
+    const inventoryEntry = globalSkillInventory.entries.find(entry => entry.folderName === 'review');
+    if (!inventoryEntry) throw new Error('missing admitted fixture');
+    const candidate = {
+      id: 'global:skill:review',
+      kind: 'skill' as const,
+      source: 'global' as const,
+      sourceLocalId: 'review',
+      canonicalName: 'review',
+      name: 'review',
+      description: 'Admitted review',
+      path: skillPath,
+      required: false,
+      systemOwned: false,
+      enabled: true,
+      contentSha256: inventoryEntry.content,
+    };
+    write(skillPath, '---\nname: changed\ndescription: Changed on disk\n---\nDifferent instructions.');
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop' },
+      globalSkillInventory,
+      capabilitySnapshot: {
+        workspacePath: workspace,
+        agentId: 'agent-1',
+        revision: 'admitted',
+        integrityRevision: globalSkillInventory.integrityRevision,
+        integrityIssues: [...globalSkillInventory.integrityIssues],
+        candidates: [candidate],
+        enabledSkills: [candidate],
+        enabledCommands: [],
+      },
+    });
+
+    expect(snapshot.skills).toEqual([
+      expect.objectContaining({ name: 'review', description: 'Admitted review' }),
+    ]);
+  });
+
   it('projects only enabled global Skills', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();
@@ -289,6 +365,8 @@ describe('Managed Codex extension compiler', () => {
         workspacePath: workspace,
         agentId: 'agent-1',
         revision: 'selection',
+        integrityRevision: 'integrity',
+        integrityIssues: [],
         candidates: [disabledSkill, enabledCommand],
         enabledSkills: [],
         enabledCommands: [enabledCommand],
@@ -315,6 +393,8 @@ describe('Managed Codex extension compiler', () => {
         workspacePath: workspace,
         agentId: 'agent-1',
         revision: 'selection-changed-with-same-effective-output',
+        integrityRevision: 'integrity',
+        integrityIssues: [],
         candidates: [disabledSkill, enabledCommand],
         enabledSkills: [],
         enabledCommands: [enabledCommand],

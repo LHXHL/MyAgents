@@ -43,6 +43,8 @@ function snapshot(): EffectiveProjectCapabilitySnapshot {
     workspacePath: '/fixture/project',
     agentId: 'fixture-agent',
     revision: 'fixture-revision',
+    integrityRevision: 'fixture-integrity-revision',
+    integrityIssues: [],
     candidates: [enabledSkill, disabledSkill, enabledCommand, disabledCommand, reservedCollision, clientActionCollision],
     enabledSkills: [enabledSkill],
     enabledCommands: [enabledCommand],

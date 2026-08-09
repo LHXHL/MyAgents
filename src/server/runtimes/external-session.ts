@@ -79,6 +79,12 @@ import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { findProjectAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
 import type { AgentConfig } from '../../shared/types/agent';
 import { resolveEffectiveProjectCapabilities } from '../project-capabilities';
+import type { EffectiveProjectCapabilitySnapshot } from '../../shared/projectCapabilities';
+import {
+  createGlobalSkillInventorySnapshot,
+  type GlobalSkillInventorySnapshot,
+} from '../global-skill-inventory';
+import { syncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
@@ -492,11 +498,13 @@ let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
 let pendingExternalProxyRestart = false;
 let pendingExternalProxyRestartOriginalKey: string | null = null;
 let pendingExternalOfficialToolsRestart = false;
+let pendingExternalCapabilityRestart = false;
 let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
 function clearPendingExternalProcessConfigRestarts(): void {
   pendingExternalProxyRestart = false;
   pendingExternalProxyRestartOriginalKey = null;
   pendingExternalOfficialToolsRestart = false;
+  pendingExternalCapabilityRestart = false;
   setManagedCodexExtensionRestartPending(false);
 }
 
@@ -504,6 +512,7 @@ function pendingExternalProcessConfigRestartReasons(): string[] {
   return [
     ...(pendingExternalProxyRestart ? ['proxy'] : []),
     ...(pendingExternalOfficialToolsRestart ? ['official-tools'] : []),
+    ...(pendingExternalCapabilityRestart ? ['capabilities'] : []),
     ...(isManagedCodexExtensionRestartPending() ? ['managed-codex-extensions'] : []),
   ];
 }
@@ -557,6 +566,9 @@ function applyPendingExternalProcessConfigInvalidation(
       }
       if (reasons.includes('official-tools')) {
         pendingExternalOfficialToolsRestart = true;
+      }
+      if (reasons.includes('capabilities')) {
+        pendingExternalCapabilityRestart = true;
       }
       if (reasons.includes('managed-codex-extensions')) {
         setManagedCodexExtensionRestartPending(true);
@@ -2344,10 +2356,32 @@ function isManagedCodexProductRuntime(): boolean {
     && getCurrentRuntimeSource() === 'managed-provider';
 }
 
+type ExternalSkillAdmission = {
+  globalSkillInventory: GlobalSkillInventorySnapshot;
+  capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
+};
+
+function buildCurrentExternalSkillAdmission(
+  workspacePath: string,
+  resolveCapabilities: boolean,
+): ExternalSkillAdmission {
+  const globalSkillInventory = createGlobalSkillInventorySnapshot();
+  const capabilitySnapshot = resolveCapabilities
+    ? resolveEffectiveProjectCapabilities(workspacePath, { globalSkillInventory })
+    : undefined;
+  const { changed } = syncProjectUserConfigFiles(workspacePath, {
+    strict: true,
+    globalSkillInventory,
+  });
+  if (changed && hasExternalRuntimeProcess()) pendingExternalCapabilityRestart = true;
+  return { globalSkillInventory, capabilitySnapshot };
+}
+
 function buildCurrentManagedCodexExtensionSnapshot(input?: {
   workspacePath?: string;
   scenario?: InteractionScenario;
   mcpServers?: readonly import('../../shared/config-types').McpServerDefinition[];
+  skillAdmission?: ExternalSkillAdmission;
 }): ManagedCodexExtensionSnapshot {
   const workspacePath = input?.workspacePath ?? getExternalLifecycleWorkspacePath();
   if (!workspacePath) {
@@ -2360,6 +2394,11 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     : getManagedCodexSessionMcpServers();
   const mcpServers = sessionMcpServers
     ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
+  const skillAdmission = input?.skillAdmission
+    ?? buildCurrentExternalSkillAdmission(workspacePath, true);
+  if (!skillAdmission.capabilitySnapshot) {
+    throw new Error('Managed Codex Skill admission has no capability snapshot');
+  }
   return compileManagedCodexExtensionSnapshot({
     workspacePath,
     scenario: input?.scenario ?? getExternalLifecycleScenario(),
@@ -2367,7 +2406,8 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
       ?? metadata?.enabledPluginIds
       ?? null,
     mcpServers,
-    capabilitySnapshot: resolveEffectiveProjectCapabilities(workspacePath),
+    capabilitySnapshot: skillAdmission.capabilitySnapshot,
+    globalSkillInventory: skillAdmission.globalSkillInventory,
   });
 }
 
@@ -2783,6 +2823,8 @@ export async function startExternalSession(options: {
   channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   messageOperation?: ExternalMessageOperation;
+  /** Reuse the exact admission already built at this message boundary. */
+  skillAdmission?: ExternalSkillAdmission;
 }): Promise<void> {
   // Concurrency guard — wait for any in-flight start to finish
   await awaitExternalLifecycleStarting();
@@ -2828,6 +2870,7 @@ async function _doStartExternalSession(options: {
   channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   messageOperation?: ExternalMessageOperation;
+  skillAdmission?: ExternalSkillAdmission;
 }): Promise<void> {
 
   const runtimeType = getCurrentRuntimeType();
@@ -2934,11 +2977,16 @@ async function _doStartExternalSession(options: {
     ? getManagedCodexSessionMcpServers()
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
+  const externalSkillAdmission = options.skillAdmission ?? buildCurrentExternalSkillAdmission(
+    options.workspacePath,
+    runtimeType === 'codex' && runtimeSource === 'managed-provider',
+  );
   let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
     ? buildCurrentManagedCodexExtensionSnapshot({
         workspacePath: options.workspacePath,
         scenario: options.scenario,
         mcpServers: managedCodexMcpServers ?? [],
+        skillAdmission: externalSkillAdmission,
       })
     : undefined;
   if (managedCodexExtensionSnapshot) {
@@ -3691,10 +3739,25 @@ async function dispatchExternalMessageOperation(
   }
 
   let runtimeText = text;
+  let skillAdmission: ExternalSkillAdmission;
+  try {
+    const workspacePath = context?.workspacePath
+      ?? operation.context.workspacePath
+      ?? getExternalLifecycleWorkspacePath();
+    if (!workspacePath) throw new Error('External Runtime Skill admission has no workspace owner');
+    skillAdmission = buildCurrentExternalSkillAdmission(workspacePath, isManagedCodexProductRuntime());
+  } catch (error) {
+    if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+    return {
+      queued: false,
+      error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (isManagedCodexProductRuntime()) {
     const extensionResult = await reconcileManagedCodexExtensionSnapshot('commands', () => (
       buildCurrentManagedCodexExtensionSnapshot({
         scenario: context?.scenario ?? getExternalLifecycleScenario(),
+        skillAdmission,
       })
     ), dispatchPromotion);
     if (!extensionResult.success) {
@@ -3832,6 +3895,7 @@ async function dispatchExternalMessageOperation(
         channelDelivery: context.channelDelivery,
         onDispatchAccepted,
         messageOperation: operation,
+        skillAdmission,
       });
       return { queued: true };
     } catch (err) {
@@ -3897,6 +3961,7 @@ async function dispatchExternalMessageOperation(
         channelDelivery: context?.channelDelivery,
         onDispatchAccepted,
         messageOperation: operation,
+        skillAdmission,
       });
       return { queued: true };
     } catch (err) {

@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeType } from '../../shared/types/runtime';
+import { REQUIRED_SYSTEM_SKILLS } from '../../shared/systemSkills';
 import type { DesktopMessageRequest, InjectedTurnRequest } from '../session-engine/types';
 import type { MirrorPayload } from '../utils/im-mirror';
 import type {
@@ -409,6 +410,14 @@ async function createHarness(
   vi.resetModules();
   const home = mkdtempSync(join(tmpdir(), 'myagents-external-mock-'));
   mkdirSync(join(home, '.myagents'), { recursive: true });
+  for (const name of REQUIRED_SYSTEM_SKILLS) {
+    const skillDir = join(home, '.myagents', 'skills', name);
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${name}\n---\n`,
+    );
+  }
   if (options.config) {
     writeFileSync(join(home, '.myagents', 'config.json'), JSON.stringify(options.config));
   }
@@ -634,6 +643,64 @@ describe('external SessionEngine with fake runtime', () => {
       { event: 'chat:status', data: { sessionState: 'running' } },
       { event: 'chat:status', data: { sessionState: 'idle' } },
     ]);
+  });
+
+  it('restarts an idle compatibility Runtime after blocked-link cleanup', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'clean projection' }]);
+    const sessionId = 'session-skill-projection-cleanup';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'optional-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: optional-review\ndescription: Optional review\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'compatibility prewarm');
+    const projected = join(workspacePath, '.claude', 'skills', 'optional-review');
+    expect(readFileSync(join(projected, 'SKILL.md'), 'utf8')).toContain('Optional review');
+
+    renameSync(join(globalSkill, 'SKILL.md'), join(globalSkill, 'SKILL(1).md'));
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'use the current projection'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(() => readFileSync(join(projected, 'SKILL.md'), 'utf8')).toThrow();
+    expect(readFileSync(join(globalSkill, 'SKILL(1).md'), 'utf8')).toContain('Optional review');
+  });
+
+  it('keeps an idle compatibility Runtime when integrity changes but projection is a no-op', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'warning stayed live' }]);
+    const sessionId = 'session-skill-warning-no-restart';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'optional-warning');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: optional-warning\ndescription: Optional warning\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'warning prewarm');
+
+    writeFileSync(join(globalSkill, 'SKILL(1).md'), 'preserved sibling');
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'keep the healthy canonical skill'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
   });
 
   it('broadcasts attachment updates only when a top-level placeholder owns them', async () => {

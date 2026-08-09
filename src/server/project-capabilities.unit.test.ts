@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { REQUIRED_SYSTEM_SKILLS } from '../shared/systemSkills';
 
 import {
   resolveEffectiveProjectCapabilities,
@@ -37,6 +38,9 @@ function makeFixture() {
   write(join(home, '.myagents', 'projects.json'), JSON.stringify([
     { id: 'project-1', path: workspace, agentId: 'agent-1' },
   ]));
+  for (const name of REQUIRED_SYSTEM_SKILLS) {
+    write(join(home, '.myagents', 'skills', name, 'SKILL.md'), skill(name, 'required'));
+  }
   return { home, workspace };
 }
 
@@ -130,7 +134,7 @@ describe('effective project capabilities', () => {
       skill('myagents-cli', 'not the official install'),
     );
     expect(() => resolveEffectiveProjectCapabilities(workspace)).toThrow(
-      'invalid required system identity',
+      'not-system-owned:untrusted_global_source',
     );
   });
 
@@ -155,12 +159,14 @@ describe('effective project capabilities', () => {
     write(join(home, '.myagents', 'skills', 'shared-slot', 'SKILL.md'), skill('global-name', 'global'));
     write(join(workspace, '.claude', 'skills', 'shared-slot', 'SKILL.md'), skill('project-name', 'project'));
 
-    expect(resolveEffectiveProjectCapabilities(workspace).candidates).toEqual([
-      expect.objectContaining({
-        id: 'project:skill:shared-slot',
-        canonicalName: 'project-name',
-      }),
-    ]);
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.candidates).toContainEqual(expect.objectContaining({
+      id: 'project:skill:shared-slot',
+      canonicalName: 'project-name',
+    }));
+    expect(snapshot.candidates).not.toContainEqual(expect.objectContaining({
+      id: 'global:skill:shared-slot',
+    }));
   });
 
   it('keeps invalid real project entries in control of their physical slots', () => {

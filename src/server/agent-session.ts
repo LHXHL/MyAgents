@@ -202,6 +202,7 @@ import {
   type ProjectUserConfigSyncOptions,
 } from './utils/project-user-config-sync';
 import { resolveEffectiveProjectCapabilities } from './project-capabilities';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
@@ -8168,7 +8169,8 @@ export async function enqueueUserMessage(
   const channelDelivery = options.channelDelivery;
 
   try {
-    const desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir);
+    const globalSkillInventory = createGlobalSkillInventorySnapshot();
+    const desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
     const disabledCapability = findDisabledCapabilityForSlashInput(trimmed, desiredCapabilities);
     if (disabledCapability) {
       return {
@@ -8176,9 +8178,26 @@ export async function enqueueUserMessage(
         error: `/${disabledCapability.canonicalName} is disabled for this workspace`,
       };
     }
+    const currentCapabilities = configState.currentCapabilitySnapshot;
+    let projectionChanged = false;
     if (
       lifecycleState.query
-      && configState.currentCapabilitySnapshot?.revision !== desiredCapabilities.revision
+      && currentCapabilities
+      && !isTurnInFlight()
+      && (currentCapabilities.revision !== desiredCapabilities.revision
+        || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+    ) {
+      projectionChanged = syncProjectUserConfigFiles(agentDir, {
+        strict: true,
+        globalSkillInventory,
+      }).changed;
+      if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+        configState.currentCapabilitySnapshot = desiredCapabilities;
+      }
+    }
+    if (
+      lifecycleState.query
+      && (currentCapabilities?.revision !== desiredCapabilities.revision || projectionChanged)
     ) {
       scheduleDeferredRestart('capabilities');
       // Quiescent/pre-warmed Queries are replaced immediately. During a turn,
@@ -10220,8 +10239,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // selection never mutates that cross-Runtime disk view.
   let launchCapabilitySnapshot: EffectiveProjectCapabilitySnapshot;
   try {
-    launchCapabilitySnapshot = resolveEffectiveProjectCapabilities(agentDir);
-    syncProjectUserConfigFiles(agentDir, { strict: true, cliToolRegistryEnabled });
+    const globalSkillInventory = createGlobalSkillInventorySnapshot({ cliToolRegistryEnabled });
+    launchCapabilitySnapshot = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+    syncProjectUserConfigFiles(agentDir, {
+      strict: true,
+      cliToolRegistryEnabled,
+      globalSkillInventory,
+    });
   } catch (error) {
     const message = `Workspace capability admission failed: ${error instanceof Error ? error.message : String(error)}`;
     console.error(`[agent] ${message}`);
@@ -13139,7 +13163,30 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     const promotedQuery = lifecycleState.query;
     let desiredCapabilities: EffectiveProjectCapabilitySnapshot;
     try {
-      desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir);
+      const globalSkillInventory = createGlobalSkillInventorySnapshot();
+      desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+      const currentCapabilities = configState.currentCapabilitySnapshot;
+      let projectionChanged = false;
+      if (
+        currentCapabilities
+        && (currentCapabilities.revision !== desiredCapabilities.revision
+          || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+      ) {
+        projectionChanged = syncProjectUserConfigFiles(agentDir, {
+          strict: true,
+          globalSkillInventory,
+        }).changed;
+        if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+          configState.currentCapabilitySnapshot = desiredCapabilities;
+        }
+      }
+      if (projectionChanged) {
+        requeuePromotedItemBeforeSdkDispatch(item);
+        scheduleDeferredRestart('capabilities');
+        applyDeferredRestartIfNeeded();
+        if (promotedQuery) await waitForQueryExit(promotedQuery);
+        return;
+      }
     } catch (error) {
       await rejectPromotedMessageBeforeDispatch(item, {
         accepted: false,

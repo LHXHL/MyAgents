@@ -2252,6 +2252,21 @@ pub(crate) fn normalize_security_path(path: PathBuf) -> PathBuf {
     }
 }
 
+pub(crate) fn normalize_lexical_security_path(path: PathBuf) -> PathBuf {
+    let path = normalize_security_path(path);
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => resolved.push(component),
+        }
+    }
+    resolved
+}
+
 #[cfg(any(windows, test))]
 fn normalize_windows_path_identity(path: &Path) -> String {
     normalize_windows_security_path(path)
@@ -2261,7 +2276,7 @@ fn normalize_windows_path_identity(path: &Path) -> String {
         .to_lowercase()
 }
 
-fn path_starts_with_identity(path: &Path, root: &Path) -> bool {
+pub(crate) fn path_starts_with_identity(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
         let candidate = normalize_windows_path_identity(path);
@@ -2333,17 +2348,8 @@ fn validate_file_path_with_home(raw_path: &str, home: &Path) -> Result<PathBuf, 
         return Err("Path must be absolute".to_string());
     }
 
-    // Resolve .. and . components without requiring the file to exist
-    let mut resolved = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                resolved.pop();
-            }
-            std::path::Component::CurDir => {}
-            _ => resolved.push(component),
-        }
-    }
+    // Resolve .. and . components without requiring the file to exist.
+    let resolved = normalize_lexical_security_path(path);
 
     reject_blacklisted_path_with_home(&resolved, home)?;
     if let Some(real_identity) = resolve_nearest_existing_path_identity(&resolved) {

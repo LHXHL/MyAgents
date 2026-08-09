@@ -19,6 +19,10 @@ import {
   parseFullSkillContent,
 } from '../../../../shared/slashCommands';
 import type { InteractionScenario } from '../../../system-prompt';
+import type {
+  GlobalSkillInventoryEntry,
+  GlobalSkillInventorySnapshot,
+} from '../../../global-skill-inventory';
 import { isRequiredSystemSkill } from '../../../../shared/systemSkills';
 import {
   projectCapabilityId,
@@ -62,6 +66,8 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   userConfigRoot?: string | null;
   /** Exact project/global winner selection resolved by the shared owner. */
   capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
+  /** Exact global bytes admitted by the shared inventory owner. */
+  globalSkillInventory: GlobalSkillInventorySnapshot;
 }
 
 function component(
@@ -322,6 +328,50 @@ function scanSkillsAtRoot(
   return skills;
 }
 
+function compileInventorySkill(
+  entry: GlobalSkillInventoryEntry,
+  reports: ManagedCodexExtensionComponentResult[],
+): ManagedCodexSkillSpec | null {
+  const parsed = parseFullSkillContent(entry.content);
+  const name = parsed.frontmatter.name?.trim() || entry.name;
+  const description = parsed.frontmatter.description?.trim() || '';
+  if (!name || !description) {
+    reports.push(component(
+      'skills',
+      'failed',
+      'skill_invalid_frontmatter',
+      `global:${entry.folderName}`,
+      'Skill requires name and description.',
+    ));
+    return null;
+  }
+  const unsupportedFields = [
+    parsed.frontmatter['allowed-tools'] ? 'allowed-tools' : null,
+    parsed.frontmatter.context ? 'context' : null,
+    parsed.frontmatter.agent ? 'agent' : null,
+  ].filter((field): field is string => Boolean(field));
+  if (unsupportedFields.length > 0) {
+    reports.push(component(
+      'skills',
+      'unsupported',
+      'skill_unsupported_fields',
+      `global:${name}`,
+      `Unsupported fields: ${unsupportedFields.join(', ')}`,
+    ));
+    return null;
+  }
+  reports.push(component('skills', 'applied', 'skill_compiled', `global:${name}`));
+  return {
+    name,
+    description,
+    contentSha256: createHash('sha256').update(entry.content).digest('hex'),
+    path: entry.skillPath,
+    scope: 'user',
+    sourceId: 'global',
+    sourceLocalId: entry.folderName,
+  };
+}
+
 function scanPluginSkills(
   plugin: TrustedPlugin,
   reports: ManagedCodexExtensionComponentResult[],
@@ -342,24 +392,6 @@ function scanPluginSkills(
     }
   }
   return skills;
-}
-
-function readDisabledUserSkillNames(userConfigRoot: string | null): Set<string> {
-  if (!userConfigRoot) return new Set();
-  const root = trustedDirectory(userConfigRoot);
-  if (!root) return new Set();
-  const configPath = trustedFile(root, join(root, 'skills-config.json'));
-  if (!configPath) return new Set();
-  try {
-    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { disabled?: unknown };
-    return new Set(
-      Array.isArray(parsed.disabled)
-        ? parsed.disabled.filter((entry): entry is string => typeof entry === 'string')
-        : [],
-    );
-  } catch {
-    return new Set();
-  }
 }
 
 function mergeSkills(
@@ -980,13 +1012,22 @@ export function compileManagedCodexExtensionSnapshot(
     scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports),
     'skill',
   );
-  const disabledUserSkillNames = readDisabledUserSkillNames(userConfigRoot);
-  const userSkills = userConfigRoot
-    ? filterSelected(
-        scanSkillsAtRoot(join(userConfigRoot, 'skills'), 'user', 'global', reports, disabledUserSkillNames),
-        'skill',
-      )
-    : [];
+  const userSkills = filterSelected(
+    input.globalSkillInventory.entries.flatMap(entry => {
+      if (!entry.enabledForProjection) {
+        reports.push(component(
+          'skills',
+          'not_applicable',
+          'skill_disabled',
+          `global:${entry.name}`,
+        ));
+        return [];
+      }
+      const skill = compileInventorySkill(entry, reports);
+      return skill ? [skill] : [];
+    }),
+    'skill',
+  );
   const pluginSkillGroups = plugins.map(plugin => ({
     rank: 1,
     skills: scanPluginSkills(plugin, reports),

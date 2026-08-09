@@ -1,12 +1,16 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from 'fs';
 import type { Stats } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 
 import { isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './admin-config';
 import { ensureDirSync } from './fs-utils';
-import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './platform';
-import { isRequiredSystemSkill } from '../../shared/systemSkills';
+import { getCrossPlatformEnv } from './platform';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import {
+  assertRequiredGlobalSkillsAdmissible,
+  createGlobalSkillInventorySnapshot,
+  type GlobalSkillInventorySnapshot,
+} from '../global-skill-inventory';
 
 const MYAGENTS_USER_DIR = '.myagents';
 
@@ -22,6 +26,8 @@ export function getMyAgentsUserDir(): string {
 
 export interface ProjectUserConfigSyncOptions {
   cliToolRegistryEnabled?: boolean;
+  /** Reuse the exact inventory admitted by the capability resolver. */
+  globalSkillInventory?: GlobalSkillInventorySnapshot;
   /** Runtime admission uses strict mode: an unconfirmed projection must fail closed. */
   strict?: boolean;
 }
@@ -35,7 +41,9 @@ function lstatIfPresent(path: string): Stats | null {
 }
 
 function removeSymlinkPath(path: string): void {
-  rmSync(path, { recursive: true, force: true });
+  // Unlink the directory entry itself. A recursive path operation could delete
+  // a real project directory if another process replaces the proven link.
+  unlinkSync(path);
 }
 
 function isInside(parent: string, child: string): boolean {
@@ -52,7 +60,7 @@ function resolvedSymlinkTarget(linkPath: string): string | null {
   }
 }
 
-function isManagedSymlink(linkPath: string, managedRoot: string): boolean {
+export function isManagedSymlink(linkPath: string, managedRoot: string): boolean {
   const meta = lstatIfPresent(linkPath);
   if (!meta?.isSymbolicLink()) return false;
   const target = resolvedSymlinkTarget(linkPath);
@@ -104,76 +112,55 @@ export function trySyncProjectUserConfigFiles(
 export function syncProjectUserConfigFiles(
   projectDir: string,
   options: ProjectUserConfigSyncOptions = {},
-): void {
+): { changed: boolean } {
   const myagentsDir = getMyAgentsUserDir();
   const isWin = process.platform === 'win32';
+  let changed = false;
 
   const userSkillsDir = join(myagentsDir, 'skills');
   const projectSkillsDir = join(projectDir, '.claude', 'skills');
+  const cliToolRegistryEnabled = options.cliToolRegistryEnabled ?? isCliToolRegistryEnabled(loadAdminConfig());
+  const globalSkillInventory = options.globalSkillInventory
+    ?? createGlobalSkillInventorySnapshot({ rootPath: userSkillsDir, cliToolRegistryEnabled });
+  if (!workspacePathsEqual(globalSkillInventory.rootPath, userSkillsDir)) {
+    throw new Error('Global Skill inventory does not belong to the configured Skill root');
+  }
+  if (options.strict) assertRequiredGlobalSkillsAdmissible(globalSkillInventory);
 
-  if (existsSync(userSkillsDir)) {
+  if (existsSync(userSkillsDir) || existsSync(projectSkillsDir)) {
     ensureDirSync(projectSkillsDir);
+    const managedSkillNames = new Set(
+      globalSkillInventory.projectableEntries.map(entry => entry.folderName),
+    );
 
-    let disabled: string[] = [];
-    try {
-      const configPath = join(myagentsDir, 'skills-config.json');
-      if (existsSync(configPath)) {
-        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-        disabled = Array.isArray(raw?.disabled) ? raw.disabled : [];
-      }
-    } catch {
-      // Ignore read errors — treat all skills as enabled.
-    }
-
-    const cliToolRegistryEnabled = options.cliToolRegistryEnabled ?? isCliToolRegistryEnabled(loadAdminConfig());
-    const managedSkillNames = new Set<string>();
-
-    for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
-      const target = join(userSkillsDir, entry.name);
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith('.')) continue;
-      if (isSkillBlockedOnPlatform(entry.name)) continue;
-      if (!existsSync(join(target, 'SKILL.md'))) continue;
-
-      managedSkillNames.add(entry.name);
-      const linkPath = join(projectSkillsDir, entry.name);
-
-      if (
-        (disabled.includes(entry.name) && !isRequiredSystemSkill(entry.name))
-        || (!cliToolRegistryEnabled && entry.name === 'tool-creator')
-      ) {
-        try {
-          if (isManagedSymlink(linkPath, userSkillsDir)) {
-            removeSymlinkPath(linkPath);
-          }
-        } catch (error) {
-          handleProjectionFailure(options, `[skill-sync] Failed to remove disabled Skill link ${entry.name}`, error);
-        }
-        continue;
-      }
+    for (const entry of globalSkillInventory.projectableEntries) {
+      const target = join(userSkillsDir, entry.folderName);
+      const linkPath = join(projectSkillsDir, entry.folderName);
 
       try {
         const linkMeta = lstatIfPresent(linkPath);
         if (linkMeta) {
           if (!linkMeta.isSymbolicLink()) continue;
           if (!isManagedSymlink(linkPath, userSkillsDir)) {
-            handleProjectionFailure(options, `[skill-sync] Foreign project symlink blocks global Skill ${entry.name}`);
+            handleProjectionFailure(options, `[skill-sync] Foreign project symlink blocks global Skill ${entry.folderName}`);
             continue;
           }
           if (symlinkPointsTo(linkPath, target)) continue;
           removeSymlinkPath(linkPath);
+          changed = true;
         }
       } catch (error) {
-        handleProjectionFailure(options, `[skill-sync] Failed to prepare Skill link ${entry.name}`, error);
+        handleProjectionFailure(options, `[skill-sync] Failed to prepare Skill link ${entry.folderName}`, error);
       }
 
       try {
         symlinkSync(target, linkPath, isWin ? 'junction' : undefined);
+        changed = true;
       } catch (err) {
         // Another Sidecar may have won the same create race. Convergence on
         // the exact managed target is success; any other occupant still fails.
         if (!symlinkPointsTo(linkPath, target)) {
-          handleProjectionFailure(options, `[skill-sync] Failed to symlink Skill ${entry.name}`, err);
+          handleProjectionFailure(options, `[skill-sync] Failed to symlink Skill ${entry.folderName}`, err);
         }
       }
     }
@@ -191,6 +178,7 @@ export function syncProjectUserConfigFiles(
           }
           if (isInside(userSkillsDir, resolvedTarget) && !managedSkillNames.has(entry.name)) {
             removeSymlinkPath(linkPath);
+            changed = true;
           }
         } catch (error) {
           if (!isMissingPathError(error)) {
@@ -228,6 +216,7 @@ export function syncProjectUserConfigFiles(
           }
           if (symlinkPointsTo(linkPath, target)) continue;
           removeSymlinkPath(linkPath);
+          changed = true;
         }
       } catch (error) {
         handleProjectionFailure(options, `[command-sync] Failed to prepare Command link ${entry.name}`, error);
@@ -235,6 +224,7 @@ export function syncProjectUserConfigFiles(
 
       try {
         symlinkSync(target, linkPath);
+        changed = true;
       } catch (err) {
         if (!symlinkPointsTo(linkPath, target)) {
           handleProjectionFailure(options, `[command-sync] Failed to symlink Command ${entry.name}`, err);
@@ -255,6 +245,7 @@ export function syncProjectUserConfigFiles(
           }
           if (isInside(userCommandsDir, resolvedTarget) && !managedCommandFiles.has(entry.name)) {
             removeSymlinkPath(linkPath);
+            changed = true;
           }
         } catch (error) {
           if (!isMissingPathError(error)) {
@@ -266,4 +257,7 @@ export function syncProjectUserConfigFiles(
       handleProjectionFailure(options, '[command-sync] Failed to inspect project Command links', error);
     }
   }
+
+  if (changed) console.info('[project-user-config-sync] reconcile=changed');
+  return { changed };
 }

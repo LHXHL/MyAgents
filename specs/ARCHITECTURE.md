@@ -584,6 +584,8 @@ Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `S
 
 Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用 `SessionEngine` config 方法，external adapter 交给 `external-session` 从服务端权威配置编译一份 immutable Session Extension Snapshot，并在 idle/terminal 边界 replacement process。只有 Codex 进程启动成功、严格 Skill read-back 通过，且 MCP startup barrier 已完成 terminal/timeout 观察后，desired revision 才提升为该 process generation 的 effective revision；单个 MCP 的连接失败由既有 `RuntimeDiagnostics.mcpServers` 表达，不伪装成未投影配置。Codex adapter 只拥有 app-server 协议投影；外部 MCP 使用启动配置，Agent 使用原生 role config，合并后的有效 Workspace/全局/Plugin Skill 通过临时 extra-root 精确投影，SDK in-process MCP 与 IM Bridge 通过 runtime-neutral Host dispatcher 暴露为 `thread/start.dynamicTools`。Codex 0.146.0 的 dynamic-tool catalog 不能在 native thread resume 时更换，因此 Session metadata 只持久化协议版本与非敏感 catalog fingerprint：catalog 未变可 resume，变化或 legacy 未证明一致时必须新建 Product Session；历史 Session 的 desired/legacy catalog 都为空时允许 resume。不能偷偷恢复旧目录或建立第二套 bridge。`system-cli` Codex 不进入这套 MyAgents-owned 投影。
 
+全局 Skill 的 Runtime authority 是 Node `global-skill-inventory.ts` 在每个 admission / Settings 业务边界构造的 immutable、ephemeral 完整根快照；不持久化注册表、cache 或 watcher 状态。同一边界的 project capability resolver 与 `.claude/skills` 兼容投影必须消费同一个快照：强证据损坏项既不进入 builtin allowlist / Managed Codex compiler，也不进入 workspace 链接；Required 项缺失或 blocked 时 Runtime fail closed。工作区 `.claude/skills/<name>` 仍是指向 `~/.myagents/skills/<name>` 的目录 junction/symlink，不是副本或第二 authority；System Codex、Claude Code 等原生发现兼容路径也必须在 start/next-turn admission 先完成该快照的 strict reconcile。Rust Launcher 只镜像同一份分类契约并跳过这种 project 投影，跨语言 JSON fixtures 负责锁定口径，而不是新增 RPC。已有 active turn 不 retroactive 改写；effective revision 继续表达 Runtime winner 内容，integrity revision 表达诊断与 desired-link set。纯诊断变化不换代；若 reconcile 真正改变 Runtime 可发现链接，则复用既有 deferred process/Query replacement。
+
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
 新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
@@ -737,7 +739,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 | 子模块 | 职责 | 暴露的 cmd |
 |------|------|-----------|
-| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、文件名校验与 sanitize | — |
+| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、全局 Skill 投影 mutation guard、文件名校验与 sanitize | — |
 | `tree` | 工作区目录树初始化 + 懒展开 | `cmd_workspace_dir_tree` / `cmd_workspace_dir_expand` |
 | `read_preview` | 文本文件预览（≤512KB，bounded read 防 TOCTOU 增长） | `cmd_workspace_read_preview` |
 | `download` | 二进制下载（≤25MB，base64 IPC） | `cmd_workspace_download_file` |
@@ -748,7 +750,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 | `user_attachments` | 用户输入图片附件 staging：绝对路径图片由 Rust 读取并复制到 `~/.myagents/attachments/<session>/`，返回 session-owned `relativePath`；≤10MB 作为图片预览/vision ref，>10MB 交回 `transfer` 转 `@myagents_files/...` 文件引用 | `cmd_prepare_user_image_attachments` |
 | `check_paths` | 200-batch existence 探针（与读侧 symlink-escape gate 一致，挡 chip 假阳性） | `cmd_workspace_check_paths` |
 | `gitignore` | `.gitignore` append（`with_file_lock_blocking` 串行写） | `cmd_workspace_add_gitignore` |
-| `slash` | / 命令扫描（builtin + 项目 + 用户 skills；`agent-browser` Windows 屏蔽） | `cmd_list_slash_commands` |
+| `slash` | / 命令扫描（builtin + 项目 + 用户 skills；跳过 MyAgents-managed project Skill 链接，并按共享完整性契约过滤 global Skill） | `cmd_list_slash_commands` |
 | `search` | 模糊文件名搜索（fuzzy_matcher，跳 node_modules / dotfiles） | `cmd_workspace_search_files_fuzzy` |
 | `git_branch` | 当前 git 分支查询 | `cmd_workspace_git_branch` |
 | `system_open` | 揭示在文件管理器 / 默认应用打开（`process_cmd::new` 防 Windows console flash） | `cmd_workspace_open_in_finder` / `cmd_workspace_open_with_default` / `cmd_open_path_external`（绝对路径，过 credential 黑名单） |
@@ -758,6 +760,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 - **路径解析**：写侧 lexical（路径可不存在），读侧 canonical（防 `evil_link → /etc/passwd` 符号链逃逸）。任意绝对路径还要 canonicalize 最近存在的 ancestor 后重跑系统/credential blacklist；Windows security identity 独立归一化 `\\?\UNC\server\share` 与 `\\?\C:`，不能复用面向 Node/cmd 的前缀剥离 helper。两套 workspace helper 命名带 "_existing_" 后缀区分。
 - **symlink-safe 写**：`crud.rs::slot_occupied` / `transfer.rs::slot_occupied` 用 `fs::symlink_metadata` 不是 `Path::exists()`（断链 symlink 会被后者误报为空，CLAUDE.md v0.2.5 红线）。
+- **全局 Skill 投影只读**：所有 workspace mutation command 在最终目标上调用 `reject_managed_global_skill_mutation`；链接叶子、已有后代、最近存在祖先为 managed junction 的新路径和断链都拒绝。read / reveal / copy-out 不走该 guard，Node 投影 owner 直接维护链接，无 bypass flag。
 - **bounded read**：所有读取大文件命令用 `File::open + take(MAX+1).read_to_end`（不是 `fs::read_to_string`），防 TOCTOU 文件增长被 OOM。
 - **no-follow attachment read**：workspace upload 统一走 `read_workspace_file_no_follow`。Unix 相对 root fd 用 `openat(O_NOFOLLOW)`；Windows 从已验证目录 handle 用 `NtCreateFile(RootDirectory=parent, FILE_OPEN_REPARSE_POINT)` 逐级打开 child/leaf，namespace 被替换或原地 reparse 都不会改变 IO 锚点。显式本地文件 leaf 复用 `open_regular_file_no_follow`。
 - **用户图片附件 owner**：视觉附件 ref 的第一段必须等于当前 session id（新会话用 `pending-<tabId>`），Sidecar 解析 `attachment_ref` 时再次校验 owner + 10MB 上限。Launcher 不创建 draft owner，直接使用 App 同一条 pending session id。

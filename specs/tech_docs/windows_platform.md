@@ -57,6 +57,12 @@ export function getPlatformPaths() {
 | 应用数据 | `APPDATA` | `~/.config` |
 | 路径分隔符 | `;` | `:` |
 
+### 全局 Skill junction 的只读边界
+
+MyAgents 把 `~/.myagents/skills/<name>` 作为唯一物理权威，并以目录 junction 投影到 `<workspace>/.claude/skills/<name>`。junction 下的 `SKILL.md` 与 references 不是副本：通过工作区路径写入会直接修改全局源，并立即影响其它工作区。因此 Tauri workspace mutation command 必须统一调用 `path_safety::reject_managed_global_skill_mutation`，拒绝链接叶子、链接后代、目标尚不存在但最近存在祖先是 managed junction 的路径，以及指向全局 Skill 根的断链/reparse point。普通项目物理 Skill 目录仍可写；read、reveal 与从 junction copy-out 仍允许。
+
+Runtime admission 由 Node `global-skill-inventory.ts` 的单次完整根快照裁决，不依赖 Windows Explorer 的命名行为猜测。`SKILL(N).md` 或孤立 `(N)` 目录只形成 warning；只有缺 canonical entry、带后缀目录复用 base identity/与 base sibling 共存、untrusted global junction/symlink 或扫描竞态等强证据才 blocked。被 blocked 的文件保持原样，只从 Runtime、Launcher 与当前工作区 managed projection 中排除；Required 系统 Skill blocked/missing 时 Runtime fail closed。不要增加 watcher、后台 repair、自动 rename/delete/merge 或字符串路径前缀判断。
+
 ### SDK Shell 输出编码
 
 Claude Agent SDK 的 Bash 工具输出最终会以 UTF-8 字符串进入 MyAgents session JSONL / SSE。Windows 上不少子进程会默认按系统 ANSI/OEM code page（如 CP936/GBK）写 stdout/stderr；一旦 SDK 按 UTF-8 解码成字符串，后续在 renderer 或 SessionStore 已无法可靠恢复原始字节。

@@ -915,3 +915,6 @@ config.multiAgentRuntime (磁盘/React state)
 | `src/shared/types/runtime.ts` | 共享类型（RuntimeType、模型列表、权限模式） |
 | `src/renderer/components/RuntimeSelector.tsx` | 前端 Runtime 选择器组件 |
 | `src/server/runtimes/claude-code.ts` → `FORWARDER_SCRIPT` | CC SessionStart hook 转发脚本（运行时生成至 `~/.myagents/.cc-hooks/forwarder.cjs`） |
+### 全局 Skill compatibility projection 准入
+
+所有会从 workspace `.claude/skills/` 原生发现 Skill 的 external Runtime，都在 process start 与下一 turn admission 复用 Node `global-skill-inventory.ts` 的一次 immutable 快照完成 strict projection reconcile。Managed Codex 还把同一快照的 canonical 内容直接交给 extension compiler，禁止 compiler 再扫描一份 global root。System Codex / Claude Code 只消费兼容 junction，但 Required 缺失、blocked stale link 无法清理时同样 fail closed；若 reconcile 真正修改了 Runtime 可发现链接，沿现有 external process config invalidation 在 idle/terminal 边界换代，不中断 active turn。不得在 adapter 内另建扫描、cache 或 watcher。

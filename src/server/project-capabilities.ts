@@ -31,6 +31,12 @@ import {
 import { isRequiredSystemSkill } from '../shared/systemSkills';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import {
+  assertRequiredGlobalSkillsAdmissible,
+  createGlobalSkillInventorySnapshot,
+  readDisabledGlobalSkillNames,
+  type GlobalSkillInventorySnapshot,
+} from './global-skill-inventory';
+import {
   atomicModifyConfig,
   isCliToolRegistryEnabled,
   loadConfig,
@@ -95,19 +101,6 @@ function canonicalFile(path: string, allowSymlink: boolean): string | null {
 
 function contentSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function readDisabledGlobalSkillNames(userRoot: string): Set<string> {
-  const path = join(userRoot, 'skills-config.json');
-  if (!existsSync(path)) return new Set();
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { disabled?: unknown };
-  if (parsed.disabled === undefined) return new Set();
-  if (!Array.isArray(parsed.disabled) || parsed.disabled.some(entry => typeof entry !== 'string')) {
-    throw new Error('skills-config.json disabled must be string[]');
-  }
-  return new Set(parsed.disabled.filter((name): name is string => (
-    typeof name === 'string' && !isRequiredSystemSkill(name)
-  )));
 }
 
 function candidate(params: {
@@ -331,6 +324,11 @@ function resolveSelection(
 
 export function resolveEffectiveProjectCapabilities(
   workspacePath: string,
+  options: {
+    globalSkillInventory?: GlobalSkillInventorySnapshot;
+    /** Settings can inspect blocked required entries; Runtime admission cannot. */
+    enforceRequiredIntegrity?: boolean;
+  } = {},
 ): EffectiveProjectCapabilitySnapshot {
   const resolvedWorkspace = resolve(workspacePath);
   if (!existsSync(resolvedWorkspace) || !statSync(resolvedWorkspace).isDirectory()) {
@@ -339,9 +337,17 @@ export function resolveEffectiveProjectCapabilities(
   const userRoot = getMyAgentsUserDir();
   const globalSkillsRoot = resolve(userRoot, 'skills');
   const globalCommandsRoot = resolve(userRoot, 'commands');
-  const disabledGlobalSkillNames = readDisabledGlobalSkillNames(userRoot);
   const config = loadConfig();
   const cliToolRegistryEnabled = isCliToolRegistryEnabled(config);
+  const globalSkillInventory = options.globalSkillInventory
+    ?? createGlobalSkillInventorySnapshot({
+      rootPath: globalSkillsRoot,
+      disabledSkillNames: readDisabledGlobalSkillNames(globalSkillsRoot),
+      cliToolRegistryEnabled,
+    });
+  if (options.enforceRequiredIntegrity !== false) {
+    assertRequiredGlobalSkillsAdmissible(globalSkillInventory);
+  }
   const { agentId, selection } = resolveSelection(resolvedWorkspace, config);
 
   const projectSlots = new Set<string>();
@@ -349,7 +355,7 @@ export function resolveEffectiveProjectCapabilities(
     rootPath: join(resolvedWorkspace, '.claude', 'skills'),
     source: 'project',
     globalSkillsRoot,
-    disabledGlobalSkillNames,
+    disabledGlobalSkillNames: new Set(),
     cliToolRegistryEnabled,
     projectSlots,
   });
@@ -361,13 +367,19 @@ export function resolveEffectiveProjectCapabilities(
   });
   const ranked = [
     ...projectSkills,
-    ...scanSkills({
-      rootPath: globalSkillsRoot,
-      source: 'global',
-      globalSkillsRoot,
-      disabledGlobalSkillNames,
-      cliToolRegistryEnabled,
-    }).filter(item => !projectSlots.has(`skill:${item.sourceLocalId}`)),
+    ...globalSkillInventory.projectableEntries
+      .map(item => candidate({
+        kind: 'skill',
+        source: 'global',
+        sourceLocalId: item.folderName,
+        canonicalName: item.name,
+        name: item.name,
+        description: item.description,
+        path: item.skillPath,
+        content: item.content,
+        author: item.author,
+      }))
+      .filter(item => !projectSlots.has(`skill:${item.sourceLocalId}`)),
     ...projectCommands,
     ...scanCommands({
       rootPath: globalCommandsRoot,
@@ -410,6 +422,8 @@ export function resolveEffectiveProjectCapabilities(
     workspacePath: resolvedWorkspace,
     agentId,
     revision,
+    integrityRevision: globalSkillInventory.integrityRevision,
+    integrityIssues: [...globalSkillInventory.integrityIssues],
     candidates,
     enabledSkills: candidates.filter(item => item.kind === 'skill' && item.enabled),
     enabledCommands: candidates.filter(item => item.kind === 'command' && item.enabled),
@@ -481,6 +495,8 @@ export function projectCapabilitySnapshotForWire(snapshot: EffectiveProjectCapab
   return {
     success: true,
     revision: snapshot.revision,
+    integrityRevision: snapshot.integrityRevision,
+    integrityIssues: snapshot.integrityIssues,
     agentId: snapshot.agentId,
     skills: snapshot.candidates.filter(item => item.kind === 'skill').map(toSkill),
     commands: snapshot.candidates.filter(item => item.kind === 'command').map(toCommand),

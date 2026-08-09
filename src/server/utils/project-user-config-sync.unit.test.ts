@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { REQUIRED_SYSTEM_SKILLS } from '../../shared/systemSkills';
 
 import { getMyAgentsUserDir, syncProjectUserConfigFiles, trySyncProjectUserConfigFiles } from './project-user-config-sync';
 
@@ -33,6 +34,7 @@ describe('project-user-config-sync', () => {
     vi.stubEnv('TMPDIR', temp);
     vi.stubEnv('TEMP', temp);
     vi.stubEnv('TMP', temp);
+    for (const name of REQUIRED_SYSTEM_SKILLS) writeUserSkill(home, name);
     return { root, home, workspace };
   }
 
@@ -108,7 +110,6 @@ describe('project-user-config-sync', () => {
     writeFileSync(join(projectSkillDir, 'SKILL.md'), 'project-owned');
 
     syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
-
     expect(lstatSync(projectSkillDir).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(projectSkillDir, 'SKILL.md'), 'utf-8')).toBe('project-owned');
   });
@@ -143,13 +144,15 @@ describe('project-user-config-sync', () => {
     const { home, workspace } = makeEnv();
     writeUserSkill(home, 'review-helper');
     writeUserCommand(home, 'ship-it');
-    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
+    const first = syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
     const skillLink = join(workspace, '.claude', 'skills', 'review-helper');
     const commandLink = join(workspace, '.claude', 'commands', 'ship-it.md');
     const before = { skill: lstatSync(skillLink).ino, command: lstatSync(commandLink).ino };
 
-    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
+    const second = syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true, strict: true });
 
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
     expect(lstatSync(skillLink).ino).toBe(before.skill);
     expect(lstatSync(commandLink).ino).toBe(before.command);
   });
@@ -169,6 +172,26 @@ describe('project-user-config-sync', () => {
     expect(existsSync(join(workspace, '.claude', 'skills', 'real-skill'))).toBe(true);
     expect(existsSync(join(workspace, '.claude', 'skills', 'inside-alias'))).toBe(false);
     expect(existsSync(join(workspace, '.claude', 'skills', 'outside-alias'))).toBe(false);
+  });
+
+  itNonWindows('removes only the stale managed link for a blocked optional Skill', () => {
+    const { home, workspace } = makeEnv();
+    const damaged = join(home, '.myagents', 'skills', 'pdf');
+    mkdirSync(damaged, { recursive: true });
+    writeFileSync(join(damaged, 'SKILL(1).md'), 'preserved backup');
+    const projectSkills = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkills, { recursive: true });
+    const link = join(projectSkills, 'pdf');
+    symlinkSync(damaged, link, 'dir');
+
+    const result = syncProjectUserConfigFiles(workspace, {
+      cliToolRegistryEnabled: true,
+      strict: true,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(existsSync(link)).toBe(false);
+    expect(readFileSync(join(damaged, 'SKILL(1).md'), 'utf8')).toBe('preserved backup');
   });
 
   itNonWindows('replaces broken managed command symlinks with current user commands', () => {

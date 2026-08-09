@@ -1,4 +1,5 @@
 import { isRequiredSystemSkill } from './systemSkills';
+import type { SkillIntegrityIssue } from './skillIntegrity';
 
 export const PROJECT_CAPABILITY_SELECTION_VERSION = 1 as const;
 
@@ -33,6 +34,8 @@ export interface EffectiveProjectCapabilitySnapshot {
   workspacePath: string;
   agentId: string;
   revision: string;
+  integrityRevision: string;
+  integrityIssues: SkillIntegrityIssue[];
   candidates: ProjectCapabilityCandidate[];
   enabledSkills: ProjectCapabilityCandidate[];
   enabledCommands: ProjectCapabilityCandidate[];

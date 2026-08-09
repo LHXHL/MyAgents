@@ -38,7 +38,6 @@ import { getBundledCusePath } from '../utils/runtime';
 import { resolveNpxMcpInvocation } from '../utils/mcp-command';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
-import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import {
   saveToolAttachment,
   makePlaceholderAttachment,
@@ -3195,7 +3194,7 @@ export class CodexRuntime implements AgentRuntime {
   ): Promise<RuntimeProcess> {
     // Clean up stale temp images from previous sessions
     cleanupStaleTempImages();
-    trySyncProjectUserConfigFiles(options.workspacePath, {}, 'codex');
+    const runtimeSource = options.runtimeSource ?? 'system-cli';
 
     // Cross-runtime workspace protocol: make Codex natively discover CLAUDE.md
     // when no AGENTS.md is present. The -c flag overrides config.toml at runtime
@@ -3204,7 +3203,6 @@ export class CodexRuntime implements AgentRuntime {
     // Capture the env we hand to Codex so the diagnostic snapshot reflects what
     // the subprocess actually saw (issue #194). The env policy is resolved by
     // the session caller from the agent's runtimeConfig.envPolicy.
-    const runtimeSource = options.runtimeSource ?? 'system-cli';
     const context = resolveCodexCommandContext({
       source: runtimeSource,
       envPolicy: options.envPolicy,

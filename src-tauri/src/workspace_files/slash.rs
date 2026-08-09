@@ -18,11 +18,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::path_safety::validate_external_read_path;
 use super::platform_blocks::is_skill_blocked_on_platform;
-use super::skills_config::{read_cli_tool_registry_enabled, read_disabled_list};
+use super::skills_config::{
+    is_required_system_skill, read_cli_tool_registry_enabled, read_disabled_list,
+};
 
 // These are *text-insertion* builtins: selecting one inserts `/name ` and the
 // text is sent to the AI/CLI. Do NOT add UI-action commands here (e.g. `loop`,
@@ -111,6 +113,7 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
             &workspace_root.join(".claude").join("skills"),
             "project",
             &disabled,
+            &myagents_root.join("skills"),
             &mut commands,
         );
     }
@@ -119,6 +122,7 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
         &myagents_root.join("skills"),
         "user",
         &disabled,
+        &myagents_root.join("skills"),
         &mut commands,
     );
 
@@ -204,18 +208,43 @@ fn scan_commands_dir(dir: &Path, scope: &str, out: &mut Vec<SlashCommand>) {
     }
 }
 
-fn scan_skills_dir(dir: &Path, scope: &str, disabled: &[String], out: &mut Vec<SlashCommand>) {
+fn scan_skills_dir(
+    dir: &Path,
+    scope: &str,
+    disabled: &[String],
+    global_skills_root: &Path,
+    out: &mut Vec<SlashCommand>,
+) {
+    let root_before = std::fs::symlink_metadata(dir).ok();
+    if scope == "user"
+        && !root_before
+            .as_ref()
+            .map(|meta| meta.is_dir() && !metadata_is_link_like(meta))
+            .unwrap_or(false)
+    {
+        return;
+    }
+    let output_start = out.len();
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
-    for entry_result in entries {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+    let entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    let folder_names: HashSet<String> = entries
+        .iter()
+        .map(|entry| skill_folder_key(&entry.file_name().to_string_lossy()))
+        .collect();
+    for entry in entries {
         let folder_name = entry.file_name().to_string_lossy().to_string();
         let folder_path = entry.path();
+
+        // Launcher scans the project surface before the global surface. A
+        // MyAgents-managed projection must not be mislabelled as a project
+        // Skill and win that priority race; its canonical global entry is
+        // classified below by the same evidence contract as Node.
+        if scope == "project" && canonical_path_is_within(&folder_path, global_skills_root) {
+            continue;
+        }
 
         // Read-only scan — follow symlinks / Windows junctions to detect
         // dir-likeness so user-installed skills mounted via junction surface.
@@ -238,14 +267,91 @@ fn scan_skills_dir(dir: &Path, scope: &str, disabled: &[String], out: &mut Vec<S
         }
 
         let skill_md = folder_path.join("SKILL.md");
-        if !skill_md.exists() {
+        let folder_meta = std::fs::symlink_metadata(&folder_path).ok();
+        let canonical_meta = std::fs::symlink_metadata(&skill_md).ok();
+        // Never read through an untrusted global link merely to decide that
+        // it is untrusted. Project Skills keep their existing read semantics.
+        if scope == "user"
+            && (!folder_meta
+                .as_ref()
+                .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+                .unwrap_or(false)
+                || canonical_meta
+                    .as_ref()
+                    .map(|meta| meta.file_type().is_symlink())
+                    .unwrap_or(false))
+        {
             continue;
         }
-        let content = match std::fs::read_to_string(&skill_md) {
-            Ok(c) => c,
+        let content_result = std::fs::read_to_string(&skill_md);
+        let canonical_readable = content_result.is_ok();
+        let content = match content_result {
+            Ok(content) => content,
+            Err(_) if scope == "user" => String::new(),
             Err(_) => continue,
         };
         let parsed = parse_skill_frontmatter(&content);
+        let declared_identity = parsed.name.clone();
+
+        if scope == "user" {
+            let collision_base = collision_directory_base(&folder_name);
+            let evidence = SkillIntegrityEvidence {
+                folder_name: folder_name.clone(),
+                declared_name: declared_identity,
+                identity_case_insensitive: cfg!(windows),
+                canonical_present: canonical_meta
+                    .as_ref()
+                    .map(|meta| meta.is_file())
+                    .unwrap_or(false),
+                canonical_readable,
+                trusted_source: folder_meta
+                    .as_ref()
+                    .map(|meta| meta.is_dir() && !metadata_is_link_like(meta))
+                    .unwrap_or(false)
+                    && canonical_meta
+                        .as_ref()
+                        .map(|meta| !metadata_is_link_like(meta))
+                        .unwrap_or(true),
+                unsuffixed_sibling_present: collision_base
+                    .as_ref()
+                    .map(|base| folder_names.contains(&skill_folder_key(base)))
+                    .unwrap_or(false),
+                reserved_entry_sibling_present: has_reserved_skill_entry_sibling(&folder_path),
+                stable: metadata_signature(folder_meta.as_ref())
+                    == metadata_signature(std::fs::symlink_metadata(&folder_path).ok().as_ref())
+                    && metadata_signature(canonical_meta.as_ref())
+                        == metadata_signature(std::fs::symlink_metadata(&skill_md).ok().as_ref()),
+            };
+            let mut classification = classify_skill_integrity(&evidence);
+            if classification.disposition != "blocked"
+                && ((evidence
+                    .declared_name
+                    .as_deref()
+                    .map(is_required_system_skill)
+                    .unwrap_or(false)
+                    && !skill_identity_equals(
+                        evidence.declared_name.as_deref().unwrap_or_default(),
+                        &folder_name,
+                        evidence.identity_case_insensitive,
+                    ))
+                    || (is_required_system_skill(&folder_name)
+                        && evidence.declared_name.is_some()
+                        && !skill_identity_equals(
+                            evidence.declared_name.as_deref().unwrap_or_default(),
+                            &folder_name,
+                            evidence.identity_case_insensitive,
+                        )))
+            {
+                classification = SkillIntegrityClassification {
+                    disposition: "blocked".to_string(),
+                    reasons: vec!["untrusted_global_source".to_string()],
+                };
+            }
+            if classification.disposition == "blocked" {
+                continue;
+            }
+        }
+
         let name = parsed.name.clone().unwrap_or_else(|| folder_name.clone());
         out.push(SlashCommand {
             name,
@@ -256,6 +362,190 @@ fn scan_skills_dir(dir: &Path, scope: &str, disabled: &[String], out: &mut Vec<S
             folder_name: Some(folder_name),
             file_name: None,
         });
+    }
+    if scope == "user"
+        && metadata_signature(root_before.as_ref())
+            != metadata_signature(std::fs::symlink_metadata(dir).ok().as_ref())
+    {
+        out.truncate(output_start);
+    }
+}
+
+fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn metadata_signature(metadata: Option<&std::fs::Metadata>) -> Option<String> {
+    let metadata = metadata?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Some(format!(
+            "{}:{}:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mode(),
+            metadata.size(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return Some(format!(
+            "{}:{}:{}:{}:{}:{}",
+            metadata.volume_serial_number().unwrap_or_default(),
+            metadata.file_index().unwrap_or_default(),
+            metadata.file_attributes(),
+            metadata.creation_time(),
+            metadata.last_write_time(),
+            metadata.file_size(),
+        ));
+    }
+    #[allow(unreachable_code)]
+    Some(format!("{}:{}", metadata.len(), metadata.is_dir()))
+}
+
+fn skill_folder_key(name: &str) -> String {
+    if cfg!(windows) {
+        name.to_lowercase()
+    } else {
+        name.to_string()
+    }
+}
+
+fn canonical_path_is_within(path: &Path, root: &Path) -> bool {
+    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        (Ok(candidate), Ok(canonical_root)) => candidate.starts_with(canonical_root),
+        _ => false,
+    }
+}
+
+fn collision_directory_base(folder_name: &str) -> Option<String> {
+    let prefix = folder_name.strip_suffix(')')?;
+    let open = prefix.rfind('(')?;
+    let digits = &prefix[open + 1..];
+    if digits.is_empty() || !digits.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    let base = prefix[..open].trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+fn is_reserved_skill_entry_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let Some(stem) = upper.strip_suffix(".MD") else {
+        return false;
+    };
+    let Some(rest) = stem.strip_prefix("SKILL") else {
+        return false;
+    };
+    let rest = rest.strip_prefix(' ').unwrap_or(rest);
+    if rest.starts_with(' ') {
+        return false;
+    }
+    let Some(suffix) = rest
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return false;
+    };
+    !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+}
+
+fn has_reserved_skill_entry_sibling(folder_path: &Path) -> bool {
+    std::fs::read_dir(folder_path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| is_reserved_skill_entry_name(&entry.file_name().to_string_lossy()))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillIntegrityEvidence {
+    folder_name: String,
+    declared_name: Option<String>,
+    #[serde(default)]
+    identity_case_insensitive: bool,
+    canonical_present: bool,
+    canonical_readable: bool,
+    trusted_source: bool,
+    unsuffixed_sibling_present: bool,
+    reserved_entry_sibling_present: bool,
+    stable: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct SkillIntegrityClassification {
+    disposition: String,
+    reasons: Vec<String>,
+}
+
+fn classify_skill_integrity(evidence: &SkillIntegrityEvidence) -> SkillIntegrityClassification {
+    let blocked = |reason: &str| SkillIntegrityClassification {
+        disposition: "blocked".to_string(),
+        reasons: vec![reason.to_string()],
+    };
+    if !evidence.stable {
+        return blocked("inventory_unstable");
+    }
+    if !evidence.trusted_source {
+        return blocked("untrusted_global_source");
+    }
+    if !evidence.canonical_present || !evidence.canonical_readable {
+        return blocked("missing_canonical_entry");
+    }
+    if let Some(base) = collision_directory_base(&evidence.folder_name) {
+        if evidence
+            .declared_name
+            .as_deref()
+            .map(|declared| {
+                skill_identity_equals(declared, &base, evidence.identity_case_insensitive)
+            })
+            .unwrap_or(false)
+        {
+            return blocked("collision_directory_identity");
+        }
+        if evidence.unsuffixed_sibling_present {
+            return blocked("collision_directory_sibling");
+        }
+    }
+    let mut reasons = Vec::new();
+    if collision_directory_base(&evidence.folder_name).is_some() {
+        reasons.push("unproven_suffix_directory".to_string());
+    }
+    if evidence.reserved_entry_sibling_present {
+        reasons.push("reserved_entry_sibling".to_string());
+    }
+    SkillIntegrityClassification {
+        disposition: if reasons.is_empty() {
+            "admitted"
+        } else {
+            "warning"
+        }
+        .to_string(),
+        reasons,
+    }
+}
+
+fn skill_identity_equals(left: &str, right: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        left.to_lowercase() == right.to_lowercase()
+    } else {
+        left == right
     }
 }
 
@@ -363,6 +653,97 @@ mod tests {
 
     fn make_tmp_workspace() -> PathBuf {
         make_test_workspace("slash")
+    }
+
+    #[derive(Deserialize)]
+    struct SkillIntegrityFixture {
+        name: String,
+        evidence: SkillIntegrityEvidence,
+        expected: SkillIntegrityClassification,
+    }
+
+    #[test]
+    fn rust_classifier_matches_shared_skill_integrity_contract() {
+        let fixtures: Vec<SkillIntegrityFixture> = serde_json::from_str(include_str!(
+            "../../../src/shared/fixtures/skill-integrity-cases.json"
+        ))
+        .expect("shared Skill integrity fixtures");
+        for fixture in fixtures {
+            assert_eq!(
+                classify_skill_integrity(&fixture.evidence),
+                fixture.expected,
+                "fixture: {}",
+                fixture.name
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_scan_filters_blocked_entries_and_project_scan_skips_managed_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_tmp_workspace();
+        let global = root.join("global-skills");
+        let project = root.join("project-skills");
+        fs::create_dir_all(global.join("healthy")).unwrap();
+        fs::write(
+            global.join("healthy").join("SKILL.md"),
+            "---\nname: healthy\ndescription: healthy\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(global.join("damaged")).unwrap();
+        fs::write(global.join("damaged").join("SKILL(1).md"), "backup").unwrap();
+        fs::create_dir_all(project.join("local")).unwrap();
+        fs::write(
+            project.join("local").join("SKILL.md"),
+            "---\nname: local\ndescription: local\n---\n",
+        )
+        .unwrap();
+        symlink(global.join("healthy"), project.join("healthy")).unwrap();
+
+        let mut global_commands = Vec::new();
+        scan_skills_dir(&global, "user", &[], &global, &mut global_commands);
+        assert!(global_commands
+            .iter()
+            .any(|command| command.folder_name.as_deref() == Some("healthy")));
+        assert!(!global_commands
+            .iter()
+            .any(|command| command.folder_name.as_deref() == Some("damaged")));
+
+        let mut project_commands = Vec::new();
+        scan_skills_dir(&project, "project", &[], &global, &mut project_commands);
+        assert!(project_commands
+            .iter()
+            .any(|command| command.folder_name.as_deref() == Some("local")));
+        assert!(!project_commands
+            .iter()
+            .any(|command| command.folder_name.as_deref() == Some("healthy")));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_scan_does_not_follow_a_linked_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_tmp_workspace();
+        let actual = root.join("actual");
+        let linked = root.join("linked");
+        fs::create_dir_all(actual.join("escaped")).unwrap();
+        fs::write(
+            actual.join("escaped").join("SKILL.md"),
+            "---\nname: escaped\ndescription: escaped\n---\n",
+        )
+        .unwrap();
+        symlink(&actual, &linked).unwrap();
+
+        let mut commands = Vec::new();
+        scan_skills_dir(&linked, "user", &[], &linked, &mut commands);
+        assert!(commands.is_empty());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

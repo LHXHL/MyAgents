@@ -3,6 +3,7 @@
  */
 import type { SkillFrontmatter, CommandFrontmatter } from './slashCommands';
 import type { ProjectCapabilitySource } from './projectCapabilities';
+import type { SkillIntegrityIssue } from './skillIntegrity';
 
 // Re-export frontmatter types
 export type { SkillFrontmatter, CommandFrontmatter };
@@ -75,6 +76,7 @@ export interface CommandDetail {
 export interface SkillsListResponse {
     success: boolean;
     skills: SkillItem[];
+    integrityIssues?: SkillIntegrityIssue[];
     error?: string;
 }
 

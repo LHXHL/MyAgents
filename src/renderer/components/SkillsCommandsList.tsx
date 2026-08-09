@@ -4,7 +4,7 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalSkillsPanel in Settings).
  */
-import { Plus, Sparkles, Terminal, Loader2 } from 'lucide-react';
+import { FolderOpen, Loader2, Plus, ShieldAlert, Sparkles, Terminal } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,7 +13,8 @@ import { useTabApiOptional } from '@/context/TabContext';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { CreateDialog, NewSkillChooser, InstallFromUrlDialog, type InstallFromUrlResponse } from './SkillDialogs';
-import type { SkillItem, CommandItem } from '../../shared/skillsTypes';
+import type { SkillItem, CommandItem, SkillsListResponse } from '../../shared/skillsTypes';
+import type { SkillIntegrityIssue } from '../../shared/skillIntegrity';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 
 interface SkillsCommandsListProps {
@@ -61,6 +62,7 @@ export default function SkillsCommandsList({
     const [loading, setLoading] = useState(true);
     const [skills, setSkills] = useState<SkillItem[]>([]);
     const [commands, setCommands] = useState<CommandItem[]>([]);
+    const [integrityIssues, setIntegrityIssues] = useState<SkillIntegrityIssue[]>([]);
     const [savingCapabilityIds, setSavingCapabilityIds] = useState<Set<string>>(() => new Set());
     const [showNewSkillDialog, setShowNewSkillDialog] = useState(false);
     const [showInstallFromUrlDialog, setShowInstallFromUrlDialog] = useState(false);
@@ -89,17 +91,22 @@ export default function SkillsCommandsList({
                     success: boolean;
                     skills: SkillItem[];
                     commands: CommandItem[];
+                    integrityIssues?: SkillIntegrityIssue[];
                 }>(buildEndpoint('/api/project-capabilities'));
                 if (response.success) {
                     setSkills(response.skills);
                     setCommands(response.commands);
+                    setIntegrityIssues(response.integrityIssues ?? []);
                 }
             } else {
                 const [skillsRes, commandsRes] = await Promise.all([
-                    api.get<{ success: boolean; skills: SkillItem[] }>(buildEndpoint(`/api/skills?scope=${scope}`)),
+                    api.get<SkillsListResponse>(buildEndpoint(`/api/skills?scope=${scope}`)),
                     api.get<{ success: boolean; commands: CommandItem[] }>(buildEndpoint(`/api/command-items?scope=${scope}`)),
                 ]);
-                if (skillsRes.success) setSkills(skillsRes.skills);
+                if (skillsRes.success) {
+                    setSkills(skillsRes.skills);
+                    setIntegrityIssues(skillsRes.integrityIssues ?? []);
+                }
                 if (commandsRes.success) setCommands(commandsRes.commands);
             }
         } catch {
@@ -122,6 +129,7 @@ export default function SkillsCommandsList({
                 error?: string;
                 skills?: SkillItem[];
                 commands?: CommandItem[];
+                integrityIssues?: SkillIntegrityIssue[];
             }>('/api/project-capability/toggle', {
                 capabilityId,
                 enabled,
@@ -132,6 +140,7 @@ export default function SkillsCommandsList({
             }
             setSkills(response.skills);
             setCommands(response.commands);
+            setIntegrityIssues(response.integrityIssues ?? []);
         } catch (error) {
             // Roll back synchronously to the last authoritative response. A
             // best-effort refresh follows, but a second network failure must
@@ -359,6 +368,8 @@ export default function SkillsCommandsList({
                     </button>
                 </div>
 
+                <SkillIntegrityIssuesPanel issues={integrityIssues} />
+
                 {/* Skills List */}
                 {skills.length > 0 ? (
                     <div className="grid grid-cols-2 gap-3">
@@ -506,6 +517,61 @@ export default function SkillsCommandsList({
                     loading={deleting}
                 />
             )}
+        </div>
+    );
+}
+
+export function SkillIntegrityIssuesPanel({ issues }: { issues: readonly SkillIntegrityIssue[] }) {
+    const { t } = useTranslation('settings');
+    const toast = useToast();
+    if (issues.length === 0) return null;
+
+    const reveal = async (path: string) => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('cmd_open_path_external', { fullPath: path, workspace: null });
+        } catch {
+            toast.error(t('agentSettings.skillCommandList.integrityRevealFailed'));
+        }
+    };
+
+    return (
+        <div className="mb-4 space-y-2" aria-label={t('agentSettings.skillCommandList.integrityTitle')}>
+            {issues.map((issue) => {
+                const blocked = issue.severity === 'blocked';
+                return (
+                    <div
+                        key={`${issue.folderName}-${issue.reason}`}
+                        className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 ${blocked
+                            ? 'border-red-500/25 bg-red-500/5'
+                            : 'border-amber-500/25 bg-amber-500/5'}`}
+                    >
+                        <ShieldAlert className={`mt-0.5 h-4 w-4 shrink-0 ${blocked ? 'text-red-500' : 'text-amber-500'}`} />
+                        <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold text-[var(--ink)]">{issue.folderName}</span>
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${blocked
+                                    ? 'bg-red-500/10 text-red-600 dark:text-red-400'
+                                    : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'}`}
+                                >
+                                    {t(`agentSettings.skillCommandList.integrity${blocked ? 'Blocked' : 'Warning'}`)}
+                                </span>
+                            </div>
+                            <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+                                {t(`agentSettings.skillCommandList.integrityReasons.${issue.reason}`)}
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => void reveal(issue.revealPath)}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                        >
+                            <FolderOpen className="h-3.5 w-3.5" />
+                            {t('agentSettings.skillCommandList.integrityReveal')}
+                        </button>
+                    </div>
+                );
+            })}
         </div>
     );
 }
