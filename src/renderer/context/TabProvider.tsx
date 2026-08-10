@@ -4152,6 +4152,11 @@ export default function TabProvider({
             const { sessionId: restartedSid, port } = event.payload;
             if (restartedSid === currentSessionIdRef.current) {
                 console.log(`[TabProvider ${tabId}] Session Sidecar restarted on port ${port}; invalidating tab URL cache`);
+                // The subscription survives a Rust-owned Sidecar replacement,
+                // but the live transport does not. Reflect that process epoch
+                // boundary until the first envelope from the replacement marks
+                // the connection live again; Tab config hydration keys off it.
+                setIsConnected(false);
                 resetTabServerUrlCache(tabId);
                 const restore = persistedRestoreLifecycleRef.current;
                 if (isPendingSessionId(restartedSid)) return;

@@ -29,6 +29,11 @@ import type { SlashCommand as InputSlashCommand } from '@/components/SlashComman
 import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
 import ContextUsageIndicator from '@/components/ContextUsageIndicator';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
+import {
+  sessionConfigPushFingerprint,
+  shouldPushSessionConfig,
+  type SessionConfigPushMode,
+} from '@/utils/sessionConfigPushPolicy';
 import QueryNavigator from '@/components/chat/QueryNavigator';
 import ChatSearchPanel from '@/components/ChatSearchPanel';
 import { useChatSearch, isHighlightApiSupported } from '@/hooks/useChatSearch';
@@ -172,6 +177,8 @@ type ExtensionUpdateResponse = {
   error?: string;
   extensionStatus?: RuntimeExtensionDiagnostics;
 };
+
+type SessionConfigPushKind = 'mcp' | 'agents';
 
 type SplitPreviewFile = {
   name: string;
@@ -1248,6 +1255,40 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // it's the recovery hook.
   const prevIsConnectedRef = useRef(isConnected);
 
+  // Background hydration has several legitimate triggers (mount, reconnect,
+  // config refresh, tab activation), but they all project the same two
+  // Sidecar-owned values. Coalesce identical payloads per Sidecar generation;
+  // explicit user mutations still bypass the dedupe and receive their response.
+  const lastSessionConfigPushRef = useRef<Record<SessionConfigPushKind, string | null>>({
+    mcp: null,
+    agents: null,
+  });
+  const pushSessionConfig = useCallback(async (
+    kind: SessionConfigPushKind,
+    path: '/api/mcp/set' | '/api/agents/set',
+    body: unknown,
+    mode: SessionConfigPushMode,
+  ): Promise<ExtensionUpdateResponse | null> => {
+    const fingerprint = sessionConfigPushFingerprint(body);
+    if (!shouldPushSessionConfig(lastSessionConfigPushRef.current[kind], fingerprint, mode)) {
+      return null;
+    }
+    lastSessionConfigPushRef.current[kind] = fingerprint;
+    try {
+      const response = await apiPost<ExtensionUpdateResponse>(path, body);
+      if (response.success === false) {
+        throw new Error(response.error ?? `Failed to sync ${kind} configuration`);
+      }
+      return response;
+    } catch (error) {
+      // Clear only if no newer payload superseded this attempt.
+      if (lastSessionConfigPushRef.current[kind] === fingerprint) {
+        lastSessionConfigPushRef.current[kind] = null;
+      }
+      throw error;
+    }
+  }, [apiPost]);
+
   // Disposition gate for config reconciliation (replaces joinedExistingSidecar).
   // configDispositionRef holds the CURRENT value (read at effect-run time); the
   // derived booleans are for effect deps.
@@ -1743,7 +1784,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           const effective = allServers.filter(s =>
             globalEnabled.includes(s.id) && launchMessage.mcpEnabledServers!.includes(s.id)
           );
-          await apiPost('/api/mcp/set', { servers: effective });
+          await pushSessionConfig('mcp', '/api/mcp/set', { servers: effective }, 'explicit');
         }
         // Hand later config-change MCP pushes back to the mount effect now that
         // autoSend has applied the launcher's initial selection.
@@ -2396,7 +2437,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // Always call /api/mcp/set, even with empty array
         // Empty array means "user explicitly disabled all MCP"
         // null (not calling) means "use file config fallback" - which we don't want
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
+        await pushSessionConfig(
+          'mcp',
+          '/api/mcp/set',
+          { servers: effectiveServers },
+          'background',
+        );
         if (isDebugMode()) {
           console.log('[Chat] Initial MCP sync:', effectiveServers.map(s => s.id).join(', ') || 'none');
         }
@@ -2417,7 +2463,6 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     //    fires → /api/mcp/set re-pushes the merged server list so the
     //    sidecar's currentMcpServers picks up the env on its next pre-warm
     //    fingerprint diff.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- apiPost / fileService are stable refs we deliberately exclude
   }, [
     configPending, // re-run when the instant-flip disposition resolves (pending→push)
     isConnected, // re-push MCP when the sidecar becomes reachable (re)connect — see guard above
@@ -2428,6 +2473,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     config?.mcpServerArgs,
     config?.mcpServers,
     launcherMcpFallbackRevision,
+    pushSessionConfig,
   ]);
 
   useEffect(() => {
@@ -2468,7 +2514,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           return;
         }
         // Sync to backend for SDK injection
-        await apiPost('/api/agents/set', { agents: response.agents });
+        await pushSessionConfig(
+          'agents',
+          '/api/agents/set',
+          { agents: response.agents },
+          'background',
+        );
         if (isDebugMode()) {
           console.log('[Chat] Agents synced:', Object.keys(response.agents).join(', ') || 'none');
         }
@@ -2481,7 +2532,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // disposition resolves makes the calling effect re-run loadAndSyncAgents, so a
   // 'pending'→'push' history open pushes agents even if it skipped during pending.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiGet, apiPost, configPending]);
+  }, [apiGet, configPending, pushSessionConfig]);
 
   // Load the authoritative enabled project capability snapshot. The settings
   // page uses the same endpoint for all candidates; the sidebar projects only
@@ -2709,8 +2760,13 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // 'adopt' the user's choice is persisted for future sessions. Post-resolution
         // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
         if (configDispositionRef.current === 'pending') return;
-        const response = await apiPost<ExtensionUpdateResponse>('/api/mcp/set', { servers });
-        handleExtensionUpdateResponse(response);
+        const response = await pushSessionConfig(
+          'mcp',
+          '/api/mcp/set',
+          { servers },
+          'explicit',
+        );
+        if (response) handleExtensionUpdateResponse(response);
       },
       getAllMcpServers,
       getGlobalMcpEnabled: getEnabledMcpServerIds,
@@ -3322,65 +3378,24 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     }
   }, [isActive]);
 
-  // Sync config when Tab becomes active (from inactive)
-  // This ensures settings changes are picked up when switching back to Chat Tab
+  // Refresh config when the Tab becomes active. ConfigProvider reloads the
+  // authoritative disk snapshot; the existing MCP/capability effects consume
+  // that state. A second imperative MCP push here raced explicit user edits
+  // and duplicated the same synchronization path.
   useEffect(() => {
     const wasInactive = !prevIsActiveRef.current;
     prevIsActiveRef.current = isActive;
 
-    // Only sync when Tab becomes active (was inactive, now active)
     if (!wasInactive || !isActive) return;
+    void refreshProviderData().catch((error) => {
+      console.error('[Chat] Failed to refresh config on tab activate:', error);
+    });
 
-    const syncConfigOnTabActivate = async () => {
-      try {
-        // 1. Refresh provider data (providers list, API keys, verify status)
-        await refreshProviderData();
-
-        // 2. Reload MCP config and sync to backend
-        const servers = await getAllMcpServers();
-        const enabledIds = await getEnabledMcpServerIds();
-        setMcpServers(servers);
-        syncMcpServerNames(servers);
-        setGlobalMcpEnabled(enabledIds);
-
-        // Skip MCP push when still in the adoption window (joined existing sidecar)
-        if (configDispositionRef.current !== 'push') {
-          if (isDebugMode()) {
-            console.log('[Chat] Skipping MCP push on tab activate (joined existing sidecar)');
-          }
-          return;
-        }
-        if (isSessionLoading) return;
-
-        // 3. Sync effective MCP servers to backend for next message
-        const workspaceEnabled = workspaceMcpEnabled;
-        const effectiveServers = servers.filter(s =>
-          enabledIds.includes(s.id) && workspaceEnabled.includes(s.id)
-        );
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
-
-        if (isDebugMode()) {
-          console.log('[Chat] Config synced on tab activate:', {
-            providers: providers.length,
-            mcpServers: servers.length,
-            effectiveMcp: effectiveServers.map(s => s.id).join(', ') || 'none',
-          });
-        }
-      } catch (err) {
-        console.error('[Chat] Failed to sync config on tab activate:', err);
-      }
-    };
-
-    void syncConfigOnTabActivate();
-
-    // 4. Reload agents & skills/commands (user may have edited in Settings)
-    loadAndSyncAgents();
-    loadSkillsAndCommands();
-
-    // 5. Refresh file tree
+    // One shared refresh trigger reloads agents, skills/commands and the
+    // file tree. Calling the loaders here as well made every activation do the
+    // same work twice.
     setWorkspaceRefreshTrigger(prev => prev + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- providers.length is only used for debug logging
-  }, [isActive, refreshProviderData, workspaceMcpEnabled, isSessionLoading, apiPost]);
+  }, [isActive, refreshProviderData]);
 
   // Listen for skill copy events to refresh DirectoryPanel (file tree shows .claude/skills/)
   // Note: WorkspaceConfigPanel has its own event listener for internalRefreshKey
@@ -3402,6 +3417,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   useEffect(() => {
     const wasConnected = prevIsConnectedRef.current;
     prevIsConnectedRef.current = isConnected;
+    if (!isConnected) {
+      // These fingerprints describe in-process Sidecar state and must die with
+      // that process so reconnect naturally rehydrates the replacement.
+      lastSessionConfigPushRef.current = { mcp: null, agents: null };
+      return;
+    }
     if (!wasConnected && isConnected) {
       setWorkspaceRefreshTrigger(k => k + 1);
     }

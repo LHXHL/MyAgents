@@ -229,6 +229,14 @@ for (const entry of entries) {
 }
 ```
 
+### 6. 在 secret-bearing transport 边界投影错误
+
+HTTP client 的错误文本通常携带完整请求 URL。若协议把凭据放在 URL 中
+（例如 Telegram Bot API 的 `/bot{token}/...`），不得把 `reqwest::Error`、
+`Request` 或完整 URL 直接格式化进产品错误和日志；transport owner 必须先投影为
+`timeout / connection / request / body / decode` 等无 URL 的有界类别。状态码和
+服务端返回的非敏感错误描述可按现有协议记录，但不能依赖事后日志正则来补救。
+
 ## 文件结构
 
 ```

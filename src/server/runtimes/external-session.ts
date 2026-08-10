@@ -153,6 +153,7 @@ import {
   setExternalRuntimeLiveReportedModel,
 } from './external-session/runtime-config';
 import {
+  projectRuntimeDiagnosticsExtensionChange,
   projectRuntimeDiagnosticLogEntries,
   projectRuntimeExtensionDiagnosticLogEntry,
   type RuntimeDiagnosticLogEntry,
@@ -961,18 +962,17 @@ function emitRuntimeDiagnosticLogEntry(entry: RuntimeDiagnosticLogEntry): void {
 
 function broadcastManagedCodexExtensionDiagnostics(emitExtensionLog = false): void {
   if (!isManagedCodexProductRuntime()) return;
-  const extensions = getManagedCodexExtensionStatus();
-  if (emitExtensionLog) {
-    const entry = projectRuntimeExtensionDiagnosticLogEntry(extensions);
-    if (entry) emitRuntimeDiagnosticLogEntry(entry);
-  }
   const runtimeDiagnostics = getManagedCodexRuntimeDiagnostics();
   if (!runtimeDiagnostics) return;
-  const diagnostics = {
-    ...runtimeDiagnostics,
-    extensions,
-    timestamp: new Date().toISOString(),
-  };
+  const diagnostics = projectRuntimeDiagnosticsExtensionChange(
+    runtimeDiagnostics,
+    getManagedCodexExtensionStatus(),
+  );
+  if (!diagnostics) return;
+  if (emitExtensionLog) {
+    const entry = projectRuntimeExtensionDiagnosticLogEntry(diagnostics.extensions);
+    if (entry) emitRuntimeDiagnosticLogEntry(entry);
+  }
   setManagedCodexRuntimeDiagnostics(diagnostics);
   broadcast('chat:runtime-diagnostics', diagnostics);
 }

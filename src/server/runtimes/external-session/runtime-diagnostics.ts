@@ -11,6 +11,44 @@ export interface RuntimeDiagnosticLogEntry {
 const MAX_VISIBLE_DIAGNOSTIC_ITEMS = 5;
 const MAX_DIAGNOSTIC_LOG_MESSAGE_LENGTH = 512;
 
+function runtimeExtensionDiagnosticsEqual(
+  left: RuntimeExtensionDiagnostics | undefined,
+  right: RuntimeExtensionDiagnostics,
+): boolean {
+  if (!left) return false;
+  if (
+    left.desiredRevision !== right.desiredRevision
+    || left.effectiveRevision !== right.effectiveRevision
+    || left.state !== right.state
+    || left.components.length !== right.components.length
+  ) {
+    return false;
+  }
+  return left.components.every((component, index) => {
+    const candidate = right.components[index];
+    return component.component === candidate.component
+      && component.id === candidate.id
+      && component.state === candidate.state
+      && component.code === candidate.code
+      && component.message === candidate.message
+      && component.requiresUserAction === candidate.requiresUserAction;
+  });
+}
+
+/**
+ * Product-extension reconciliation projects into the latest Runtime-owned
+ * diagnostics snapshot; it is not a new Runtime diagnostics collection.
+ * Return null for an idempotent projection and preserve the producer timestamp
+ * for a real extension transition.
+ */
+export function projectRuntimeDiagnosticsExtensionChange(
+  current: RuntimeDiagnostics,
+  extensions: RuntimeExtensionDiagnostics,
+): RuntimeDiagnostics | null {
+  if (runtimeExtensionDiagnosticsEqual(current.extensions, extensions)) return null;
+  return { ...current, extensions };
+}
+
 function boundDiagnosticLogMessage(message: string): string {
   if (message.length <= MAX_DIAGNOSTIC_LOG_MESSAGE_LENGTH) return message;
   return `${message.slice(0, MAX_DIAGNOSTIC_LOG_MESSAGE_LENGTH - 1)}…`;

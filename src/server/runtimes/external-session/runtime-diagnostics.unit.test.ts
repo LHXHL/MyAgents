@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeDiagnostics } from '../../../shared/types/runtime';
 import {
+  projectRuntimeDiagnosticsExtensionChange,
   projectRuntimeDiagnosticLogEntries,
   projectRuntimeExtensionDiagnosticLogEntry,
 } from './runtime-diagnostics';
@@ -22,6 +23,41 @@ function diagnostics(overrides: Partial<RuntimeDiagnostics> = {}): RuntimeDiagno
 }
 
 describe('Runtime diagnostics log projection', () => {
+  it('does not manufacture a new diagnostics snapshot when extensions are unchanged', () => {
+    const current = diagnostics({
+      extensions: {
+        desiredRevision: 'revision-one',
+        effectiveRevision: 'revision-one',
+        state: 'applied',
+        components: [{ component: 'skills', state: 'applied', code: 'skill_compiled' }],
+      },
+    });
+
+    expect(projectRuntimeDiagnosticsExtensionChange(current, current.extensions!)).toBeNull();
+  });
+
+  it('preserves the producer timestamp when only extension state changes', () => {
+    const current = diagnostics({
+      extensions: {
+        desiredRevision: 'revision-one',
+        effectiveRevision: 'revision-one',
+        state: 'applied',
+        components: [],
+      },
+    });
+    const extensions = {
+      desiredRevision: 'revision-two',
+      effectiveRevision: 'revision-one',
+      state: 'pending_next_start' as const,
+      components: [],
+    };
+
+    expect(projectRuntimeDiagnosticsExtensionChange(current, extensions)).toEqual({
+      ...current,
+      extensions,
+    });
+  });
+
   it('logs app discovery and Host tool degradation once without successful Skills', () => {
     const entries = projectRuntimeDiagnosticLogEntries(diagnostics({
       status: {

@@ -27,6 +27,19 @@ function snapshot(revision: string, mcpServers: McpServerDefinition[] = []): Man
 }
 
 describe('Managed Codex extension generation state', () => {
+  it('keeps no-op status operation-local instead of mutating durable diagnostics state', () => {
+    resetManagedCodexExtensionState();
+    markManagedCodexExtensionEffective(snapshot('one'), 'generation-one');
+
+    expect(setManagedCodexDesiredSnapshot(snapshot('one'), 'idle-process')).toMatchObject({
+      state: 'unchanged',
+    });
+    expect(getManagedCodexExtensionStatus()).toMatchObject({
+      state: 'applied',
+      components: [{ state: 'applied' }],
+    });
+  });
+
   it('resolves renderer MCP intent from the server-owned catalogue', () => {
     const authoritative: McpServerDefinition[] = [{
       id: 'safe',
