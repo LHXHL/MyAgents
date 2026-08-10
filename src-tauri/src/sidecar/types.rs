@@ -1027,10 +1027,8 @@ mod lifecycle_contract_tests {
         ));
         assert!(!manager.upgrade_session_id_for_tab("pending-a", "session-real", "tab-a",));
 
-        let release = manager.remove_session_owner(
-            "session-real",
-            &SidecarOwner::Task("task-1".to_string()),
-        );
+        let release =
+            manager.remove_session_owner("session-real", &SidecarOwner::Task("task-1".to_string()));
         assert!(release.removed);
         assert!(!release.stopped);
         assert!(manager.session_id_upgrade_is_already_applied_for_tab(
