@@ -249,6 +249,56 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('filters runtime-blind Launcher scan results for non-builtin execution', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    workspaceMocks.service.listSlashCommands.mockResolvedValue({
+      success: true,
+      commands: [
+        { name: 'compact', description: 'SDK compact', source: 'builtin' },
+        { name: 'context', description: 'SDK context', source: 'builtin' },
+        { name: 'ship-it', description: 'Workspace command', source: 'custom' },
+        { name: 'apple-notes', description: 'Project Skill', source: 'skill', scope: 'project' },
+      ],
+      globalSkillFolderNames: [],
+    });
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        mode: 'launcher',
+        workspacePath: '/tmp/workspace',
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        sdkSlashCommands: [{
+          name: 'plugin:review',
+          description: 'Builtin SDK plugin command',
+          source: 'sdk',
+        }],
+      });
+
+      const textarea = screen.getByRole('textbox');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+      expect(screen.queryByText('/plugin:review')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('dispatches the Managed Codex compact command as a client action', async () => {
     await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup();

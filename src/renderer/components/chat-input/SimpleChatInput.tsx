@@ -515,13 +515,28 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       : [],
     [showBuiltinSdkSlashCommands, t],
   );
+  // Launcher receives a runtime-neutral filesystem inventory whose Rust
+  // scanner includes Claude SDK builtins. Project that raw inventory at render
+  // time so provider/runtime changes cannot be overwritten by a late scan from
+  // the previous selection. Chat's injected capability snapshot passes through
+  // the same boundary for one consistent composer invariant.
+  const runtimeVisibleSlashCommands = useMemo(
+    () => showBuiltinSdkSlashCommands
+      ? slashCommands
+      : slashCommands.filter(command => command.source !== 'builtin'),
+    [showBuiltinSdkSlashCommands, slashCommands],
+  );
+  const runtimeVisibleSdkSlashCommands = useMemo(
+    () => showBuiltinSdkSlashCommands ? sdkSlashCommands : [],
+    [showBuiltinSdkSlashCommands, sdkSlashCommands],
+  );
   const mergedSlashCommands = useMemo(
     () => withClientActionCommands(
-      mergeSdkSlashCommands(slashCommands, sdkSlashCommands),
+      mergeSdkSlashCommands(runtimeVisibleSlashCommands, runtimeVisibleSdkSlashCommands),
       clientActionsEnabled,
       clientActionSlashCommands ?? [],
     ),
-    [slashCommands, sdkSlashCommands, clientActionsEnabled, clientActionSlashCommands],
+    [runtimeVisibleSlashCommands, runtimeVisibleSdkSlashCommands, clientActionsEnabled, clientActionSlashCommands],
   );
 
   // Compute filtered slash commands once per render (used in both handleKeyDown and JSX)
