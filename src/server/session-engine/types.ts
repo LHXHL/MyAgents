@@ -171,6 +171,7 @@ export type InjectedTurnRequest = {
   onTerminal?: TurnTerminalObserver;
   /** Final authority check at the runtime promotion boundary. */
   beforeDispatch?: DispatchGuard;
+  requiredSystemSkill?: RequiredSystemSkill;
 };
 
 export type InjectedTurnResult = {
@@ -219,6 +220,7 @@ export type ScheduledTurnPreparationResult = {
   providerRoutingRecovery?: string;
   runtimeConfig?: RuntimeConfig | null;
   beforeDispatch?: DispatchGuard;
+  requiredSystemSkill?: RequiredSystemSkill;
   release?: () => void | Promise<void>;
   error?: string;
   code?: 'session_bind_failed' | 'configuration_failed' | 'scenario_failed';

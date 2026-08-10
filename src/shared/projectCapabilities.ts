@@ -41,7 +41,6 @@ export interface EffectiveProjectCapabilitySnapshot {
   enabledCommands: ProjectCapabilityCandidate[];
 }
 
-const WINDOWS_RESERVED_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 function hasControlCharacter(value: string): boolean {
   return [...value].some(character => {
     const code = character.charCodeAt(0);
@@ -61,7 +60,7 @@ export function normalizeCapabilitySourceLocalId(
   kind: ProjectCapabilityKind,
 ): string {
   const normalized = value.trim().replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
-  if (!normalized || hasControlCharacter(normalized) || normalized.includes(':')) {
+  if (!normalized || hasControlCharacter(normalized)) {
     throw new Error(`Invalid ${kind} capability source id`);
   }
   const segments = normalized.split('/');
@@ -69,7 +68,7 @@ export function normalizeCapabilitySourceLocalId(
     throw new Error('Skill capability source id must be one folder name');
   }
   for (const segment of segments) {
-    if (!segment || segment === '.' || segment === '..' || WINDOWS_RESERVED_NAME_RE.test(segment)) {
+    if (!segment || segment === '.' || segment === '..') {
       throw new Error(`Invalid ${kind} capability source id`);
     }
   }

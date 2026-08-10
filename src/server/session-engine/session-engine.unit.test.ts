@@ -1425,6 +1425,28 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
   });
 
+  it('checks an injected turn Required Skill inside the builtin adapter', async () => {
+    mocks.requireCurrentBuiltinSkill.mockRejectedValueOnce(new Error('required Skill missing'));
+
+    const result = await runInjectedTurn({
+      prompt: 'update memory',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+      permissionMode: 'fullAgency',
+      timeoutMs: 1_000,
+      requiredSystemSkill: 'myagents-memory-update',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: false,
+      status: 409,
+      error: 'required Skill missing',
+    });
+    expect(mocks.requireCurrentBuiltinSkill).toHaveBeenCalledWith('myagents-memory-update');
+  });
+
   it('waits for an in-flight domain claim and durable abort before publishing dispatch-timeout rejection', async () => {
     let releaseClaim!: () => void;
     let releaseAbort!: () => void;

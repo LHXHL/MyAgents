@@ -97,24 +97,80 @@ describe('effective project capabilities', () => {
     })).rejects.toThrow('Required system Skill cannot be disabled');
   });
 
-  it('fails closed without an exact owner and rejects project Required-Skill spoofing', () => {
+  it('uses the default enabled set without an exact owner but keeps writes strict', async () => {
     const { home, workspace } = makeFixture();
     write(join(home, '.myagents', 'projects.json'), JSON.stringify([]));
-    expect(() => resolveEffectiveProjectCapabilities(workspace)).toThrow('unique Project owner');
-
-    write(join(home, '.myagents', 'projects.json'), JSON.stringify([
-      { id: 'project-1', path: workspace, agentId: 'agent-1' },
-    ]));
-    write(
-      join(workspace, '.claude', 'skills', 'local-spoof', 'SKILL.md'),
-      skill('myagents-cli', 'not system owned'),
-    );
-    expect(() => resolveEffectiveProjectCapabilities(workspace)).toThrow(
-      'collides with required system Skill',
-    );
+    expect(resolveEffectiveProjectCapabilities(workspace)).toMatchObject({
+      agentId: '',
+      enabledSkills: expect.arrayContaining([
+        expect.objectContaining({ canonicalName: 'myagents-cli' }),
+      ]),
+    });
+    await expect(setProjectCapabilityEnabled({
+      workspacePath: workspace,
+      capabilityId: 'global:skill:myagents-cli',
+      enabled: true,
+    })).rejects.toThrow('unique Project owner');
   });
 
-  it('rejects an AgentConfig claimed by more than one Project', () => {
+  it('keeps historical project copies of required Skills enabled as the project winner', async () => {
+    const { home, workspace } = makeFixture();
+    write(join(home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{
+        id: 'agent-1',
+        path: workspace,
+        capabilitySelection: {
+          version: 1,
+          disabled: {
+            skills: ['project:skill:task-alignment'],
+            commands: [],
+          },
+        },
+      }],
+    }));
+    write(
+      join(workspace, '.claude', 'skills', 'task-alignment', 'SKILL.md'),
+      skill('task-alignment', 'historical project copy'),
+    );
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.candidates.filter(item => item.canonicalName === 'task-alignment')).toEqual([
+      expect.objectContaining({
+        id: 'project:skill:task-alignment',
+        source: 'project',
+        required: true,
+        systemOwned: false,
+        enabled: true,
+      }),
+    ]);
+    await expect(setProjectCapabilityEnabled({
+      workspacePath: workspace,
+      capabilityId: 'project:skill:task-alignment',
+      enabled: false,
+    })).rejects.toThrow('Required system Skill cannot be disabled');
+  });
+
+  it('uses a project alias as the winner for the same Required canonical name', () => {
+    const { workspace } = makeFixture();
+    write(
+      join(workspace, '.claude', 'skills', 'local-alignment', 'SKILL.md'),
+      skill('task-alignment', 'project override'),
+    );
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.candidates.filter(item => item.canonicalName === 'task-alignment')).toEqual([
+      expect.objectContaining({
+        id: 'project:skill:local-alignment',
+        source: 'project',
+        sourceLocalId: 'local-alignment',
+        required: true,
+        systemOwned: false,
+        enabled: true,
+      }),
+    ]);
+  });
+
+  it('does not let ambiguous persistence ownership block capability reads', async () => {
     const { home, workspace } = makeFixture();
     const secondWorkspace = join(home, 'second-workspace');
     mkdirSync(secondWorkspace, { recursive: true });
@@ -122,20 +178,28 @@ describe('effective project capabilities', () => {
       { id: 'project-1', path: workspace, agentId: 'agent-1' },
       { id: 'project-2', path: secondWorkspace, agentId: 'agent-1' },
     ]));
-    expect(() => resolveEffectiveProjectCapabilities(workspace)).toThrow(
-      'claimed by multiple Projects',
-    );
+    expect(resolveEffectiveProjectCapabilities(workspace).agentId).toBe('');
+    await expect(setProjectCapabilityEnabled({
+      workspacePath: workspace,
+      capabilityId: 'global:skill:myagents-cli',
+      enabled: true,
+    })).rejects.toThrow('claimed by multiple Projects');
   });
 
-  it('rejects a global Skill that aliases a required system identity', () => {
+  it('isolates a global Skill that aliases a required system identity', () => {
     const { home, workspace } = makeFixture();
     write(
       join(home, '.myagents', 'skills', 'not-system-owned', 'SKILL.md'),
       skill('myagents-cli', 'not the official install'),
     );
-    expect(() => resolveEffectiveProjectCapabilities(workspace)).toThrow(
-      'not-system-owned:untrusted_global_source',
-    );
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.candidates).not.toContainEqual(expect.objectContaining({
+      id: 'global:skill:not-system-owned',
+    }));
+    expect(snapshot.integrityIssues).toContainEqual(expect.objectContaining({
+      folderName: 'not-system-owned',
+      reason: 'untrusted_global_source',
+    }));
   });
 
   it('keeps reserved product command names outside project selection', () => {
@@ -214,6 +278,43 @@ describe('effective project capabilities', () => {
     }));
     expect(snapshot.candidates).not.toContainEqual(expect.objectContaining({
       id: 'global:command:alias-command',
+    }));
+  });
+
+  it('treats a project Skill symlink as the project winner by canonical name', () => {
+    const { home, workspace } = makeFixture();
+    write(join(home, '.myagents', 'skills', 'global-alignment', 'SKILL.md'), skill('task-alignment', 'global'));
+    const foreign = join(home, 'foreign-project-skill');
+    write(join(foreign, 'SKILL.md'), skill('task-alignment', 'project link'));
+    const projectSkills = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkills, { recursive: true });
+    symlinkSync(foreign, join(projectSkills, 'local-alignment'));
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.candidates.filter(item => item.canonicalName === 'task-alignment')).toEqual([
+      expect.objectContaining({
+        id: 'project:skill:local-alignment',
+        source: 'project',
+        required: true,
+        enabled: true,
+      }),
+    ]);
+  });
+
+  it('supports a platform-valid colon in a Skill folder identity', () => {
+    const { home, workspace } = makeFixture();
+    write(join(home, '.myagents', 'skills', 'bad:name', 'SKILL.md'), skill('bad-name', 'colon folder'));
+    write(join(home, '.myagents', 'skills', 'healthy', 'SKILL.md'), skill('healthy', 'healthy'));
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+
+    expect(snapshot.candidates).toContainEqual(expect.objectContaining({
+      id: 'global:skill:bad:name',
+      canonicalName: 'bad-name',
+    }));
+    expect(snapshot.enabledSkills).toContainEqual(expect.objectContaining({
+      id: 'global:skill:healthy',
+      canonicalName: 'healthy',
     }));
   });
 });

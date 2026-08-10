@@ -2,12 +2,13 @@
 export const SYSTEM_SKILLS_VERSION = '47';
 
 /**
- * Product-owned skills that are part of MyAgents' always-available runtime
+ * Canonical Skill names that are part of MyAgents' always-available runtime
  * contract.
  *
- * These cannot be disabled as ordinary user skills. The task and memory
- * skills back managed workflows, while myagents-cli and myagents-docs are the
- * product's baseline operation and product-knowledge surfaces.
+ * The effective project/global winner for these names cannot be disabled as
+ * an ordinary Skill. The task and memory skills back managed workflows, while
+ * myagents-cli and myagents-docs are the product's baseline operation and
+ * product-knowledge surfaces.
  */
 export const REQUIRED_SYSTEM_SKILLS = [
   'task-alignment',

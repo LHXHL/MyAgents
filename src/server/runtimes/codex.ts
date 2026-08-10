@@ -349,6 +349,7 @@ function pushCodexConfigArg(target: string[], key: string, valueToml: string): v
 type ManagedCodexExtensionMaterialization = {
   configArgs: string[];
   skillRoots: string[];
+  skills: ManagedCodexSkillSpec[];
   cleanup(): void;
 };
 
@@ -363,47 +364,89 @@ export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec
   return `${lines.join('\n')}\n`;
 }
 
-function materializeManagedCodexExtensions(
+export function materializeManagedCodexExtensions(
   snapshot: ManagedCodexExtensionSnapshot | undefined,
 ): ManagedCodexExtensionMaterialization {
   if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
-    return { configArgs: [], skillRoots: [], cleanup() {} };
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
   }
-  const root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  let root: string;
+  try {
+    root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  } catch (error) {
+    console.warn(
+      '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
   const configArgs: string[] = [];
   const skillRoots: string[] = [];
+  const skills: ManagedCodexSkillSpec[] = [];
   let cleaned = false;
-  try {
-    if (snapshot.agents.length > 0) {
+  if (snapshot.agents.length > 0) {
+    try {
       const rolesRoot = join(root, 'agents');
       ensureDirSync(rolesRoot);
-      for (const role of snapshot.agents) {
-        const configPath = join(rolesRoot, `${role.name}.toml`);
-        writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
-        pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
-        pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+      for (const [index, role] of snapshot.agents.entries()) {
+        const configPath = join(rolesRoot, `${String(index).padStart(3, '0')}.toml`);
+        try {
+          writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
+          pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
+          pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+        } catch (error) {
+          console.warn(
+            `[codex] managed Agent materialization failed; continuing without ${role.name}:`,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
+    } catch (error) {
+      console.warn(
+        '[codex] managed Agent materialization unavailable; continuing without projected Agents:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
-    if (snapshot.skills.length > 0) {
+  }
+  if (snapshot.skills.length > 0) {
+    try {
       const skillsRoot = join(root, 'skills');
       ensureDirSync(skillsRoot);
       for (const [index, skill] of snapshot.skills.entries()) {
-        const folderName = `${String(index).padStart(3, '0')}-${skill.name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
-        symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+        try {
+          const folderName = String(index).padStart(3, '0');
+          symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+          skills.push(skill);
+        } catch (error) {
+          console.warn(
+            `[codex] managed Skill materialization failed; continuing without ${skill.name}:`,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
-      skillRoots.push(skillsRoot);
+      if (skills.length > 0) skillRoots.push(skillsRoot);
+    } catch (error) {
+      console.warn(
+        '[codex] managed Skill materialization unavailable; continuing without projected Skills:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
-  } catch (error) {
-    rmSync(root, { recursive: true, force: true });
-    throw error;
   }
   return {
     configArgs,
     skillRoots,
+    skills,
     cleanup() {
       if (cleaned) return;
       cleaned = true;
-      rmSync(root, { recursive: true, force: true });
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(
+          '[codex] failed to clean managed extension temp files:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     },
   };
 }
@@ -419,7 +462,7 @@ export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
   }
 }
 
-export const CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS = 5_000;
+export const CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS = 30_000;
 export const CODEX_SKILL_LIST_TIMEOUT_MS = 30_000;
 
 type CodexSkillListError = { path?: string; message?: string };
@@ -429,6 +472,11 @@ type CodexSkillListEntry = {
 };
 
 type ExpectedCodexSkill = Pick<ManagedCodexSkillSpec, 'name' | 'path'>;
+
+export type CodexSkillProjectionResult = {
+  extraRoots: string[];
+  loadedSkillNames: string[];
+};
 
 function canonicalCodexSkillPath(path: string): string {
   try {
@@ -472,12 +520,11 @@ export async function configureCodexSkillExtraRoots(
   requestedRoots?: readonly string[],
   expectedSkills: readonly ExpectedCodexSkill[] = [],
   listTimeoutMs = CODEX_SKILL_LIST_TIMEOUT_MS,
-): Promise<string[]> {
-  const strictProjection = requestedRoots !== undefined;
+): Promise<CodexSkillProjectionResult> {
   const extraRoots = requestedRoots === undefined
     ? resolveCodexSkillExtraRoots(workspacePath)
     : [...new Set(requestedRoots)];
-  if (!strictProjection && extraRoots.length === 0) return [];
+  if (extraRoots.length === 0) return { extraRoots: [], loadedSkillNames: [] };
 
   try {
     const setStartedAt = Date.now();
@@ -538,19 +585,27 @@ export async function configureCodexSkillExtraRoots(
     );
     const missing = expectedSkills.filter(skill => !visible.has(codexSkillIdentity(skill)));
     if (missing.length > 0) {
-      throw new Error(`Codex skills/list did not report expected Skills: ${missing.map(skill => skill.name).join(', ')}`);
-    }
-    console.log(`[codex] skills extra roots applied and verified: roots=${extraRoots.length} skills=${expectedSkills.length}`);
-    return extraRoots;
-  } catch (err) {
-    if (!strictProjection) {
       console.warn(
-        '[codex] skills extra roots injection failed; continuing without .claude/skills:',
-        err instanceof Error ? err.message : String(err),
+        `[codex] skills/list omitted projected Skills; continuing without them: ${missing.map(skill => skill.name).join(', ')}`,
       );
-      return [];
     }
-    throw new Error(`Managed Codex Skill projection failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.log(
+      `[codex] skills extra roots applied: roots=${extraRoots.length}`
+      + ` visible=${expectedSkills.length - missing.length} missing=${missing.length}`,
+    );
+    const missingIdentities = new Set(missing.map(codexSkillIdentity));
+    return {
+      extraRoots,
+      loadedSkillNames: expectedSkills
+        .filter(skill => !missingIdentities.has(codexSkillIdentity(skill)))
+        .map(skill => skill.name),
+    };
+  } catch (err) {
+    console.warn(
+      '[codex] skills extra roots injection failed; continuing without projected Skills:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return { extraRoots: [], loadedSkillNames: [] };
   }
 }
 
@@ -2134,6 +2189,7 @@ class CodexProcess implements RuntimeProcess {
   readonly pid: number;
   readonly runtimeGeneration: string;
   exited = false;
+  loadedSkillNames: readonly string[] = [];
   private proc: Subprocess;
 
   // Codex-specific state
@@ -3083,7 +3139,9 @@ export class CodexRuntime implements AgentRuntime {
     }
 
     const codexProc = new CodexProcess(proc);
-    codexProc.extensionSnapshot = extensionSnapshot ?? null;
+    codexProc.extensionSnapshot = extensionSnapshot
+      ? { ...extensionSnapshot, skills: extensionMaterialization.skills }
+      : null;
     codexProc.cleanupExtensionResources = extensionMaterialization.cleanup;
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
@@ -3325,14 +3383,15 @@ export class CodexRuntime implements AgentRuntime {
       const enableManagedRawEvents = runtimeSource === 'managed-provider'
         && !options.resumeSessionId;
       await initializeCodexRpc(codexProc.rpc, 15_000, enableManagedRawEvents);
-      await configureCodexSkillExtraRoots(
+      const skillProjection = await configureCodexSkillExtraRoots(
         codexProc.rpc,
         options.workspacePath,
         CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
         extensionSnapshot ? extensionMaterialization.skillRoots : undefined,
-        extensionSnapshot?.skills ?? [],
+        extensionSnapshot ? extensionMaterialization.skills : [],
         CODEX_SKILL_LIST_TIMEOUT_MS,
       );
+      codexProc.loadedSkillNames = skillProjection.loadedSkillNames;
 
       // 2. Determine permission mode
       const isHeadlessAutomation =

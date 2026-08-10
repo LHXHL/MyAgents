@@ -181,9 +181,7 @@ describe('Managed Codex extension compiler', () => {
       runtimeText: 'Inspect src/server carefully.',
       revision: snapshot.revision,
     });
-    expect(() => compileManagedCodexCommand('/missing input', snapshot)).toThrow(
-      'Unknown Managed Codex command: /missing',
-    );
+    expect(compileManagedCodexCommand('/missing input', snapshot)).toBeNull();
     expect(compileManagedCodexCommand('/compact', snapshot)).toBeNull();
   });
 
@@ -242,6 +240,40 @@ describe('Managed Codex extension compiler', () => {
     expect(first.revision).not.toBe(second.revision);
   });
 
+  it('compiles a project Skill directory symlink as the project winner', () => {
+    if (process.platform === 'win32') return;
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    const linkedSkill = tempRoot();
+    write(
+      join(linkedSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Project-linked review\n---\nReview locally.',
+    );
+    mkdirSync(join(workspace, '.claude', 'skills'), { recursive: true });
+    symlinkSync(linkedSkill, join(workspace, '.claude', 'skills', 'local-review'), 'dir');
+    write(
+      join(userRoot, 'skills', 'global-review', 'SKILL.md'),
+      '---\nname: review\ndescription: Global review\n---\nReview globally.',
+    );
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+    });
+
+    expect(snapshot.skills).toEqual([
+      expect.objectContaining({
+        name: 'review',
+        description: 'Project-linked review',
+        scope: 'project',
+        sourceLocalId: 'local-review',
+      }),
+    ]);
+  });
+
   it('compiles global Skill bytes from the admitted inventory without rereading disk', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();
@@ -293,6 +325,116 @@ describe('Managed Codex extension compiler', () => {
     expect(snapshot.skills).toEqual([
       expect.objectContaining({ name: 'review', description: 'Admitted review' }),
     ]);
+  });
+
+  it('omits Skill folders that are absent from the admitted capability snapshot', () => {
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    write(
+      join(workspace, '.claude', 'skills', 'bad:name', 'SKILL.md'),
+      '---\nname: project-bad\ndescription: Invalid project id\n---\nProject.',
+    );
+    write(
+      join(userRoot, 'skills', 'bad:name', 'SKILL.md'),
+      '---\nname: global-bad\ndescription: Invalid global id\n---\nGlobal.',
+    );
+    write(
+      join(userRoot, 'skills', 'healthy', 'SKILL.md'),
+      '---\nname: healthy\ndescription: Healthy Skill\n---\nHealthy.',
+    );
+    const globalSkillInventory = createGlobalSkillInventorySnapshot({
+      rootPath: join(userRoot, 'skills'),
+      cliToolRegistryEnabled: true,
+      disabledSkillNames: new Set(),
+    });
+    const healthyEntry = globalSkillInventory.entries.find(entry => entry.folderName === 'healthy');
+    if (!healthyEntry) throw new Error('missing healthy fixture');
+    const healthyCandidate = {
+      id: 'global:skill:healthy',
+      kind: 'skill' as const,
+      source: 'global' as const,
+      sourceLocalId: 'healthy',
+      canonicalName: 'healthy',
+      name: 'healthy',
+      description: 'Healthy Skill',
+      path: healthyEntry.skillPath,
+      required: false,
+      systemOwned: false,
+      enabled: true,
+      contentSha256: 'healthy',
+    };
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+      globalSkillInventory,
+      capabilitySnapshot: {
+        workspacePath: workspace,
+        agentId: 'agent-1',
+        revision: 'admitted',
+        integrityRevision: globalSkillInventory.integrityRevision,
+        integrityIssues: [...globalSkillInventory.integrityIssues],
+        candidates: [healthyCandidate],
+        enabledSkills: [healthyCandidate],
+        enabledCommands: [],
+      },
+    });
+
+    expect(snapshot.skills).toEqual([
+      expect.objectContaining({ name: 'healthy', sourceLocalId: 'healthy' }),
+    ]);
+  });
+
+  it('omits a canonical Skill isolated by compatibility projection', () => {
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    write(
+      join(workspace, '.claude', 'skills', 'local-review', 'SKILL.md'),
+      '---\nname: review\ndescription: Project review\n---\nProject.',
+    );
+    const projectCandidate = {
+      id: 'project:skill:local-review',
+      kind: 'skill' as const,
+      source: 'project' as const,
+      sourceLocalId: 'local-review',
+      canonicalName: 'review',
+      name: 'review',
+      description: 'Project review',
+      path: join(workspace, '.claude', 'skills', 'local-review', 'SKILL.md'),
+      required: false,
+      systemOwned: false,
+      enabled: true,
+      contentSha256: 'project-review',
+    };
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+      unavailableSkillNames: ['review'],
+      capabilitySnapshot: {
+        workspacePath: workspace,
+        agentId: 'agent-1',
+        revision: 'admitted',
+        integrityRevision: 'integrity',
+        integrityIssues: [],
+        candidates: [projectCandidate],
+        enabledSkills: [projectCandidate],
+        enabledCommands: [],
+      },
+    });
+
+    expect(snapshot.skills).toEqual([]);
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'skills',
+      state: 'failed',
+      code: 'skill_projection_unavailable',
+    }));
   });
 
   it('projects only enabled global Skills', () => {
@@ -454,6 +596,32 @@ describe('Managed Codex extension compiler', () => {
       expect.objectContaining({ component: 'plugins', state: 'unsupported', code: 'plugin_bin_unsupported' }),
       expect.objectContaining({ component: 'mcp', state: 'unsupported', code: 'plugin_mcp_sse_unsupported' }),
     ]));
+  });
+
+  it('isolates an enabled Plugin whose install directory disappeared', () => {
+    const workspace = tempRoot();
+    const missingPluginRoot = join(tempRoot(), 'missing-plugin');
+    pluginStore.entries = [{
+      id: 'missing-plugin@local',
+      enabled: true,
+      installPath: missingPluginRoot,
+    }];
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: ['missing-plugin@local'],
+      scenario: { type: 'desktop' },
+      mcpServers: [],
+    });
+
+    expect(snapshot.enabledPluginIds).toEqual(['missing-plugin@local']);
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'plugins',
+      id: 'missing-plugin@local',
+      state: 'failed',
+      code: 'plugin_unavailable',
+    }));
   });
 
   it('reports transports that the pinned Codex app-server cannot represent', () => {

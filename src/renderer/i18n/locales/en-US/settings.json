@@ -634,7 +634,7 @@
         "reserved_entry_sibling": "A SKILL(N).md file exists beside SKILL.md. SKILL.md remains active, but the folder should be checked.",
         "unproven_suffix_directory": "The folder has an (N) suffix, but there is not enough evidence to call it corrupt. The Skill remains available.",
         "inventory_unstable": "The folder changed during inspection, so the Skill is not loaded from this snapshot. Refresh and try again.",
-        "missing_required_skill": "A required MyAgents system Skill is missing, so affected Runtimes will refuse to start."
+        "missing_required_skill": "A required MyAgents system Skill is missing; that Skill will not load, while other capabilities remain available."
       },
       "projectSkillsTitle": "Workspace Skills",
       "skillsTitle": "Skills",

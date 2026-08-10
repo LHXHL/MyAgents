@@ -22,6 +22,10 @@ describe('project capability selection contract', () => {
       kind: 'command',
       sourceLocalId: 'release/ship',
     });
+
+    const skillId = projectCapabilityId('project', 'skill', 'review:local');
+    expect(skillId).toBe('project:skill:review:local');
+    expect(parseProjectCapabilityId(skillId).sourceLocalId).toBe('review:local');
   });
 
   it('fails closed for unknown schema versions and invalid identities', () => {
@@ -34,7 +38,7 @@ describe('project capability selection contract', () => {
     })).toThrow('Skill capability source id must be one folder name');
   });
 
-  it('cannot persist a required system Skill as disabled', () => {
+  it('canonicalizes global Required disables without guessing project frontmatter identity', () => {
     expect(normalizeProjectCapabilitySelection({
       version: 1,
       disabled: { skills: ['global:skill:myagents-cli'] },

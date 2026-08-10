@@ -17,6 +17,7 @@ import {
   buildCodexStartedFileChangeInput,
   CodexRuntime,
   codexModelCacheKey,
+  CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
   CODEX_SKILL_LIST_TIMEOUT_MS,
   configureCodexSkillExtraRoots,
   createCodexMcpStartupBarrier,
@@ -25,6 +26,7 @@ import {
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
   mapCodexTurnPlanUpdatedNotification,
+  materializeManagedCodexExtensions,
   resolveCodexThreadModelProvider,
   resolveCodexConversationBranchPoint,
   resolveCodexSkillExtraRoots,
@@ -79,6 +81,42 @@ describe('Codex app-server protocol helpers', () => {
       'enabled = true',
       '',
     ].join('\n'));
+  });
+
+  it('materializes a long Skill name without using it as a filesystem component', () => {
+    const workspace = tempWorkspace();
+    const skillDir = join(workspace, 'skill-source');
+    const skillPath = join(skillDir, 'SKILL.md');
+    mkdirSync(skillDir, { recursive: true });
+    const longName = `skill-${'x'.repeat(300)}`;
+    const materialized = materializeManagedCodexExtensions({
+      revision: 'revision',
+      workspacePath: workspace,
+      scenario: { type: 'desktop' },
+      enabledPluginIds: [],
+      skills: [{
+        name: longName,
+        description: 'Long but valid native name',
+        contentSha256: 'sha',
+        path: skillPath,
+        scope: 'project',
+        sourceId: 'workspace',
+        sourceLocalId: 'skill-source',
+      }],
+      commands: [],
+      agents: [],
+      mcpServers: [],
+      dynamicTools: [],
+      components: [],
+    });
+
+    try {
+      expect(materialized.skills.map(skill => skill.name)).toEqual([longName]);
+      expect(materialized.skillRoots).toHaveLength(1);
+      expect(existsSync(join(materialized.skillRoots[0], '000'))).toBe(true);
+    } finally {
+      materialized.cleanup();
+    }
   });
 
   it('holds Managed Codex Host tools behind the existing permission owner', async () => {
@@ -677,13 +715,16 @@ describe('Codex app-server protocol helpers', () => {
     mkdirSync(projectSkillsDir, { recursive: true });
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace, 1234)).resolves.toEqual([projectSkillsDir]);
+    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: [],
+    });
 
     expect(resolveCodexSkillExtraRoots(workspace)).toEqual([projectSkillsDir]);
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/extraRoots/set',
       { extraRoots: [projectSkillsDir] },
-      1234,
+      CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
     );
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/list',
@@ -718,7 +759,10 @@ describe('Codex app-server protocol helpers', () => {
       1_234,
       [projectSkillsDir],
       [{ name: 'expected-skill', path: expectedSkillPath }],
-    )).resolves.toEqual([projectSkillsDir]);
+    )).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: ['expected-skill'],
+    });
 
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
     const logLine = warning.mock.calls.flat().join('\n');
@@ -730,7 +774,7 @@ describe('Codex app-server protocol helpers', () => {
     expect(logLine).not.toContain(workspace);
   });
 
-  it('keeps a missing expected Skill as a strict projection failure after read-back', async () => {
+  it('keeps Codex available when one projected Skill is missing after read-back', async () => {
     const workspace = tempWorkspace();
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
@@ -752,12 +796,17 @@ describe('Codex app-server protocol helpers', () => {
       1_234,
       [projectSkillsDir],
       [{ name: 'web-access', path: join(projectSkillsDir, 'web-access', 'SKILL.md') }],
-    )).rejects.toThrow(/did not report expected Skills: web-access/);
+    )).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: [],
+    });
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
-    expect(warning.mock.calls.flat().join('\n')).not.toContain('invalid YAML');
+    const warningLog = warning.mock.calls.flat().join('\n');
+    expect(warningLog).toContain('continuing without them: web-access');
+    expect(warningLog).not.toContain('invalid YAML');
   });
 
-  it('does not let a same-name Skill from another root satisfy strict projection', async () => {
+  it('does not let a same-name Skill from another root satisfy projected identity', async () => {
     const workspace = tempWorkspace();
     const projectedRoot = join(workspace, 'projected-skills');
     const projectedPath = join(projectedRoot, 'skill-creator', 'SKILL.md');
@@ -780,21 +829,27 @@ describe('Codex app-server protocol helpers', () => {
       1_234,
       [projectedRoot],
       [{ name: 'skill-creator', path: projectedPath }],
-    )).rejects.toThrow(/did not report expected Skills: skill-creator/);
+    )).resolves.toEqual({
+      extraRoots: [projectedRoot],
+      loadedSkillNames: [],
+    });
   });
 
   it('skips Codex skill extra roots when project .claude/skills is absent', async () => {
     const workspace = tempWorkspace();
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual([]);
+    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+      extraRoots: [],
+      loadedSkillNames: [],
+    });
 
     expect(existsSync(join(workspace, '.claude', 'skills'))).toBe(false);
     expect(resolveCodexSkillExtraRoots(workspace)).toEqual([]);
     expect(rpc.call).not.toHaveBeenCalled();
   });
 
-  it('does not fail Codex startup when extraRoots RPC is unavailable', async () => {
+  it('does not fail Codex startup when managed extraRoots RPC is unavailable', async () => {
     const workspace = tempWorkspace();
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
@@ -802,7 +857,13 @@ describe('Codex app-server protocol helpers', () => {
       call: vi.fn().mockRejectedValue(new Error('Method not found: skills/extraRoots/set')),
     };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual([]);
+    await expect(configureCodexSkillExtraRoots(
+      rpc,
+      workspace,
+      5_000,
+      [projectSkillsDir],
+      [{ name: 'review-helper', path: join(projectSkillsDir, 'review-helper', 'SKILL.md') }],
+    )).resolves.toEqual({ extraRoots: [], loadedSkillNames: [] });
 
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/extraRoots/set',

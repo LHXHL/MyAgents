@@ -95,7 +95,6 @@ import {
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
 import {
   isRequiredSystemSkill,
-  type RequiredSystemSkill,
   withoutRequiredSystemSkills,
 } from '../shared/systemSkills';
 import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
@@ -257,7 +256,6 @@ import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from './utils/memory-update-reminder';
-import { assertOfficialSystemSkillExposed } from './utils/system-skill-readiness';
 import { setImCronContext } from './tools/im-cron-tool';
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
@@ -429,7 +427,6 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
-  requireCurrentBuiltinSkill,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
@@ -756,52 +753,6 @@ function applyBackgroundAgentPermissionModeFromDisk(): void {
  * `undefined` means "keep current provider", which is the bug PRD 0.2.9 R1
  * was tracking.
  */
-/**
- * Compose task authorization with the actual Runtime-exposure prerequisite.
- * This runs at the turn-queue dispatch boundary, after earlier work drains
- * but before any model sees the managed prompt.
- */
-function createRequiredSystemSkillDispatchGuard(
-  skillName: RequiredSystemSkill,
-  workspacePath: string,
-  preceding?: import('./session-core/turn-queue').DispatchGuard,
-): import('./session-core/turn-queue').DispatchGuard {
-  let canceled = false;
-  const guard: import('./session-core/turn-queue').DispatchGuard = async () => {
-    if (canceled) {
-      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-    }
-    if (preceding) {
-      const prior = await preceding();
-      if (!prior.accepted) return prior;
-    }
-    if (canceled) {
-      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-    }
-    try {
-      assertOfficialSystemSkillExposed({ workspacePath, skillName });
-      if (getSessionEngine().kind === 'builtin') {
-        await requireCurrentBuiltinSkill(skillName);
-      }
-      if (canceled) {
-        return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-      }
-      return { accepted: true };
-    } catch (error) {
-      return {
-        accepted: false,
-        code: 'required_system_skill_unavailable',
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  };
-  guard.cancel = () => {
-    canceled = true;
-    preceding?.cancel?.();
-  };
-  return guard;
-}
-
 function parseArgs(argv: string[]): {
   agentDir: string;
   initialPrompt?: string;
@@ -4715,7 +4666,6 @@ async function main() {
           return jsonResponse(projectCapabilitySnapshotForWire(
             resolveEffectiveProjectCapabilities(workspacePath, {
               globalSkillInventory,
-              enforceRequiredIntegrity: false,
             }),
           ));
         } catch (error) {
@@ -8388,11 +8338,8 @@ description: >
             assistantChannelDelivery: 'none',
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
-            beforeDispatch: createRequiredSystemSkillDispatchGuard(
-              'myagents-memory-update',
-              currentAgentDir,
-              taskDispatchGuard,
-            ),
+            beforeDispatch: taskDispatchGuard,
+            requiredSystemSkill: 'myagents-memory-update',
             ...(isAuto ? {
               queueId,
               turnOwner: { kind: 'task' as const, id: taskId },

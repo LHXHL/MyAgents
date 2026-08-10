@@ -85,7 +85,7 @@ import {
   createGlobalSkillInventorySnapshot,
   type GlobalSkillInventorySnapshot,
 } from '../global-skill-inventory';
-import { syncProjectUserConfigFiles } from '../utils/project-user-config-sync';
+import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
@@ -242,6 +242,7 @@ import {
   getCurrentExternalBoundSessionId,
   getExternalActivePair,
   getExternalActiveOfficialToolIds,
+  getExternalActiveCapabilityRevision,
   getExternalActiveProcess,
   getExternalActiveRuntime,
   getExternalLifecycleAnalyticsOrigin,
@@ -2380,23 +2381,32 @@ function isManagedCodexProductRuntime(): boolean {
 
 type ExternalSkillAdmission = {
   globalSkillInventory: GlobalSkillInventorySnapshot;
-  capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
+  capabilitySnapshot: EffectiveProjectCapabilitySnapshot;
+  unavailableSkillNames: string[];
+  revision: string;
 };
 
-function buildCurrentExternalSkillAdmission(
-  workspacePath: string,
-  resolveCapabilities: boolean,
-): ExternalSkillAdmission {
+function buildCurrentExternalSkillAdmission(workspacePath: string): ExternalSkillAdmission {
   const globalSkillInventory = createGlobalSkillInventorySnapshot();
-  const capabilitySnapshot = resolveCapabilities
-    ? resolveEffectiveProjectCapabilities(workspacePath, { globalSkillInventory })
-    : undefined;
-  const { changed } = syncProjectUserConfigFiles(workspacePath, {
-    strict: true,
+  const capabilitySnapshot = resolveEffectiveProjectCapabilities(workspacePath, { globalSkillInventory });
+  const projection = trySyncProjectUserConfigFiles(workspacePath, {
     globalSkillInventory,
-  });
-  if (changed && hasExternalRuntimeProcess()) pendingExternalCapabilityRestart = true;
-  return { globalSkillInventory, capabilitySnapshot };
+    capabilitySnapshot,
+  }, 'external-skill-sync');
+  const revision = JSON.stringify([
+    capabilitySnapshot.revision,
+    projection.unavailableSkillNames,
+  ]);
+  const activeRevision = getExternalActiveCapabilityRevision();
+  if (activeRevision !== null && activeRevision !== revision) {
+    pendingExternalCapabilityRestart = true;
+  }
+  return {
+    globalSkillInventory,
+    capabilitySnapshot,
+    unavailableSkillNames: projection.unavailableSkillNames,
+    revision,
+  };
 }
 
 function buildCurrentManagedCodexExtensionSnapshot(input?: {
@@ -2417,10 +2427,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
   const mcpServers = sessionMcpServers
     ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
   const skillAdmission = input?.skillAdmission
-    ?? buildCurrentExternalSkillAdmission(workspacePath, true);
-  if (!skillAdmission.capabilitySnapshot) {
-    throw new Error('Managed Codex Skill admission has no capability snapshot');
-  }
+    ?? buildCurrentExternalSkillAdmission(workspacePath);
   return compileManagedCodexExtensionSnapshot({
     workspacePath,
     scenario: input?.scenario ?? getExternalLifecycleScenario(),
@@ -2430,6 +2437,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     mcpServers,
     capabilitySnapshot: skillAdmission.capabilitySnapshot,
     globalSkillInventory: skillAdmission.globalSkillInventory,
+    unavailableSkillNames: skillAdmission.unavailableSkillNames,
   });
 }
 
@@ -2612,6 +2620,22 @@ export function getManagedCodexExtensionConfigSnapshot(): {
       ?? [],
     extensionStatus: getManagedCodexExtensionStatus(),
   };
+}
+
+class ExternalRequiredSkillUnavailableError extends Error {
+  constructor(skillName: string) {
+    super(`Managed Codex did not load required system skill ${skillName}`);
+    this.name = 'ExternalRequiredSkillUnavailableError';
+  }
+}
+
+/** Reject only a dependent Managed Codex operation when native read-back omitted its Skill. */
+export async function requireCurrentExternalSkill(skillName: string): Promise<void> {
+  if (!isManagedCodexProductRuntime()) return;
+  const process = getExternalActiveProcess();
+  if (!process?.loadedSkillNames?.includes(skillName)) {
+    throw new ExternalRequiredSkillUnavailableError(skillName);
+  }
 }
 
 export async function handleExternalProxyConfigChange(input: {
@@ -2847,6 +2871,7 @@ export async function startExternalSession(options: {
   messageOperation?: ExternalMessageOperation;
   /** Reuse the exact admission already built at this message boundary. */
   skillAdmission?: ExternalSkillAdmission;
+  requiredSystemSkill?: import('../../shared/systemSkills').RequiredSystemSkill;
 }): Promise<void> {
   // Concurrency guard — wait for any in-flight start to finish
   await awaitExternalLifecycleStarting();
@@ -2893,6 +2918,7 @@ async function _doStartExternalSession(options: {
   onDispatchAccepted?: () => void;
   messageOperation?: ExternalMessageOperation;
   skillAdmission?: ExternalSkillAdmission;
+  requiredSystemSkill?: import('../../shared/systemSkills').RequiredSystemSkill;
 }): Promise<void> {
 
   const runtimeType = getCurrentRuntimeType();
@@ -2999,10 +3025,8 @@ async function _doStartExternalSession(options: {
     ? getManagedCodexSessionMcpServers()
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
-  const externalSkillAdmission = options.skillAdmission ?? buildCurrentExternalSkillAdmission(
-    options.workspacePath,
-    runtimeType === 'codex' && runtimeSource === 'managed-provider',
-  );
+  const externalSkillAdmission = options.skillAdmission
+    ?? buildCurrentExternalSkillAdmission(options.workspacePath);
   let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
     ? buildCurrentManagedCodexExtensionSnapshot({
         workspacePath: options.workspacePath,
@@ -3235,7 +3259,12 @@ async function _doStartExternalSession(options: {
   let startedProcess: RuntimeProcess | null = null;
   let terminalSettledByStop = false;
   try {
-    if (options.initialMessage) {
+    const deferRequiredAdmission = Boolean(
+      options.initialMessage
+      && options.dispatchPromotion
+      && options.requiredSystemSkill,
+    );
+    if (options.initialMessage && !deferRequiredAdmission) {
       const clientUserMessageId = await admitInitialMessage();
       if (!options.dispatchPromotion) {
         if (!clientUserMessageId) {
@@ -3310,7 +3339,7 @@ async function _doStartExternalSession(options: {
       throw new Error(`${runtimeType} process exited before startup completed`);
     }
     startedProcess = process;
-    setExternalActiveProcess(process, enabledOfficialToolIds);
+    setExternalActiveProcess(process, enabledOfficialToolIds, externalSkillAdmission.revision);
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionEffective(
         managedCodexExtensionSnapshot,
@@ -3320,6 +3349,12 @@ async function _doStartExternalSession(options: {
     }
     if (options.dispatchPromotion && !isExternalTurnPromotionCurrent(options.dispatchPromotion)) {
       throw new ExternalTurnPromotionCanceledError();
+    }
+    if (options.requiredSystemSkill) {
+      await requireCurrentExternalSkill(options.requiredSystemSkill);
+    }
+    if (deferRequiredAdmission) {
+      await admitInitialMessage();
     }
     if (options.dispatchPromotion && options.initialMessage) {
       assertExternalTurnPromotionCurrent(options.dispatchPromotion);
@@ -3339,6 +3374,18 @@ async function _doStartExternalSession(options: {
       && !(err instanceof ExternalTurnPromotionCanceledError)
       ? new ExternalTurnPromotionCanceledError()
       : err;
+    if (failure instanceof ExternalRequiredSkillUnavailableError) {
+      if (options.dispatchPromotion) {
+        finishExternalTurnPromotion(options.dispatchPromotion, { status: 'not-dispatched' });
+      }
+      clearWatchdog();
+      clearExternalTurnStartTime();
+      resetTurnAccumulators();
+      clearExternalTurnTrace();
+      setExternalTurnCompleted(true);
+      setExternalSessionState('idle');
+      throw failure;
+    }
     if (startedProcess && !startedProcess.exited && getExternalActiveProcess() === startedProcess) {
       const stopped = await stopExternalSession({
         preserveQueue: failure instanceof ExternalTurnPromotionCanceledError
@@ -3774,7 +3821,7 @@ async function dispatchExternalMessageOperation(
       ?? operation.context.workspacePath
       ?? getExternalLifecycleWorkspacePath();
     if (!workspacePath) throw new Error('External Runtime Skill admission has no workspace owner');
-    skillAdmission = buildCurrentExternalSkillAdmission(workspacePath, isManagedCodexProductRuntime());
+    skillAdmission = buildCurrentExternalSkillAdmission(workspacePath);
   } catch (error) {
     if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
     return {
@@ -3837,6 +3884,15 @@ async function dispatchExternalMessageOperation(
   // synchronously before its first persistence await.
   if (!ensureInitialDispatchPromotion()) {
     return { queued: false, error: 'external_busy: another turn is being promoted' };
+  }
+  const admittedProcess = getExternalActiveProcess();
+  if (context?.requiredSystemSkill && admittedProcess && !admittedProcess.exited) {
+    try {
+      await requireCurrentExternalSkill(context.requiredSystemSkill);
+    } catch (error) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return { queued: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
   const activitySessionId = context?.sessionId ?? getExternalLifecycleSessionId();
   const activityFacts: SessionActivityTurnFacts = {
@@ -3925,6 +3981,7 @@ async function dispatchExternalMessageOperation(
         onDispatchAccepted,
         messageOperation: operation,
         skillAdmission,
+        requiredSystemSkill: context.requiredSystemSkill,
       });
       return { queued: true };
     } catch (err) {
@@ -3991,6 +4048,7 @@ async function dispatchExternalMessageOperation(
         onDispatchAccepted,
         messageOperation: operation,
         skillAdmission,
+        requiredSystemSkill: context?.requiredSystemSkill,
       });
       return { queued: true };
     } catch (err) {

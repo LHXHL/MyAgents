@@ -198,7 +198,6 @@ import { messageAttachmentsFromImagePayloads, resolveImagePayloads } from './run
 import { buildBuiltinMediaAttachments, saveExtractedToolResultAttachments } from './runtimes/builtin-media-attachments';
 import {
   getMyAgentsUserDir,
-  syncProjectUserConfigFiles,
   trySyncProjectUserConfigFiles,
   type ProjectUserConfigSyncOptions,
 } from './utils/project-user-config-sync';
@@ -601,8 +600,19 @@ export function syncProjectUserConfig(
   projectDir: string,
   options: ProjectUserConfigSyncOptions = {},
 ): void {
-  const synced = trySyncProjectUserConfigFiles(projectDir, options, 'skill-sync');
-  if (!synced) return;
+  let capabilitySnapshot = options.capabilitySnapshot;
+  if (!capabilitySnapshot) {
+    try {
+      capabilitySnapshot = resolveEffectiveProjectCapabilities(projectDir);
+    } catch (error) {
+      console.warn('[skill-sync] Project capability scan failed; reconciling only the global inventory:', error);
+    }
+  }
+  trySyncProjectUserConfigFiles(
+    projectDir,
+    { ...options, capabilitySnapshot },
+    'skill-sync',
+  );
   // A live Query owns the allowlist captured at birth. Capability changes use
   // the existing deferred-restart boundary; reloadSkills() alone cannot update
   // Options.skills. The shared inventory itself remains runtime-neutral.
@@ -614,13 +624,19 @@ export function syncProjectUserConfig(
 
 /**
  * Reload the live builtin SDK skill registry and prove that a product-owned
- * workflow contract is actually available to this Session. If no initialized
- * SDK query exists yet, its next subprocess start will scan the already-
- * verified project link before the first turn.
+ * workflow contract is actually available to this Session. Cold-start guards
+ * await the Query's existing initialization promise before reading the native
+ * registry; this rejects only the dependent turn, never Session startup.
  */
 export async function requireCurrentBuiltinSkill(skillName: string): Promise<void> {
   const query = lifecycleState.query;
-  if (!query || !lifecycleState.sdkControlReady) return;
+  if (!query) throw new Error(`builtin Runtime is unavailable for required system skill ${skillName}`);
+  if (!lifecycleState.sdkControlReady) {
+    await query.initializationResult();
+    if (lifecycleState.query !== query) {
+      throw new Error(`builtin Runtime changed before loading required system skill ${skillName}`);
+    }
+  }
 
   const refreshed = await query.reloadSkills();
   if (!refreshed.skills.some(skill => skill.name === skillName)) {
@@ -8186,10 +8202,10 @@ export async function enqueueUserMessage(
       && (currentCapabilities.revision !== desiredCapabilities.revision
         || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
     ) {
-      projectionChanged = syncProjectUserConfigFiles(agentDir, {
-        strict: true,
+      projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
         globalSkillInventory,
-      }).changed;
+        capabilitySnapshot: desiredCapabilities,
+      }, 'skill-sync').changed;
       if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
         configState.currentCapabilitySnapshot = desiredCapabilities;
       }
@@ -10233,18 +10249,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   }
   const adminConfigForSession = loadAdminConfig();
   const cliToolRegistryEnabled = isCliToolRegistryEnabled(adminConfigForSession);
-  // One resolver owns UI and Runtime admission. The shared compatibility
-  // inventory is refreshed separately and strictly before launch; project
-  // selection never mutates that cross-Runtime disk view.
+  // One resolver owns UI and Runtime admission. The same inventory and
+  // project-winner snapshot also drive the compatibility projection before
+  // launch, so every Runtime observes one canonical result.
   let launchCapabilitySnapshot: EffectiveProjectCapabilitySnapshot;
+  let unavailableBuiltinSkillNames: string[] = [];
   try {
     const globalSkillInventory = createGlobalSkillInventorySnapshot({ cliToolRegistryEnabled });
     launchCapabilitySnapshot = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
-    syncProjectUserConfigFiles(agentDir, {
-      strict: true,
+    unavailableBuiltinSkillNames = trySyncProjectUserConfigFiles(agentDir, {
       cliToolRegistryEnabled,
       globalSkillInventory,
-    });
+      capabilitySnapshot: launchCapabilitySnapshot,
+    }).unavailableSkillNames;
   } catch (error) {
     const message = `Workspace capability admission failed: ${error instanceof Error ? error.message : String(error)}`;
     console.error(`[agent] ${message}`);
@@ -10612,6 +10629,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const enabledSkillAllowlist = buildBuiltinSkillAllowlist(
       launchCapabilitySnapshot,
       enabledPluginSkillNames,
+      unavailableBuiltinSkillNames,
     );
 
     const commonQueryOptions = {
@@ -13171,10 +13189,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         && (currentCapabilities.revision !== desiredCapabilities.revision
           || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
       ) {
-        projectionChanged = syncProjectUserConfigFiles(agentDir, {
-          strict: true,
+        projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
           globalSkillInventory,
-        }).changed;
+          capabilitySnapshot: desiredCapabilities,
+        }, 'skill-sync').changed;
         if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
           configState.currentCapabilitySnapshot = desiredCapabilities;
         }

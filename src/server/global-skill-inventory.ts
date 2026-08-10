@@ -93,14 +93,23 @@ function pathKey(path: string): string {
 export function readDisabledGlobalSkillNames(rootPath = defaultSkillsRoot()): Set<string> {
   const configPath = join(rootPath, '..', 'skills-config.json');
   if (!existsSync(configPath)) return new Set();
-  const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { disabled?: unknown };
-  if (parsed.disabled === undefined) return new Set();
-  if (!Array.isArray(parsed.disabled) || parsed.disabled.some(entry => typeof entry !== 'string')) {
-    throw new Error('skills-config.json disabled must be string[]');
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { disabled?: unknown };
+    if (parsed.disabled === undefined) return new Set();
+    if (!Array.isArray(parsed.disabled) || parsed.disabled.some(entry => typeof entry !== 'string')) {
+      console.warn('[skill-integrity] Ignoring malformed skills-config.json disabled list');
+      return new Set();
+    }
+    return new Set(parsed.disabled.filter((name): name is string => (
+      typeof name === 'string' && !isRequiredSystemSkill(name)
+    )));
+  } catch (error) {
+    console.warn(
+      '[skill-integrity] Ignoring unreadable skills-config.json:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return new Set();
   }
-  return new Set(parsed.disabled.filter((name): name is string => (
-    typeof name === 'string' && !isRequiredSystemSkill(name)
-  )));
 }
 
 function makeIssue(input: {
@@ -131,13 +140,17 @@ export function createGlobalSkillInventorySnapshot(
   const rootBefore = lstatIfPresent(rootPath);
   if (rootBefore) {
     if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) {
-      throw new Error(`Global Skill root is not a trusted owned directory: ${rootPath}`);
-    }
-    try {
-      rootEntries = readdirSync(rootPath, { withFileTypes: true });
-      options.testHooks?.afterRootEnumeration?.();
-    } catch (error) {
-      throw new Error(`Failed to scan global Skill root: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`[skill-integrity] Ignoring unreadable global Skill root: ${rootPath}`);
+    } else {
+      try {
+        rootEntries = readdirSync(rootPath, { withFileTypes: true });
+        options.testHooks?.afterRootEnumeration?.();
+      } catch (error) {
+        console.warn(
+          '[skill-integrity] Ignoring unreadable global Skill root:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
 
@@ -283,7 +296,7 @@ export function createGlobalSkillInventorySnapshot(
   entries.sort((left, right) => left.folderName.localeCompare(right.folderName));
   const rootAfter = lstatIfPresent(rootPath);
   if (statIdentity(rootBefore) !== statIdentity(rootAfter)) {
-    throw new Error('Global Skill root changed during inventory scan');
+    console.warn('[skill-integrity] Global Skill root changed during inventory scan; next admission will rescan');
   }
   const projectableEntries = entries.filter(entry => entry.enabledForProjection);
   const integrityRevision = createHash('sha256')
@@ -308,17 +321,4 @@ export function createGlobalSkillInventorySnapshot(
     integrityIssues: Object.freeze(integrityIssues),
     integrityRevision,
   });
-}
-
-export function assertRequiredGlobalSkillsAdmissible(
-  snapshot: GlobalSkillInventorySnapshot,
-): void {
-  const blockedRequired = snapshot.integrityIssues.filter(issue => (
-    issue.severity === 'blocked' && issue.required
-  ));
-  if (blockedRequired.length === 0) return;
-  const summary = blockedRequired
-    .map(issue => `${issue.folderName}:${issue.reason}`)
-    .join(', ');
-  throw new Error(`Required global Skill integrity check failed: ${summary}`);
 }

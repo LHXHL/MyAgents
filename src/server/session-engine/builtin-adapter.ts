@@ -680,12 +680,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
           providerRoute,
           providerRoutingRecovery,
           runtimeConfig: runtimeConfig ?? null,
-          beforeDispatch: createScheduledDispatchGuard({
-            preceding: operation.beforeDispatch,
-            workspacePath: request.workspacePath,
-            requiredSystemSkill: operation.requiredSystemSkill,
-            requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
-          }),
+          beforeDispatch: operation.beforeDispatch,
+          requiredSystemSkill: operation.requiredSystemSkill,
           release,
         };
       } catch (error) {
@@ -713,7 +709,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
       }
-      const beforeDispatch = request.beforeDispatch ?? acceptInjectedTurnDispatch;
+      const beforeDispatch = createScheduledDispatchGuard({
+        preceding: request.beforeDispatch ?? acceptInjectedTurnDispatch,
+        requiredSystemSkill: request.requiredSystemSkill,
+        requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
+      });
       const enqueueAttempt = enqueueUserMessage(
         request.prompt,
         [],

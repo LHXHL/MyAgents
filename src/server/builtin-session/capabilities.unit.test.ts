@@ -55,6 +55,8 @@ describe('builtin project capability admission', () => {
   it('builds an exact Skill allowlist from enabled project capabilities and plugins', () => {
     expect(buildBuiltinSkillAllowlist(snapshot(), ['plugin-a:one', 'frontend', 'plugin-a:one']))
       .toEqual(['frontend', 'plugin-a:one']);
+    expect(buildBuiltinSkillAllowlist(snapshot(), ['plugin-a:one'], ['frontend']))
+      .toEqual(['plugin-a:one']);
   });
 
   it('hides and rejects disabled slash capabilities without changing enabled commands', () => {

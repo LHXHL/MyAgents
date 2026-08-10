@@ -38,6 +38,7 @@ type TurnScript =
 class FakeRuntimeProcess implements RuntimeProcess {
   readonly pid = 4242;
   exited = false;
+  loadedSkillNames: readonly string[] = [];
 
   async writeLine(): Promise<void> {
     return undefined;
@@ -80,6 +81,7 @@ class FakeRuntime implements AgentRuntime {
   private readonly emitSessionCompleteOnStop: boolean;
   private nextTurnNumber = 1;
   private nextThreadNumber = 1;
+  private readonly omittedLoadedSkillNames: ReadonlySet<string>;
 
   constructor(private readonly scripts: TurnScript[], options: {
     realtimeSteering?: boolean;
@@ -94,6 +96,7 @@ class FakeRuntime implements AgentRuntime {
     deferStopAfterSessionComplete?: boolean;
     deferStopBeforeResult?: boolean;
     conversationBranching?: boolean;
+    omittedLoadedSkillNames?: readonly string[];
   } = {}) {
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
@@ -101,6 +104,7 @@ class FakeRuntime implements AgentRuntime {
     this.emitInterruptedOnStop = options.emitInterruptedOnStop === true;
     this.emitSessionCompleteOnStop = options.emitSessionCompleteOnStop === true;
     this.deferStopBeforeResult = options.deferStopBeforeResult === true;
+    this.omittedLoadedSkillNames = new Set(options.omittedLoadedSkillNames ?? []);
     if (options.deferRejectedSend) {
       this.rejectedSendGate = new Promise<void>((resolve) => {
         this.releaseRejectedSendGate = resolve;
@@ -195,6 +199,9 @@ class FakeRuntime implements AgentRuntime {
     }
     this.callback = onEvent;
     const process = new FakeRuntimeProcess();
+    process.loadedSkillNames = (options.managedCodexExtensions?.skills ?? [])
+      .map(skill => skill.name)
+      .filter(name => !this.omittedLoadedSkillNames.has(name));
     this.defer(() => {
       const threadId = options.resumeSessionId ?? `fake-thread-${this.nextThreadNumber++}`;
       this.emit({ kind: 'session_init', sessionId: threadId, model: options.model ?? 'fake-model', tools: ['FakeTool'] });
@@ -404,6 +411,7 @@ async function createHarness(
     deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
     runtimeSource?: 'system-cli' | 'managed-provider';
+    omittedLoadedSkillNames?: readonly string[];
     config?: Record<string, unknown>;
   } = {},
 ): Promise<Harness> {
@@ -470,6 +478,7 @@ async function createHarness(
     deferStopAfterSessionComplete: options.deferStopAfterSessionComplete,
     deferStopBeforeResult: options.deferStopBeforeResult,
     conversationBranching: options.conversationBranching,
+    omittedLoadedSkillNames: options.omittedLoadedSkillNames,
   });
   if (options.unconfirmedDispatchStop || options.unconfirmedStop) {
     vi.doMock('./utils/kill-with-escalation', () => ({
@@ -609,6 +618,195 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('prewarms and sends with historical project copies of required Skills', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'required project winners admitted' },
+    ], { runtimeSource: 'managed-provider' });
+    const sessionId = 'session-required-project-winners';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{
+        id: 'agent-required-project-winners',
+        path: workspacePath,
+        capabilitySelection: {
+          version: 1,
+          disabled: {
+            skills: [
+              'project:skill:local-alignment',
+              'project:skill:task-implement',
+            ],
+            commands: [],
+          },
+        },
+      }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([{
+      id: 'project-required-project-winners',
+      path: workspacePath,
+      agentId: 'agent-required-project-winners',
+    }]));
+    for (const [folderName, canonicalName] of [
+      ['local-alignment', 'task-alignment'],
+      ['task-implement', 'task-implement'],
+    ] as const) {
+      const projectSkill = join(workspacePath, '.claude', 'skills', folderName);
+      mkdirSync(projectSkill, { recursive: true });
+      writeFileSync(
+        join(projectSkill, 'SKILL.md'),
+        `---\nname: ${canonicalName}\ndescription: Historical project copy\n---\n`,
+      );
+    }
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    })).resolves.toEqual({ prewarmed: true });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'required project winner prewarm');
+
+    const sent = await harness.engine.sendDesktopMessage(
+      {
+        ...desktopRequest(sessionId, workspacePath, 'use the required project winners'),
+        permissionMode: 'no-restrictions',
+      },
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+  });
+
+  it('rejects only a dependent Managed turn when native Skill read-back omits its Required Skill', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'ordinary turn still works' },
+    ], {
+      runtimeSource: 'managed-provider',
+      omittedLoadedSkillNames: ['task-alignment'],
+    });
+    const sessionId = 'session-required-native-omission';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.sessionStore.saveSessionMetadata({
+      id: sessionId,
+      agentDir: workspacePath,
+      title: 'Required native omission',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      unifiedSession: true,
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+    });
+    const scenario = {
+      type: 'cron' as const,
+      taskId: 'task-required-native-omission',
+      intervalMinutes: 15,
+      aiCanExit: false,
+    };
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId,
+      workspacePath,
+      scenario,
+    )).resolves.toEqual({ success: true });
+
+    const required = await runInjectedTurn(harness, {
+      prompt: 'must use task alignment',
+      sessionId,
+      workspacePath,
+      scenario,
+      timeoutMs: 1_000,
+      pollMs: 10,
+      beforeDispatch: Object.assign(vi.fn(async () => ({ accepted: true })), { cancel: vi.fn() }),
+      requiredSystemSkill: 'task-alignment',
+    });
+
+    expect(required).toMatchObject({
+      success: false,
+      enqueued: false,
+      error: expect.stringContaining('did not load required system skill task-alignment'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    expect(broadcastEvents.some(event => event.event === 'chat:agent-error')).toBe(false);
+
+    const ordinary = await harness.engine.sendDesktopMessage(
+      {
+        ...desktopRequest(sessionId, workspacePath, 'ordinary message'),
+        permissionMode: 'no-restrictions',
+      },
+    );
+    expect(ordinary).toMatchObject({ success: true, queued: true });
+    if (ordinary.dispatchAcceptance) {
+      await expect(ordinary.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    }
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.runtime.sentMessages).toContain('ordinary message');
+  });
+
+  it('keeps the shared Skill projection on the project canonical winner for compatibility Runtimes', async () => {
+    const harness = await createHarness([]);
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'global-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Global review\n---\n',
+    );
+    const projectSkill = join(workspacePath, '.claude', 'skills', 'local-review');
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Project review\n---\n',
+    );
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId: 'session-project-canonical-compatibility',
+      workspacePath,
+      scenario: { type: 'desktop' },
+    })).resolves.toEqual({ prewarmed: true });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'compatibility project winner prewarm');
+
+    expect(readFileSync(join(projectSkill, 'SKILL.md'), 'utf8')).toContain('Project review');
+    expect(() => readFileSync(join(workspacePath, '.claude', 'skills', 'global-review', 'SKILL.md'), 'utf8'))
+      .toThrow();
+  });
+
+  it('restarts a compatibility Runtime when another Sidecar already projected a new canonical winner', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'project winner used' }]);
+    const sessionId = 'session-cross-sidecar-skill-winner';
+    const workspacePath = join(harness.home, 'workspace');
+    const globalSkill = join(harness.home, '.myagents', 'skills', 'global-review');
+    mkdirSync(globalSkill, { recursive: true });
+    writeFileSync(
+      join(globalSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Global review\n---\n',
+    );
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'global winner prewarm');
+
+    const projectSkill = join(workspacePath, '.claude', 'skills', 'local-review');
+    mkdirSync(projectSkill, { recursive: true });
+    writeFileSync(
+      join(projectSkill, 'SKILL.md'),
+      '---\nname: review\ndescription: Project review\n---\n',
+    );
+    // Simulate another Sidecar winning the shared projection race first.
+    rmSync(join(workspacePath, '.claude', 'skills', 'global-review'));
+
+    const sent = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'use the project winner'),
+    );
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(readFileSync(join(projectSkill, 'SKILL.md'), 'utf8')).toContain('Project review');
+  });
+
   it('projects Managed Codex native compaction through Session status without transcript messages', async () => {
     const harness = await createHarness([], { runtimeSource: 'managed-provider' });
     const sessionId = 'session-managed-codex-compact';

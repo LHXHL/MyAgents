@@ -25,7 +25,6 @@ import type {
 } from '../../../global-skill-inventory';
 import { isRequiredSystemSkill } from '../../../../shared/systemSkills';
 import {
-  projectCapabilityId,
   type EffectiveProjectCapabilitySnapshot,
   type ProjectCapabilityKind,
 } from '../../../../shared/projectCapabilities';
@@ -69,6 +68,8 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
   /** Exact global bytes admitted by the shared inventory owner. */
   globalSkillInventory: GlobalSkillInventorySnapshot;
+  /** Canonical Skills isolated after compatibility projection failures. */
+  unavailableSkillNames?: readonly string[];
 }
 
 function component(
@@ -156,6 +157,17 @@ function trustedDirectory(path: string): string | null {
   }
 }
 
+function projectSkillDirectory(path: string): string | null {
+  try {
+    const lst = lstatSync(path);
+    if (!lst.isDirectory() && !lst.isSymbolicLink()) return null;
+    const canonical = realpathSync(path);
+    return statSync(canonical).isDirectory() ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
 function trustedFile(root: string, path: string): string | null {
   try {
     const lst = lstatSync(path);
@@ -206,10 +218,10 @@ function resolveTrustedPlugins(enabledPluginIds: readonly string[]): TrustedPlug
   return listInstalledPlugins()
     .filter(item => enabledPluginIds.includes(item.id) && item.enabled && trustedRoots.has(item.installPath))
     .flatMap(item => {
-      const root = realpathSync(item.installPath);
-      const manifestPath = trustedFile(root, join(root, '.claude-plugin', 'plugin.json'));
-      if (!manifestPath) return [];
       try {
+        const root = realpathSync(item.installPath);
+        const manifestPath = trustedFile(root, join(root, '.claude-plugin', 'plugin.json'));
+        if (!manifestPath) return [];
         const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
         return manifest && typeof manifest === 'object' && !Array.isArray(manifest)
           ? [{ id: item.id, root, manifest: manifest as Record<string, unknown> }]
@@ -321,9 +333,11 @@ function scanSkillsAtRoot(
       reports.push(component('skills', 'not_applicable', 'skill_disabled', `${sourceId}:${entry.name}`));
       continue;
     }
-    const folder = trustedDirectory(join(root, entry.name));
-    if (!folder || !isWithin(root, folder)) continue;
-    const skill = readSkillFolder(root, folder, entry.name, scope, sourceId, reports);
+    const folder = scope === 'project'
+      ? projectSkillDirectory(join(root, entry.name))
+      : trustedDirectory(join(root, entry.name));
+    if (!folder || (scope !== 'project' && !isWithin(root, folder))) continue;
+    const skill = readSkillFolder(scope === 'project' ? folder : root, folder, entry.name, scope, sourceId, reports);
     if (skill) skills.push(skill);
   }
   return skills;
@@ -1007,17 +1021,16 @@ export function compileManagedCodexExtensionSnapshot(
     kind: ProjectCapabilityKind,
   ): T[] => {
     if (!input.capabilitySnapshot) return items;
-    const enabledIds = new Set(
-      (kind === 'skill'
-        ? input.capabilitySnapshot.enabledSkills
-        : input.capabilitySnapshot.enabledCommands
-      ).map(item => item.id),
-    );
+    const enabledCandidates = kind === 'skill'
+      ? input.capabilitySnapshot.enabledSkills
+      : input.capabilitySnapshot.enabledCommands;
     return items.filter(item => {
       if (item.scope === 'plugin') return true;
       if (!item.sourceLocalId) return false;
       const source = item.scope === 'project' ? 'project' : 'global';
-      const enabled = enabledIds.has(projectCapabilityId(source, kind, item.sourceLocalId));
+      const enabled = enabledCandidates.some(candidate => (
+        candidate.source === source && candidate.sourceLocalId === item.sourceLocalId
+      ));
       if (!enabled) {
         reports.push(component(
           kind === 'skill' ? 'skills' : 'commands',
@@ -1054,11 +1067,21 @@ export function compileManagedCodexExtensionSnapshot(
     rank: 1,
     skills: scanPluginSkills(plugin, reports),
   }));
+  const unavailableSkillNames = new Set(input.unavailableSkillNames ?? []);
   const skills = mergeSkills([
     { rank: 3, skills: projectSkills },
     { rank: 2, skills: userSkills },
     ...pluginSkillGroups,
-  ], reports);
+  ], reports).filter(skill => {
+    if (!unavailableSkillNames.has(skill.name)) return true;
+    reports.push(component(
+      'skills',
+      'failed',
+      'skill_projection_unavailable',
+      `${skill.sourceId}:${skill.name}`,
+    ));
+    return false;
+  });
 
   const projectCommands = filterSelected(
     scanCommandsAtRoot(join(input.workspacePath, '.claude', 'commands'), 'project', 'workspace', reports),
@@ -1123,9 +1146,7 @@ export function compileManagedCodexCommand(
   const commandName = match[1]!;
   if (isReservedSlashCommandName(commandName)) return null;
   const command = snapshot.commands.find(candidate => candidate.name === commandName);
-  if (!command) {
-    throw new Error(`Unknown Managed Codex command: /${commandName}`);
-  }
+  if (!command) return null;
   const args = match[2]?.trim() ?? '';
   const hasArgumentsPlaceholder = command.body.includes('$ARGUMENTS');
   const expanded = command.body.replaceAll('$ARGUMENTS', args);

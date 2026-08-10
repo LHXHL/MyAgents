@@ -12,6 +12,7 @@ import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { Dirent } from 'node:fs';
 
 import {
+  emptyProjectCapabilitySelection,
   isCapabilityDisabled,
   normalizeCapabilitySourceLocalId,
   normalizeProjectCapabilitySelection,
@@ -31,7 +32,6 @@ import {
 import { isRequiredSystemSkill } from '../shared/systemSkills';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import {
-  assertRequiredGlobalSkillsAdmissible,
   createGlobalSkillInventorySnapshot,
   readDisabledGlobalSkillNames,
   type GlobalSkillInventorySnapshot,
@@ -115,9 +115,11 @@ function candidate(params: {
   author?: string;
 }): Omit<ProjectCapabilityCandidate, 'enabled'> {
   const sourceLocalId = normalizeCapabilitySourceLocalId(params.sourceLocalId, params.kind);
-  const required = params.kind === 'skill'
-    && params.source === 'global'
-    && isRequiredSystemSkill(sourceLocalId);
+  // Required is a runtime-name policy, not a provenance/authenticity check.
+  // A real project Skill may legitimately override a global Skill with the
+  // same canonical name; the ordinary winner remains required (and therefore
+  // enabled) without turning that supported collision into a workspace error.
+  const required = params.kind === 'skill' && isRequiredSystemSkill(params.canonicalName);
   return {
     id: projectCapabilityId(params.source, params.kind, sourceLocalId),
     kind: params.kind,
@@ -136,71 +138,62 @@ function candidate(params: {
 
 function scanSkills(params: {
   rootPath: string;
-  source: ProjectCapabilitySource;
   globalSkillsRoot: string;
-  disabledGlobalSkillNames: ReadonlySet<string>;
-  cliToolRegistryEnabled: boolean;
   projectSlots?: Set<string>;
 }): Array<Omit<ProjectCapabilityCandidate, 'enabled'>> {
   if (!existsSync(params.rootPath)) return [];
   const root = canonicalDirectory(params.rootPath, false);
-  if (!root) throw new Error(`Skill root is not a trusted directory: ${params.rootPath}`);
+  if (!root) {
+    console.warn(`[project-capabilities] Ignoring unreadable project Skill root: ${params.rootPath}`);
+    return [];
+  }
   let entries: Dirent[];
   try {
     entries = readdirSync(root, { withFileTypes: true });
   } catch (error) {
-    throw new Error(`Failed to scan Skill root: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn('[project-capabilities] Ignoring unreadable project Skill root:', error);
+    return [];
   }
   const result: Array<Omit<ProjectCapabilityCandidate, 'enabled'>> = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.name.startsWith('.') || isSkillBlockedOnPlatform(entry.name)) continue;
-    if (params.source === 'global') {
-      if (params.disabledGlobalSkillNames.has(entry.name) && !isRequiredSystemSkill(entry.name)) continue;
-      if (!params.cliToolRegistryEnabled && entry.name === 'tool-creator') continue;
-    }
     const diskFolder = join(root, entry.name);
     const lst = (() => {
       try { return lstatSync(diskFolder); } catch { return null; }
     })();
     if (!lst) continue;
-    if (params.source === 'project' && lst.isSymbolicLink()) {
+    if (lst.isSymbolicLink()) {
       if (symlinkTargetIsWithin(diskFolder, params.globalSkillsRoot)) continue;
-      throw new Error(`Foreign project Skill symlink is not trusted: ${entry.name}`);
     }
-    if (params.source === 'project') params.projectSlots?.add(`skill:${entry.name}`);
-    const folder = canonicalDirectory(diskFolder, false);
-    if (!folder || !isWithin(root, folder)) continue;
+    params.projectSlots?.add(`skill:${entry.name}`);
+    // A symlink under the project Skill root is itself a project-owned
+    // declaration. Follow it just like Claude/Codex do; only MyAgents' own
+    // global projection links are excluded above so they retain global
+    // provenance.
+    const folder = canonicalDirectory(diskFolder, true);
+    if (!folder || (!lst.isSymbolicLink() && !isWithin(root, folder))) continue;
     const skillPath = canonicalFile(join(folder, 'SKILL.md'), false);
     if (!skillPath || !isWithin(folder, skillPath)) continue;
-    const content = readFileSync(skillPath, 'utf8');
-    const parsed = parseFullSkillContent(content);
-    const canonicalName = parsed.frontmatter.name?.trim() || entry.name;
-    const description = parsed.frontmatter.description?.trim() || '';
-    if (!canonicalName) continue;
-    if (
-      params.source === 'global'
-      && (isRequiredSystemSkill(entry.name) || isRequiredSystemSkill(canonicalName))
-      && entry.name !== canonicalName
-    ) {
-      throw new Error(`Global Skill has invalid required system identity: ${entry.name}`);
+    try {
+      const content = readFileSync(skillPath, 'utf8');
+      const parsed = parseFullSkillContent(content);
+      const canonicalName = parsed.frontmatter.name?.trim() || entry.name;
+      const description = parsed.frontmatter.description?.trim() || '';
+      if (!canonicalName) continue;
+      result.push(candidate({
+        kind: 'skill',
+        source: 'project',
+        sourceLocalId: entry.name,
+        canonicalName,
+        name: canonicalName,
+        description,
+        path: skillPath,
+        content,
+        author: parsed.frontmatter.author,
+      }));
+    } catch (error) {
+      console.warn(`[project-capabilities] Ignoring unreadable project Skill ${entry.name}:`, error);
     }
-    if (
-      params.source === 'project'
-      && (isRequiredSystemSkill(entry.name) || isRequiredSystemSkill(canonicalName))
-    ) {
-      throw new Error(`Project Skill collides with required system Skill: ${entry.name}`);
-    }
-    result.push(candidate({
-      kind: 'skill',
-      source: params.source,
-      sourceLocalId: entry.name,
-      canonicalName,
-      name: canonicalName,
-      description,
-      path: skillPath,
-      content,
-      author: parsed.frontmatter.author,
-    }));
   }
   return result;
 }
@@ -224,7 +217,8 @@ function walkCommands(params: {
   try {
     entries = readdirSync(canonicalCurrent, { withFileTypes: true });
   } catch (error) {
-    throw new Error(`Failed to scan Command root: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn('[project-capabilities] Ignoring unreadable project Command directory:', error);
+    return [];
   }
   const result: Array<Omit<ProjectCapabilityCandidate, 'enabled'>> = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -236,7 +230,12 @@ function walkCommands(params: {
     if (!lst) continue;
     if (params.source === 'project' && lst.isSymbolicLink()) {
       if (symlinkTargetIsWithin(diskPath, params.globalCommandsRoot)) continue;
-      throw new Error(`Foreign project Command symlink is not trusted: ${entry.name}`);
+      const rel = relative(params.root, diskPath).split(sep).join('/');
+      if (extname(entry.name).toLowerCase() === '.md') {
+        params.projectSlots?.add(`command:${rel.slice(0, -extname(rel).length)}`);
+      }
+      console.warn(`[project-capabilities] Ignoring foreign project Command symlink: ${entry.name}`);
+      continue;
     }
     const rel = relative(params.root, diskPath).split(sep).join('/');
     if (params.source === 'project' && extname(entry.name).toLowerCase() === '.md') {
@@ -252,26 +251,30 @@ function walkCommands(params: {
     if (extname(entry.name).toLowerCase() !== '.md') continue;
     const commandPath = canonicalFile(diskPath, false);
     if (!commandPath || !isWithin(params.root, commandPath)) continue;
-    const content = readFileSync(commandPath, 'utf8');
-    const parsed = parseFullCommandContent(content);
-    if (!parsed.body.trim()) continue;
-    // Identity is the lexical location under the source root, never the
-    // canonical target of an allowed global symlink.
-    const sourceLocalId = rel.slice(0, -extname(rel).length);
-    const fallbackName = basename(diskPath, extname(diskPath));
-    const canonicalName = parsed.frontmatter.name?.trim() || fallbackName;
-    if (!isValidSlashCommandName(canonicalName) || isReservedSlashCommandName(canonicalName)) continue;
-    result.push(candidate({
-      kind: 'command',
-      source: params.source,
-      sourceLocalId,
-      canonicalName,
-      name: canonicalName,
-      description: parsed.frontmatter.description?.trim() || '',
-      path: commandPath,
-      content,
-      author: parsed.frontmatter.author,
-    }));
+    try {
+      const content = readFileSync(commandPath, 'utf8');
+      const parsed = parseFullCommandContent(content);
+      if (!parsed.body.trim()) continue;
+      // Identity is the lexical location under the source root, never the
+      // canonical target of an allowed global symlink.
+      const sourceLocalId = rel.slice(0, -extname(rel).length);
+      const fallbackName = basename(diskPath, extname(diskPath));
+      const canonicalName = parsed.frontmatter.name?.trim() || fallbackName;
+      if (!isValidSlashCommandName(canonicalName) || isReservedSlashCommandName(canonicalName)) continue;
+      result.push(candidate({
+        kind: 'command',
+        source: params.source,
+        sourceLocalId,
+        canonicalName,
+        name: canonicalName,
+        description: parsed.frontmatter.description?.trim() || '',
+        path: commandPath,
+        content,
+        author: parsed.frontmatter.author,
+      }));
+    } catch (error) {
+      console.warn(`[project-capabilities] Ignoring unreadable project Command ${rel}:`, error);
+    }
   }
   return result;
 }
@@ -284,7 +287,10 @@ function scanCommands(params: {
 }): Array<Omit<ProjectCapabilityCandidate, 'enabled'>> {
   if (!existsSync(params.rootPath)) return [];
   const root = canonicalDirectory(params.rootPath, false);
-  if (!root) throw new Error(`Command root is not a trusted directory: ${params.rootPath}`);
+  if (!root) {
+    console.warn(`[project-capabilities] Ignoring unreadable Command root: ${params.rootPath}`);
+    return [];
+  }
   return walkCommands({
     root,
     current: root,
@@ -326,14 +332,9 @@ export function resolveEffectiveProjectCapabilities(
   workspacePath: string,
   options: {
     globalSkillInventory?: GlobalSkillInventorySnapshot;
-    /** Settings can inspect blocked required entries; Runtime admission cannot. */
-    enforceRequiredIntegrity?: boolean;
   } = {},
 ): EffectiveProjectCapabilitySnapshot {
   const resolvedWorkspace = resolve(workspacePath);
-  if (!existsSync(resolvedWorkspace) || !statSync(resolvedWorkspace).isDirectory()) {
-    throw new Error('Workspace capability owner is not a directory');
-  }
   const userRoot = getMyAgentsUserDir();
   const globalSkillsRoot = resolve(userRoot, 'skills');
   const globalCommandsRoot = resolve(userRoot, 'commands');
@@ -345,18 +346,21 @@ export function resolveEffectiveProjectCapabilities(
       disabledSkillNames: readDisabledGlobalSkillNames(globalSkillsRoot),
       cliToolRegistryEnabled,
     });
-  if (options.enforceRequiredIntegrity !== false) {
-    assertRequiredGlobalSkillsAdmissible(globalSkillInventory);
+  let agentId = '';
+  let selection = emptyProjectCapabilitySelection();
+  try {
+    ({ agentId, selection } = resolveSelection(resolvedWorkspace, config));
+  } catch (error) {
+    console.warn(
+      '[project-capabilities] No writable selection owner; using the default enabled set:',
+      error instanceof Error ? error.message : String(error),
+    );
   }
-  const { agentId, selection } = resolveSelection(resolvedWorkspace, config);
 
   const projectSlots = new Set<string>();
   const projectSkills = scanSkills({
     rootPath: join(resolvedWorkspace, '.claude', 'skills'),
-    source: 'project',
     globalSkillsRoot,
-    disabledGlobalSkillNames: new Set(),
-    cliToolRegistryEnabled,
     projectSlots,
   });
   const projectCommands = scanCommands({
@@ -368,17 +372,27 @@ export function resolveEffectiveProjectCapabilities(
   const ranked = [
     ...projectSkills,
     ...globalSkillInventory.projectableEntries
-      .map(item => candidate({
-        kind: 'skill',
-        source: 'global',
-        sourceLocalId: item.folderName,
-        canonicalName: item.name,
-        name: item.name,
-        description: item.description,
-        path: item.skillPath,
-        content: item.content,
-        author: item.author,
-      }))
+      .flatMap(item => {
+        try {
+          return [candidate({
+            kind: 'skill',
+            source: 'global',
+            sourceLocalId: item.folderName,
+            canonicalName: item.name,
+            name: item.name,
+            description: item.description,
+            path: item.skillPath,
+            content: item.content,
+            author: item.author,
+          })];
+        } catch (error) {
+          console.warn(
+            `[project-capabilities] Ignoring global Skill with invalid capability identity ${item.folderName}:`,
+            error instanceof Error ? error.message : String(error),
+          );
+          return [];
+        }
+      })
       .filter(item => !projectSlots.has(`skill:${item.sourceLocalId}`)),
     ...projectCommands,
     ...scanCommands({
@@ -436,7 +450,9 @@ export async function setProjectCapabilityEnabled(input: {
   enabled: boolean;
 }): Promise<EffectiveProjectCapabilitySnapshot> {
   return withAgentConfigIntentLock(async () => {
+    const owner = resolveSelection(resolve(input.workspacePath), loadConfig());
     const before = resolveEffectiveProjectCapabilities(input.workspacePath);
+    if (before.agentId !== owner.agentId) throw new Error('Workspace capability owner changed before save');
     const target = before.candidates.find(item => item.id === input.capabilityId);
     if (!target) throw new Error('Project capability is unavailable or shadowed');
     if (target.required && !input.enabled) throw new Error('Required system Skill cannot be disabled');

@@ -114,11 +114,7 @@ import {
 } from './product-session-binding';
 import { resolveSessionConfig } from '../utils/resolve-session-config';
 import { resolveScheduledTurnPermissionMode } from '../../shared/types/runtime';
-import {
-  createScheduledDispatchGuard,
-  runtimeConfigModel,
-  runtimeConfigSource,
-} from './scheduled-turn-preparation';
+import { runtimeConfigModel, runtimeConfigSource } from './scheduled-turn-preparation';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -673,11 +669,8 @@ export function createExternalSessionEngine(): SessionEngine {
         ),
         model: runtimeConfigModel(runtimeConfig, runtime),
         runtimeConfig: runtimeConfig ?? null,
-        beforeDispatch: createScheduledDispatchGuard({
-          preceding: operation.beforeDispatch,
-          workspacePath: request.workspacePath,
-          requiredSystemSkill: operation.requiredSystemSkill,
-        }),
+        beforeDispatch: operation.beforeDispatch,
+        requiredSystemSkill: operation.requiredSystemSkill,
       };
     },
 
@@ -714,6 +707,7 @@ export function createExternalSessionEngine(): SessionEngine {
             }
           },
           beforeDispatch: request.beforeDispatch,
+          requiredSystemSkill: request.requiredSystemSkill,
           channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
         },
       );

@@ -35,9 +35,13 @@ export function filterSlashCommandsForCapabilities(
 export function buildBuiltinSkillAllowlist(
   snapshot: EffectiveProjectCapabilitySnapshot,
   pluginQualifiedSkillNames: Iterable<string>,
+  unavailableSkillNames: Iterable<string> = [],
 ): string[] {
+  const unavailable = new Set(unavailableSkillNames);
   return [...new Set([
-    ...snapshot.enabledSkills.map(item => item.canonicalName),
+    ...snapshot.enabledSkills
+      .map(item => item.canonicalName)
+      .filter(name => !unavailable.has(name)),
     ...pluginQualifiedSkillNames,
   ])].sort();
 }

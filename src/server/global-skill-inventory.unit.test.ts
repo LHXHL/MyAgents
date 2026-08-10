@@ -11,10 +11,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { REQUIRED_SYSTEM_SKILLS } from '../shared/systemSkills';
-import {
-  assertRequiredGlobalSkillsAdmissible,
-  createGlobalSkillInventorySnapshot,
-} from './global-skill-inventory';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 
 const roots: string[] = [];
 
@@ -68,7 +65,7 @@ describe('global Skill inventory', () => {
     ]));
   });
 
-  it('fails required admission without treating missing optional Skills as fatal', () => {
+  it('reports a missing required Skill without rejecting the remaining inventory', () => {
     const root = makeSkillsRoot();
     rmSync(join(root, 'myagents-cli'), { recursive: true, force: true });
     mkdirSync(join(root, 'optional-broken'), { recursive: true });
@@ -78,16 +75,18 @@ describe('global Skill inventory', () => {
       disabledSkillNames: new Set(),
     });
 
-    expect(() => assertRequiredGlobalSkillsAdmissible(snapshot)).toThrow(
-      'myagents-cli:missing_required_skill',
-    );
+    expect(snapshot.entries.map(entry => entry.folderName)).not.toContain('myagents-cli');
+    expect(snapshot.integrityIssues).toContainEqual(expect.objectContaining({
+      folderName: 'myagents-cli',
+      reason: 'missing_required_skill',
+    }));
     expect(snapshot.integrityIssues).toContainEqual(expect.objectContaining({
       folderName: 'optional-broken',
       required: false,
     }));
   });
 
-  it('does not let a non-directory Required slot suppress missing admission', () => {
+  it('does not let a non-directory Required slot hide its diagnostic', () => {
     const root = makeSkillsRoot();
     rmSync(join(root, 'myagents-cli'), { recursive: true, force: true });
     writeFileSync(join(root, 'myagents-cli'), 'not a Skill directory');
@@ -98,21 +97,26 @@ describe('global Skill inventory', () => {
       disabledSkillNames: new Set(),
     });
 
-    expect(() => assertRequiredGlobalSkillsAdmissible(snapshot)).toThrow(
-      'myagents-cli:missing_required_skill',
-    );
+    expect(snapshot.integrityIssues).toContainEqual(expect.objectContaining({
+      folderName: 'myagents-cli',
+      reason: 'missing_required_skill',
+    }));
   });
 
-  it('fails the whole snapshot when the root changes after enumeration', () => {
+  it('keeps the observed candidates when the root changes after enumeration', () => {
     const root = makeSkillsRoot();
-    expect(() => createGlobalSkillInventorySnapshot({
+    const snapshot = createGlobalSkillInventorySnapshot({
       rootPath: root,
       cliToolRegistryEnabled: true,
       disabledSkillNames: new Set(),
       testHooks: {
         afterRootEnumeration: () => mkdirSync(join(root, 'late-arrival')),
       },
-    })).toThrow('Global Skill root changed during inventory scan');
+    });
+    expect(snapshot.entries.map(entry => entry.folderName)).toEqual(
+      expect.arrayContaining([...REQUIRED_SYSTEM_SKILLS]),
+    );
+    expect(snapshot.entries.map(entry => entry.folderName)).not.toContain('late-arrival');
   });
 
   it('blocks a slot whose canonical identity changes during its scan', () => {
