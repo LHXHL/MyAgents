@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.7] - 2026-08-11
+
+> MyAgents 0.4.7 新增按 Agent 管理工作区 Skills 与 Commands 的能力，并为 Managed Codex 提供原生上下文压缩和与真实 Runtime 一致的命令入口。版本同时修复单个 Skill、MCP 或扩展异常导致整个 Codex 会话不可用的问题，改善自动标题、IM 新会话、CLI 与全局 Skill 投影的可靠性。
+
+### Added
+
+- **工作区支持按 Agent 管理 Skills 与 Commands**：可以在 Agent 设置中查看能力来源并启用或停用可选项；项目内同名 Skill 优先于全局版本，Required 能力保持可用，Builtin 与 Managed Codex 使用同一份有效结果。
+- **Managed Codex 支持原生上下文压缩**：可以使用 `/compact`，也可以从上下文用量提示直接压缩；压缩过程沿用当前 Session 与队列，不会产生多余的对话消息。
+
+### Changed
+
+- **Goal 与斜杠命令更贴合当前 Runtime**：输入框可以直接进入 Goal 模式；Chat 与 Launcher 只展示所选 Runtime 真正支持的系统命令，同时保留项目 Skill、自定义 Command 和正确的来源标识。
+- **CLI 始终使用当前安装的 MyAgents 版本**：用户目录只保留指向当前 App 的轻量启动器，不再运行升级前遗留的旧业务副本；macOS、Windows、Linux 与内嵌终端使用一致的命令来源。
+- **Agent 设置与能力列表更清晰**：权限菜单、Workspace 控件、Skill、Command 与 Sub-Agent 卡片使用统一的交互和信息层级，窄宽度下也会优先保留关键名称。
+
+### Fixed
+
+- **单个 Managed Codex 扩展异常不再阻塞整个 Session**：不适合安全投影的 HTTP MCP、连接失败、Skill 缺项、解析失败或投影异常只影响对应组件并记录到 Logs，其他能力与普通对话继续可用；Skill 枚举等待上限从 5 秒提高到 30 秒，修复 [#525](https://github.com/hAcKlyc/MyAgents/issues/525) 与 [#526](https://github.com/hAcKlyc/MyAgents/issues/526)。
+- **Managed Codex 自动标题恢复生成**：标题请求现在携带完整的初始 Turn 身份，不再在到达模型前被 Codex 拒绝；普通首轮消息与预热 Session 的身份仍保持隔离。
+- **损坏或重复的全局 Skill 不再拖垮其它能力**：异常项会被单独隔离，健康 Skill 继续加载；工作区中的全局 Skill 投影保持只读，避免一次编辑意外修改所有工作区共享的源文件。
+- **IM `/new` 不再影响桌面仍在使用的旧会话**：新会话只轮换当前 IM 绑定，桌面 Tab、并发回合和旧 Session 的其它 owner 保持原位。
+- **被动诊断不再显示为阻塞型 Chat 横条**：可选扩展跳过和普通配置降级只进入有界日志，真正需要用户操作的问题仍会保留明确提示。
+- **关于页的源代码入口保持指向仓库主页**：版本升级后不再错误跳转到对应版本的归档路径，许可证与第三方声明仍使用精确版本链接。
+
+---
+
 ## [0.4.6] - 2026-08-08
 
 > MyAgents 0.4.6 让 Managed Codex 完整接入 MyAgents 的 Skills、Commands、Agents、Plugins、MCP 与产品工具，并在安全的 Runtime 生命周期边界应用配置变更。版本同时改善多会话恢复体验，并提升文件路径交互、Sidecar 锁恢复、支持日志脱敏与长上下文失败诊断的可靠性。
