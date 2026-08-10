@@ -187,7 +187,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
-    this.startSessionInitialMessages.push(options.initialMessage);
+    this.startSessionInitialMessages.push(options.initialTurn?.message);
     const gate = this.startGate;
     if (gate) {
       await gate;
@@ -198,9 +198,9 @@ class FakeRuntime implements AgentRuntime {
     this.defer(() => {
       const threadId = options.resumeSessionId ?? `fake-thread-${this.nextThreadNumber++}`;
       this.emit({ kind: 'session_init', sessionId: threadId, model: options.model ?? 'fake-model', tools: ['FakeTool'] });
-      if (options.initialMessage) {
-        this.emitRootTurnAdmission(options.initialClientUserMessageId);
-        this.playTurn(options.initialMessage);
+      if (options.initialTurn) {
+        this.emitRootTurnAdmission(options.initialTurn.clientUserMessageId);
+        this.playTurn(options.initialTurn.message);
       }
     });
     return process;

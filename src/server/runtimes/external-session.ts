@@ -22,6 +22,7 @@ import type {
   ExternalRuntimeConfigSnapshot,
   RuntimeConfigApplyMode,
   RuntimeConfigCapabilities,
+  RuntimeInitialTurn,
   RuntimeProcess,
   UnifiedEvent,
   ImagePayload,
@@ -3106,9 +3107,10 @@ async function _doStartExternalSession(options: {
   }
 
   let turnAdmissionActivated = false;
-  const admitInitialMessage = async (): Promise<void> => {
+  const admitInitialMessage = async (): Promise<string | undefined> => {
     if (!options.initialMessage || turnAdmissionActivated) return;
-    if (!options.messageOperation) {
+    const messageOperation = options.messageOperation;
+    if (!messageOperation) {
       throw new Error('Initial external message is missing its operation owner');
     }
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
@@ -3133,9 +3135,9 @@ async function _doStartExternalSession(options: {
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
       ? new Date().toISOString()
       : undefined;
-    const userMsg = options.messageOperation.userProjection.message;
+    const userMsg = messageOperation.userProjection.message;
     pushExternalSessionMessage(userMsg);
-    markExternalUserMessageInTranscript(options.messageOperation);
+    markExternalUserMessageInTranscript(messageOperation);
     resetTurnAccumulators();
     seedTurnWatchdogEstimate();
     resetWatchdog();
@@ -3149,7 +3151,7 @@ async function _doStartExternalSession(options: {
       );
     }
     notifyExternalMessageDispatchAccepted(
-      options.messageOperation,
+      messageOperation,
       options.sessionId,
       options.onDispatchAccepted,
     );
@@ -3172,13 +3174,14 @@ async function _doStartExternalSession(options: {
       turnPath: options.resumeSessionId ? 'resume-start' : 'fresh-start',
       metadataBirthPending: options.metadataBirthPending,
       birthOrigin: options.birthOrigin,
-      operation: options.messageOperation,
+      operation: messageOperation,
       failureContext: '[external-session] Failed to persist initial user message',
       lastActiveAt: admissionActivityAt,
       channelDelivery,
       userChannelProjection,
     });
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
+    return messageOperation.userProjection.message.id;
   };
 
   // Set session context BEFORE startSession so that events fired during startup
@@ -3204,6 +3207,7 @@ async function _doStartExternalSession(options: {
     options.scenario,
   );
 
+  let runtimeInitialTurn: RuntimeInitialTurn | undefined;
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
       {
@@ -3212,13 +3216,7 @@ async function _doStartExternalSession(options: {
         // Guarded turns split process startup from prompt transport. This lets
         // Stop invalidate the promotion while initialize/resume is still
         // awaiting and before any runtime can consume the prompt.
-        initialMessage: options.dispatchPromotion
-          ? undefined
-          : (options.initialRuntimeMessage ?? options.initialMessage),
-        initialClientUserMessageId: options.dispatchPromotion
-          ? undefined
-          : options.messageOperation?.userProjection.message.id,
-        initialImages: options.dispatchPromotion ? undefined : options.initialImages,
+        initialTurn: runtimeInitialTurn,
         systemPromptAppend,
         model: startModel,
         permissionMode: runtimePermissionMode,
@@ -3238,7 +3236,17 @@ async function _doStartExternalSession(options: {
   let terminalSettledByStop = false;
   try {
     if (options.initialMessage) {
-      await admitInitialMessage();
+      const clientUserMessageId = await admitInitialMessage();
+      if (!options.dispatchPromotion) {
+        if (!clientUserMessageId) {
+          throw new Error('Initial external message is missing its operation owner');
+        }
+        runtimeInitialTurn = {
+          message: options.initialRuntimeMessage ?? options.initialMessage,
+          clientUserMessageId,
+          images: options.initialImages,
+        };
+      }
     }
     let process: RuntimeProcess;
     try {

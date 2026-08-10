@@ -75,6 +75,7 @@ describe('buildExternalTitleSessionOptions', () => {
     sessionId: 'title-session',
     workspacePath: '/workspace',
     userPrompt: 'Write the title',
+    clientUserMessageId: 'title-user-message',
     runtimeType: 'codex' as const,
     model: 'gpt-5.6-sol',
   };
@@ -86,6 +87,10 @@ describe('buildExternalTitleSessionOptions', () => {
     });
 
     expect(options).toMatchObject({
+      initialTurn: {
+        message: 'Write the title',
+        clientUserMessageId: 'title-user-message',
+      },
       runtimeSource: 'managed-provider',
       mcpServers: [],
       permissionMode: 'suggest',
@@ -102,7 +107,13 @@ describe('buildExternalTitleSessionOptions', () => {
       runtimeSource: 'system-cli',
     });
 
-    expect(options.runtimeSource).toBe('system-cli');
+    expect(options).toMatchObject({
+      initialTurn: {
+        message: 'Write the title',
+        clientUserMessageId: 'title-user-message',
+      },
+      runtimeSource: 'system-cli',
+    });
     expect(options).not.toHaveProperty('mcpServers');
     expect(options).not.toHaveProperty('reasoningEffort');
     expect(options).not.toHaveProperty('ephemeral');

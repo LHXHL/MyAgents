@@ -38,6 +38,20 @@ export type ImagePayload = InlineImagePayload | AttachmentRefImagePayload;
 /** Image payload after Sidecar resolves refs at the runtime boundary. */
 export type ResolvedImagePayload = InlineImagePayload & { data: string };
 
+/**
+ * Atomic first user turn for a newly started runtime process.
+ *
+ * The message and its caller-owned identity must cross the adapter boundary
+ * together. Product Session turns use the persisted SessionMessage id; isolated
+ * utility turns (for example auto-title generation) mint an ephemeral id. Keeping
+ * these fields in one object makes an unowned initial root turn unrepresentable.
+ */
+export interface RuntimeInitialTurn {
+  message: string;
+  clientUserMessageId: string;
+  images?: ResolvedImagePayload[];
+}
+
 export function isAttachmentRefImagePayload(img: ImagePayload): img is AttachmentRefImagePayload {
   return img.kind === 'attachment_ref';
 }
@@ -52,10 +66,7 @@ export function isInlineImagePayload(img: ImagePayload): img is InlineImagePaylo
 export interface SessionStartOptions {
   sessionId: string;
   workspacePath: string;
-  initialMessage?: string;
-  /** Product message identity for the root turn started by initialMessage. */
-  initialClientUserMessageId?: string;
-  initialImages?: ResolvedImagePayload[];
+  initialTurn?: RuntimeInitialTurn;
   systemPromptAppend?: string;
   model?: string;
   permissionMode?: string;

@@ -3609,14 +3609,14 @@ export class CodexRuntime implements AgentRuntime {
         throw new Error('Codex process exited before startup completed');
       }
 
-      // 4. Send initial message if provided
-      if (options.initialMessage) {
-        const clientUserMessageId = options.initialClientUserMessageId;
+      // 4. Send initial turn if provided
+      if (options.initialTurn) {
+        const clientUserMessageId = options.initialTurn.clientUserMessageId;
         if (!clientUserMessageId) {
           throw new Error('Codex initial root turn is missing clientUserMessageId');
         }
         this.beginRootTurnAdmission(codexProc, clientUserMessageId);
-        const input = buildCodexInput(options.initialMessage, options.initialImages);
+        const input = buildCodexInput(options.initialTurn.message, options.initialTurn.images);
         const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
           threadId: codexProc.threadId,
           input,

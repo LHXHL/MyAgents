@@ -1016,19 +1016,19 @@ export class GeminiRuntime implements AgentRuntime {
       //     { stopReason, _meta.quota } when done.
       //
       //     dispatchPrompt flips replayMode to false internally before sending
-      //     the live prompt. When there's no initialMessage, we must flip it
+      //     the live prompt. When there's no initialTurn, we must flip it
       //     here instead, so the first user-sendMessage call doesn't race
-      //     against any delayed replay notifications (an initialMessage-less
+      //     against any delayed replay notifications (an initialTurn-less
       //     startSession is used for pre-warm-style IM scenarios where the
       //     peer session is restored but the first user message hasn't
       //     arrived yet). Without this, session/update events arriving
       //     between startSession's return and sendMessage's first prompt
       //     dispatch would be silently dropped as replay.
-      if (options.initialMessage) {
+      if (options.initialTurn) {
         this.dispatchPrompt(
           geminiProc,
-          options.initialMessage,
-          options.initialImages,
+          options.initialTurn.message,
+          options.initialTurn.images,
           wrappedOnEvent,
         );
       } else {
