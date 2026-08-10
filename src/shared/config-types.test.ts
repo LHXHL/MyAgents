@@ -6,6 +6,7 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
   MANAGED_CODEX_REQUIRED_RUNTIME,
+  PRESET_MCP_SERVERS,
   PRESET_PROVIDERS,
   SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
@@ -26,6 +27,20 @@ import {
   withManagedCodexProviderCatalog,
 } from './config-types';
 import managedCodexRuntimeLock from './managed-codex-runtime.json';
+
+describe('MCP presets', () => {
+  it('keeps Tavily credentials out of the URL and projects them through an auth header', () => {
+    const tavily = PRESET_MCP_SERVERS.find(server => server.id === 'tavily-search');
+
+    expect(tavily).toMatchObject({
+      type: 'http',
+      url: 'https://mcp.tavily.com/mcp/',
+      headers: { Authorization: 'Bearer {{TAVILY_API_KEY}}' },
+      requiresConfig: ['TAVILY_API_KEY'],
+    });
+    expect(tavily?.url).not.toContain('TAVILY_API_KEY');
+  });
+});
 
 // normalizeProviderOrder reconciles a persisted provider order against the set
 // of providers that actually exist now: honor the saved order, drop stale/

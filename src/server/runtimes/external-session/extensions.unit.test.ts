@@ -27,6 +27,19 @@ function snapshot(revision: string, mcpServers: McpServerDefinition[] = []): Man
 }
 
 describe('Managed Codex extension generation state', () => {
+  it('keeps no-op status operation-local instead of mutating durable diagnostics state', () => {
+    resetManagedCodexExtensionState();
+    markManagedCodexExtensionEffective(snapshot('one'), 'generation-one');
+
+    expect(setManagedCodexDesiredSnapshot(snapshot('one'), 'idle-process')).toMatchObject({
+      state: 'unchanged',
+    });
+    expect(getManagedCodexExtensionStatus()).toMatchObject({
+      state: 'applied',
+      components: [{ state: 'applied' }],
+    });
+  });
+
   it('resolves renderer MCP intent from the server-owned catalogue', () => {
     const authoritative: McpServerDefinition[] = [{
       id: 'safe',
@@ -72,6 +85,27 @@ describe('Managed Codex extension generation state', () => {
     });
   });
 
+  it('keeps a failed optional MCP component below an applied generation', () => {
+    resetManagedCodexExtensionState();
+    const degraded = {
+      ...snapshot('degraded'),
+      components: [{
+        component: 'mcp' as const,
+        id: 'unsafe-query',
+        state: 'failed' as const,
+        code: 'mcp_projection_rejected',
+        message: 'Unsafe URL query.',
+      }],
+    };
+
+    expect(markManagedCodexExtensionEffective(degraded, 'generation-degraded')).toMatchObject({
+      desiredRevision: 'degraded',
+      effectiveRevision: 'degraded',
+      state: 'applied',
+      components: [{ component: 'mcp', id: 'unsafe-query', state: 'failed' }],
+    });
+  });
+
   it('ignores stale generation cleanup and releases the effective generation', () => {
     resetManagedCodexExtensionState();
     markManagedCodexExtensionEffective(snapshot('one'), 'generation-one');
@@ -90,7 +124,7 @@ describe('Managed Codex extension generation state', () => {
     const dispose = vi.fn();
     const withHost: ManagedCodexExtensionSnapshot = {
       ...snapshot('one'),
-      dynamicTools: [{ name: 'mcp__local__echo', description: 'Echo', inputSchema: {} }],
+      dynamicTools: [{ name: 'myagents__mcp__local__echo', description: 'Echo', inputSchema: {} }],
       hostToolDispatcher: { descriptors: [], dispatch: vi.fn(), dispose },
       components: [{ component: 'host_tools', state: 'applied', code: 'connected' }],
     };
@@ -98,7 +132,7 @@ describe('Managed Codex extension generation state', () => {
     setManagedCodexDesiredSnapshot(snapshot('one'), 'idle-process');
 
     expect(getManagedCodexDesiredSnapshot()).toMatchObject({
-      dynamicTools: [{ name: 'mcp__local__echo' }],
+      dynamicTools: [{ name: 'myagents__mcp__local__echo' }],
       hostToolDispatcher: withHost.hostToolDispatcher,
       components: [{ component: 'commands' }, { component: 'host_tools' }],
     });

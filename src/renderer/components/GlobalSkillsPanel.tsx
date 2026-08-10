@@ -13,8 +13,9 @@ import type { SkillDetailPanelRef } from './SkillDetailPanel';
 import CommandDetailPanel from './CommandDetailPanel';
 import type { CommandDetailPanelRef } from './CommandDetailPanel';
 import { CreateDialog, NewSkillChooser, InstallFromUrlDialog, type InstallFromUrlResponse } from './SkillDialogs';
-import { SkillCard, CommandCard } from './SkillsCommandsList';
-import type { SkillItem, CommandItem, CapabilityInitialSelect } from '../../shared/skillsTypes';
+import { SkillCard, CommandCard, SkillIntegrityIssuesPanel } from './SkillsCommandsList';
+import type { SkillItem, CommandItem, CapabilityInitialSelect, SkillsListResponse } from '../../shared/skillsTypes';
+import type { SkillIntegrityIssue } from '../../shared/skillIntegrity';
 
 type ViewState =
     | { type: 'list' }
@@ -61,6 +62,7 @@ export default function GlobalSkillsPanel({
     const [loading, setLoading] = useState(true);
     const [skills, setSkills] = useState<SkillItem[]>([]);
     const [commands, setCommands] = useState<CommandItem[]>([]);
+    const [integrityIssues, setIntegrityIssues] = useState<SkillIntegrityIssue[]>([]);
     const [refreshKey, setRefreshKey] = useState(0);
 
     // Refs for checking editing state
@@ -122,7 +124,7 @@ export default function GlobalSkillsPanel({
         setLoading(true);
         try {
             const [skillsRes, commandsRes, syncCheckRes] = await Promise.all([
-                apiGetJson<{ success: boolean; skills: SkillItem[] }>('/api/skills?scope=user'),
+                apiGetJson<SkillsListResponse>('/api/skills?scope=user'),
                 apiGetJson<{ success: boolean; commands: CommandItem[] }>('/api/command-items?scope=user'),
                 apiGetJson<{ canSync: boolean; count: number; folders: string[] }>('/api/skill/sync-check')
             ]);
@@ -130,7 +132,10 @@ export default function GlobalSkillsPanel({
             // Guard against setState after unmount
             if (!isMountedRef.current) return;
 
-            if (skillsRes.success) setSkills(skillsRes.skills);
+            if (skillsRes.success) {
+                setSkills(skillsRes.skills);
+                setIntegrityIssues(skillsRes.integrityIssues ?? []);
+            }
             if (commandsRes.success) setCommands(commandsRes.commands);
 
             // Update sync state (with defensive checks for API errors)
@@ -423,6 +428,7 @@ export default function GlobalSkillsPanel({
                         {t('agentSettings.common.new')}
                     </button>
                 </div>
+                <SkillIntegrityIssuesPanel issues={integrityIssues} />
                 {skills.length > 0 ? (
                     <div className="grid grid-cols-2 gap-3">
                         {skills.map(skill => (

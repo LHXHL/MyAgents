@@ -13,6 +13,7 @@ import {
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
+import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
@@ -114,6 +115,7 @@ import {
 } from './utils/context-occupancy';
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
+import type { EffectiveProjectCapabilitySnapshot } from '../shared/projectCapabilities';
 import type { OfficialToolId } from '../shared/official-tools';
 import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
@@ -140,6 +142,12 @@ import {
   getEnabledPluginSdkConfigs,
   getDefaultEnabledPluginIdsForWorkspace,
 } from './plugins/store';
+import { listPluginQualifiedSkillNames } from './plugins/manifest';
+import {
+  buildBuiltinSkillAllowlist,
+  filterSlashCommandsForCapabilities,
+  findDisabledCapabilityForSlashInput,
+} from './builtin-session/capabilities';
 import { initLogger, appendLog, getLogLines as getLogLinesFromLogger } from './AgentLogger';
 import { setAmbientLogContext, clearAmbientLogContextField } from './logger-context';
 import { beginTurn as beginTurnAbort, endTurn as endTurnAbort, abortTurn as abortTurnAbort } from './utils/turn-abort';
@@ -193,6 +201,8 @@ import {
   trySyncProjectUserConfigFiles,
   type ProjectUserConfigSyncOptions,
 } from './utils/project-user-config-sync';
+import { resolveEffectiveProjectCapabilities } from './project-capabilities';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
@@ -569,15 +579,15 @@ const DECORATIVE_TEXT_MAX_LENGTH = 5000;
 /**
  * Sync user-level skills and commands into a project's .claude/ as symlinks.
  *
- * The SDK has no API to filter skills/commands — it reads ALL entries from settingSources paths.
- * We use settingSources: ['project'] (reads from <cwd>/.claude/) and sync user-level
- * skills/commands as symlinks into the project's .claude/skills/ and .claude/commands/.
+ * This is a runtime-neutral compatibility inventory. Project-level selection
+ * is enforced separately at Runtime admission from AgentConfig; changing one
+ * Session must not rewrite shared links observed by other runtimes/Sidecars.
  *
  * This avoids setting CLAUDE_CONFIG_DIR (which would break Keychain credential lookup).
  *
  * Skills (directories):
- * - Creates symlinks for enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
- * - Removes symlinks for disabled skills (only symlinks, never real project directories)
+ * - Creates symlinks for globally enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
+ * - Removes links disabled by the global skills-config (not project selection)
  * - Does NOT touch real (non-symlink) skill directories in the project
  *
  * Commands (.md files):
@@ -590,57 +600,48 @@ export function syncProjectUserConfig(
   projectDir: string,
   options: ProjectUserConfigSyncOptions = {},
 ): void {
-  const synced = trySyncProjectUserConfigFiles(projectDir, options, 'skill-sync');
-  if (!synced) return;
-  // The symlinks above just changed what's on disk, but the live SDK session
-  // only scans skills at startup — without a reload, a skill installed
-  // mid-session is visible in the UI (Rust scans disk) yet unusable by the AI
-  // until the next session restart. Putting the reload HERE (not at each CRUD
-  // call site) makes every present and future "refresh project config" path
-  // pick it up automatically, with the order guaranteed correct: symlinks
-  // first, SDK rescan second. No-ops when no SDK session is alive (session
-  // startup path) or when the synced dir isn't this session's workspace.
-  reloadSessionSkillsAfterSync(projectDir);
+  let capabilitySnapshot = options.capabilitySnapshot;
+  if (!capabilitySnapshot) {
+    try {
+      capabilitySnapshot = resolveEffectiveProjectCapabilities(projectDir);
+    } catch (error) {
+      console.warn('[skill-sync] Project capability scan failed; reconciling only the global inventory:', error);
+    }
+  }
+  trySyncProjectUserConfigFiles(
+    projectDir,
+    { ...options, capabilitySnapshot },
+    'skill-sync',
+  );
+  // A live Query owns the allowlist captured at birth. Capability changes use
+  // the existing deferred-restart boundary; reloadSkills() alone cannot update
+  // Options.skills. The shared inventory itself remains runtime-neutral.
+  if (lifecycleState.query && agentDir && workspacePathsEqual(projectDir, agentDir)) {
+    scheduleDeferredRestart('capabilities');
+    return;
+  }
 }
 
 /**
  * Reload the live builtin SDK skill registry and prove that a product-owned
- * workflow contract is actually available to this Session. If no initialized
- * SDK query exists yet, its next subprocess start will scan the already-
- * verified project link before the first turn.
+ * workflow contract is actually available to this Session. Cold-start guards
+ * await the Query's existing initialization promise before reading the native
+ * registry; this rejects only the dependent turn, never Session startup.
  */
 export async function requireCurrentBuiltinSkill(skillName: string): Promise<void> {
   const query = lifecycleState.query;
-  if (!query || !lifecycleState.sdkControlReady) return;
+  if (!query) throw new Error(`builtin Runtime is unavailable for required system skill ${skillName}`);
+  if (!lifecycleState.sdkControlReady) {
+    await query.initializationResult();
+    if (lifecycleState.query !== query) {
+      throw new Error(`builtin Runtime changed before loading required system skill ${skillName}`);
+    }
+  }
 
   const refreshed = await query.reloadSkills();
   if (!refreshed.skills.some(skill => skill.name === skillName)) {
     throw new Error(`builtin Runtime did not load required system skill ${skillName}`);
   }
-}
-
-/**
- * Fire-and-forget mid-session skill rescan (SDK 0.3.169+ reloadSkills control
- * request). Failure degrades to the pre-0.2.34 behavior — skills refresh on
- * the next session — so it never blocks the CRUD response that triggered the
- * sync. External runtimes (Claude Code / Codex / Gemini CLI) have no such
- * control channel; they rescan on their next session naturally.
- */
-function reloadSessionSkillsAfterSync(syncedDir: string): void {
-  if (!lifecycleState.query) return;
-  // External runtimes never populate lifecycleState.query, so this guard is
-  // belt-and-suspenders — kept explicit per the external-routing red line.
-  if (isExternalRuntime(getCurrentRuntimeType())) return;
-  // Another workspace's dir was synced — this session's skill view is unaffected.
-  if (!agentDir || !workspacePathsEqual(syncedDir, agentDir)) return;
-  lifecycleState.query.reloadSkills()
-    .then(res => {
-      console.log(`[agent] skills reloaded mid-session (${res.skills.length} skill commands)`);
-    })
-    .catch(err => {
-      console.warn('[agent] reloadSkills failed — skills will refresh on next session:',
-        err instanceof Error ? err.message : err);
-    });
 }
 
 // (issue #174) `starting` separates "subprocess launched, awaiting system_init"
@@ -3484,7 +3485,7 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
  * - 'project': <cwd>/.claude/ (project-level config)
  *
  * We use 'project' only:
- * - User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+ * - Enabled MyAgents global Skills are projected into <cwd>/.claude/skills/ at Query birth
  * - Avoids setting CLAUDE_CONFIG_DIR which would break Keychain credential lookup
  * - Project-level: SDK reads project's .claude/skills/, .claude/commands/, CLAUDE.md
  *
@@ -3663,15 +3664,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = mcpConfig;
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {
-      // Substitute {{ENV_VAR}} placeholders in URL with values from server.env
-      let resolvedUrl = server.url;
-      if (server.env) {
-        resolvedUrl = resolvedUrl.replace(/\{\{(\w+)\}\}/g, (_, key) => server.env?.[key] ?? '');
-      }
+      const remote = resolveRemoteMcpTransportConfig(server);
 
       // Inject OAuth token as Authorization header (auto-refreshes if needed)
       // Respect user-supplied Authorization — don't overwrite if already present
-      const headers = { ...server.headers };
+      const headers = { ...remote.headers };
       if (!headers['Authorization'] && !headers['authorization']) {
         const oauthHeaders = await resolveAuthHeaders(server.id);
         if (oauthHeaders['Authorization']) {
@@ -3682,11 +3679,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = {
         type: server.type,
-        url: resolvedUrl,
+        url: remote.url,
         headers,
       };
       // Log URL with API key masked for security
-      const maskedUrl = resolvedUrl.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
+      const maskedUrl = remote.url.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
       console.log(`[agent] MCP ${server.id}: ${server.type} → ${maskedUrl}`);
     } else if (server.type === 'sse' || server.type === 'http') {
       console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);
@@ -5613,8 +5610,8 @@ export function buildClaudeSessionEnv(
     env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
   }
   // DO NOT set CLAUDE_CONFIG_DIR here — it would change the Keychain service name
-  // and break Anthropic subscription OAuth. User-level skills are synced as symlinks
-  // into project .claude/skills/ by syncProjectUserConfig() instead.
+  // and break Anthropic subscription OAuth. Enabled global Skills are instead
+  // projected into project .claude/skills/ at Query birth.
 
   // agent-browser: no env injection needed. The CLI ships its own config
   // discovery (~/.agent-browser/config.json default path) and is installed
@@ -7260,7 +7257,7 @@ function pushInboxAbortReplyForQueuedItem(
  * IMPORTANT: Must properly terminate SDK session to prevent context leakage.
  * Simply interrupting is not enough - we must wait for the session to fully end.
  */
-export async function resetSession(): Promise<void> {
+export async function resetSession(options?: { sessionId?: string }): Promise<void> {
   return runSerializedSessionMutation(async () => {
   console.log('[agent] resetSession: starting new conversation');
   // 1. Properly terminate the SDK session (same pattern as switchToSession)
@@ -7299,8 +7296,10 @@ export async function resetSession(): Promise<void> {
   clearMessageState();
   clearImBridgeToolsContext();
 
-  // 3. Generate new session ID (don't persist yet - wait for first message)
-  setCurrentSessionId(randomUUID());
+  // 3. Bind the caller-proven target identity, or mint one for ordinary
+  // desktop reset. Surface migration passes its Rust-generated target so
+  // Router, SidecarManager, Runtime, and renderer adopt one exact identity.
+  setCurrentSessionId(options?.sessionId ?? randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -8183,6 +8182,50 @@ export async function enqueueUserMessage(
     return { queued: false, error: 'Missing explicit channel delivery ownership' };
   }
   const channelDelivery = options.channelDelivery;
+
+  try {
+    const globalSkillInventory = createGlobalSkillInventorySnapshot();
+    const desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+    const disabledCapability = findDisabledCapabilityForSlashInput(trimmed, desiredCapabilities);
+    if (disabledCapability) {
+      return {
+        queued: false,
+        error: `/${disabledCapability.canonicalName} is disabled for this workspace`,
+      };
+    }
+    const currentCapabilities = configState.currentCapabilitySnapshot;
+    let projectionChanged = false;
+    if (
+      lifecycleState.query
+      && currentCapabilities
+      && !isTurnInFlight()
+      && (currentCapabilities.revision !== desiredCapabilities.revision
+        || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+    ) {
+      projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
+        globalSkillInventory,
+        capabilitySnapshot: desiredCapabilities,
+      }, 'skill-sync').changed;
+      if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+        configState.currentCapabilitySnapshot = desiredCapabilities;
+      }
+    }
+    if (
+      lifecycleState.query
+      && (currentCapabilities?.revision !== desiredCapabilities.revision || projectionChanged)
+    ) {
+      scheduleDeferredRestart('capabilities');
+      // Quiescent/pre-warmed Queries are replaced immediately. During a turn,
+      // the latch is drained by the terminal owner and the queued message is
+      // dispatched only by the replacement Query.
+      applyDeferredRestartIfNeeded();
+    }
+  } catch (error) {
+    return {
+      queued: false,
+      error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 
   const queueId = options?.queueId ?? randomUUID();
   const deferVisibleAdmission = options?.beforeUserPersistence !== undefined;
@@ -10204,11 +10247,37 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     console.log('[agent] applying deferred provider history boundary reset before SDK start');
     resetForProviderHistoryBoundary();
   }
-  // Sync enabled user-level skills as symlinks into project's .claude/skills/
-  // Must happen before buildClaudeSessionEnv() so SDK sees them via settingSources: ['project']
   const adminConfigForSession = loadAdminConfig();
   const cliToolRegistryEnabled = isCliToolRegistryEnabled(adminConfigForSession);
-  syncProjectUserConfig(agentDir, { cliToolRegistryEnabled });
+  // One resolver owns UI and Runtime admission. The same inventory and
+  // project-winner snapshot also drive the compatibility projection before
+  // launch, so every Runtime observes one canonical result.
+  let launchCapabilitySnapshot: EffectiveProjectCapabilitySnapshot;
+  let unavailableBuiltinSkillNames: string[] = [];
+  try {
+    const globalSkillInventory = createGlobalSkillInventorySnapshot({ cliToolRegistryEnabled });
+    launchCapabilitySnapshot = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+    unavailableBuiltinSkillNames = trySyncProjectUserConfigFiles(agentDir, {
+      cliToolRegistryEnabled,
+      globalSkillInventory,
+      capabilitySnapshot: launchCapabilitySnapshot,
+    }).unavailableSkillNames;
+  } catch (error) {
+    const message = `Workspace capability admission failed: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(`[agent] ${message}`);
+    lastAgentError = message;
+    const hadQueuedInput = getMessageQueue().length > 0;
+    if (!preWarm || hadQueuedInput) {
+      drainQueueWithCancellation();
+      broadcast('chat:agent-error', { message });
+    }
+    // Capability projection happens before the ordinary Query try/finally.
+    // Release the pre-warm owner here so a failed replacement cannot strand
+    // its requeued user message behind a permanently "pre-warming" Session.
+    setPreWarmInProgress(false);
+    setSessionState('idle');
+    return;
+  }
   ensureGitignorePattern(agentDir, SESSION_PLANS_GITIGNORE_PATTERN);
   // PRD #124: register a FRESH bridge token for this SDK subprocess.
   // `freshToken: true` retires the previous token (if any) so any late
@@ -10550,15 +10619,30 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       configState.currentEnabledOfficialToolIds,
     );
     const claudeCodeExecutable = resolveClaudeCodeCli();
+    const contextPluginIds = configState.currentEnabledPluginIds !== null
+      ? configState.currentEnabledPluginIds
+      : getDefaultEnabledPluginIdsForWorkspace(agentDir ?? '');
+    const enabledPluginConfigs = getEnabledPluginSdkConfigs(contextPluginIds);
+    const enabledPluginSkillNames = enabledPluginConfigs.flatMap(plugin => (
+      listPluginQualifiedSkillNames(plugin.path)
+    ));
+    const enabledSkillAllowlist = buildBuiltinSkillAllowlist(
+      launchCapabilitySnapshot,
+      enabledPluginSkillNames,
+      unavailableBuiltinSkillNames,
+    );
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
       thinking: thinkingConfig,
       effort: sdkEffort,
       // Load settings from project scope only (.claude/)
-      // User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+      // Enabled global Skills are projected into <cwd>/.claude/skills/ before Query launch.
       // CLAUDE_CONFIG_DIR is NOT set — preserves Anthropic subscription Keychain lookup
       settingSources: buildSettingSources(),
+      // SDK-level allowlist is the execution gate for both project and global
+      // Skills. Disk projection remains the compatibility bridge for Commands.
+      skills: [...new Set(enabledSkillAllowlist)].sort(),
       settings: {
         cleanupPeriodDays: claudeTranscriptCleanupPeriodDays,
         // MyAgents does not expose Anthropic feedback submission. Keep the
@@ -10656,21 +10740,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // already filters to entries that exist on disk as valid plugin roots.
       // Field omitted entirely when no plugins are enabled so empty-array
       // noise doesn't show up in SDK debug output.
-      ...((): { plugins?: { type: 'local'; path: string }[] } => {
-        // Two-layer plugin resolution (mirrors MCP):
-        //   1. Per-session override (configState.currentEnabledPluginIds, set via
-        //      setSessionEnabledPluginIds when the renderer toggles in the
-        //      chat input "插件" submenu)
-        //   2. Fallback: Agent.enabledPluginIds (or Project's) for this
-        //      workspace (agentDir)
-        // Layer 1 still applies the AppConfig.enabledPlugins global
-        // visibility gate inside getEnabledPluginSdkConfigs.
-        const contextIds = configState.currentEnabledPluginIds !== null
-          ? configState.currentEnabledPluginIds
-          : getDefaultEnabledPluginIdsForWorkspace(agentDir ?? '');
-        const pluginCfgs = getEnabledPluginSdkConfigs(contextIds);
-        return pluginCfgs.length > 0 ? { plugins: pluginCfgs } : {};
-      })(),
+      ...(enabledPluginConfigs.length > 0 ? { plugins: enabledPluginConfigs } : {}),
       // (v0.2.12) Enable --replay-user-messages so CLI emits SDKUserMessageReplay
       // (isReplay=true) when it drains a mid-turn queued_command attachment from
       // its commandQueue into the model's context. We use this signal to know
@@ -11211,6 +11281,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         productSessionId: queryProductSessionId,
         expectedSdkSessionId: effectiveSdkSessionId,
       });
+      configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
     } catch (queryError: unknown) {
       // Defensive fallback: metadata lost but SDK disk data exists → switch to resume
       // Note: "already in use" may surface asynchronously during for-await iteration
@@ -11231,6 +11302,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           productSessionId: queryProductSessionId,
           expectedSdkSessionId: effectiveSdkSessionId,
         });
+        configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
       } else {
         throw queryError;
       }
@@ -11306,7 +11378,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           return;
         }
         setSdkControlReady(true);
-        const slashCommands = normalizeSdkSlashCommands(initResult?.commands);
+        const normalizedSlashCommands = normalizeSdkSlashCommands(initResult?.commands);
+        const slashCommands = normalizedSlashCommands
+          ? filterSlashCommandsForCapabilities(normalizedSlashCommands, launchCapabilitySnapshot)
+          : null;
         if (slashCommands) {
           broadcastSdkSlashCommands(slashCommands, 'initialize');
         }
@@ -11653,7 +11728,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
       }
 
-      const changedSlashCommands = parseSdkCommandsChanged(sdkMessage);
+      const normalizedChangedSlashCommands = parseSdkCommandsChanged(sdkMessage);
+      const changedSlashCommands = normalizedChangedSlashCommands
+        ? filterSlashCommandsForCapabilities(normalizedChangedSlashCommands, launchCapabilitySnapshot)
+        : null;
       if (changedSlashCommands) {
         broadcastSdkSlashCommands(changedSlashCommands, 'commands_changed');
       }
@@ -12899,6 +12977,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // 安全关闭 SDK session
     const session = lifecycleState.query as Query | null;
     setQuerySession(null);
+    configState.currentCapabilitySnapshot = null;
     try { session?.close(); } catch { /* subprocess 可能已退出 */ }
 
     // PRD #124: unregister the bridge token now that the SDK subprocess
@@ -13099,6 +13178,59 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     beginPromotedItem(item);
     const promotedQuery = lifecycleState.query;
+    let desiredCapabilities: EffectiveProjectCapabilitySnapshot;
+    try {
+      const globalSkillInventory = createGlobalSkillInventorySnapshot();
+      desiredCapabilities = resolveEffectiveProjectCapabilities(agentDir, { globalSkillInventory });
+      const currentCapabilities = configState.currentCapabilitySnapshot;
+      let projectionChanged = false;
+      if (
+        currentCapabilities
+        && (currentCapabilities.revision !== desiredCapabilities.revision
+          || currentCapabilities.integrityRevision !== desiredCapabilities.integrityRevision)
+      ) {
+        projectionChanged = trySyncProjectUserConfigFiles(agentDir, {
+          globalSkillInventory,
+          capabilitySnapshot: desiredCapabilities,
+        }, 'skill-sync').changed;
+        if (currentCapabilities.revision === desiredCapabilities.revision && !projectionChanged) {
+          configState.currentCapabilitySnapshot = desiredCapabilities;
+        }
+      }
+      if (projectionChanged) {
+        requeuePromotedItemBeforeSdkDispatch(item);
+        scheduleDeferredRestart('capabilities');
+        applyDeferredRestartIfNeeded();
+        if (promotedQuery) await waitForQueryExit(promotedQuery);
+        return;
+      }
+    } catch (error) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    const disabledCapability = findDisabledCapabilityForSlashInput(item.messageText, desiredCapabilities);
+    if (disabledCapability) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: `/${disabledCapability.canonicalName} is disabled for this workspace`,
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    if (configState.currentCapabilitySnapshot?.revision !== desiredCapabilities.revision) {
+      // Files/config may change after enqueue but before promotion. Return the
+      // exact item to the local queue and replace the Query before it crosses
+      // the SDK boundary; the replacement generator will retry it.
+      requeuePromotedItemBeforeSdkDispatch(item);
+      scheduleDeferredRestart('capabilities');
+      applyDeferredRestartIfNeeded();
+      if (promotedQuery) await waitForQueryExit(promotedQuery);
+      return;
+    }
     const activeMcpMutation = getQueryMcpMutation();
     if (activeMcpMutation) {
       const cancellation = getPromotedItemCancellation(item.id);

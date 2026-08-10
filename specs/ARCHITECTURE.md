@@ -308,7 +308,9 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_delete_session_if_unowned` | 在同一 Session lifecycle guard 内检查所有持久和临时 owner；只有不存在未授权 owner 时才删除 Node Session 数据并释放调用方提交的 Tab owner。完整删除事务见 `tech_docs/session_architecture.md` |
 | `cmd_get_session_port` | 查询已就绪 Session Sidecar 的端口，仅供登记的数据面和就绪状态调用方使用 |
 | `cmd_reconcile_session_tab_activation` | 已有 Session Tab ensure 后确认当前 generation 仍由该 Tab owner 持有，并释放临时 `BackgroundCompletion` 交接 owner |
-| `cmd_upgrade_session_id` | 同一 Sidecar 的 Session ID 升级（pending→real、desktop reset 或已确认的 Session 迁移）；旧或新 Session ID 被持久 owner 占用时拒绝改名，历史导航不得调用 |
+| `cmd_upgrade_session_id` | exact Tab owner 的 pending→real / desktop reset 升级；旧或新 Session ID 被持久 owner 占用时拒绝改名，历史导航不得调用 |
+
+Sidecar 的 raw HashMap rekey 是 manager 内部实现，不是通用 Session 操作。生产入口必须证明完整参与 owner 集合：普通 birth/reset 只允许 exact `Tab(tabId)`；桌面“新对话并保留绑定”只允许 exact `Tab(tabId) + Agent(sessionKey)`；Runtime terminal 返回新 ID 时只允许 exact `Agent(sessionKey)`。任何额外 owner 都在 Node 改变逻辑身份前 fail closed。IM `/new` 不做 rekey：它只把 peer binding 轮换到一个 `sidecar_port=0` 的新 ID，并从旧 Session 释放目标 Agent owner，其它 owner 和旧 Sidecar identity 原地不动。
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
 | `cmd_stop_all_sidecars` | 显式 IPC / debug stop；不拥有应用生命周期 |
 
@@ -374,23 +376,25 @@ macOS 的 renderer 崩溃恢复由 Tauri `on_web_content_process_terminate` 回�
 
 ### 3. 系统提示词组装 (`src/server/system-prompt.ts`)
 
-三层 Prompt 架构：
+对话 Session 的系统上下文由四类来源共同组成：Runtime 原生 base/preset、MyAgents
+产品级 Prompt append、Workspace 指令文件，以及按 Turn 注入的 `system-reminder`。
+它们共享最终模型上下文，但 owner、权限层级和生命周期不同，不能当成一个字符串维护。
+
+MyAgents 产品级 append 由 `buildSystemPromptAppend()` 统一组装：
 
 | 层 | 用途 | 何时包含 |
 |----|------|---------|
 | **L1** 基础身份 | 告诉 AI 运行在 MyAgents 产品中 | 始终 |
 | **L2** 交互方式 | 桌面客户端 / IM Bot / Agent Channel | 互斥选一 |
-| **L3** 场景指令 | Cron 定时任务上下文 / IM 心跳 / 浮球小窗 / Browser Storage | 按需叠加 |
+| **L3** 场景与产品交互 | Task / IM 心跳 / Registered Agent / 浮球 / Widget / Session 协作 / Browser Storage | 按需叠加 |
+| **L4** CLI 能力发现 | Task / Goal / Thought / IM 媒体 / Vision / 用户注册工具 | 按场景与能力开关叠加 |
 
-```typescript
-type InteractionScenario =
-  | { type: 'desktop'; surface?: 'chat' | 'floating-ball' }
-  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
-  | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string }
-  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean };
-```
-
-`desktop.surface` 区分同一桌面渠道下的入口形态：默认 Chat 不额外指定；浮球入口使用 `surface: 'floating-ball'`，系统提示词追加小窗交互约束，同时每条浮球消息自带 `system-reminder` 上下文，覆盖已预热 session 不能重组 systemPrompt 的情况。
+当前 `InteractionScenario` 包含 desktop、im、agent-channel、cron 和 registeredAgent；
+精确字段、预设片段条件矩阵、四种 Runtime 的投送方式、Workspace 指令兼容和
+pre-warm 不可变语义见
+[`tech_docs/system_prompt_architecture.md`](./tech_docs/system_prompt_architecture.md)。
+逐轮隐藏消息的 wire/display 协议由
+[`tech_docs/system_reminder_protocol.md`](./tech_docs/system_reminder_protocol.md) 单独拥有。
 
 ### 4. 自配置 CLI (`src/cli/` + `src-tauri/src/cli.rs`)
 
@@ -401,9 +405,9 @@ type InteractionScenario =
 | 场景 | 调用方式 | 端口来源 |
 |------|---------|---------|
 | AI 内部调用（主要） | SDK Bash 工具 → `myagents mcp add ...` | `MYAGENTS_PORT` 环境变量 |
-| 用户终端调用 | `MyAgents mcp list` | `~/.myagents/sidecar.port` 文件 |
+| 用户终端调用 | `myagents mcp list`（兼容直接调用 `MyAgents mcp list`） | `~/.myagents/sidecar.port` 文件 |
 
-为什么 CLI 放在 `~/.myagents/bin/` 而非 app bundle：SDK 子进程 PATH 不含 app bundle 内部路径；shebang 执行需要可执行权限和去掉 `.ts` 后缀；`~/.myagents/bin/` 是跨平台稳定的工具投放点。
+CLI 业务 bundle 只位于当前 app。由于 SDK 子进程与用户 shell 的 PATH 不应依赖 app 内部路径，Rust 在 `~/.myagents/bin/` 投影确定性的薄启动器；launcher 回到当前 MyAgents executable，再由 Rust 直达同一安装树的 bundled Node + CLI CJS。HOME 不保存第二份 route、help 或请求体实现。
 
 详见 `tech_docs/cli_architecture.md`。
 
@@ -580,11 +584,13 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 
 Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `SessionEngine` → external adapter 路径，不建立 Codex 专用 route 或第二套 Session。`codex.ts` 独占 `thread/read(includeTurns:true)`、`thread/fork(lastTurnId)`、`thread/unsubscribe` 与 root `turn/start` admission；`external-session.ts` 在既有 operation serialization 边界内编排 native branch、进程切换和产品 Session；`SessionStore` 独占 transcript/metadata 的可恢复提交。成功 root terminal assistant 才持久化 `{turnId, rootUserMessageId}` 锚点。Rewind 只改变对话上下文，不恢复工作区文件；有 replacement native thread 时在 durable rebind 和 mutation lease 释放后异步复用既有 prewarm，失败只影响下一次 send 的启动延迟；第一 native Turn 之前继续用“无 runtimeSessionId”表示，不预热空 thread，下一次发送复用既有 fresh-start。Claude Code / Gemini 继续明确不支持该能力。
 
-Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用 `SessionEngine` config 方法，external adapter 交给 `external-session` 从服务端权威配置编译一份 immutable Session Extension Snapshot，并在 idle/terminal 边界 replacement process。只有 Codex 进程启动成功、严格 Skill read-back 通过，且 MCP startup barrier 已完成 terminal/timeout 观察后，desired revision 才提升为该 process generation 的 effective revision；单个 MCP 的连接失败由既有 `RuntimeDiagnostics.mcpServers` 表达，不伪装成未投影配置。Codex adapter 只拥有 app-server 协议投影；外部 MCP 使用启动配置，Agent 使用原生 role config，合并后的有效 Workspace/全局/Plugin Skill 通过临时 extra-root 精确投影，SDK in-process MCP 与 IM Bridge 通过 runtime-neutral Host dispatcher 暴露为 `thread/start.dynamicTools`。Codex 0.146.0 的 dynamic-tool catalog 不能在 native thread resume 时更换，因此 Session metadata 只持久化协议版本与非敏感 catalog fingerprint：catalog 未变可 resume，变化或 legacy 未证明一致时必须新建 Product Session；历史 Session 的 desired/legacy catalog 都为空时允许 resume。不能偷偷恢复旧目录或建立第二套 bridge。`system-cli` Codex 不进入这套 MyAgents-owned 投影。
+Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用 `SessionEngine` config 方法，external adapter 交给 `external-session` 从服务端权威配置编译一份 immutable Session Extension Snapshot，并在 idle/terminal 边界 replacement process。Codex 进程启动且 MCP startup barrier 完成 terminal/timeout 观察后，desired revision 提升为该 process generation 的 effective revision；单个 Skill、MCP、Agent 或 Plugin 的失败只降级对应组件并进入 Logs，不阻断 Runtime generation。Codex adapter 只拥有 app-server 协议投影；外部 MCP 使用启动配置，Agent 使用原生 role config，合并后的有效 Workspace/全局/Plugin Skill 通过临时 extra-root 精确投影，SDK in-process MCP 与 IM Bridge 通过 runtime-neutral Host dispatcher 暴露为 `thread/start.dynamicTools`。Codex 0.146.0 的 dynamic-tool catalog 不能在 native thread resume 时更换，因此 Session metadata 只持久化协议版本与非敏感 catalog fingerprint：catalog 未变可 resume，变化或 legacy 未证明一致时必须新建 Product Session；历史 Session 的 desired/legacy catalog 都为空时允许 resume。不能偷偷恢复旧目录或建立第二套 bridge。`system-cli` Codex 不进入这套 MyAgents-owned 投影。
+
+全局 Skill 的 Runtime authority 是 Node `global-skill-inventory.ts` 在每个 admission / Settings 业务边界构造的 immutable、ephemeral 完整根快照；不持久化注册表、cache 或 watcher 状态。同一边界的 project capability resolver 与 `.claude/skills` 兼容投影必须消费同一个快照：强证据损坏项既不进入 builtin allowlist / Managed Codex compiler，也不进入新建 workspace 链接，但任何单个 Skill 的缺失、损坏或投影失败都只淘汰该候选并记录日志，不能阻断 Runtime 或 Session。Project Skill（包括项目目录 symlink）按 canonical name 覆盖 global；MyAgents 只维护指向 `~/.myagents/skills` 的兼容 junction/symlink，不覆盖项目条目。Builtin/Managed 可在投影失败时从本次 admission 精确排除受影响 canonical；Managed 的临时 Skill/Agent materialization 与原生 read-back 同样逐候选降级，依赖 Required Skill 的 operation 只按当前 process 的 native read-back 决定是否执行。System Codex、Claude Code 等兼容 Runtime 直接扫描共享磁盘，若 OS 拒绝删除既有链接则只记录物理歧义并继续，不为这个极端状态新增进程协议或阻断 Session。Rust Launcher 只镜像同一份分类契约并跳过这种 project 投影，跨语言 JSON fixtures 负责锁定口径，而不是新增 RPC。已有 active turn 不 retroactive 改写；effective revision 继续表达 Runtime winner 内容，integrity revision 表达诊断与 desired-link set。纯诊断变化不换代；external lifecycle 随 active process 保存启动时采用的 effective capability/projection revision，后续 admission 发现 revision 变化才复用既有 deferred process/Query replacement，不能以“当前 Sidecar 是否实际写了链接”代替进程配置 identity。
 
 **门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
 
-新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、`/api/im/session/new`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
+新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、proof-bearing `/api/session/surface-migration`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。IM `/new` 只在 Rust owner/binding authority 内轮换，不调用 Node reset endpoint。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
 
 **测试防线：** server 测试必须显式后缀分层：`*.unit.test.ts`（pure policy / parser / boundary）、`*.integration.test.ts`（credential-free stateful server 集成，singleFork）、`*.credentialed.test.ts`（真实 Provider / SDK / upstream smoke，显式本地跑）。`unit` / `integration` 都加载 `src/test/setup-no-egress.ts`，阻断 fetch / undici / http(s) / net / tls / dns 非 loopback 出站；`npm run test:classification` 用实际 Vitest project list 扫描并禁止裸 `src/server/**/*.test.ts`。External runtime 的回归主路径通过 `external-session-mock.integration.test.ts` 在测试层 mock `runtimes/factory.ts`，fake runtime 伪装为真实 `RuntimeType`（如 `codex`），穿过 `SessionEngine` 覆盖正常 turn、failed turn、queue、permission response，不在生产代码里增加 mock runtime 类型。
 
@@ -735,7 +741,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 | 子模块 | 职责 | 暴露的 cmd |
 |------|------|-----------|
-| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、文件名校验与 sanitize | — |
+| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、全局 Skill 投影 mutation guard、文件名校验与 sanitize | — |
 | `tree` | 工作区目录树初始化 + 懒展开 | `cmd_workspace_dir_tree` / `cmd_workspace_dir_expand` |
 | `read_preview` | 文本文件预览（≤512KB，bounded read 防 TOCTOU 增长） | `cmd_workspace_read_preview` |
 | `download` | 二进制下载（≤25MB，base64 IPC） | `cmd_workspace_download_file` |
@@ -746,7 +752,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 | `user_attachments` | 用户输入图片附件 staging：绝对路径图片由 Rust 读取并复制到 `~/.myagents/attachments/<session>/`，返回 session-owned `relativePath`；≤10MB 作为图片预览/vision ref，>10MB 交回 `transfer` 转 `@myagents_files/...` 文件引用 | `cmd_prepare_user_image_attachments` |
 | `check_paths` | 200-batch existence 探针（与读侧 symlink-escape gate 一致，挡 chip 假阳性） | `cmd_workspace_check_paths` |
 | `gitignore` | `.gitignore` append（`with_file_lock_blocking` 串行写） | `cmd_workspace_add_gitignore` |
-| `slash` | / 命令扫描（builtin + 项目 + 用户 skills；`agent-browser` Windows 屏蔽） | `cmd_list_slash_commands` |
+| `slash` | / 命令扫描（builtin + 项目 + 用户 skills；跳过 MyAgents-managed project Skill 链接，并按共享完整性契约过滤 global Skill） | `cmd_list_slash_commands` |
 | `search` | 模糊文件名搜索（fuzzy_matcher，跳 node_modules / dotfiles） | `cmd_workspace_search_files_fuzzy` |
 | `git_branch` | 当前 git 分支查询 | `cmd_workspace_git_branch` |
 | `system_open` | 揭示在文件管理器 / 默认应用打开（`process_cmd::new` 防 Windows console flash） | `cmd_workspace_open_in_finder` / `cmd_workspace_open_with_default` / `cmd_open_path_external`（绝对路径，过 credential 黑名单） |
@@ -756,6 +762,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 - **路径解析**：写侧 lexical（路径可不存在），读侧 canonical（防 `evil_link → /etc/passwd` 符号链逃逸）。任意绝对路径还要 canonicalize 最近存在的 ancestor 后重跑系统/credential blacklist；Windows security identity 独立归一化 `\\?\UNC\server\share` 与 `\\?\C:`，不能复用面向 Node/cmd 的前缀剥离 helper。两套 workspace helper 命名带 "_existing_" 后缀区分。
 - **symlink-safe 写**：`crud.rs::slot_occupied` / `transfer.rs::slot_occupied` 用 `fs::symlink_metadata` 不是 `Path::exists()`（断链 symlink 会被后者误报为空，CLAUDE.md v0.2.5 红线）。
+- **全局 Skill 投影只读**：所有 workspace mutation command 在最终目标上调用 `reject_managed_global_skill_mutation`；链接叶子、已有后代、最近存在祖先为 managed junction 的新路径和断链都拒绝。read / reveal / copy-out 不走该 guard，Node 投影 owner 直接维护链接，无 bypass flag。
 - **bounded read**：所有读取大文件命令用 `File::open + take(MAX+1).read_to_end`（不是 `fs::read_to_string`），防 TOCTOU 文件增长被 OOM。
 - **no-follow attachment read**：workspace upload 统一走 `read_workspace_file_no_follow`。Unix 相对 root fd 用 `openat(O_NOFOLLOW)`；Windows 从已验证目录 handle 用 `NtCreateFile(RootDirectory=parent, FILE_OPEN_REPARSE_POINT)` 逐级打开 child/leaf，namespace 被替换或原地 reparse 都不会改变 IO 锚点。显式本地文件 leaf 复用 `open_regular_file_no_follow`。
 - **用户图片附件 owner**：视觉附件 ref 的第一段必须等于当前 session id（新会话用 `pending-<tabId>`），Sidecar 解析 `attachment_ref` 时再次校验 owner + 10MB 上限。Launcher 不创建 draft owner，直接使用 App 同一条 pending session id。
@@ -1019,7 +1026,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### PATH 注入
 
-`buildClaudeSessionEnv()` 优先级：`systemNodeDirs`（用户安装的 Node.js） → `bundledNodeDir` → `~/.myagents/npm-global/bin` → `~/.myagents/bin` → 系统路径。SDK shell env 不全局设置 `npm_config_prefix`；需要固定 npm 安装落点时使用命令级 env。
+`buildClaudeSessionEnv()` 的 app-owned executable layer 优先级：`~/.myagents/bin` → `systemNodeDirs`（用户安装的 Node.js） → `bundledNodeDir` → `~/.myagents/npm-global/bin` → 其它显式目录 → 去重后的继承 PATH。这样产品保留命令 `myagents` 不会被 npm / AppData 同名脚本遮蔽；Tool Registry 对 `node` / `npm` / `bun` 等运行时名称的保留名校验继续保护既有 Node 选择策略。SDK shell env 不全局设置 `npm_config_prefix`；需要固定 npm 安装落点时使用命令级 env。
 
 详见 `tech_docs/bundled_node.md`。
 
@@ -1070,6 +1077,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 通信与会话
 - [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步、Goal Mode session 状态
+- [MyAgents 系统提示词架构](./tech_docs/system_prompt_architecture.md) — 产品 Prompt、Workspace 指令、Runtime 投送、场景片段与 `system-reminder` 边界
 - [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
 - [统一日志](./tech_docs/unified_logging.md) — 日志格式、来源、排查指南

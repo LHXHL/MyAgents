@@ -22,6 +22,7 @@ import type {
   ExternalRuntimeConfigSnapshot,
   RuntimeConfigApplyMode,
   RuntimeConfigCapabilities,
+  RuntimeInitialTurn,
   RuntimeProcess,
   UnifiedEvent,
   ImagePayload,
@@ -78,6 +79,13 @@ import {
 import { isManagedCodexProviderReady } from '../utils/managed-codex-readiness';
 import { findProjectAgentByWorkspacePath, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from '../utils/admin-config';
 import type { AgentConfig } from '../../shared/types/agent';
+import { resolveEffectiveProjectCapabilities } from '../project-capabilities';
+import type { EffectiveProjectCapabilitySnapshot } from '../../shared/projectCapabilities';
+import {
+  createGlobalSkillInventorySnapshot,
+  type GlobalSkillInventorySnapshot,
+} from '../global-skill-inventory';
+import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
@@ -144,6 +152,12 @@ import {
   restoreExternalRuntimeConfigFromMetadata,
   setExternalRuntimeLiveReportedModel,
 } from './external-session/runtime-config';
+import {
+  projectRuntimeDiagnosticsExtensionChange,
+  projectRuntimeDiagnosticLogEntries,
+  projectRuntimeExtensionDiagnosticLogEntry,
+  type RuntimeDiagnosticLogEntry,
+} from './external-session/runtime-diagnostics';
 import {
   compileManagedCodexCommand,
   compileManagedCodexExtensionSnapshot,
@@ -228,6 +242,7 @@ import {
   getCurrentExternalBoundSessionId,
   getExternalActivePair,
   getExternalActiveOfficialToolIds,
+  getExternalActiveCapabilityRevision,
   getExternalActiveProcess,
   getExternalActiveRuntime,
   getExternalLifecycleAnalyticsOrigin,
@@ -491,11 +506,13 @@ let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
 let pendingExternalProxyRestart = false;
 let pendingExternalProxyRestartOriginalKey: string | null = null;
 let pendingExternalOfficialToolsRestart = false;
+let pendingExternalCapabilityRestart = false;
 let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
 function clearPendingExternalProcessConfigRestarts(): void {
   pendingExternalProxyRestart = false;
   pendingExternalProxyRestartOriginalKey = null;
   pendingExternalOfficialToolsRestart = false;
+  pendingExternalCapabilityRestart = false;
   setManagedCodexExtensionRestartPending(false);
 }
 
@@ -503,6 +520,7 @@ function pendingExternalProcessConfigRestartReasons(): string[] {
   return [
     ...(pendingExternalProxyRestart ? ['proxy'] : []),
     ...(pendingExternalOfficialToolsRestart ? ['official-tools'] : []),
+    ...(pendingExternalCapabilityRestart ? ['capabilities'] : []),
     ...(isManagedCodexExtensionRestartPending() ? ['managed-codex-extensions'] : []),
   ];
 }
@@ -556,6 +574,9 @@ function applyPendingExternalProcessConfigInvalidation(
       }
       if (reasons.includes('official-tools')) {
         pendingExternalOfficialToolsRestart = true;
+      }
+      if (reasons.includes('capabilities')) {
+        pendingExternalCapabilityRestart = true;
       }
       if (reasons.includes('managed-codex-extensions')) {
         setManagedCodexExtensionRestartPending(true);
@@ -930,14 +951,29 @@ function broadcast(event: string, data: unknown): void {
   broadcastSse(event, data);
 }
 
-function broadcastManagedCodexExtensionDiagnostics(): void {
-  const runtimeDiagnostics = getManagedCodexRuntimeDiagnostics();
-  if (!runtimeDiagnostics || !isManagedCodexProductRuntime()) return;
-  const diagnostics = {
-    ...runtimeDiagnostics,
-    extensions: getManagedCodexExtensionStatus(),
+function emitRuntimeDiagnosticLogEntry(entry: RuntimeDiagnosticLogEntry): void {
+  broadcast('chat:log', {
+    source: 'bun',
+    level: entry.level,
+    message: entry.message,
     timestamp: new Date().toISOString(),
-  };
+    runtime: getCurrentRuntimeType(),
+  });
+}
+
+function broadcastManagedCodexExtensionDiagnostics(emitExtensionLog = false): void {
+  if (!isManagedCodexProductRuntime()) return;
+  const runtimeDiagnostics = getManagedCodexRuntimeDiagnostics();
+  if (!runtimeDiagnostics) return;
+  const diagnostics = projectRuntimeDiagnosticsExtensionChange(
+    runtimeDiagnostics,
+    getManagedCodexExtensionStatus(),
+  );
+  if (!diagnostics) return;
+  if (emitExtensionLog) {
+    const entry = projectRuntimeExtensionDiagnosticLogEntry(diagnostics.extensions);
+    if (entry) emitRuntimeDiagnosticLogEntry(entry);
+  }
   setManagedCodexRuntimeDiagnostics(diagnostics);
   broadcast('chat:runtime-diagnostics', diagnostics);
 }
@@ -2343,10 +2379,41 @@ function isManagedCodexProductRuntime(): boolean {
     && getCurrentRuntimeSource() === 'managed-provider';
 }
 
+type ExternalSkillAdmission = {
+  globalSkillInventory: GlobalSkillInventorySnapshot;
+  capabilitySnapshot: EffectiveProjectCapabilitySnapshot;
+  unavailableSkillNames: string[];
+  revision: string;
+};
+
+function buildCurrentExternalSkillAdmission(workspacePath: string): ExternalSkillAdmission {
+  const globalSkillInventory = createGlobalSkillInventorySnapshot();
+  const capabilitySnapshot = resolveEffectiveProjectCapabilities(workspacePath, { globalSkillInventory });
+  const projection = trySyncProjectUserConfigFiles(workspacePath, {
+    globalSkillInventory,
+    capabilitySnapshot,
+  }, 'external-skill-sync');
+  const revision = JSON.stringify([
+    capabilitySnapshot.revision,
+    projection.unavailableSkillNames,
+  ]);
+  const activeRevision = getExternalActiveCapabilityRevision();
+  if (activeRevision !== null && activeRevision !== revision) {
+    pendingExternalCapabilityRestart = true;
+  }
+  return {
+    globalSkillInventory,
+    capabilitySnapshot,
+    unavailableSkillNames: projection.unavailableSkillNames,
+    revision,
+  };
+}
+
 function buildCurrentManagedCodexExtensionSnapshot(input?: {
   workspacePath?: string;
   scenario?: InteractionScenario;
   mcpServers?: readonly import('../../shared/config-types').McpServerDefinition[];
+  skillAdmission?: ExternalSkillAdmission;
 }): ManagedCodexExtensionSnapshot {
   const workspacePath = input?.workspacePath ?? getExternalLifecycleWorkspacePath();
   if (!workspacePath) {
@@ -2359,6 +2426,8 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     : getManagedCodexSessionMcpServers();
   const mcpServers = sessionMcpServers
     ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
+  const skillAdmission = input?.skillAdmission
+    ?? buildCurrentExternalSkillAdmission(workspacePath);
   return compileManagedCodexExtensionSnapshot({
     workspacePath,
     scenario: input?.scenario ?? getExternalLifecycleScenario(),
@@ -2366,6 +2435,9 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
       ?? metadata?.enabledPluginIds
       ?? null,
     mcpServers,
+    capabilitySnapshot: skillAdmission.capabilitySnapshot,
+    globalSkillInventory: skillAdmission.globalSkillInventory,
+    unavailableSkillNames: skillAdmission.unavailableSkillNames,
   });
 }
 
@@ -2403,7 +2475,7 @@ async function reconcileManagedCodexExtensionSnapshot(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const extensionStatus = markManagedCodexExtensionFailed(message);
-    broadcastManagedCodexExtensionDiagnostics();
+    broadcastManagedCodexExtensionDiagnostics(true);
     return {
       success: false,
       error: message,
@@ -2426,7 +2498,7 @@ async function reconcileManagedCodexExtensionSnapshot(
         ? 'busy-process'
         : 'idle-process',
   );
-  broadcastManagedCodexExtensionDiagnostics();
+  broadcastManagedCodexExtensionDiagnostics(true);
   if (
     status.effectiveRevision === snapshot.revision
     && (status.state === 'applied' || status.state === 'unchanged')
@@ -2450,7 +2522,7 @@ async function reconcileManagedCodexExtensionSnapshot(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const extensionStatus = markManagedCodexExtensionFailed(message);
-    broadcastManagedCodexExtensionDiagnostics();
+    broadcastManagedCodexExtensionDiagnostics(true);
     return {
       success: false,
       error: message,
@@ -2548,6 +2620,22 @@ export function getManagedCodexExtensionConfigSnapshot(): {
       ?? [],
     extensionStatus: getManagedCodexExtensionStatus(),
   };
+}
+
+class ExternalRequiredSkillUnavailableError extends Error {
+  constructor(skillName: string) {
+    super(`Managed Codex did not load required system skill ${skillName}`);
+    this.name = 'ExternalRequiredSkillUnavailableError';
+  }
+}
+
+/** Reject only a dependent Managed Codex operation when native read-back omitted its Skill. */
+export async function requireCurrentExternalSkill(skillName: string): Promise<void> {
+  if (!isManagedCodexProductRuntime()) return;
+  const process = getExternalActiveProcess();
+  if (!process?.loadedSkillNames?.includes(skillName)) {
+    throw new ExternalRequiredSkillUnavailableError(skillName);
+  }
 }
 
 export async function handleExternalProxyConfigChange(input: {
@@ -2781,6 +2869,9 @@ export async function startExternalSession(options: {
   channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   messageOperation?: ExternalMessageOperation;
+  /** Reuse the exact admission already built at this message boundary. */
+  skillAdmission?: ExternalSkillAdmission;
+  requiredSystemSkill?: import('../../shared/systemSkills').RequiredSystemSkill;
 }): Promise<void> {
   // Concurrency guard — wait for any in-flight start to finish
   await awaitExternalLifecycleStarting();
@@ -2826,6 +2917,8 @@ async function _doStartExternalSession(options: {
   channelDelivery?: TurnChannelDelivery;
   onDispatchAccepted?: () => void;
   messageOperation?: ExternalMessageOperation;
+  skillAdmission?: ExternalSkillAdmission;
+  requiredSystemSkill?: import('../../shared/systemSkills').RequiredSystemSkill;
 }): Promise<void> {
 
   const runtimeType = getCurrentRuntimeType();
@@ -2932,14 +3025,14 @@ async function _doStartExternalSession(options: {
     ? getManagedCodexSessionMcpServers()
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
+  const externalSkillAdmission = options.skillAdmission
+    ?? buildCurrentExternalSkillAdmission(options.workspacePath);
   let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
-    ? compileManagedCodexExtensionSnapshot({
+    ? buildCurrentManagedCodexExtensionSnapshot({
         workspacePath: options.workspacePath,
         scenario: options.scenario,
-        enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
-          ?? existingMetadataAtStart?.enabledPluginIds
-          ?? null,
         mcpServers: managedCodexMcpServers ?? [],
+        skillAdmission: externalSkillAdmission,
       })
     : undefined;
   if (managedCodexExtensionSnapshot) {
@@ -2982,6 +3075,7 @@ async function _doStartExternalSession(options: {
             state: 'unsupported',
             code: 'host_tools_catalog_immutable',
             message: 'Start a new Product Session to apply the changed Host tool catalog.',
+            requiresUserAction: true,
           },
         ],
       };
@@ -3037,9 +3131,10 @@ async function _doStartExternalSession(options: {
   }
 
   let turnAdmissionActivated = false;
-  const admitInitialMessage = async (): Promise<void> => {
+  const admitInitialMessage = async (): Promise<string | undefined> => {
     if (!options.initialMessage || turnAdmissionActivated) return;
-    if (!options.messageOperation) {
+    const messageOperation = options.messageOperation;
+    if (!messageOperation) {
       throw new Error('Initial external message is missing its operation owner');
     }
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
@@ -3064,9 +3159,9 @@ async function _doStartExternalSession(options: {
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
       ? new Date().toISOString()
       : undefined;
-    const userMsg = options.messageOperation.userProjection.message;
+    const userMsg = messageOperation.userProjection.message;
     pushExternalSessionMessage(userMsg);
-    markExternalUserMessageInTranscript(options.messageOperation);
+    markExternalUserMessageInTranscript(messageOperation);
     resetTurnAccumulators();
     seedTurnWatchdogEstimate();
     resetWatchdog();
@@ -3080,7 +3175,7 @@ async function _doStartExternalSession(options: {
       );
     }
     notifyExternalMessageDispatchAccepted(
-      options.messageOperation,
+      messageOperation,
       options.sessionId,
       options.onDispatchAccepted,
     );
@@ -3103,13 +3198,14 @@ async function _doStartExternalSession(options: {
       turnPath: options.resumeSessionId ? 'resume-start' : 'fresh-start',
       metadataBirthPending: options.metadataBirthPending,
       birthOrigin: options.birthOrigin,
-      operation: options.messageOperation,
+      operation: messageOperation,
       failureContext: '[external-session] Failed to persist initial user message',
       lastActiveAt: admissionActivityAt,
       channelDelivery,
       userChannelProjection,
     });
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
+    return messageOperation.userProjection.message.id;
   };
 
   // Set session context BEFORE startSession so that events fired during startup
@@ -3135,6 +3231,7 @@ async function _doStartExternalSession(options: {
     options.scenario,
   );
 
+  let runtimeInitialTurn: RuntimeInitialTurn | undefined;
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
       {
@@ -3143,13 +3240,7 @@ async function _doStartExternalSession(options: {
         // Guarded turns split process startup from prompt transport. This lets
         // Stop invalidate the promotion while initialize/resume is still
         // awaiting and before any runtime can consume the prompt.
-        initialMessage: options.dispatchPromotion
-          ? undefined
-          : (options.initialRuntimeMessage ?? options.initialMessage),
-        initialClientUserMessageId: options.dispatchPromotion
-          ? undefined
-          : options.messageOperation?.userProjection.message.id,
-        initialImages: options.dispatchPromotion ? undefined : options.initialImages,
+        initialTurn: runtimeInitialTurn,
         systemPromptAppend,
         model: startModel,
         permissionMode: runtimePermissionMode,
@@ -3168,8 +3259,23 @@ async function _doStartExternalSession(options: {
   let startedProcess: RuntimeProcess | null = null;
   let terminalSettledByStop = false;
   try {
-    if (options.initialMessage) {
-      await admitInitialMessage();
+    const deferRequiredAdmission = Boolean(
+      options.initialMessage
+      && options.dispatchPromotion
+      && options.requiredSystemSkill,
+    );
+    if (options.initialMessage && !deferRequiredAdmission) {
+      const clientUserMessageId = await admitInitialMessage();
+      if (!options.dispatchPromotion) {
+        if (!clientUserMessageId) {
+          throw new Error('Initial external message is missing its operation owner');
+        }
+        runtimeInitialTurn = {
+          message: options.initialRuntimeMessage ?? options.initialMessage,
+          clientUserMessageId,
+          images: options.initialImages,
+        };
+      }
     }
     let process: RuntimeProcess;
     try {
@@ -3206,12 +3312,9 @@ async function _doStartExternalSession(options: {
         }
         if (runtimeType === 'codex' && runtimeSource === 'managed-provider') {
           managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
-            snapshot: compileManagedCodexExtensionSnapshot({
+            snapshot: buildCurrentManagedCodexExtensionSnapshot({
               workspacePath: options.workspacePath,
               scenario: options.scenario,
-              enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
-                ?? existingMetadataAtStart?.enabledPluginIds
-                ?? null,
               mcpServers: managedCodexMcpServers ?? [],
             }),
             sessionId: options.sessionId,
@@ -3236,7 +3339,7 @@ async function _doStartExternalSession(options: {
       throw new Error(`${runtimeType} process exited before startup completed`);
     }
     startedProcess = process;
-    setExternalActiveProcess(process, enabledOfficialToolIds);
+    setExternalActiveProcess(process, enabledOfficialToolIds, externalSkillAdmission.revision);
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionEffective(
         managedCodexExtensionSnapshot,
@@ -3246,6 +3349,12 @@ async function _doStartExternalSession(options: {
     }
     if (options.dispatchPromotion && !isExternalTurnPromotionCurrent(options.dispatchPromotion)) {
       throw new ExternalTurnPromotionCanceledError();
+    }
+    if (options.requiredSystemSkill) {
+      await requireCurrentExternalSkill(options.requiredSystemSkill);
+    }
+    if (deferRequiredAdmission) {
+      await admitInitialMessage();
     }
     if (options.dispatchPromotion && options.initialMessage) {
       assertExternalTurnPromotionCurrent(options.dispatchPromotion);
@@ -3265,6 +3374,18 @@ async function _doStartExternalSession(options: {
       && !(err instanceof ExternalTurnPromotionCanceledError)
       ? new ExternalTurnPromotionCanceledError()
       : err;
+    if (failure instanceof ExternalRequiredSkillUnavailableError) {
+      if (options.dispatchPromotion) {
+        finishExternalTurnPromotion(options.dispatchPromotion, { status: 'not-dispatched' });
+      }
+      clearWatchdog();
+      clearExternalTurnStartTime();
+      resetTurnAccumulators();
+      clearExternalTurnTrace();
+      setExternalTurnCompleted(true);
+      setExternalSessionState('idle');
+      throw failure;
+    }
     if (startedProcess && !startedProcess.exited && getExternalActiveProcess() === startedProcess) {
       const stopped = await stopExternalSession({
         preserveQueue: failure instanceof ExternalTurnPromotionCanceledError
@@ -3321,7 +3442,7 @@ async function _doStartExternalSession(options: {
     const message = failure instanceof Error ? failure.message : String(failure);
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionFailed(message);
-      broadcastManagedCodexExtensionDiagnostics();
+      broadcastManagedCodexExtensionDiagnostics(true);
     }
     if (!(failure instanceof ExternalTurnPromotionCanceledError)) {
       console.error(`[external-session] Failed to start ${runtimeType}:`, message);
@@ -3694,10 +3815,25 @@ async function dispatchExternalMessageOperation(
   }
 
   let runtimeText = text;
+  let skillAdmission: ExternalSkillAdmission;
+  try {
+    const workspacePath = context?.workspacePath
+      ?? operation.context.workspacePath
+      ?? getExternalLifecycleWorkspacePath();
+    if (!workspacePath) throw new Error('External Runtime Skill admission has no workspace owner');
+    skillAdmission = buildCurrentExternalSkillAdmission(workspacePath);
+  } catch (error) {
+    if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+    return {
+      queued: false,
+      error: `Workspace capabilities are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (isManagedCodexProductRuntime()) {
     const extensionResult = await reconcileManagedCodexExtensionSnapshot('commands', () => (
       buildCurrentManagedCodexExtensionSnapshot({
         scenario: context?.scenario ?? getExternalLifecycleScenario(),
+        skillAdmission,
       })
     ), dispatchPromotion);
     if (!extensionResult.success) {
@@ -3748,6 +3884,15 @@ async function dispatchExternalMessageOperation(
   // synchronously before its first persistence await.
   if (!ensureInitialDispatchPromotion()) {
     return { queued: false, error: 'external_busy: another turn is being promoted' };
+  }
+  const admittedProcess = getExternalActiveProcess();
+  if (context?.requiredSystemSkill && admittedProcess && !admittedProcess.exited) {
+    try {
+      await requireCurrentExternalSkill(context.requiredSystemSkill);
+    } catch (error) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return { queued: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
   const activitySessionId = context?.sessionId ?? getExternalLifecycleSessionId();
   const activityFacts: SessionActivityTurnFacts = {
@@ -3835,6 +3980,8 @@ async function dispatchExternalMessageOperation(
         channelDelivery: context.channelDelivery,
         onDispatchAccepted,
         messageOperation: operation,
+        skillAdmission,
+        requiredSystemSkill: context.requiredSystemSkill,
       });
       return { queued: true };
     } catch (err) {
@@ -3900,6 +4047,8 @@ async function dispatchExternalMessageOperation(
         channelDelivery: context?.channelDelivery,
         onDispatchAccepted,
         messageOperation: operation,
+        skillAdmission,
+        requiredSystemSkill: context?.requiredSystemSkill,
       });
       return { queued: true };
     } catch (err) {
@@ -5016,6 +5165,89 @@ export function isExternalSessionBusy(): boolean {
     || hasExternalSendInFlight()
     || hasExternalQueuedOperations()
     || isExternalOperationDrainInFlight();
+}
+
+/**
+ * Run Managed Codex's native compact control turn. The Session owns admission
+ * and status projection; the runtime adapter owns the app-server protocol.
+ * No user or assistant message is created for this operation.
+ */
+export async function compactExternalContext(): Promise<{
+  success: boolean;
+  status?: number;
+  error?: string;
+}> {
+  await awaitExternalLifecycleStarting();
+  if (!isManagedCodexProductRuntime()) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Native context compaction is only available for Managed Codex',
+    };
+  }
+  if (isExternalSessionBusy()) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+
+  const lease = tryAcquireExternalSessionMutationLease();
+  if (!lease) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Wait for the current Session operation to finish',
+    };
+  }
+
+  let started = false;
+  try {
+    const active = await getCodexConversationBranchPair();
+    if (!active || active.process.exited || active.runtime.type !== 'codex' || !active.runtime.compactContext) {
+      return {
+        success: false,
+        status: 409,
+        error: 'Managed Codex Session is not ready for context compaction',
+      };
+    }
+
+    started = true;
+    setExternalSessionState('running');
+    broadcast('chat:system-status', { status: 'compacting' });
+    await active.runtime.compactContext(active.process);
+    const contextUsage = getExternalCurrentTurnContextUsage();
+    const sessionId = getExternalLifecycleSessionId();
+    if (contextUsage && sessionId) {
+      try {
+        await updateSessionMetadata(sessionId, { lastContextUsage: contextUsage });
+      } catch (error) {
+        console.warn(
+          '[external-session] Failed to persist post-compact context usage:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    broadcast('chat:system-status', { status: null, compactResult: 'success' });
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[external-session] Managed Codex context compaction failed: ${message}`);
+    if (started) {
+      broadcast('chat:system-status', {
+        status: null,
+        compactResult: 'failed',
+        compactError: message,
+      });
+    }
+    return { success: false, status: 500, error: message };
+  } finally {
+    setExternalCurrentTurnContextUsage(null);
+    if (started) setExternalSessionState('idle');
+    lease.release();
+    scheduleExternalQueueDrainAfterTurnBoundary();
+  }
 }
 
 /** Single atomic owner for reset, rewind, and fork Session-boundary mutations. */
@@ -6551,61 +6783,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       console.log(`[external-session] runtime_diagnostics: runtime=${diagnostics.runtime} features=${diagnostics.features?.length ?? 0} mcp=${diagnostics.mcpServers?.length ?? 0} apps=${diagnostics.apps?.length ?? 0} auth=${diagnostics.auth?.authMethod ?? 'none'}`);
       broadcast('chat:runtime-diagnostics', diagnostics);
 
-      // Banner renders blocking Runtime failures plus actionable extension
-      // lifecycle states. Other non-blocking signals — app/list 403, individual MCP
-      // server failure, feature-flag query error — used to show up in the
-      // yellow banner too; users (rightly) complained about chronic noise
-      // from transient Codex backend hiccups. Route them through chat:log
-      // instead so the Logs panel shows them but the chat header stays
-      // clean. Sidecar console / unified log still has the full snapshot.
-      const d = diagnostics;
-      const emitDiagnosticLog = (level: 'warn' | 'error', message: string): void => {
-        broadcast('chat:log', {
-          source: 'bun',
-          level,
-          message,
-          timestamp: new Date().toISOString(),
-          runtime: getCurrentRuntimeType(),
-        });
-      };
-      const errOf = (s: typeof d.status.auth): string | null =>
-        s && typeof s === 'object' && 'error' in s ? String(s.error) : null;
-      const authErr = errOf(d.status.auth);
-      const appsErr = errOf(d.status.apps);
-      const mcpErr = errOf(d.status.mcpServers);
-      const featErr = errOf(d.status.features);
-      // `error` for ones the banner would have considered "warn-tier" in v1;
-      // `warn` for purely informational. Severity here drives Logs panel
-      // sort/filter — it isn't what makes the banner appear.
-      if (authErr) emitDiagnosticLog('error', `[codex-diag] auth status query failed: ${authErr.slice(0, 200)}`);
-      if (appsErr) emitDiagnosticLog('warn', `[codex-diag] app/list failed: ${appsErr.slice(0, 200)}`);
-      if (mcpErr) emitDiagnosticLog('warn', `[codex-diag] mcpServerStatus/list failed: ${mcpErr.slice(0, 200)}`);
-      if (featErr) emitDiagnosticLog('warn', `[codex-diag] experimentalFeature/list failed: ${featErr.slice(0, 200)}`);
-      if (d.apps) {
-        const inaccessible = d.apps.filter(a => a.isEnabled && !a.isAccessible);
-        if (inaccessible.length > 0) {
-          emitDiagnosticLog(
-            'warn',
-            `[codex-diag] ${inaccessible.length} app(s) enabled but not accessible: ${inaccessible.map(a => a.id).slice(0, 5).join(', ')}`,
-          );
-        }
-      }
-      if (d.mcpServers) {
-        const failed = d.mcpServers.filter(s => s.state === 'failed');
-        if (failed.length > 0) {
-          emitDiagnosticLog(
-            'warn',
-            `[codex-diag] MCP server(s) in failed state: ${failed.map(s => s.name).join(', ')}`,
-          );
-        }
-      }
-      if (d.issues) {
-        for (const issue of d.issues) {
-          emitDiagnosticLog(
-            issue.severity === 'error' ? 'error' : 'warn',
-            `[codex-diag] ${issue.code}: ${issue.message}`,
-          );
-        }
+      // The header only owns blocking failures. Optional degradation belongs
+      // to the Logs panel; project one bounded summary here instead of making
+      // the Renderer infer severity from raw extension component states.
+      for (const entry of projectRuntimeDiagnosticLogEntries(diagnostics)) {
+        emitRuntimeDiagnosticLogEntry(entry);
       }
       break;
     }

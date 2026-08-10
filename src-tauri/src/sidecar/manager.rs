@@ -1771,12 +1771,9 @@ impl SidecarManager {
         self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()))
     }
 
-    /// Upgrade a session ID (e.g., from "pending-xxx" to real session ID)
-    /// This updates the manager-owned Session identity without stopping the
-    /// Sidecar.
-    ///
-    /// Returns true if the upgrade was successful.
-    pub fn upgrade_session_id(&mut self, old_session_id: &str, new_session_id: &str) -> bool {
+    /// Low-level Session identity rekey. Callers must first prove the complete
+    /// participating owner set through one of the scoped upgrade methods below.
+    fn upgrade_session_id_unchecked(&mut self, old_session_id: &str, new_session_id: &str) -> bool {
         ulog_info!(
             "[sidecar] Upgrading session ID: {} -> {}",
             old_session_id,
@@ -1890,24 +1887,25 @@ impl SidecarManager {
         tab_id: &str,
     ) -> bool {
         let owner = SidecarOwner::Tab(tab_id.to_string());
+        let expected = [owner];
         let old_recovering = self.recovering_sidecars.contains_key(old_session_id);
         let old_exists = self.sidecars.contains_key(old_session_id) || old_recovering;
         let new_exists = self.sidecars.contains_key(new_session_id)
             || self.recovering_sidecars.contains_key(new_session_id);
 
         if old_session_id == new_session_id {
-            return new_exists && self.session_has_exact_owner(new_session_id, &owner);
+            return new_exists && self.active_session_has_exact_owners(new_session_id, &expected);
         }
         if !old_exists && new_exists {
-            return self.session_has_exact_owner(new_session_id, &owner);
+            return self.active_session_has_exact_owners(new_session_id, &expected);
         }
         if old_recovering {
             return false;
         }
-        if !old_exists || !self.session_has_exact_owner(old_session_id, &owner) {
+        if new_exists || !self.active_session_has_exact_owners(old_session_id, &expected) {
             return false;
         }
-        self.upgrade_session_id(old_session_id, new_session_id)
+        self.upgrade_session_id_unchecked(old_session_id, new_session_id)
     }
 
     pub fn session_id_upgrade_is_already_applied_for_tab(
@@ -1922,7 +1920,72 @@ impl SidecarManager {
             || self.recovering_sidecars.contains_key(new_session_id);
         !old_exists
             && new_exists
-            && self.session_has_exact_owner(new_session_id, &SidecarOwner::Tab(tab_id.to_string()))
+            && self.active_session_has_exact_owners(
+                new_session_id,
+                &[SidecarOwner::Tab(tab_id.to_string())],
+            )
+    }
+
+    /// `/new` rotates only the peer binding. If a logical Sidecar exists, the
+    /// exact Agent owner must still be attached so the router cannot silently
+    /// detach an unrelated or already-moved Session. Additional owners are
+    /// deliberately allowed: they remain on the old identity.
+    pub(crate) fn agent_binding_rotation_is_admissible(
+        &self,
+        session_id: &str,
+        session_key: &str,
+    ) -> bool {
+        let exists = self.sidecars.contains_key(session_id)
+            || self.recovering_sidecars.contains_key(session_id);
+        !exists
+            || self
+                .session_has_exact_owner(session_id, &SidecarOwner::Agent(session_key.to_string()))
+    }
+
+    /// A desktop surface migration moves exactly one Tab and one Agent owner.
+    /// Any additional owner must remain on the source identity, so whole-
+    /// Sidecar rekey is forbidden in that case.
+    pub(crate) fn surface_session_migration_is_admissible(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        session_key: &str,
+    ) -> bool {
+        self.active_session_has_exact_owners(
+            session_id,
+            &[
+                SidecarOwner::Tab(tab_id.to_string()),
+                SidecarOwner::Agent(session_key.to_string()),
+            ],
+        )
+    }
+
+    pub(crate) fn upgrade_session_id_for_surface_migration(
+        &mut self,
+        old_session_id: &str,
+        new_session_id: &str,
+        tab_id: &str,
+        session_key: &str,
+    ) -> bool {
+        let expected = [
+            SidecarOwner::Tab(tab_id.to_string()),
+            SidecarOwner::Agent(session_key.to_string()),
+        ];
+        let old_exists = self.sidecars.contains_key(old_session_id)
+            || self.recovering_sidecars.contains_key(old_session_id);
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.recovering_sidecars.contains_key(new_session_id);
+
+        if old_session_id == new_session_id {
+            return new_exists && self.active_session_has_exact_owners(new_session_id, &expected);
+        }
+        if !old_exists && new_exists {
+            return self.active_session_has_exact_owners(new_session_id, &expected);
+        }
+        if new_exists || !self.active_session_has_exact_owners(old_session_id, &expected) {
+            return false;
+        }
+        self.upgrade_session_id_unchecked(old_session_id, new_session_id)
     }
 
     /// Check if a session's Sidecar has an owner whose work remains bound to
@@ -2001,6 +2064,20 @@ impl SidecarManager {
     pub(super) fn session_has_exact_owner(&self, session_id: &str, owner: &SidecarOwner) -> bool {
         self.session_owners(session_id)
             .any(|candidate| candidate == owner)
+    }
+
+    fn active_session_has_exact_owners(&self, session_id: &str, expected: &[SidecarOwner]) -> bool {
+        if self.recovering_sidecars.contains_key(session_id) {
+            return false;
+        }
+        let Some(sidecar) = self.sidecars.get(session_id) else {
+            return false;
+        };
+        let expected = expected
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        sidecar.owners == expected
     }
 }
 
@@ -2146,13 +2223,77 @@ mod completion_claim_tests {
             .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)
             .expect("pending binding");
 
-        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert!(manager.upgrade_session_id_for_tab("pending-tab-a", "session-real", "tab-a"));
         assert!(manager
             .claim_frontend_session_completion(&binding, "pending-tab-a", "turn-1")
             .is_none());
         assert!(manager
             .claim_frontend_session_completion(&binding, "session-real", "turn-1")
             .is_some());
+    }
+
+    #[test]
+    fn tab_upgrade_rejects_an_unlisted_owner() {
+        let mut manager = SidecarManager::new();
+        manager.insert_test_ready_frontend_sidecar(
+            "pending-tab-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        assert!(manager.add_session_owner(
+            "pending-tab-a",
+            SidecarOwner::Agent("agent:a:feishu:private:user".to_string())
+        ));
+
+        assert!(!manager.upgrade_session_id_for_tab("pending-tab-a", "session-real", "tab-a"));
+        assert!(manager.sidecars.contains_key("pending-tab-a"));
+        assert!(!manager.sidecars.contains_key("session-real"));
+    }
+
+    #[test]
+    fn surface_upgrade_requires_exact_tab_and_agent_owners() {
+        let mut manager = SidecarManager::new();
+        let session_key = "agent:a:feishu:private:user";
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        assert!(
+            manager.add_session_owner("session-a", SidecarOwner::Agent(session_key.to_string()))
+        );
+
+        assert!(manager.surface_session_migration_is_admissible("session-a", "tab-a", session_key));
+        assert!(manager.upgrade_session_id_for_surface_migration(
+            "session-a",
+            "session-b",
+            "tab-a",
+            session_key
+        ));
+        assert!(!manager.sidecars.contains_key("session-a"));
+        assert!(manager.sidecars.contains_key("session-b"));
+    }
+
+    #[test]
+    fn binding_rotation_detaches_only_its_agent_from_a_shared_sidecar() {
+        let mut manager = SidecarManager::new();
+        let session_key = "agent:a:feishu:private:user";
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Agent(session_key.to_string()),
+        );
+        assert!(manager.add_session_owner("session-a", SidecarOwner::Tab("tab-a".to_string())));
+
+        assert!(manager.agent_binding_rotation_is_admissible("session-a", session_key));
+        let release = manager
+            .remove_session_owner("session-a", &SidecarOwner::Agent(session_key.to_string()));
+        assert!(release.removed);
+        assert!(!release.stopped);
+        assert!(
+            manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()))
+        );
+        assert!(!manager.agent_binding_rotation_is_admissible("session-a", session_key));
     }
 
     #[test]

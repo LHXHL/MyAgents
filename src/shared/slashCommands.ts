@@ -7,7 +7,7 @@ import { load as yamlLoad } from 'js-yaml';
 export interface SlashCommand {
     name: string;           // Command name without slash, e.g., "review"
     description: string;    // Human readable description
-    source: 'builtin' | 'custom' | 'skill' | 'sdk';  // Source type: builtin, custom command, local skill, or SDK-provided command
+    source: 'builtin' | 'client' | 'custom' | 'skill' | 'sdk';  // Source type: runtime builtin, renderer action, custom command, local skill, or SDK-provided command
     scope?: 'user' | 'project';  // Where the item is defined
     path?: string;          // File path for custom commands or skills
     folderName?: string;    // Folder name for skills (may differ from display name after rename)
@@ -51,11 +51,11 @@ export interface CommandFrontmatter {
     author?: string;
 }
 
-// Built-in Claude Code slash commands with descriptions.
+// Built-in Claude Agent SDK slash commands with descriptions.
 // These are *text-insertion* builtins (selecting one inserts `/name ` and sends
-// it to the AI/CLI). UI-action commands that open a panel instead of sending
-// text (e.g. `goal`) are NOT listed here — they are renderer-only and defined
-// in `src/renderer/utils/slashActions.ts` (and their names are reserved there).
+// it to the builtin SDK). UI-action commands that change product state instead
+// of sending text (e.g. `goal`) are NOT listed here — they are renderer-only
+// and defined in `src/renderer/utils/slashActions.ts` (their names are reserved there).
 export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
     { name: 'compact', description: '压缩对话历史，释放上下文空间', source: 'builtin' },
     { name: 'context', description: '显示或管理当前上下文', source: 'builtin' },
@@ -66,6 +66,23 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
     { name: 'review', description: '对代码进行审查', source: 'builtin' },
     { name: 'security-review', description: '进行安全相关的代码审查', source: 'builtin' },
 ];
+
+const SLASH_COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+const RESERVED_PRODUCT_COMMAND_NAMES = new Set([
+    ...BUILTIN_SLASH_COMMANDS.map(command => command.name),
+    // Renderer client action plus its public alias. Their behavior remains in
+    // slashActions.ts; the shared capability contract only reserves names.
+    'goal',
+    'loop',
+]);
+
+export function isValidSlashCommandName(name: string): boolean {
+    return SLASH_COMMAND_NAME_RE.test(name);
+}
+
+export function isReservedSlashCommandName(name: string): boolean {
+    return RESERVED_PRODUCT_COMMAND_NAMES.has(name);
+}
 
 /**
  * Extract YAML frontmatter string from markdown content

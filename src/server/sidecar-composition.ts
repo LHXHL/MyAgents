@@ -129,6 +129,7 @@ const GLOBAL_PREFIXES = ['/api/mcp/oauth/'] as const;
 const COMMON_EXACT_PATHS = new Set([
   '/api/runtime/models',
   '/api/runtime/permission-modes',
+  '/api/project-capabilities',
   '/debug/logger',
   '/health',
   '/health/functional',
@@ -142,6 +143,7 @@ const COMMON_PREFIXES = [
   '/api/cc-plugin/',
   '/api/command-item/',
   '/api/command-items',
+  '/api/project-capability/',
   '/api/rules',
   '/api/skill/',
   '/api/skills',

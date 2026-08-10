@@ -28,6 +28,8 @@ export interface ManagedCodexExtensionComponentResult {
   state: ManagedCodexExtensionApplyState;
   code: string;
   message?: string;
+  /** Direct configuration actionability; passive Chat diagnostics remain log-only. */
+  requiresUserAction?: boolean;
 }
 
 export interface ManagedCodexExtensionStatus {
@@ -49,6 +51,7 @@ export interface ManagedCodexCommandSpec {
   body: string;
   scope: 'project' | 'user' | 'plugin';
   sourceId: string;
+  sourceLocalId?: string;
 }
 
 export interface ManagedCodexSkillSpec {
@@ -59,6 +62,7 @@ export interface ManagedCodexSkillSpec {
   path: string;
   scope: 'project' | 'user' | 'plugin';
   sourceId: string;
+  sourceLocalId?: string;
 }
 
 export interface ManagedCodexAgentRoleSpec {

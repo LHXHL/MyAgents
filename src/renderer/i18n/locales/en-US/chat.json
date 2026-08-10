@@ -395,7 +395,7 @@
       "exportMarkdown": "Export as Markdown",
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
-      "bindBot": "Bind chat bot",
+      "continueInBot": "Continue in chat bot",
       "deleteBlockedByOwner": "This chat is still in use. Complete, archive, or delete its task or Goal; wait for background completion; or unbind the chat bot before deleting.",
       "deleteTransitionInProgress": "This chat is opening or switching. Try deleting it again in a moment.",
       "deleteActivityUnavailable": "Unable to confirm whether this chat is still running. It was kept; try again in a moment.",
@@ -525,19 +525,11 @@
     "runtimeDiagnostics": {
       "problems": {
         "needsCodexLogin": "Codex login required (click the account avatar or run codex login)",
-        "authQueryFailed": "auth query failed: {{error}}",
-        "appListFailed": "app list failed: {{error}}",
-        "mcpStatusFailed": "MCP status query failed: {{error}}",
-        "featureFlagFailed": "feature flag query failed: {{error}}",
-        "appsInaccessible": "{{count}} enabled app(s) inaccessible: {{names}}",
-        "mcpServersFailed": "MCP server failed: {{names}}",
         "extensionComponent": "Extension {{component}}{{id}} is {{state}}: {{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "Sign in to Codex to continue",
-        "allDiagnosticsFailed": "All Codex diagnostics failed; runtime may not be running",
-        "extensionsFailed": "Managed Codex extension application failed",
-        "extensionsPartial": "Some Managed Codex extensions are unsupported"
+        "extensionsFailed": "Managed Codex extension application failed"
       },
       "status": {
         "unsupported": "Unsupported",
@@ -967,7 +959,7 @@
       "providerSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated.",
       "createNewSessionFailed": "Failed to create new chat.",
       "imagesNotTransferred": "Image attachments cannot be carried into the new chat. Add them again.",
-      "channelRebindFailedReset": "Channel rebind failed. The chat was reset locally.",
+      "channelRebindFailedNewCancelled": "Channel rebind failed. The new conversation was cancelled.",
       "channelRebindFailedDeleteCancelled": "Channel rebind failed. Delete was cancelled.",
       "reselectModelFirst": "Select the model again in the model picker first.",
       "submitFailedRetry": "Submit failed. Please try again.",

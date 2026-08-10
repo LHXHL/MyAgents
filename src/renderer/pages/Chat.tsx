@@ -25,9 +25,15 @@ import SessionSurfaceTags from '@/components/SessionSurfaceTags';
 import SessionMenuButton, { type BotChannelCandidate } from '@/components/SessionMenuButton';
 import { FileActionProvider } from '@/context/FileActionContext';
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
+import type { SlashCommand as InputSlashCommand } from '@/components/SlashCommandMenu';
 import AgentStatusPanel from '@/components/agent-status/AgentStatusPanel';
 import ContextUsageIndicator from '@/components/ContextUsageIndicator';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
+import {
+  sessionConfigPushFingerprint,
+  shouldPushSessionConfig,
+  type SessionConfigPushMode,
+} from '@/utils/sessionConfigPushPolicy';
 import QueryNavigator from '@/components/chat/QueryNavigator';
 import ChatSearchPanel from '@/components/ChatSearchPanel';
 import { useChatSearch, isHighlightApiSupported } from '@/hooks/useChatSearch';
@@ -52,18 +58,18 @@ import { useConfig } from '@/hooks/useConfig';
 import { useFileDropZone } from '@/hooks/useFileDropZone';
 import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { useCronTask } from '@/hooks/useCronTask';
-import { useSessionGoal, type SessionGoalDraftConfig } from '@/hooks/useSessionGoal';
+import { useSessionGoal } from '@/hooks/useSessionGoal';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { isIntroductionAbsentError, shouldShowIntroductionOverlay, useIntroductionContent } from '@/hooks/useIntroductionContent';
 import { resolveAdoptedBuiltinProviderId } from '@/utils/sessionConfigAdoption';
 import { getSessionCronTask, isTaskExecuting, createCronTask, startCronTask as startCronTaskIpc } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
-import { sessionHasPersistentOwners } from '@/api/tauriClient';
+import { releaseTabSession, sessionHasPersistentOwners } from '@/api/tauriClient';
 import { persistInputOptionChange, type BuiltinModelSelection, type BuiltinProviderEnvPolicy } from '@/api/persistInputOption';
 import { materializePendingSessionConfig } from '@/api/sessionMaterialize';
 import type { CronTask } from '@/types/cronTask';
-import type { SessionGoal } from '@/types/sessionGoal';
+import type { SessionGoal, SessionGoalDraftConfig } from '@/types/sessionGoal';
 import { isTerminalGoalStatus } from '@/types/sessionGoal';
 import { formatCronScheduleDescription } from '@/utils/cronTaskI18n';
 import CronTaskCard from '@/components/scheduled-tasks/CronTaskCard';
@@ -75,6 +81,8 @@ import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
+import { createDefaultSessionGoalDraftConfig } from '@/utils/sessionGoalDraft';
+import { MANAGED_CODEX_COMPACT_SLASH_COMMAND } from '@/utils/slashActions';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
@@ -141,6 +149,7 @@ import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBi
 import {
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
+  shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
 import {
@@ -168,6 +177,8 @@ type ExtensionUpdateResponse = {
   error?: string;
   extensionStatus?: RuntimeExtensionDiagnostics;
 };
+
+type SessionConfigPushKind = 'mcp' | 'agents';
 
 type SplitPreviewFile = {
   name: string;
@@ -533,12 +544,9 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   const tRef = useRef(t);
   tRef.current = t;
 
-  // Workspace file service — Phase D coherence fix: SimpleChatInput already
-  // sources its slash menu from `cmd_list_slash_commands`; the chat sidebar
-  // (loadSkillsAndCommands below) used to hit the sidecar `/api/commands`
-  // route, so the two surfaces could drift when sidecar fingerprint and Rust
-  // scan disagreed (different builtin tables, different filter rules). Routing
-  // both through one Rust source of truth removes the drift class.
+  // Workspace file service owns ordinary workspace IO. Capability policy is
+  // resolved once by the Sidecar endpoint below; Chat injects that same
+  // effective snapshot into its sidebar and slash picker.
   const fileService = useWorkspaceFileService(agentDir);
 
   // Get config to find current project provider
@@ -1137,9 +1145,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // Cron task state
   const [showCronSettings, setShowCronSettings] = useState(false);
   const [cronPrompt, setCronPrompt] = useState('');
-  // Preset applied when opening the cron modal via a slash command (e.g.
-  // `/goal`). Wins over `cronState.config` only for a fresh open (no running
-  // task); cleared on open-via-定时-button / close / confirm so it never leaks.
+  // Preset applied when Goal's draft bar opens the optional settings modal.
+  // Cleared on open-via-定时-button / close / confirm so it never leaks.
   const [cronOpenPreset, setCronOpenPreset] = useState<CronInitialConfig | null>(null);
   const [goalDraftConfig, setGoalDraftConfig] = useState<SessionGoalDraftConfig | null>(null);
   const goalDraftConfigRef = useRef<SessionGoalDraftConfig | null>(null);
@@ -1248,6 +1255,40 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // it's the recovery hook.
   const prevIsConnectedRef = useRef(isConnected);
 
+  // Background hydration has several legitimate triggers (mount, reconnect,
+  // config refresh, tab activation), but they all project the same two
+  // Sidecar-owned values. Coalesce identical payloads per Sidecar generation;
+  // explicit user mutations still bypass the dedupe and receive their response.
+  const lastSessionConfigPushRef = useRef<Record<SessionConfigPushKind, string | null>>({
+    mcp: null,
+    agents: null,
+  });
+  const pushSessionConfig = useCallback(async (
+    kind: SessionConfigPushKind,
+    path: '/api/mcp/set' | '/api/agents/set',
+    body: unknown,
+    mode: SessionConfigPushMode,
+  ): Promise<ExtensionUpdateResponse | null> => {
+    const fingerprint = sessionConfigPushFingerprint(body);
+    if (!shouldPushSessionConfig(lastSessionConfigPushRef.current[kind], fingerprint, mode)) {
+      return null;
+    }
+    lastSessionConfigPushRef.current[kind] = fingerprint;
+    try {
+      const response = await apiPost<ExtensionUpdateResponse>(path, body);
+      if (response.success === false) {
+        throw new Error(response.error ?? `Failed to sync ${kind} configuration`);
+      }
+      return response;
+    } catch (error) {
+      // Clear only if no newer payload superseded this attempt.
+      if (lastSessionConfigPushRef.current[kind] === fingerprint) {
+        lastSessionConfigPushRef.current[kind] = null;
+      }
+      throw error;
+    }
+  }, [apiPost]);
+
   // Disposition gate for config reconciliation (replaces joinedExistingSidecar).
   // configDispositionRef holds the CURRENT value (read at effect-run time); the
   // derived booleans are for effect deps.
@@ -1289,6 +1330,22 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<WorkspaceTab | undefined>();
   // Initial item selection — when set, WorkspaceConfigPanel opens already showing that item's detail.
   const [workspaceConfigInitialSelect, setWorkspaceConfigInitialSelect] = useState<CapabilityInitialSelect | undefined>();
+  const workspaceCapabilitySlashCommands = useMemo<InputSlashCommand[]>(() => [
+    ...enabledCommands.map(command => ({
+      name: command.name,
+      description: command.description,
+      source: 'custom' as const,
+      scope: command.scope,
+      fileName: command.fileName,
+    })),
+    ...enabledSkills.map(skill => ({
+      name: skill.name,
+      description: skill.description,
+      source: 'skill' as const,
+      scope: skill.scope,
+      folderName: skill.folderName,
+    })),
+  ], [enabledCommands, enabledSkills]);
 
   // Agent Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
@@ -1357,9 +1414,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     managedProviderRuntimeActive,
   });
   const showLegacyRuntimeSelector = multiAgentRuntimeEnabled;
+  const showBuiltinSdkSlashCommands = shouldShowBuiltinSdkSlashCommands(currentRuntime);
   const visibleSdkSlashCommands = useMemo(
-    () => inputUsesExternalRuntimeControls ? [] : sdkSlashCommands,
-    [inputUsesExternalRuntimeControls, sdkSlashCommands],
+    () => showBuiltinSdkSlashCommands ? sdkSlashCommands : [],
+    [showBuiltinSdkSlashCommands, sdkSlashCommands],
   );
 
   // Detect installed runtimes once on mount
@@ -1726,7 +1784,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           const effective = allServers.filter(s =>
             globalEnabled.includes(s.id) && launchMessage.mcpEnabledServers!.includes(s.id)
           );
-          await apiPost('/api/mcp/set', { servers: effective });
+          await pushSessionConfig('mcp', '/api/mcp/set', { servers: effective }, 'explicit');
         }
         // Hand later config-change MCP pushes back to the mount effect now that
         // autoSend has applied the launcher's initial selection.
@@ -2379,7 +2437,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // Always call /api/mcp/set, even with empty array
         // Empty array means "user explicitly disabled all MCP"
         // null (not calling) means "use file config fallback" - which we don't want
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
+        await pushSessionConfig(
+          'mcp',
+          '/api/mcp/set',
+          { servers: effectiveServers },
+          'background',
+        );
         if (isDebugMode()) {
           console.log('[Chat] Initial MCP sync:', effectiveServers.map(s => s.id).join(', ') || 'none');
         }
@@ -2400,7 +2463,6 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     //    fires → /api/mcp/set re-pushes the merged server list so the
     //    sidecar's currentMcpServers picks up the env on its next pre-warm
     //    fingerprint diff.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- apiPost / fileService are stable refs we deliberately exclude
   }, [
     configPending, // re-run when the instant-flip disposition resolves (pending→push)
     isConnected, // re-push MCP when the sidecar becomes reachable (re)connect — see guard above
@@ -2411,6 +2473,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     config?.mcpServerArgs,
     config?.mcpServers,
     launcherMcpFallbackRevision,
+    pushSessionConfig,
   ]);
 
   useEffect(() => {
@@ -2451,7 +2514,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
           return;
         }
         // Sync to backend for SDK injection
-        await apiPost('/api/agents/set', { agents: response.agents });
+        await pushSessionConfig(
+          'agents',
+          '/api/agents/set',
+          { agents: response.agents },
+          'background',
+        );
         if (isDebugMode()) {
           console.log('[Chat] Agents synced:', Object.keys(response.agents).join(', ') || 'none');
         }
@@ -2464,24 +2532,41 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // disposition resolves makes the calling effect re-run loadAndSyncAgents, so a
   // 'pending'→'push' history open pushes agents even if it skipped during pending.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiGet, apiPost, configPending]);
+  }, [apiGet, configPending, pushSessionConfig]);
 
-  // Load skills/commands for sidebar display.
-  // Sources the same Rust scan that SimpleChatInput's slash menu uses so the
-  // sidebar list and the slash-menu list cannot disagree.
+  // Load the authoritative enabled project capability snapshot. The settings
+  // page uses the same endpoint for all candidates; the sidebar projects only
+  // enabled winners from that shared source of truth.
   const loadSkillsAndCommands = useCallback(async () => {
-    if (!fileService.isAvailable) return;
     try {
-      const response = await fileService.listSlashCommands();
-      if (response.success && response.commands) {
-        setEnabledSkills(response.commands.filter(c => c.source === 'skill').map(c => ({ name: c.name, description: c.description, scope: c.scope, folderName: c.folderName })));
-        setEnabledCommands(response.commands.filter(c => c.source === 'custom').map(c => ({ name: c.name, description: c.description, scope: c.scope, fileName: c.fileName })));
-        setGlobalSkillFolderNames(new Set(response.globalSkillFolderNames || []));
+      const response = await apiGet<{
+        success: boolean;
+        skills?: Array<{ name: string; description: string; scope: 'user' | 'project'; folderName: string; enabled: boolean; origin?: 'global' | 'project' }>;
+        commands?: Array<{ name: string; description: string; scope: 'user' | 'project'; fileName: string; enabled?: boolean }>;
+      }>('/api/project-capabilities');
+      if (response.success) {
+        const skills = response.skills ?? [];
+        const commands = response.commands ?? [];
+        setEnabledSkills(skills.filter(item => item.enabled).map(item => ({
+          name: item.name,
+          description: item.description,
+          scope: item.scope,
+          folderName: item.folderName,
+        })));
+        setEnabledCommands(commands.filter(item => item.enabled !== false).map(item => ({
+          name: item.name,
+          description: item.description,
+          scope: item.scope,
+          fileName: item.fileName,
+        })));
+        setGlobalSkillFolderNames(new Set(
+          skills.filter(item => item.origin === 'global').map(item => item.folderName),
+        ));
       }
     } catch (err) {
       console.error('[Chat] Failed to load skills/commands:', err);
     }
-  }, [fileService]);
+  }, [apiGet]);
 
   // Sync project skill to global
   const loadSkillsAndCommandsRef = useRef(loadSkillsAndCommands);
@@ -2506,7 +2591,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   useEffect(() => {
     loadAndSyncAgents();
     loadSkillsAndCommands();
-  }, [loadAndSyncAgents, loadSkillsAndCommands, workspaceRefreshTrigger]);
+  }, [
+    currentAgent?.capabilitySelection,
+    loadAndSyncAgents,
+    loadSkillsAndCommands,
+    workspaceRefreshTrigger,
+  ]);
 
   // Sync workspace MCP to project config when it changes
   useEffect(() => {
@@ -2670,8 +2760,13 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         // 'adopt' the user's choice is persisted for future sessions. Post-resolution
         // (push OR adopt) a user toggle is explicit intent and DOES reach the sidecar.
         if (configDispositionRef.current === 'pending') return;
-        const response = await apiPost<ExtensionUpdateResponse>('/api/mcp/set', { servers });
-        handleExtensionUpdateResponse(response);
+        const response = await pushSessionConfig(
+          'mcp',
+          '/api/mcp/set',
+          { servers },
+          'explicit',
+        );
+        if (response) handleExtensionUpdateResponse(response);
       },
       getAllMcpServers,
       getGlobalMcpEnabled: getEnabledMcpServerIds,
@@ -3283,65 +3378,24 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     }
   }, [isActive]);
 
-  // Sync config when Tab becomes active (from inactive)
-  // This ensures settings changes are picked up when switching back to Chat Tab
+  // Refresh config when the Tab becomes active. ConfigProvider reloads the
+  // authoritative disk snapshot; the existing MCP/capability effects consume
+  // that state. A second imperative MCP push here raced explicit user edits
+  // and duplicated the same synchronization path.
   useEffect(() => {
     const wasInactive = !prevIsActiveRef.current;
     prevIsActiveRef.current = isActive;
 
-    // Only sync when Tab becomes active (was inactive, now active)
     if (!wasInactive || !isActive) return;
+    void refreshProviderData().catch((error) => {
+      console.error('[Chat] Failed to refresh config on tab activate:', error);
+    });
 
-    const syncConfigOnTabActivate = async () => {
-      try {
-        // 1. Refresh provider data (providers list, API keys, verify status)
-        await refreshProviderData();
-
-        // 2. Reload MCP config and sync to backend
-        const servers = await getAllMcpServers();
-        const enabledIds = await getEnabledMcpServerIds();
-        setMcpServers(servers);
-        syncMcpServerNames(servers);
-        setGlobalMcpEnabled(enabledIds);
-
-        // Skip MCP push when still in the adoption window (joined existing sidecar)
-        if (configDispositionRef.current !== 'push') {
-          if (isDebugMode()) {
-            console.log('[Chat] Skipping MCP push on tab activate (joined existing sidecar)');
-          }
-          return;
-        }
-        if (isSessionLoading) return;
-
-        // 3. Sync effective MCP servers to backend for next message
-        const workspaceEnabled = workspaceMcpEnabled;
-        const effectiveServers = servers.filter(s =>
-          enabledIds.includes(s.id) && workspaceEnabled.includes(s.id)
-        );
-        await apiPost('/api/mcp/set', { servers: effectiveServers });
-
-        if (isDebugMode()) {
-          console.log('[Chat] Config synced on tab activate:', {
-            providers: providers.length,
-            mcpServers: servers.length,
-            effectiveMcp: effectiveServers.map(s => s.id).join(', ') || 'none',
-          });
-        }
-      } catch (err) {
-        console.error('[Chat] Failed to sync config on tab activate:', err);
-      }
-    };
-
-    void syncConfigOnTabActivate();
-
-    // 4. Reload agents & skills/commands (user may have edited in Settings)
-    loadAndSyncAgents();
-    loadSkillsAndCommands();
-
-    // 5. Refresh file tree
+    // One shared refresh trigger reloads agents, skills/commands and the
+    // file tree. Calling the loaders here as well made every activation do the
+    // same work twice.
     setWorkspaceRefreshTrigger(prev => prev + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- providers.length is only used for debug logging
-  }, [isActive, refreshProviderData, workspaceMcpEnabled, isSessionLoading, apiPost]);
+  }, [isActive, refreshProviderData]);
 
   // Listen for skill copy events to refresh DirectoryPanel (file tree shows .claude/skills/)
   // Note: WorkspaceConfigPanel has its own event listener for internalRefreshKey
@@ -3363,6 +3417,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   useEffect(() => {
     const wasConnected = prevIsConnectedRef.current;
     prevIsConnectedRef.current = isConnected;
+    if (!isConnected) {
+      // These fingerprints describe in-process Sidecar state and must die with
+      // that process so reconnect naturally rehydrates the replacement.
+      lastSessionConfigPushRef.current = { mcp: null, agents: null };
+      return;
+    }
     if (!wasConnected && isConnected) {
       setWorkspaceRefreshTrigger(k => k + 1);
     }
@@ -4243,17 +4303,94 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setShowCronSettings(true);
   }, []);
 
-  // Dispatch a client-action slash command from the chat input. `/goal` opens
-  // the shared settings modal preset to Goal mode; the objective is entered in
-  // the input after confirming.
+  const managedCodexCompactSupported = currentRuntime === 'codex' && managedProviderRuntimeActive;
+  const manualContextCompactSupported = currentRuntime === 'builtin' || managedCodexCompactSupported;
+  const runtimeClientActionSlashCommands = useMemo(
+    () => managedCodexCompactSupported ? [MANAGED_CODEX_COMPACT_SLASH_COMMAND] : [],
+    [managedCodexCompactSupported],
+  );
+
+  // Both the context card and `/compact` dispatch this action. Builtin keeps
+  // the Claude SDK command path; Managed Codex uses its native SessionEngine
+  // control operation so no synthetic user message enters the transcript.
+  const handleCompactContext = useCallback(() => {
+    if (managedCodexCompactSupported) {
+      void apiPost<{ success: boolean; error?: string }>('/api/session/compact')
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          toastRef.current.error(`${t('input.operationFailed')}: ${message}`);
+        });
+      return;
+    }
+    if (currentRuntime !== 'builtin') return;
+    if (pinnedProviderUnavailable) {
+      showPinnedProviderUnavailableToast();
+      return;
+    }
+    if (builtinSnapshotProviderSelectionIncomplete) {
+      showSnapshotProviderIncompleteToast();
+      return;
+    }
+    const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
+    const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
+    void sendMessage(
+      '/compact',
+      undefined,
+      effectivePermissionMode,
+      effectiveModel,
+      providerEnv,
+      undefined,
+      reasoningEffort,
+      providerRoute,
+    );
+  }, [
+    apiPost,
+    buildProviderEnv,
+    builtinSnapshotProviderSelectionIncomplete,
+    currentRuntime,
+    effectiveModel,
+    effectivePermissionMode,
+    managedCodexCompactSupported,
+    pinnedProviderUnavailable,
+    reasoningEffort,
+    sendMessage,
+    showPinnedProviderUnavailableToast,
+    showSnapshotProviderIncompleteToast,
+    t,
+  ]);
+
+  // `/goal` is a product action, not a Runtime command. Arm the lightweight
+  // composer draft immediately; the bar's settings button owns optional tuning.
   const handleSlashAction = useCallback((name: string) => {
+    if (name === 'compact') {
+      handleCompactContext();
+      return;
+    }
     if (name === 'goal' || name === 'loop') {
       setStoppedCronRecovery(null);
-      setCronPrompt(''); // task is entered after confirm, not snapshotted here
-      setCronOpenPreset(GOAL_SLASH_PRESET);
-      setShowCronSettings(true);
+      if (!cronStateRef.current.task) disableCronMode();
+      const goalExecution = buildCronExecutionOverrides({
+        providerId: !isExternalRuntime && currentProvider ? currentProvider.id : undefined,
+        model: isExternalRuntime ? undefined : selectedModel,
+      });
+      setGoalDraftConfig(createDefaultSessionGoalDraftConfig({
+        permissionMode: isExternalRuntime ? effectiveRuntimePermissionMode : permissionMode,
+        runtime: goalExecution.runtime,
+      }));
+      setCronPrompt('');
+      setCronOpenPreset(null);
+      setShowCronSettings(false);
     }
-  }, []);
+  }, [
+    buildCronExecutionOverrides,
+    currentProvider,
+    disableCronMode,
+    effectiveRuntimePermissionMode,
+    handleCompactContext,
+    isExternalRuntime,
+    permissionMode,
+    selectedModel,
+  ]);
 
   const handleCronStop = useCallback(async () => {
     const stopSessionId = sessionIdRef.current;
@@ -4437,32 +4574,19 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     [supportsAgentStatusPanel, handleJumpToTool],
   );
 
-  // PRD 0.2.32 — 智能压缩入口（builtin only）。用与正常发送完全相同的已解析
-  // model/permission/providerEnv 发送 `/compact`（实测可触发内置压缩），避免误切 provider。
-  const handleCompactContext = useCallback(() => {
-    if (pinnedProviderUnavailable) {
-      showPinnedProviderUnavailableToast();
-      return;
-    }
-    if (builtinSnapshotProviderSelectionIncomplete) {
-      showSnapshotProviderIncompleteToast();
-      return;
-    }
-    const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
-    const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
-    void sendMessage('/compact', undefined, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
-      isExternalRuntime ? undefined : reasoningEffort,
-      isExternalRuntime ? undefined : providerRoute);
-  }, [sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, buildProviderEnv, builtinSnapshotProviderSelectionIncomplete, pinnedProviderUnavailable, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast]);
-
   // PRD 0.2.32 — context 用量指示器 slot。自取数（内部 useTabState 订阅 contextUsage），
   // 数据不经 SimpleChatInput props；useMemo 让 slot identity 在流式期间稳定，不打穿
   // SimpleChatInput 的 React.memo（与 agentStatusSlot 同款）。
   const contextIndicatorSlot = useMemo(
     // key on sessionId → remount on session switch resets local open/timer state
     // (review #W3). sessionId is stable during streaming, so the memo still holds.
-    () => <ContextUsageIndicator key={sessionId ?? 'none'} onCompact={handleCompactContext} />,
-    [handleCompactContext, sessionId],
+    () => (
+      <ContextUsageIndicator
+        key={sessionId ?? 'none'}
+        onCompact={manualContextCompactSupported ? handleCompactContext : undefined}
+      />
+    ),
+    [handleCompactContext, manualContextCompactSupported, sessionId],
   );
 
   // P3 (second memo-breaker): this list was computed inline in the SimpleChatInput
@@ -4921,23 +5045,20 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
    * SessionMenuButton's "新会话（保留绑定）" submenu item can drive the
    * exact same flow without re-running the unbound fallback paths.
    */
-  const newSessionKeepingBinding = useCallback(async (
-    options: { allowPlainResetFallback?: boolean } = {},
-  ): Promise<boolean> => {
-    const allowPlainResetFallback = options.allowPlainResetFallback ?? true;
+  const newSessionKeepingBinding = useCallback(async (): Promise<boolean> => {
     const boundChannel = surfaces.channel;
     if (!boundChannel || !sessionId) return false;
     const { migrateChannelToNewSession } = await import('@/api/sessionHandoverClient');
     return await transitionChannelBoundSession({
       sessionId,
+      tabId,
       boundChannel,
       migrateChannelToNewSession,
       adoptMigratedSession,
-      resetSession,
+      releaseMigratedTabOwner: releaseTabSession,
       reportError: (message) => toastRef.current.error(message),
-      allowPlainResetFallback,
     });
-  }, [surfaces.channel, sessionId, resetSession, adoptMigratedSession]);
+  }, [surfaces.channel, sessionId, tabId, adoptMigratedSession]);
 
   const showIntroductionOverlay = shouldShowIntroductionOverlay({
     content: introductionContent,
@@ -4953,7 +5074,8 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // If AI is running, App.tsx handles it via background completion (returns true).
   // If AI is idle, falls back to resetSession (reuses Sidecar).
   // PRD 0.2.14: when current session is IM-channel-bound, migrate the binding
-  // to the new session so the IM channel keeps routing here (matches IM `/new`).
+  // to the new session so the IM channel keeps routing here. Unlike IM `/new`,
+  // this is an explicit Tab + Agent joint migration.
   const handleNewSession = useCallback(async (): Promise<boolean> => {
     if (surfaces.channel && sessionId) {
       return await newSessionKeepingBinding();
@@ -5368,6 +5490,9 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
             agentDir={agentDir}
             workspacePath={agentDir}
             sessionId={sessionId}
+            showBuiltinSdkSlashCommands={showBuiltinSdkSlashCommands}
+            clientActionSlashCommands={runtimeClientActionSlashCommands}
+            workspaceSlashCommands={workspaceCapabilitySlashCommands}
             sdkSlashCommands={visibleSdkSlashCommands}
             provider={currentProvider}
             providers={providers}
@@ -5966,10 +6091,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
         isOpen={showCronSettings}
         onClose={() => { setShowCronSettings(false); setCronOpenPreset(null); }}
         initialPrompt={cronPrompt}
-        // Editing a RUNNING task always wins (cronState.task). Otherwise a slash
-        // preset (e.g. /goal) applies — including over an armed-but-unsent
-        // config, so /goal reliably forces Goal mode. Plain 定时-button opens
-        // (no preset) fall back to cronState.config either way.
+        // Editing a RUNNING task always wins (cronState.task). Otherwise the
+        // Goal bar's optional settings preset applies over an armed-but-unsent
+        // config. Plain 定时-button opens (no preset) fall back to
+        // cronState.config either way.
         initialConfig={cronOpenPreset?.taskKind === 'goal'
           ? cronOpenPreset
           : (cronState.task ? cronState.config : (cronOpenPreset ?? cronState.config))}

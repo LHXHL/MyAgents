@@ -49,6 +49,8 @@ const sseHarness = vi.hoisted(() => {
 const tauriHarness = vi.hoisted(() => ({
   proxyFetch: vi.fn(),
   ensureSessionSidecar: vi.fn(async () => undefined),
+  isTauri: false,
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 
 vi.mock('@/api/SseConnection', () => ({
@@ -90,13 +92,26 @@ vi.mock('@/api/tauriClient', () => ({
     path: string,
     init?: RequestInit,
   ) => tauriHarness.proxyFetch(`http://127.0.0.1:1234${path}`, init)),
-  isTauri: () => false,
+  isTauri: () => tauriHarness.isTauri,
   getSessionActivation: vi.fn(async () => null),
   getSessionPort: vi.fn(async () => null),
   ensureSessionSidecar: tauriHarness.ensureSessionSidecar,
   resetTabServerUrlCache: vi.fn(),
   setActiveCorrelation: vi.fn(),
   setFocusedCorrelationTabId: vi.fn(),
+}));
+
+vi.mock('@/utils/tauriListen', () => ({
+  listenWithCleanup: vi.fn(async (
+    eventName: string,
+    listener: (event: { payload: unknown }) => void,
+  ) => {
+    tauriHarness.listeners.set(eventName, listener);
+    return {
+      unlisten: () => tauriHarness.listeners.delete(eventName),
+      isRegistered: () => tauriHarness.listeners.has(eventName),
+    };
+  }),
 }));
 
 function Probe() {
@@ -110,6 +125,7 @@ function Probe() {
     streamingMessage,
     systemInitInfo,
     queuedMessages,
+    isConnected,
     adoptMigratedSession,
     resetSession,
     retryCurrentSessionRestore,
@@ -129,6 +145,7 @@ function Probe() {
           initModel: systemInitInfo?.model ?? null,
         })}
       </output>
+      <output data-testid="connected">{String(isConnected)}</output>
       <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
       <output data-testid="streaming-content">{JSON.stringify(streamingMessage?.content ?? null)}</output>
       <output data-testid="session-loading">{String(isSessionLoading)}</output>
@@ -219,6 +236,42 @@ describe('TabProvider session activity ownership', () => {
     sseHarness.state.eventHandler = null;
     sseHarness.state.statusHandler = null;
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
+    tauriHarness.isTauri = false;
+    tauriHarness.listeners.clear();
+  });
+
+  it('marks the live connection down across a Rust-owned Sidecar replacement', async () => {
+    tauriHarness.isTauri = true;
+    render(
+      <TabProvider
+        tabId="tab-sidecar-restart"
+        agentDir="/tmp/workspace"
+        sessionId="pending-sidecar-restart"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('connected')).toHaveTextContent('true'));
+    const restartListener = await waitFor(() => {
+      const listener = tauriHarness.listeners.get('session-sidecar:restarted');
+      expect(listener).toBeDefined();
+      return listener!;
+    });
+
+    act(() => {
+      restartListener({
+        payload: { sessionId: 'pending-sidecar-restart', port: 43210 },
+      });
+    });
+    expect(screen.getByTestId('connected')).toHaveTextContent('false');
+
+    act(() => {
+      sseHarness.state.generation = 2;
+      sseHarness.state.statusHandler?.('connected');
+    });
+    expect(screen.getByTestId('connected')).toHaveTextContent('true');
   });
 
   it('does not reacquire a Tab owner from an SSE status failure', async () => {

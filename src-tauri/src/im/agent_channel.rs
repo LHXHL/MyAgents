@@ -1,9 +1,14 @@
 use super::*;
+use crate::sidecar::{release_session_sidecar, SidecarOwner};
 use tauri::Manager;
 
 static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn short_session_id(value: &str) -> String {
+    value.chars().take(8).collect()
+}
 
 /// One serialization boundary per durable channel identity. Weak entries keep
 /// the registry from becoming another lifecycle owner.
@@ -51,6 +56,105 @@ async fn lock_agent_channels_for_stop(
         guards.push(lock.lock_owned().await);
     }
     guards
+}
+
+/// Execute IM `/new` as one owner-scoped binding transaction. The Router and
+/// its health projection remain the only binding authorities; the transition
+/// snapshot exists solely for exact in-memory/disk rollback on failure.
+async fn rotate_peer_binding_for_new_command(
+    session_key: &str,
+    runtime: &str,
+    router: &Arc<Mutex<SessionRouter>>,
+    health: &Arc<HealthManager>,
+    manager: &ManagedSidecarManager,
+    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
+) -> Result<String, String> {
+    // Match every other active-session projection lock order: projection ->
+    // Router -> per-Session lifecycle. The caller already holds the per-peer
+    // message lock, so no ordinary IM turn can race this mutation.
+    let _projection = health.lock_active_sessions_projection().await;
+    let mut router_guard = router.lock().await;
+    let prior = router_guard.peer_session_snapshot(session_key);
+    let _session_lifecycle = if let Some(peer) = prior.as_ref() {
+        let guard = crate::sidecar::acquire_session_lifecycle(&[&peer.session_id]).await;
+        if crate::sidecar::has_persisted_session_owner(&peer.session_id).await? {
+            return Err(
+                "Cannot start a new conversation while a persistent Goal or task owns this Session"
+                    .to_string(),
+            );
+        }
+        let admissible = manager
+            .lock()
+            .map_err(|error| error.to_string())?
+            .agent_binding_rotation_is_admissible(&peer.session_id, session_key);
+        if !admissible {
+            return Err(format!(
+                "Agent owner no longer controls Session {}",
+                short_session_id(&peer.session_id)
+            ));
+        }
+        router_guard
+            .freeze_peer_before_binding_rotation(peer, fallback_snapshot)
+            .await
+            .map_err(|error| format!("Failed to freeze old Session: {error}"))?;
+        Some(guard)
+    } else {
+        None
+    };
+
+    let transition = router_guard.stage_new_session_binding(session_key);
+    let new_session_id = transition.target_session_id().to_string();
+    let old_session_id = transition.old_session_id().map(str::to_string);
+
+    if let Err(error) = health
+        .persist_active_sessions_snapshot(router_guard.active_sessions())
+        .await
+    {
+        let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
+        ulog_error!(
+            "[im-router] operation=im_binding_rotation stage=persist result=failed session_key={} old={} new={} rollback={} durable_state=unchanged error={}",
+            session_key,
+            old_session_id.as_deref().map(short_session_id).unwrap_or_else(|| "none".to_string()),
+            short_session_id(&new_session_id),
+            rolled_back,
+            error
+        );
+        return Err(format!("Failed to save new conversation binding: {error}"));
+    }
+
+    if let Some(old_session_id) = old_session_id.as_deref() {
+        let owner = SidecarOwner::Agent(session_key.to_string());
+        if let Err(error) = release_session_sidecar(manager, old_session_id, &owner) {
+            let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
+            let rollback_persisted = if rolled_back {
+                health
+                    .persist_active_sessions_snapshot(router_guard.active_sessions())
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            ulog_error!(
+                "[im-router] operation=im_binding_rotation stage=owner-transfer result=failed session_key={} old={} new={} rollback={} rollback_persisted={} error={}",
+                session_key,
+                short_session_id(old_session_id),
+                short_session_id(&new_session_id),
+                rolled_back,
+                rollback_persisted,
+                error
+            );
+            return Err(format!("Failed to release old Session owner: {error}"));
+        }
+    }
+
+    ulog_info!(
+        "[im-router] operation=im_binding_rotation result=committed session_key={} runtime={} old={} new={} materialization=pending",
+        session_key,
+        runtime,
+        old_session_id.as_deref().map(short_session_id).unwrap_or_else(|| "none".to_string()),
+        short_session_id(&new_session_id)
+    );
+    Ok(new_session_id)
 }
 
 /// Stop one exact Agent Channel runtime through its lifecycle owner.
@@ -1522,8 +1626,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                         }
                         adapter_for_reply.ack_processing(&chat_id, &message_id).await;
-                        // Clear pending group history so the fresh session doesn't get stale context
-                        group_history_for_loop.lock().await.clear(&session_key);
+                        let peer_lock = {
+                            let mut locks = peer_locks_for_loop.lock().await;
+                            locks
+                                .entry(session_key.clone())
+                                .or_insert_with(|| Arc::new(Mutex::new(())))
+                                .clone()
+                        };
+                        let _peer_guard = peer_lock.lock().await;
+                        let runtime = runtime_for_loop.read().await.clone();
                         let fallback_snapshot = runtime_change::build_snapshot_from_channel_state(
                             &runtime_for_loop,
                             &current_model_for_loop,
@@ -1533,28 +1644,27 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             provider_id_for_loop.clone(),
                             &current_provider_env_for_loop,
                         ).await;
-                        let result = router_clone
-                            .lock()
-                            .await
-                            .reset_session(&session_key, &app_clone, &manager_clone, Some(&fallback_snapshot))
-                            .await;
+                        let result = rotate_peer_binding_for_new_command(
+                            &session_key,
+                            &runtime,
+                            &router_clone,
+                            &health_clone,
+                            &manager_clone,
+                            &fallback_snapshot,
+                        )
+                        .await;
                         adapter_for_reply.ack_clear(&chat_id, &message_id).await;
                         match result {
                             Ok(new_id) => {
-                                let persist_result = health::persist_router_active_sessions(
-                                    &health_clone,
-                                    &router_clone,
-                                    "command-new-reset",
-                                )
-                                .await;
-                                let reply = match persist_result {
-                                    Ok(()) => format!("✅ 已创建新对话 ({})", &new_id[..8.min(new_id.len())]),
-                                    Err(e) => format!(
-                                        "⚠️ 已创建新对话 ({}), 但状态保存失败: {}",
-                                        &new_id[..8.min(new_id.len())],
-                                        e
-                                    ),
-                                };
+                                // The transition is committed before transient
+                                // context is cleared. A failed `/new` keeps A
+                                // fully usable, including its pending group history.
+                                group_history_for_loop.lock().await.clear(&session_key);
+                                drop_im_consumer(&im_consumers_for_loop, &session_key).await;
+                                let reply = format!(
+                                    "✅ 已创建新对话 ({})",
+                                    short_session_id(&new_id)
+                                );
                                 if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                     ulog_warn!("[im-cmd] send_message (/new success) failed: {}", e);
                                 }
@@ -2757,42 +2867,35 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             .unwrap_or(0);
                         let on_terminal: Arc<dyn Fn(String, reply_router::TerminalOutcome) + Send + Sync> = {
                             let router = Arc::clone(&task_router);
-                            let manager = Arc::clone(&task_manager);
                             let app = task_app.clone();
                             let health = Arc::clone(&task_health);
                             let agent_link = Arc::clone(&task_agent_link);
                             let session_key_cap = session_key.clone();
+                            let admitted_session_id = sidecar_session_id_initial.clone();
                             let source_type_cap = msg.source_type.clone();
                             let model_work_gate = Arc::clone(&task_model_work_gate);
-                            Arc::new(move |req_id: String, outcome: reply_router::TerminalOutcome| {
+                            Arc::new(move |req_id: String, _outcome: reply_router::TerminalOutcome| {
                                 let terminal_work_guard = model_work_gate.begin_handoff();
                                 let router = Arc::clone(&router);
-                                let manager = Arc::clone(&manager);
                                 let app = app.clone();
                                 let health = Arc::clone(&health);
                                 let agent_link = Arc::clone(&agent_link);
                                 let session_key = session_key_cap.clone();
+                                let admitted_session_id = admitted_session_id.clone();
                                 let source_type = source_type_cap.clone();
                                 tauri::async_runtime::spawn(async move {
                                     let _terminal_work_guard = terminal_work_guard;
                                     {
                                         let mut router_g = router.lock().await;
-                                        router_g.record_response(&session_key, outcome.session_id.as_deref());
-                                        if let Some(new_sid) = outcome.session_id.as_deref() {
-                                            if let Err(error) = router_g
-                                                .upgrade_peer_session_id(
-                                                    &session_key,
-                                                    new_sid,
-                                                    &manager,
-                                                )
-                                                .await
-                                            {
-                                                ulog_warn!(
-                                                    "[im] Could not upgrade Session identity for {}: {}",
-                                                    session_key,
-                                                    error
-                                                );
-                                            }
+                                        if !router_g.record_response_if_bound(
+                                            &session_key,
+                                            &admitted_session_id,
+                                        ) {
+                                            ulog_info!(
+                                                "[im] Ignored stale terminal for peer {} admitted_session={} after binding rotation",
+                                                session_key,
+                                                short_session_id(&admitted_session_id),
+                                            );
                                         }
                                     }
                                     health.set_last_message_at(chrono::Utc::now().to_rfc3339()).await;
@@ -3481,6 +3584,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         shutdown_tx,
         health: Arc::clone(&health),
         router,
+        peer_locks,
         im_consumers,
         model_work_gate,
         buffer,

@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -108,6 +109,15 @@ describe('required system skill API contract', () => {
     }
     writeSkill(userSkills, OPTIONAL_SYSTEM_SKILL, 'author: Legacy Author');
     writeSkill(userSkills, 'user-skill', 'metadata:\n  author: Standard Author\n  version: "1.0"');
+    mkdirSync(join(userSkills, 'damaged-skill'), { recursive: true });
+    writeFileSync(join(userSkills, 'damaged-skill', 'SKILL(1).md'), 'preserved backup');
+    symlinkSync(
+      join(userSkills, 'damaged-skill'),
+      join(projectSkills, 'damaged-skill'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    writeSkill(userSkills, 'warning-skill');
+    writeFileSync(join(userSkills, 'warning-skill', 'SKILL (2).md'), 'preserved sibling');
     // Same folder name at project scope is user-owned and must not inherit the
     // global system lifecycle flags.
     writeSkill(projectSkills, 'myagents-cli');
@@ -196,6 +206,20 @@ describe('required system skill API contract', () => {
         required: false,
         enabled: false,
       });
+      expect(userBody.skills.some(skill => skill.folderName === 'damaged-skill')).toBe(false);
+      expect(byFolder(userBody.skills, 'warning-skill')).toMatchObject({ enabled: true });
+      expect(userBody.integrityIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          folderName: 'damaged-skill',
+          reason: 'missing_canonical_entry',
+          severity: 'blocked',
+        }),
+        expect.objectContaining({
+          folderName: 'warning-skill',
+          reason: 'reserved_entry_sibling',
+          severity: 'warning',
+        }),
+      ]));
 
       const detailResponse = await fetch(`${baseUrl}/api/skill/user-skill?scope=user`);
       expect(detailResponse.ok).toBe(true);
@@ -233,6 +257,7 @@ describe('required system skill API contract', () => {
         required: false,
         enabled: true,
       });
+      expect(projectBody.skills.some(skill => skill.folderName === 'damaged-skill')).toBe(false);
 
       const baselineConfig = readFileSync(configPath, 'utf8');
       for (const folderName of REQUIRED_SYSTEM_SKILLS) {

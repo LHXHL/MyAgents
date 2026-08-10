@@ -1688,8 +1688,8 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className={`group/workspace flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] ${
-        active ? 'bg-[var(--hover-bg)]' : ''
+      className={`group/workspace relative flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] focus-within:bg-[var(--hover-bg)] ${
+        active || menuOpen ? 'bg-[var(--hover-bg)]' : ''
       }`}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
@@ -1721,9 +1721,16 @@ function WorkspaceRow({
           {displayName}
         </span>
       </button>
-      {/* The scroll owner supplies 8px; this local 8px keeps controls outside Fluent's 16px overlay hit region. */}
+      {/* Overlay the hover actions instead of reserving row width. The opaque
+          end of the Theme-aware gradient hides any title underneath; its
+          transparent lead-in avoids a hard vertical seam. The scroll owner
+          supplies 8px, and the local right padding keeps controls outside
+          Fluent's 16px overlay hit region. */}
       <div
-        className={`flex shrink-0 items-center pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        className={`pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
+        style={{
+          background: 'linear-gradient(to right, var(--global-sidebar-bg-a0) 0, color-mix(in srgb, var(--global-sidebar-bg) 90%, var(--accent) 10%) 1.5rem)',
+        }}
         data-global-sidebar-workspace-actions
       >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
@@ -1731,7 +1738,7 @@ function WorkspaceRow({
             ref={menuRef}
             type="button"
             onClick={() => setMenu(!menuOpen)}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={tLauncher('workspaceCard.more')}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -1741,7 +1748,7 @@ function WorkspaceRow({
           <button
             type="button"
             onClick={onOpenWorkspace}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            className={`flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? 'pointer-events-auto' : 'pointer-events-none group-hover/workspace:pointer-events-auto group-focus-within/workspace:pointer-events-auto'}`}
             aria-label={t('globalSidebar.newChatHere')}
           >
             <MessageSquarePlus className="h-3.5 w-3.5" />

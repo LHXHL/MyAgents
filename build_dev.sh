@@ -201,9 +201,9 @@ fi
 echo -e "  ${GREEN}✓ claude (${SDK_TRIPLE}) 已就绪${NC}"
 
 # myagents CLI 的打包不在这里——`npm run tauri:build` 的 beforeBuildCommand
-# (tauri.conf.json) 已包含 `npm run build:cli`，由 `scripts/esbuild-bundle.mjs`
-# 的 post-build hook 同步把 myagents.cmd 拷贝到 resources/cli/。dev 脚本只需
-# 保证目录存在，避免 Tauri bundle 阶段的 resource 校验报错。
+# (tauri.conf.json) 已包含 `npm run build:cli`。该 target 会清理 CLI staging
+# 并只生成 bundle authority `myagents.cjs`；dev 脚本只需保证目录存在，避免
+# Tauri bundle 阶段的 resource 校验报错。
 mkdir -p "${PROJECT_DIR}/src-tauri/resources/cli"
 
 # Debug 模式签名 (optional — build_macos.sh per-TARGET loop 已处理 Node + Claude)

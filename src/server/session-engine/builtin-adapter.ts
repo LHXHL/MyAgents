@@ -426,6 +426,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    async compactContext() {
+      return {
+        success: false,
+        status: 409,
+        error: 'Native context compaction is only available for Managed Codex',
+      };
+    },
+
     async enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult> {
       await setInteractionScenario(request.scenario);
       const routed = providerEnvForRouteRequest(request);
@@ -672,12 +680,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
           providerRoute,
           providerRoutingRecovery,
           runtimeConfig: runtimeConfig ?? null,
-          beforeDispatch: createScheduledDispatchGuard({
-            preceding: operation.beforeDispatch,
-            workspacePath: request.workspacePath,
-            requiredSystemSkill: operation.requiredSystemSkill,
-            requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
-          }),
+          beforeDispatch: operation.beforeDispatch,
+          requiredSystemSkill: operation.requiredSystemSkill,
           release,
         };
       } catch (error) {
@@ -705,7 +709,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
       }
-      const beforeDispatch = request.beforeDispatch ?? acceptInjectedTurnDispatch;
+      const beforeDispatch = createScheduledDispatchGuard({
+        preceding: request.beforeDispatch ?? acceptInjectedTurnDispatch,
+        requiredSystemSkill: request.requiredSystemSkill,
+        requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
+      });
       const enqueueAttempt = enqueueUserMessage(
         request.prompt,
         [],
@@ -923,16 +931,23 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return { success: true, sessionId: getSessionId() };
     },
 
-    async resetForNewImSession(_workspacePath, options) {
+    async migrateBoundSurfaceSession(_workspacePath, options) {
       const freeze = await freezeCurrentSessionMetadataForImDetach(undefined, {
         allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
       if (!freeze.success) {
-        return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
+        return { success: false, error: freeze.error ?? 'Failed to freeze current Session before surface migration' };
       }
-      await resetSession();
-      await materializeCurrentSessionMetadataForPublishedReset();
-      return { success: true, sessionId: getSessionId() };
+      await resetSession({ sessionId: options.targetSessionId });
+      // resetSession() is the identity commit point. Metadata publication is
+      // recoverable preparation; surfacing a failure after the commit would
+      // make Rust roll Router/manager back to A while this Runtime remains B.
+      try {
+        await materializeCurrentSessionMetadataForPublishedReset();
+      } catch (error) {
+        console.warn('[session-engine] Surface migration post-commit metadata publication deferred:', error);
+      }
+      return { success: true, sessionId: options.targetSessionId };
     },
   };
 }

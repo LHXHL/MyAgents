@@ -3,17 +3,22 @@ import type { McpServerDefinition } from '../../../shared/config-types';
 import type { RuntimeDiagnostics } from '../../../shared/types/runtime';
 import { mcpConfigFingerprint } from '../../session-core/mcp-sync-policy';
 import type {
-  ManagedCodexExtensionApplyState,
   ManagedCodexExtensionSnapshot,
   ManagedCodexExtensionStatus,
 } from '../managed-codex/extensions/contracts';
+
+type ManagedCodexDurableExtensionApplyState =
+  | 'applied'
+  | 'pending_next_start'
+  | 'deferred_until_idle'
+  | 'failed';
 
 let desiredSnapshot: ManagedCodexExtensionSnapshot | null = null;
 let desiredApplyFingerprint: string | null = null;
 let effectiveRevision: string | null = null;
 let effectiveApplyFingerprint: string | null = null;
 let effectiveProcessGeneration: string | null = null;
-let applyState: ManagedCodexExtensionApplyState = 'pending_next_start';
+let applyState: ManagedCodexDurableExtensionApplyState = 'pending_next_start';
 let lastFailure: string | null = null;
 let sessionEnabledPluginIds: string[] | null = null;
 let sessionMcpServers: McpServerDefinition[] | null = null;
@@ -48,7 +53,6 @@ function statusComponents(snapshot: ManagedCodexExtensionSnapshot | null) {
   if (!snapshot) return [];
   return snapshot.components.map(result => {
     if (result.state !== 'applied') return result;
-    if (applyState === 'unchanged') return { ...result, state: 'unchanged' as const };
     if (applyState === 'pending_next_start' || applyState === 'deferred_until_idle') {
       return { ...result, state: applyState };
     }
@@ -101,17 +105,32 @@ export function setManagedCodexDesiredSnapshot(
   desiredSnapshot = snapshot;
   desiredApplyFingerprint = incomingApplyFingerprint;
   lastFailure = null;
+  let unchanged = false;
   if (
     snapshot.revision === effectiveRevision
     && incomingApplyFingerprint === effectiveApplyFingerprint
   ) {
-    applyState = wasDesired ? 'unchanged' : 'applied';
+    // `unchanged` describes this reconciliation operation, not the durable
+    // generation state. Keeping the owner state `applied` prevents a repeated
+    // config hydration from looking like a new runtime transition.
+    unchanged = wasDesired;
+    applyState = 'applied';
   } else if (disposition === 'busy-process') {
     applyState = 'deferred_until_idle';
   } else {
     applyState = 'pending_next_start';
   }
-  return getManagedCodexExtensionStatus();
+  const status = getManagedCodexExtensionStatus();
+  if (!unchanged) return status;
+  return {
+    ...status,
+    state: 'unchanged',
+    components: status.components.map(component => (
+      component.state === 'applied'
+        ? { ...component, state: 'unchanged' as const }
+        : component
+    )),
+  };
 }
 
 export function markManagedCodexExtensionEffective(

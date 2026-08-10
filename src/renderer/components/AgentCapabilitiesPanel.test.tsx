@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
 
 import AgentCapabilitiesPanel from './AgentCapabilitiesPanel';
 import { ToastProvider } from './Toast';
@@ -61,5 +62,53 @@ describe('AgentCapabilitiesPanel — divider ownership (#314)', () => {
 
         expect(toggle).toHaveAttribute('aria-expanded', 'true');
         expect(screen.getByText('docx')).toBeInTheDocument();
+    });
+
+    it('opens workspace Skill settings without changing expanded state', () => {
+        const onOpenSettings = vi.fn();
+        renderPanel({
+            enabledAgents: {},
+            enabledSkills: [{ name: 'docx', description: 'word docs', scope: 'user' }],
+            enabledCommands: [],
+            onOpenSettings,
+        });
+
+        const toggle = screen.getByRole('button', { expanded: false });
+        fireEvent.click(screen.getByRole('button', { name: '设置' }));
+
+        expect(onOpenSettings).toHaveBeenCalledWith();
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('keeps the settings shortcut available in empty and expanded states with keyboard activation', async () => {
+        const user = userEvent.setup();
+        const onOpenSettings = vi.fn();
+        const { rerender } = renderPanel({
+            enabledAgents: {},
+            enabledSkills: [],
+            enabledCommands: [],
+            onOpenSettings,
+        });
+
+        const emptySettings = screen.getByRole('button', { name: '设置' });
+        emptySettings.focus();
+        await user.keyboard('{Enter}');
+        expect(onOpenSettings).toHaveBeenCalledTimes(1);
+
+        rerender(
+            <ToastProvider>
+                <AgentCapabilitiesPanel
+                    enabledAgents={{}}
+                    enabledSkills={[{ name: 'docx', description: 'word docs', scope: 'user' }]}
+                    enabledCommands={[]}
+                    onOpenSettings={onOpenSettings}
+                />
+            </ToastProvider>,
+        );
+        const toggle = screen.getByRole('button', { expanded: false });
+        await user.click(toggle);
+        await user.click(screen.getByRole('button', { name: '设置' }));
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        expect(onOpenSettings).toHaveBeenCalledTimes(2);
     });
 });

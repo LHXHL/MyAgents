@@ -958,6 +958,16 @@ describe('GlobalSidebar rail flyout', () => {
     expect(inactiveTitle).toHaveClass('font-normal');
     expect(inactiveTitle?.className).toContain('group-hover/workspace:font-medium');
     expect(inactiveTitle?.className).toContain('group-focus-within/workspace:font-medium');
+    const workspaceToggle = within(inactiveRow).getAllByRole('button')[0];
+    const workspaceActions = inactiveRow.querySelector<HTMLElement>('[data-global-sidebar-workspace-actions]');
+    expect(inactiveRow).toHaveClass('relative');
+    expect(workspaceToggle).toHaveClass('flex-1');
+    expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'pl-6', 'pr-2');
+    expect(workspaceActions).not.toHaveClass('shrink-0');
+    expect(workspaceActions?.style.background).toContain('linear-gradient(to right');
+    expect(workspaceActions?.style.background).toContain('var(--global-sidebar-bg-a0)');
+    expect(workspaceActions?.style.background).toContain('var(--global-sidebar-bg)');
+    expect(workspaceActions?.style.background).toContain('var(--accent)');
 
     fireEvent.click(within(inactiveRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) }));
     expect(inactiveTitle).toHaveClass('font-medium');

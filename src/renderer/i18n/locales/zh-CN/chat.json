@@ -395,7 +395,7 @@
       "exportMarkdown": "导出为 md 文件",
       "tokenStats": "会话 Token 消耗统计",
       "contextUsage": "上下文 Token 使用详情",
-      "bindBot": "绑定聊天机器人",
+      "continueInBot": "在聊天机器人继续此对话",
       "deleteBlockedByOwner": "该对话仍在使用中。请先完成、归档或删除关联任务/目标，等待后台回复结束，或解绑聊天机器人后再删除",
       "deleteTransitionInProgress": "该对话正在打开或切换，请稍后再删除",
       "deleteActivityUnavailable": "暂时无法确认该对话是否仍在运行，已保留对话，请稍后重试",
@@ -525,19 +525,11 @@
     "runtimeDiagnostics": {
       "problems": {
         "needsCodexLogin": "需要登录 Codex（点账户头像或运行 codex login）",
-        "authQueryFailed": "auth 查询失败：{{error}}",
-        "appListFailed": "app 列表失败：{{error}}",
-        "mcpStatusFailed": "MCP 状态查询失败：{{error}}",
-        "featureFlagFailed": "feature flag 查询失败：{{error}}",
-        "appsInaccessible": "{{count}} 个 app 启用但不可达：{{names}}",
-        "mcpServersFailed": "MCP server 失败：{{names}}",
         "extensionComponent": "扩展 {{component}}{{id}} 为 {{state}}：{{reason}}"
       },
       "headlines": {
         "needsCodexLogin": "需要登录 Codex 才能继续使用",
-        "allDiagnosticsFailed": "Codex 自诊断全部失败，runtime 可能未启动",
-        "extensionsFailed": "Managed Codex 扩展应用失败",
-        "extensionsPartial": "部分 Managed Codex 扩展不受支持"
+        "extensionsFailed": "Managed Codex 扩展应用失败"
       },
       "status": {
         "unsupported": "不支持",
@@ -967,7 +959,7 @@
       "providerSwitchChannelTransferFailed": "新会话已打开，但 Channel 绑定未迁移",
       "createNewSessionFailed": "创建新会话失败",
       "imagesNotTransferred": "图片附件无法带入新会话，请重新添加",
-      "channelRebindFailedReset": "Channel 重绑失败，已就地重置",
+      "channelRebindFailedNewCancelled": "Channel 重绑失败，已取消新对话",
       "channelRebindFailedDeleteCancelled": "Channel 重绑失败，已取消删除",
       "reselectModelFirst": "请先在模型选择器里重新选择一次模型",
       "submitFailedRetry": "提交失败，请重试",

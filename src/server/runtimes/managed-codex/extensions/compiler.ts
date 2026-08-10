@@ -12,9 +12,22 @@ import type { Dirent } from 'node:fs';
 import type { McpServerDefinition } from '../../../../shared/config-types';
 import { parseFullAgentContent } from '../../../../shared/agentCommands';
 import type { AgentWorkspaceConfig } from '../../../../shared/agentTypes';
-import { BUILTIN_SLASH_COMMANDS, parseFullCommandContent, parseFullSkillContent } from '../../../../shared/slashCommands';
+import {
+  isReservedSlashCommandName,
+  isValidSlashCommandName,
+  parseFullCommandContent,
+  parseFullSkillContent,
+} from '../../../../shared/slashCommands';
 import type { InteractionScenario } from '../../../system-prompt';
+import type {
+  GlobalSkillInventoryEntry,
+  GlobalSkillInventorySnapshot,
+} from '../../../global-skill-inventory';
 import { isRequiredSystemSkill } from '../../../../shared/systemSkills';
+import {
+  type EffectiveProjectCapabilitySnapshot,
+  type ProjectCapabilityKind,
+} from '../../../../shared/projectCapabilities';
 import {
   getDefaultEnabledPluginIdsForWorkspace,
   getEnabledPluginSdkConfigs,
@@ -29,13 +42,12 @@ import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexSkillSpec,
 } from './contracts';
+import { projectManagedCodexMcpLaunchConfig } from './mcp-launch-projection';
 
 const MAX_EXTENSION_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_DEPTH = 8;
-const COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const AGENT_ROLE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const CLAUDE_MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
-const RESERVED_COMMANDS = new Set(BUILTIN_SLASH_COMMANDS.map(command => command.name));
 
 type ExtensionScope = 'project' | 'user' | 'plugin';
 
@@ -52,6 +64,12 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   mcpServers: readonly McpServerDefinition[];
   /** Test-only/home-independent override. Production uses ~/.myagents. */
   userConfigRoot?: string | null;
+  /** Exact project/global winner selection resolved by the shared owner. */
+  capabilitySnapshot?: EffectiveProjectCapabilitySnapshot;
+  /** Exact global bytes admitted by the shared inventory owner. */
+  globalSkillInventory: GlobalSkillInventorySnapshot;
+  /** Canonical Skills isolated after compatibility projection failures. */
+  unavailableSkillNames?: readonly string[];
 }
 
 function component(
@@ -98,8 +116,12 @@ function secretSafeMcpProjection(server: McpServerDefinition): unknown {
   };
 }
 
-function revisionOf(snapshot: Omit<ManagedCodexExtensionSnapshot, 'revision' | 'hostToolDispatcher'>): string {
+function revisionOf(
+  snapshot: Omit<ManagedCodexExtensionSnapshot, 'revision' | 'hostToolDispatcher'>,
+  capabilityRevision?: string,
+): string {
   const projection = {
+    capabilityRevision,
     workspacePath: snapshot.workspacePath,
     scenario: snapshot.scenario,
     enabledPluginIds: snapshot.enabledPluginIds,
@@ -128,6 +150,17 @@ function trustedDirectory(path: string): string | null {
   try {
     const lst = lstatSync(path);
     if (!lst.isDirectory() || lst.isSymbolicLink()) return null;
+    const canonical = realpathSync(path);
+    return statSync(canonical).isDirectory() ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
+function projectSkillDirectory(path: string): string | null {
+  try {
+    const lst = lstatSync(path);
+    if (!lst.isDirectory() && !lst.isSymbolicLink()) return null;
     const canonical = realpathSync(path);
     return statSync(canonical).isDirectory() ? canonical : null;
   } catch {
@@ -185,10 +218,10 @@ function resolveTrustedPlugins(enabledPluginIds: readonly string[]): TrustedPlug
   return listInstalledPlugins()
     .filter(item => enabledPluginIds.includes(item.id) && item.enabled && trustedRoots.has(item.installPath))
     .flatMap(item => {
-      const root = realpathSync(item.installPath);
-      const manifestPath = trustedFile(root, join(root, '.claude-plugin', 'plugin.json'));
-      if (!manifestPath) return [];
       try {
+        const root = realpathSync(item.installPath);
+        const manifestPath = trustedFile(root, join(root, '.claude-plugin', 'plugin.json'));
+        if (!manifestPath) return [];
         const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown;
         return manifest && typeof manifest === 'object' && !Array.isArray(manifest)
           ? [{ id: item.id, root, manifest: manifest as Record<string, unknown> }]
@@ -269,6 +302,7 @@ function readSkillFolder(
       path: skillPath,
       scope,
       sourceId,
+      sourceLocalId: fallbackName,
     };
   } catch {
     reports.push(component('skills', 'failed', 'skill_read_failed', `${sourceId}:${fallbackName}`));
@@ -299,12 +333,58 @@ function scanSkillsAtRoot(
       reports.push(component('skills', 'not_applicable', 'skill_disabled', `${sourceId}:${entry.name}`));
       continue;
     }
-    const folder = trustedDirectory(join(root, entry.name));
-    if (!folder || !isWithin(root, folder)) continue;
-    const skill = readSkillFolder(root, folder, entry.name, scope, sourceId, reports);
+    const folder = scope === 'project'
+      ? projectSkillDirectory(join(root, entry.name))
+      : trustedDirectory(join(root, entry.name));
+    if (!folder || (scope !== 'project' && !isWithin(root, folder))) continue;
+    const skill = readSkillFolder(scope === 'project' ? folder : root, folder, entry.name, scope, sourceId, reports);
     if (skill) skills.push(skill);
   }
   return skills;
+}
+
+function compileInventorySkill(
+  entry: GlobalSkillInventoryEntry,
+  reports: ManagedCodexExtensionComponentResult[],
+): ManagedCodexSkillSpec | null {
+  const parsed = parseFullSkillContent(entry.content);
+  const name = parsed.frontmatter.name?.trim() || entry.name;
+  const description = parsed.frontmatter.description?.trim() || '';
+  if (!name || !description) {
+    reports.push(component(
+      'skills',
+      'failed',
+      'skill_invalid_frontmatter',
+      `global:${entry.folderName}`,
+      'Skill requires name and description.',
+    ));
+    return null;
+  }
+  const unsupportedFields = [
+    parsed.frontmatter['allowed-tools'] ? 'allowed-tools' : null,
+    parsed.frontmatter.context ? 'context' : null,
+    parsed.frontmatter.agent ? 'agent' : null,
+  ].filter((field): field is string => Boolean(field));
+  if (unsupportedFields.length > 0) {
+    reports.push(component(
+      'skills',
+      'unsupported',
+      'skill_unsupported_fields',
+      `global:${name}`,
+      `Unsupported fields: ${unsupportedFields.join(', ')}`,
+    ));
+    return null;
+  }
+  reports.push(component('skills', 'applied', 'skill_compiled', `global:${name}`));
+  return {
+    name,
+    description,
+    contentSha256: createHash('sha256').update(entry.content).digest('hex'),
+    path: entry.skillPath,
+    scope: 'user',
+    sourceId: 'global',
+    sourceLocalId: entry.folderName,
+  };
 }
 
 function scanPluginSkills(
@@ -327,24 +407,6 @@ function scanPluginSkills(
     }
   }
   return skills;
-}
-
-function readDisabledUserSkillNames(userConfigRoot: string | null): Set<string> {
-  if (!userConfigRoot) return new Set();
-  const root = trustedDirectory(userConfigRoot);
-  if (!root) return new Set();
-  const configPath = trustedFile(root, join(root, 'skills-config.json'));
-  if (!configPath) return new Set();
-  try {
-    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { disabled?: unknown };
-    return new Set(
-      Array.isArray(parsed.disabled)
-        ? parsed.disabled.filter((entry): entry is string => typeof entry === 'string')
-        : [],
-    );
-  } catch {
-    return new Set();
-  }
 }
 
 function mergeSkills(
@@ -379,11 +441,11 @@ function readCommandFile(
     const content = readFileSync(safePath, 'utf8');
     const parsed = parseFullCommandContent(content);
     const name = parsed.frontmatter.name?.trim() || fallbackName;
-    if (!COMMAND_NAME_RE.test(name)) {
+    if (!isValidSlashCommandName(name)) {
       reports.push(component('commands', 'failed', 'command_invalid_name', `${sourceId}:${fallbackName}`));
       return null;
     }
-    if (RESERVED_COMMANDS.has(name)) {
+    if (isReservedSlashCommandName(name)) {
       reports.push(component('commands', 'unsupported', 'command_reserved_name', `${sourceId}:${name}`));
       return null;
     }
@@ -397,6 +459,7 @@ function readCommandFile(
       body: parsed.body.trim(),
       scope,
       sourceId,
+      sourceLocalId: relative(root, safePath).split(sep).join('/').replace(/\.md$/i, ''),
     };
   } catch {
     reports.push(component('commands', 'failed', 'command_read_failed', `${sourceId}:${fallbackName}`));
@@ -849,7 +912,6 @@ function pluginMcpServers(
               : undefined,
             isBuiltin: false,
           });
-          reports.push(component('mcp', 'applied', 'plugin_mcp_compiled', `${plugin.id}:${name}`));
           continue;
         }
         const url = typeof raw.url === 'string' ? raw.url : undefined;
@@ -872,7 +934,6 @@ function pluginMcpServers(
               : undefined,
             isBuiltin: false,
           });
-          reports.push(component('mcp', 'applied', 'plugin_mcp_compiled', `${plugin.id}:${name}`));
           continue;
         }
         reports.push(component('mcp', 'unsupported', 'plugin_mcp_transport_unsupported', `${plugin.id}:${name}`));
@@ -891,12 +952,7 @@ function mergeMcpServers(
 ): McpServerDefinition[] {
   const selected = new Map<string, McpServerDefinition>();
   for (const server of base) {
-    if (server.command !== '__builtin__' && server.type !== 'stdio' && server.type !== 'http') {
-      reports.push(component('mcp', 'unsupported', 'mcp_transport_unsupported', server.id));
-      continue;
-    }
     selected.set(server.id, { ...server });
-    reports.push(component('mcp', 'applied', 'mcp_compiled', server.id));
   }
   for (const server of plugin) {
     if (selected.has(server.id)) {
@@ -905,7 +961,35 @@ function mergeMcpServers(
     }
     selected.set(server.id, server);
   }
-  return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const candidates = [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // The same adapter-owned compiler is used at config admission and process
+  // launch. This makes deterministic argv/env rejection a component result
+  // before Session birth instead of a fatal exception after user dispatch.
+  const projection = projectManagedCodexMcpLaunchConfig(candidates, {});
+  const acceptedIds = new Set(projection.acceptedServerIds);
+  const failures = new Map(projection.failures.map(failure => [failure.serverId, failure]));
+  for (const server of candidates) {
+    const failure = failures.get(server.id);
+    if (failure) {
+      reports.push(component(
+        'mcp',
+        failure.state,
+        failure.code,
+        server.id,
+        failure.message,
+      ));
+      continue;
+    }
+    if (acceptedIds.has(server.id)) {
+      reports.push(component(
+        'mcp',
+        'applied',
+        server.id.startsWith('plugin__') ? 'plugin_mcp_compiled' : 'mcp_compiled',
+        server.id,
+      ));
+    }
+  }
+  return candidates.filter(server => acceptedIds.has(server.id));
 }
 
 export function compileManagedCodexExtensionSnapshot(
@@ -932,24 +1016,82 @@ export function compileManagedCodexExtensionSnapshot(
   }
   reportUnsupportedPluginComponents(plugins, reports);
 
-  const projectSkills = scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports);
-  const disabledUserSkillNames = readDisabledUserSkillNames(userConfigRoot);
-  const userSkills = userConfigRoot
-    ? scanSkillsAtRoot(join(userConfigRoot, 'skills'), 'user', 'global', reports, disabledUserSkillNames)
-    : [];
+  const filterSelected = <T extends { scope: ExtensionScope; sourceId: string; sourceLocalId?: string; name: string }>(
+    items: T[],
+    kind: ProjectCapabilityKind,
+  ): T[] => {
+    if (!input.capabilitySnapshot) return items;
+    const enabledCandidates = kind === 'skill'
+      ? input.capabilitySnapshot.enabledSkills
+      : input.capabilitySnapshot.enabledCommands;
+    return items.filter(item => {
+      if (item.scope === 'plugin') return true;
+      if (!item.sourceLocalId) return false;
+      const source = item.scope === 'project' ? 'project' : 'global';
+      const enabled = enabledCandidates.some(candidate => (
+        candidate.source === source && candidate.sourceLocalId === item.sourceLocalId
+      ));
+      if (!enabled) {
+        reports.push(component(
+          kind === 'skill' ? 'skills' : 'commands',
+          'not_applicable',
+          kind === 'skill' ? 'skill_project_disabled' : 'command_project_disabled',
+          `${item.sourceId}:${item.name}`,
+        ));
+      }
+      return enabled;
+    });
+  };
+
+  const projectSkills = filterSelected(
+    scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports),
+    'skill',
+  );
+  const userSkills = filterSelected(
+    input.globalSkillInventory.entries.flatMap(entry => {
+      if (!entry.enabledForProjection) {
+        reports.push(component(
+          'skills',
+          'not_applicable',
+          'skill_disabled',
+          `global:${entry.name}`,
+        ));
+        return [];
+      }
+      const skill = compileInventorySkill(entry, reports);
+      return skill ? [skill] : [];
+    }),
+    'skill',
+  );
   const pluginSkillGroups = plugins.map(plugin => ({
     rank: 1,
     skills: scanPluginSkills(plugin, reports),
   }));
+  const unavailableSkillNames = new Set(input.unavailableSkillNames ?? []);
   const skills = mergeSkills([
     { rank: 3, skills: projectSkills },
     { rank: 2, skills: userSkills },
     ...pluginSkillGroups,
-  ], reports);
+  ], reports).filter(skill => {
+    if (!unavailableSkillNames.has(skill.name)) return true;
+    reports.push(component(
+      'skills',
+      'failed',
+      'skill_projection_unavailable',
+      `${skill.sourceId}:${skill.name}`,
+    ));
+    return false;
+  });
 
-  const projectCommands = scanCommandsAtRoot(join(input.workspacePath, '.claude', 'commands'), 'project', 'workspace', reports);
+  const projectCommands = filterSelected(
+    scanCommandsAtRoot(join(input.workspacePath, '.claude', 'commands'), 'project', 'workspace', reports),
+    'command',
+  );
   const userCommands = userConfigRoot
-    ? scanCommandsAtRoot(join(userConfigRoot, 'commands'), 'user', 'global', reports)
+    ? filterSelected(
+        scanCommandsAtRoot(join(userConfigRoot, 'commands'), 'user', 'global', reports),
+        'command',
+      )
     : [];
   const pluginCommandGroups = plugins.map(plugin => ({
     rank: 1,
@@ -991,7 +1133,7 @@ export function compileManagedCodexExtensionSnapshot(
   };
   return {
     ...snapshotWithoutRevision,
-    revision: revisionOf(snapshotWithoutRevision),
+    revision: revisionOf(snapshotWithoutRevision, input.capabilitySnapshot?.revision),
   };
 }
 
@@ -1002,11 +1144,9 @@ export function compileManagedCodexCommand(
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(rawText);
   if (!match) return null;
   const commandName = match[1]!;
-  if (RESERVED_COMMANDS.has(commandName)) return null;
+  if (isReservedSlashCommandName(commandName)) return null;
   const command = snapshot.commands.find(candidate => candidate.name === commandName);
-  if (!command) {
-    throw new Error(`Unknown Managed Codex command: /${commandName}`);
-  }
+  if (!command) return null;
   const args = match[2]?.trim() ?? '';
   const hasArgumentsPlaceholder = command.body.includes('$ARGUMENTS');
   const expanded = command.body.replaceAll('$ARGUMENTS', args);

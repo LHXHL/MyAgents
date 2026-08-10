@@ -2280,18 +2280,20 @@ describe('admin-api MCP connectivity test', () => {
         name: 'Resolved HTTP fixture',
         type: 'http',
         url: 'https://mcp.invalid/{{MCP_PATH}}',
-        env: { MCP_PATH: 'stale-path' },
-        headers: { 'X-MCP-Test': 'configured-header' },
+        env: { MCP_PATH: 'stale-path', MCP_TOKEN: 'stale-token' },
+        headers: { Authorization: 'Bearer {{MCP_TOKEN}}' },
         isBuiltin: false,
       }],
-      mcpServerEnv: { 'resolved-http': { MCP_PATH: 'resolved-path' } },
+      mcpServerEnv: {
+        'resolved-http': { MCP_PATH: 'resolved-path', MCP_TOKEN: 'resolved-token' },
+      },
     });
     const cancellation = await import('./utils/cancellation');
     let observedUrl = '';
     let observedHeader = '';
     cancellation._setGeneralFetchTransportForTests(async (url, init) => {
       observedUrl = String(url);
-      observedHeader = new Headers(init?.headers as HeadersInit | undefined).get('X-MCP-Test') ?? '';
+      observedHeader = new Headers(init?.headers as HeadersInit | undefined).get('Authorization') ?? '';
       if (init?.method === 'GET') return new Response(null, { status: 405 });
       const body = typeof init?.body === 'string'
         ? JSON.parse(init.body) as { id?: string | number; method?: string; params?: { protocolVersion?: string } }
@@ -2323,7 +2325,7 @@ describe('admin-api MCP connectivity test', () => {
         serverVersion: '2.0.0',
       }));
       expect(observedUrl).toBe('https://mcp.invalid/resolved-path');
-      expect(observedHeader).toBe('configured-header');
+      expect(observedHeader).toBe('Bearer resolved-token');
     } finally {
       cancellation._setGeneralFetchTransportForTests();
     }

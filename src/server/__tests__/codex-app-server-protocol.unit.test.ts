@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { McpServerDefinition } from '../../shared/config-types';
 
 import {
   buildCodexFileChangeResultContent,
@@ -16,6 +17,8 @@ import {
   buildCodexStartedFileChangeInput,
   CodexRuntime,
   codexModelCacheKey,
+  CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
+  CODEX_SKILL_LIST_TIMEOUT_MS,
   configureCodexSkillExtraRoots,
   createCodexMcpStartupBarrier,
   assertManagedCodexExtensionProtocolVersion,
@@ -23,6 +26,7 @@ import {
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
   mapCodexTurnPlanUpdatedNotification,
+  materializeManagedCodexExtensions,
   resolveCodexThreadModelProvider,
   resolveCodexConversationBranchPoint,
   resolveCodexSkillExtraRoots,
@@ -30,12 +34,14 @@ import {
   summarizeCodexThreadParamsForLog,
   type PendingCodexRequest,
 } from '../runtimes/codex';
+import { projectManagedCodexMcpLaunchConfig } from '../runtimes/managed-codex/extensions/mcp-launch-projection';
 
 describe('Codex app-server protocol helpers', () => {
   const tempRoots: string[] = [];
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     while (tempRoots.length > 0) {
       const dir = tempRoots.pop();
       if (dir) rmSync(dir, { recursive: true, force: true });
@@ -77,6 +83,42 @@ describe('Codex app-server protocol helpers', () => {
     ].join('\n'));
   });
 
+  it('materializes a long Skill name without using it as a filesystem component', () => {
+    const workspace = tempWorkspace();
+    const skillDir = join(workspace, 'skill-source');
+    const skillPath = join(skillDir, 'SKILL.md');
+    mkdirSync(skillDir, { recursive: true });
+    const longName = `skill-${'x'.repeat(300)}`;
+    const materialized = materializeManagedCodexExtensions({
+      revision: 'revision',
+      workspacePath: workspace,
+      scenario: { type: 'desktop' },
+      enabledPluginIds: [],
+      skills: [{
+        name: longName,
+        description: 'Long but valid native name',
+        contentSha256: 'sha',
+        path: skillPath,
+        scope: 'project',
+        sourceId: 'workspace',
+        sourceLocalId: 'skill-source',
+      }],
+      commands: [],
+      agents: [],
+      mcpServers: [],
+      dynamicTools: [],
+      components: [],
+    });
+
+    try {
+      expect(materialized.skills.map(skill => skill.name)).toEqual([longName]);
+      expect(materialized.skillRoots).toHaveLength(1);
+      expect(existsSync(join(materialized.skillRoots[0], '000'))).toBe(true);
+    } finally {
+      materialized.cleanup();
+    }
+  });
+
   it('holds Managed Codex Host tools behind the existing permission owner', async () => {
     const runtime = new CodexRuntime();
     const dispatch = vi.fn(async () => ({
@@ -96,7 +138,7 @@ describe('Codex app-server protocol helpers', () => {
       settledHostCallIds: new Set(),
       extensionSnapshot: {
         hostToolDispatcher: {
-          descriptors: [{ name: 'mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
+          descriptors: [{ name: 'myagents__mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
           dispatch,
           dispose: vi.fn(),
         },
@@ -128,7 +170,7 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'thread-one',
       turnId: 'turn-one',
       callId: 'call-one',
-      tool: 'mcp__local__write',
+      tool: 'myagents__mcp__local__write',
       arguments: { path: 'README.md' },
     }, event => events.push(event));
 
@@ -136,7 +178,7 @@ describe('Codex app-server protocol helpers', () => {
     expect(events).toEqual([expect.objectContaining({
       kind: 'permission_request',
       requestId: '41',
-      toolName: 'mcp__local__write',
+      toolName: 'myagents__mcp__local__write',
     })]);
     await runtime.respondPermission(
       process as unknown as import('../runtimes/types').RuntimeProcess,
@@ -167,7 +209,7 @@ describe('Codex app-server protocol helpers', () => {
       extensionSnapshot: {
         hostToolDispatcher: {
           descriptors: [{
-            name: 'mcp__local__write',
+            name: 'myagents__mcp__local__write',
             description: 'Write',
             inputSchema: {
               type: 'object',
@@ -194,7 +236,7 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'thread-one',
       turnId: 'turn-one',
       callId: 'call-invalid',
-      tool: 'mcp__local__write',
+      tool: 'myagents__mcp__local__write',
       arguments: { unexpected: true },
     }, event => events.push(event));
 
@@ -564,31 +606,51 @@ describe('Codex app-server protocol helpers', () => {
     });
   });
 
-  it('fails the managed MCP snapshot instead of silently skipping unsafe entries', () => {
-    const build = (server: NonNullable<Parameters<typeof buildCodexAppServerArgs>[0]['mcpServers']>[number]) => () => (
-      buildCodexAppServerArgs({
-        commandPath: '/managed/codex',
-        runtimeSource: 'managed-provider',
-        codexEnv: {},
-        mcpServers: [server],
-      })
-    );
+  it('isolates unsafe managed MCP entries while keeping valid servers launchable', () => {
+    const env: Record<string, string | undefined> = {};
+    const mcpServers: McpServerDefinition[] = [
+      {
+        id: 'arg-secret', name: 'Arg Secret', type: 'stdio', command: 'node',
+        args: ['server.js', '--api-key', 'sk-test-secret-value'], isBuiltin: false,
+      },
+      {
+        id: 'safe', name: 'Safe', type: 'stdio', command: 'node',
+        args: ['safe-server.js'], env: { SAFE_TOKEN: 'safe-secret' }, isBuiltin: false,
+      },
+      {
+        id: 'env-openai', name: 'OpenAI env', type: 'stdio', command: 'node',
+        args: ['server.js'], env: { OPENAI_API_KEY: 'must-not-leak' }, isBuiltin: false,
+      },
+      {
+        id: 'url-query', name: 'URL Query', type: 'http',
+        url: 'https://example.com/mcp?transport=streamable', isBuiltin: false,
+      },
+    ];
+    const launch = buildCodexAppServerLaunchConfig({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: env,
+      mcpServers,
+    });
+    const projection = projectManagedCodexMcpLaunchConfig(mcpServers, {});
 
-    expect(build({
-      id: 'arg-secret', name: 'Arg Secret', type: 'stdio', command: 'node',
-      args: ['server.js', '--api-key', 'sk-test-secret-value'], isBuiltin: false,
-    })).toThrow(/arg-secret.*credential flag/i);
-    expect(build({
-      id: 'env-openai', name: 'OpenAI env', type: 'stdio', command: 'node',
-      args: ['server.js'], env: { OPENAI_API_KEY: 'must-not-leak' }, isBuiltin: false,
-    })).toThrow(/env-openai.*OPENAI_API_KEY/i);
-    expect(build({
-      id: 'url-query', name: 'URL Query', type: 'http',
-      url: 'https://example.com/mcp?transport=streamable', isBuiltin: false,
-    })).toThrow(/url-query.*query string/i);
+    expect(launch.mcpServerNames).toEqual(['safe']);
+    expect(launch.args).toContain('mcp_servers.safe.command="node"');
+    expect(launch.args.join('\n')).not.toContain('mcp_servers.arg-secret');
+    expect(launch.args.join('\n')).not.toContain('mcp_servers.env-openai');
+    expect(launch.args.join('\n')).not.toContain('mcp_servers.url-query');
+    expect(launch.args.join('\n')).not.toContain('sk-test-secret-value');
+    expect(launch.args.join('\n')).not.toContain('must-not-leak');
+    expect(env.SAFE_TOKEN).toBe('safe-secret');
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(projection.failures).toEqual([
+      expect.objectContaining({ serverId: 'arg-secret', message: expect.stringMatching(/credential flag/i) }),
+      expect.objectContaining({ serverId: 'env-openai', message: expect.stringMatching(/OPENAI_API_KEY/i) }),
+      expect.objectContaining({ serverId: 'url-query', message: expect.stringMatching(/query string/i) }),
+    ]);
   });
 
-  it('keeps in-process MCP on the Host path and rejects conflicting native MCP env values', () => {
+  it('keeps in-process MCP on the Host path and isolates conflicting native MCP env values', () => {
     expect(() => buildCodexAppServerArgs({
       commandPath: '/managed/codex',
       runtimeSource: 'managed-provider',
@@ -599,15 +661,52 @@ describe('Codex app-server protocol helpers', () => {
       }],
     })).not.toThrow();
 
-    expect(() => buildCodexAppServerArgs({
+    const mcpServers: McpServerDefinition[] = [
+      { id: 'one', name: 'One', type: 'stdio', command: 'one', env: { TOKEN: 'first' }, isBuiltin: false },
+      { id: 'two', name: 'Two', type: 'stdio', command: 'two', env: { TOKEN: 'second' }, isBuiltin: false },
+    ];
+    const launch = buildCodexAppServerLaunchConfig({
       commandPath: '/managed/codex',
       runtimeSource: 'managed-provider',
       codexEnv: {},
-      mcpServers: [
-        { id: 'one', name: 'One', type: 'stdio', command: 'one', env: { TOKEN: 'first' }, isBuiltin: false },
-        { id: 'two', name: 'Two', type: 'stdio', command: 'two', env: { TOKEN: 'second' }, isBuiltin: false },
-      ],
-    })).toThrow(/two.*TOKEN.*one/i);
+      mcpServers,
+    });
+    const projection = projectManagedCodexMcpLaunchConfig(mcpServers, {});
+    expect(launch.mcpServerNames).toEqual(['one']);
+    expect(projection.failures).toEqual([
+      expect.objectContaining({ serverId: 'two', message: expect.stringMatching(/TOKEN.*one/i) }),
+    ]);
+  });
+
+  it('keeps generated HTTP header env ownership isolated from stdio env', () => {
+    const env: Record<string, string | undefined> = {};
+    const mcpServers: McpServerDefinition[] = [
+      {
+        id: 'a', name: 'HTTP owner', type: 'http', url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer http-secret' }, isBuiltin: false,
+      },
+      {
+        id: 'b', name: 'Stdio collision', type: 'stdio', command: 'node',
+        env: { MYAGENTS_MCP_A_AUTHORIZATION: 'stdio-secret' }, isBuiltin: false,
+      },
+    ];
+    const launch = buildCodexAppServerLaunchConfig({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: env,
+      mcpServers,
+    });
+    const projection = projectManagedCodexMcpLaunchConfig(mcpServers, {});
+
+    expect(launch.mcpServerNames).toEqual(['a']);
+    expect(projection.failures).toEqual([
+      expect.objectContaining({
+        serverId: 'b',
+        message: expect.stringMatching(/MYAGENTS_MCP_A_AUTHORIZATION.*a/i),
+      }),
+    ]);
+    expect(env.MYAGENTS_MCP_A_AUTHORIZATION).toBe('Bearer http-secret');
+    expect(Object.values(env)).not.toContain('stdio-secret');
   });
 
   it('injects project .claude/skills as Codex app-server extra skill roots', async () => {
@@ -616,28 +715,141 @@ describe('Codex app-server protocol helpers', () => {
     mkdirSync(projectSkillsDir, { recursive: true });
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace, 1234)).resolves.toEqual([projectSkillsDir]);
+    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: [],
+    });
 
     expect(resolveCodexSkillExtraRoots(workspace)).toEqual([projectSkillsDir]);
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/extraRoots/set',
       { extraRoots: [projectSkillsDir] },
-      1234,
+      CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
     );
+    expect(rpc.call).toHaveBeenCalledWith(
+      'skills/list',
+      { cwds: [workspace], forceReload: true },
+      CODEX_SKILL_LIST_TIMEOUT_MS,
+    );
+  });
+
+  it('logs Codex Skill parser details without exposing absolute paths', async () => {
+    const workspace = tempWorkspace();
+    const projectSkillsDir = join(workspace, '.claude', 'skills');
+    const expectedSkillPath = join(projectSkillsDir, 'expected-skill', 'SKILL.md');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rpc = {
+      call: vi.fn(async (method: string) => method === 'skills/list'
+        ? {
+            data: [{
+              skills: [{ name: 'expected-skill', enabled: true, path: expectedSkillPath }],
+              errors: [{
+                path: join(projectSkillsDir, 'broken', 'SKILL.md'),
+                message: 'invalid frontmatter SECRET_SENTINEL BODY_SENTINEL',
+              }],
+            }],
+          }
+        : {}),
+    };
+
+    await expect(configureCodexSkillExtraRoots(
+      rpc,
+      workspace,
+      1_234,
+      [projectSkillsDir],
+      [{ name: 'expected-skill', path: expectedSkillPath }],
+    )).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: ['expected-skill'],
+    });
+
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
+    const logLine = warning.mock.calls.flat().join('\n');
+    expect(logLine).toContain('<workspace>/.claude/skills/broken/SKILL.md');
+    expect(logLine).toContain('message={"present":true,"chars":');
+    expect(logLine).not.toContain('invalid frontmatter');
+    expect(logLine).not.toContain('SECRET_SENTINEL');
+    expect(logLine).not.toContain('BODY_SENTINEL');
+    expect(logLine).not.toContain(workspace);
+  });
+
+  it('keeps Codex available when one projected Skill is missing after read-back', async () => {
+    const workspace = tempWorkspace();
+    const projectSkillsDir = join(workspace, '.claude', 'skills');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rpc = {
+      call: vi.fn(async (method: string) => method === 'skills/list'
+        ? {
+            data: [{
+              skills: [],
+              errors: [{ path: join(projectSkillsDir, 'web-access', 'SKILL.md'), message: 'invalid YAML' }],
+            }],
+          }
+        : {}),
+    };
+
+    await expect(configureCodexSkillExtraRoots(
+      rpc,
+      workspace,
+      1_234,
+      [projectSkillsDir],
+      [{ name: 'web-access', path: join(projectSkillsDir, 'web-access', 'SKILL.md') }],
+    )).resolves.toEqual({
+      extraRoots: [projectSkillsDir],
+      loadedSkillNames: [],
+    });
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
+    const warningLog = warning.mock.calls.flat().join('\n');
+    expect(warningLog).toContain('continuing without them: web-access');
+    expect(warningLog).not.toContain('invalid YAML');
+  });
+
+  it('does not let a same-name Skill from another root satisfy projected identity', async () => {
+    const workspace = tempWorkspace();
+    const projectedRoot = join(workspace, 'projected-skills');
+    const projectedPath = join(projectedRoot, 'skill-creator', 'SKILL.md');
+    const systemPath = join(workspace, 'system-skills', 'skill-creator', 'SKILL.md');
+    mkdirSync(projectedRoot, { recursive: true });
+    const rpc = {
+      call: vi.fn(async (method: string) => method === 'skills/list'
+        ? {
+            data: [{
+              skills: [{ name: 'skill-creator', enabled: true, path: systemPath }],
+              errors: [{ path: projectedPath, message: 'invalid projected Skill' }],
+            }],
+          }
+        : {}),
+    };
+
+    await expect(configureCodexSkillExtraRoots(
+      rpc,
+      workspace,
+      1_234,
+      [projectedRoot],
+      [{ name: 'skill-creator', path: projectedPath }],
+    )).resolves.toEqual({
+      extraRoots: [projectedRoot],
+      loadedSkillNames: [],
+    });
   });
 
   it('skips Codex skill extra roots when project .claude/skills is absent', async () => {
     const workspace = tempWorkspace();
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual([]);
+    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+      extraRoots: [],
+      loadedSkillNames: [],
+    });
 
     expect(existsSync(join(workspace, '.claude', 'skills'))).toBe(false);
     expect(resolveCodexSkillExtraRoots(workspace)).toEqual([]);
     expect(rpc.call).not.toHaveBeenCalled();
   });
 
-  it('does not fail Codex startup when extraRoots RPC is unavailable', async () => {
+  it('does not fail Codex startup when managed extraRoots RPC is unavailable', async () => {
     const workspace = tempWorkspace();
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
@@ -645,7 +857,13 @@ describe('Codex app-server protocol helpers', () => {
       call: vi.fn().mockRejectedValue(new Error('Method not found: skills/extraRoots/set')),
     };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual([]);
+    await expect(configureCodexSkillExtraRoots(
+      rpc,
+      workspace,
+      5_000,
+      [projectSkillsDir],
+      [{ name: 'review-helper', path: join(projectSkillsDir, 'review-helper', 'SKILL.md') }],
+    )).resolves.toEqual({ extraRoots: [], loadedSkillNames: [] });
 
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/extraRoots/set',
@@ -955,6 +1173,59 @@ describe('Codex app-server protocol helpers', () => {
       error: 'websocket failed',
       result: 'websocket failed',
     });
+  });
+
+  it('runs native Managed Codex compaction as a transcript-free control turn', async () => {
+    const runtime = new CodexRuntime();
+    const rpc = { call: vi.fn(async () => ({})) };
+    const codexProc = {
+      exited: false,
+      runtimeSource: 'managed-provider',
+      threadId: 'thread-1',
+      currentTurnId: '',
+      compactControl: null,
+      activeRootTurnAdmission: null,
+      exactUsageByTurn: new Map(),
+      rpc,
+    };
+    const parseNotification = (method: string, params: unknown) => (
+      runtime as unknown as {
+        parseNotification(
+          proc: typeof codexProc,
+          notificationMethod: string,
+          notificationParams: unknown,
+          asyncEmit: () => void,
+        ): unknown;
+      }
+    ).parseNotification(codexProc, method, params, () => {});
+
+    const compact = runtime.compactContext(
+      codexProc as unknown as import('../runtimes/types').RuntimeProcess,
+    );
+    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledWith(
+      'thread/compact/start',
+      { threadId: 'thread-1' },
+      15_000,
+    ));
+
+    expect(parseNotification('turn/started', {
+      threadId: 'thread-1',
+      turn: { id: 'compact-turn', status: 'inProgress' },
+    })).toBeNull();
+    expect(codexProc.currentTurnId).toBe('compact-turn');
+    expect(parseNotification('item/started', {
+      threadId: 'thread-1',
+      turnId: 'compact-turn',
+      item: { type: 'contextCompaction', id: 'compact-item' },
+    })).toBeNull();
+    expect(parseNotification('turn/completed', {
+      threadId: 'thread-1',
+      turn: { id: 'compact-turn', status: 'completed', error: null },
+    })).toBeNull();
+
+    await expect(compact).resolves.toBeUndefined();
+    expect(codexProc.compactControl).toBeNull();
+    expect(codexProc.currentTurnId).toBe('');
   });
 
   it('keeps thread status snapshots separate from turn activity', () => {

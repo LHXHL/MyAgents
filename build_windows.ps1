@@ -559,9 +559,9 @@ try {
     Write-Host "[5/7] 构建前端和服务端..." -ForegroundColor Blue
 
     # Sidecar / Bridge / CLI 三件套统一通过 npm scripts，由
-    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 post-build：
-    #   - cli: 复制 myagents.cmd 到 resources/cli/
-    #   - server: 校验产物不含硬编码 __dirname 路径
+    # `scripts/esbuild-bundle.mjs` 单一入口驱动。Driver 自带 target 生命周期职责：
+    #   - cli: 构建前清理 staging，随后只产出 bundle authority myagents.cjs
+    #   - server: 构建后校验产物不含硬编码 __dirname 路径
     # 实际上 tauri:build 的 beforeBuildCommand (tauri.conf.json) 也会
     # 跑同一组 npm 脚本——这里显式提前一步是为了 build 阶段提早暴露
     # 错误（避免等到 cargo 链接成功才发现 server-dist.js 有问题）。

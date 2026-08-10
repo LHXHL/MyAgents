@@ -38,6 +38,20 @@ export type ImagePayload = InlineImagePayload | AttachmentRefImagePayload;
 /** Image payload after Sidecar resolves refs at the runtime boundary. */
 export type ResolvedImagePayload = InlineImagePayload & { data: string };
 
+/**
+ * Atomic first user turn for a newly started runtime process.
+ *
+ * The message and its caller-owned identity must cross the adapter boundary
+ * together. Product Session turns use the persisted SessionMessage id; isolated
+ * utility turns (for example auto-title generation) mint an ephemeral id. Keeping
+ * these fields in one object makes an unowned initial root turn unrepresentable.
+ */
+export interface RuntimeInitialTurn {
+  message: string;
+  clientUserMessageId: string;
+  images?: ResolvedImagePayload[];
+}
+
 export function isAttachmentRefImagePayload(img: ImagePayload): img is AttachmentRefImagePayload {
   return img.kind === 'attachment_ref';
 }
@@ -52,10 +66,7 @@ export function isInlineImagePayload(img: ImagePayload): img is InlineImagePaylo
 export interface SessionStartOptions {
   sessionId: string;
   workspacePath: string;
-  initialMessage?: string;
-  /** Product message identity for the root turn started by initialMessage. */
-  initialClientUserMessageId?: string;
-  initialImages?: ResolvedImagePayload[];
+  initialTurn?: RuntimeInitialTurn;
   systemPromptAppend?: string;
   model?: string;
   permissionMode?: string;
@@ -105,6 +116,8 @@ export interface RuntimeProcess {
   readonly pid: number;
   /** Optional adapter-owned identity for generation-scoped projections/callbacks. */
   readonly runtimeGeneration?: string;
+  /** Runtime-native Skill names confirmed after startup, when the adapter can inspect them. */
+  loadedSkillNames?: readonly string[];
   /** Write a line to the process stdin */
   writeLine(line: string): Promise<void>;
   /** Kill the process */
@@ -381,6 +394,13 @@ export interface AgentRuntime {
     images?: ResolvedImagePayload[],
     options?: { clientUserMessageId?: string },
   ): Promise<void>;
+
+  /**
+   * Compact the active conversation through the runtime's native control
+   * plane. This is intentionally separate from sendMessage(): compaction is a
+   * control turn and must never create user/assistant transcript messages.
+   */
+  compactContext?(process: RuntimeProcess): Promise<void>;
 
   /** Create a runtime-native conversation branch at a stable root-turn boundary. */
   branchConversation?(

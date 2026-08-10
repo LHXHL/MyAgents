@@ -9,8 +9,8 @@
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
-import { writeFileSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
-import { dirname, join } from 'path';
+import { writeFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   RuntimeDetection, RuntimeModelInfo, RuntimePermissionMode, RuntimeType,
   RuntimeAuthStatus, RuntimeFeatureFlag, RuntimeMcpServerInfo, RuntimeAppInfo,
@@ -34,11 +34,8 @@ import {
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
-import { getBundledCusePath } from '../utils/runtime';
-import { resolveNpxMcpInvocation } from '../utils/mcp-command';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
-import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import {
   saveToolAttachment,
   makePlaceholderAttachment,
@@ -57,8 +54,12 @@ import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexHostToolCall,
   ManagedCodexHostToolResult,
+  ManagedCodexSkillSpec,
 } from './managed-codex/extensions/contracts';
 import { MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION } from './managed-codex/extensions/contracts';
+import {
+  projectManagedCodexMcpLaunchConfig,
+} from './managed-codex/extensions/mcp-launch-projection';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 
 /**
@@ -86,6 +87,7 @@ type CodexDynamicToolCallResult = {
 };
 
 const managedCodexHostInputValidator = new AjvJsonSchemaValidator();
+const CODEX_COMPACT_TIMEOUT_MS = 120_000;
 
 function toCodexDynamicToolCallResult(result: ManagedCodexHostToolResult): CodexDynamicToolCallResult {
   return {
@@ -155,43 +157,6 @@ export function summarizeCodexThreadParamsForLog(
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
-const CODEX_MCP_PROXY_ENV_KEYS = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'all_proxy',
-  'no_proxy',
-] as const;
-const CODEX_MCP_TEMPLATE_RE = /\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/;
-const CODEX_MCP_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CODEX_MCP_SECRET_VALUE_RE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/i;
-const CODEX_MCP_INLINE_SECRET_RE = /(?:api[-_]?key|token|secret|password|authorization|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s]+/i;
-const CODEX_MCP_SENSITIVE_FLAG_RE = /^-{1,2}(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|authorization|auth-token)(?:$|[=:])/i;
-const CODEX_MCP_PARENT_ENV_DENY = new Set([
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'PWD',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'LD_PRELOAD',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'MYAGENTS_RUNTIME_SOURCE',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENAI_ORG_ID',
-  'OPENAI_ORGANIZATION',
-]);
 export type CodexMcpStartupState = 'starting' | 'ready' | 'failed' | 'cancelled';
 
 export interface CodexMcpStartupStatusNotification {
@@ -377,120 +342,6 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function tomlArray(values: readonly string[]): string {
-  return `[${values.map(tomlString).join(',')}]`;
-}
-
-function tomlKey(value: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
-}
-
-function tomlInlineStringMap(values: Record<string, string>): string {
-  const entries = Object.entries(values);
-  return `{${entries.map(([key, value]) => `${tomlKey(key)}=${tomlString(value)}`).join(',')}}`;
-}
-
-function codexMcpServerName(id: string): string | null {
-  const normalized = id.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
-  return normalized || null;
-}
-
-function codexMcpEnvVarName(serverName: string, key: string): string {
-  const safeServer = serverName.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  const safeKey = key.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  return `MYAGENTS_MCP_${safeServer}_${safeKey}`.slice(0, 180);
-}
-
-function uniqueCodexMcpEnvVarName(
-  serverName: string,
-  key: string,
-  used: Set<string>,
-): string {
-  const base = codexMcpEnvVarName(serverName, key);
-  let candidate = base;
-  let i = 2;
-  while (used.has(candidate)) {
-    const suffix = `_${i}`;
-    candidate = `${base.slice(0, Math.max(1, 180 - suffix.length))}${suffix}`;
-    i += 1;
-  }
-  used.add(candidate);
-  return candidate;
-}
-
-function hasCodexMcpTemplate(value: string): boolean {
-  return CODEX_MCP_TEMPLATE_RE.test(value);
-}
-
-function resolveMcpTemplateValue(
-  value: string,
-  env: Record<string, string> | undefined,
-): string | null {
-  let missing = false;
-  const resolved = value.replace(/\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g, (_match, key: string) => {
-    const replacement = env?.[key];
-    if (replacement === undefined) {
-      missing = true;
-      return '';
-    }
-    return replacement;
-  });
-  return missing ? null : resolved;
-}
-
-function unsafeCodexMcpStdioValueReason(value: string): string | null {
-  if (hasCodexMcpTemplate(value)) return 'contains MyAgents env placeholder';
-  if (CODEX_MCP_SECRET_VALUE_RE.test(value)) return 'contains inline secret-looking value';
-  if (/bearer\s+\S+/i.test(value)) return 'contains inline bearer token';
-  if (CODEX_MCP_INLINE_SECRET_RE.test(value)) return 'contains inline credential assignment';
-  return null;
-}
-
-function unsafeCodexMcpStdioArgsReason(args: readonly string[]): string | null {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] ?? '';
-    const valueReason = unsafeCodexMcpStdioValueReason(arg);
-    if (valueReason) return `arg[${i}] ${valueReason}`;
-    if (CODEX_MCP_SENSITIVE_FLAG_RE.test(arg.trim())) {
-      return `arg[${i}] uses a credential flag`;
-    }
-    const previous = args[i - 1]?.trim();
-    if (previous && CODEX_MCP_SENSITIVE_FLAG_RE.test(previous)) {
-      return `arg[${i}] follows a credential flag`;
-    }
-  }
-  return null;
-}
-
-function unsafeCodexMcpUrlReason(rawUrl: string): string | null {
-  if (hasCodexMcpTemplate(rawUrl)) return 'contains MyAgents env placeholder';
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return 'is not a valid URL';
-  }
-  if (parsed.username || parsed.password) return 'contains URL userinfo';
-  if (parsed.search || parsed.hash) {
-    return 'contains query string or fragment that would enter argv';
-  }
-  if (CODEX_MCP_SECRET_VALUE_RE.test(parsed.pathname)) {
-    return 'contains secret-looking path segment';
-  }
-  return null;
-}
-
-function canExposeMcpEnvKeyToCodexParent(key: string): boolean {
-  if (!CODEX_MCP_ENV_NAME_RE.test(key)) return false;
-  const upper = key.toUpperCase();
-  if (upper.startsWith('CODEX_') || upper.startsWith('OPENAI_')) return false;
-  if (CODEX_MCP_PARENT_ENV_DENY.has(upper)) return false;
-  if ((CODEX_MCP_PROXY_ENV_KEYS as readonly string[]).some(proxyKey => proxyKey.toUpperCase() === upper)) {
-    return false;
-  }
-  return true;
-}
-
 function pushCodexConfigArg(target: string[], key: string, valueToml: string): void {
   target.push('-c', `${key}=${valueToml}`);
 }
@@ -498,6 +349,7 @@ function pushCodexConfigArg(target: string[], key: string, valueToml: string): v
 type ManagedCodexExtensionMaterialization = {
   configArgs: string[];
   skillRoots: string[];
+  skills: ManagedCodexSkillSpec[];
   cleanup(): void;
 };
 
@@ -512,47 +364,89 @@ export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec
   return `${lines.join('\n')}\n`;
 }
 
-function materializeManagedCodexExtensions(
+export function materializeManagedCodexExtensions(
   snapshot: ManagedCodexExtensionSnapshot | undefined,
 ): ManagedCodexExtensionMaterialization {
   if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
-    return { configArgs: [], skillRoots: [], cleanup() {} };
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
   }
-  const root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  let root: string;
+  try {
+    root = mkdtempSync(join(tmpdir(), 'myagents-codex-extensions-'));
+  } catch (error) {
+    console.warn(
+      '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
   const configArgs: string[] = [];
   const skillRoots: string[] = [];
+  const skills: ManagedCodexSkillSpec[] = [];
   let cleaned = false;
-  try {
-    if (snapshot.agents.length > 0) {
+  if (snapshot.agents.length > 0) {
+    try {
       const rolesRoot = join(root, 'agents');
       ensureDirSync(rolesRoot);
-      for (const role of snapshot.agents) {
-        const configPath = join(rolesRoot, `${role.name}.toml`);
-        writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
-        pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
-        pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+      for (const [index, role] of snapshot.agents.entries()) {
+        const configPath = join(rolesRoot, `${String(index).padStart(3, '0')}.toml`);
+        try {
+          writeFileSync(configPath, buildManagedCodexAgentRoleConfig(role), { encoding: 'utf8', mode: 0o600 });
+          pushCodexConfigArg(configArgs, `agents.${role.name}.description`, tomlString(role.description));
+          pushCodexConfigArg(configArgs, `agents.${role.name}.config_file`, tomlString(configPath));
+        } catch (error) {
+          console.warn(
+            `[codex] managed Agent materialization failed; continuing without ${role.name}:`,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
+    } catch (error) {
+      console.warn(
+        '[codex] managed Agent materialization unavailable; continuing without projected Agents:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
-    if (snapshot.skills.length > 0) {
+  }
+  if (snapshot.skills.length > 0) {
+    try {
       const skillsRoot = join(root, 'skills');
       ensureDirSync(skillsRoot);
       for (const [index, skill] of snapshot.skills.entries()) {
-        const folderName = `${String(index).padStart(3, '0')}-${skill.name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
-        symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+        try {
+          const folderName = String(index).padStart(3, '0');
+          symlinkSync(dirname(skill.path), join(skillsRoot, folderName), process.platform === 'win32' ? 'junction' : 'dir');
+          skills.push(skill);
+        } catch (error) {
+          console.warn(
+            `[codex] managed Skill materialization failed; continuing without ${skill.name}:`,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
-      skillRoots.push(skillsRoot);
+      if (skills.length > 0) skillRoots.push(skillsRoot);
+    } catch (error) {
+      console.warn(
+        '[codex] managed Skill materialization unavailable; continuing without projected Skills:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
-  } catch (error) {
-    rmSync(root, { recursive: true, force: true });
-    throw error;
   }
   return {
     configArgs,
     skillRoots,
+    skills,
     cleanup() {
       if (cleaned) return;
       cleaned = true;
-      rmSync(root, { recursive: true, force: true });
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(
+          '[codex] failed to clean managed extension temp files:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     },
   };
 }
@@ -568,193 +462,175 @@ export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
   }
 }
 
+export const CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS = 30_000;
+export const CODEX_SKILL_LIST_TIMEOUT_MS = 30_000;
+
+type CodexSkillListError = { path?: string; message?: string };
+type CodexSkillListEntry = {
+  skills?: Array<{ name?: string; enabled?: boolean; path?: string }>;
+  errors?: CodexSkillListError[];
+};
+
+type ExpectedCodexSkill = Pick<ManagedCodexSkillSpec, 'name' | 'path'>;
+
+export type CodexSkillProjectionResult = {
+  extraRoots: string[];
+  loadedSkillNames: string[];
+};
+
+function canonicalCodexSkillPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function codexSkillIdentity(skill: { name: string; path: string }): string {
+  return `${skill.name}\0${canonicalCodexSkillPath(skill.path)}`;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function summarizeCodexSkillErrorPath(
+  path: string | undefined,
+  workspacePath: string,
+  extraRoots: readonly string[],
+): string {
+  if (!path) return '<unknown>';
+  if (isPathInside(workspacePath, path)) {
+    const rel = relative(resolve(workspacePath), resolve(path));
+    return rel ? `<workspace>/${rel}` : '<workspace>';
+  }
+  for (const [index, root] of extraRoots.entries()) {
+    if (!isPathInside(root, path)) continue;
+    const rel = relative(resolve(root), resolve(path));
+    return rel ? `<extra-root-${index + 1}>/${rel}` : `<extra-root-${index + 1}>`;
+  }
+  return `<external>/${basename(path) || 'unknown'}`;
+}
+
 export async function configureCodexSkillExtraRoots(
   rpc: Pick<JsonRpcClient, 'call'>,
   workspacePath: string,
-  timeoutMs = 5_000,
+  setTimeoutMs = CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
   requestedRoots?: readonly string[],
-  expectedSkillNames: readonly string[] = [],
-): Promise<string[]> {
-  const strictProjection = requestedRoots !== undefined;
+  expectedSkills: readonly ExpectedCodexSkill[] = [],
+  listTimeoutMs = CODEX_SKILL_LIST_TIMEOUT_MS,
+): Promise<CodexSkillProjectionResult> {
   const extraRoots = requestedRoots === undefined
     ? resolveCodexSkillExtraRoots(workspacePath)
     : [...new Set(requestedRoots)];
-  if (!strictProjection && extraRoots.length === 0) return [];
+  if (extraRoots.length === 0) return { extraRoots: [], loadedSkillNames: [] };
 
   try {
-    await rpc.call('skills/extraRoots/set', { extraRoots }, timeoutMs);
-    const listed = await rpc.call('skills/list', {
-      cwds: [workspacePath],
-      forceReload: true,
-    }, timeoutMs) as { data?: Array<{ skills?: Array<{ name?: string; enabled?: boolean }> }> };
-    const visible = new Set(
-      (listed.data ?? []).flatMap(entry => entry.skills ?? [])
-        .filter(skill => skill.enabled !== false && typeof skill.name === 'string')
-        .map(skill => skill.name as string),
-    );
-    const missing = expectedSkillNames.filter(name => !visible.has(name));
-    if (missing.length > 0) {
-      throw new Error(`Codex skills/list did not report expected Skills: ${missing.join(', ')}`);
-    }
-    console.log(`[codex] skills extra roots applied and verified: roots=${extraRoots.length} skills=${expectedSkillNames.length}`);
-    return extraRoots;
-  } catch (err) {
-    if (!strictProjection) {
-      console.warn(
-        '[codex] skills extra roots injection failed; continuing without .claude/skills:',
-        err instanceof Error ? err.message : String(err),
+    const setStartedAt = Date.now();
+    try {
+      await rpc.call('skills/extraRoots/set', { extraRoots }, setTimeoutMs);
+      console.log(
+        `[codex] skills/extraRoots/set completed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`,
       );
-      return [];
+    } catch (error) {
+      console.warn(
+        `[codex] skills/extraRoots/set failed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`
+        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
     }
-    throw new Error(`Managed Codex Skill projection failed: ${err instanceof Error ? err.message : String(err)}`);
+
+    const listStartedAt = Date.now();
+    let listed: { data?: CodexSkillListEntry[] };
+    try {
+      listed = await rpc.call('skills/list', {
+        cwds: [workspacePath],
+        forceReload: true,
+      }, listTimeoutMs) as { data?: CodexSkillListEntry[] };
+    } catch (error) {
+      console.warn(
+        `[codex] skills/list failed: roots=${extraRoots.length}`
+        + ` expected=${expectedSkills.length}`
+        + ` durationMs=${Date.now() - listStartedAt} timeoutMs=${listTimeoutMs}`
+        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+    const entries = listed.data ?? [];
+    const listedSkills = entries.flatMap(entry => entry.skills ?? []);
+    const listErrors = entries.flatMap(entry => entry.errors ?? []);
+    console.log(
+      `[codex] skills/list completed: roots=${extraRoots.length}`
+      + ` expected=${expectedSkills.length} visible=${listedSkills.length}`
+      + ` errors=${listErrors.length} durationMs=${Date.now() - listStartedAt}`
+      + ` timeoutMs=${listTimeoutMs}`,
+    );
+    for (const error of listErrors) {
+      console.warn(
+        `[codex] skills/list parser warning: path=${JSON.stringify(summarizeCodexSkillErrorPath(error.path, workspacePath, extraRoots))}`
+        + ` message=${JSON.stringify(summarizeSensitiveValueForLog(error.message))}`,
+      );
+    }
+    const visible = new Set(
+      listedSkills
+        .filter((skill): skill is { name: string; path: string; enabled?: boolean } => (
+          skill.enabled !== false
+          && typeof skill.name === 'string'
+          && typeof skill.path === 'string'
+        ))
+        .map(codexSkillIdentity),
+    );
+    const missing = expectedSkills.filter(skill => !visible.has(codexSkillIdentity(skill)));
+    if (missing.length > 0) {
+      console.warn(
+        `[codex] skills/list omitted projected Skills; continuing without them: ${missing.map(skill => skill.name).join(', ')}`,
+      );
+    }
+    console.log(
+      `[codex] skills extra roots applied: roots=${extraRoots.length}`
+      + ` visible=${expectedSkills.length - missing.length} missing=${missing.length}`,
+    );
+    const missingIdentities = new Set(missing.map(codexSkillIdentity));
+    return {
+      extraRoots,
+      loadedSkillNames: expectedSkills
+        .filter(skill => !missingIdentities.has(codexSkillIdentity(skill)))
+        .map(skill => skill.name),
+    };
+  } catch (err) {
+    console.warn(
+      '[codex] skills extra roots injection failed; continuing without projected Skills:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return { extraRoots: [], loadedSkillNames: [] };
   }
 }
 
 function buildManagedCodexMcpConfigArgs(
   servers: readonly McpServerDefinition[] | undefined,
   codexEnv: Record<string, string | undefined>,
-): { args: string[]; serverNames: string[] } {
-  if (!servers || servers.length === 0) return { args: [], serverNames: [] };
-
-  const args: string[] = [];
-  const usedNames = new Set<string>();
-  const usedGeneratedEnvNames = new Set<string>();
-  const assignedServerEnv = new Map<string, { value: string; serverId: string }>();
-
-  const reject = (serverId: string, reason: string): never => {
-    throw new Error(`Managed Codex MCP ${serverId} cannot be applied: ${reason}`);
+): {
+  args: string[];
+  serverNames: string[];
+} {
+  const projection = projectManagedCodexMcpLaunchConfig(servers, codexEnv);
+  Object.assign(codexEnv, projection.envPatch);
+  if (projection.serverNames.length > 0 || projection.failures.length > 0) {
+    console.log(
+      `[codex] managed MCP startup config: injected=${projection.serverNames.length}`
+      + ` degraded=${projection.failures.length}`,
+    );
+  }
+  for (const failure of projection.failures) {
+    console.warn(`[codex] managed MCP component degraded: ${failure.message}`);
+  }
+  return {
+    args: projection.args,
+    serverNames: projection.serverNames,
   };
-
-  codexEnv.NO_PROXY = CODEX_MCP_NO_PROXY_VAL;
-  codexEnv.no_proxy = CODEX_MCP_NO_PROXY_VAL;
-
-  for (const server of servers) {
-    const name = codexMcpServerName(server.id);
-    if (!name || usedNames.has(name)) {
-      reject(server.id, 'invalid or duplicate Codex MCP server name');
-    }
-    const serverName = name ?? reject(server.id, 'invalid Codex MCP server name');
-
-    if (server.type === 'stdio') {
-      let command = server.command;
-      if (command === '__builtin__') {
-        // In-process MCP is exposed through the Host tool dispatcher instead.
-        continue;
-      }
-      if (command === '__bundled_cuse__') {
-        command = getBundledCusePath() ?? undefined;
-        if (!command) {
-          reject(server.id, 'bundled cuse binary not found');
-        }
-      }
-      if (!command) {
-        reject(server.id, 'missing stdio command');
-      }
-      const resolvedCommand = command ?? reject(server.id, 'missing stdio command');
-      let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-      let projectedCommand = resolvedCommand;
-      if (projectedCommand === 'npx') {
-        const invocation = resolveNpxMcpInvocation(stdioArgs, {
-          pinPresetPackages: server.isBuiltin === true,
-        });
-        projectedCommand = invocation.command;
-        stdioArgs = invocation.args;
-        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${projectedCommand})`);
-      }
-      const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
-      if (commandReason) {
-        reject(server.id, `stdio command ${commandReason}`);
-      }
-      const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
-      if (argsReason) {
-        reject(server.id, `stdio args unsafe for Codex argv (${argsReason})`);
-      }
-
-      const serverEnv = Object.entries(server.env ?? {});
-      const unsafeEnvKeys = serverEnv
-        .map(([key]) => key)
-        .filter(key => !canExposeMcpEnvKeyToCodexParent(key));
-      if (unsafeEnvKeys.length > 0) {
-        reject(server.id, `env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
-      }
-      for (const [key, value] of serverEnv) {
-        const assigned = assignedServerEnv.get(key);
-        if (assigned && assigned.value !== value) {
-          reject(server.id, `env key ${key} conflicts with server ${assigned.serverId}`);
-        }
-        assignedServerEnv.set(key, { value, serverId: server.id });
-      }
-
-      usedNames.add(serverName);
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.command`, tomlString(projectedCommand));
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.args`, tomlArray(stdioArgs));
-
-      const envVars = new Set<string>();
-      for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
-        if (codexEnv[key]) envVars.add(key);
-      }
-      envVars.add('NO_PROXY');
-      envVars.add('no_proxy');
-      for (const [key, value] of serverEnv) {
-        if (!key || value === undefined) continue;
-        codexEnv[key] = value;
-        envVars.add(key);
-      }
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.env_vars`, tomlArray([...envVars].sort()));
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${serverName}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    if (server.type === 'http') {
-      if (!server.url) {
-        reject(server.id, 'missing HTTP MCP URL');
-      }
-      const url = server.url ?? reject(server.id, 'missing HTTP MCP URL');
-      const urlReason = unsafeCodexMcpUrlReason(url);
-      if (urlReason) {
-        reject(server.id, `HTTP MCP URL unsafe for Codex argv (${urlReason})`);
-      }
-
-      const envHeaderMap: Record<string, string> = {};
-      const pendingHeaderEnv: Record<string, string> = {};
-      if (server.headers && Object.keys(server.headers).length > 0) {
-        for (const [header, value] of Object.entries(server.headers)) {
-          if (!header || value === undefined) continue;
-          const resolvedHeaderValue = resolveMcpTemplateValue(value, server.env);
-          if (resolvedHeaderValue === null) {
-            reject(server.id, `HTTP header ${header} references missing env placeholder`);
-          }
-          const envName = uniqueCodexMcpEnvVarName(serverName, header, usedGeneratedEnvNames);
-          pendingHeaderEnv[envName] = resolvedHeaderValue ?? reject(server.id, `HTTP header ${header} references missing env placeholder`);
-          envHeaderMap[header] = envName;
-        }
-      }
-
-      usedNames.add(serverName);
-      Object.assign(codexEnv, pendingHeaderEnv);
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.url`, tomlString(url));
-      if (Object.keys(envHeaderMap).length > 0) {
-        pushCodexConfigArg(args, `mcp_servers.${serverName}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
-      }
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${serverName}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    reject(server.id, `Codex app-server does not support MyAgents MCP type ${server.type}`);
-  }
-
-  if (args.length > 0) {
-    console.log(`[codex] managed MCP startup config: injected=${usedNames.size}`);
-  }
-  return { args, serverNames: [...usedNames] };
 }
 
 export function buildCodexAppServerLaunchConfig(args: {
@@ -763,7 +639,11 @@ export function buildCodexAppServerLaunchConfig(args: {
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
   extensionConfigArgs?: readonly string[];
-}): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
+}): {
+  args: string[];
+  mcpServerNames: string[];
+  modelProvider?: string;
+} {
   const codexArgs = [
     args.commandPath,
     '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
@@ -2298,16 +2178,25 @@ export class JsonRpcClient {
 
 // ─── CodexProcess wrapper ───
 
+type CodexCompactControl = {
+  turnId: string;
+  restartRequired: boolean;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
 class CodexProcess implements RuntimeProcess {
   readonly pid: number;
   readonly runtimeGeneration: string;
   exited = false;
+  loadedSkillNames: readonly string[] = [];
   private proc: Subprocess;
 
   // Codex-specific state
   rpc: JsonRpcClient;
   threadId = '';
   currentTurnId = '';
+  compactControl: CodexCompactControl | null = null;
   version = '';
   activeRootTurnAdmission: {
     clientUserMessageId: string;
@@ -3186,7 +3075,7 @@ export class CodexRuntime implements AgentRuntime {
   ): Promise<RuntimeProcess> {
     // Clean up stale temp images from previous sessions
     cleanupStaleTempImages();
-    trySyncProjectUserConfigFiles(options.workspacePath, {}, 'codex');
+    const runtimeSource = options.runtimeSource ?? 'system-cli';
 
     // Cross-runtime workspace protocol: make Codex natively discover CLAUDE.md
     // when no AGENTS.md is present. The -c flag overrides config.toml at runtime
@@ -3195,7 +3084,6 @@ export class CodexRuntime implements AgentRuntime {
     // Capture the env we hand to Codex so the diagnostic snapshot reflects what
     // the subprocess actually saw (issue #194). The env policy is resolved by
     // the session caller from the agent's runtimeConfig.envPolicy.
-    const runtimeSource = options.runtimeSource ?? 'system-cli';
     const context = resolveCodexCommandContext({
       source: runtimeSource,
       envPolicy: options.envPolicy,
@@ -3251,7 +3139,9 @@ export class CodexRuntime implements AgentRuntime {
     }
 
     const codexProc = new CodexProcess(proc);
-    codexProc.extensionSnapshot = extensionSnapshot ?? null;
+    codexProc.extensionSnapshot = extensionSnapshot
+      ? { ...extensionSnapshot, skills: extensionMaterialization.skills }
+      : null;
     codexProc.cleanupExtensionResources = extensionMaterialization.cleanup;
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
@@ -3429,6 +3319,10 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      this.rejectCompactControl(
+        codexProc,
+        new Error(`Codex process exited during context compaction with code ${code}`),
+      );
       codexProc.disposeExtensionResources(`Codex process exited with code ${code}`);
       if (mcpCatalogRefreshTimer) {
         clearTimeout(mcpCatalogRefreshTimer);
@@ -3489,13 +3383,15 @@ export class CodexRuntime implements AgentRuntime {
       const enableManagedRawEvents = runtimeSource === 'managed-provider'
         && !options.resumeSessionId;
       await initializeCodexRpc(codexProc.rpc, 15_000, enableManagedRawEvents);
-      await configureCodexSkillExtraRoots(
+      const skillProjection = await configureCodexSkillExtraRoots(
         codexProc.rpc,
         options.workspacePath,
-        5_000,
+        CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
         extensionSnapshot ? extensionMaterialization.skillRoots : undefined,
-        extensionSnapshot?.skills.map(skill => skill.name) ?? [],
+        extensionSnapshot ? extensionMaterialization.skills : [],
+        CODEX_SKILL_LIST_TIMEOUT_MS,
       );
+      codexProc.loadedSkillNames = skillProjection.loadedSkillNames;
 
       // 2. Determine permission mode
       const isHeadlessAutomation =
@@ -3598,14 +3494,14 @@ export class CodexRuntime implements AgentRuntime {
         throw new Error('Codex process exited before startup completed');
       }
 
-      // 4. Send initial message if provided
-      if (options.initialMessage) {
-        const clientUserMessageId = options.initialClientUserMessageId;
+      // 4. Send initial turn if provided
+      if (options.initialTurn) {
+        const clientUserMessageId = options.initialTurn.clientUserMessageId;
         if (!clientUserMessageId) {
           throw new Error('Codex initial root turn is missing clientUserMessageId');
         }
         this.beginRootTurnAdmission(codexProc, clientUserMessageId);
-        const input = buildCodexInput(options.initialMessage, options.initialImages);
+        const input = buildCodexInput(options.initialTurn.message, options.initialTurn.images);
         const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
           threadId: codexProc.threadId,
           input,
@@ -3710,6 +3606,66 @@ export class CodexRuntime implements AgentRuntime {
     } catch (error) {
       codexProc.activeRootTurnAdmission = null;
       throw error;
+    }
+  }
+
+  /**
+   * Managed Codex exposes compaction as a native control turn. Keep that turn
+   * out of the UnifiedEvent transcript and wait for its authoritative
+   * turn/completed terminal before resolving the Session operation.
+   */
+  async compactContext(process: RuntimeProcess): Promise<void> {
+    const codexProc = process as CodexProcess;
+    if (codexProc.exited) throw new Error('Codex process has exited');
+    if (codexProc.runtimeSource !== 'managed-provider') {
+      throw new Error('Native context compaction is only available for Managed Codex');
+    }
+    if (!codexProc.threadId) throw new Error('Managed Codex has no active thread to compact');
+    if (codexProc.compactControl || codexProc.activeRootTurnAdmission) {
+      throw new Error('Managed Codex is already running a Session operation');
+    }
+
+    let resolveTerminal!: () => void;
+    let rejectTerminal!: (error: Error) => void;
+    const terminal = new Promise<void>((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
+    // Process-exit or protocol notifications may reject before rpc.call()
+    // settles. Attach a handler immediately so Node never observes a transient
+    // unhandled rejection; the awaited promise below still carries the error.
+    void terminal.catch(() => undefined);
+    const control: CodexCompactControl = {
+      turnId: '',
+      restartRequired: false,
+      resolve: resolveTerminal,
+      reject: rejectTerminal,
+    };
+    codexProc.compactControl = control;
+
+    const timeout = setTimeout(() => {
+      if (codexProc.compactControl === control) {
+        control.reject(new Error('Managed Codex context compaction timed out'));
+      }
+    }, CODEX_COMPACT_TIMEOUT_MS);
+
+    try {
+      await codexProc.rpc.call('thread/compact/start', {
+        threadId: codexProc.threadId,
+      }, 15_000);
+      await terminal;
+    } catch (error) {
+      // If the terminal handler already cleared ownership, the protocol gave
+      // us a definitive failed terminal and the process remains reusable. An
+      // RPC/timeout failure while we still own the control turn is ambiguous,
+      // so restart the process boundary before another user turn can enter.
+      if (codexProc.compactControl === control || control.restartRequired) {
+        if (codexProc.compactControl === control) codexProc.compactControl = null;
+        await this.stopSession(codexProc);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -4058,6 +4014,7 @@ export class CodexRuntime implements AgentRuntime {
   async stopSession(process: RuntimeProcess): Promise<void> {
     const codexProc = process as CodexProcess;
     if (codexProc.exited) return;
+    this.rejectCompactControl(codexProc, new Error('Managed Codex context compaction was interrupted'));
     codexProc.abortPendingHostCalls('Managed Codex Host tool call interrupted because the Session stopped');
 
     try {
@@ -4132,6 +4089,87 @@ export class CodexRuntime implements AgentRuntime {
     return attachment;
   }
 
+  private rejectCompactControl(codexProc: CodexProcess, error: Error): void {
+    const control = codexProc.compactControl;
+    if (!control) return;
+    codexProc.compactControl = null;
+    if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+      codexProc.currentTurnId = '';
+    }
+    control.reject(error);
+  }
+
+  /**
+   * Consume the native compact turn before ordinary root-turn parsing can
+   * create transcript events. Context usage notifications remain visible so
+   * the ring refreshes as soon as Codex reports the post-compact window.
+   */
+  private handleCompactControlNotification(
+    codexProc: CodexProcess,
+    method: string,
+    p: Record<string, unknown>,
+  ): boolean {
+    const control = codexProc.compactControl;
+    if (!control) return false;
+    const threadId = stringValue(p.threadId);
+    if (threadId && codexProc.threadId && threadId !== codexProc.threadId) return false;
+
+    if (method === 'turn/started') {
+      const turnId = stringValue(p.turnId) ?? stringValue(objectValue(p.turn).id);
+      if (!turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn has no id'));
+        return true;
+      }
+      if (control.turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact turn id changed unexpectedly'));
+        return true;
+      }
+      control.turnId = turnId;
+      codexProc.currentTurnId = turnId;
+      return true;
+    }
+
+    if (method === 'turn/completed') {
+      const turn = objectValue(p.turn);
+      const turnId = stringValue(turn.id) ?? stringValue(p.turnId) ?? control.turnId;
+      if (control.turnId && turnId && control.turnId !== turnId) {
+        control.restartRequired = true;
+        this.rejectCompactControl(codexProc, new Error('Managed Codex compact terminal does not match its turn'));
+        return true;
+      }
+      control.turnId = turnId ?? control.turnId;
+      takeCodexExactTurnUsage(codexProc.exactUsageByTurn, control.turnId);
+      codexProc.compactControl = null;
+      if (!control.turnId || codexProc.currentTurnId === control.turnId) {
+        codexProc.currentTurnId = '';
+      }
+      const status = stringValue(turn.status) ?? 'completed';
+      if (status === 'completed') {
+        control.resolve();
+      } else {
+        const message = stringValue(objectValue(turn.error).message)
+          ?? `Managed Codex context compaction ended with status ${status}`;
+        control.reject(new Error(message));
+      }
+      return true;
+    }
+
+    if (method === 'thread/compacted') return true;
+    if (method === 'thread/tokenUsage/updated') return false;
+
+    // Compaction is not a conversational turn. Fail closed for any root-turn
+    // content emitted by a future app-server schema while keeping unrelated
+    // session/account/MCP notifications flowing normally.
+    return method.startsWith('item/')
+      || method.startsWith('command/')
+      || method.startsWith('process/')
+      || method.startsWith('rawResponse')
+      || method === 'turn/diff/updated'
+      || method === 'turn/plan/updated';
+  }
+
   private parseNotification(
     codexProc: CodexProcess,
     method: string,
@@ -4189,6 +4227,8 @@ export class CodexRuntime implements AgentRuntime {
         return null; // child lifecycle informs ownership but never drives it directly
       }
     }
+
+    if (this.handleCompactControlNotification(codexProc, method, p)) return null;
 
     switch (method) {
       // ── Thread lifecycle ──

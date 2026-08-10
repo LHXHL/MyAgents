@@ -141,7 +141,7 @@ Plugin Store 为唯一权威，避免把一次 Session 的加载快照误当成�
 
 Chat 输入框的 `/` 菜单有两类数据源：
 
-1. **本地静态源**：`cmd_list_slash_commands` 通过 Rust 扫描工作区 / 用户的 commands 与 skills，用于 Launcher 和 Chat 的基础菜单。
+1. **本地静态源**：Launcher 没有 Session Sidecar，继续由 `cmd_list_slash_commands` 通过 Rust 扫描工作区 / 用户的 commands 与 skills；Chat 则消费 `/api/project-capabilities` 返回的同一份 enabled project/global snapshot，与侧栏和 Runtime 保持一致。两条路径都必须保留 `skill` / `custom` 来源，不能因合并顺序改写成 SDK 来源。
 2. **SDK 动态源**：builtin SDK 初始化后返回 `initializationResult().commands`，运行中还可能发 `commands_changed.commands`。Sidecar 将这份全量 snapshot 通过 `chat:slash-commands` SSE 发给 Tab，前端只在 Chat/builtin runtime 下把它作为补充项合并进菜单。前端每次收到同 session 的 snapshot 都用 replace 语义覆盖旧值，空数组也是有效状态（表示 runtime 当前没有 SDK commands），这样用户中途关闭 plugin 后可在下一次 SDK restart / `commands_changed` 后自然收敛。
 
 对 builtin，这条动态源仍是 plugin skills 可被手动 `/plugin:skill` 触发的唯一正确来源：Renderer 不扫描 `~/.myagents/plugins/<id>/skills` 重建 SDK 语义。合并规则是本地静态源优先，SDK 只追加本地没有的命令，避免覆盖 `/goal` / `/loop` 这类 renderer client-action 或本地自定义命令。Managed Codex 也不消费 `chat:slash-commands`；它由 Sidecar compiler 按 Session snapshot 解析 Plugin Command，并在 turn admission 时展开。其它外部 Runtime 两条路径都不消费。

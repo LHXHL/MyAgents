@@ -71,17 +71,19 @@ describe('Managed Codex Host tool dispatcher', () => {
       workspacePath: '/workspace',
     });
     expect(first.dynamicTools).toEqual([expect.objectContaining({
-      name: 'mcp__local-tools__echo',
+      name: 'myagents__mcp__local-tools__echo',
       description: 'Echo a value',
     })]);
+    expect(first.dynamicTools[0]?.name).not.toMatch(/^mcp(?:__|$)/);
+    expect(first.dynamicTools[0]?.name).toMatch(/^[A-Za-z0-9_-]+$/);
     await expect(first.hostToolDispatcher!.dispatch(
-      call('mcp__local-tools__echo', { value: 'hello' }),
+      call('myagents__mcp__local-tools__echo', { value: 'hello' }),
     )).resolves.toEqual({
       success: true,
       contentItems: [{ type: 'text', text: 'echo:hello' }],
     });
     await expect(first.hostToolDispatcher!.dispatch(
-      call('mcp__local-tools__echo', { value: 42 }),
+      call('myagents__mcp__local-tools__echo', { value: 42 }),
     )).resolves.toMatchObject({ success: false });
 
     first.hostToolDispatcher!.dispose('process generation ended');
@@ -91,7 +93,7 @@ describe('Managed Codex Host tool dispatcher', () => {
       workspacePath: '/workspace',
     });
     await expect(second.hostToolDispatcher!.dispatch(
-      call('mcp__local-tools__echo', { value: 'again' }, 'generation-two'),
+      call('myagents__mcp__local-tools__echo', { value: 'again' }, 'generation-two'),
     )).resolves.toMatchObject({
       success: true,
       contentItems: [{ type: 'text', text: 'echo:again' }],
@@ -112,11 +114,39 @@ describe('Managed Codex Host tool dispatcher', () => {
       workspacePath: '/workspace',
     });
 
-    await attached.hostToolDispatcher!.dispatch(call('mcp__local-tools__once', {}));
+    await attached.hostToolDispatcher!.dispatch(call('myagents__mcp__local-tools__once', {}));
     await expect(attached.hostToolDispatcher!.dispatch(
-      call('mcp__local-tools__once', {}, 'stale-generation'),
+      call('myagents__mcp__local-tools__once', {}, 'stale-generation'),
     )).rejects.toThrow(/stale/i);
     expect(handler).toHaveBeenCalledOnce();
     attached.hostToolDispatcher!.dispose('test complete');
+  });
+
+  it('rejects a server when distinct native names collapse to one Codex wire name', async () => {
+    const server = new McpServer({ name: 'local-tools', version: '1.0.0' });
+    server.registerTool('echo.tool', { inputSchema: {} }, async () => ({
+      content: [{ type: 'text', text: 'dot' }],
+    }));
+    server.registerTool('echo_tool', { inputSchema: {} }, async () => ({
+      content: [{ type: 'text', text: 'underscore' }],
+    }));
+    mocks.getBuiltinMcpInstance.mockReturnValue(Promise.resolve({
+      server: { type: 'sdk', name: 'local-tools', instance: server },
+    }));
+
+    const attached = await attachManagedCodexHostTools({
+      snapshot: snapshot(),
+      sessionId: 'session-one',
+      workspacePath: '/workspace',
+    });
+
+    expect(attached.dynamicTools).toEqual([]);
+    expect(attached.hostToolDispatcher).toBeUndefined();
+    expect(attached.components).toContainEqual(expect.objectContaining({
+      component: 'host_tools',
+      id: 'local-tools',
+      state: 'failed',
+      code: 'host_tool_name_conflict',
+    }));
   });
 });

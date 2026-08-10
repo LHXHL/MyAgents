@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
+  shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
 } from './runtimeUiProjection';
 
@@ -29,6 +30,13 @@ describe('runtime UI projection', () => {
     })).toBe(true);
   });
 
+  it('only exposes Claude Agent SDK system slash commands to builtin Sessions', () => {
+    expect(shouldShowBuiltinSdkSlashCommands('builtin')).toBe(true);
+    expect(shouldShowBuiltinSdkSlashCommands('codex')).toBe(false);
+    expect(shouldShowBuiltinSdkSlashCommands('claude-code')).toBe(false);
+    expect(shouldShowBuiltinSdkSlashCommands('gemini')).toBe(false);
+  });
+
   it('only requests extension feedback when the user must wait or act', () => {
     expect(projectRuntimeExtensionUpdateNotice({
       desiredRevision: 'desired',
@@ -49,9 +57,21 @@ describe('runtime UI projection', () => {
       effectiveRevision: 'effective',
       state: 'applied',
       components: [{
+        component: 'plugins',
+        state: 'unsupported',
+        code: 'plugin_hooks_unsupported',
+      }],
+    })).toBeNull();
+
+    expect(projectRuntimeExtensionUpdateNotice({
+      desiredRevision: 'desired',
+      effectiveRevision: 'effective',
+      state: 'applied',
+      components: [{
         component: 'host_tools',
         state: 'unsupported',
         code: 'host_tools_catalog_immutable',
+        requiresUserAction: true,
       }],
     })).toBe('unsupported');
   });

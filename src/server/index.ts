@@ -95,7 +95,6 @@ import {
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
 import {
   isRequiredSystemSkill,
-  type RequiredSystemSkill,
   withoutRequiredSystemSkills,
 } from '../shared/systemSkills';
 import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
@@ -257,7 +256,6 @@ import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from './utils/memory-update-reminder';
-import { assertOfficialSystemSkillExposed } from './utils/system-skill-readiness';
 import { setImCronContext } from './tools/im-cron-tool';
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
@@ -429,7 +427,6 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
-  requireCurrentBuiltinSkill,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
@@ -452,6 +449,14 @@ import {
   getAttachmentPath,
 } from './SessionStore';
 import { findProjectAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
+import {
+  projectCapabilitySnapshotForWire,
+  resolveEffectiveProjectCapabilities,
+  setProjectCapabilityEnabled,
+} from './project-capabilities';
+import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
+import { isManagedSymlink } from './utils/project-user-config-sync';
+import { managementApi } from './utils/management-api-client';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 import {
   isManagedCodexProviderReady,
@@ -748,52 +753,6 @@ function applyBackgroundAgentPermissionModeFromDisk(): void {
  * `undefined` means "keep current provider", which is the bug PRD 0.2.9 R1
  * was tracking.
  */
-/**
- * Compose task authorization with the actual Runtime-exposure prerequisite.
- * This runs at the turn-queue dispatch boundary, after earlier work drains
- * but before any model sees the managed prompt.
- */
-function createRequiredSystemSkillDispatchGuard(
-  skillName: RequiredSystemSkill,
-  workspacePath: string,
-  preceding?: import('./session-core/turn-queue').DispatchGuard,
-): import('./session-core/turn-queue').DispatchGuard {
-  let canceled = false;
-  const guard: import('./session-core/turn-queue').DispatchGuard = async () => {
-    if (canceled) {
-      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-    }
-    if (preceding) {
-      const prior = await preceding();
-      if (!prior.accepted) return prior;
-    }
-    if (canceled) {
-      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-    }
-    try {
-      assertOfficialSystemSkillExposed({ workspacePath, skillName });
-      if (getSessionEngine().kind === 'builtin') {
-        await requireCurrentBuiltinSkill(skillName);
-      }
-      if (canceled) {
-        return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
-      }
-      return { accepted: true };
-    } catch (error) {
-      return {
-        accepted: false,
-        code: 'required_system_skill_unavailable',
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  };
-  guard.cancel = () => {
-    canceled = true;
-    preceding?.cancel?.();
-  };
-  return guard;
-}
-
 function parseArgs(argv: string[]): {
   agentDir: string;
   initialPrompt?: string;
@@ -913,7 +872,7 @@ function writeSkillsConfig(config: SkillsConfig): void {
  * Bump skills generation counter without changing seeded/disabled lists.
  * Called after skill CRUD operations (create/update/delete/upload/import)
  * that don't go through writeSkillsConfig but DO change the available skill set.
- * Tab Sidecars detect this change and re-sync symlinks on next /api/commands fetch.
+ * Sessions observe the generation through their next capability resolution.
  */
 function bumpSkillsGeneration(): void {
   const config = readSkillsConfig();
@@ -921,19 +880,11 @@ function bumpSkillsGeneration(): void {
 }
 
 /**
- * Lazy skill sync: Track the last generation we synced to avoid redundant sync work.
- * When a Tab Sidecar's /api/commands or /api/skills is called, we compare the current
- * generation in skills-config.json against this value. Only if they differ do we run
- * syncProjectUserConfig(). This covers the case where the Global Sidecar modified
- * global skills (create/toggle/delete) without the Tab Sidecar knowing.
+ * Capability reads are side-effect free. Each Session reconciles the latest
+ * AgentConfig selection at its next turn boundary; shared disk inventory is
+ * maintained independently for runtime compatibility.
  */
-// Phase E (PRD 0.2.7): the `syncSkillsIfNeeded` wrapper + generation-tracking
-// optimization is gone. Rust `cmd_list_slash_commands` is the canonical UI
-// path and runs `sync_workspace_skills` (idempotent) every call. The sidecar
-// only syncs as a side-effect of skill/command CRUD via direct
-// `syncProjectUserConfig(...)` calls; CRUD-time correctness is what matters
-// (the picker UI lives in Rust now). `markSkillsSynced` is also gone — there's
-// no longer a generation-cached fast-path to invalidate.
+// Phase E (PRD 0.2.7): the old generation-cached fast path remains removed.
 
 /**
  * Resolve bundled-skills directory.
@@ -3768,6 +3719,8 @@ async function main() {
             }
 
             try {
+              const { resolveRemoteMcpTransportConfig } = await import('./session-core/mcp-template-resolution');
+              const remote = resolveRemoteMcpTransportConfig(server);
               const controller = new AbortController();
               const timeout = setTimeout(() => controller.abort(), 15000);
 
@@ -3779,14 +3732,14 @@ async function main() {
                 // content-encoding: gzip with a non-compressed body, causing Bun's
                 // fetch() auto-decompression to crash. Validation doesn't need compression.
                 'Accept-Encoding': 'identity',
-                ...(server.headers || {}),
+                ...remote.headers,
               };
 
               let response: Response;
 
               if (server.type === 'http') {
                 // Streamable HTTP: send MCP initialize JSON-RPC request
-                response = await fetchWithGeneralProxy(server.url, {
+                response = await fetchWithGeneralProxy(remote.url, {
                   method: 'POST',
                   headers: { ...headers, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -3803,7 +3756,7 @@ async function main() {
                 });
               } else {
                 // SSE: send GET request to check if endpoint is reachable
-                response = await fetchWithGeneralProxy(server.url, {
+                response = await fetchWithGeneralProxy(remote.url, {
                   method: 'GET',
                   headers,
                   signal: controller.signal,
@@ -4695,18 +4648,94 @@ async function main() {
       const projectSkillsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'skills') : '';
       const projectCommandsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'commands') : '';
 
+      // GET /api/project-capabilities - authoritative candidate + effective set
+      // for the current workspace. Unlike the legacy per-directory endpoints,
+      // this resolves MyAgents-managed symlinks back to their global origin,
+      // applies project-over-global winner semantics, and keeps disabled cards.
+      if (pathname === '/api/project-capabilities' && request.method === 'GET') {
+        try {
+          const queryAgentDir = url.searchParams.get('agentDir');
+          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
+            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+          }
+          const workspacePath = queryAgentDir || currentAgentDir;
+          if (!workspacePath) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
+          const globalSkillInventory = createGlobalSkillInventorySnapshot();
+          return jsonResponse(projectCapabilitySnapshotForWire(
+            resolveEffectiveProjectCapabilities(workspacePath, {
+              globalSkillInventory,
+            }),
+          ));
+        } catch (error) {
+          console.error('[api/project-capabilities] Error:', error);
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to resolve project capabilities',
+          }, 500);
+        }
+      }
+
+      // POST /api/project-capability/toggle - persist one disabled override on
+      // the exact AgentConfig selected by Project.agentId. Runtime replacement
+      // intentionally waits for each Session's next turn.
+      if (pathname === '/api/project-capability/toggle' && request.method === 'POST') {
+        try {
+          const body = await request.json() as {
+            capabilityId?: unknown;
+            enabled?: unknown;
+            agentDir?: unknown;
+          };
+          if (typeof body.capabilityId !== 'string' || typeof body.enabled !== 'boolean') {
+            return jsonResponse({ success: false, error: 'Invalid capability toggle request' }, 400);
+          }
+          const queryAgentDir = typeof body.agentDir === 'string' ? body.agentDir : null;
+          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
+            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+          }
+          const workspacePath = queryAgentDir || currentAgentDir;
+          if (!workspacePath) {
+            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+          }
+          const snapshot = await setProjectCapabilityEnabled({
+            workspacePath,
+            capabilityId: body.capabilityId,
+            enabled: body.enabled,
+          });
+          broadcast('config:changed', {
+            section: 'agent',
+            action: 'project-capability-toggle',
+            id: snapshot.agentId,
+          });
+          // App-wide invalidation is advisory here: every Session resolves the
+          // disk authority again at its own turn admission, so a renderer fanout
+          // outage must not turn a committed save into a false rollback.
+          if (process.env.MYAGENTS_MANAGEMENT_PORT) {
+            void managementApi('/api/app/config-changed', 'POST', {}, { timeoutMs: 2_000 })
+              .catch(error => console.warn('[api/project-capability/toggle] app refresh failed:', error));
+          }
+          return jsonResponse(projectCapabilitySnapshotForWire(snapshot));
+        } catch (error) {
+          console.error('[api/project-capability/toggle] Error:', error);
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to save project capability',
+          }, 500);
+        }
+      }
+
       // GET /api/skills - List all skills (with scope filter)
       // Supports ?agentDir= for listing skills from a specific workspace (e.g. from Launcher)
       if (pathname === '/api/skills' && request.method === 'GET') {
         try {
-          // Phase E (PRD 0.2.7): always-sync (cheap when nothing changed) —
-          // the gen-tracking wrapper is gone.
-          if (currentAgentDir) syncProjectUserConfig(currentAgentDir);
-
           const scope = url.searchParams.get('scope') || 'all';
           const queryAgentDir = url.searchParams.get('agentDir');
           const { skillsDir: effectiveSkillsDir } = getProjectBaseDirs(queryAgentDir);
           const skillsConfigForList = readSkillsConfig();
+          const globalSkillInventory = (scope === 'all' || scope === 'user')
+            ? createGlobalSkillInventorySnapshot({ rootPath: userSkillsBaseDir })
+            : null;
           const skills: Array<{
             name: string;
             description: string;
@@ -4724,10 +4753,14 @@ async function main() {
             try {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
+                const folderPath = join(dir, folder.name);
+                if (scopeType === 'project' && isManagedSymlink(folderPath, userSkillsBaseDir)) {
+                  continue;
+                }
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
-                if (!isDirEntry(folder, join(dir, folder.name))) continue;
+                if (!isDirEntry(folder, folderPath)) continue;
                 if (isSkillBlockedOnPlatform(folder.name)) continue;
-                const skillMdPath = join(dir, folder.name, 'SKILL.md');
+                const skillMdPath = join(folderPath, 'SKILL.md');
                 if (!existsSync(skillMdPath)) continue;
 
                 const content = readFileSync(skillMdPath, 'utf-8');
@@ -4758,10 +4791,29 @@ async function main() {
             scanSkills(resolvedProjectSkillsDir, 'project');
           }
           if (scope === 'all' || scope === 'user') {
-            scanSkills(userSkillsBaseDir, 'user');
+            for (const entry of globalSkillInventory?.entries ?? []) {
+              const systemOwned = SYSTEM_SKILLS.includes(entry.folderName);
+              skills.push({
+                name: entry.name,
+                description: entry.description,
+                scope: 'user',
+                path: entry.skillPath,
+                folderName: entry.folderName,
+                ...(entry.author ? { author: entry.author } : {}),
+                systemOwned,
+                required: entry.required,
+                enabled: entry.enabledForProjection,
+              });
+            }
           }
 
-          return jsonResponse({ success: true, skills });
+          return jsonResponse({
+            success: true,
+            skills,
+            ...(globalSkillInventory
+              ? { integrityIssues: globalSkillInventory.integrityIssues }
+              : {}),
+          });
         } catch (error) {
           console.error('[api/skills] Error:', error);
           return jsonResponse(
@@ -8286,11 +8338,8 @@ description: >
             assistantChannelDelivery: 'none',
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
-            beforeDispatch: createRequiredSystemSkillDispatchGuard(
-              'myagents-memory-update',
-              currentAgentDir,
-              taskDispatchGuard,
-            ),
+            beforeDispatch: taskDispatchGuard,
+            requiredSystemSkill: 'myagents-memory-update',
             ...(isAuto ? {
               queueId,
               turnOwner: { kind: 'task' as const, id: taskId },

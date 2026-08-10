@@ -1,6 +1,6 @@
 [package]
 name = "myagents"
-version = "0.4.6"
+version = "0.4.7"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
@@ -139,9 +139,9 @@ windows-sys = { version = "0.59", features = [
 ] }
 # `junction` creates NTFS directory junctions without admin / Developer Mode
 # (`std::os::windows::fs::symlink_dir` would otherwise need ERROR_PRIVILEGE_NOT_HELD
-# elevated rights). Used by `workspace_files::skill_sync` to mirror
-# user-level skills into `<workspace>/.claude/skills/` — the Node.js
-# sidecar uses `symlinkSync(target, link, 'junction')` for the same reason.
+# elevated rights). The path-safety Windows tests use this to verify that
+# no-follow workspace IO rejects junction races. Runtime inventory projection
+# itself is Node-owned (`symlinkSync(target, link, 'junction')`).
 junction = "1.0"
 # WinRT toast notifications with click activation. `tauri-plugin-notification`
 # wraps this same crate but doesn't expose the `on_activated` callback we need

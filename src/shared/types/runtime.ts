@@ -708,6 +708,11 @@ export interface RuntimeExtensionComponentStatus {
   state: RuntimeExtensionApplyState;
   code: string;
   message?: string;
+  /**
+   * True when a direct configuration action should explain how to apply this
+   * degradation. This is not a passive Chat-banner severity signal.
+   */
+  requiresUserAction?: boolean;
 }
 
 export interface RuntimeExtensionDiagnostics {

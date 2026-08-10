@@ -988,7 +988,7 @@ mod lifecycle_contract_tests {
         let session_generation = manager.current_generation("pending-a");
         assert!(manager.is_live_process("pending-a", session_generation));
 
-        assert!(manager.upgrade_session_id("pending-a", "session-a"));
+        assert!(manager.upgrade_session_id_for_tab("pending-a", "session-a", "tab-a"));
         assert!(
             manager.is_live_process("pending-a", session_generation),
             "a logical Session key upgrade must not invalidate the immutable identity injected into the live process"
@@ -1158,7 +1158,7 @@ mod lifecycle_contract_tests {
         insert_test_sidecar(&mut manager, "pending-tab-a", SidecarState::Healthy);
         let owner = SidecarOwner::Tab("tab-a".to_string());
 
-        assert!(manager.upgrade_session_id("pending-tab-a", "session-real"));
+        assert!(manager.upgrade_session_id_for_tab("pending-tab-a", "session-real", "tab-a"));
         assert_eq!(
             manager
                 .resolve_session_sidecar_for_frontend_owner("pending-tab-a", &owner)

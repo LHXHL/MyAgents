@@ -202,6 +202,139 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('keeps product and workspace actions while hiding SDK system commands', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        workspaceSlashCommands: [
+          {
+            name: 'ship-it',
+            description: 'Workspace command',
+            source: 'custom',
+          },
+          {
+            name: 'apple-notes',
+            description: 'Project Skill',
+            source: 'skill',
+            scope: 'project',
+          },
+        ],
+      });
+
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.getByText('skill')).toBeInTheDocument();
+      expect(screen.queryByText('plugin')).not.toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('filters runtime-blind Launcher scan results for non-builtin execution', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    workspaceMocks.service.listSlashCommands.mockResolvedValue({
+      success: true,
+      commands: [
+        { name: 'compact', description: 'SDK compact', source: 'builtin' },
+        { name: 'context', description: 'SDK context', source: 'builtin' },
+        { name: 'ship-it', description: 'Workspace command', source: 'custom' },
+        { name: 'apple-notes', description: 'Project Skill', source: 'skill', scope: 'project' },
+      ],
+      globalSkillFolderNames: [],
+    });
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        mode: 'launcher',
+        workspacePath: '/tmp/workspace',
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction: vi.fn(),
+        sdkSlashCommands: [{
+          name: 'plugin:review',
+          description: 'Builtin SDK plugin command',
+          source: 'sdk',
+        }],
+      });
+
+      const textarea = screen.getByRole('textbox');
+      await user.type(textarea, '/');
+
+      expect(await screen.findByText('/goal')).toBeInTheDocument();
+      expect(screen.getByText('/ship-it')).toBeInTheDocument();
+      expect(screen.getByText('/apple-notes')).toBeInTheDocument();
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument();
+      expect(screen.queryByText('/context')).not.toBeInTheDocument();
+      expect(screen.queryByText('/plugin:review')).not.toBeInTheDocument();
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('dispatches the Managed Codex compact command as a client action', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onSlashAction = vi.fn();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      const onSend = renderInput({
+        showBuiltinSdkSlashCommands: false,
+        onSlashAction,
+        clientActionSlashCommands: [{
+          name: 'compact',
+          description: 'Compact',
+          source: 'client',
+        }],
+      });
+      const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+      await user.type(textarea, '/');
+      await user.click(await screen.findByText('/compact'));
+
+      expect(onSlashAction).toHaveBeenCalledWith('compact');
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea).toHaveValue('');
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();

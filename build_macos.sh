@@ -251,8 +251,8 @@ ensure_host_esbuild
 # Sidecar / Bridge / CLI 三件套都走 `npm run build:*` —— 后台是
 # `node scripts/esbuild-bundle.mjs <target>`。单一配置入口（entry /
 # banner / format / external / target），不再让 shell 引号介入。
-# Driver 内部包含 post-build 步骤：cli 复制 myagents.cmd，server 校验
-# 无硬编码 __dirname 路径——这两步以前在每个平台脚本里各抄一遍，现已合并。
+# Driver 内部完整接管 target 生命周期：cli 构建前清理 staging inventory、只产出
+# bundle authority myagents.cjs；server 构建后校验无硬编码 __dirname 路径。
 echo -e "  ${CYAN}打包服务端代码...${NC}"
 npm run build:server
 echo -e "  ${CYAN}打包 Plugin Bridge...${NC}"

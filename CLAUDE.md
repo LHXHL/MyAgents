@@ -30,7 +30,7 @@
 | `src/renderer/` | React 19 + TypeScript + Vite + TailwindCSS；桌面 WebView UI |
 | `src/server/` | Node.js v24 Sidecar；Claude Agent SDK；每 Session 独立实例 |
 | `src/server/plugin-bridge/` | 独立 Node 进程；OpenClaw Plugin Bridge |
-| `src/cli/` | `myagents` CLI，同步到 `~/.myagents/bin/` |
+| `src/cli/` | `myagents` CLI 源码；业务 bundle 随 app 发布，`~/.myagents/bin/` 仅投影薄启动器 |
 | `src/shared/` | renderer / server 共用的纯类型与逻辑 |
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
@@ -82,6 +82,7 @@ Builtin SDK 与 Claude Code / Codex / Gemini 等外部 Runtime 的 session 操�
 | Pit-of-Success helper、跨语言边界、测试分层 | `specs/tech_docs/pit_of_success.md` |
 | Sidecar 冷启动 / pre-warm 性能 | `specs/tech_docs/sidecar_cold_start.md` |
 | Session ID、状态同步、恢复、配置归置 | `specs/tech_docs/session_architecture.md` |
+| 系统提示词组装、场景 Prompt、Workspace 指令注入 | `specs/tech_docs/system_prompt_architecture.md`；逐轮隐藏消息再读 `specs/tech_docs/system_reminder_protocol.md` |
 | Claude Code / Codex / Gemini Runtime | `specs/tech_docs/multi_agent_runtime.md` |
 | Task / Thought / Goal / Cron provider routing | `specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md` |
 | Cloud Space / Space Issue / registered agent | `specs/tech_docs/space_cloud.md`；改云 API、鉴权、数据或 quota 时再读 `../MyAgents_space/specs/ARCHITECTURE.md` |

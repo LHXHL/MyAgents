@@ -75,10 +75,13 @@ async function closeConnection(connection: ConnectedServer): Promise<void> {
   }
 }
 
-function exposedToolName(serverId: string, toolName: string): string {
+function codexDynamicToolName(serverId: string, toolName: string): string {
   const safeServer = serverId.replace(/[^A-Za-z0-9_-]/g, '_');
   const safeTool = toolName.replace(/[^A-Za-z0-9_-]/g, '_');
-  return `mcp__${safeServer}__${safeTool}`;
+  // Codex reserves `mcp` and `mcp__*` for MCP tools that it owns natively.
+  // These tools are proxied by MyAgents through `thread/start.dynamicTools`,
+  // so their wire identity must live in a separate namespace.
+  return `myagents__mcp__${safeServer}__${safeTool}`;
 }
 
 async function connectServer(
@@ -100,11 +103,11 @@ async function connectServer(
         serverTransport,
       },
       tools: listed.tools.map(tool => ({
-        exposedName: exposedToolName(serverId, tool.name),
+        exposedName: codexDynamicToolName(serverId, tool.name),
         serverId,
         nativeName: tool.name,
         descriptor: {
-          name: exposedToolName(serverId, tool.name),
+          name: codexDynamicToolName(serverId, tool.name),
           description: tool.description ?? '',
           inputSchema: tool.inputSchema as Record<string, unknown>,
         },
@@ -279,7 +282,12 @@ export async function attachManagedCodexHostTools(input: {
   for (const server of serverConfigs) {
     try {
       const connected = await connectServer(server.id, server.config);
-      const duplicate = connected.tools.find(tool => tools.some(existing => existing.exposedName === tool.exposedName));
+      const exposedNames = new Set(tools.map(tool => tool.exposedName));
+      const duplicate = connected.tools.find((tool) => {
+        if (exposedNames.has(tool.exposedName)) return true;
+        exposedNames.add(tool.exposedName);
+        return false;
+      });
       if (duplicate) {
         await closeConnection(connected.connection);
         reports.push({
