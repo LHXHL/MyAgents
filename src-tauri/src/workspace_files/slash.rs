@@ -215,11 +215,11 @@ fn scan_skills_dir(
     global_skills_root: &Path,
     out: &mut Vec<SlashCommand>,
 ) {
-    let root_before = std::fs::symlink_metadata(dir).ok();
+    let root_before = (scope == "user").then(|| file_snapshot(dir)).flatten();
     if scope == "user"
         && !root_before
             .as_ref()
-            .map(|meta| meta.is_dir() && !metadata_is_link_like(meta))
+            .map(FileSnapshot::is_dir)
             .unwrap_or(false)
     {
         return;
@@ -267,19 +267,21 @@ fn scan_skills_dir(
         }
 
         let skill_md = folder_path.join("SKILL.md");
-        let folder_meta = std::fs::symlink_metadata(&folder_path).ok();
-        let canonical_meta = std::fs::symlink_metadata(&skill_md).ok();
-        // Never read through an untrusted global link merely to decide that
-        // it is untrusted. Project Skills keep their existing read semantics.
+        let folder_before = (scope == "user")
+            .then(|| file_snapshot(&folder_path))
+            .flatten();
+        let canonical_before = (scope == "user")
+            .then(|| file_snapshot(&skill_md))
+            .flatten();
+        // A snapshot proves that the path stayed direct while its handle was
+        // opened. Never read through a global link or a path that changed
+        // during that proof. Project Skills keep their existing read semantics.
         if scope == "user"
-            && (!folder_meta
+            && (!folder_before
                 .as_ref()
-                .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+                .map(FileSnapshot::is_dir)
                 .unwrap_or(false)
-                || canonical_meta
-                    .as_ref()
-                    .map(|meta| meta.file_type().is_symlink())
-                    .unwrap_or(false))
+                || canonical_before.is_none())
         {
             continue;
         }
@@ -299,28 +301,19 @@ fn scan_skills_dir(
                 folder_name: folder_name.clone(),
                 declared_name: declared_identity,
                 identity_case_insensitive: cfg!(windows),
-                canonical_present: canonical_meta
+                canonical_present: canonical_before
                     .as_ref()
-                    .map(|meta| meta.is_file())
+                    .map(FileSnapshot::is_file)
                     .unwrap_or(false),
                 canonical_readable,
-                trusted_source: folder_meta
-                    .as_ref()
-                    .map(|meta| meta.is_dir() && !metadata_is_link_like(meta))
-                    .unwrap_or(false)
-                    && canonical_meta
-                        .as_ref()
-                        .map(|meta| !metadata_is_link_like(meta))
-                        .unwrap_or(true),
+                trusted_source: folder_before.is_some() && canonical_before.is_some(),
                 unsuffixed_sibling_present: collision_base
                     .as_ref()
                     .map(|base| folder_names.contains(&skill_folder_key(base)))
                     .unwrap_or(false),
                 reserved_entry_sibling_present: has_reserved_skill_entry_sibling(&folder_path),
-                stable: metadata_signature(folder_meta.as_ref())
-                    == metadata_signature(std::fs::symlink_metadata(&folder_path).ok().as_ref())
-                    && metadata_signature(canonical_meta.as_ref())
-                        == metadata_signature(std::fs::symlink_metadata(&skill_md).ok().as_ref()),
+                stable: file_snapshot_matches(folder_before.as_ref(), &folder_path)
+                    && file_snapshot_matches(canonical_before.as_ref(), &skill_md),
             };
             let mut classification = classify_skill_integrity(&evidence);
             if classification.disposition != "blocked"
@@ -363,10 +356,7 @@ fn scan_skills_dir(
             file_name: None,
         });
     }
-    if scope == "user"
-        && metadata_signature(root_before.as_ref())
-            != metadata_signature(std::fs::symlink_metadata(dir).ok().as_ref())
-    {
+    if scope == "user" && !file_snapshot_matches(root_before.as_ref(), dir) {
         out.truncate(output_start);
     }
 }
@@ -385,36 +375,92 @@ fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
     false
 }
 
-fn metadata_signature(metadata: Option<&std::fs::Metadata>) -> Option<String> {
-    let metadata = metadata?;
+#[derive(Debug, Eq, PartialEq)]
+enum FileSnapshot {
+    Missing,
+    Present {
+        identity: same_file::Handle,
+        metadata: String,
+        is_dir: bool,
+        is_file: bool,
+    },
+}
+
+impl FileSnapshot {
+    fn is_dir(&self) -> bool {
+        matches!(self, Self::Present { is_dir: true, .. })
+    }
+
+    fn is_file(&self) -> bool {
+        matches!(self, Self::Present { is_file: true, .. })
+    }
+}
+
+fn file_snapshot(path: &Path) -> Option<FileSnapshot> {
+    let identity = match same_file::Handle::from_path(path) {
+        Ok(identity) => identity,
+        Err(_) => {
+            return match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Some(FileSnapshot::Missing)
+                }
+                _ => None,
+            };
+        }
+    };
+    let metadata = identity.as_file().metadata().ok()?;
+    let path_metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata_is_link_like(&path_metadata) {
+        return None;
+    }
+    let current_identity = same_file::Handle::from_path(path).ok()?;
+    let current_metadata = current_identity.as_file().metadata().ok()?;
+    let signature = metadata_signature(&metadata);
+    if current_identity != identity || metadata_signature(&current_metadata) != signature {
+        return None;
+    }
+    Some(FileSnapshot::Present {
+        is_dir: metadata.is_dir(),
+        is_file: metadata.is_file(),
+        metadata: signature,
+        identity,
+    })
+}
+
+fn file_snapshot_matches(before: Option<&FileSnapshot>, path: &Path) -> bool {
+    let Some(before) = before else {
+        return false;
+    };
+    file_snapshot(path).as_ref() == Some(before)
+}
+
+fn metadata_signature(metadata: &std::fs::Metadata) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Some(format!(
-            "{}:{}:{}:{}:{}:{}",
-            metadata.dev(),
-            metadata.ino(),
+        format!(
+            "{}:{}:{}:{}",
             metadata.mode(),
             metadata.size(),
             metadata.mtime(),
             metadata.mtime_nsec(),
-        ));
+        )
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return Some(format!(
-            "{}:{}:{}:{}:{}:{}",
-            metadata.volume_serial_number().unwrap_or_default(),
-            metadata.file_index().unwrap_or_default(),
+        format!(
+            "{}:{}:{}:{}",
             metadata.file_attributes(),
             metadata.creation_time(),
             metadata.last_write_time(),
             metadata.file_size(),
-        ));
+        )
     }
-    #[allow(unreachable_code)]
-    Some(format!("{}:{}", metadata.len(), metadata.is_dir()))
+    #[cfg(not(any(unix, windows)))]
+    {
+        format!("{}:{}", metadata.len(), metadata.is_dir())
+    }
 }
 
 fn skill_folder_key(name: &str) -> String {
@@ -653,6 +699,51 @@ mod tests {
 
     fn make_tmp_workspace() -> PathBuf {
         make_test_workspace("slash")
+    }
+
+    #[test]
+    fn file_snapshot_distinguishes_a_replaced_path_with_the_same_contents() {
+        let root = make_tmp_workspace();
+        let current = root.join("current.md");
+        let displaced = root.join("displaced.md");
+        fs::write(&current, "same contents").unwrap();
+
+        let before = file_snapshot(&current).expect("initial file snapshot");
+        fs::rename(&current, &displaced).unwrap();
+        fs::write(&current, "same contents").unwrap();
+
+        assert!(!file_snapshot_matches(Some(&before), &current));
+
+        drop(before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_snapshot_does_not_follow_a_link() {
+        use std::os::unix::fs::symlink;
+
+        let root = make_tmp_workspace();
+        let actual = root.join("actual.md");
+        let linked = root.join("linked.md");
+        fs::write(&actual, "contents").unwrap();
+        symlink(&actual, &linked).unwrap();
+
+        assert!(file_snapshot(&linked).is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_snapshot_keeps_a_missing_path_stable() {
+        let root = make_tmp_workspace();
+        let missing = root.join("missing.md");
+        let before = file_snapshot(&missing).expect("missing-path snapshot");
+
+        assert_eq!(before, FileSnapshot::Missing);
+        assert!(file_snapshot_matches(Some(&before), &missing));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[derive(Deserialize)]
