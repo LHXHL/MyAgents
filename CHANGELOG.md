@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows 源码构建恢复正常**：使用仓库固定的 Rust 工具链运行 Windows 构建脚本时，不再因平台文件身份 API 不稳定而编译失败；发布前会在原生 Windows 环境完成 Rust 编译验证。
 - **单个 Managed Codex 扩展异常不再阻塞整个 Session**：不适合安全投影的 HTTP MCP、连接失败、Skill 缺项、解析失败或投影异常只影响对应组件并记录到 Logs，其他能力与普通对话继续可用；Skill 枚举等待上限从 5 秒提高到 30 秒，修复 [#525](https://github.com/hAcKlyc/MyAgents/issues/525) 与 [#526](https://github.com/hAcKlyc/MyAgents/issues/526)。
 - **Managed Codex 自动标题恢复生成**：标题请求现在携带完整的初始 Turn 身份，不再在到达模型前被 Codex 拒绝；普通首轮消息与预热 Session 的身份仍保持隔离。
 - **损坏或重复的全局 Skill 不再拖垮其它能力**：异常项会被单独隔离，健康 Skill 继续加载；工作区中的全局 Skill 投影保持只读，避免一次编辑意外修改所有工作区共享的源文件。
