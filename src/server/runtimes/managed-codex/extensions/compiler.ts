@@ -43,6 +43,7 @@ import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexSkillSpec,
 } from './contracts';
+import { projectManagedCodexMcpLaunchConfig } from './mcp-launch-projection';
 
 const MAX_EXTENSION_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_DEPTH = 8;
@@ -897,7 +898,6 @@ function pluginMcpServers(
               : undefined,
             isBuiltin: false,
           });
-          reports.push(component('mcp', 'applied', 'plugin_mcp_compiled', `${plugin.id}:${name}`));
           continue;
         }
         const url = typeof raw.url === 'string' ? raw.url : undefined;
@@ -920,7 +920,6 @@ function pluginMcpServers(
               : undefined,
             isBuiltin: false,
           });
-          reports.push(component('mcp', 'applied', 'plugin_mcp_compiled', `${plugin.id}:${name}`));
           continue;
         }
         reports.push(component('mcp', 'unsupported', 'plugin_mcp_transport_unsupported', `${plugin.id}:${name}`));
@@ -939,12 +938,7 @@ function mergeMcpServers(
 ): McpServerDefinition[] {
   const selected = new Map<string, McpServerDefinition>();
   for (const server of base) {
-    if (server.command !== '__builtin__' && server.type !== 'stdio' && server.type !== 'http') {
-      reports.push(component('mcp', 'unsupported', 'mcp_transport_unsupported', server.id));
-      continue;
-    }
     selected.set(server.id, { ...server });
-    reports.push(component('mcp', 'applied', 'mcp_compiled', server.id));
   }
   for (const server of plugin) {
     if (selected.has(server.id)) {
@@ -953,7 +947,35 @@ function mergeMcpServers(
     }
     selected.set(server.id, server);
   }
-  return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const candidates = [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // The same adapter-owned compiler is used at config admission and process
+  // launch. This makes deterministic argv/env rejection a component result
+  // before Session birth instead of a fatal exception after user dispatch.
+  const projection = projectManagedCodexMcpLaunchConfig(candidates, {});
+  const acceptedIds = new Set(projection.acceptedServerIds);
+  const failures = new Map(projection.failures.map(failure => [failure.serverId, failure]));
+  for (const server of candidates) {
+    const failure = failures.get(server.id);
+    if (failure) {
+      reports.push(component(
+        'mcp',
+        failure.state,
+        failure.code,
+        server.id,
+        failure.message,
+      ));
+      continue;
+    }
+    if (acceptedIds.has(server.id)) {
+      reports.push(component(
+        'mcp',
+        'applied',
+        server.id.startsWith('plugin__') ? 'plugin_mcp_compiled' : 'mcp_compiled',
+        server.id,
+      ));
+    }
+  }
+  return candidates.filter(server => acceptedIds.has(server.id));
 }
 
 export function compileManagedCodexExtensionSnapshot(

@@ -85,6 +85,27 @@ describe('Managed Codex extension generation state', () => {
     });
   });
 
+  it('keeps a failed optional MCP component below an applied generation', () => {
+    resetManagedCodexExtensionState();
+    const degraded = {
+      ...snapshot('degraded'),
+      components: [{
+        component: 'mcp' as const,
+        id: 'unsafe-query',
+        state: 'failed' as const,
+        code: 'mcp_projection_rejected',
+        message: 'Unsafe URL query.',
+      }],
+    };
+
+    expect(markManagedCodexExtensionEffective(degraded, 'generation-degraded')).toMatchObject({
+      desiredRevision: 'degraded',
+      effectiveRevision: 'degraded',
+      state: 'applied',
+      components: [{ component: 'mcp', id: 'unsafe-query', state: 'failed' }],
+    });
+  });
+
   it('ignores stale generation cleanup and releases the effective generation', () => {
     resetManagedCodexExtensionState();
     markManagedCodexExtensionEffective(snapshot('one'), 'generation-one');

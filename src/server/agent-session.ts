@@ -13,6 +13,7 @@ import {
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
+import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
@@ -3647,15 +3648,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = mcpConfig;
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {
-      // Substitute {{ENV_VAR}} placeholders in URL with values from server.env
-      let resolvedUrl = server.url;
-      if (server.env) {
-        resolvedUrl = resolvedUrl.replace(/\{\{(\w+)\}\}/g, (_, key) => server.env?.[key] ?? '');
-      }
+      const remote = resolveRemoteMcpTransportConfig(server);
 
       // Inject OAuth token as Authorization header (auto-refreshes if needed)
       // Respect user-supplied Authorization — don't overwrite if already present
-      const headers = { ...server.headers };
+      const headers = { ...remote.headers };
       if (!headers['Authorization'] && !headers['authorization']) {
         const oauthHeaders = await resolveAuthHeaders(server.id);
         if (oauthHeaders['Authorization']) {
@@ -3666,11 +3663,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 
       result[server.id] = {
         type: server.type,
-        url: resolvedUrl,
+        url: remote.url,
         headers,
       };
       // Log URL with API key masked for security
-      const maskedUrl = resolvedUrl.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
+      const maskedUrl = remote.url.replace(/([?&]\w*[Kk]ey=)[^&]+/g, '$1***');
       console.log(`[agent] MCP ${server.id}: ${server.type} → ${maskedUrl}`);
     } else if (server.type === 'sse' || server.type === 'http') {
       console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);

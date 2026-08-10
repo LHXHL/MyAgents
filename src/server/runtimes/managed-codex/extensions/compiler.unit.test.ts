@@ -481,6 +481,50 @@ describe('Managed Codex extension compiler', () => {
     }));
   });
 
+  it('keeps valid MCP servers and reports an unsafe server as a component degradation', () => {
+    const workspace = tempRoot();
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      scenario: { type: 'desktop' },
+      mcpServers: [
+        {
+          id: 'unsafe-query',
+          name: 'Unsafe query',
+          type: 'http',
+          url: 'https://example.invalid/mcp?apiKey={{MCP_TOKEN}}',
+          env: { MCP_TOKEN: 'secret' },
+          isBuiltin: false,
+        },
+        {
+          id: 'safe-header',
+          name: 'Safe header',
+          type: 'http',
+          url: 'https://example.invalid/mcp',
+          headers: { Authorization: 'Bearer {{MCP_TOKEN}}' },
+          env: { MCP_TOKEN: 'secret' },
+          isBuiltin: false,
+        },
+      ],
+    });
+
+    expect(snapshot.mcpServers.map(server => server.id)).toEqual(['safe-header']);
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'mcp',
+      id: 'unsafe-query',
+      state: 'failed',
+      code: 'mcp_projection_rejected',
+      message: expect.stringMatching(/unsafe-query.*env placeholder/i),
+    }));
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'mcp',
+      id: 'safe-header',
+      state: 'applied',
+      code: 'mcp_compiled',
+    }));
+  });
+
   it.runIf(process.platform !== 'win32')('does not follow symlinked extension roots outside the trusted workspace', () => {
     const workspace = tempRoot();
     const outside = tempRoot();

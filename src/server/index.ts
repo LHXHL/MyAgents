@@ -3768,6 +3768,8 @@ async function main() {
             }
 
             try {
+              const { resolveRemoteMcpTransportConfig } = await import('./session-core/mcp-template-resolution');
+              const remote = resolveRemoteMcpTransportConfig(server);
               const controller = new AbortController();
               const timeout = setTimeout(() => controller.abort(), 15000);
 
@@ -3779,14 +3781,14 @@ async function main() {
                 // content-encoding: gzip with a non-compressed body, causing Bun's
                 // fetch() auto-decompression to crash. Validation doesn't need compression.
                 'Accept-Encoding': 'identity',
-                ...(server.headers || {}),
+                ...remote.headers,
               };
 
               let response: Response;
 
               if (server.type === 'http') {
                 // Streamable HTTP: send MCP initialize JSON-RPC request
-                response = await fetchWithGeneralProxy(server.url, {
+                response = await fetchWithGeneralProxy(remote.url, {
                   method: 'POST',
                   headers: { ...headers, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -3803,7 +3805,7 @@ async function main() {
                 });
               } else {
                 // SSE: send GET request to check if endpoint is reachable
-                response = await fetchWithGeneralProxy(server.url, {
+                response = await fetchWithGeneralProxy(remote.url, {
                   method: 'GET',
                   headers,
                   signal: controller.signal,

@@ -123,6 +123,26 @@ describe('Runtime diagnostics log projection', () => {
     expect(entry).toMatchObject({ level: 'error' });
   });
 
+  it('keeps an optional MCP projection failure at warning severity after generation apply', () => {
+    const entry = projectRuntimeExtensionDiagnosticLogEntry({
+      desiredRevision: 'desired',
+      effectiveRevision: 'desired',
+      state: 'applied',
+      components: [{
+        component: 'mcp',
+        id: 'unsafe-query',
+        state: 'failed',
+        code: 'mcp_projection_rejected',
+        message: 'Unsafe URL query.',
+      }],
+    });
+
+    expect(entry).toMatchObject({
+      level: 'warn',
+      message: expect.stringContaining('mcp/unsafe-query'),
+    });
+  });
+
   it('caps issue fan-out and preserves omitted error severity in one summary', () => {
     const entries = projectRuntimeDiagnosticLogEntries(diagnostics({
       issues: Array.from({ length: 12 }, (_, index) => ({

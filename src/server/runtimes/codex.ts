@@ -9,8 +9,8 @@
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { spawn, type Subprocess, type SubprocessStdin } from '../utils/subprocess';
-import { writeFileSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
-import { dirname, join } from 'path';
+import { writeFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, statSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   RuntimeDetection, RuntimeModelInfo, RuntimePermissionMode, RuntimeType,
   RuntimeAuthStatus, RuntimeFeatureFlag, RuntimeMcpServerInfo, RuntimeAppInfo,
@@ -34,8 +34,6 @@ import {
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
-import { getBundledCusePath } from '../utils/runtime';
-import { resolveNpxMcpInvocation } from '../utils/mcp-command';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
 import {
@@ -56,8 +54,12 @@ import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexHostToolCall,
   ManagedCodexHostToolResult,
+  ManagedCodexSkillSpec,
 } from './managed-codex/extensions/contracts';
 import { MANAGED_CODEX_EXTENSION_PROTOCOL_VERSION } from './managed-codex/extensions/contracts';
+import {
+  projectManagedCodexMcpLaunchConfig,
+} from './managed-codex/extensions/mcp-launch-projection';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 
 /**
@@ -155,43 +157,6 @@ export function summarizeCodexThreadParamsForLog(
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
 const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
-const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
-const CODEX_MCP_PROXY_ENV_KEYS = [
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'all_proxy',
-  'no_proxy',
-] as const;
-const CODEX_MCP_TEMPLATE_RE = /\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/;
-const CODEX_MCP_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const CODEX_MCP_SECRET_VALUE_RE = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/i;
-const CODEX_MCP_INLINE_SECRET_RE = /(?:api[-_]?key|token|secret|password|authorization|access[-_]?token|refresh[-_]?token)\s*[:=]\s*[^,\s]+/i;
-const CODEX_MCP_SENSITIVE_FLAG_RE = /^-{1,2}(?:api[-_]?key|key|token|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|authorization|auth-token)(?:$|[=:])/i;
-const CODEX_MCP_PARENT_ENV_DENY = new Set([
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'PWD',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'LD_PRELOAD',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'MYAGENTS_RUNTIME_SOURCE',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENAI_ORG_ID',
-  'OPENAI_ORGANIZATION',
-]);
 export type CodexMcpStartupState = 'starting' | 'ready' | 'failed' | 'cancelled';
 
 export interface CodexMcpStartupStatusNotification {
@@ -377,120 +342,6 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function tomlArray(values: readonly string[]): string {
-  return `[${values.map(tomlString).join(',')}]`;
-}
-
-function tomlKey(value: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
-}
-
-function tomlInlineStringMap(values: Record<string, string>): string {
-  const entries = Object.entries(values);
-  return `{${entries.map(([key, value]) => `${tomlKey(key)}=${tomlString(value)}`).join(',')}}`;
-}
-
-function codexMcpServerName(id: string): string | null {
-  const normalized = id.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
-  return normalized || null;
-}
-
-function codexMcpEnvVarName(serverName: string, key: string): string {
-  const safeServer = serverName.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  const safeKey = key.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-  return `MYAGENTS_MCP_${safeServer}_${safeKey}`.slice(0, 180);
-}
-
-function uniqueCodexMcpEnvVarName(
-  serverName: string,
-  key: string,
-  used: Set<string>,
-): string {
-  const base = codexMcpEnvVarName(serverName, key);
-  let candidate = base;
-  let i = 2;
-  while (used.has(candidate)) {
-    const suffix = `_${i}`;
-    candidate = `${base.slice(0, Math.max(1, 180 - suffix.length))}${suffix}`;
-    i += 1;
-  }
-  used.add(candidate);
-  return candidate;
-}
-
-function hasCodexMcpTemplate(value: string): boolean {
-  return CODEX_MCP_TEMPLATE_RE.test(value);
-}
-
-function resolveMcpTemplateValue(
-  value: string,
-  env: Record<string, string> | undefined,
-): string | null {
-  let missing = false;
-  const resolved = value.replace(/\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g, (_match, key: string) => {
-    const replacement = env?.[key];
-    if (replacement === undefined) {
-      missing = true;
-      return '';
-    }
-    return replacement;
-  });
-  return missing ? null : resolved;
-}
-
-function unsafeCodexMcpStdioValueReason(value: string): string | null {
-  if (hasCodexMcpTemplate(value)) return 'contains MyAgents env placeholder';
-  if (CODEX_MCP_SECRET_VALUE_RE.test(value)) return 'contains inline secret-looking value';
-  if (/bearer\s+\S+/i.test(value)) return 'contains inline bearer token';
-  if (CODEX_MCP_INLINE_SECRET_RE.test(value)) return 'contains inline credential assignment';
-  return null;
-}
-
-function unsafeCodexMcpStdioArgsReason(args: readonly string[]): string | null {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] ?? '';
-    const valueReason = unsafeCodexMcpStdioValueReason(arg);
-    if (valueReason) return `arg[${i}] ${valueReason}`;
-    if (CODEX_MCP_SENSITIVE_FLAG_RE.test(arg.trim())) {
-      return `arg[${i}] uses a credential flag`;
-    }
-    const previous = args[i - 1]?.trim();
-    if (previous && CODEX_MCP_SENSITIVE_FLAG_RE.test(previous)) {
-      return `arg[${i}] follows a credential flag`;
-    }
-  }
-  return null;
-}
-
-function unsafeCodexMcpUrlReason(rawUrl: string): string | null {
-  if (hasCodexMcpTemplate(rawUrl)) return 'contains MyAgents env placeholder';
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return 'is not a valid URL';
-  }
-  if (parsed.username || parsed.password) return 'contains URL userinfo';
-  if (parsed.search || parsed.hash) {
-    return 'contains query string or fragment that would enter argv';
-  }
-  if (CODEX_MCP_SECRET_VALUE_RE.test(parsed.pathname)) {
-    return 'contains secret-looking path segment';
-  }
-  return null;
-}
-
-function canExposeMcpEnvKeyToCodexParent(key: string): boolean {
-  if (!CODEX_MCP_ENV_NAME_RE.test(key)) return false;
-  const upper = key.toUpperCase();
-  if (upper.startsWith('CODEX_') || upper.startsWith('OPENAI_')) return false;
-  if (CODEX_MCP_PARENT_ENV_DENY.has(upper)) return false;
-  if ((CODEX_MCP_PROXY_ENV_KEYS as readonly string[]).some(proxyKey => proxyKey.toUpperCase() === upper)) {
-    return false;
-  }
-  return true;
-}
-
 function pushCodexConfigArg(target: string[], key: string, valueToml: string): void {
   target.push('-c', `${key}=${valueToml}`);
 }
@@ -568,12 +419,59 @@ export function resolveCodexSkillExtraRoots(workspacePath: string): string[] {
   }
 }
 
+export const CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS = 5_000;
+export const CODEX_SKILL_LIST_TIMEOUT_MS = 30_000;
+
+type CodexSkillListError = { path?: string; message?: string };
+type CodexSkillListEntry = {
+  skills?: Array<{ name?: string; enabled?: boolean; path?: string }>;
+  errors?: CodexSkillListError[];
+};
+
+type ExpectedCodexSkill = Pick<ManagedCodexSkillSpec, 'name' | 'path'>;
+
+function canonicalCodexSkillPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function codexSkillIdentity(skill: { name: string; path: string }): string {
+  return `${skill.name}\0${canonicalCodexSkillPath(skill.path)}`;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function summarizeCodexSkillErrorPath(
+  path: string | undefined,
+  workspacePath: string,
+  extraRoots: readonly string[],
+): string {
+  if (!path) return '<unknown>';
+  if (isPathInside(workspacePath, path)) {
+    const rel = relative(resolve(workspacePath), resolve(path));
+    return rel ? `<workspace>/${rel}` : '<workspace>';
+  }
+  for (const [index, root] of extraRoots.entries()) {
+    if (!isPathInside(root, path)) continue;
+    const rel = relative(resolve(root), resolve(path));
+    return rel ? `<extra-root-${index + 1}>/${rel}` : `<extra-root-${index + 1}>`;
+  }
+  return `<external>/${basename(path) || 'unknown'}`;
+}
+
 export async function configureCodexSkillExtraRoots(
   rpc: Pick<JsonRpcClient, 'call'>,
   workspacePath: string,
-  timeoutMs = 5_000,
+  setTimeoutMs = CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
   requestedRoots?: readonly string[],
-  expectedSkillNames: readonly string[] = [],
+  expectedSkills: readonly ExpectedCodexSkill[] = [],
+  listTimeoutMs = CODEX_SKILL_LIST_TIMEOUT_MS,
 ): Promise<string[]> {
   const strictProjection = requestedRoots !== undefined;
   const extraRoots = requestedRoots === undefined
@@ -582,21 +480,67 @@ export async function configureCodexSkillExtraRoots(
   if (!strictProjection && extraRoots.length === 0) return [];
 
   try {
-    await rpc.call('skills/extraRoots/set', { extraRoots }, timeoutMs);
-    const listed = await rpc.call('skills/list', {
-      cwds: [workspacePath],
-      forceReload: true,
-    }, timeoutMs) as { data?: Array<{ skills?: Array<{ name?: string; enabled?: boolean }> }> };
-    const visible = new Set(
-      (listed.data ?? []).flatMap(entry => entry.skills ?? [])
-        .filter(skill => skill.enabled !== false && typeof skill.name === 'string')
-        .map(skill => skill.name as string),
-    );
-    const missing = expectedSkillNames.filter(name => !visible.has(name));
-    if (missing.length > 0) {
-      throw new Error(`Codex skills/list did not report expected Skills: ${missing.join(', ')}`);
+    const setStartedAt = Date.now();
+    try {
+      await rpc.call('skills/extraRoots/set', { extraRoots }, setTimeoutMs);
+      console.log(
+        `[codex] skills/extraRoots/set completed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`,
+      );
+    } catch (error) {
+      console.warn(
+        `[codex] skills/extraRoots/set failed: roots=${extraRoots.length}`
+        + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`
+        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
     }
-    console.log(`[codex] skills extra roots applied and verified: roots=${extraRoots.length} skills=${expectedSkillNames.length}`);
+
+    const listStartedAt = Date.now();
+    let listed: { data?: CodexSkillListEntry[] };
+    try {
+      listed = await rpc.call('skills/list', {
+        cwds: [workspacePath],
+        forceReload: true,
+      }, listTimeoutMs) as { data?: CodexSkillListEntry[] };
+    } catch (error) {
+      console.warn(
+        `[codex] skills/list failed: roots=${extraRoots.length}`
+        + ` expected=${expectedSkills.length}`
+        + ` durationMs=${Date.now() - listStartedAt} timeoutMs=${listTimeoutMs}`
+        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+    const entries = listed.data ?? [];
+    const listedSkills = entries.flatMap(entry => entry.skills ?? []);
+    const listErrors = entries.flatMap(entry => entry.errors ?? []);
+    console.log(
+      `[codex] skills/list completed: roots=${extraRoots.length}`
+      + ` expected=${expectedSkills.length} visible=${listedSkills.length}`
+      + ` errors=${listErrors.length} durationMs=${Date.now() - listStartedAt}`
+      + ` timeoutMs=${listTimeoutMs}`,
+    );
+    for (const error of listErrors) {
+      console.warn(
+        `[codex] skills/list parser warning: path=${JSON.stringify(summarizeCodexSkillErrorPath(error.path, workspacePath, extraRoots))}`
+        + ` message=${JSON.stringify(summarizeSensitiveValueForLog(error.message))}`,
+      );
+    }
+    const visible = new Set(
+      listedSkills
+        .filter((skill): skill is { name: string; path: string; enabled?: boolean } => (
+          skill.enabled !== false
+          && typeof skill.name === 'string'
+          && typeof skill.path === 'string'
+        ))
+        .map(codexSkillIdentity),
+    );
+    const missing = expectedSkills.filter(skill => !visible.has(codexSkillIdentity(skill)));
+    if (missing.length > 0) {
+      throw new Error(`Codex skills/list did not report expected Skills: ${missing.map(skill => skill.name).join(', ')}`);
+    }
+    console.log(`[codex] skills extra roots applied and verified: roots=${extraRoots.length} skills=${expectedSkills.length}`);
     return extraRoots;
   } catch (err) {
     if (!strictProjection) {
@@ -613,148 +557,25 @@ export async function configureCodexSkillExtraRoots(
 function buildManagedCodexMcpConfigArgs(
   servers: readonly McpServerDefinition[] | undefined,
   codexEnv: Record<string, string | undefined>,
-): { args: string[]; serverNames: string[] } {
-  if (!servers || servers.length === 0) return { args: [], serverNames: [] };
-
-  const args: string[] = [];
-  const usedNames = new Set<string>();
-  const usedGeneratedEnvNames = new Set<string>();
-  const assignedServerEnv = new Map<string, { value: string; serverId: string }>();
-
-  const reject = (serverId: string, reason: string): never => {
-    throw new Error(`Managed Codex MCP ${serverId} cannot be applied: ${reason}`);
+): {
+  args: string[];
+  serverNames: string[];
+} {
+  const projection = projectManagedCodexMcpLaunchConfig(servers, codexEnv);
+  Object.assign(codexEnv, projection.envPatch);
+  if (projection.serverNames.length > 0 || projection.failures.length > 0) {
+    console.log(
+      `[codex] managed MCP startup config: injected=${projection.serverNames.length}`
+      + ` degraded=${projection.failures.length}`,
+    );
+  }
+  for (const failure of projection.failures) {
+    console.warn(`[codex] managed MCP component degraded: ${failure.message}`);
+  }
+  return {
+    args: projection.args,
+    serverNames: projection.serverNames,
   };
-
-  codexEnv.NO_PROXY = CODEX_MCP_NO_PROXY_VAL;
-  codexEnv.no_proxy = CODEX_MCP_NO_PROXY_VAL;
-
-  for (const server of servers) {
-    const name = codexMcpServerName(server.id);
-    if (!name || usedNames.has(name)) {
-      reject(server.id, 'invalid or duplicate Codex MCP server name');
-    }
-    const serverName = name ?? reject(server.id, 'invalid Codex MCP server name');
-
-    if (server.type === 'stdio') {
-      let command = server.command;
-      if (command === '__builtin__') {
-        // In-process MCP is exposed through the Host tool dispatcher instead.
-        continue;
-      }
-      if (command === '__bundled_cuse__') {
-        command = getBundledCusePath() ?? undefined;
-        if (!command) {
-          reject(server.id, 'bundled cuse binary not found');
-        }
-      }
-      if (!command) {
-        reject(server.id, 'missing stdio command');
-      }
-      const resolvedCommand = command ?? reject(server.id, 'missing stdio command');
-      let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-      let projectedCommand = resolvedCommand;
-      if (projectedCommand === 'npx') {
-        const invocation = resolveNpxMcpInvocation(stdioArgs, {
-          pinPresetPackages: server.isBuiltin === true,
-        });
-        projectedCommand = invocation.command;
-        stdioArgs = invocation.args;
-        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${projectedCommand})`);
-      }
-      const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
-      if (commandReason) {
-        reject(server.id, `stdio command ${commandReason}`);
-      }
-      const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
-      if (argsReason) {
-        reject(server.id, `stdio args unsafe for Codex argv (${argsReason})`);
-      }
-
-      const serverEnv = Object.entries(server.env ?? {});
-      const unsafeEnvKeys = serverEnv
-        .map(([key]) => key)
-        .filter(key => !canExposeMcpEnvKeyToCodexParent(key));
-      if (unsafeEnvKeys.length > 0) {
-        reject(server.id, `env keys cannot be exposed to Codex parent process (${unsafeEnvKeys.join(', ')})`);
-      }
-      for (const [key, value] of serverEnv) {
-        const assigned = assignedServerEnv.get(key);
-        if (assigned && assigned.value !== value) {
-          reject(server.id, `env key ${key} conflicts with server ${assigned.serverId}`);
-        }
-        assignedServerEnv.set(key, { value, serverId: server.id });
-      }
-
-      usedNames.add(serverName);
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.command`, tomlString(projectedCommand));
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.args`, tomlArray(stdioArgs));
-
-      const envVars = new Set<string>();
-      for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
-        if (codexEnv[key]) envVars.add(key);
-      }
-      envVars.add('NO_PROXY');
-      envVars.add('no_proxy');
-      for (const [key, value] of serverEnv) {
-        if (!key || value === undefined) continue;
-        codexEnv[key] = value;
-        envVars.add(key);
-      }
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.env_vars`, tomlArray([...envVars].sort()));
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${serverName}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    if (server.type === 'http') {
-      if (!server.url) {
-        reject(server.id, 'missing HTTP MCP URL');
-      }
-      const url = server.url ?? reject(server.id, 'missing HTTP MCP URL');
-      const urlReason = unsafeCodexMcpUrlReason(url);
-      if (urlReason) {
-        reject(server.id, `HTTP MCP URL unsafe for Codex argv (${urlReason})`);
-      }
-
-      const envHeaderMap: Record<string, string> = {};
-      const pendingHeaderEnv: Record<string, string> = {};
-      if (server.headers && Object.keys(server.headers).length > 0) {
-        for (const [header, value] of Object.entries(server.headers)) {
-          if (!header || value === undefined) continue;
-          const resolvedHeaderValue = resolveMcpTemplateValue(value, server.env);
-          if (resolvedHeaderValue === null) {
-            reject(server.id, `HTTP header ${header} references missing env placeholder`);
-          }
-          const envName = uniqueCodexMcpEnvVarName(serverName, header, usedGeneratedEnvNames);
-          pendingHeaderEnv[envName] = resolvedHeaderValue ?? reject(server.id, `HTTP header ${header} references missing env placeholder`);
-          envHeaderMap[header] = envName;
-        }
-      }
-
-      usedNames.add(serverName);
-      Object.assign(codexEnv, pendingHeaderEnv);
-      pushCodexConfigArg(args, `mcp_servers.${serverName}.url`, tomlString(url));
-      if (Object.keys(envHeaderMap).length > 0) {
-        pushCodexConfigArg(args, `mcp_servers.${serverName}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
-      }
-      pushCodexConfigArg(
-        args,
-        `mcp_servers.${serverName}.startup_timeout_sec`,
-        String(MCP_PREWARM_GRACE_MS / 1_000),
-      );
-      continue;
-    }
-
-    reject(server.id, `Codex app-server does not support MyAgents MCP type ${server.type}`);
-  }
-
-  if (args.length > 0) {
-    console.log(`[codex] managed MCP startup config: injected=${usedNames.size}`);
-  }
-  return { args, serverNames: [...usedNames] };
 }
 
 export function buildCodexAppServerLaunchConfig(args: {
@@ -763,7 +584,11 @@ export function buildCodexAppServerLaunchConfig(args: {
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
   extensionConfigArgs?: readonly string[];
-}): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
+}): {
+  args: string[];
+  mcpServerNames: string[];
+  modelProvider?: string;
+} {
   const codexArgs = [
     args.commandPath,
     '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
@@ -3503,9 +3328,10 @@ export class CodexRuntime implements AgentRuntime {
       await configureCodexSkillExtraRoots(
         codexProc.rpc,
         options.workspacePath,
-        5_000,
+        CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
         extensionSnapshot ? extensionMaterialization.skillRoots : undefined,
-        extensionSnapshot?.skills.map(skill => skill.name) ?? [],
+        extensionSnapshot?.skills ?? [],
+        CODEX_SKILL_LIST_TIMEOUT_MS,
       );
 
       // 2. Determine permission mode

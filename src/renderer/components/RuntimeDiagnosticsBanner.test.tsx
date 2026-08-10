@@ -381,6 +381,30 @@ describe('RuntimeDiagnosticsBanner diagnostics action', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('keeps an optional MCP projection failure out of the banner when the generation applied', () => {
+    const diagnostics: RuntimeDiagnostics = {
+      ...blockingDiagnostics,
+      auth: { authMethod: 'chatgpt', requiresLogin: false },
+      issues: [],
+      extensions: {
+        desiredRevision: 'desired-revision',
+        effectiveRevision: 'desired-revision',
+        state: 'applied',
+        components: [{
+          component: 'mcp',
+          id: 'unsafe-query',
+          state: 'failed',
+          code: 'mcp_projection_rejected',
+          message: 'Unsafe URL query.',
+        }],
+      },
+    };
+
+    const { container } = render(<RuntimeDiagnosticsBanner diagnostics={diagnostics} />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('shows only failed extension components when the snapshot itself failed', async () => {
     render(
       <RuntimeDiagnosticsBanner

@@ -320,7 +320,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 1. 调 `syncProjectUserConfigFiles(workspacePath)`，把 `~/.myagents/skills` 中启用的用户级 skills 同步为工作区 `.claude/skills/*` symlink（与 builtin Claude SDK 共用同一套磁盘桥接逻辑，不另建 Codex 专用目录）。
 2. `initialize` 握手完成后调 Codex app-server RPC `skills/extraRoots/set`，把 `<workspace>/.claude/skills` 作为额外 skill root 注入当前 Codex 进程。
 
-这段兼容路径只描述 `runtimeSource:'system-cli'`：同步或 `skills/extraRoots/set` 失败只记录 warning，用户自己的 Codex 会话继续启动并回落到默认 `.agents/skills` 扫描。`runtimeSource:'managed-provider'` 不复用该宽松语义；它走下节的精确 Product Extension projection，设置或 read-back 失败会让本次 Runtime 启动失败，不能带着旧/多余 Skill 冒充成功。
+这段兼容路径只描述 `runtimeSource:'system-cli'`：同步或 `skills/extraRoots/set` 失败只记录 warning，用户自己的 Codex 会话继续启动并回落到默认 `.agents/skills` 扫描。`runtimeSource:'managed-provider'` 不复用该宽松语义；它走下节的精确 Product Extension projection，设置或 read-back 失败会让本次 Runtime 启动失败，不能带着旧/多余 Skill 冒充成功。Managed 路径为 `skills/extraRoots/set` 保留 5 秒控制面 deadline，首次 `skills/list(forceReload:true)` 使用独立 30 秒扫描 deadline；read-back 按 Skill 名称和 canonical source path 同时验收，不能由其他 root 的同名 Skill 冒充。统一日志记录两个阶段的耗时、root/expected/visible/error 计数，并以 workspace/extra-root 相对路径及不可逆 message 摘要记录 Codex 返回的 `errors[]`，不持久化 parser 自由文本。与期望集合无关的 parser warning 只进入日志，不提升为 Chat banner；期望 Skill 缺失仍是顶层投影失败。
 
 ### Managed Codex Product Extensions（0.4.6）
 
@@ -333,7 +333,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | Workspace/全局/Plugin Skills | 临时精确目录 → `skills/extraRoots/set` + read-back | project > user > plugin；只投影合并后 enabled 的 canonical、非 symlink、限深限大 `SKILL.md`；正文 digest 进入 revision |
 | Commands | Sidecar admission-time 展开为 runtime prompt | transcript 保留用户原始 `/command args`；`$ARGUMENTS` 只作用于发给 Runtime 的文本 |
 | Agents | 启动时生成临时 native `agents.<role>.config_file` | prompt/model/Skill 可忠实映射；tools/disallowedTools/maxTurns 等字段逐 Agent unsupported，不用 prompt 伪装约束 |
-| 外部 MCP | Managed app-server 启动配置 | stdio/streamable HTTP 由服务端权威 MCP definition 投影；无法安全表达或 env key 值冲突时整次启动失败，不静默 skip；secret 值只进入进程 apply fingerprint，不进入 revision/diagnostics |
+| 外部 MCP | Managed app-server 启动配置 | stdio/streamable HTTP 由服务端权威 MCP definition 逐 server 原子投影；URL/header 的 `{{ENV_NAME}}` 先经共享 MCP 模板解析，再交给 Settings 探活、Builtin SDK 或 Managed Codex 各自的 transport projector。无法安全表达、transport 不支持或 env key 值冲突时只排除该 server，并以 `extensions.components` 的 `failed` / `unsupported` 进入 Logs panel，其他 MCP 与基础 Session 继续；顶层 generation 仍为 `applied`，因此不出现 blocking Chat banner。secret 值只进入进程 apply fingerprint，不进入 revision/diagnostics，也绝不进入 argv |
 | SDK in-process MCP / IM Bridge | `thread/start.dynamicTools` +反向 `item/tool/call` | Dispatcher 复用标准 MCP handler、现有权限 owner、AbortSignal、timeout、附件与 large-value spill；exactly-once 且绑定 process generation |
 | Plugin | 按 `plugin.json` 的 `skills`/`commands`/`agents`/`mcpServers` 路径与默认目录编译 | 命名组件使用 project > user > plugin；MCP 按 server id 独立合并并显式报告冲突。Hooks/LSP/monitors/bin 和不可表示 transport 逐组件 unsupported，不阻断其它可转换组件 |
 
