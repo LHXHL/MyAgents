@@ -299,10 +299,6 @@ fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value
     (headers, Json(value))
 }
 
-fn sidecar_identity_matches(current_generation: Option<u64>, requested_generation: u64) -> bool {
-    current_generation == Some(requested_generation)
-}
-
 fn validate_current_sidecar_request(
     headers: &HeaderMap,
     sidecar_id: &str,
@@ -460,36 +456,16 @@ async fn grok_bearer_handler(
     headers: HeaderMap,
     Json(req): Json<crate::grok_auth::types::ManagementBearerRequest>,
 ) -> (HeaderMap, Json<serde_json::Value>) {
-    let session_id = req.session_id.trim();
-    if session_id.is_empty() {
+    let sidecar_id = req.sidecar_id.trim();
+    if sidecar_id.is_empty() {
         return no_store_json(serde_json::json!({
             "ok": false,
             "code": "invalid_request",
-            "error": "sessionId is required",
+            "error": "sidecarId is required",
         }));
     }
-    let generation = match request_sidecar_generation(&headers) {
-        Ok(generation) => generation,
-        Err(Json(value)) => return no_store_json(value),
-    };
-    let Some(sidecars) = get_sidecar_state() else {
-        return no_store_json(serde_json::json!({
-            "ok": false,
-            "code": "management_unavailable",
-            "error": "Sidecar manager is not initialized",
-        }));
-    };
-    let current_generation = sidecars
-        .lock()
-        .ok()
-        .and_then(|manager| manager.generation_for(session_id));
-    let is_current = sidecar_identity_matches(current_generation, generation);
-    if !is_current {
-        return no_store_json(serde_json::json!({
-            "ok": false,
-            "code": "stale_sidecar",
-            "error": "Sidecar identity is no longer current",
-        }));
+    if let Err(value) = validate_current_sidecar_request(&headers, sidecar_id) {
+        return no_store_json(value);
     }
 
     let bearer_purpose = match req.purpose.as_deref().unwrap_or("execution") {
@@ -2119,6 +2095,10 @@ async fn uninstall_plugin_handler(
 
 // ===== Agent Runtime Status handler =====
 
+fn live_channel_uptime_seconds(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_secs()
+}
+
 async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
     let agents = match get_agents() {
         Some(a) => a,
@@ -2138,6 +2118,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
         channel_id: String,
         platform_str: String,
         health: std::sync::Arc<im::health::HealthManager>,
+        started_at: std::time::Instant,
     }
 
     let mut snapshots: Vec<AgentSnapshot> = Vec::new();
@@ -2151,6 +2132,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
                 channel_id: ch_id.clone(),
                 platform_str,
                 health: std::sync::Arc::clone(&ch.bot_instance.health),
+                started_at: ch.bot_instance.started_at(),
             });
         }
         snapshots.push(AgentSnapshot {
@@ -2175,7 +2157,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
                 "channelId": ch.channel_id,
                 "channelType": ch.platform_str,
                 "status": status_str,
-                "uptimeSeconds": health_state.uptime_seconds,
+                "uptimeSeconds": live_channel_uptime_seconds(ch.started_at),
                 "lastMessageAt": health_state.last_message_at,
                 "errorMessage": health_state.error_message,
                 "activeSessions": health_state.active_sessions.len(),
@@ -3945,10 +3927,20 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn grok_bearer_requires_the_current_sidecar_generation() {
-        assert!(sidecar_identity_matches(Some(7), 7));
-        assert!(!sidecar_identity_matches(Some(7), 6));
-        assert!(!sidecar_identity_matches(None, 7));
+    fn grok_bearer_addresses_the_calling_sidecar_process() {
+        let request: crate::grok_auth::types::ManagementBearerRequest =
+            serde_json::from_value(serde_json::json!({
+                "sidecarId": crate::sidecar::GLOBAL_SIDECAR_ID,
+                "reason": "request",
+            }))
+            .expect("sidecar process identity should deserialize");
+        assert_eq!(request.sidecar_id, crate::sidecar::GLOBAL_SIDECAR_ID);
+        assert!(
+            serde_json::from_value::<crate::grok_auth::types::ManagementBearerRequest>(
+                serde_json::json!({ "sessionId": "session-1", "reason": "request" })
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -4033,6 +4025,12 @@ mod tests {
         assert_eq!(request.patch.model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(request.patch.permission_mode.as_deref(), Some("fullAgency"));
         assert_eq!(request.patch.provider_env_json, Some(None));
+    }
+
+    #[test]
+    fn live_channel_uptime_comes_from_the_running_instance_start() {
+        let started_at = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        assert!(live_channel_uptime_seconds(started_at) >= 3);
     }
 
     #[test]

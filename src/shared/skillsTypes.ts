@@ -54,6 +54,10 @@ export interface SkillDetail {
     folderName: string;
     path: string;
     scope: 'user' | 'project';
+    /** Content is versioned and maintained by MyAgents. */
+    systemOwned: boolean;
+    /** Product contract requires this global Skill to remain available. */
+    required: boolean;
     frontmatter: Partial<SkillFrontmatter>;
     body: string;
 }

@@ -946,7 +946,7 @@ async fn acquire_session_dispatch_with_wait(
     unreachable!("dispatch retry iterator always contains its final attempt")
 }
 
-async fn acquire_global_dispatch_with_wait(
+pub(crate) async fn acquire_global_dispatch_with_wait(
     manager: &ManagedSidecarManager,
 ) -> Result<crate::sidecar::manager::SidecarHttpDispatch, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -1297,10 +1297,71 @@ async fn execute_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidecar::{
+        create_sidecar_manager, DispatchGate, SidecarInstance, GLOBAL_SIDECAR_ID,
+    };
+    use std::process::Stdio;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::Listener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn global_dispatch_waits_for_the_canonical_birth_to_finish() {
+        let manager = create_sidecar_manager();
+        let install_manager = manager.clone();
+        let install_ready_instance = async move {
+            tokio::task::yield_now().await;
+            #[cfg(windows)]
+            let mut command = {
+                let mut command = crate::process_cmd::new("powershell");
+                command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+                command
+            };
+            #[cfg(not(windows))]
+            let mut command = {
+                let mut command = crate::process_cmd::new("sleep");
+                command.arg("60");
+                command
+            };
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            install_manager
+                .lock()
+                .expect("sidecar manager lock")
+                .insert_instance(
+                    GLOBAL_SIDECAR_ID.to_string(),
+                    SidecarInstance {
+                        process: Some(
+                            crate::process_cmd::spawn_tree(&mut command)
+                                .expect("spawn test Global process"),
+                        ),
+                        generation: 7,
+                        port: 31419,
+                        agent_dir: None,
+                        healthy: true,
+                        is_global: true,
+                        session_delete_authority: None,
+                        dispatch_gate: DispatchGate::new(),
+                        created_at: std::time::Instant::now(),
+                    },
+                );
+        };
+
+        let (dispatch, ()) = tokio::join!(
+            acquire_global_dispatch_with_wait(&manager),
+            install_ready_instance,
+        );
+        let dispatch = dispatch.expect("dispatch should join the canonical Global birth");
+        assert_eq!(
+            dispatch
+                .url_for_path("/api/grok/verify")
+                .expect("valid route"),
+            "http://127.0.0.1:31419/api/grok/verify"
+        );
+    }
 
     async fn loopback_response(raw_response: &'static [u8]) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

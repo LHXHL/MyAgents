@@ -47,8 +47,12 @@ import {
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
+  getExplicitImageInputSupport,
   isImageUnderstandingToolConfigured,
   normalizeOfficialToolIds,
+  type ImageUnderstandingCapabilityConfidence,
+  type ImageUnderstandingCapabilitySource,
+  type ImageUnderstandingModelOption,
   type OfficialToolId,
   type OfficialToolSettings,
 } from '../../shared/official-tools';
@@ -74,6 +78,7 @@ import { resolveSessionConfig } from './resolve-session-config';
 import { normalizeThemeConfigRecord } from '../../shared/theme';
 import { buildAvailableProvidersJson } from '../../shared/availableProvidersProjection';
 import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
+import { lookupModelModalitySupport } from './model-capabilities';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -525,7 +530,12 @@ export type ImageUnderstandingToolAvailability =
       providerId: string;
       model: string;
       provider: ProviderRecord;
-      modelEntry: { model: string; inputModalities: string[] };
+      modelEntry: {
+        model: string;
+        inputModalities?: string[];
+        capabilityConfidence: ImageUnderstandingCapabilityConfidence;
+        capabilitySource?: ImageUnderstandingCapabilitySource;
+      };
     }
   | {
       ok: false;
@@ -547,7 +557,13 @@ function unavailableImageUnderstandingTool(
 function findProviderImageModel(
   provider: Record<string, unknown>,
   model: string,
-): { model: string; inputModalities: string[] } | null {
+): {
+  model: string;
+  modelName: string;
+  inputModalities?: string[];
+  capabilityConfidence: ImageUnderstandingCapabilityConfidence;
+  capabilitySource?: ImageUnderstandingCapabilitySource;
+} | null {
   const models = Array.isArray(provider.models) ? provider.models : [];
   for (const entry of models) {
     if (!entry || typeof entry !== 'object') continue;
@@ -555,10 +571,78 @@ function findProviderImageModel(
     if (record.model !== model) continue;
     const inputModalities = Array.isArray(record.inputModalities)
       ? record.inputModalities.filter((value): value is string => typeof value === 'string')
-      : [];
-    return { model, inputModalities };
+      : undefined;
+    const explicitSupport = getExplicitImageInputSupport(record);
+    if (explicitSupport === false) return null;
+    const declaredSource = record.source === 'preset'
+      || record.source === 'custom'
+      || record.source === 'discovered'
+      ? record.source
+      : 'provider';
+    const fallback = explicitSupport === undefined
+      ? lookupModelModalitySupport(model, 'image')
+      : undefined;
+    const inferred = fallback?.status === 'supported' && fallback.source === 'litellm';
+    return {
+      model,
+      modelName: typeof record.modelName === 'string' && record.modelName.trim()
+        ? record.modelName
+        : model,
+      inputModalities,
+      capabilityConfidence: explicitSupport === true
+        ? 'declared'
+        : inferred
+          ? 'inferred'
+          : 'unknown',
+      capabilitySource: explicitSupport === true
+        ? declaredSource
+        : inferred
+          ? 'litellm'
+          : undefined,
+    };
   }
   return null;
+}
+
+/**
+ * Canonical image-helper picker data. The provider offering is authoritative:
+ * explicit text-only rows are excluded, explicit image rows are declared,
+ * and missing metadata remains selectable. LiteLLM can upgrade that unknown
+ * state to a positive inference, but its negative/absent data never vetoes a
+ * provider offering that the user may explicitly confirm.
+ */
+export function listImageUnderstandingModelOptions(
+  config?: AdminAppConfig,
+): ImageUnderstandingModelOption[] {
+  const c = config ?? loadConfig();
+  const options: ImageUnderstandingModelOption[] = [];
+  const seen = new Set<string>();
+  for (const provider of getAllEffectiveProviders(c)) {
+    if (isRuntimeBackedProvider(provider) || getProviderSelectionError(provider, c) !== null) continue;
+    const providerName = typeof provider.name === 'string' && provider.name.trim()
+      ? provider.name
+      : provider.id;
+    const models = Array.isArray(provider.models) ? provider.models : [];
+    for (const entry of models) {
+      if (!entry || typeof entry !== 'object') continue;
+      const modelId = (entry as Record<string, unknown>).model;
+      if (typeof modelId !== 'string' || !modelId.trim()) continue;
+      const resolved = findProviderImageModel(provider, modelId);
+      if (!resolved) continue;
+      const key = `${provider.id}\u0000${modelId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      options.push({
+        providerId: provider.id,
+        providerName,
+        model: modelId,
+        modelName: resolved.modelName,
+        capabilityConfidence: resolved.capabilityConfidence,
+        capabilitySource: resolved.capabilitySource,
+      });
+    }
+  }
+  return options;
 }
 
 export function resolveImageUnderstandingToolAvailability(
@@ -593,11 +677,11 @@ export function resolveImageUnderstandingToolAvailability(
   }
 
   const modelEntry = findProviderImageModel(provider, model);
-  if (!modelEntry || !modelEntry.inputModalities.includes('image')) {
+  if (!modelEntry) {
     return unavailableImageUnderstandingTool(
       'model-not-image-capable',
-      `Model '${model}' is not registered as image-capable for provider '${providerId}'.`,
-      'Open Model Providers and select or mark a model whose input modalities include image.',
+      `Model '${model}' is missing or explicitly registered as text-only for provider '${providerId}'.`,
+      'Open Model Providers and select a model that accepts image input.',
     );
   }
 

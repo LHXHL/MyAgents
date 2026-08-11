@@ -1128,6 +1128,15 @@ pub struct ImBotInstance {
     pub(crate) agent_link: SharedAgentLink,
 }
 
+impl ImBotInstance {
+    /// Read-only lifecycle authority for projections outside the IM module.
+    /// Callers snapshot the Instant under the registry lock, then calculate
+    /// elapsed time without holding that lock across awaits.
+    pub(crate) fn started_at(&self) -> Instant {
+        self.started_at
+    }
+}
+
 // ===== Agent Architecture (v0.1.41) =====
 
 use types::{AgentConfigRust, LastActiveChannel, LastActivePrivateTarget};

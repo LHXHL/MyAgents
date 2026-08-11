@@ -26,6 +26,11 @@ const runtimeModelMocks = vi.hoisted(() => ({
   managedInstalled: true,
 }));
 
+const providerVerifyMocks = vi.hoisted(() => ({
+  verifyProviderViaSdk: vi.fn(async () => ({ success: true })),
+  verifySubscription: vi.fn(async () => ({ success: true })),
+}));
+
 const adminConfigBehavior = vi.hoisted(() => ({
   failProjectWrite: false,
   failNextConfigWrite: false,
@@ -109,6 +114,11 @@ vi.mock('./runtimes/codex-command-context', async (importOriginal) => ({
   isManagedCodexRuntimeInstalled: () => runtimeModelMocks.managedInstalled,
 }));
 
+vi.mock('./provider-verify', () => ({
+  verifyProviderViaSdk: providerVerifyMocks.verifyProviderViaSdk,
+  verifySubscription: providerVerifyMocks.verifySubscription,
+}));
+
 vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
@@ -149,6 +159,10 @@ beforeEach(() => {
   runtimeModelMocks.queryRuntimeModels.mockClear();
   runtimeModelMocks.queryRuntimeModels.mockResolvedValue([{ value: 'gpt-5.6-sol' }]);
   runtimeModelMocks.managedInstalled = true;
+  providerVerifyMocks.verifyProviderViaSdk.mockClear();
+  providerVerifyMocks.verifyProviderViaSdk.mockResolvedValue({ success: true });
+  providerVerifyMocks.verifySubscription.mockClear();
+  providerVerifyMocks.verifySubscription.mockResolvedValue({ success: true });
   adminConfigBehavior.failProjectWrite = false;
   adminConfigBehavior.failNextConfigWrite = false;
   adminConfigBehavior.delayNextIntent = false;
@@ -171,6 +185,28 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('documents dry-run on the exact mutation leaves that implement it', async () => {
+    const { handleHelp } = await import('./admin-api');
+    for (const path of [
+      ['mcp', 'add'],
+      ['model', 'add'],
+      ['config', 'set'],
+    ]) {
+      const text = String((handleHelp({ path }).data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents ${path.join(' ')}`);
+      expect(text).toContain('--dry-run');
+      expect(text).toMatch(/without (writing|persisting)|does not (write|persist)/i);
+    }
+  });
+
+  it('distinguishes API-key and subscription verification in exact model verify help', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const text = String((handleHelp({ path: ['model', 'verify'] }).data as { text?: string })?.text ?? '');
+    expect(text).toContain('myagents model verify');
+    expect(text).toContain('API-key');
+    expect(text).toContain('subscription');
+  });
+
   it('provides exact Agent and Session leaf help instead of group fallback', async () => {
     const { handleHelp } = await import('./admin-api');
     const leaves = [
@@ -2065,6 +2101,68 @@ describe('admin-api model add', () => {
     );
     expect(existsSync(providerPath)).toBe(true);
     expect(JSON.parse(readFileSync(providerPath, 'utf-8'))).toMatchObject({ id: 'transaction-provider' });
+  });
+});
+
+describe('admin-api model verify credential authority', () => {
+  it('verifies sdk-native subscriptions without requiring an API key', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {});
+    const { handleModelVerify } = await import('./admin-api');
+
+    const result = await handleModelVerify({ id: 'anthropic-sub', model: 'claude-sonnet-5' });
+
+    expect(result).toMatchObject({ success: true, data: { id: 'anthropic-sub' } });
+    expect(providerVerifyMocks.verifySubscription).toHaveBeenCalledWith('claude-sonnet-5');
+    expect(providerVerifyMocks.verifyProviderViaSdk).not.toHaveBeenCalled();
+    expect(readConfig()).toMatchObject({
+      providerVerifyStatus: { 'anthropic-sub': { status: 'valid' } },
+    });
+  });
+
+  it('rejects host-managed subscriptions at their credential owner before the API-key path', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {});
+    const { handleModelVerify } = await import('./admin-api');
+
+    const result = await handleModelVerify({ id: 'xai-sub' });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'SUBSCRIPTION_AUTH_OWNER_REQUIRED',
+      error: expect.not.stringContaining('No API key'),
+      recoveryHint: { message: expect.stringContaining('Settings') },
+    });
+    expect(providerVerifyMocks.verifyProviderViaSdk).not.toHaveBeenCalled();
+  });
+
+  it('redirects runtime-managed subscriptions to the managed-provider owner', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { managedCodexProviderDevGate: true });
+    const { handleModelVerify } = await import('./admin-api');
+
+    const result = await handleModelVerify({ id: 'codex-sub' });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'SUBSCRIPTION_AUTH_OWNER_REQUIRED',
+      recoveryHint: {
+        message: expect.stringContaining('Settings → Model Providers → Codex'),
+      },
+    });
+    expect((result.recoveryHint as { recoveryCommand?: string }).recoveryCommand).toBeUndefined();
+    expect(providerVerifyMocks.verifyProviderViaSdk).not.toHaveBeenCalled();
+    expect(providerVerifyMocks.verifySubscription).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api config dry-run contract', () => {
+  it('previews config set without writing config.json', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { locale: 'zh-CN' });
+    const before = readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8');
+    const { handleConfigSet } = await import('./admin-api');
+
+    const result = await handleConfigSet({ key: 'locale', value: 'en-US', dryRun: true });
+
+    expect(result).toMatchObject({ success: true, dryRun: true, preview: { key: 'locale', value: 'en-US' } });
+    expect(readFileSync(join(scratch, '.myagents', 'config.json'), 'utf-8')).toBe(before);
   });
 });
 

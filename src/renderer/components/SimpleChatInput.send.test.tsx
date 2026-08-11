@@ -370,6 +370,31 @@ describe('SimpleChatInput send paths', () => {
     expect(screen.queryByText('browser_click')).not.toBeInTheDocument();
   });
 
+  it('uses the Codex MCP catalog while keeping Managed Codex builtin input chrome', async () => {
+    await i18n.changeLanguage('en-US');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      capabilityRuntime: 'codex',
+      runtimeMcpTools: ['mcp__playwright__browser_click'],
+      mcpServers: [
+        { id: 'playwright', name: 'Playwright', description: 'Browser automation' },
+        { id: 'configured-only', name: 'Configured only' },
+      ],
+      globalMcpEnabled: ['playwright', 'configured-only'],
+      workspaceMcpEnabled: ['playwright', 'configured-only'],
+    });
+
+    const toolsButton = screen.getByTitle('Use tools');
+    await user.click(toolsButton);
+
+    expect(toolsButton).toHaveTextContent('1');
+    const playwrightRow = screen.getByText('Playwright').parentElement;
+    expect(playwrightRow).not.toBeNull();
+    expect(playwrightRow?.querySelector('button')).toBeNull();
+    expect(screen.queryByText('Configured only')).not.toBeInTheDocument();
+  });
+
   it('shows Goal and scheduled Task state independently', async () => {
     await i18n.changeLanguage('en-US');
     renderInput({

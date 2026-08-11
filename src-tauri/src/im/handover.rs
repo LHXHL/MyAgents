@@ -28,10 +28,10 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::health::{self, HealthManager};
-use super::router::{parse_session_key, SessionRouter};
+use super::router::{parse_session_key, peer_binding_source_requires_freeze, SessionRouter};
 use super::runtime_change;
 use super::types::{ImSourceType, LastActiveChannel, LastActivePrivateTarget, PeerSession};
-use super::{ImConsumers, ManagedAgents};
+use super::{ImConsumers, ManagedAgents, PeerLocks};
 use crate::sidecar::{
     ensure_session_sidecar_with_lifecycle, release_session_sidecar, ManagedSidecarManager,
     SidecarOwner,
@@ -43,6 +43,20 @@ struct ChannelRuntimeRefs {
     router: std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
     health: std::sync::Arc<HealthManager>,
     consumers: ImConsumers,
+}
+
+async fn acquire_peer_operation_fence(
+    peer_locks: &PeerLocks,
+    session_key: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let peer_lock = {
+        let mut locks = peer_locks.lock().await;
+        locks
+            .entry(session_key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    peer_lock.lock_owned().await
 }
 
 fn target_consumer_needs_cancel(
@@ -63,17 +77,47 @@ fn target_consumer_needs_cancel(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use axum::{
         routing::{get, post},
         Json, Router,
     };
     use serde_json::Value;
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
     use super::{
-        freeze_current_via_sidecar, migrate_surface_via_sidecar, target_consumer_needs_cancel,
+        acquire_peer_operation_fence, freeze_current_via_sidecar, migrate_surface_via_sidecar,
+        target_consumer_needs_cancel,
     };
+
+    #[tokio::test]
+    async fn handover_peer_fence_waits_for_an_inflight_im_operation() {
+        let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+        let first = acquire_peer_operation_fence(&peer_locks, "agent:a:weixin:private:user").await;
+        let (acquired_tx, mut acquired_rx) = oneshot::channel();
+        let waiter = tauri::async_runtime::spawn({
+            let peer_locks = Arc::clone(&peer_locks);
+            async move {
+                let _second =
+                    acquire_peer_operation_fence(&peer_locks, "agent:a:weixin:private:user").await;
+                let _ = acquired_tx.send(());
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            acquired_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("handover waiter should acquire the shared fence")
+            .expect("handover waiter should not panic");
+        assert!(acquired_rx.await.is_ok());
+    }
 
     #[test]
     fn target_consumer_cancel_is_required_when_handover_replaces_session() {
@@ -633,6 +677,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         router_arc,
         adapter,
         target_health,
+        target_peer_locks,
         agent_workspace,
         last_active_channel,
         last_active_private_target,
@@ -679,6 +724,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             channel.bot_instance.router.clone(),
             channel.bot_instance.adapter.clone(),
             channel.bot_instance.health.clone(),
+            channel.bot_instance.peer_locks.clone(),
             agent.config.resolved_workspace_path.clone(),
             agent.last_active_channel.clone(),
             agent.last_active_private_target.clone(),
@@ -742,6 +788,13 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         }
     };
     ulog_info!("[handover] step2 target_session_key={}", target_session_key);
+
+    // Serialize the whole owner rotation with ordinary IM enqueue, `/new`,
+    // heartbeat, and surface migration for this exact chat. In particular,
+    // a first IM message must finish its SessionStore materialization before
+    // the source is classified as durable vs unmaterialized below.
+    let _target_peer_guard =
+        acquire_peer_operation_fence(&target_peer_locks, &target_session_key).await;
     let prior_before_handover = {
         let router = router_arc.lock().await;
         router.peer_session_snapshot(&target_session_key)
@@ -810,48 +863,84 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
     // no "old session frozen but IM still bound to it" half-state.
     if let Some(prior) = prior_before_handover.as_ref() {
         if prior.session_id != sessionId {
-            let freeze_result = if prior.sidecar_port != 0 {
+            // Re-read immediately before freeze. The per-peer fence excludes
+            // IM materialization, while this identity check also fails closed
+            // if another supported owner path replaced the source meanwhile.
+            let (prior_for_freeze, prior_metadata_disposition) = {
+                let router = router_arc.lock().await;
+                let current_prior = router.peer_session_snapshot(&target_session_key);
+                let before_identity = Some((prior.session_id.as_str(), prior.sidecar_port));
+                let current_identity = current_prior
+                    .as_ref()
+                    .map(|current| (current.session_id.as_str(), current.sidecar_port));
+                if before_identity != current_identity {
+                    let _ = release_session_sidecar(manager.inner(), &sessionId, &owner);
+                    ulog_warn!(
+                        "[handover] step4b binding changed before freeze; target owner released key={}",
+                        target_session_key
+                    );
+                    return Err(
+                        "Channel binding changed during handover; please retry.".to_string()
+                    );
+                }
+                (
+                    current_prior.expect("binding identity matched an existing source"),
+                    router.classify_peer_session_metadata_for_binding_rotation(&target_session_key),
+                )
+            };
+            let freeze_result = if !peer_binding_source_requires_freeze(prior_metadata_disposition)
+            {
+                ulog_info!(
+                    "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
+                    short_id(&prior_for_freeze.session_id),
+                    prior_metadata_disposition,
+                );
+                Ok(())
+            } else if prior_for_freeze.sidecar_port != 0 {
                 freeze_current_via_sidecar(
-                    prior.sidecar_port,
-                    prior.metadata_birth_pending,
-                    prior.metadata_indexed,
+                    prior_for_freeze.sidecar_port,
+                    prior_for_freeze.metadata_birth_pending,
+                    prior_for_freeze.metadata_indexed,
                 )
                 .await
                 .map(|_| {
                     ulog_info!(
                         "[handover] step4b froze prior session {} via sidecar port {}",
-                        short_id(&prior.session_id),
-                        prior.sidecar_port
+                        short_id(&prior_for_freeze.session_id),
+                        prior_for_freeze.sidecar_port
                     );
                 })
             } else {
-                runtime_change::freeze_via_file_lock_status(&prior.session_id, &fallback_snapshot)
-                    .await
-                    .and_then(|outcome| {
-                        runtime_change::resolve_peer_file_lock_freeze_outcome(
-                            outcome,
-                            prior.metadata_birth_pending,
-                            prior.metadata_indexed,
-                            &prior.session_id,
-                        )
-                    })
-                    .map(|disposition| match disposition {
+                runtime_change::freeze_via_file_lock_status(
+                    &prior_for_freeze.session_id,
+                    &fallback_snapshot,
+                )
+                .await
+                .and_then(|outcome| {
+                    runtime_change::resolve_peer_file_lock_freeze_outcome(
+                        outcome,
+                        prior_for_freeze.metadata_birth_pending,
+                        prior_for_freeze.metadata_indexed,
+                        &prior_for_freeze.session_id,
+                    )
+                })
+                .map(|disposition| match disposition {
                         runtime_change::PeerFileLockFreezeDisposition::Frozen => {
                             ulog_info!(
                                 "[handover] step4b froze idle prior session {} via file lock",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                         runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending => {
                             ulog_info!(
                                 "[handover] step4b skipped freeze for birth-pending prior session {} missing from SessionStore",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                         runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession => {
                             ulog_info!(
                                 "[handover] step4b skipped freeze for unindexed prior peer session {} missing from SessionStore",
-                                short_id(&prior.session_id)
+                                short_id(&prior_for_freeze.session_id)
                             );
                         }
                     })

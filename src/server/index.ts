@@ -958,6 +958,10 @@ const SYSTEM_SKILLS: readonly string[] = [
   'prompt-writer',
 ];
 
+function isSystemSkillName(name: string): boolean {
+  return SYSTEM_SKILLS.includes(name.toLowerCase());
+}
+
 /**
  * Seed bundled skills to ~/.myagents/skills/ on first launch.
  * Only copies skills that haven't been seeded before (tracked in skills-config.json).
@@ -990,7 +994,7 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
-      if (SYSTEM_SKILLS.includes(folder)) {
+      if (isSystemSkillName(folder)) {
         // Owned by Rust version gate — skip silently.
         continue;
       }
@@ -1272,7 +1276,11 @@ function normalizeSessionListPreview(meta: SessionMetadata): SessionMetadata {
  * Route /api/admin/* requests to the appropriate handler.
  * Keeps the route matching logic clean and separated from business logic (in admin-api.ts).
  */
-async function routeAdminApi(pathname: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function routeAdminApi(
+  pathname: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
 
@@ -1305,6 +1313,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   // Official MyAgents CLI tools
   if (route === 'vision/readme') return await api.handleVisionReadme();
+  if (route === 'vision/models') return api.handleVisionModels();
   if (route === 'vision/analyze') return await api.handleVisionAnalyze(payload as Parameters<typeof api.handleVisionAnalyze>[0]);
 
   // Model commands
@@ -1328,7 +1337,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);
   if (route === 'agent/channel/remove') return api.handleAgentChannelRemove(payload as Parameters<typeof api.handleAgentChannelRemove>[0]);
   if (route === 'runtime/list') return await api.handleRuntimeList();
-  if (route === 'runtime/describe') return await api.handleRuntimeDescribe(payload as Parameters<typeof api.handleRuntimeDescribe>[0]);
+  if (route === 'runtime/describe') return await api.handleRuntimeDescribe(payload as Parameters<typeof api.handleRuntimeDescribe>[0], signal);
   if (route === 'runtime/diagnose') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
   if (route === 'diagnose/runtime') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
 
@@ -2333,6 +2342,7 @@ async function main() {
         try {
           const models = await queryRuntimeModels(type as import('../shared/types/runtime').RuntimeType, {
             runtimeSource,
+            signal: request.signal,
           });
           return jsonResponse({ models });
         } catch (error) {
@@ -3951,13 +3961,10 @@ async function main() {
                 pinPresetPackages: true,
               });
 
-              // Route through utils/subprocess.spawn — on Windows the bundled
-              // and system npx are both `npx.cmd` shims. Calling .cmd via raw
-              // `child_process.spawn` returns EINVAL on Node ≥20.12 (CVE-2024-27980),
-              // and Node's own `shell: true` workaround does NOT escape inner
-              // quotes / metachars in args. The wrapper handles both — see
-              // utils/subprocess.ts::spawn for the cmd.exe wrapping + cross-spawn
-              // escape algorithm.
+              // Keep all Sidecar child processes on the shared spawn adapter.
+              // The npx resolver already projects Windows to node.exe +
+              // npx-cli.js because managed Codex owns its final native spawn;
+              // the adapter remains the single stream/error lifecycle owner.
               const { spawn: wrappedSpawn } = await import('./utils/subprocess');
               const { getShellEnv } = await import('./utils/shell');
               const baseEnv = getShellEnv();
@@ -4355,7 +4362,7 @@ async function main() {
             ? {}
             : await request.json().catch(() => ({})) as Record<string, unknown>;
 
-          const result = await routeAdminApi(pathname, payload);
+          const result = await routeAdminApi(pathname, payload, request.signal);
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);
@@ -4765,7 +4772,7 @@ async function main() {
 
                 const content = readFileSync(skillMdPath, 'utf-8');
                 const { name, description, author } = parseSkillFrontmatter(content);
-                const systemOwned = scopeType === 'user' && SYSTEM_SKILLS.includes(folder.name);
+                const systemOwned = scopeType === 'user' && isSystemSkillName(folder.name);
                 const required = scopeType === 'user' && isRequiredSystemSkill(folder.name);
                 skills.push({
                   name: name || folder.name,
@@ -4792,7 +4799,7 @@ async function main() {
           }
           if (scope === 'all' || scope === 'user') {
             for (const entry of globalSkillInventory?.entries ?? []) {
-              const systemOwned = SYSTEM_SKILLS.includes(entry.folderName);
+              const systemOwned = isSystemSkillName(entry.folderName);
               skills.push({
                 name: entry.name,
                 description: entry.description,
@@ -5052,6 +5059,8 @@ async function main() {
 
           const content = readFileSync(skillPath, 'utf-8');
           const { frontmatter, body } = parseFullSkillContent(content);
+          const systemOwned = scope === 'user' && isSystemSkillName(skillName);
+          const required = scope === 'user' && isRequiredSystemSkill(skillName.toLowerCase());
 
           return jsonResponse({
             success: true,
@@ -5060,6 +5069,8 @@ async function main() {
               folderName: skillName,
               path: skillPath,
               scope,
+              systemOwned,
+              required,
               frontmatter,
               body,
             }
@@ -5095,6 +5106,13 @@ async function main() {
           let skillDir = join(baseDir, currentFolderName);
           let skillPath = join(skillDir, 'SKILL.md');
 
+          if (payload.scope === 'user' && isSystemSkillName(skillName)) {
+            return jsonResponse({
+              success: false,
+              code: 'SYSTEM_SKILL_READ_ONLY',
+              error: 'System Skill is read-only',
+            }, 409);
+          }
           if (!existsSync(skillPath)) {
             return jsonResponse({ success: false, error: 'Skill not found' }, 404);
           }
@@ -5175,6 +5193,13 @@ async function main() {
           const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, skillName);
 
+          if (scope === 'user' && isSystemSkillName(skillName)) {
+            return jsonResponse({
+              success: false,
+              code: 'SYSTEM_SKILL_READ_ONLY',
+              error: 'System Skill is read-only',
+            }, 409);
+          }
           if (!existsSync(skillDir)) {
             return jsonResponse({ success: false, error: 'Skill not found' }, 404);
           }

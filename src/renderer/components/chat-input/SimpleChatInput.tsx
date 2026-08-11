@@ -219,6 +219,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // Whether this input belongs to the currently active tab. Used to gate document-level
   // listeners (Shift+Tab permission-mode cycle below) so background tabs don't also fire.
   active = true,
+  capabilityRuntime,
   runtime = 'builtin',
   runtimeDetections,
   onRuntimeChange,
@@ -240,6 +241,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // without the three-site scan the prior duplicated ternary required.
   const effectiveMinLines = isLauncherMode ? LAUNCHER_MIN_LINES : 2;
   const isExternalRuntime = runtime !== 'builtin';
+  const runtimeMcpCatalogIsAuthoritative = (capabilityRuntime ?? runtime) !== 'builtin';
   const overlayRootRef = useRef<HTMLDivElement>(null);
   const attachmentSessionId = sessionId;
 
@@ -411,7 +413,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     return ids.map(id => configuredServers.get(id) ?? { id, name: id });
   }, [mcpServers, runtimeMcpTools]);
   const effectiveToolCount = useMemo(() => {
-    const effectiveMcpCount = isExternalRuntime
+    const effectiveMcpCount = runtimeMcpCatalogIsAuthoritative
       ? runtimeMcpServers.length
       : workspaceMcpEnabled.filter(
         id => globalMcpEnabled.includes(id) && mcpServers.some(s => s.id === id),
@@ -420,7 +422,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       id => visibleOfficialTools.some(tool => tool.id === id),
     ).length;
     return effectiveMcpCount + effectiveOfficialCount;
-  }, [globalMcpEnabled, isExternalRuntime, mcpServers, runtimeMcpServers.length, visibleOfficialTools, workspaceMcpEnabled, workspaceOfficialToolEnabled]);
+  }, [globalMcpEnabled, mcpServers, runtimeMcpCatalogIsAuthoritative, runtimeMcpServers.length, visibleOfficialTools, workspaceMcpEnabled, workspaceOfficialToolEnabled]);
 
   // #324 — 推理强度 submenu (fixed bottom row of the model menu). Opens on
   // hover/click of the row; 120ms close delay + an invisible hover bridge
@@ -1973,7 +1975,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                     <div className="px-3 py-2 text-xs font-medium text-[var(--ink-muted)] border-b border-[var(--line)]">
                       {t('input.toolsHeader')}
                     </div>
-                    {visibleOfficialTools.length > 0 || runtimeMcpServers.length > 0 || (!isExternalRuntime && mcpServers.some(s => globalMcpEnabled.includes(s.id))) ? (
+                    {visibleOfficialTools.length > 0 || (runtimeMcpCatalogIsAuthoritative && runtimeMcpServers.length > 0) || (!runtimeMcpCatalogIsAuthoritative && mcpServers.some(s => globalMcpEnabled.includes(s.id))) ? (
                       <>
                       {visibleOfficialTools.map((tool) => {
                         const isEnabled = workspaceOfficialToolEnabled.includes(tool.id);
@@ -2023,7 +2025,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                           </div>
                         );
                       })}
-                      {isExternalRuntime && runtimeMcpServers.map((server) => (
+                      {runtimeMcpCatalogIsAuthoritative && runtimeMcpServers.map((server) => (
                         <div
                           key={server.id}
                           className="px-3 py-2"
@@ -2039,7 +2041,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         </div>
                       ))}
                       {mcpServers
-                        .filter(s => !isExternalRuntime && globalMcpEnabled.includes(s.id))
+                        .filter(s => !runtimeMcpCatalogIsAuthoritative && globalMcpEnabled.includes(s.id))
                         .map((server) => {
                           const isEnabled = workspaceMcpEnabled.includes(server.id);
                           return (
@@ -2102,7 +2104,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         >
                           {t('input.settingsPage')}
                         </button>
-                        {isExternalRuntime
+                        {runtimeMcpCatalogIsAuthoritative
                           ? t('input.toolsEmptyExternal')
                           : t('input.toolsEmptyBuiltin')}
                       </div>

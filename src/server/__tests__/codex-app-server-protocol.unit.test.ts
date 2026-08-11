@@ -4,6 +4,7 @@ import { join } from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerDefinition } from '../../shared/config-types';
+import * as mcpCommand from '../utils/mcp-command';
 
 import {
   buildCodexFileChangeResultContent,
@@ -486,6 +487,46 @@ describe('Codex app-server protocol helpers', () => {
     expect(launch.mcpServerNames).toEqual(['playwright']);
   });
 
+  it('reports the safe Windows npx distribution error at the Managed Codex projection boundary', () => {
+    const resolver = vi.spyOn(mcpCommand, 'resolveNpxMcpInvocation');
+    resolver.mockImplementationOnce(() => {
+      throw new mcpCommand.NpxMcpResolutionError();
+    });
+
+    const projection = projectManagedCodexMcpLaunchConfig([{
+      id: 'playwright',
+      name: 'Playwright',
+      type: 'stdio',
+      command: 'npx',
+      args: ['@playwright/mcp@0.0.68'],
+      isBuiltin: true,
+    }], {});
+
+    expect(projection.args).toEqual([]);
+    expect(projection.failures).toEqual([expect.objectContaining({
+      serverId: 'playwright',
+      state: 'failed',
+      code: 'mcp_projection_rejected',
+      message: expect.stringContaining(
+        'No complete Windows Node.js distribution with npm/bin/npx-cli.js was found for MCP startup',
+      ),
+    })]);
+
+    resolver.mockImplementationOnce(() => {
+      throw new Error('private unexpected detail');
+    });
+    const unexpected = projectManagedCodexMcpLaunchConfig([{
+      id: 'unexpected',
+      name: 'Unexpected',
+      type: 'stdio',
+      command: 'npx',
+      args: ['package-name'],
+      isBuiltin: false,
+    }], {});
+    expect(unexpected.failures[0]?.message).toContain('unexpected launch projection failure');
+    expect(unexpected.failures[0]?.message).not.toContain('private unexpected detail');
+  });
+
   it('settles managed Codex MCP readiness only after every injected server is terminal', async () => {
     const barrier = createCodexMcpStartupBarrier(['playwright', 'remote-http']);
     barrier.arm();
@@ -603,6 +644,85 @@ describe('Codex app-server protocol helpers', () => {
       outcome: 'ready',
       pendingNames: [],
       states: { playwright: 'ready' },
+    });
+  });
+
+  it('keeps waiting when Codex reports cancelled before the same MCP becomes ready', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
+    let settled = false;
+    const startup = barrier.wait().then((result) => {
+      settled = true;
+      return result;
+    });
+
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'starting',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'cancelled',
+      error: null,
+      failureReason: null,
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+
+    await expect(startup).resolves.toMatchObject({
+      outcome: 'ready',
+      pendingNames: [],
+      states: { playwright: 'ready' },
+    });
+  });
+
+  it('does not let a late cancelled status overwrite a terminal MCP failure', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright', 'remote-http']);
+    barrier.arm();
+    const startup = barrier.wait();
+
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'failed',
+      error: 'spawn failed',
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'cancelled',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'remote-http',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+
+    await expect(startup).resolves.toMatchObject({
+      outcome: 'degraded',
+      reason: 'terminal_status',
+      pendingNames: [],
+      states: {
+        playwright: 'failed',
+        'remote-http': 'ready',
+      },
     });
   });
 

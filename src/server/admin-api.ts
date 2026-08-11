@@ -56,6 +56,7 @@ import {
   atomicModifyProjects,
   redactSecret,
   findProvider,
+  findEffectiveProvider,
   getAllEffectiveProviders,
   getProviderSelectionError,
   isProviderDisabled,
@@ -64,6 +65,7 @@ import {
   deleteCustomProviderFile,
   withAvailableProvidersProjection,
   isCliToolRegistryEnabled,
+  listImageUnderstandingModelOptions,
   type AdminAppConfig,
   type AgentConfigSlim,
   type ChannelConfigSlim,
@@ -862,6 +864,13 @@ export async function handleVisionReadme(): Promise<AdminResponse> {
   return { success: true, data: { text: getVisionToolReadme() } };
 }
 
+export function handleVisionModels(): AdminResponse {
+  return {
+    success: true,
+    data: { models: listImageUnderstandingModelOptions() },
+  };
+}
+
 export async function handleVisionAnalyze(payload: {
   images?: unknown;
   image?: unknown;
@@ -1005,14 +1014,12 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   const { id } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
 
+  // Resolve the provider before looking for an API key. Subscription providers
+  // deliberately keep credentials at another owner (SDK, host UI, or runtime),
+  // so treating every provider as API-key-backed routes valid subscriptions to
+  // the wrong verification path.
   const config = loadConfig();
-  const apiKey = (config.providerApiKeys ?? {})[id];
-  if (!apiKey) {
-    return { success: false, error: `No API key set for provider '${id}'. Use 'myagents model set-key' first.` };
-  }
-
-  // Look up provider config (preset or custom)
-  const provider = findProvider(id);
+  const provider = findEffectiveProvider(id, config);
   if (!provider) {
     return { success: false, error: `Provider '${id}' not found in presets or custom providers.` };
   }
@@ -1024,7 +1031,57 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   const userPrimary = (config.providerPrimaryModels as Record<string, string> | undefined)?.[id];
   const verifyModel = payload.model ?? userPrimary ?? String(provider.primaryModel ?? '');
 
+  const persistVerified = async (): Promise<AdminResponse> => {
+    await atomicModifyConfig(c => withAvailableProvidersProjection({
+      ...c,
+      providerVerifyStatus: {
+        ...(c.providerVerifyStatus ?? {}),
+        [id]: { status: 'valid', verifiedAt: new Date().toISOString() },
+      },
+    }));
+    await notifyModelConfigChanged('verify', id);
+    return { success: true, data: { id, model: verifyModel }, hint: 'Verification successful.' };
+  };
+
   try {
+    const subscriptionAuth = provider.subscriptionAuth as { kind?: string } | undefined;
+    if (provider.type === 'subscription') {
+      if (subscriptionAuth?.kind === 'sdk-native') {
+        const { verifySubscription } = await import('./provider-verify');
+        const result = await verifySubscription(verifyModel || undefined);
+        if (result.success) return await persistVerified();
+        return {
+          success: false,
+          error: result.error ?? 'Subscription verification failed',
+          data: { id, detail: result.detail },
+        };
+      }
+      if (subscriptionAuth?.kind === 'runtime-managed') {
+        return {
+          success: false,
+          code: 'SUBSCRIPTION_AUTH_OWNER_REQUIRED',
+          error: `Provider '${id}' is authenticated by its external runtime, not by a MyAgents API key.`,
+          recoveryHint: {
+            message: 'Open Settings → Model Providers → Codex (订阅), then complete the MyAgents-managed login there.',
+          },
+        };
+      }
+      return {
+        success: false,
+        code: 'SUBSCRIPTION_AUTH_OWNER_REQUIRED',
+        error: `Provider '${id}' uses a host-managed subscription login, not a MyAgents API key.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents model list --json',
+          message: 'Open Settings → Model Providers, complete the subscription login there, and verify it from that screen.',
+        },
+      };
+    }
+
+    const apiKey = (config.providerApiKeys ?? {})[id];
+    if (!apiKey) {
+      return { success: false, error: `No API key set for provider '${id}'. Use 'myagents model set-key' first.` };
+    }
+
     const { verifyProviderViaSdk } = await import('./provider-verify');
     const result = await verifyProviderViaSdk(
       id,
@@ -1036,16 +1093,7 @@ export async function handleModelVerify(payload: { id: string; model?: string })
     );
 
     if (result.success) {
-      // Persist verify status
-      await atomicModifyConfig(c => withAvailableProvidersProjection({
-        ...c,
-        providerVerifyStatus: {
-          ...(c.providerVerifyStatus ?? {}),
-          [id]: { status: 'valid', verifiedAt: new Date().toISOString() },
-        },
-      }));
-      await notifyModelConfigChanged('verify', id);
-      return { success: true, data: { id, model: verifyModel }, hint: 'Verification successful.' };
+      return await persistVerified();
     }
 
     return { success: false, error: result.error ?? 'Verification failed', data: { id, detail: result.detail } };
@@ -2076,6 +2124,46 @@ RECOVERY
 }
 
 const HELP_TEXTS: Record<string, string> = {
+  'mcp/add': taskLeafHelp({
+    usage: 'myagents mcp add --id <id> [connection options] [--dry-run]',
+    when: 'Use when registering a new custom MCP server.',
+    effect: 'Validates the proposed server and, unless --dry-run is set, persists it in config.json.',
+    options: '  --dry-run              Validate and preview without writing config.json\n  See myagents mcp --help for transport options.',
+    mutation: '--dry-run does not write or persist configuration. Without it, this mutates app configuration.',
+    output: 'The normalized server preview or the created server ID.',
+    example: '  myagents mcp add --id docs --type http --url https://example.test/mcp --dry-run',
+    recovery: 'If validation fails, correct the reported field and repeat the same dry-run.',
+  }),
+  'model/add': taskLeafHelp({
+    usage: 'myagents model add --id <id> --name <name> --base-url <url> --models <model> [--dry-run]',
+    when: 'Use when registering a custom API-key-backed model provider.',
+    effect: 'Validates the provider and, unless --dry-run is set, persists its provider definition.',
+    options: '  --dry-run              Validate and preview without persisting provider files or config\n  See myagents model --help for protocol and model options.',
+    mutation: '--dry-run does not write or persist provider configuration. Without it, this mutates app configuration.',
+    output: 'The normalized provider preview or the created provider ID.',
+    example: '  myagents model add --id acme --name Acme --base-url https://api.example.test --models acme-chat --dry-run',
+    recovery: 'Resolve the validation error and repeat the dry-run before applying the mutation.',
+  }),
+  'model/verify': taskLeafHelp({
+    usage: 'myagents model verify <provider-id> [--model <model>]',
+    when: 'Use to verify an API-key provider or an SDK-native subscription.',
+    effect: 'API-key providers send a minimal provider probe. SDK-native subscriptions use their SDK login; host/runtime-managed subscriptions redirect to their credential owner.',
+    options: '  --model <model>         Override the provider default for this verification',
+    mutation: 'A successful verification persists only verification status and time; it never copies subscription credentials.',
+    output: 'Verification success, or an actionable credential-owner error.',
+    example: '  myagents model verify anthropic-sub --model claude-sonnet-5',
+    recovery: 'For subscription authentication errors, follow the returned Settings or runtime recovery hint.',
+  }),
+  'config/set': taskLeafHelp({
+    usage: 'myagents config set <key> <value> [--dry-run]',
+    when: 'Use when changing one supported application configuration key.',
+    effect: 'Parses and validates the value, then persists it unless --dry-run is set.',
+    options: '  --dry-run              Preview the parsed value without writing config.json',
+    mutation: '--dry-run does not write or persist config.json. Without it, this mutates application configuration.',
+    output: 'The parsed key/value preview or the persisted value.',
+    example: '  myagents config set locale en-US --dry-run',
+    recovery: 'Run myagents config --help to inspect supported keys and value shapes.',
+  }),
   mcp: `myagents mcp — Manage MCP tool servers
 
 Commands:
@@ -2173,6 +2261,7 @@ Commands:
 
 Commands:
   list                     List all cron tasks
+                           Inspect one task with: myagents task get <taskId>
   add                      Create a new cron task
   start <id>               Start a stopped task
   stop <id>                Stop a running task
@@ -4702,9 +4791,10 @@ NOTE
   existing users and scripts.
 
 WHAT
-  Create, list, inspect, stop, and delete scheduled AI tasks (cron / interval /
-  one-shot). Tasks run inside MyAgents regardless of which runtime the current
-  chat uses. A task can deliver results to an IM channel.
+  Create, list, stop, and delete scheduled AI tasks (cron / interval / one-shot).
+  Inspect one task with the canonical 'myagents task get <taskId>' command.
+  Tasks run inside MyAgents regardless of which runtime the current chat uses.
+  A task can deliver results to an IM channel.
 
 TIME SEMANTICS
   MyAgents stores execution facts as absolute instants (UTC internally), but
@@ -4732,6 +4822,7 @@ TIME SEMANTICS
 
 COMMANDS
   list                            List tasks in the current workspace
+                                  For one task: myagents task get <taskId>
   status                          Totals + next execution time
   add OPTIONS                     Create a new task
   start <taskId>                  Enable scheduled task (resume from stopped).
@@ -5536,7 +5627,7 @@ export async function handleRuntimeList(): Promise<AdminResponse> {
  */
 export async function handleRuntimeDescribe(payload: {
   runtime?: string;
-}): Promise<AdminResponse> {
+}, signal?: AbortSignal): Promise<AdminResponse> {
   const runtimeArg = payload.runtime;
   if (!runtimeArg) {
     return {
@@ -5594,11 +5685,32 @@ export async function handleRuntimeDescribe(payload: {
 
   // Only query models when the CLI is actually installed — otherwise we'd
   // waste 10+ seconds trying to spawn a binary that doesn't exist.
-  const models: RuntimeModelInfo[] = detection.installed
-    ? ((await queryRuntimeModels(runtimeArg, {
+  let models: RuntimeModelInfo[] = [];
+  if (detection.installed) {
+    try {
+      models = (await queryRuntimeModels(runtimeArg, {
         runtimeSource: runtimeArg === 'codex' ? 'system-cli' : undefined,
-      })) as RuntimeModelInfo[])
-    : [];
+        signal,
+        throwOnError: true,
+      })) as RuntimeModelInfo[];
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        code: 'RUNTIME_MODEL_DISCOVERY_FAILED',
+        error: `Failed to discover ${RUNTIME_DISPLAY_NAMES[runtimeArg]} models: ${detail}`,
+        recoveryHint: runtimeArg === 'gemini'
+          ? {
+              recoveryCommand: 'gemini',
+              message: 'Authenticate Gemini in a normal terminal, then retry `myagents runtime describe gemini`.',
+            }
+          : {
+              recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
+              message: 'Inspect runtime installation and authentication, then retry.',
+            },
+      };
+    }
+  }
   const permissionModes = getRuntimePermissionModes(runtimeArg);
   const defaultPermissionMode = getDefaultRuntimePermissionMode(runtimeArg);
 

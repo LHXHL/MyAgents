@@ -80,11 +80,12 @@ describe('SkillsCommandsList project capability controls', () => {
   });
 
   it('loads project and global cards once, hides required switches, and persists an exact toggle', async () => {
+    const onSelectSkill = vi.fn();
     render(
       <SkillsCommandsList
         scope="project"
         agentDir="/workspace"
-        onSelectSkill={vi.fn()}
+        onSelectSkill={onSelectSkill}
         onSelectCommand={vi.fn()}
       />,
     );
@@ -107,6 +108,9 @@ describe('SkillsCommandsList project capability controls', () => {
     expect(commandIcon?.nextElementSibling).toContainElement(commandTitle);
     expect(commandTitle.nextElementSibling).toBe(commandAuthor);
     expect(commandAuthor).not.toHaveClass('rounded-full', 'bg-[var(--paper-inset)]');
+
+    fireEvent.click(requiredCard!);
+    expect(onSelectSkill).toHaveBeenCalledWith('myagents-cli', 'user');
 
     fireEvent.click(reviewCard!.querySelector('[role="switch"]')!);
 

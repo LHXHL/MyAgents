@@ -226,10 +226,13 @@ describe('required system skill API contract', () => {
       const detailBody = await detailResponse.json() as {
         success: boolean;
         skill: {
+          systemOwned: boolean;
+          required: boolean;
           frontmatter: Record<string, unknown>;
           body: string;
         };
       };
+      expect(detailBody.skill).toMatchObject({ systemOwned: false, required: false });
       expect(detailBody.skill.frontmatter).toMatchObject({
         author: 'Standard Author',
         metadata: { author: 'Standard Author', version: '1.0' },
@@ -249,6 +252,84 @@ describe('required system skill API contract', () => {
       expect(savedSkill).not.toMatch(/^author:/m);
       expect(savedSkill).toContain('metadata:\n  author: "Standard Author"\n  version: "1.0"');
 
+      const systemDetailResponse = await fetch(`${baseUrl}/api/skill/task-implement?scope=user`);
+      expect(systemDetailResponse.ok).toBe(true);
+      const systemDetailBody = await systemDetailResponse.json() as {
+        skill: { systemOwned: boolean; required: boolean };
+      };
+      expect(systemDetailBody.skill).toMatchObject({ systemOwned: true, required: true });
+
+      const systemSkillBefore = readFileSync(join(userSkills, 'task-implement', 'SKILL.md'), 'utf8');
+      const systemSaveResponse = await fetch(`${baseUrl}/api/skill/task-implement`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: 'user',
+          frontmatter: { name: 'task-implement', description: 'changed' },
+          body: 'changed',
+        }),
+      });
+      expect(systemSaveResponse.status).toBe(409);
+      expect(await systemSaveResponse.json()).toMatchObject({
+        success: false,
+        code: 'SYSTEM_SKILL_READ_ONLY',
+      });
+      expect(readFileSync(join(userSkills, 'task-implement', 'SKILL.md'), 'utf8')).toBe(systemSkillBefore);
+
+      const systemDeleteResponse = await fetch(`${baseUrl}/api/skill/task-implement?scope=user`, {
+        method: 'DELETE',
+      });
+      expect(systemDeleteResponse.status).toBe(409);
+      expect(await systemDeleteResponse.json()).toMatchObject({
+        success: false,
+        code: 'SYSTEM_SKILL_READ_ONLY',
+      });
+      expect(readFileSync(join(userSkills, 'task-implement', 'SKILL.md'), 'utf8')).toBe(systemSkillBefore);
+
+      const caseVariantSystemSaveResponse = await fetch(`${baseUrl}/api/skill/TASK-IMPLEMENT`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: 'user',
+          frontmatter: { name: 'TASK-IMPLEMENT', description: 'changed' },
+          body: 'changed',
+        }),
+      });
+      expect(caseVariantSystemSaveResponse.status).toBe(409);
+      expect(await caseVariantSystemSaveResponse.json()).toMatchObject({
+        success: false,
+        code: 'SYSTEM_SKILL_READ_ONLY',
+      });
+      const caseVariantSystemDeleteResponse = await fetch(`${baseUrl}/api/skill/TASK-IMPLEMENT?scope=user`, {
+        method: 'DELETE',
+      });
+      expect(caseVariantSystemDeleteResponse.status).toBe(409);
+      expect(await caseVariantSystemDeleteResponse.json()).toMatchObject({
+        success: false,
+        code: 'SYSTEM_SKILL_READ_ONLY',
+      });
+      expect(readFileSync(join(userSkills, 'task-implement', 'SKILL.md'), 'utf8')).toBe(systemSkillBefore);
+
+      const optionalSystemDetailResponse = await fetch(`${baseUrl}/api/skill/${OPTIONAL_SYSTEM_SKILL}?scope=user`);
+      expect(optionalSystemDetailResponse.ok).toBe(true);
+      expect(await optionalSystemDetailResponse.json()).toMatchObject({
+        skill: { systemOwned: true, required: false },
+      });
+      const optionalSystemSaveResponse = await fetch(`${baseUrl}/api/skill/${OPTIONAL_SYSTEM_SKILL}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: 'user',
+          frontmatter: { name: OPTIONAL_SYSTEM_SKILL, description: 'changed' },
+          body: 'changed',
+        }),
+      });
+      expect(optionalSystemSaveResponse.status).toBe(409);
+      expect(await optionalSystemSaveResponse.json()).toMatchObject({
+        success: false,
+        code: 'SYSTEM_SKILL_READ_ONLY',
+      });
+
       const projectResponse = await fetch(`${baseUrl}/api/skills?scope=project`);
       const projectBody = await projectResponse.json() as SkillsListResponse;
       expect(byFolder(projectBody.skills, 'myagents-cli')).toMatchObject({
@@ -258,6 +339,24 @@ describe('required system skill API contract', () => {
         enabled: true,
       });
       expect(projectBody.skills.some(skill => skill.folderName === 'damaged-skill')).toBe(false);
+
+      const projectSystemNameDetailResponse = await fetch(`${baseUrl}/api/skill/myagents-cli?scope=project`);
+      expect(projectSystemNameDetailResponse.ok).toBe(true);
+      const projectSystemNameDetail = await projectSystemNameDetailResponse.json() as {
+        skill: { systemOwned: boolean; required: boolean; frontmatter: Record<string, unknown>; body: string };
+      };
+      expect(projectSystemNameDetail.skill).toMatchObject({ systemOwned: false, required: false });
+      const projectSystemNameSave = await fetch(`${baseUrl}/api/skill/myagents-cli`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: 'project',
+          frontmatter: projectSystemNameDetail.skill.frontmatter,
+          body: `${projectSystemNameDetail.skill.body}\nProject-local edit.`,
+        }),
+      });
+      expect(projectSystemNameSave.ok).toBe(true);
+      expect(readFileSync(join(projectSkills, 'myagents-cli', 'SKILL.md'), 'utf8')).toContain('Project-local edit.');
 
       const baselineConfig = readFileSync(configPath, 'utf8');
       for (const folderName of REQUIRED_SYSTEM_SKILLS) {

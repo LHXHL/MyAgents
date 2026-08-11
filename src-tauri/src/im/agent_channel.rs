@@ -1,3 +1,4 @@
+use super::router::peer_binding_source_requires_freeze;
 use super::*;
 use crate::sidecar::{release_session_sidecar, SidecarOwner};
 use tauri::Manager;
@@ -69,6 +70,30 @@ async fn rotate_peer_binding_for_new_command(
     manager: &ManagedSidecarManager,
     fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
 ) -> Result<String, String> {
+    rotate_peer_binding_for_new_command_with_metadata_lookup(
+        session_key,
+        runtime,
+        router,
+        health,
+        manager,
+        fallback_snapshot,
+        |session_id| crate::sidecar::resolve_session_runtime_identity_full(session_id).is_some(),
+    )
+    .await
+}
+
+async fn rotate_peer_binding_for_new_command_with_metadata_lookup<F>(
+    session_key: &str,
+    runtime: &str,
+    router: &Arc<Mutex<SessionRouter>>,
+    health: &Arc<HealthManager>,
+    manager: &ManagedSidecarManager,
+    fallback_snapshot: &runtime_change::OwnedSessionSnapshot,
+    metadata_exists: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&str) -> bool,
+{
     // Match every other active-session projection lock order: projection ->
     // Router -> per-Session lifecycle. The caller already holds the per-peer
     // message lock, so no ordinary IM turn can race this mutation.
@@ -93,10 +118,24 @@ async fn rotate_peer_binding_for_new_command(
                 short_session_id(&peer.session_id)
             ));
         }
-        router_guard
-            .freeze_peer_before_binding_rotation(peer, fallback_snapshot)
-            .await
-            .map_err(|error| format!("Failed to freeze old Session: {error}"))?;
+        let metadata_disposition = router_guard
+            .classify_peer_session_metadata_for_binding_rotation_with_lookup(
+                session_key,
+                metadata_exists,
+            );
+        if peer_binding_source_requires_freeze(metadata_disposition) {
+            router_guard
+                .freeze_peer_before_binding_rotation(peer, fallback_snapshot)
+                .await
+                .map_err(|error| format!("Failed to freeze old Session: {error}"))?;
+        } else {
+            ulog_info!(
+                "[im-router] Skipping freeze for unmaterialized source before /new: session_key={} session={} disposition={:?}",
+                session_key,
+                short_session_id(&peer.session_id),
+                metadata_disposition,
+            );
+        }
         Some(guard)
     } else {
         None
@@ -3777,7 +3816,40 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::im::types::AskUserQuestionOption;
+    use crate::im::types::{AskUserQuestionOption, PeerSession};
+    use axum::{routing::post, Json, Router as AxumRouter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn rotation_peer(session_key: &str, session_id: &str, sidecar_port: u16) -> PeerSession {
+        let (source_type, source_id) = super::router::parse_session_key(session_key);
+        PeerSession {
+            session_key: session_key.to_string(),
+            session_id: session_id.to_string(),
+            sidecar_port,
+            workspace_path: PathBuf::from("/tmp/workspace"),
+            source_type,
+            source_id,
+            source_display_name: None,
+            last_sender_name: None,
+            message_count: 3,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            last_active: Instant::now(),
+        }
+    }
+
+    async fn rotation_snapshot() -> runtime_change::OwnedSessionSnapshot {
+        runtime_change::build_snapshot_from_channel_state(
+            &tokio::sync::RwLock::new("builtin".to_string()),
+            &tokio::sync::RwLock::new(Some("test-model".to_string())),
+            &tokio::sync::RwLock::new("auto".to_string()),
+            &tokio::sync::RwLock::new(None),
+            &tokio::sync::RwLock::new(None),
+            Some("test-provider".to_string()),
+            &tokio::sync::RwLock::new(None),
+        )
+        .await
+    }
 
     #[test]
     fn all_stop_lock_set_unions_durable_and_live_channel_ids() {
@@ -3834,6 +3906,146 @@ mod tests {
 
         drop(guard);
         assert_eq!(gate.active(), 0);
+    }
+
+    #[tokio::test]
+    async fn new_command_skips_only_missing_sources_and_commits_one_fresh_binding() {
+        let freeze_calls = Arc::new(AtomicUsize::new(0));
+        let app = AxumRouter::new().route(
+            "/api/session/freeze-current",
+            post({
+                let freeze_calls = Arc::clone(&freeze_calls);
+                move || {
+                    let freeze_calls = Arc::clone(&freeze_calls);
+                    async move {
+                        freeze_calls.fetch_add(1, Ordering::SeqCst);
+                        Json(serde_json::json!({ "success": true }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind freeze server");
+        let port = listener.local_addr().expect("freeze server addr").port();
+        let server = tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let snapshot = rotation_snapshot().await;
+        let manager = crate::sidecar::create_sidecar_manager();
+
+        let missing_key = "agent:a:openclaw:weixin:private:missing";
+        let missing_id = uuid::Uuid::new_v4().to_string();
+        let missing_router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        missing_router
+            .lock()
+            .await
+            .upsert_peer_session(rotation_peer(missing_key, &missing_id, port));
+        let missing_dir = tempfile::tempdir().expect("missing health tempdir");
+        let missing_health = Arc::new(HealthManager::new(missing_dir.path().join("state.json")));
+
+        let fresh_id = rotate_peer_binding_for_new_command_with_metadata_lookup(
+            missing_key,
+            "builtin",
+            &missing_router,
+            &missing_health,
+            &manager,
+            &snapshot,
+            |_| false,
+        )
+        .await
+        .expect("missing source should rotate without freeze");
+
+        assert_eq!(freeze_calls.load(Ordering::SeqCst), 0);
+        assert_ne!(fresh_id, missing_id);
+        let fresh = missing_router
+            .lock()
+            .await
+            .peer_session_snapshot(missing_key)
+            .expect("fresh binding committed");
+        assert_eq!(fresh.session_id, fresh_id);
+        assert_eq!(fresh.sidecar_port, 0);
+        assert!(fresh.metadata_birth_pending);
+        assert!(!fresh.metadata_indexed);
+        let durable = missing_health.get_state().await.active_sessions;
+        assert_eq!(durable.len(), 1);
+        assert_eq!(durable[0].session_id, fresh_id);
+
+        let indexed_key = "agent:a:openclaw:weixin:private:indexed";
+        let indexed_id = uuid::Uuid::new_v4().to_string();
+        let indexed_router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        indexed_router
+            .lock()
+            .await
+            .upsert_peer_session(rotation_peer(indexed_key, &indexed_id, port));
+        let indexed_dir = tempfile::tempdir().expect("indexed health tempdir");
+        let indexed_health = Arc::new(HealthManager::new(indexed_dir.path().join("state.json")));
+
+        rotate_peer_binding_for_new_command_with_metadata_lookup(
+            indexed_key,
+            "builtin",
+            &indexed_router,
+            &indexed_health,
+            &manager,
+            &snapshot,
+            |_| true,
+        )
+        .await
+        .expect("indexed source should freeze then rotate");
+        assert_eq!(freeze_calls.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn new_command_restores_the_exact_source_when_projection_persist_fails() {
+        let session_key = "agent:a:openclaw:weixin:private:persist-failure";
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let source = rotation_peer(session_key, &session_id, 0);
+        let router = Arc::new(Mutex::new(SessionRouter::new_for_agent(
+            PathBuf::from("/tmp/workspace"),
+            "a".to_string(),
+        )));
+        router.lock().await.upsert_peer_session(source.clone());
+        let tempdir = tempfile::tempdir().expect("health tempdir");
+        let blocked_parent = tempdir.path().join("not-a-directory");
+        std::fs::write(&blocked_parent, b"block mkdir").expect("create blocked parent");
+        let health = Arc::new(HealthManager::new(blocked_parent.join("state.json")));
+        let manager = crate::sidecar::create_sidecar_manager();
+        let snapshot = rotation_snapshot().await;
+
+        let error = rotate_peer_binding_for_new_command_with_metadata_lookup(
+            session_key,
+            "builtin",
+            &router,
+            &health,
+            &manager,
+            &snapshot,
+            |_| false,
+        )
+        .await
+        .expect_err("projection persist must fail");
+
+        assert!(error.contains("Failed to save new conversation binding"));
+        let restored = router
+            .lock()
+            .await
+            .peer_session_snapshot(session_key)
+            .expect("source binding restored");
+        assert_eq!(restored.session_id, source.session_id);
+        assert_eq!(restored.sidecar_port, source.sidecar_port);
+        assert_eq!(restored.message_count, source.message_count);
+        assert_eq!(
+            restored.metadata_birth_pending,
+            source.metadata_birth_pending
+        );
+        assert_eq!(restored.metadata_indexed, source.metadata_indexed);
     }
 
     #[test]

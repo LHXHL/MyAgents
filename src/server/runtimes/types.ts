@@ -373,6 +373,7 @@ export interface AgentRuntime {
   queryModels(options?: {
     runtimeSource?: RuntimeSource;
     envPolicy?: RuntimeEnvPolicy;
+    signal?: AbortSignal;
   }): Promise<RuntimeModelInfo[]>;
 
   /** Get the permission modes supported by this runtime */

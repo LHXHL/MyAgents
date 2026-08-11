@@ -1475,11 +1475,17 @@
     "dialogs": {
       "vision": {
         "title": "Image Understanding Settings",
-        "description": "Choose a configured model that explicitly supports image input.",
+        "description": "Choose a configured model for image understanding; missing metadata can be inferred by LiteLLM or confirmed by you.",
         "model": "Image understanding model",
         "selectModel": "Choose model",
         "noImageModels": "No image-capable models available",
-        "noImageModelsWarning": "Configure an API key in Model Providers first, and make sure at least one model declares image input support."
+        "noImageModelsWarning": "Configure an API key in Model Providers first, then add a model that accepts image input.",
+        "loadingModels": "Loading available models…",
+        "loadModelsFailed": "Model capabilities could not be loaded. Try again shortly.",
+        "inferredBadge": "LiteLLM inferred",
+        "confirmBadge": "Needs confirmation",
+        "inferredHint": "Image support for this model is inferred from the LiteLLM catalog.",
+        "confirmUnknownWarning": "Neither the model entry nor LiteLLM provides reliable image support data. Saving confirms that this model accepts image input."
       },
       "builtinMcp": {
         "title": "{{name}} Settings",
