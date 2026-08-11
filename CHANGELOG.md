@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.8] - 2026-08-12
+
+> MyAgents 0.4.8 聚焦多 Runtime、订阅 Provider 与 IM 会话的可靠性：Managed Codex 会等工具真正就绪后再开始首轮，Grok 与 Gemini 的验证和模型发现不再走错误的进程或隐藏登录路径。版本同时改善 Agent CLI、Skill 详情、图片能力判断和 Chat 错误恢复。
+
+### Changed
+
+- **Agent CLI 的命令与诊断更准确**：不存在的命令会在请求前直接拒绝并给出可执行建议；`task get` 作为单条任务详情入口，dry-run、订阅 Provider 验证与 Sidecar 能力限制都有对应说明。
+- **System Skill 的所有权更清晰**：MyAgents 内置 system Skill 在用户范围内保持只读，optional Skill 仍可启停；项目内同名实体 Skill 继续独立可编辑。
+
+### Fixed
+
+- **Managed Codex 首轮不再抢跑未就绪的 MCP**：等待每个注入工具到达真实终态，临时 cancelled 后仍会观察后继 ready；工具菜单只展示 Runtime 实际加载的目录，Windows `npx` MCP 也使用正确 Node 启动。
+- **Grok 订阅验证恢复正常**：设置页验证通过 Global Sidecar 执行，不再创建或借用虚假的聊天 Session；凭据仍只由 Rust 管理。
+- **Gemini 模型发现不再触发隐藏登录或遗留进程**：未认证时直接提示先在终端登录；请求取消会停止共享发现，并有界清理临时进程树。
+- **IM 新会话与运行状态更可靠**：缺失或过期绑定可以安全轮换，桌面接管与首条 IM 消息保持顺序；runtime status 显示当前 Channel 的真实 uptime。
+- **新一轮对话不会继续显示上一轮错误**：桌面发送或 IM 消息真正被接纳后会清除旧终态错误，同时保留新一轮自身的失败。
+- **未知模型的图片能力判断更准确**：保留 Provider 明确声明，未声明的自定义模型可使用可靠能力证据或用户确认，文本模型仍不会误收图片。
+
+---
+
 ## [0.4.7] - 2026-08-11
 
 > MyAgents 0.4.7 新增按 Agent 管理工作区 Skills 与 Commands 的能力，并为 Managed Codex 提供原生上下文压缩和与真实 Runtime 一致的命令入口。版本同时修复单个 Skill、MCP 或扩展异常导致整个 Codex 会话不可用的问题，改善自动标题、IM 新会话、CLI 与全局 Skill 投影的可靠性。
