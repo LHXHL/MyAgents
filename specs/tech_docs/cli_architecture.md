@@ -216,7 +216,7 @@ canonical path match。历史 extra/orphan Agent 仍可用 exact ID discovery/co
 
 新 Agent 工作流以 `myagents task` 为 canonical surface；`task start/stop/runs/exit` 在 CLI 路由层复用对应 compatibility handler，不复制 Admin/Rust 业务逻辑。旧 `cron` 命令继续服务已发布脚本和人工习惯。
 
-标准 Cron list/get 也只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
+Cron 兼容面只提供 `list`，不发布 `cron get`；单条详情统一使用 canonical `myagents task get <taskId>`，两者都只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
 
 - `start` 提交 Task `Running` 并 arm timer，不绕过 schedule/Detector；若保留的 interval anchor 已过期，scheduler 可能把下一次 tick clamp 到约 2 秒后，调用方必须读取权威 `nextExecutionAt`。
 - `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。

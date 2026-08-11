@@ -40,6 +40,8 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/admin/session/send', 'session'],
     ['POST', '/api/admin/goal/update', 'session'],
     ['POST', '/api/admin/task/create-attached', 'session'],
+    ['POST', '/api/admin/status', 'common'],
+    ['POST', '/api/admin/reload', 'session'],
     ['POST', '/api/admin/task/run', 'common'],
     ['POST', '/api/admin/mcp/remove', 'common'],
     ['POST', '/api/cc-plugin/session-enable', 'session'],

@@ -471,10 +471,11 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
     const contentType = resp.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       const text = await resp.text();
-      return {
-        success: false,
-        error: text.trim() || `HTTP ${resp.status} ${resp.statusText}`,
-      };
+      return adminHttpErrorResult(
+        route,
+        resp.status,
+        text.trim() || `HTTP ${resp.status} ${resp.statusText}`,
+      );
     }
     return await resp.json() as Record<string, unknown>;
   } catch (err) {
@@ -498,6 +499,26 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
     }
     throw err;
   }
+}
+
+export function adminHttpErrorResult(
+  route: string,
+  status: number,
+  text: string,
+): Record<string, unknown> {
+  if (route === 'reload' && status === 404) {
+    return {
+      success: false,
+      code: 'SESSION_SIDECAR_REQUIRED',
+      error: 'Reload requires a Session Sidecar; the current Global Sidecar does not own session runtime state.',
+      suggestion: 'Run the command from an active MyAgents chat session, or open its help for details.',
+      suggestedCommand: 'myagents reload --help',
+    };
+  }
+  return {
+    success: false,
+    error: text,
+  };
 }
 
 export function sessionTransportExitCode(route: string): 2 | 3 {
@@ -2406,6 +2427,9 @@ async function main(): Promise<void> {
 
   if (!flags.help) rejectUnsupportedSpaceDryRun(positional, flags);
 
+  const commandError = validateCliCommand(positional, !!flags.help);
+  if (commandError) return exitAgentCliError(flags, commandError);
+
   // Resolve port: --port flag overrides env
   PORT = resolveCliPort(flags.port, PORT);
   if (!PORT) {
@@ -2666,6 +2690,76 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
   return `${group}/${action}`;
 }
 
+const PUBLISHED_ADMIN_ROUTES = new Set([
+  'mcp/list', 'mcp/show', 'mcp/add', 'mcp/remove', 'mcp/enable', 'mcp/disable', 'mcp/env', 'mcp/test',
+  'mcp/oauth/discover', 'mcp/oauth/start', 'mcp/oauth/status', 'mcp/oauth/revoke',
+  'tool/list', 'tool/info', 'tool/add', 'tool/remove', 'tool/enable', 'tool/disable', 'tool/readme', 'tool/env',
+  'vision/readme', 'vision/models', 'vision/analyze',
+  'model/list', 'model/add', 'model/remove', 'model/set-key', 'model/set-default', 'model/verify',
+  'agent/list', 'agent/current', 'agent/show', 'agent/enable', 'agent/disable', 'agent/archive', 'agent/unarchive',
+  'agent/set', 'agent/channel/list', 'agent/channel/add', 'agent/channel/remove', 'agent/runtime-status',
+  'runtime/list', 'runtime/describe', 'runtime/diagnose', 'diagnose/runtime',
+  'cron/list', 'cron/add', 'cron/start', 'cron/run-now', 'cron/stop', 'cron/remove', 'cron/update', 'cron/runs',
+  'cron/status', 'cron/exit',
+  'goal/get', 'goal/create', 'goal/update',
+  'im/send-media', 'im/wake', 'im/channels',
+  'readme/task', 'readme/cron', 'readme/im', 'readme/widget', 'readme/thought',
+  'plugin/list', 'plugin/install', 'plugin/remove',
+  'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
+  'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
+  'config/get', 'config/set',
+  'task/list', 'task/get', 'task/create-direct', 'task/create-from-alignment', 'task/create-attached', 'task/run',
+  'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
+  'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/append-session', 'task/archive', 'task/delete',
+  'thought/list', 'thought/create',
+  'space/list', 'space/whoami', 'space/assignee-list', 'space/goal-list', 'space/issue-create', 'space/issue-update',
+  'space/issue-list', 'space/issue-get', 'space/issue-comment', 'space/issue-comments', 'space/issue-comment-get',
+  'space/issue-status', 'space/issue-claim', 'space/issue-close', 'space/issue-complete', 'space/issue-cancel-claim',
+  'space/claim-local-task', 'space/attachment-download', 'space/attachment-add', 'space/attachment-inspect',
+  'session/list', 'session/start', 'session/send', 'session/watch',
+]);
+
+const PUBLISHED_COMMAND_GROUPS = new Set([
+  'mcp', 'tool', 'vision', 'model', 'agent', 'runtime', 'diagnose', 'cron', 'goal', 'im', 'widget',
+  'plugin', 'cc-plugin', 'skill', 'config', 'task', 'thought', 'space', 'issue', 'session',
+  'status', 'reload', 'version',
+]);
+
+export function validateCliCommand(
+  positional: string[],
+  helpMode = false,
+): AgentCliError | undefined {
+  const group = positional[0];
+  if (!group) return undefined;
+  if (!PUBLISHED_COMMAND_GROUPS.has(group)) {
+    return {
+      code: 'UNKNOWN_COMMAND_GROUP',
+      error: `Unknown command group: ${group}`,
+      suggestion: 'List the commands supported by this MyAgents build.',
+      suggestedCommand: 'myagents --help',
+    };
+  }
+  if (helpMode && positional.length === 1) return undefined;
+
+  if (group === 'status' || group === 'reload' || group === 'version') {
+    if (positional.length === 1) return undefined;
+  } else if (group === 'widget' || group === 'issue') {
+    return undefined;
+  } else {
+    const action = positional[1] || 'list';
+    const route = buildRoute(group, action, positional.slice(2));
+    if (PUBLISHED_ADMIN_ROUTES.has(route)) return undefined;
+  }
+
+  const command = positional.join(' ');
+  return {
+    code: 'UNKNOWN_COMMAND',
+    error: `Unknown command: ${command}`,
+    suggestion: `List the published ${group} commands and retry with one of them.`,
+    suggestedCommand: `myagents ${group} --help`,
+  };
+}
+
 function resolveSpaceWorkspacePath(flags: Record<string, unknown>): string {
   const explicit = typeof flags.workspacePath === 'string'
     ? flags.workspacePath
@@ -2692,6 +2786,7 @@ function exitAgentCliError(
   } else {
     console.error(`Error: ${error.error}`);
     if (error.suggestion) console.error(`Suggestion: ${error.suggestion}`);
+    if (error.suggestedCommand) console.error(`Try: ${error.suggestedCommand}`);
   }
   process.exit(exitCode);
 }

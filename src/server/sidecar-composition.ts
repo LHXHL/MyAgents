@@ -156,7 +156,6 @@ const SESSION_ADMIN_ROUTES = new Set([
   'im/send-media',
   'im/wake',
   'reload',
-  'status',
   'task/create-attached',
 ]);
 
@@ -182,7 +181,7 @@ const COMMON_ADMIN_PREFIXES = [
   'vision/',
 ] as const;
 
-const COMMON_ADMIN_ROUTES = new Set(['help', 'version']);
+const COMMON_ADMIN_ROUTES = new Set(['help', 'status', 'version']);
 
 function startsWithAny(pathname: string, prefixes: readonly string[]): boolean {
   return prefixes.some(prefix => pathname.startsWith(prefix));

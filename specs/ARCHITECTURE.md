@@ -431,7 +431,7 @@ CLI 业务 bundle 只位于当前 app。由于 SDK 子进程与用户 shell 的 
 - `myagents cron ...` 作为已发布兼容 alias 保留；新 Agent 工作流不把 Cron 或 Sensor 暴露成独立领域，所有 mutation 仍落 TaskStore
 - `/cron/execute-sync` 只是为兼容历史保留的接口名，业务归属仍是 Task；`routes/scheduled-turns.ts` 只做请求校验和响应映射，`task-turn-orchestrator.ts` 与 Runtime adapter 负责实际准备和执行
 
-标准 Cron get/list/mutation facade 也只读 TaskStore；未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
+Cron 兼容 facade 发布 list/mutation，不发布 `cron get`；单条详情统一使用 canonical `myagents task get <taskId>`，同样只读 TaskStore。未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
 
 Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`，但禁止新增写盘路径。完整边界见 `tech_docs/task_center.md` 与 `tech_docs/task_provider_routing.md`。
 

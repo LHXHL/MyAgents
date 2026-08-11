@@ -8,6 +8,7 @@ import {
   formatCronTaskScheduleForDisplay,
   buildRequestBody,
   buildRoute,
+  adminHttpErrorResult,
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
   commandResultExitCode,
@@ -22,6 +23,7 @@ import {
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
   resolveCliPort,
+  validateCliCommand,
 } from './myagents';
 
 const inheritedMyAgentsSessionId = process.env.MYAGENTS_SESSION_ID;
@@ -40,6 +42,43 @@ describe('myagents CLI port authority', () => {
     expect(resolveCliPort('32003', '32002')).toBe('32003');
     expect(resolveCliPort(undefined, '32002')).toBe('32002');
     expect(resolveCliPort(undefined, '')).toBe('');
+  });
+});
+
+describe('myagents CLI command grammar', () => {
+  it('rejects unknown groups and leaves before any HTTP request is possible', () => {
+    expect(validateCliCommand(['definitely-unknown'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND_GROUP',
+      error: expect.stringContaining('definitely-unknown'),
+      suggestedCommand: 'myagents --help',
+    });
+  });
+
+  it('rejects unknown leaves while accepting published nested commands', () => {
+    expect(validateCliCommand(['mcp', 'definitely-unknown'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND',
+      error: expect.stringContaining('mcp definitely-unknown'),
+      suggestedCommand: 'myagents mcp --help',
+    });
+    expect(validateCliCommand(['mcp', 'oauth', 'start'])).toBeUndefined();
+    expect(validateCliCommand(['space', 'issue', 'comment', 'get'])).toBeUndefined();
+    expect(validateCliCommand(['task', 'trigger', 'test'])).toBeUndefined();
+  });
+
+  it('allows group-only help without treating the default action as a command', () => {
+    expect(validateCliCommand(['config'], true)).toBeUndefined();
+    expect(validateCliCommand(['im'], true)).toBeUndefined();
+  });
+});
+
+describe('myagents CLI Sidecar capability diagnostics', () => {
+  it('turns Global Sidecar reload rejection into an actionable Session-only error', () => {
+    expect(adminHttpErrorResult('reload', 404, 'Not Found')).toMatchObject({
+      success: false,
+      code: 'SESSION_SIDECAR_REQUIRED',
+      error: expect.stringContaining('Session Sidecar'),
+      suggestedCommand: 'myagents reload --help',
+    });
   });
 });
 
