@@ -1475,11 +1475,17 @@
     "dialogs": {
       "vision": {
         "title": "图片理解设置",
-        "description": "选择一个已配置、且明确支持图片输入的模型作为读图驱动",
+        "description": "选择一个已配置的模型作为读图驱动；缺少模态信息时可由 LiteLLM 推断或由你确认",
         "model": "图片理解模型",
         "selectModel": "选择模型",
         "noImageModels": "暂无可用图片模型",
-        "noImageModelsWarning": "请先在模型供应商中配置 API Key，并确保至少一个模型声明支持 image 输入。"
+        "noImageModelsWarning": "请先在模型供应商中配置 API Key，并添加一个可接收图片输入的模型。",
+        "loadingModels": "正在读取可用模型…",
+        "loadModelsFailed": "暂时无法读取模型能力，请稍后重试。",
+        "inferredBadge": "LiteLLM 推断",
+        "confirmBadge": "待确认",
+        "inferredHint": "该模型的图片能力来自 LiteLLM 数据兜底。",
+        "confirmUnknownWarning": "该模型没有声明图片能力，LiteLLM 也没有可靠结论；保存即表示你确认它支持图片输入。"
       },
       "builtinMcp": {
         "title": "{{name}} 设置",

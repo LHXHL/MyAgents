@@ -464,6 +464,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
 - registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
 - LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal（大小写归一后）裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max 选一个——相同 tail 在不同 Provider 上可能是 8K 与 10M，取 max 会让真实小窗口端点在自动压缩前先溢出（#516）。
+- 模态能力必须保留 `supported / unsupported / unknown` 三态和逐字段来源。LiteLLM 的 `supports_vision`、`supports_audio_input`、`supports_video_input` 是不完整证据，字段缺失不能转成 `false`；`supported_modalities` 才可作为完整列表。tail alias 同样逐模态取共识，冲突就保持 unknown。图片理解模型选择以 Provider offering row 为 authority：显式 `inputModalities` 无 `image` 才拒绝；缺失时 LiteLLM 只可提供正向 “inferred” 提示，负向或缺失不得跨 Provider veto，完全 unknown 由用户保存选择完成确认（#538）。
 
 ---
 

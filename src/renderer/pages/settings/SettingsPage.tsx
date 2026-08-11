@@ -63,6 +63,7 @@ import {
     getMcpServerArgs,
     getMcpServerEnv,
     atomicModifyConfig,
+    isImageUnderstandingSelectionAvailable,
     isProviderAvailable,
     rebuildAndPersistAvailableProviders,
 } from '@/config/configService';
@@ -96,11 +97,10 @@ import { DEFAULT_SUMMON_ACCELERATOR } from '../../../shared/config-types';
 import {
     IMAGE_UNDERSTANDING_TOOL_ID,
     OFFICIAL_TOOLS,
-    isImageUnderstandingToolConfigured,
     normalizeOfficialToolIds,
+    type ImageUnderstandingModelOption,
     type OfficialToolDefinition,
 } from '../../../shared/official-tools';
-import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
@@ -832,27 +832,50 @@ export default function Settings({ mode = 'settings', initialSection, navigation
     const [officialToolEnabling, setOfficialToolEnabling] = useState<Record<string, boolean>>({});
     const [visionToolSettingsOpen, setVisionToolSettingsOpen] = useState(false);
     const [visionToolDraftValue, setVisionToolDraftValue] = useState('');
+    const [visionModelCandidates, setVisionModelCandidates] = useState<ImageUnderstandingModelOption[]>([]);
+    const [visionModelsLoading, setVisionModelsLoading] = useState(false);
+    const [visionModelsLoadFailed, setVisionModelsLoadFailed] = useState(false);
 
     const officialEnabledIds = useMemo(
         () => normalizeOfficialToolIds(config.enabledOfficialToolIds ?? []),
         [config.enabledOfficialToolIds],
     );
 
-    const visionModelOptions = useMemo(() => {
-        return providers
-            .filter(provider =>
-                isProviderAvailable(provider, apiKeys, providerVerifyStatus)
-                && !isRuntimeBackedProvider(provider),
-            )
-            .flatMap(provider =>
-                provider.models
-                    .filter(model => Array.isArray(model.inputModalities) && model.inputModalities.includes('image'))
-                    .map(model => ({
-                        value: visionModelOptionValue(provider.id, model.model),
-                        label: `${provider.name} / ${model.modelName || model.model}`,
-                    })),
-            );
-    }, [providers, apiKeys, providerVerifyStatus]);
+    const loadVisionModelCandidates = useCallback(async () => {
+        setVisionModelsLoading(true);
+        setVisionModelsLoadFailed(false);
+        try {
+            const result = await apiPostJson<{
+                success: boolean;
+                data?: { models?: ImageUnderstandingModelOption[] };
+            }>('/api/admin/vision/models', {});
+            if (!result.success || !Array.isArray(result.data?.models)) {
+                throw new Error('Invalid image-understanding model response');
+            }
+            setVisionModelCandidates(result.data.models);
+        } catch (error) {
+            console.error('[Settings] Failed to load image-understanding models:', error);
+            setVisionModelCandidates([]);
+            setVisionModelsLoadFailed(true);
+        } finally {
+            setVisionModelsLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        void loadVisionModelCandidates();
+    }, [loadVisionModelCandidates, providers, apiKeys, providerVerifyStatus]);
+
+    const visionModelOptions = useMemo(() => visionModelCandidates.map(candidate => ({
+        value: visionModelOptionValue(candidate.providerId, candidate.model),
+        label: `${candidate.providerName} / ${candidate.modelName || candidate.model}${
+            candidate.capabilityConfidence === 'inferred'
+                ? ` · ${tSettings('toolbox.dialogs.vision.inferredBadge')}`
+                : candidate.capabilityConfidence === 'unknown'
+                    ? ` · ${tSettings('toolbox.dialogs.vision.confirmBadge')}`
+                    : ''
+        }`,
+    })), [tSettings, visionModelCandidates]);
 
     const savedVisionModelValue = useMemo(() => {
         const saved = config.officialToolSettings?.imageUnderstanding;
@@ -860,10 +883,21 @@ export default function Settings({ mode = 'settings', initialSection, navigation
             ? visionModelOptionValue(saved.providerId, saved.model)
             : '';
     }, [config.officialToolSettings?.imageUnderstanding]);
-    const savedVisionModelStillValid = !!savedVisionModelValue
-        && visionModelOptions.some(option => option.value === savedVisionModelValue);
-    const visionToolNeedsConfig = !isImageUnderstandingToolConfigured(config.officialToolSettings)
-        || !savedVisionModelStillValid;
+    const savedVisionModelStillValid = isImageUnderstandingSelectionAvailable(
+        providers,
+        apiKeys,
+        providerVerifyStatus,
+        config.officialToolSettings,
+    );
+    const visionToolNeedsConfig = !savedVisionModelStillValid;
+    const selectedVisionModelCandidate = useMemo(() => {
+        const parsed = parseVisionModelOptionValue(visionToolDraftValue);
+        return parsed
+            ? visionModelCandidates.find(candidate => (
+                candidate.providerId === parsed.providerId && candidate.model === parsed.model
+            ))
+            : undefined;
+    }, [visionModelCandidates, visionToolDraftValue]);
 
     // Builtin MCP settings dialog state
     const [builtinMcpSettings, setBuiltinMcpSettings] = useState<{
@@ -1186,7 +1220,14 @@ export default function Settings({ mode = 'settings', initialSection, navigation
             : (visionModelOptions[0]?.value ?? '');
         setVisionToolDraftValue(initial);
         setVisionToolSettingsOpen(true);
-    }, [savedVisionModelStillValid, savedVisionModelValue, visionModelOptions]);
+        void loadVisionModelCandidates();
+    }, [loadVisionModelCandidates, savedVisionModelStillValid, savedVisionModelValue, visionModelOptions]);
+
+    useEffect(() => {
+        if (visionToolSettingsOpen && !visionToolDraftValue && visionModelOptions[0]) {
+            setVisionToolDraftValue(visionModelOptions[0].value);
+        }
+    }, [visionModelOptions, visionToolDraftValue, visionToolSettingsOpen]);
 
     const handleOfficialToolToggle = useCallback(async (tool: OfficialToolDefinition, enabled: boolean) => {
         setOfficialToolEnabling(prev => ({ ...prev, [tool.id]: true }));
@@ -5511,9 +5552,29 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         : tSettings('toolbox.dialogs.vision.noImageModels')}
                                     size="md"
                                 />
-                                {visionModelOptions.length === 0 && (
+                                {visionModelsLoading && (
+                                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                                        {tSettings('toolbox.dialogs.vision.loadingModels')}
+                                    </p>
+                                )}
+                                {!visionModelsLoading && visionModelsLoadFailed && (
+                                    <p className="mt-2 text-xs text-[var(--warning)]">
+                                        {tSettings('toolbox.dialogs.vision.loadModelsFailed')}
+                                    </p>
+                                )}
+                                {!visionModelsLoading && !visionModelsLoadFailed && visionModelOptions.length === 0 && (
                                     <p className="mt-2 text-xs text-[var(--warning)]">
                                         {tSettings('toolbox.dialogs.vision.noImageModelsWarning')}
+                                    </p>
+                                )}
+                                {selectedVisionModelCandidate?.capabilityConfidence === 'unknown' && (
+                                    <p className="mt-2 text-xs text-[var(--warning)]">
+                                        {tSettings('toolbox.dialogs.vision.confirmUnknownWarning')}
+                                    </p>
+                                )}
+                                {selectedVisionModelCandidate?.capabilityConfidence === 'inferred' && (
+                                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                                        {tSettings('toolbox.dialogs.vision.inferredHint')}
                                     </p>
                                 )}
                             </div>

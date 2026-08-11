@@ -88,6 +88,7 @@ import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
   getAllMcpServers,
   getEnabledMcpServerIds,
+  isImageUnderstandingSelectionAvailable,
   isProviderAvailable,
   resolveProvider,
 } from '@/config/configService';
@@ -98,7 +99,6 @@ import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
   OFFICIAL_TOOLS,
-  isImageUnderstandingToolConfigured,
   normalizeOfficialToolIds,
   type OfficialToolId,
 } from '../../shared/official-tools';
@@ -2279,13 +2279,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     [config.enabledOfficialToolIds],
   );
   const imageUnderstandingConfiguredForInput = useMemo(() => {
-    if (!isImageUnderstandingToolConfigured(config.officialToolSettings)) return false;
-    const selection = config.officialToolSettings?.imageUnderstanding;
-    const provider = providers.find(item => item.id === selection?.providerId);
-    if (!provider || isRuntimeBackedProvider(provider)) return false;
-    if (!isProviderAvailable(provider, apiKeys, providerVerifyStatus)) return false;
-    const model = provider.models.find(item => item.model === selection?.model);
-    return Array.isArray(model?.inputModalities) && model.inputModalities.includes('image');
+    return isImageUnderstandingSelectionAvailable(
+      providers,
+      apiKeys,
+      providerVerifyStatus,
+      config.officialToolSettings,
+    );
   }, [apiKeys, config.officialToolSettings, providerVerifyStatus, providers]);
   const officialToolNeedsConfig = useMemo(
     () => ({ [IMAGE_UNDERSTANDING_TOOL_ID]: !imageUnderstandingConfiguredForInput }),

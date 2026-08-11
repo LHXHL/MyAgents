@@ -1309,6 +1309,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   // Official MyAgents CLI tools
   if (route === 'vision/readme') return await api.handleVisionReadme();
+  if (route === 'vision/models') return api.handleVisionModels();
   if (route === 'vision/analyze') return await api.handleVisionAnalyze(payload as Parameters<typeof api.handleVisionAnalyze>[0]);
 
   // Model commands

@@ -64,6 +64,7 @@ import {
   deleteCustomProviderFile,
   withAvailableProvidersProjection,
   isCliToolRegistryEnabled,
+  listImageUnderstandingModelOptions,
   type AdminAppConfig,
   type AgentConfigSlim,
   type ChannelConfigSlim,
@@ -860,6 +861,13 @@ export async function handleMcpOAuthRevoke(payload: { id: string }): Promise<Adm
 export async function handleVisionReadme(): Promise<AdminResponse> {
   const { getVisionToolReadme } = await import('./official-tools/vision');
   return { success: true, data: { text: getVisionToolReadme() } };
+}
+
+export function handleVisionModels(): AdminResponse {
+  return {
+    success: true,
+    data: { models: listImageUnderstandingModelOptions() },
+  };
 }
 
 export async function handleVisionAnalyze(payload: {
