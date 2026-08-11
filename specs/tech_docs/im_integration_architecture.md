@@ -200,7 +200,7 @@ Per-Message Task:
 |------|------|
 | `/start BIND_xxxx` | QR 绑定：添加用户到白名单，发射 `im:user-bound` 事件 |
 | `/start` | 显示帮助文本 |
-| `/new` | 轮换当前 peer binding；旧 Session 只释放 `Agent(session_key)` owner，新 ID 延迟到首条普通消息实体化 |
+| `/new` | 先按 exact Session ID 向 SessionStore 做无副作用分类；仅冻结仍有 metadata 的旧 Session，missing/stale binding 直接轮换；旧 Session 只释放 `Agent(session_key)` owner，新 ID 延迟到首条普通消息实体化 |
 | `/workspace [path]` | 显示/切换工作区 |
 | `/model [name]` | 显示/切换 AI 模型（支持快捷名：sonnet, opus, haiku） |
 | `/provider [id]` | 显示/切换 AI 供应商 |
@@ -305,7 +305,9 @@ pub struct SessionRouter {
 
 **Sidecar 所有权**：IM Bot / Agent Channel 使用 `SidecarOwner::Agent(session_key)` 作为 Sidecar owner，与 `Tab`、`Companion`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
-**`/new` 的 owner 边界**：命令在现有 per-peer enqueue fence 内 freeze 旧 Session，生成并持久化 `sidecar_port=0 / metadata_birth_pending=true` 的新 binding，成功后只释放旧 Session 的目标 `Agent(session_key)`。它不得调用 Node reset、不得修改旧 Sidecar key，也不得迁移共享的 Tab/Task/Goal 等 owner。新 binding 在第一条普通 IM 消息到来时复用 `prepare_ensure_sidecar()` 实体化；命令自身不创建空 Sidecar 或 transcript。freeze / health projection / owner transfer 任一步失败都恢复旧 binding，并保留旧 group history 与 consumer。
+**`/new` 的 owner 边界**：命令在现有 per-peer enqueue fence 内按 exact Session ID 查询 SessionStore；仅 metadata 仍存在的源 Session 需要 freeze，missing birth-pending / stale binding 没有可冻结的持久源，直接进入同一个轮换事务。随后生成并持久化 `sidecar_port=0 / metadata_birth_pending=true` 的唯一新 binding，成功后只释放旧 Session 的目标 `Agent(session_key)`。它不得调用 Node reset、不得修改旧 Sidecar key，也不得迁移共享的 Tab/Task/Goal 等 owner。新 binding 在第一条普通 IM 消息到来时复用 `prepare_ensure_sidecar()` 实体化；命令自身不创建空 Sidecar 或 transcript。freeze / health projection / owner transfer 任一步失败都恢复旧 binding，并保留旧 group history 与 consumer。
+
+桌面把现有 Session 接管到 Channel 时复用同一条 SessionStore 分类策略和同一把 per-peer fence：首条 IM enqueue 必须先完成 metadata materialization，再由 handover 判断是否冻结旧源并替换 binding。这样接管与普通消息、`/new`、heartbeat、surface migration 不会对同一 peer 并发裁决。
 
 ### 2.6.1 通用代理变化时的 Channel 重连
 

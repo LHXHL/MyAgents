@@ -46,10 +46,19 @@ fn short_id(s: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PeerMetadataDisposition {
+pub(crate) enum PeerMetadataDisposition {
     Indexed,
     BirthPending,
     RotateStale,
+}
+
+/// A source Session may be frozen only when SessionStore currently owns its
+/// metadata. Missing birth-pending and stale Router bindings have no durable
+/// source to preserve and must be replaced without resurrecting the old ID.
+pub(crate) fn peer_binding_source_requires_freeze(
+    disposition: Option<PeerMetadataDisposition>,
+) -> bool {
+    matches!(disposition, Some(PeerMetadataDisposition::Indexed))
 }
 
 fn reconcile_peer_metadata_with_lookup<F>(
@@ -443,6 +452,35 @@ impl SessionRouter {
         })
     }
 
+    pub(crate) fn classify_peer_session_metadata_for_binding_rotation_with_lookup<F>(
+        &self,
+        session_key: &str,
+        metadata_exists: F,
+    ) -> Option<PeerMetadataDisposition>
+    where
+        F: FnOnce(&str) -> bool,
+    {
+        let peer = self.peer_sessions.get(session_key)?;
+        Some(reconcile_peer_metadata_with_lookup(
+            peer.metadata_birth_pending,
+            peer.metadata_indexed,
+            &peer.session_id,
+            metadata_exists,
+        ))
+    }
+
+    /// Classify the source binding against SessionStore without mutating the
+    /// Router or Sidecar owners. Binding rotations need this read before freeze
+    /// while preserving their exact stage/persist/release rollback boundary.
+    pub(crate) fn classify_peer_session_metadata_for_binding_rotation(
+        &self,
+        session_key: &str,
+    ) -> Option<PeerMetadataDisposition> {
+        self.classify_peer_session_metadata_for_binding_rotation_with_lookup(session_key, |sid| {
+            resolve_session_runtime_identity_full(sid).is_some()
+        })
+    }
+
     fn reconcile_peer_session_metadata_before_use(
         &mut self,
         session_key: &str,
@@ -452,12 +490,9 @@ impl SessionRouter {
             return;
         };
 
-        let disposition = reconcile_peer_metadata_with_lookup(
-            snapshot.metadata_birth_pending,
-            snapshot.metadata_indexed,
-            &snapshot.session_id,
-            |sid| resolve_session_runtime_identity_full(sid).is_some(),
-        );
+        let disposition = self
+            .classify_peer_session_metadata_for_binding_rotation(session_key)
+            .expect("peer binding exists after snapshot lookup");
 
         match disposition {
             PeerMetadataDisposition::Indexed => {
@@ -1737,7 +1772,7 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        parse_session_key, persisted_session_runtime_differs,
+        parse_session_key, peer_binding_source_requires_freeze, persisted_session_runtime_differs,
         persisted_session_runtime_identity_differs, reconcile_peer_metadata_with_lookup,
         EnsureSidecarInfo, PeerMetadataDisposition, SessionRouter,
     };
@@ -2192,6 +2227,56 @@ mod tests {
         assert_eq!(reconciled.message_count, 0);
         assert!(reconciled.metadata_birth_pending);
         assert!(!reconciled.metadata_indexed);
+    }
+
+    #[test]
+    fn binding_rotation_classifies_stale_metadata_without_mutating_the_source_binding() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        let mut stale = peer(session_key, "deleted-before-new-command");
+        stale.sidecar_port = 32100;
+        stale.message_count = 3;
+        stale.metadata_birth_pending = false;
+        stale.metadata_indexed = true;
+        router.upsert_peer_session(stale.clone());
+
+        let disposition = router
+            .classify_peer_session_metadata_for_binding_rotation_with_lookup(session_key, |_| false)
+            .expect("peer binding exists");
+
+        assert_eq!(disposition, PeerMetadataDisposition::RotateStale);
+        let source_after_classification = router
+            .peer_session_snapshot(session_key)
+            .expect("classification must keep the source binding");
+        assert_eq!(source_after_classification.session_id, stale.session_id);
+        assert_eq!(source_after_classification.sidecar_port, stale.sidecar_port);
+        assert_eq!(
+            source_after_classification.message_count,
+            stale.message_count
+        );
+        assert_eq!(
+            source_after_classification.metadata_birth_pending,
+            stale.metadata_birth_pending,
+        );
+        assert_eq!(
+            source_after_classification.metadata_indexed,
+            stale.metadata_indexed,
+        );
+    }
+
+    #[test]
+    fn binding_rotation_freezes_only_sources_owned_by_session_store() {
+        assert!(peer_binding_source_requires_freeze(Some(
+            PeerMetadataDisposition::Indexed,
+        )));
+        assert!(!peer_binding_source_requires_freeze(Some(
+            PeerMetadataDisposition::BirthPending,
+        )));
+        assert!(!peer_binding_source_requires_freeze(Some(
+            PeerMetadataDisposition::RotateStale,
+        )));
+        assert!(!peer_binding_source_requires_freeze(None));
     }
 
     #[test]
