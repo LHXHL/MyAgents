@@ -2083,6 +2083,10 @@ export default function TabProvider({
                 seenIdsRef.current.add(msg.id);
 
                 if (isExplicitLiveEcho && msg.role === 'user') {
+                    // This is the authoritative admission signal for an IM turn.
+                    // A terminal error belongs to the previous turn and must not
+                    // remain beside the newly-admitted message/model selection.
+                    setAgentError(null);
                     projectAcceptedFirstUserTitle({
                         content: msg.content,
                         messageId: msg.id,
@@ -4221,10 +4225,10 @@ export default function TabProvider({
         // Reset new session flag BEFORE sending - allow message replay to show user's message
         isNewSessionRef.current = false;
 
-        // Clear prior turn's terminal_reason banner — a new user send semantically
-        // invalidates the previous turn's outcome. Without this, banner stays visible
-        // while the new stream renders (and chat:message-complete no longer wipes it
-        // since that caused the external-runtime bug).
+        // A successfully claimed send starts a new turn. Clear both terminal
+        // projections here rather than on message-complete, where an error event
+        // can race the completion envelope and be hidden.
+        setAgentError(null);
         setLastTerminalReason(null);
         setSystemNotice(null);
 

@@ -71,11 +71,15 @@ vi.mock('@/config/services/appConfigService', () => ({
 
 vi.mock('@/analytics', () => ({
   track: vi.fn(),
-  consumePendingSessionBirth: vi.fn(),
-  peekPendingSessionBirth: vi.fn(),
+  consumePendingSessionBirth: vi.fn((_tabId: string, fallback: unknown) => fallback),
+  peekPendingSessionBirth: vi.fn((_tabId: string, fallback: unknown) => fallback),
   setPendingSessionBirth: vi.fn(),
   hashAgentNameSync: () => null,
-  birthContextForSurface: vi.fn(),
+  birthContextForSurface: vi.fn((surface: string) => ({
+    surface,
+    entryIntent: 'unknown',
+    hasInitialMessage: false,
+  })),
 }));
 
 vi.mock('@/utils/frontendLogger', () => ({
@@ -125,6 +129,7 @@ function Probe() {
     streamingMessage,
     systemInitInfo,
     queuedMessages,
+    agentError,
     isConnected,
     adoptMigratedSession,
     resetSession,
@@ -156,6 +161,7 @@ function Probe() {
         runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
       })))}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
+      <output data-testid="agent-error">{agentError ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
@@ -317,6 +323,70 @@ describe('TabProvider session activity ownership', () => {
     expect(tauriHarness.proxyFetch.mock.calls.some(
       ([url]) => String(url).includes('/chat/send'),
     )).toBe(false);
+  });
+
+  it('clears a prior terminal agent error when a new desktop or IM turn is admitted', async () => {
+    tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    render(
+      <TabProvider
+        tabId="tab-agent-error-lifecycle"
+        agentDir="/tmp/workspace"
+        sessionId="pending-agent-error-lifecycle"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:agent-error', { message: 'Not logged in' });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('Not logged in');
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+    expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+
+    emit('chat:agent-error', { message: 'New turn auth failure' });
+    emit('chat:message-complete', {
+      assistant_message_id: 'failed-turn-completion',
+    });
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('New turn auth failure');
+
+    emit('chat:agent-error', { message: 'Old provider error' });
+    emit('chat:message-replay', {
+      replayKind: 'live-user-echo',
+      sessionId: 'pending-agent-error-lifecycle',
+      message: {
+        id: 'im-turn-after-error',
+        role: 'user',
+        content: 'new IM turn',
+        timestamp: '2026-08-11T14:35:00.000Z',
+      },
+    });
+    expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+  });
+
+  it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {
+    const refuseSessionOpening = vi.fn(() => null);
+    render(
+      <TabProvider
+        tabId="tab-agent-error-refused"
+        agentDir="/tmp/workspace"
+        sessionId="pending-agent-error-refused"
+        claimSessionOpeningTransition={refuseSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:agent-error', { message: 'Keep this error' });
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+
+    expect(refuseSessionOpening).toHaveBeenCalledWith('pending-agent-error-refused');
+    expect(screen.getByTestId('agent-error')).toHaveTextContent('Keep this error');
   });
 
   it('holds turn admission until the backend accepts the send', async () => {
