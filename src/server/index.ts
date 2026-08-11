@@ -1276,7 +1276,11 @@ function normalizeSessionListPreview(meta: SessionMetadata): SessionMetadata {
  * Route /api/admin/* requests to the appropriate handler.
  * Keeps the route matching logic clean and separated from business logic (in admin-api.ts).
  */
-async function routeAdminApi(pathname: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function routeAdminApi(
+  pathname: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
   // Strip the prefix for matching
   const route = pathname.replace('/api/admin/', '');
 
@@ -1333,7 +1337,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);
   if (route === 'agent/channel/remove') return api.handleAgentChannelRemove(payload as Parameters<typeof api.handleAgentChannelRemove>[0]);
   if (route === 'runtime/list') return await api.handleRuntimeList();
-  if (route === 'runtime/describe') return await api.handleRuntimeDescribe(payload as Parameters<typeof api.handleRuntimeDescribe>[0]);
+  if (route === 'runtime/describe') return await api.handleRuntimeDescribe(payload as Parameters<typeof api.handleRuntimeDescribe>[0], signal);
   if (route === 'runtime/diagnose') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
   if (route === 'diagnose/runtime') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
 
@@ -2338,6 +2342,7 @@ async function main() {
         try {
           const models = await queryRuntimeModels(type as import('../shared/types/runtime').RuntimeType, {
             runtimeSource,
+            signal: request.signal,
           });
           return jsonResponse({ models });
         } catch (error) {
@@ -4357,7 +4362,7 @@ async function main() {
             ? {}
             : await request.json().catch(() => ({})) as Record<string, unknown>;
 
-          const result = await routeAdminApi(pathname, payload);
+          const result = await routeAdminApi(pathname, payload, request.signal);
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);

@@ -5815,17 +5815,22 @@ export async function prewarmExternalSession(options: {
  */
 export async function queryRuntimeModels(
   runtimeType: RuntimeType,
-  options: { runtimeSource?: import('../../shared/types/runtime').RuntimeSource } = {},
+  options: {
+    runtimeSource?: import('../../shared/types/runtime').RuntimeSource;
+    signal?: AbortSignal;
+    throwOnError?: boolean;
+  } = {},
 ): Promise<unknown[]> {
   if (runtimeType === 'builtin') return [];
   const runtimeSource = runtimeType === 'codex' ? options.runtimeSource : undefined;
   try {
-    return await queryRuntimeModelsSingleFlight(runtimeType, async () => {
+    return await queryRuntimeModelsSingleFlight(runtimeType, async (ownerSignal) => {
       const runtime = getExternalRuntime(runtimeType);
-      return await runtime.queryModels({ runtimeSource });
-    }, runtimeSource);
+      return await runtime.queryModels({ runtimeSource, signal: ownerSignal });
+    }, runtimeSource, options.signal);
   } catch (err) {
     console.error(`[external-session] Failed to query models for ${runtimeType}:`, err);
+    if (options.throwOnError) throw err;
     return [];
   }
 }

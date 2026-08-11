@@ -5627,7 +5627,7 @@ export async function handleRuntimeList(): Promise<AdminResponse> {
  */
 export async function handleRuntimeDescribe(payload: {
   runtime?: string;
-}): Promise<AdminResponse> {
+}, signal?: AbortSignal): Promise<AdminResponse> {
   const runtimeArg = payload.runtime;
   if (!runtimeArg) {
     return {
@@ -5685,11 +5685,32 @@ export async function handleRuntimeDescribe(payload: {
 
   // Only query models when the CLI is actually installed — otherwise we'd
   // waste 10+ seconds trying to spawn a binary that doesn't exist.
-  const models: RuntimeModelInfo[] = detection.installed
-    ? ((await queryRuntimeModels(runtimeArg, {
+  let models: RuntimeModelInfo[] = [];
+  if (detection.installed) {
+    try {
+      models = (await queryRuntimeModels(runtimeArg, {
         runtimeSource: runtimeArg === 'codex' ? 'system-cli' : undefined,
-      })) as RuntimeModelInfo[])
-    : [];
+        signal,
+        throwOnError: true,
+      })) as RuntimeModelInfo[];
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        code: 'RUNTIME_MODEL_DISCOVERY_FAILED',
+        error: `Failed to discover ${RUNTIME_DISPLAY_NAMES[runtimeArg]} models: ${detail}`,
+        recoveryHint: runtimeArg === 'gemini'
+          ? {
+              recoveryCommand: 'gemini',
+              message: 'Authenticate Gemini in a normal terminal, then retry `myagents runtime describe gemini`.',
+            }
+          : {
+              recoveryCommand: `myagents runtime diagnose ${runtimeArg} --json`,
+              message: 'Inspect runtime installation and authentication, then retry.',
+            },
+      };
+    }
+  }
   const permissionModes = getRuntimePermissionModes(runtimeArg);
   const defaultPermissionMode = getDefaultRuntimePermissionMode(runtimeArg);
 

@@ -550,13 +550,14 @@ https://geminicli.com/docs/cli/system-prompt/):它指向一个 markdown 文件,
 
 ### 模型列表动态发现
 
-不硬编码 `GEMINI_MODELS`(常量里只保留一个"默认"占位)。`queryModelsViaAcp()` 策略:
+不硬编码 `GEMINI_MODELS`(常量里只保留一个"默认"占位)。`queryGeminiModelsViaAcp()` 策略:
 
-1. Spawn 短命 `gemini --acp`(cwd = `$HOME`,避免被当前 workspace 配置干扰)
-2. `initialize` 握手 + `session/new`
-3. 从 `result.models.availableModels[]` 读取 `{ modelId, name, description, isDefault }`
-4. 在首位追加一个空值 `default` 条目(交给 Gemini 自选)
-5. Kill 子进程
+1. 先检查非交互鉴权环境，或已选择的 auth 类型及 OAuth credential 存在性；未配置时直接返回可操作错误，绝不 spawn 后台登录向导
+2. Spawn 短命 `gemini --acp`(cwd = `$HOME`,避免被当前 workspace 配置干扰)
+3. `initialize` 握手 + `session/new`
+4. 从 `result.models.availableModels[]` 读取 `{ modelId, name, description, isDefault }`
+5. 在首位追加一个空值 `default` 条目(交给 Gemini 自选)
+6. 无论成功、失败或请求中断，都通过 `killWithEscalation(killTree=true)` 有界关闭进程树和 stdio drain
 
 v0.37.2 实测返回 8 个模型:`auto-gemini-3`、`auto-gemini-2.5`、`gemini-3.1-pro-preview`、
 `gemini-3-flash-preview`、`gemini-3.1-flash-lite-preview`、`gemini-2.5-pro`、
@@ -564,14 +565,15 @@ v0.37.2 实测返回 8 个模型:`auto-gemini-3`、`auto-gemini-2.5`、`gemini-3
 
 **启动稳定性**:`queryModels` 调用前 `await new Promise(r => setTimeout(r, 50))` 让
 stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注册之前到达的
-竞态;超时由 10s 上调到 30s,覆盖 Gemini Node.js 冷启动 + OAuth 刷新的延迟。
+竞态;超时由 10s 上调到 30s,覆盖 Gemini Node.js 冷启动和已有凭据刷新的延迟。
+同一 runtime/source 的并发发现由 single-flight owner 合并；单个 HTTP 等待者取消只解除自身订阅，最后一个等待者取消才 abort owner 并清理临时进程树。
 
 ### 认证
 
-**完全不由 MyAgents 管理**。Gemini CLI 支持 OAuth、`GEMINI_API_KEY`、Vertex AI 三种方式,
+**凭据完全不由 MyAgents 管理**。Gemini CLI 支持 OAuth、`GEMINI_API_KEY`、Vertex AI 三种方式,
 用户自行在本机完成登录(`gemini` 交互式向导或 shell rc 导出环境变量),MyAgents 子进程
-继承 Sidecar 的环境变量即可。如果用户未登录,`session/new` 会抛 `-32000` RPC 错误,
-前端显示"请先在终端运行 `gemini` 完成登录"。
+只消费既有凭据。短命模型发现会在 spawn 前 fail-closed；它不会替用户启动浏览器登录或写入凭据。
+真实 Session 启动仍由 Gemini CLI 使用本机既有 auth authority，鉴权失败原样返回给会话错误面。
 
 ## External Session Handler (`src/server/runtimes/external-session.ts`)
 
