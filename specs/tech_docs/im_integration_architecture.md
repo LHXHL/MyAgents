@@ -369,6 +369,10 @@ pub struct ImHealthState {
 }
 ```
 
+`ImHealthState.uptime_seconds` 是持久化健康快照，不是运行中 Channel 的实时计时 authority。
+`agent runtime-status` 在持有 Agent registry 锁时复制 `ImBotInstance.started_at`，释放锁后再用
+`started_at.elapsed()` 生成 `uptimeSeconds`；健康状态只提供 status、错误、会话数等快照字段。
+
 **持久化**：每 5 秒写入磁盘，供前端轮询展示。
 
 **Per-Bot 文件路径**（v3 子目录结构）：

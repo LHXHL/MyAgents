@@ -2095,6 +2095,10 @@ async fn uninstall_plugin_handler(
 
 // ===== Agent Runtime Status handler =====
 
+fn live_channel_uptime_seconds(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_secs()
+}
+
 async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
     let agents = match get_agents() {
         Some(a) => a,
@@ -2114,6 +2118,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
         channel_id: String,
         platform_str: String,
         health: std::sync::Arc<im::health::HealthManager>,
+        started_at: std::time::Instant,
     }
 
     let mut snapshots: Vec<AgentSnapshot> = Vec::new();
@@ -2127,6 +2132,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
                 channel_id: ch_id.clone(),
                 platform_str,
                 health: std::sync::Arc::clone(&ch.bot_instance.health),
+                started_at: ch.bot_instance.started_at(),
             });
         }
         snapshots.push(AgentSnapshot {
@@ -2151,7 +2157,7 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
                 "channelId": ch.channel_id,
                 "channelType": ch.platform_str,
                 "status": status_str,
-                "uptimeSeconds": health_state.uptime_seconds,
+                "uptimeSeconds": live_channel_uptime_seconds(ch.started_at),
                 "lastMessageAt": health_state.last_message_at,
                 "errorMessage": health_state.error_message,
                 "activeSessions": health_state.active_sessions.len(),
@@ -4019,6 +4025,12 @@ mod tests {
         assert_eq!(request.patch.model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(request.patch.permission_mode.as_deref(), Some("fullAgency"));
         assert_eq!(request.patch.provider_env_json, Some(None));
+    }
+
+    #[test]
+    fn live_channel_uptime_comes_from_the_running_instance_start() {
+        let started_at = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        assert!(live_channel_uptime_seconds(started_at) >= 3);
     }
 
     #[test]
