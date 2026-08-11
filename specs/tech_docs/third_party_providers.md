@@ -64,10 +64,10 @@ if (currentProviderEnv?.baseUrl) {
 Grok bearer 的边界：
 
 1. Rust 独立存储 `~/.myagents/credentials/grok-oauth.json`，用文件锁、fresh-read、原子替换与平台权限加固管理 rotating refresh token。
-2. Sidecar 不缓存 bearer。Bridge 的 async registry resolver 在每次上游请求前，经 localhost Management API 获取当前 access token；请求带 `MYAGENTS_SESSION_ID` 与 `X-MyAgents-Sidecar-Generation`，Rust 只接受当前 live Sidecar identity。
+2. Sidecar 不缓存 bearer。Bridge 的 async registry resolver 在每次上游请求前，经 localhost Management API 获取当前 access token；请求带进程出生时注入的 `MYAGENTS_SIDECAR_ID` 与 `X-MyAgents-Sidecar-Generation`，Rust 只接受当前 live Sidecar process identity。该身份同时覆盖 canonical Global 与 Session Sidecar，不能用可变的 Product Session id 代替。
 3. Bridge 遇到首个 401 才请求一次强制 refresh，并以字节等价的 request body 重试；第二个 401 quarantine 对应 credential version。403/429 只记录 entitlement/rate 状态，绝不 refresh 或删除 grant。
 4. renderer 只调用 Tauri auth/model commands，永远拿不到 bearer。模型目录复用 `ModelManagementPanel`，由宿主 `discoveryAction` 调 Rust `/v1/models`，再进入共享 OpenAI model-list parser。
-5. OAuth 成功不等于“已验证”。验证 Sidecar 使用带 expected grant lineage 的 `verification` bearer purpose；只有 builtin SDK 经现有 Responses Bridge 收到 terminal success 后，Tauri verification owner 才按同一 lineage 提交 `providerVerifyStatus[xai-sub]=valid`。普通 Bridge 2xx 不写验证状态；`execution` purpose 只允许已 valid（或既有 valid 后的 rate/network 临时态）的 grant。
+5. OAuth 成功不等于“已验证”。Global Sidecar 的 one-shot 验证使用带 expected grant lineage 的 `verification` bearer purpose；只有 builtin SDK 经现有 Responses Bridge 收到 terminal success 后，Tauri verification owner 才按同一 lineage 提交 `providerVerifyStatus[xai-sub]=valid`。它不创建 Product Session，也不借用 Session Sidecar；普通 Bridge 2xx 不写验证状态，`execution` purpose 只允许已 valid（或既有 valid 后的 rate/network 临时态）的 grant。
 
 ### 3. API Key 存储与读取
 
