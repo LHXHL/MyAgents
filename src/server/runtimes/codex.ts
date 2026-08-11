@@ -272,7 +272,7 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
       [...states.entries()].filter(([name]) => expected.has(name)),
     );
     const unhealthy = Object.values(stateSnapshot)
-      .some(state => state === 'failed' || state === 'cancelled');
+      .some(state => state === 'failed');
     const degraded = timedOut || pending.length > 0 || unhealthy;
     return {
       outcome: degraded ? 'degraded' : 'ready',
@@ -285,16 +285,18 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
 
   const pendingNames = (): string[] => [...expected].filter((name) => {
     const state = states.get(name);
-    return state === undefined || state === 'starting';
+    return state === undefined || state === 'starting' || state === 'cancelled';
   });
 
   return {
     observe(notification) {
       if (!expected.has(notification.name) || completed) return;
+      const previous = states.get(notification.name);
+      if (previous === 'ready' || previous === 'failed') return;
       states.set(notification.name, notification.status);
       const allTerminal = [...expected].every((name) => {
         const state = states.get(name);
-        return state === 'ready' || state === 'failed' || state === 'cancelled';
+        return state === 'ready' || state === 'failed';
       });
       if (allTerminal) {
         completed = true;

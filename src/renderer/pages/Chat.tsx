@@ -147,6 +147,7 @@ import {
 } from '@/utils/optionResolve';
 import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBirth';
 import {
+  projectInputCapabilityRuntime,
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
   shouldShowBuiltinSdkSlashCommands,
@@ -1406,6 +1407,10 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     });
   }, [agentDir, currentRuntime]);
   const inputChromeRuntime = projectInputChromeRuntime({
+    currentRuntime,
+    managedProviderRuntimeActive,
+  });
+  const inputCapabilityRuntime = projectInputCapabilityRuntime({
     currentRuntime,
     managedProviderRuntimeActive,
   });
@@ -5555,6 +5560,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
             onGoalCancel={handleGoalCancelOpen}
             onGoalDismiss={handleGoalDismiss}
             onSlashAction={handleSlashAction}
+            capabilityRuntime={inputCapabilityRuntime}
             runtime={inputChromeRuntime}
             runtimeDetections={showLegacyRuntimeSelector ? runtimeDetections : undefined}
             onRuntimeChange={showLegacyRuntimeSelector ? handleRuntimeChange : undefined}

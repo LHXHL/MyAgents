@@ -3956,13 +3956,10 @@ async function main() {
                 pinPresetPackages: true,
               });
 
-              // Route through utils/subprocess.spawn — on Windows the bundled
-              // and system npx are both `npx.cmd` shims. Calling .cmd via raw
-              // `child_process.spawn` returns EINVAL on Node ≥20.12 (CVE-2024-27980),
-              // and Node's own `shell: true` workaround does NOT escape inner
-              // quotes / metachars in args. The wrapper handles both — see
-              // utils/subprocess.ts::spawn for the cmd.exe wrapping + cross-spawn
-              // escape algorithm.
+              // Keep all Sidecar child processes on the shared spawn adapter.
+              // The npx resolver already projects Windows to node.exe +
+              // npx-cli.js because managed Codex owns its final native spawn;
+              // the adapter remains the single stream/error lifecycle owner.
               const { spawn: wrappedSpawn } = await import('./utils/subprocess');
               const { getShellEnv } = await import('./utils/shell');
               const baseEnv = getShellEnv();

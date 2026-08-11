@@ -1,7 +1,7 @@
 import type { McpServerDefinition } from '../../../../shared/config-types';
 import { MCP_PREWARM_GRACE_MS } from '../../../session-core/mcp-prewarm-policy';
 import { resolveMcpTemplateValue } from '../../../session-core/mcp-template-resolution';
-import { resolveNpxMcpInvocation } from '../../../utils/mcp-command';
+import { NpxMcpResolutionError, resolveNpxMcpInvocation } from '../../../utils/mcp-command';
 import { getBundledCusePath } from '../../../utils/runtime';
 
 const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
@@ -329,11 +329,17 @@ export function projectManagedCodexMcpLaunchConfig(
     } catch (error) {
       const projectionError = error instanceof ManagedCodexMcpProjectionError
         ? error
-        : new ManagedCodexMcpProjectionError(
-            'failed',
-            'mcp_projection_rejected',
-            'unexpected launch projection failure',
-          );
+        : error instanceof NpxMcpResolutionError
+          ? new ManagedCodexMcpProjectionError(
+              'failed',
+              'mcp_projection_rejected',
+              error.message,
+            )
+          : new ManagedCodexMcpProjectionError(
+              'failed',
+              'mcp_projection_rejected',
+              'unexpected launch projection failure',
+            );
       failures.push({
         serverId: server.id,
         state: projectionError.state,

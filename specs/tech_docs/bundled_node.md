@@ -125,7 +125,7 @@ Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/s
 ### 外部 stdio MCP（用户装 `@notionhq/notion-mcp-server` 等）
 
 `utils/mcp-command.ts::resolveNpxMcpInvocation()` 是 npx MCP 启动命令的唯一解释器，由 builtin Claude、managed Codex 和 MCP enable warmup 共用：
-- `command: 'npx'` → 解析为 **系统 npx** → bundled npx → runtime sibling npx（fallback），始终输出绝对路径并补 `-y`
+- `command: 'npx'` → 解析为 **系统 npx** → bundled npx → runtime sibling npx（fallback），始终补 `-y`；macOS/Linux 输出绝对 npx 路径，Windows 输出同一完整 Node distribution 的绝对 `node.exe`，并把绝对 `node_modules/npm/bin/npx-cli.js` 放在 argv 首位，禁止把 `.cmd` shim 交给 Codex 原生 spawn
 - MyAgents-owned preset 使用 `shared/mcpPackages.ts` 的精确 package spec；旧配置里的已知 `@latest` 在 runtime boundary 归一化，避免每次进程启动重新查询 registry
 - `mcpServerArgs[id]` 只存用户附加参数，必须追加到 preset/package 基础参数之后，不能替换整段 argv
 - 通过 `process_cmd::new()` spawn（Windows 自动 `CREATE_NO_WINDOW`）

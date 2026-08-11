@@ -135,6 +135,8 @@ export interface SimpleChatInputProps {
   mode?: 'chat' | 'launcher';
   toolbarPrefix?: React.ReactNode;
   contextIndicator?: React.ReactNode;
+  /** Runtime that owns capability discovery; Managed Codex differs from its builtin visual chrome. */
+  capabilityRuntime?: RuntimeType;
   runtime?: RuntimeType;
   runtimeDetections?: RuntimeDetections;
   onRuntimeChange?: (runtime: RuntimeType) => void;
