@@ -958,6 +958,10 @@ const SYSTEM_SKILLS: readonly string[] = [
   'prompt-writer',
 ];
 
+function isSystemSkillName(name: string): boolean {
+  return SYSTEM_SKILLS.includes(name.toLowerCase());
+}
+
 /**
  * Seed bundled skills to ~/.myagents/skills/ on first launch.
  * Only copies skills that haven't been seeded before (tracked in skills-config.json).
@@ -990,7 +994,7 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
-      if (SYSTEM_SKILLS.includes(folder)) {
+      if (isSystemSkillName(folder)) {
         // Owned by Rust version gate — skip silently.
         continue;
       }
@@ -4765,7 +4769,7 @@ async function main() {
 
                 const content = readFileSync(skillMdPath, 'utf-8');
                 const { name, description, author } = parseSkillFrontmatter(content);
-                const systemOwned = scopeType === 'user' && SYSTEM_SKILLS.includes(folder.name);
+                const systemOwned = scopeType === 'user' && isSystemSkillName(folder.name);
                 const required = scopeType === 'user' && isRequiredSystemSkill(folder.name);
                 skills.push({
                   name: name || folder.name,
@@ -4792,7 +4796,7 @@ async function main() {
           }
           if (scope === 'all' || scope === 'user') {
             for (const entry of globalSkillInventory?.entries ?? []) {
-              const systemOwned = SYSTEM_SKILLS.includes(entry.folderName);
+              const systemOwned = isSystemSkillName(entry.folderName);
               skills.push({
                 name: entry.name,
                 description: entry.description,
@@ -5052,6 +5056,8 @@ async function main() {
 
           const content = readFileSync(skillPath, 'utf-8');
           const { frontmatter, body } = parseFullSkillContent(content);
+          const systemOwned = scope === 'user' && isSystemSkillName(skillName);
+          const required = scope === 'user' && isRequiredSystemSkill(skillName.toLowerCase());
 
           return jsonResponse({
             success: true,
@@ -5060,6 +5066,8 @@ async function main() {
               folderName: skillName,
               path: skillPath,
               scope,
+              systemOwned,
+              required,
               frontmatter,
               body,
             }
@@ -5095,6 +5103,13 @@ async function main() {
           let skillDir = join(baseDir, currentFolderName);
           let skillPath = join(skillDir, 'SKILL.md');
 
+          if (payload.scope === 'user' && isSystemSkillName(skillName)) {
+            return jsonResponse({
+              success: false,
+              code: 'SYSTEM_SKILL_READ_ONLY',
+              error: 'System Skill is read-only',
+            }, 409);
+          }
           if (!existsSync(skillPath)) {
             return jsonResponse({ success: false, error: 'Skill not found' }, 404);
           }
@@ -5175,6 +5190,13 @@ async function main() {
           const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, skillName);
 
+          if (scope === 'user' && isSystemSkillName(skillName)) {
+            return jsonResponse({
+              success: false,
+              code: 'SYSTEM_SKILL_READ_ONLY',
+              error: 'System Skill is read-only',
+            }, 409);
+          }
           if (!existsSync(skillDir)) {
             return jsonResponse({ success: false, error: 'Skill not found' }, 404);
           }
