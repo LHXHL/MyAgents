@@ -149,7 +149,7 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 | `system-cli` | 用户自行安装并登录的本机 CLI | 实验室「更多 Agent Runtime」里选择 Codex / Claude Code / Gemini |
 | `managed-provider` | MyAgents 管理 runtime 二进制、安装状态与登录状态 | Provider 列表里的 `codex-sub`（Codex 订阅） |
 
-`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
+`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时，仅将 Agent 当前的 `runtime:'builtin' + providerId:'codex-sub'`（以及可读兼容的旧 `runtime:'codex' + source:'managed-provider'`）投影成 `runtime='codex'`、`source='managed-provider'`；显式 system Codex / Claude Code / Gemini Runtime 胜过遗留的 `codex-sub` 字段。
 
 每次 Rust Sidecar ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`；同一次 attempt 的既有进程复用校验与新进程 spawn 必须消费这个同一快照，不能在两者之间重读 Session/Agent 配置。Task 首次 materialize metadata 时，Node 以 live `SessionEngine.getRuntimeIdentity()` 和同一时刻的 live config snapshot 绑定实际进程身份，避免 Rust payload 与 Node 进程发生 TOCTOU 漂移。
 
