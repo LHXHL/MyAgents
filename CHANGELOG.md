@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Managed Codex 首轮不再抢跑未就绪的 MCP**：等待每个注入工具到达真实终态，临时 cancelled 后仍会观察后继 ready；对话页保留工作区工具配置开关，Runtime 尚未启动时也不会显示为空，Windows `npx` MCP 也使用正确 Node 启动。
+- **Managed Codex 新会话与工具启动保持正确身份**：新建工作区对话会在 Runtime 启动前继承 Agent 选择的订阅身份，不再因模型目录尚未加载而误判为 AgentSDK；等待每个注入工具到达真实终态，临时 cancelled 后仍会观察后继 ready，对话页也始终保留已启用的工具配置。切换到 system Codex、Claude Code 或 Gemini 后，后续新会话不会再被遗留的订阅字段拉回 Managed Codex；Windows `npx` MCP 同样使用正确 Node 启动。
 - **Grok 订阅验证恢复正常**：设置页验证通过 Global Sidecar 执行，不再创建或借用虚假的聊天 Session；凭据仍只由 Rust 管理。
 - **Gemini 模型发现不再触发隐藏登录或遗留进程**：未认证时直接提示先在终端登录；请求取消会停止共享发现，并有界清理临时进程树。
 - **IM 新会话与运行状态更可靠**：缺失或过期绑定可以安全轮换，桌面接管与首条 IM 消息保持顺序；runtime status 显示当前 Channel 的真实 uptime。

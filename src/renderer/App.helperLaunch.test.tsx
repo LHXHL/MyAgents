@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => {
     id: 'helper-agent',
     name: 'MA Helper',
     workspacePath: project.path,
+    providerId: undefined as string | undefined,
+    model: undefined as string | undefined,
     runtime: 'builtin',
     permissionMode: 'auto',
     reasoningEffort: undefined as string | undefined,
@@ -41,7 +43,10 @@ const mocks = vi.hoisted(() => {
     agent,
     provider,
     multiAgentRuntime: false,
-    resolveBuiltinSelection: vi.fn(() => ({ provider, model: 'mimo-v2.5-pro' })),
+    resolveBuiltinSelection: vi.fn((): { provider: typeof provider; model: string } | undefined => ({
+      provider,
+      model: 'mimo-v2.5-pro',
+    })),
     createSession: vi.fn(async () => ({
       id: 'prepared-managed-session',
       agentDir: project.path,
@@ -339,6 +344,9 @@ vi.mock('@/hooks/useConfig', () => ({
       projects: [mocks.project],
       agents: [mocks.agent],
       multiAgentRuntime: mocks.multiAgentRuntime,
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'installed', usable: true },
+      managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
       defaultPermissionMode: 'auto',
       teamSpaceEnabled: true,
     },
@@ -458,6 +466,8 @@ describe('App helper launch', () => {
     mocks.listeners.clear();
     mocks.sessionSidecarFetch.mockReset();
     mocks.agent.runtime = 'builtin';
+    mocks.agent.providerId = undefined;
+    mocks.agent.model = undefined;
     mocks.agent.permissionMode = 'auto';
     mocks.agent.reasoningEffort = undefined;
     mocks.agent.runtimeConfig = undefined;
@@ -571,6 +581,8 @@ describe('App helper launch', () => {
   });
 
   it('prepares managed Codex from the Agent product permission, not stale runtime permission', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.5';
     mocks.agent.runtimeConfig = {
       permissionMode: 'suggest',
       reasoningEffort: 'xhigh',
@@ -617,6 +629,8 @@ describe('App helper launch', () => {
   });
 
   it('keeps the readable legacy codex/managed-provider Agent identity on empty launch', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.5';
     mocks.agent.runtime = 'codex';
     mocks.agent.runtimeConfig = { source: 'managed-provider' };
     mocks.resolveBuiltinSelection.mockReturnValue({
@@ -636,6 +650,37 @@ describe('App helper launch', () => {
         expect.objectContaining({
           runtimeSource: 'managed-provider',
           permissionMode: 'auto-edit',
+          prepareForFirstUserMessage: true,
+        }),
+      );
+    });
+  });
+
+  it('prepares managed Codex from the Agent template before its runtime model catalog loads', async () => {
+    mocks.agent.providerId = CODEX_SUBSCRIPTION_PROVIDER_ID;
+    mocks.agent.model = 'gpt-5.6-sol';
+    mocks.resolveBuiltinSelection.mockReturnValue(undefined);
+
+    render(<App />);
+    await act(async () => {
+      latestLauncherProps().onLaunchProject(mocks.project);
+    });
+
+    await waitFor(() => {
+      expect(mocks.createSession).toHaveBeenCalledWith(
+        mocks.project.path,
+        'codex',
+        expect.objectContaining({
+          runtimeSource: 'managed-provider',
+          providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+          model: 'gpt-5.6-sol',
+          providerExecutionIdentity: expect.objectContaining({
+            kind: 'runtime-backed-provider',
+            providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+            runtime: 'codex',
+            runtimeSource: 'managed-provider',
+            model: 'gpt-5.6-sol',
+          }),
           prepareForFirstUserMessage: true,
         }),
       );

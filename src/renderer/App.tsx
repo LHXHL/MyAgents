@@ -102,6 +102,7 @@ import { listenWithCleanup } from '@/utils/tauriListen';
 import { migrateFloatingBallSessionBinding } from '@/floating-ball/sessionBinding';
 import { CUSTOM_EVENTS, createPendingSessionId, isPendingSessionId } from '../shared/constants';
 import { normalizeOfficialToolIds, type OfficialToolId } from '../shared/official-tools';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, getManagedCodexProviderReadiness } from '../shared/config-types';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import type { CapabilityInitialSelect } from '../shared/skillsTypes';
 import { ensureSelfAwarenessWorkspace, resolveBuiltinSelection, pairBuiltinSelection, isProviderAvailable } from '@/config/configService';
@@ -110,6 +111,7 @@ import type { SessionMetadata } from '@/api/sessionClient';
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import {
   agentUsesManagedCodexProvider,
+  createRuntimeBackedProviderIdentity,
   isRuntimeBackedProvider,
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
@@ -1768,26 +1770,19 @@ export default function App() {
         if (initialMessageHasExecutionSelection || !configForLaunchBirth) {
           return undefined;
         }
-        const effectiveAgentRuntime = resolveEffectiveRuntime(
-          agentForLaunchBirth?.runtime,
-          !!configForLaunchBirth.multiAgentRuntime,
-        );
-        if (effectiveAgentRuntime !== 'builtin'
-            && !agentUsesManagedCodexProvider(agentForLaunchBirth)) {
+        if (!agentUsesManagedCodexProvider(agentForLaunchBirth)
+            || !getManagedCodexProviderReadiness(configForLaunchBirth).selectable) {
           return undefined;
         }
-        const sel = resolveBuiltinSelection(
-          { agent: agentForLaunchBirth, workspace: project },
-          configForLaunchBirth,
-          appProvidersRef.current,
-          appApiKeysRef.current,
-          appProviderVerifyStatusRef.current,
-        );
-        if (!sel || !isRuntimeBackedProvider(sel.provider)) {
+        const model = normalizeStringSetting(agentForLaunchBirth?.model)
+          ?? normalizeStringSetting(project.model);
+        if (!model) {
           return undefined;
         }
-        const intent = toProviderExecutionIntent(sel.provider, sel.model);
-        return intent.kind === 'runtime-backed-provider' ? intent : undefined;
+        return createRuntimeBackedProviderIdentity({
+          providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+          model,
+        });
       })();
       const runtimeBackedProviderIdentity =
         initialMessage?.providerExecutionIdentity
@@ -1799,7 +1794,7 @@ export default function App() {
       // Rust must read runtime/runtimeSource/providerExecutionIdentity from
       // sessions.json before spawning, so create a real session metadata row before
       // ensureSessionSidecar. This covers both explicit initial-message launches
-      // and empty Launcher opens whose current Provider is Codex (订阅).
+      // and empty workspace opens whose Agent template uses Codex (订阅).
       let effectiveSessionId = createPendingSessionId(targetTabId);
       if (runtimeBackedProviderIdentity) {
         try {
