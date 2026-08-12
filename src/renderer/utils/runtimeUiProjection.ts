@@ -7,13 +7,6 @@ export function projectInputChromeRuntime(args: {
   return args.managedProviderRuntimeActive ? 'builtin' : args.currentRuntime;
 }
 
-export function projectInputCapabilityRuntime(args: {
-  currentRuntime: RuntimeType;
-  managedProviderRuntimeActive: boolean;
-}): RuntimeType {
-  return args.managedProviderRuntimeActive ? 'codex' : args.currentRuntime;
-}
-
 export function shouldUseExternalRuntimeInputControls(args: {
   currentRuntime: RuntimeType;
   managedProviderRuntimeActive: boolean;

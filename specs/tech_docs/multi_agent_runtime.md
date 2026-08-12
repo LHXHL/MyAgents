@@ -309,7 +309,7 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 
 斜杠菜单必须按 Session 的真实 Runtime 能力投影，不能按视觉 chrome 推断。`/goal` 是 MyAgents 自己的 runtime-neutral 客户端动作，所有 Runtime 都保留；工作区 Skill / Command 继续消费各自既有的能力快照。静态 `compact/context/cost/init/pr-comments/release-notes/review/security-review` 列表属于 Claude Agent SDK，只在 `runtime:'builtin'` 的 Session 展示。Managed Codex 即使为了产品一致性使用 builtin 输入 chrome，也不继承这份列表，而是仅额外投影已适配的原生 `/compact`；其他 external Runtime 隐藏全部 Claude SDK 系统指令。
 
-工具菜单遵守同一条 source-of-truth 规则：输入框的 `runtime` 只描述视觉与模型/权限控件，`capabilityRuntime` 决定 MCP 目录 authority。Managed Codex 保持 builtin provider chrome，但 MCP 数量与行只消费 `runtime_tool_catalog` 上报的 ready server，并按 external Runtime 目录只读展示；不得回退到 workspace 配置开关冒充已加载工具。
+工具菜单区分配置 authority 与 Runtime 状态：MyAgents 托管的 builtin / Managed Codex Session 都以 Product Session 的 workspace 配置提供候选项与开关；`runtime_tool_catalog` 只描述实际 Runtime 已加载的工具，不得在 Runtime 尚未启动或目录尚未上报时反向清空配置 UI。用户自行管理的 system-cli Runtime 不由 MyAgents 写入 MCP 配置，继续以 Runtime 目录只读展示。
 
 锁定的 Codex app-server `0.146.0` 中，`thread/compact/start` 与 `review/start` 分别提供原生压缩和审查 RPC，但两者都会创建 Codex 控制回合。当前仅 `compact` 已接入：Renderer 的 `/compact` 与上下文卡片按钮共用 `/api/session/compact`，route 只调用 SessionEngine facade；external Session owner 负责 idle admission、mutation lease、`chat:status`/`chat:system-status` 与排队消息恢复，Codex adapter 负责 RPC、control turn terminal 及隔离其 item/turn 事件，禁止把压缩写成用户/助手 transcript。RPC/timeout 等不确定失败会重启 runtime 进程边界，明确失败 terminal 则保留进程。`review` 尚未建立对应产品语义，继续隐藏；`context` 已由实时上下文指标承担只读展示但没有等价管理 RPC，`cost` 只有 token usage、没有费用语义，其余 Claude 系统指令没有可忠实映射的 Codex RPC。
 

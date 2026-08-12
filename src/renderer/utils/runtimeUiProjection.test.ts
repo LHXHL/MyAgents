@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  projectInputCapabilityRuntime,
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
   shouldShowBuiltinSdkSlashCommands,
@@ -18,17 +17,6 @@ describe('runtime UI projection', () => {
       currentRuntime: 'codex',
       managedProviderRuntimeActive: true,
     })).toBe(false);
-    expect(projectInputCapabilityRuntime({
-      currentRuntime: 'codex',
-      managedProviderRuntimeActive: true,
-    })).toBe('codex');
-  });
-
-  it('keeps the managed Codex capability owner during the pre-init builtin fallback', () => {
-    expect(projectInputCapabilityRuntime({
-      currentRuntime: 'builtin',
-      managedProviderRuntimeActive: true,
-    })).toBe('codex');
   });
 
   it('keeps user-managed CLI runtimes in external runtime controls', () => {
@@ -40,10 +28,6 @@ describe('runtime UI projection', () => {
       currentRuntime: 'codex',
       managedProviderRuntimeActive: false,
     })).toBe(true);
-    expect(projectInputCapabilityRuntime({
-      currentRuntime: 'codex',
-      managedProviderRuntimeActive: false,
-    })).toBe('codex');
   });
 
   it('only exposes Claude Agent SDK system slash commands to builtin Sessions', () => {
