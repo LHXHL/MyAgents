@@ -42,7 +42,11 @@ Sidecar、Plugin Bridge、MCP Server 与 CLI 共用应用内置的单一 Node.js
 
 ### Owner 与 authority 优先
 
-任何状态或资源只能有一个明确 owner 和一个权威来源。修复前先回答“谁创建、谁持久化、谁释放、并发时谁裁决”；不要用同步副本、额外 effect 或新 flag 掩盖 owner 错位。
+Owner 和 source of truth 必须针对具体事实、scope 与 lifecycle phase 定义，不能针对一个笼统的产品概念定义。同一产品概念可能同时存在 desired state、Session snapshot 中固化的 execution identity、当前 generation 的 effective runtime state，以及前端派生状态；它们分别回答不同问题，不能相互替代。
+
+后产生或更接近执行层的数据不会因此获得其他状态的写权限。跨表示的转换、比较或写回必须由对应 lifecycle owner 的既有入口裁决；多个进程或语言层需要执行同一判断时，先定义一份权威决策表，能共享 pure policy 就共享，否则用 parity tests 保证一致性。
+
+操作归属按其读写的产品状态和生命周期确定，不按其复用的 SDK、Sidecar 或 facade 确定。修改前回答“谁创建、谁持久化、谁可以修改、谁释放、并发时谁裁决”。
 
 ### Session、Sidecar 与 Tab
 
