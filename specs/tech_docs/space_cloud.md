@@ -42,7 +42,7 @@ Space 是 build-time capability：
 Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 - debug/test build 中运行时设置 `MYAGENTS_SPACE_MOCK_DATA=true` 时，`space_build_capability()` 返回可用能力，baseUrl 为 `https://space.mock.myagents.local`。release build 中该环境变量被忽略。
-- mock mode 仍然由 Rust Space 边界拥有：renderer 继续只调用 `src/renderer/api/spaceCloud.ts`，Tauri command/CLI helper 继续走 `src-tauri/src/space_cloud.rs`，不会在 React 组件里塞假数据。
+- mock mode 仍然由 Rust Space 边界拥有：renderer 继续只调用 `src/renderer/api/spaceCloud.ts`，Tauri command/CLI helper 继续进入 `src-tauri/src/space_cloud.rs` facade 或其明确 owner module，不会在 React 组件里塞假数据。
 - mock mode 使用进程内 deterministic 数据集，覆盖 Goals、Issues、评论、附件、Skills、Skill 文件、Registered Agents、IssueDelivery 与 claim。mutation 会更新同一份 in-memory state，便于验证创建/评论/状态/claim/complete 等交互。
 - mock mode 不读写真实 `~/.myagents/space/session.json`，不访问 `space.myagents.io`，不作为发布能力写入 CHANGELOG 或 Release notes。
 - mock mode 只用于 dev/test。生产构建仍以 `MYAGENTS_SPACE_ENABLED` / `MYAGENTS_SPACE_BASE_URL` / public client id 的 build-time capability 为准。
@@ -51,10 +51,14 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 | 层           | 文件                                                          | 职责                                                                                                                                                                                                                                                                                                                               |
 | ------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rust         | `src-tauri/src/space_cloud.rs`                                | account context + user credential authority、统一 Cloud response/auth policy、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                     |
+| Rust core    | `src-tauri/src/space_cloud.rs`                                | facade；account context + user credential authority、统一 Cloud response/auth policy、HTTP transport、session persistence，以及 Agent mutation→Connector wake、Attachment 下载 credential 选择等跨域编排                                                                                                                         |
+| Rust domains | `src-tauri/src/space_cloud/{registered_agents,delivery,cli,skills,attachments}.rs` | Registered Agent model/store/management、Connector + IssueDelivery、CLI actor/context、Skill package/install、Issue attachment IO；领域模块复用根 auth/client 与既有文件安全 helper，不建立平行 authority                                                                                                                          |
+| Rust tests   | `src-tauri/src/space_cloud/tests.rs`                          | account/session/auth、跨模块持久化、Prompt、Connector、CLI、Agent selector 与 Attachment 的契约回归；模块私有实现优先就近测试                                                                                                                                                                                                     |
 | Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper与结构化错误投影；不直接 `fetch` Space 服务、不裁决 credential validity                                                                                                                                                                                                                                  |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
 | CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/Goal/assignee discovery、Issue create/read/metadata update/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
+
+Rust 领域依赖固定为 `delivery → registered_agents`、`cli → registered_agents + attachments`，其余领域彼此独立并共同指向根 auth/client。`registered_agents` 不调用 `delivery`，`attachments` 也不选择 Registered Agent；需要同时修改 Agent 状态与 Connector schedule，或先裁决 User/Agent credential 再执行 Attachment 下载的 Tauri command，由根 facade 完成跨域编排。这些不是兼容 wrapper，而是显式的跨 owner 协调点。
 
 ### CLI Goal discovery 与 Issue 元数据更新
 

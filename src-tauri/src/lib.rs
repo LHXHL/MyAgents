@@ -685,27 +685,27 @@ pub fn run() {
             space_cloud::cmd_space_register_agent,
             space_cloud::cmd_space_update_registered_agent,
             space_cloud::cmd_space_update_registered_agent_avatar,
-            space_cloud::cmd_space_revoke_registered_agent,
-            space_cloud::cmd_space_list_local_agents,
-            space_cloud::cmd_space_poll_dispatches,
-            space_cloud::cmd_space_mark_dispatch_delivered,
-            space_cloud::cmd_space_poll_deliveries,
-            space_cloud::cmd_space_mark_delivery_delivered,
-            space_cloud::cmd_space_wake_connector,
-            space_cloud::cmd_space_process_deliveries_once,
-            space_cloud::cmd_space_process_dispatches_once,
-            space_cloud::cmd_space_install_skill,
-            space_cloud::cmd_space_cleanup_skill_export_packages,
-            space_cloud::cmd_space_export_skill_from_url,
-            space_cloud::cmd_space_inspect_skill_source,
-            space_cloud::cmd_space_list_local_skills,
-            space_cloud::cmd_space_upload_skill,
-            space_cloud::cmd_space_upload_issue_attachments,
-            space_cloud::cmd_space_inspect_attachment_drafts,
-            space_cloud::cmd_space_create_issue_with_attachments,
-            space_cloud::cmd_space_comment_issue_with_attachments,
+            space_cloud::registered_agents::cmd_space_revoke_registered_agent,
+            space_cloud::registered_agents::cmd_space_list_local_agents,
+            space_cloud::delivery::cmd_space_poll_dispatches,
+            space_cloud::delivery::cmd_space_mark_dispatch_delivered,
+            space_cloud::delivery::cmd_space_poll_deliveries,
+            space_cloud::delivery::cmd_space_mark_delivery_delivered,
+            space_cloud::delivery::cmd_space_wake_connector,
+            space_cloud::delivery::cmd_space_process_deliveries_once,
+            space_cloud::delivery::cmd_space_process_dispatches_once,
+            space_cloud::skills::cmd_space_install_skill,
+            space_cloud::skills::cmd_space_cleanup_skill_export_packages,
+            space_cloud::skills::cmd_space_export_skill_from_url,
+            space_cloud::skills::cmd_space_inspect_skill_source,
+            space_cloud::skills::cmd_space_list_local_skills,
+            space_cloud::skills::cmd_space_upload_skill,
+            space_cloud::attachments::cmd_space_upload_issue_attachments,
+            space_cloud::attachments::cmd_space_inspect_attachment_drafts,
+            space_cloud::attachments::cmd_space_create_issue_with_attachments,
+            space_cloud::attachments::cmd_space_comment_issue_with_attachments,
             space_cloud::cmd_space_download_attachment,
-            space_cloud::cmd_space_download_skill_zip,
+            space_cloud::skills::cmd_space_download_skill_zip,
             // PRD 0.2.35 — global "always-on" wake-lock toggle
             wake_lock::cmd_set_force_wake_lock,
         ])
@@ -756,7 +756,10 @@ pub fn run() {
             crash_artifact_retention::start_crash_artifact_retention_owner();
             tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
-            space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
+            space_cloud::delivery::start_space_connector(
+                app.handle().clone(),
+                space_sidecar_state,
+            );
 
             // Main window: programmatic creation so we can attach
             // `on_navigation` to block external top-frame navigation. The
