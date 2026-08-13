@@ -377,6 +377,8 @@
       "eyebrow": "Official Space",
       "title": "MyAgents 社区",
       "description": "使用 Google 账号进入官方 Space",
+      "reauthDescription": "{{name}} 的登录已失效，请重新登录以继续使用团队空间。",
+      "forgetAccount": "退出并清除本机账户",
       "waiting": "等待浏览器授权完成",
       "continueWithGoogle": "继续使用 Google",
       "returnHint": "授权完成后会自动回到 MyAgents。"

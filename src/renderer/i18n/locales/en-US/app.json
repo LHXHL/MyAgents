@@ -377,6 +377,8 @@
       "eyebrow": "Official Space",
       "title": "MyAgents Community",
       "description": "Sign in to the official Space with Google",
+      "reauthDescription": "The sign-in for {{name}} is no longer valid. Sign in again to continue.",
+      "forgetAccount": "Sign out and forget this account",
       "waiting": "Waiting for browser authorization",
       "continueWithGoogle": "Continue with Google",
       "returnHint": "MyAgents will reopen automatically after authorization."

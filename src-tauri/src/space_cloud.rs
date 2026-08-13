@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Write};
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use image::ImageEncoder;
 use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_DISPOSITION, USER_AGENT};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{ipc::Response as IpcResponse, AppHandle};
@@ -110,12 +111,11 @@ static SPACE_CLIENT_DEVICE_CONTEXT: LazyLock<SpaceClientDeviceContext> = LazyLoc
     }
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceSession {
     pub base_url: String,
-    pub session_token: String,
-    pub expires_at: Option<String>,
+    user_credential: SpaceUserCredential,
     pub user: Value,
     #[serde(default)]
     pub account_plan: Value,
@@ -128,12 +128,175 @@ pub struct SpaceSession {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum SpaceUserCredential {
+    Authenticated {
+        session_token: String,
+        expires_at: Option<String>,
+    },
+    ReauthRequired {
+        invalidated_session_binding_id: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpaceSessionWire {
+    base_url: String,
+    #[serde(default)]
+    user_credential: Option<SpaceUserCredential>,
+    #[serde(default)]
+    session_token: Option<String>,
+    #[serde(default)]
+    expires_at: Option<String>,
+    user: Value,
+    #[serde(default)]
+    account_plan: Value,
+    space: Value,
+    membership: Value,
+    #[serde(default)]
+    spaces: Vec<Value>,
+    #[serde(default)]
+    last_active_space_id: Option<String>,
+    updated_at: String,
+}
+
+impl<'de> Deserialize<'de> for SpaceSession {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SpaceSessionWire::deserialize(deserializer)?;
+        let user_credential = match (wire.user_credential, wire.session_token) {
+            (Some(credential), None) => credential,
+            (None, Some(session_token)) if !session_token.trim().is_empty() => {
+                SpaceUserCredential::Authenticated {
+                    session_token,
+                    expires_at: wire.expires_at,
+                }
+            }
+            (Some(_), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "Space session contains both canonical and legacy credentials",
+                ));
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "Space session is missing its user credential",
+                ));
+            }
+        };
+        Ok(Self {
+            base_url: wire.base_url,
+            user_credential,
+            user: wire.user,
+            account_plan: wire.account_plan,
+            space: wire.space,
+            membership: wire.membership,
+            spaces: wire.spaces,
+            last_active_space_id: wire.last_active_space_id,
+            updated_at: wire.updated_at,
+        })
+    }
+}
+
+impl SpaceSession {
+    pub(crate) fn authenticated(
+        account: SpaceAccountPublic,
+        session_token: String,
+        expires_at: Option<String>,
+    ) -> Self {
+        Self {
+            base_url: account.base_url,
+            user_credential: SpaceUserCredential::Authenticated {
+                session_token,
+                expires_at,
+            },
+            user: account.user,
+            account_plan: account.account_plan,
+            space: account.space,
+            membership: account.membership,
+            spaces: account.spaces,
+            last_active_space_id: account.last_active_space_id,
+            updated_at: account.updated_at,
+        }
+    }
+
+    fn expires_at(&self) -> Option<&str> {
+        match &self.user_credential {
+            SpaceUserCredential::Authenticated { expires_at, .. } => expires_at.as_deref(),
+            SpaceUserCredential::ReauthRequired { .. } => None,
+        }
+    }
+
+    fn session_binding_id(&self) -> String {
+        match &self.user_credential {
+            SpaceUserCredential::Authenticated { session_token, .. } => {
+                space_session_binding_id_for_token(&self.base_url, session_token)
+            }
+            SpaceUserCredential::ReauthRequired {
+                invalidated_session_binding_id,
+            } => invalidated_session_binding_id.clone(),
+        }
+    }
+
+    fn authenticated_token(&self) -> Option<&str> {
+        match &self.user_credential {
+            SpaceUserCredential::Authenticated { session_token, .. } => Some(session_token),
+            SpaceUserCredential::ReauthRequired { .. } => None,
+        }
+    }
+
+    fn invalidated_session_binding_id(&self) -> Option<&str> {
+        match &self.user_credential {
+            SpaceUserCredential::Authenticated { .. } => None,
+            SpaceUserCredential::ReauthRequired {
+                invalidated_session_binding_id,
+            } => Some(invalidated_session_binding_id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceSessionPublic {
     pub session_binding_id: String,
     pub base_url: String,
     pub expires_at: Option<String>,
+    pub user: Value,
+    pub account_plan: Value,
+    pub space: Value,
+    pub membership: Value,
+    pub spaces: Vec<Value>,
+    pub last_active_space_id: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SpaceSessionView {
+    Authenticated {
+        session: SpaceSessionPublic,
+    },
+    ReauthRequired {
+        account: SpaceAccountPublic,
+        invalidated_session_binding_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceAccountPublic {
+    pub base_url: String,
     pub user: Value,
     pub account_plan: Value,
     pub space: Value,
@@ -184,6 +347,7 @@ struct SpaceCliContext {
     workspace_id: Option<String>,
     workspace_path: PathBuf,
     session_binding: SpaceCliSessionBinding,
+    user_session: Option<AuthenticatedSpaceSession>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +374,50 @@ struct SpaceRuntimeScope {
     data_dir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct AuthenticatedSpaceSession {
+    account: SpaceSession,
+    session_token: String,
+    session_binding_id: String,
+    session_path: PathBuf,
+}
+
+impl AuthenticatedSpaceSession {
+    fn from_account(account: SpaceSession, session_path: PathBuf) -> Result<Self, String> {
+        let session_token = account
+            .authenticated_token()
+            .ok_or_else(|| "SPACE_REAUTH_REQUIRED: MyAgents Space login is required.".to_string())?
+            .to_string();
+        let session_binding_id = account.session_binding_id();
+        Ok(Self {
+            account,
+            session_token,
+            session_binding_id,
+            session_path,
+        })
+    }
+
+    fn session_token(&self) -> &str {
+        &self.session_token
+    }
+
+    fn session_binding_id(&self) -> &str {
+        &self.session_binding_id
+    }
+
+    fn session_path(&self) -> &Path {
+        &self.session_path
+    }
+}
+
+impl Deref for AuthenticatedSpaceSession {
+    type Target = SpaceSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.account
+    }
+}
+
 impl SpaceEnvironment {
     fn config_value(self) -> &'static str {
         match self {
@@ -221,11 +429,12 @@ impl SpaceEnvironment {
 
 impl From<SpaceSession> for SpaceSessionPublic {
     fn from(session: SpaceSession) -> Self {
-        let session_binding_id = space_session_binding_id(&session);
+        let session_binding_id = session.session_binding_id();
+        let expires_at = session.expires_at().map(ToString::to_string);
         Self {
             session_binding_id,
-            base_url: session.base_url,
-            expires_at: session.expires_at,
+            base_url: session.base_url.clone(),
+            expires_at,
             user: session.user,
             account_plan: session.account_plan,
             space: session.space,
@@ -233,6 +442,32 @@ impl From<SpaceSession> for SpaceSessionPublic {
             spaces: session.spaces,
             last_active_space_id: session.last_active_space_id,
             updated_at: session.updated_at,
+        }
+    }
+}
+
+impl From<SpaceSession> for SpaceSessionView {
+    fn from(session: SpaceSession) -> Self {
+        if let Some(invalidated_session_binding_id) = session
+            .invalidated_session_binding_id()
+            .map(ToString::to_string)
+        {
+            return Self::ReauthRequired {
+                account: SpaceAccountPublic {
+                    base_url: session.base_url,
+                    user: session.user,
+                    account_plan: session.account_plan,
+                    space: session.space,
+                    membership: session.membership,
+                    spaces: session.spaces,
+                    last_active_space_id: session.last_active_space_id,
+                    updated_at: session.updated_at,
+                },
+                invalidated_session_binding_id,
+            };
+        }
+        Self::Authenticated {
+            session: session.into(),
         }
     }
 }
@@ -1056,6 +1291,119 @@ struct CloudEnvelope<T> {
     limit: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SpaceCredentialKind {
+    UserSession,
+    RegisteredAgent,
+}
+
+fn should_require_space_reauth(
+    status: reqwest::StatusCode,
+    credential_kind: SpaceCredentialKind,
+) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED
+        && credential_kind == SpaceCredentialKind::UserSession
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCommandError {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_kind: Option<SpaceCredentialKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_binding_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_hint: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quota: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<Value>,
+}
+
+type SpaceCommandResult<T> = Result<T, SpaceCommandError>;
+
+impl SpaceCommandError {
+    fn local(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            cloud_code: None,
+            http_status: None,
+            request_id: None,
+            retryable: false,
+            credential_kind: None,
+            session_binding_id: None,
+            recovery_hint: None,
+            quota: None,
+            usage: None,
+            limit: None,
+        }
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self {
+            retryable: true,
+            ..Self::local("SPACE_NETWORK_ERROR", message)
+        }
+    }
+}
+
+impl std::fmt::Display for SpaceCommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)?;
+        if let Some(request_id) = self.request_id.as_deref() {
+            write!(formatter, " [requestId={request_id}]")?;
+        }
+        if let Some(session_binding_id) = self.session_binding_id.as_deref() {
+            write!(formatter, " [sessionBindingId={session_binding_id}]")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SpaceCommandError {}
+
+impl From<String> for SpaceCommandError {
+    fn from(message: String) -> Self {
+        let code = message
+            .split_once(':')
+            .map(|(candidate, _)| candidate.trim())
+            .filter(|candidate| {
+                !candidate.is_empty()
+                    && candidate
+                        .chars()
+                        .all(|character| character.is_ascii_uppercase() || character == '_')
+            })
+            .unwrap_or("SPACE_LOCAL_ERROR")
+            .to_string();
+        Self::local(code, message)
+    }
+}
+
+impl From<&str> for SpaceCommandError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl From<SpaceCommandError> for String {
+    fn from(error: SpaceCommandError) -> Self {
+        error.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpaceDeliveryLogFile {
@@ -1532,7 +1880,7 @@ pub async fn cmd_space_get_capability() -> Result<SpaceBuildCapability, String> 
 }
 
 #[tauri::command]
-pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, String> {
+pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionView>, String> {
     if crate::space_cloud_mock::is_enabled() {
         return Ok(Some(crate::space_cloud_mock::session().into()));
     }
@@ -1540,19 +1888,28 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
     let Some(session) = read_current_session()? else {
         return Ok(None);
     };
+    if session.invalidated_session_binding_id().is_some() {
+        return Ok(Some(session.into()));
+    }
+    let authenticated = AuthenticatedSpaceSession::from_account(session, session_path()?)?;
     let identity = current_device_identity()?;
-    spawn_space_user_device_upsert(session.clone(), identity);
-    match refresh_session_from_cloud(&session).await {
+    spawn_space_user_device_upsert(authenticated.clone(), identity);
+    match refresh_session_from_cloud(&authenticated).await {
         Ok(refreshed) => {
             let committed = commit_refreshed_session(refreshed).await?;
-            Ok(Some(committed.into()))
+            Ok(Some(SpaceSessionView::from(committed)))
         }
         Err(error) => {
+            if error.code == "SPACE_SESSION_STATE_WRITE_FAILED" {
+                return Err(error.into());
+            }
             ulog_warn!(
                 "[space] failed to refresh /api/me session snapshot: {}",
                 error
             );
-            Ok(Some(session.into()))
+            let current = read_session_from_path(authenticated.session_path())?
+                .ok_or_else(|| "Space session changed while refresh was in flight".to_string())?;
+            Ok(Some(current.into()))
         }
     }
 }
@@ -1609,6 +1966,10 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
     let capability = ensure_space_available()?;
     let base_url = capability_base_url(&capability)?;
     let client = http_client()?;
+    let session_path = session_path()?;
+    let expected_session_binding_id = read_session_from_path(&session_path)?
+        .as_ref()
+        .map(SpaceSession::session_binding_id);
     let path = format!(
         "/api/auth/desktop/poll?token={}",
         url_component(&input.login_token)
@@ -1617,7 +1978,7 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
         with_space_client_context_headers(client.get(api_url(&base_url, &path)?), &capability)
             .send()
             .await
-            .map_err(|e| format!("Space auth poll failed: {}", e))?;
+            .map_err(|_| "Space auth poll request failed".to_string())?;
     let mut data = parse_cloud_data::<Value>(response).await?;
     if data.get("status").and_then(Value::as_str) == Some("done") {
         let token = data
@@ -1625,28 +1986,37 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
             .and_then(Value::as_str)
             .ok_or_else(|| "Space auth completed without session token".to_string())?
             .to_string();
-        let session = SpaceSession {
-            base_url,
-            session_token: token,
-            expires_at: data
-                .get("expiresAt")
+        let session = SpaceSession::authenticated(
+            SpaceAccountPublic {
+                base_url,
+                user: data.get("user").cloned().unwrap_or(Value::Null),
+                account_plan: data.get("accountPlan").cloned().unwrap_or(Value::Null),
+                space: data.get("space").cloned().unwrap_or(Value::Null),
+                membership: data.get("membership").cloned().unwrap_or(Value::Null),
+                spaces: data
+                    .get("spaces")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+                last_active_space_id: None,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+            token,
+            data.get("expiresAt")
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
-            user: data.get("user").cloned().unwrap_or(Value::Null),
-            account_plan: data.get("accountPlan").cloned().unwrap_or(Value::Null),
-            space: data.get("space").cloned().unwrap_or(Value::Null),
-            membership: data.get("membership").cloned().unwrap_or(Value::Null),
-            spaces: data
-                .get("spaces")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-            last_active_space_id: None,
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        };
-        write_private_json(&session_path()?, &session)?;
-        let identity = current_device_identity()?;
-        spawn_space_user_device_upsert(session, identity);
+        );
+        if commit_authenticated_session_if_unchanged_at_path(
+            &session_path,
+            expected_session_binding_id.as_deref(),
+            &session,
+        )? {
+            let identity = current_device_identity()?;
+            spawn_space_user_device_upsert(
+                AuthenticatedSpaceSession::from_account(session, session_path)?,
+                identity,
+            );
+        }
         if let Some(map) = data.as_object_mut() {
             map.remove("sessionToken");
         }
@@ -1666,7 +2036,7 @@ pub async fn cmd_space_auth_ack(input: SpaceAuthPollInput) -> Result<(), String>
     )
     .send()
     .await
-    .map_err(|e| format!("Space auth ack failed: {}", e))?;
+    .map_err(|_| "Space auth acknowledgement failed".to_string())?;
     let _ = parse_cloud_data::<Value>(response).await?;
     Ok(())
 }
@@ -1694,12 +2064,15 @@ pub async fn cmd_space_logout() -> Result<(), String> {
         });
 
     if let Some(session) = session_to_revoke {
+        let Some(session_token) = session.authenticated_token() else {
+            return Ok(());
+        };
         match (http_client(), api_url(&session.base_url, "/api/logout")) {
             (Ok(client), Ok(url)) => {
                 let _ = with_space_client_context_headers(
                     client
                         .post(url)
-                        .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
+                        .header(AUTHORIZATION, format!("Bearer {}", session_token)),
                     &capability,
                 )
                 .send()
@@ -1720,72 +2093,54 @@ pub async fn cmd_space_logout() -> Result<(), String> {
 #[tauri::command]
 pub async fn cmd_space_update_profile(
     input: SpaceUpdateProfileInput,
-) -> Result<SpaceSessionPublic, String> {
+) -> SpaceCommandResult<SpaceSessionPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::update_profile(input);
+        return crate::space_cloud_mock::update_profile(input).map_err(Into::into);
     }
     ensure_space_available()?;
     let session = require_session()?;
     let form = profile_form(input)?;
-    let data = authorized_multipart_data_request(
-        &session.base_url,
-        "/api/me/profile",
-        &session.session_token,
-        form,
-    )
-    .await?;
+    let data = authorized_multipart_data_request(&session, "/api/me/profile", form).await?;
     let refreshed = session_from_me_data(&session, &data);
     Ok(commit_refreshed_session(refreshed).await?.into())
 }
 
 #[tauri::command]
-pub async fn cmd_space_get_avatar_presets() -> Result<Value, String> {
+pub async fn cmd_space_get_avatar_presets() -> SpaceCommandResult<Value> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::avatar_presets();
+        return crate::space_cloud_mock::avatar_presets().map_err(Into::into);
     }
     ensure_space_available()?;
     let session = require_session()?;
-    authorized_json_data_request(
-        &session.base_url,
-        "/api/avatar-presets",
-        &session.session_token,
-        reqwest::Method::GET,
-        None,
-    )
-    .await
+    authorized_json_data_request(&session, "/api/avatar-presets", reqwest::Method::GET, None).await
 }
 
 #[tauri::command]
 pub async fn cmd_space_update_space(
     input: SpaceUpdateSpaceInput,
-) -> Result<SpaceSessionPublic, String> {
+) -> SpaceCommandResult<SpaceSessionPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::update_space(input);
+        return crate::space_cloud_mock::update_space(input).map_err(Into::into);
     }
     ensure_space_available()?;
     let session = require_session()?;
     let space_id = input.space_id.trim().to_string();
     if space_id.is_empty() {
-        return Err("Space id is required".to_string());
+        return Err("Space id is required".into());
     }
     let form = space_form(input)?;
     let path = format!("/api/spaces/{}", url_component(&space_id));
-    authorized_multipart_method_data_request(
-        reqwest::Method::PATCH,
-        &session.base_url,
-        &path,
-        &session.session_token,
-        form,
-    )
-    .await?;
+    authorized_multipart_method_data_request(reqwest::Method::PATCH, &session, &path, form).await?;
     let refreshed = refresh_session_from_cloud(&session).await?;
     Ok(commit_refreshed_session(refreshed).await?.into())
 }
 
 #[tauri::command]
-pub async fn cmd_space_api_request(input: SpaceApiRequestInput) -> Result<Value, String> {
+pub async fn cmd_space_api_request(
+    input: SpaceApiRequestInput,
+) -> Result<Value, SpaceCommandError> {
     let method = reqwest::Method::from_bytes(input.method.to_uppercase().as_bytes())
-        .map_err(|_| "Invalid HTTP method".to_string())?;
+        .map_err(|_| SpaceCommandError::local("SPACE_METHOD_INVALID", "Invalid HTTP method"))?;
     if !matches!(
         method,
         reqwest::Method::GET
@@ -1794,18 +2149,24 @@ pub async fn cmd_space_api_request(input: SpaceApiRequestInput) -> Result<Value,
             | reqwest::Method::PATCH
             | reqwest::Method::DELETE
     ) {
-        return Err("Unsupported Space API method".to_string());
+        return Err(SpaceCommandError::local(
+            "SPACE_METHOD_UNSUPPORTED",
+            "Unsupported Space API method",
+        ));
     }
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::api_request(input);
+        return crate::space_cloud_mock::api_request(input).map_err(Into::into);
     }
-    ensure_space_available()?;
-    let session = require_session()?;
-    let client = http_client()?;
+    ensure_space_available().map_err(SpaceCommandError::from)?;
+    let session = require_session().map_err(SpaceCommandError::from)?;
+    let client = http_client().map_err(SpaceCommandError::from)?;
     let mut req = with_space_client_context_headers(
         client
-            .request(method, api_url(&session.base_url, &input.path)?)
-            .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
+            .request(
+                method,
+                api_url(&session.base_url, &input.path).map_err(SpaceCommandError::from)?,
+            )
+            .header(AUTHORIZATION, format!("Bearer {}", session.session_token())),
         &space_build_capability(),
     );
     if let Some(body) = input.body {
@@ -1814,19 +2175,17 @@ pub async fn cmd_space_api_request(input: SpaceApiRequestInput) -> Result<Value,
     let response = req
         .send()
         .await
-        .map_err(|e| format!("Space API request failed: {}", e))?;
-    response
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("Invalid Space API response: {}", e))
+        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
+    let data = parse_cloud_cli_data(response, Some(&session)).await?;
+    Ok(serde_json::json!({ "success": true, "data": data }))
 }
 
 #[tauri::command]
 pub async fn cmd_space_register_agent(
     input: SpaceRegisterAgentInput,
-) -> Result<LocalRegisteredAgentPublic, String> {
+) -> SpaceCommandResult<LocalRegisteredAgentPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::register_agent(input);
+        return crate::space_cloud_mock::register_agent(input).map_err(Into::into);
     }
     ensure_space_available()?;
     let workspace_root = validate_workspace_root(&input.workspace_path)?;
@@ -1837,12 +2196,12 @@ pub async fn cmd_space_register_agent(
     try_upsert_space_user_device(&session, &identity).await;
     let display_name = input.display_name.trim();
     if display_name.is_empty() {
-        return Err("displayName is required".to_string());
+        return Err("displayName is required".into());
     }
     let instruction = normalize_registered_agent_instruction(&input.instruction)?;
     let goal_id = input.goal_id.trim();
     if goal_id.is_empty() {
-        return Err("goalId is required".to_string());
+        return Err("goalId is required".into());
     }
     let state_filter = normalize_agent_state_filter(input.state_filter);
     let goal_md = input.goal_md.clone();
@@ -1874,14 +2233,8 @@ pub async fn cmd_space_register_agent(
         "/api/spaces/{}/registered-agents",
         session_space_segment(&session)
     );
-    let data = authorized_json_data_request(
-        &session.base_url,
-        &path,
-        &session.session_token,
-        reqwest::Method::POST,
-        Some(body),
-    )
-    .await?;
+    let data =
+        authorized_json_data_request(&session, &path, reqwest::Method::POST, Some(body)).await?;
     let registered = data
         .get("registeredAgent")
         .cloned()
@@ -1968,7 +2321,7 @@ pub async fn cmd_space_register_agent(
 #[tauri::command]
 pub async fn cmd_space_update_registered_agent(
     input: SpaceUpdateRegisteredAgentInput,
-) -> Result<LocalRegisteredAgentPublic, String> {
+) -> SpaceCommandResult<LocalRegisteredAgentPublic> {
     ensure_space_available()?;
     let session = require_session()?;
     let identity = current_device_identity()?;
@@ -2009,7 +2362,7 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(display_name) = input.display_name {
         let display_name = display_name.trim();
         if display_name.is_empty() {
-            return Err("displayName is required".to_string());
+            return Err("displayName is required".into());
         }
         body.insert(
             "displayName".to_string(),
@@ -2025,7 +2378,7 @@ pub async fn cmd_space_update_registered_agent(
             "expectedInstructionRevision is required when updating instruction".to_string()
         })?;
         if expected_revision < 0 {
-            return Err("expectedInstructionRevision must be non-negative".to_string());
+            return Err("expectedInstructionRevision must be non-negative".into());
         }
         body.insert(
             "instruction".to_string(),
@@ -2039,19 +2392,15 @@ pub async fn cmd_space_update_registered_agent(
             agent.instruction = Some(instruction);
         }
     } else if input.expected_instruction_revision.is_some() {
-        return Err(
-            "instruction is required when expectedInstructionRevision is provided".to_string(),
-        );
+        return Err("instruction is required when expectedInstructionRevision is provided".into());
     }
     if let Some(workspace_id) = input.workspace_id {
         if !can_update_local_binding {
-            return Err(
-                "workspace binding can only be changed from the registered device".to_string(),
-            );
+            return Err("workspace binding can only be changed from the registered device".into());
         }
         let workspace_id = workspace_id.trim();
         if workspace_id.is_empty() {
-            return Err("workspaceId is required".to_string());
+            return Err("workspaceId is required".into());
         }
         let local_agent_id = stable_local_agent_id(workspace_id);
         body.insert(
@@ -2070,9 +2419,7 @@ pub async fn cmd_space_update_registered_agent(
     }
     if let Some(workspace_path) = input.workspace_path {
         if !can_update_local_binding {
-            return Err(
-                "workspace binding can only be changed from the registered device".to_string(),
-            );
+            return Err("workspace binding can only be changed from the registered device".into());
         }
         let workspace_root = validate_workspace_root(&workspace_path)?;
         let workspace_path = workspace_root.to_string_lossy().to_string();
@@ -2086,9 +2433,7 @@ pub async fn cmd_space_update_registered_agent(
     }
     if let Some(workspace_label) = input.workspace_label {
         if !can_update_local_binding {
-            return Err(
-                "workspace binding can only be changed from the registered device".to_string(),
-            );
+            return Err("workspace binding can only be changed from the registered device".into());
         }
         let workspace_label = workspace_label.trim();
         if workspace_label.is_empty() {
@@ -2109,7 +2454,7 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(goal_id) = input.goal_id {
         let goal_id = goal_id.trim();
         if goal_id.is_empty() {
-            return Err("goalId is required".to_string());
+            return Err("goalId is required".into());
         }
         if agent.as_ref().and_then(|agent| agent.goal_id.as_deref()) != Some(goal_id) {
             if let Some(agent) = agent.as_mut() {
@@ -2135,7 +2480,7 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(goal_md) = input.goal_md {
         let goal_md = goal_md.trim();
         if goal_md.is_empty() {
-            return Err("goalMd is required".to_string());
+            return Err("goalMd is required".into());
         }
         body.insert("goalMd".to_string(), Value::String(goal_md.to_string()));
         if let Some(agent) = agent.as_mut() {
@@ -2145,7 +2490,7 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(status) = input.status {
         let status = status.trim();
         if !matches!(status, "active" | "disabled") {
-            return Err("Registered Agent status must be active or disabled".to_string());
+            return Err("Registered Agent status must be active or disabled".into());
         }
         body.insert("status".to_string(), Value::String(status.to_string()));
         if let Some(agent) = agent.as_mut() {
@@ -2166,7 +2511,7 @@ pub async fn cmd_space_update_registered_agent(
 
     if body.is_empty() {
         let Some(agent) = agent else {
-            return Err("No Registered Agent changes provided".to_string());
+            return Err("No Registered Agent changes provided".into());
         };
         let merged = merge_managed_agent_snapshot_at_path(agent, registered_agents_path()?)?;
         wake_space_connector_for_agent(&merged.id);
@@ -2174,9 +2519,8 @@ pub async fn cmd_space_update_registered_agent(
     }
 
     let data = authorized_json_data_request(
-        &session.base_url,
+        &session,
         &format!("/api/registered-agents/{}", url_component(&input.id)),
-        &session.session_token,
         reqwest::Method::PATCH,
         Some(Value::Object(body)),
     )
@@ -2242,15 +2586,20 @@ pub async fn cmd_space_update_registered_agent(
     let registered = data
         .get("registeredAgent")
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
-    local_registered_agent_public_from_cloud(&session, registered, subscription, None)
+    Ok(local_registered_agent_public_from_cloud(
+        &session,
+        registered,
+        subscription,
+        None,
+    )?)
 }
 
 #[tauri::command]
 pub async fn cmd_space_update_registered_agent_avatar(
     input: SpaceUpdateRegisteredAgentAvatarInput,
-) -> Result<LocalRegisteredAgentPublic, String> {
+) -> SpaceCommandResult<LocalRegisteredAgentPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::update_registered_agent_avatar(input);
+        return crate::space_cloud_mock::update_registered_agent_avatar(input).map_err(Into::into);
     }
     ensure_space_available()?;
     let session = require_session()?;
@@ -2260,9 +2609,8 @@ pub async fn cmd_space_update_registered_agent_avatar(
         .find(|agent| agent.id == input.id);
     let form = registered_agent_avatar_form(&input)?;
     let data = authorized_multipart_data_request(
-        &session.base_url,
+        &session,
         &format!("/api/registered-agents/{}/avatar", url_component(&input.id)),
-        &session.session_token,
         form,
     )
     .await?;
@@ -2278,20 +2626,20 @@ pub async fn cmd_space_update_registered_agent_avatar(
         wake_space_connector_for_agent(&merged.id);
         return Ok(merged.into());
     }
-    local_registered_agent_public_from_cloud(
+    Ok(local_registered_agent_public_from_cloud(
         &session,
         registered,
         first_subscription_from_data(&data),
         None,
-    )
+    )?)
 }
 
 #[tauri::command]
 pub async fn cmd_space_revoke_registered_agent(
     input: SpaceRegisteredAgentIdInput,
-) -> Result<LocalRegisteredAgentPublic, String> {
+) -> SpaceCommandResult<LocalRegisteredAgentPublic> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::revoke_agent(&input.id);
+        return crate::space_cloud_mock::revoke_agent(&input.id).map_err(Into::into);
     }
     ensure_space_available()?;
     let session = require_session()?;
@@ -2300,9 +2648,8 @@ pub async fn cmd_space_revoke_registered_agent(
         .into_iter()
         .find(|agent| agent.id == input.id);
     let data = authorized_json_data_request(
-        &session.base_url,
+        &session,
         &format!("/api/registered-agents/{}/revoke", url_component(&input.id)),
-        &session.session_token,
         reqwest::Method::POST,
         None,
     )
@@ -2322,12 +2669,12 @@ pub async fn cmd_space_revoke_registered_agent(
     let registered = data
         .get("registeredAgent")
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
-    local_registered_agent_public_from_cloud(
+    Ok(local_registered_agent_public_from_cloud(
         &session,
         registered,
         first_subscription_from_data(&data),
         None,
-    )
+    )?)
 }
 
 #[tauri::command]
@@ -2451,7 +2798,7 @@ pub async fn cmd_space_process_dispatches_once(
 #[tauri::command]
 pub async fn cmd_space_install_skill(
     input: SpaceInstallSkillInput,
-) -> Result<SpaceInstallSkillResult, String> {
+) -> SpaceCommandResult<SpaceInstallSkillResult> {
     let session = require_session()?;
     let install_root = match input.target {
         SpaceSkillInstallTarget::Global => {
@@ -2476,20 +2823,16 @@ pub async fn cmd_space_install_skill(
     let base_name = safe_local_name(&input.skill_name);
     let target_dir = install_root.join(&base_name);
     if skill_install_target_exists(&target_dir)? && !input.overwrite {
-        return Err(SKILL_INSTALL_CONFLICT_ERROR.to_string());
+        return Err(SKILL_INSTALL_CONFLICT_ERROR.into());
     }
 
     let bytes = authorized_bytes_request(
-        &session.base_url,
+        &session,
         &format!("/api/skills/{}/package.zip", url_component(&input.skill_id)),
-        &session.session_token,
     )
     .await?;
     if bytes.len() > MAX_SKILL_ZIP_BYTES {
-        return Err(format!(
-            "Skill package exceeds {} bytes",
-            MAX_SKILL_ZIP_BYTES
-        ));
+        return Err(format!("Skill package exceeds {} bytes", MAX_SKILL_ZIP_BYTES).into());
     }
     let staging_dir = install_root.join(format!(
         ".{}.myagents-installing-{}",
@@ -2500,7 +2843,7 @@ pub async fn cmd_space_install_skill(
         .map_err(|e| format!("Failed to create skill staging dir: {}", e))?;
     if let Err(error) = extract_skill_zip(&bytes, &staging_dir) {
         let _ = fs::remove_dir_all(&staging_dir);
-        return Err(error);
+        return Err(error.into());
     }
     let commit_lock = install_root.join(format!(".{base_name}.myagents-install.lock"));
     let commit_staging = staging_dir.clone();
@@ -2522,7 +2865,7 @@ pub async fn cmd_space_install_skill(
     .and_then(|result| result);
     if let Err(error) = commit_result {
         let _ = remove_skill_install_entry(&staging_dir);
-        return Err(error);
+        return Err(error.into());
     }
     let target = match input.target {
         SpaceSkillInstallTarget::Global => "global",
@@ -2654,9 +2997,9 @@ fn add_skill_source_form_fields(
 }
 
 #[tauri::command]
-pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
+pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> SpaceCommandResult<Value> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::upload_skill(input);
+        return crate::space_cloud_mock::upload_skill(input).map_err(Into::into);
     }
     let session = require_session()?;
     let source_path = input.file_path.trim().to_string();
@@ -2682,9 +3025,7 @@ pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Valu
     } else {
         format!("/api/spaces/{}/skills", session_space_segment(&session))
     };
-    let result =
-        authorized_multipart_data_request(&session.base_url, &path, &session.session_token, form)
-            .await;
+    let result = authorized_multipart_data_request(&session, &path, form).await;
     if result.is_ok() {
         cleanup_skill_export_path(&source_path)?;
     }
@@ -2860,14 +3201,14 @@ pub async fn cmd_space_inspect_attachment_drafts(
 #[tauri::command]
 pub async fn cmd_space_upload_issue_attachments(
     input: SpaceUploadIssueAttachmentsInput,
-) -> Result<Value, String> {
+) -> SpaceCommandResult<Value> {
     let issue_id = input.issue_id.trim();
     if issue_id.is_empty() {
-        return Err("issueId is required".to_string());
+        return Err("issueId is required".into());
     }
     let attachments = prepare_gui_attachments(&input.file_paths)?;
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::upload_issue_attachments(
+        return Ok(crate::space_cloud_mock::upload_issue_attachments(
             SpaceUploadIssueAttachmentsInput {
                 issue_id: input.issue_id,
                 file_paths: attachments
@@ -2875,14 +3216,13 @@ pub async fn cmd_space_upload_issue_attachments(
                     .map(|attachment| attachment.path.to_string_lossy().to_string())
                     .collect(),
             },
-        );
+        )?);
     }
     let session = require_session()?;
     let form = attachment_form(serde_json::json!({}), attachments)?;
     authorized_multipart_data_request(
-        &session.base_url,
+        &session,
         &format!("/api/issues/{}/attachments", url_component(issue_id)),
-        &session.session_token,
         form,
     )
     .await
@@ -2891,19 +3231,19 @@ pub async fn cmd_space_upload_issue_attachments(
 #[tauri::command]
 pub async fn cmd_space_create_issue_with_attachments(
     input: SpaceCreateIssueWithAttachmentsInput,
-) -> Result<Value, String> {
+) -> SpaceCommandResult<Value> {
     let session = require_session()?;
     let space_id = input.space_id.trim();
     let title = input.title.trim();
     let body = input.body.trim();
     if space_id.is_empty() {
-        return Err("Space id is required".to_string());
+        return Err("Space id is required".into());
     }
     if title.is_empty() {
-        return Err("Issue title is required".to_string());
+        return Err("Issue title is required".into());
     }
     if body.is_empty() {
-        return Err("Issue body is required".to_string());
+        return Err("Issue body is required".into());
     }
     let mut payload = serde_json::json!({
         "title": title,
@@ -2915,66 +3255,54 @@ pub async fn cmd_space_create_issue_with_attachments(
     });
     let path = format!("/api/spaces/{}/issues", url_component(space_id));
     if input.file_paths.is_empty() {
-        return authorized_json_data_request(
-            &session.base_url,
-            &path,
-            &session.session_token,
-            reqwest::Method::POST,
-            Some(payload),
-        )
-        .await;
+        return authorized_json_data_request(&session, &path, reqwest::Method::POST, Some(payload))
+            .await;
     }
     let attachments = prepare_gui_attachments(&input.file_paths)?;
     if crate::space_cloud_mock::is_enabled() {
         payload["attachments"] = Value::Array(mock_attachment_metadata(&attachments));
-        return crate::space_cloud_mock::api_data_request_with_token(
+        return Ok(crate::space_cloud_mock::api_data_request_with_token(
             "POST",
             &path,
-            Some(&session.session_token),
+            Some(session.session_token()),
             Some(payload),
-        );
+        )?);
     }
     let form = attachment_form(payload, attachments)?;
-    authorized_multipart_data_request(&session.base_url, &path, &session.session_token, form).await
+    authorized_multipart_data_request(&session, &path, form).await
 }
 
 #[tauri::command]
 pub async fn cmd_space_comment_issue_with_attachments(
     input: SpaceCommentIssueWithAttachmentsInput,
-) -> Result<Value, String> {
+) -> SpaceCommandResult<Value> {
     let session = require_session()?;
     let issue_id = input.issue_id.trim();
     let body = input.body.trim();
     if issue_id.is_empty() {
-        return Err("Issue id is required".to_string());
+        return Err("Issue id is required".into());
     }
     if body.is_empty() && input.file_paths.is_empty() {
-        return Err("Comment text or at least one attachment is required".to_string());
+        return Err("Comment text or at least one attachment is required".into());
     }
     let mut payload = serde_json::json!({ "body": body });
     let path = format!("/api/issues/{}/comments", url_component(issue_id));
     if input.file_paths.is_empty() {
-        return authorized_json_data_request(
-            &session.base_url,
-            &path,
-            &session.session_token,
-            reqwest::Method::POST,
-            Some(payload),
-        )
-        .await;
+        return authorized_json_data_request(&session, &path, reqwest::Method::POST, Some(payload))
+            .await;
     }
     let attachments = prepare_gui_attachments(&input.file_paths)?;
     if crate::space_cloud_mock::is_enabled() {
         payload["attachments"] = Value::Array(mock_attachment_metadata(&attachments));
-        return crate::space_cloud_mock::api_data_request_with_token(
+        return Ok(crate::space_cloud_mock::api_data_request_with_token(
             "POST",
             &path,
-            Some(&session.session_token),
+            Some(session.session_token()),
             Some(payload),
-        );
+        )?);
     }
     let form = attachment_form(payload, attachments)?;
-    authorized_multipart_data_request(&session.base_url, &path, &session.session_token, form).await
+    authorized_multipart_data_request(&session, &path, form).await
 }
 
 fn attachment_mime_type(path: &Path) -> &'static str {
@@ -3017,33 +3345,28 @@ fn cli_attachment_form(
 #[tauri::command]
 pub async fn cmd_space_download_attachment(
     input: SpaceDownloadAttachmentInput,
-) -> Result<SpaceDownloadAttachmentResult, String> {
+) -> SpaceCommandResult<SpaceDownloadAttachmentResult> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::download_attachment(
+        return Ok(crate::space_cloud_mock::download_attachment(
             &input.workspace_path,
             &input.attachment_id,
             input.issue_id.as_deref(),
             input.file_name.as_deref(),
             input.output.as_deref(),
-        );
+        )?);
     }
-    let (base_url, token) = if let Some(agent_id) = input.registered_agent_id.as_deref() {
+    if let Some(agent_id) = input.registered_agent_id.as_deref() {
         let agent = require_local_agent(agent_id)?;
         let base = space_base_url()?;
-        (base, agent.token)
-    } else {
-        let session = require_session()?;
-        (session.base_url, session.session_token)
-    };
+        return download_attachment_with_token(&base, &agent.token, &input, None, None).await;
+    }
+    let session = require_session()?;
     download_attachment_with_token(
-        &base_url,
-        &token,
-        &input.workspace_path,
-        &input.attachment_id,
-        input.issue_id.as_deref(),
-        input.file_name.as_deref(),
-        input.output.as_deref(),
+        &session.base_url,
+        session.session_token(),
+        &input,
         None,
+        Some(&session),
     )
     .await
 }
@@ -3051,19 +3374,21 @@ pub async fn cmd_space_download_attachment(
 async fn download_attachment_with_token(
     base_url: &str,
     token: &str,
-    workspace_path: &str,
-    attachment_id: &str,
-    issue_id: Option<&str>,
-    file_name: Option<&str>,
-    output: Option<&str>,
+    input: &SpaceDownloadAttachmentInput,
     space_id: Option<&str>,
-) -> Result<SpaceDownloadAttachmentResult, String> {
-    let workspace_root = validate_workspace_root(workspace_path)?;
-    let response = authorized_raw_request_scoped(
+    user_session: Option<&AuthenticatedSpaceSession>,
+) -> SpaceCommandResult<SpaceDownloadAttachmentResult> {
+    let workspace_root =
+        validate_workspace_root(&input.workspace_path).map_err(SpaceCommandError::from)?;
+    let response = authorized_raw_request_with_credential(
         base_url,
-        &format!("/api/attachments/{}/download", url_component(attachment_id)),
+        &format!(
+            "/api/attachments/{}/download",
+            url_component(&input.attachment_id)
+        ),
         token,
         space_id,
+        user_session,
     )
     .await?;
     let headers = response.headers().clone();
@@ -3072,7 +3397,8 @@ async fn download_attachment_with_token(
         0,
         0,
         MAX_ATTACHMENT_DOWNLOAD_BYTES,
-    )?;
+    )
+    .map_err(SpaceCommandError::from)?;
     let mut bytes = Vec::with_capacity(
         response
             .content_length()
@@ -3081,16 +3407,21 @@ async fn download_attachment_with_token(
     );
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Attachment download failed: {}", e))?;
+        let chunk = chunk.map_err(|e| {
+            SpaceCommandError::transport(format!("Attachment download failed: {e}"))
+        })?;
         ensure_attachment_download_size(
             None,
             bytes.len(),
             chunk.len(),
             MAX_ATTACHMENT_DOWNLOAD_BYTES,
-        )?;
+        )
+        .map_err(SpaceCommandError::from)?;
         bytes.extend_from_slice(&chunk);
     }
-    let name = file_name
+    let name = input
+        .file_name
+        .as_deref()
         .map(safe_local_filename)
         .filter(|s| !s.is_empty())
         .or_else(|| {
@@ -3100,21 +3431,24 @@ async fn download_attachment_with_token(
                     .and_then(|v| v.to_str().ok()),
             )
         })
-        .unwrap_or_else(|| format!("attachment-{}", attachment_id));
-    let relative = if let Some(output) = output.filter(|s| !s.trim().is_empty()) {
+        .unwrap_or_else(|| format!("attachment-{}", input.attachment_id));
+    let relative = if let Some(output) = input.output.as_deref().filter(|s| !s.trim().is_empty()) {
         output.trim().to_string()
     } else {
-        let issue_part = issue_id
+        let issue_part = input
+            .issue_id
+            .as_deref()
             .map(safe_local_name)
             .unwrap_or_else(|| "unknown-issue".to_string());
         format!(
             "myagents_files/space/issues/{}/attachments/{}/{}",
             issue_part,
-            safe_local_name(attachment_id),
+            safe_local_name(&input.attachment_id),
             name
         )
     };
-    let target = write_workspace_file_no_follow(&workspace_root, &relative, &bytes)?;
+    let target = write_workspace_file_no_follow(&workspace_root, &relative, &bytes)
+        .map_err(SpaceCommandError::from)?;
     Ok(SpaceDownloadAttachmentResult {
         name,
         relative_path: relative,
@@ -3140,7 +3474,7 @@ fn ensure_attachment_download_size(
 #[tauri::command]
 pub async fn cmd_space_download_skill_zip(
     input: SpaceInstallSkillInput,
-) -> Result<IpcResponse, String> {
+) -> SpaceCommandResult<IpcResponse> {
     if crate::space_cloud_mock::is_enabled() {
         return Ok(IpcResponse::new(
             crate::space_cloud_mock::skill_package_bytes(&input.skill_id)?,
@@ -3148,9 +3482,8 @@ pub async fn cmd_space_download_skill_zip(
     }
     let session = require_session()?;
     let bytes = authorized_bytes_request(
-        &session.base_url,
+        &session,
         &format!("/api/skills/{}/package.zip", url_component(&input.skill_id)),
-        &session.session_token,
     )
     .await?;
     Ok(IpcResponse::new(bytes))
@@ -3557,6 +3890,7 @@ pub async fn space_cli_assignee_list(input: SpaceCliContextInput) -> Result<Valu
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await?;
     let items = data
@@ -3609,6 +3943,7 @@ pub async fn space_cli_goal_list(input: SpaceCliGoalListInput) -> Result<Value, 
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3662,6 +3997,7 @@ pub async fn space_cli_issue_create(input: SpaceCliIssueCreateInput) -> Result<V
             reqwest::Method::POST,
             Some(payload),
             Some(&context.space_id),
+            context.user_session.as_ref(),
         )
         .await;
     }
@@ -3683,6 +4019,7 @@ pub async fn space_cli_issue_create(input: SpaceCliIssueCreateInput) -> Result<V
         &context.token,
         form,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3730,6 +4067,7 @@ pub async fn space_cli_attachment_add(input: SpaceCliAttachmentAddInput) -> Resu
         &context.token,
         form,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3773,6 +4111,7 @@ pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, 
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3828,6 +4167,7 @@ pub async fn space_cli_issue_update(input: SpaceCliIssueUpdateInput) -> Result<V
         reqwest::Method::PATCH,
         Some(payload),
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3880,6 +4220,7 @@ pub async fn space_cli_issue_list(input: SpaceCliIssueListInput) -> Result<Value
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3911,6 +4252,7 @@ pub async fn space_cli_issue_comment(input: SpaceCliIssueCommentInput) -> Result
             reqwest::Method::POST,
             Some(serde_json::json!({ "body": input.body })),
             Some(&context.space_id),
+            context.user_session.as_ref(),
         )
         .await;
     }
@@ -3933,6 +4275,7 @@ pub async fn space_cli_issue_comment(input: SpaceCliIssueCommentInput) -> Result
         &context.token,
         form,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3967,6 +4310,7 @@ pub async fn space_cli_issue_comments(input: SpaceCliIssueCommentsInput) -> Resu
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -3993,6 +4337,7 @@ pub async fn space_cli_issue_comment_get(
         reqwest::Method::GET,
         None,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -4016,6 +4361,7 @@ pub async fn space_cli_issue_status(input: SpaceCliIssueStatusInput) -> Result<V
         reqwest::Method::POST,
         Some(serde_json::json!({ "state": input.state })),
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -4036,6 +4382,7 @@ pub async fn space_cli_issue_claim(input: SpaceCliIssueClaimInput) -> Result<Val
         reqwest::Method::POST,
         Some(serde_json::json!({ "deliveryId": input.delivery_id })),
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -4115,6 +4462,7 @@ async fn space_cli_issue_action(
             &context.token,
             form,
             Some(&context.space_id),
+            context.user_session.as_ref(),
         )
         .await?;
         if let Some(object) = result.as_object_mut() {
@@ -4129,6 +4477,7 @@ async fn space_cli_issue_action(
         reqwest::Method::POST,
         body,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -4172,6 +4521,7 @@ pub async fn space_cli_claim_local_task(
             "localSessionId": input.local_session_id,
         })),
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await
 }
@@ -4187,15 +4537,20 @@ pub async fn space_cli_attachment_download(
         input.agent_id.as_deref(),
     )
     .await?;
+    let download = SpaceDownloadAttachmentInput {
+        attachment_id: input.attachment_id.trim().to_string(),
+        workspace_path: context.workspace_path.to_string_lossy().to_string(),
+        issue_id: input.issue_id,
+        file_name: None,
+        registered_agent_id: None,
+        output: input.output,
+    };
     let result = download_attachment_with_token(
         &context.base_url,
         &context.token,
-        &context.workspace_path.to_string_lossy(),
-        input.attachment_id.trim(),
-        input.issue_id.as_deref(),
-        None,
-        input.output.as_deref(),
+        &download,
         Some(&context.space_id),
+        context.user_session.as_ref(),
     )
     .await?;
     serde_json::to_value(result)
@@ -4381,12 +4736,14 @@ async fn touch_agent_device_presence(
     base_url: &str,
     agent: &LocalRegisteredAgent,
 ) -> Result<(), String> {
-    authorized_json_data_request(
+    authorized_json_data_request_scoped(
         base_url,
         "/api/registered-agents/me/device-presence",
         &agent.token,
         reqwest::Method::POST,
         Some(Value::Object(Default::default())),
+        None,
+        None,
     )
     .await
     .map(|_| ())
@@ -4397,7 +4754,7 @@ async fn poll_agent_deliveries(
     agent: &LocalRegisteredAgent,
     empty_streak: u32,
 ) -> Result<PolledSpaceAgentDeliveries, String> {
-    let data = authorized_json_data_request(
+    let data = authorized_json_data_request_scoped(
         base_url,
         &format!(
             "/api/registered-agents/me/deliveries?status=pending&limit=20&emptyStreak={}",
@@ -4405,6 +4762,8 @@ async fn poll_agent_deliveries(
         ),
         &agent.token,
         reqwest::Method::GET,
+        None,
+        None,
         None,
     )
     .await?;
@@ -5404,7 +5763,7 @@ async fn mark_delivery_delivered(
     session_id: &str,
     instruction_revision_used: i64,
 ) -> Result<(), String> {
-    authorized_json_data_request(
+    authorized_json_data_request_scoped(
         base_url,
         &format!("/api/deliveries/{}/delivered", url_component(delivery_id)),
         &agent.token,
@@ -5414,6 +5773,8 @@ async fn mark_delivery_delivered(
             "instructionRevisionUsed": instruction_revision_used,
             "protocolVersion": 2,
         })),
+        None,
+        None,
     )
     .await
     .map(|_| ())
@@ -6102,8 +6463,7 @@ fn session_space_segment(session: &SpaceSession) -> String {
 fn session_from_me_data(session: &SpaceSession, data: &Value) -> SpaceSession {
     SpaceSession {
         base_url: session.base_url.clone(),
-        session_token: session.session_token.clone(),
-        expires_at: session.expires_at.clone(),
+        user_credential: session.user_credential.clone(),
         user: data
             .get("user")
             .cloned()
@@ -6127,15 +6487,10 @@ fn session_from_me_data(session: &SpaceSession, data: &Value) -> SpaceSession {
     }
 }
 
-async fn refresh_session_from_cloud(session: &SpaceSession) -> Result<SpaceSession, String> {
-    let data = authorized_json_data_request(
-        &session.base_url,
-        "/api/me",
-        &session.session_token,
-        reqwest::Method::GET,
-        None,
-    )
-    .await?;
+async fn refresh_session_from_cloud(
+    session: &AuthenticatedSpaceSession,
+) -> SpaceCommandResult<SpaceSession> {
+    let data = authorized_json_data_request(session, "/api/me", reqwest::Method::GET, None).await?;
     Ok(session_from_me_data(session, &data))
 }
 
@@ -6444,27 +6799,125 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| "Space API response missing data".to_string())
 }
 
-async fn parse_cloud_cli_data(response: reqwest::Response) -> Result<Value, String> {
+async fn parse_cloud_cli_data(
+    response: reqwest::Response,
+    user_session: Option<&AuthenticatedSpaceSession>,
+) -> Result<Value, SpaceCommandError> {
     let status = response.status();
-    let envelope = response
-        .json::<CloudEnvelope<Value>>()
-        .await
-        .map_err(|e| format!("SPACE_RESPONSE_INVALID: Invalid Space response: {}", e))?;
+    let credential_kind = if user_session.is_some() {
+        SpaceCredentialKind::UserSession
+    } else {
+        SpaceCredentialKind::RegisteredAgent
+    };
+    let reauth_required = should_require_space_reauth(status, credential_kind);
+    if let Some(session) = user_session.filter(|_| reauth_required) {
+        match mark_user_session_reauth_required(session).await {
+            Ok(true) => {
+                ulog_info!(
+                    "[space] user session moved to reauth_required: sessionBindingId={}",
+                    session.session_binding_id()
+                );
+            }
+            Ok(false) => {
+                ulog_info!(
+                    "[space] ignored stale user-session 401: sessionBindingId={}",
+                    session.session_binding_id()
+                );
+            }
+            Err(error) => {
+                ulog_warn!(
+                    "[space] failed to persist reauth_required: sessionBindingId={} error={}",
+                    session.session_binding_id(),
+                    error
+                );
+                return Err(SpaceCommandError {
+                    http_status: Some(status.as_u16()),
+                    credential_kind: Some(credential_kind),
+                    session_binding_id: Some(session.session_binding_id().to_string()),
+                    ..SpaceCommandError::local(
+                        "SPACE_SESSION_STATE_WRITE_FAILED",
+                        "MyAgents could not persist the Space login state.",
+                    )
+                });
+            }
+        }
+    }
+    let envelope = match response.json::<CloudEnvelope<Value>>().await {
+        Ok(envelope) => envelope,
+        Err(error) if reauth_required => {
+            return Err(SpaceCommandError {
+                code: "SPACE_REAUTH_REQUIRED".to_string(),
+                message: "MyAgents Space login is required.".to_string(),
+                cloud_code: None,
+                http_status: Some(status.as_u16()),
+                request_id: None,
+                retryable: false,
+                credential_kind: Some(credential_kind),
+                session_binding_id: user_session
+                    .map(AuthenticatedSpaceSession::session_binding_id)
+                    .map(ToString::to_string),
+                recovery_hint: None,
+                quota: None,
+                usage: None,
+                limit: None,
+            });
+        }
+        Err(error) => {
+            return Err(SpaceCommandError {
+                http_status: Some(status.as_u16()),
+                credential_kind: Some(credential_kind),
+                ..SpaceCommandError::local(
+                    "SPACE_RESPONSE_INVALID",
+                    format!("Invalid Space response: {error}"),
+                )
+            });
+        }
+    };
     if !status.is_success() || !envelope.success {
-        let code = envelope
+        let cloud_code = envelope
             .code
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("SPACE_REQUEST_FAILED");
+            .map(ToString::to_string);
         let message = envelope
             .error
             .unwrap_or_else(|| format!("Space request failed with HTTP {}.", status.as_u16()));
-        return Err(format!("{}: {}", code, message));
+        let code = if reauth_required {
+            "SPACE_REAUTH_REQUIRED".to_string()
+        } else {
+            cloud_code
+                .clone()
+                .unwrap_or_else(|| "SPACE_REQUEST_FAILED".to_string())
+        };
+        return Err(SpaceCommandError {
+            code,
+            message: if reauth_required {
+                "MyAgents Space login is required.".to_string()
+            } else {
+                message
+            },
+            cloud_code,
+            http_status: Some(status.as_u16()),
+            request_id: envelope.request_id,
+            retryable: status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            credential_kind: Some(credential_kind),
+            session_binding_id: user_session
+                .filter(|_| reauth_required)
+                .map(AuthenticatedSpaceSession::session_binding_id)
+                .map(ToString::to_string),
+            recovery_hint: envelope.recovery_hint,
+            quota: envelope.quota,
+            usage: envelope.usage,
+            limit: envelope.limit,
+        });
     }
-    envelope
-        .data
-        .ok_or_else(|| "SPACE_RESPONSE_INVALID: Space response did not include data.".to_string())
+    envelope.data.ok_or_else(|| {
+        SpaceCommandError::local(
+            "SPACE_RESPONSE_INVALID",
+            "Space response did not include data.",
+        )
+    })
 }
 
 async fn authorized_json_request(
@@ -6505,9 +6958,9 @@ async fn authorized_json_request(
 }
 
 async fn upsert_space_user_device(
-    session: &SpaceSession,
+    session: &AuthenticatedSpaceSession,
     identity: &DeviceIdentity,
-) -> Result<(), String> {
+) -> SpaceCommandResult<()> {
     let body = serde_json::json!({
         "deviceId": identity.device_id,
         "deviceName": identity.device_name,
@@ -6516,9 +6969,8 @@ async fn upsert_space_user_device(
         "appVersion": identity.app_version,
     });
     authorized_json_data_request(
-        &session.base_url,
+        session,
         "/api/devices/upsert",
-        &session.session_token,
         reqwest::Method::POST,
         Some(body),
     )
@@ -6526,7 +6978,10 @@ async fn upsert_space_user_device(
     .map(|_| ())
 }
 
-async fn try_upsert_space_user_device(session: &SpaceSession, identity: &DeviceIdentity) {
+async fn try_upsert_space_user_device(
+    session: &AuthenticatedSpaceSession,
+    identity: &DeviceIdentity,
+) {
     if let Err(error) = upsert_space_user_device(session, identity).await {
         ulog_warn!(
             "[space] failed to upsert user device {}: {}",
@@ -6536,20 +6991,28 @@ async fn try_upsert_space_user_device(session: &SpaceSession, identity: &DeviceI
     }
 }
 
-fn spawn_space_user_device_upsert(session: SpaceSession, identity: DeviceIdentity) {
+fn spawn_space_user_device_upsert(session: AuthenticatedSpaceSession, identity: DeviceIdentity) {
     tauri::async_runtime::spawn(async move {
         try_upsert_space_user_device(&session, &identity).await;
     });
 }
 
 async fn authorized_json_data_request(
-    base_url: &str,
+    session: &AuthenticatedSpaceSession,
     path: &str,
-    token: &str,
     method: reqwest::Method,
     body: Option<Value>,
-) -> Result<Value, String> {
-    authorized_json_data_request_scoped(base_url, path, token, method, body, None).await
+) -> Result<Value, SpaceCommandError> {
+    authorized_json_data_request_with_credential(
+        &session.base_url,
+        path,
+        session.session_token(),
+        method,
+        body,
+        None,
+        Some(session),
+    )
+    .await
 }
 
 async fn authorized_json_data_request_scoped(
@@ -6559,7 +7022,30 @@ async fn authorized_json_data_request_scoped(
     method: reqwest::Method,
     body: Option<Value>,
     space_id: Option<&str>,
+    user_session: Option<&AuthenticatedSpaceSession>,
 ) -> Result<Value, String> {
+    authorized_json_data_request_with_credential(
+        base_url,
+        path,
+        token,
+        method,
+        body,
+        space_id,
+        user_session,
+    )
+    .await
+    .map_err(String::from)
+}
+
+async fn authorized_json_data_request_with_credential(
+    base_url: &str,
+    path: &str,
+    token: &str,
+    method: reqwest::Method,
+    body: Option<Value>,
+    space_id: Option<&str>,
+    user_session: Option<&AuthenticatedSpaceSession>,
+) -> Result<Value, SpaceCommandError> {
     if crate::space_cloud_mock::is_enabled() {
         return crate::space_cloud_mock::api_data_request_scoped_with_token(
             method.as_str(),
@@ -6567,13 +7053,17 @@ async fn authorized_json_data_request_scoped(
             Some(token),
             body,
             space_id,
-        );
+        )
+        .map_err(Into::into);
     }
-    let capability = ensure_space_available()?;
-    let client = http_client()?;
+    let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
+    let client = http_client().map_err(SpaceCommandError::from)?;
     let mut req = with_space_client_context_headers(
         client
-            .request(method, api_url(base_url, path)?)
+            .request(
+                method,
+                api_url(base_url, path).map_err(SpaceCommandError::from)?,
+            )
             .header(AUTHORIZATION, format!("Bearer {}", token)),
         &capability,
     );
@@ -6586,28 +7076,34 @@ async fn authorized_json_data_request_scoped(
     let response = req
         .send()
         .await
-        .map_err(|e| format!("Space API request failed: {}", e))?;
-    parse_cloud_cli_data(response).await
+        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
+    parse_cloud_cli_data(response, user_session).await
 }
 
 async fn authorized_multipart_data_request(
-    base_url: &str,
+    session: &AuthenticatedSpaceSession,
     path: &str,
-    token: &str,
     form: reqwest::multipart::Form,
-) -> Result<Value, String> {
-    authorized_multipart_method_data_request(reqwest::Method::POST, base_url, path, token, form)
-        .await
+) -> Result<Value, SpaceCommandError> {
+    authorized_multipart_method_data_request(reqwest::Method::POST, session, path, form).await
 }
 
 async fn authorized_multipart_method_data_request(
     method: reqwest::Method,
-    base_url: &str,
+    session: &AuthenticatedSpaceSession,
     path: &str,
-    token: &str,
     form: reqwest::multipart::Form,
-) -> Result<Value, String> {
-    authorized_multipart_method_data_request_scoped(method, base_url, path, token, form, None).await
+) -> Result<Value, SpaceCommandError> {
+    authorized_multipart_method_data_request_with_credential(
+        method,
+        &session.base_url,
+        path,
+        session.session_token(),
+        form,
+        None,
+        Some(session),
+    )
+    .await
 }
 
 async fn authorized_multipart_method_data_request_scoped(
@@ -6617,17 +7113,44 @@ async fn authorized_multipart_method_data_request_scoped(
     token: &str,
     form: reqwest::multipart::Form,
     space_id: Option<&str>,
+    user_session: Option<&AuthenticatedSpaceSession>,
 ) -> Result<Value, String> {
+    authorized_multipart_method_data_request_with_credential(
+        method,
+        base_url,
+        path,
+        token,
+        form,
+        space_id,
+        user_session,
+    )
+    .await
+    .map_err(String::from)
+}
+
+async fn authorized_multipart_method_data_request_with_credential(
+    method: reqwest::Method,
+    base_url: &str,
+    path: &str,
+    token: &str,
+    form: reqwest::multipart::Form,
+    space_id: Option<&str>,
+    user_session: Option<&AuthenticatedSpaceSession>,
+) -> Result<Value, SpaceCommandError> {
     if crate::space_cloud_mock::is_enabled() {
-        return Err(
-            "Mock Space does not accept raw multipart requests; use typed mock upload commands"
-                .to_string(),
-        );
+        return Err(SpaceCommandError::local(
+            "SPACE_MOCK_MULTIPART_UNAVAILABLE",
+            "Mock Space does not accept raw multipart requests; use typed mock upload commands",
+        ));
     }
-    let capability = ensure_space_available()?;
+    let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
     let mut request = with_space_client_context_headers(
-        http_client()?
-            .request(method, api_url(base_url, path)?)
+        http_client()
+            .map_err(SpaceCommandError::from)?
+            .request(
+                method,
+                api_url(base_url, path).map_err(SpaceCommandError::from)?,
+            )
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .multipart(form),
         &capability,
@@ -6638,31 +7161,42 @@ async fn authorized_multipart_method_data_request_scoped(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("Space upload failed: {}", e))?;
-    parse_cloud_cli_data(response).await
+        .map_err(|e| SpaceCommandError::transport(format!("Space upload failed: {e}")))?;
+    parse_cloud_cli_data(response, user_session).await
 }
 
 async fn authorized_raw_request(
-    base_url: &str,
+    session: &AuthenticatedSpaceSession,
     path: &str,
-    token: &str,
-) -> Result<reqwest::Response, String> {
-    authorized_raw_request_scoped(base_url, path, token, None).await
+) -> Result<reqwest::Response, SpaceCommandError> {
+    authorized_raw_request_with_credential(
+        &session.base_url,
+        path,
+        session.session_token(),
+        None,
+        Some(session),
+    )
+    .await
 }
 
-async fn authorized_raw_request_scoped(
+async fn authorized_raw_request_with_credential(
     base_url: &str,
     path: &str,
     token: &str,
     space_id: Option<&str>,
-) -> Result<reqwest::Response, String> {
+    user_session: Option<&AuthenticatedSpaceSession>,
+) -> Result<reqwest::Response, SpaceCommandError> {
     if crate::space_cloud_mock::is_enabled() {
-        return Err("Mock Space raw HTTP response is not available through this path".to_string());
+        return Err(SpaceCommandError::local(
+            "SPACE_MOCK_RAW_UNAVAILABLE",
+            "Mock Space raw HTTP response is not available through this path",
+        ));
     }
-    let capability = ensure_space_available()?;
+    let capability = ensure_space_available().map_err(SpaceCommandError::from)?;
     let mut request = with_space_client_context_headers(
-        http_client()?
-            .get(api_url(base_url, path)?)
+        http_client()
+            .map_err(SpaceCommandError::from)?
+            .get(api_url(base_url, path).map_err(SpaceCommandError::from)?)
             .header(AUTHORIZATION, format!("Bearer {}", token)),
         &capability,
     );
@@ -6672,35 +7206,41 @@ async fn authorized_raw_request_scoped(
     let response = request
         .send()
         .await
-        .map_err(|e| format!("Space API request failed: {}", e))?;
+        .map_err(|e| SpaceCommandError::transport(format!("Space API request failed: {e}")))?;
     if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("Space download failed with {}: {}", status, text));
+        return match parse_cloud_cli_data(response, user_session).await {
+            Err(error) => Err(error),
+            Ok(_) => Err(SpaceCommandError::local(
+                "SPACE_DOWNLOAD_FAILED",
+                "Space download failed.",
+            )),
+        };
     }
     Ok(response)
 }
 
 async fn authorized_bytes_request(
-    base_url: &str,
+    session: &AuthenticatedSpaceSession,
     path: &str,
-    token: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, SpaceCommandError> {
     if crate::space_cloud_mock::is_enabled() {
         if let Some(skill_id) = path
             .strip_prefix("/api/skills/")
             .and_then(|rest| rest.strip_suffix("/package.zip"))
         {
-            return crate::space_cloud_mock::skill_package_bytes(skill_id);
+            return crate::space_cloud_mock::skill_package_bytes(skill_id).map_err(Into::into);
         }
-        return Err(format!("Mock Space bytes route not implemented: {}", path));
+        return Err(SpaceCommandError::local(
+            "SPACE_MOCK_BYTES_UNAVAILABLE",
+            format!("Mock Space bytes route not implemented: {path}"),
+        ));
     }
-    let response = authorized_raw_request(base_url, path, token).await?;
+    let response = authorized_raw_request(session, path).await?;
     response
         .bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| format!("Space download failed: {}", e))
+        .map_err(|e| SpaceCommandError::transport(format!("Space download failed: {e}")))
 }
 
 fn space_runtime_scope() -> Result<SpaceRuntimeScope, String> {
@@ -6750,10 +7290,6 @@ fn session_path() -> Result<PathBuf, String> {
     Ok(session_path_in_dir(&space_data_dir()?))
 }
 
-fn read_session() -> Result<Option<SpaceSession>, String> {
-    read_session_from_path(&session_path()?)
-}
-
 fn read_session_from_path(path: &Path) -> Result<Option<SpaceSession>, String> {
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content)
@@ -6764,18 +7300,23 @@ fn read_session_from_path(path: &Path) -> Result<Option<SpaceSession>, String> {
     }
 }
 
-fn require_session() -> Result<SpaceSession, String> {
+fn require_session() -> Result<AuthenticatedSpaceSession, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return Ok(crate::space_cloud_mock::session());
+        return AuthenticatedSpaceSession::from_account(
+            crate::space_cloud_mock::session(),
+            PathBuf::from("mock-session.json"),
+        );
     }
     let configured_base_url = space_base_url()?;
-    let session = read_session()?.ok_or_else(|| "Not logged in to MyAgents Space".to_string())?;
+    let path = session_path()?;
+    let session = read_session_from_path(&path)?
+        .ok_or_else(|| "NOT_AUTHENTICATED: Not logged in to MyAgents Space.".to_string())?;
     if !space_base_urls_equal(&session.base_url, &configured_base_url) {
         return Err(
             "Space session belongs to a different Space service. Please log in again.".to_string(),
         );
     }
-    Ok(session)
+    AuthenticatedSpaceSession::from_account(session, path)
 }
 
 fn read_local_agents_from_path(path: &Path) -> Result<LocalRegisteredAgentsFile, String> {
@@ -7034,13 +7575,15 @@ fn cli_space_role(space: &Value) -> String {
         .to_string()
 }
 
-async fn refresh_cli_session() -> Result<SpaceSession, String> {
+async fn refresh_cli_session() -> Result<AuthenticatedSpaceSession, String> {
     let session = require_session()?;
     let refreshed = refresh_session_from_cloud(&session).await?;
-    if !crate::space_cloud_mock::is_enabled() {
-        return commit_refreshed_session(refreshed).await;
-    }
-    Ok(refreshed)
+    let refreshed = if !crate::space_cloud_mock::is_enabled() {
+        commit_refreshed_session(refreshed).await?
+    } else {
+        refreshed
+    };
+    AuthenticatedSpaceSession::from_account(refreshed, session.session_path().to_path_buf())
 }
 
 async fn resolve_space_cli_context(
@@ -7055,7 +7598,14 @@ async fn resolve_space_cli_context(
     if slug.is_empty() {
         return Err("SPACE_REQUIRED: This command requires --space <slug>.".to_string());
     }
-    let session = refresh_cli_session().await?;
+    let (session, user_session) = if session_origin.is_some() {
+        let session = read_current_session()?
+            .ok_or_else(|| "NOT_AUTHENTICATED: Not logged in to MyAgents Space.".to_string())?;
+        (session, None)
+    } else {
+        let authenticated = refresh_cli_session().await?;
+        (authenticated.account.clone(), Some(authenticated))
+    };
     let space = cli_space_item(&session, slug).ok_or_else(|| {
         format!(
             "SPACE_NOT_AVAILABLE: Space '{}' is not available to the current user.",
@@ -7137,7 +7687,7 @@ async fn resolve_space_cli_context(
             return Err("SPACE_AGENT_BINDING_INVALID: This Session origin no longer matches an active Registered Agent for the selected Space and workspace. Do not retry as the User actor.".to_string());
         }
         return Ok(SpaceCliContext {
-            base_url: session.base_url,
+            base_url: session.base_url.clone(),
             space_id,
             space_slug: slug.to_string(),
             space_name,
@@ -7152,6 +7702,7 @@ async fn resolve_space_cli_context(
             workspace_id: effective_space_workspace_id(agent).map(ToString::to_string),
             workspace_path: workspace_root,
             session_binding: SpaceCliSessionBinding::RegisteredAgentSession,
+            user_session: None,
         });
     }
 
@@ -7179,7 +7730,7 @@ async fn resolve_space_cli_context(
             return Err("SPACE_AGENT_BINDING_INVALID: The active Registered Agent for this Space and workspace no longer matches the current owner, device, role, or token. Do not retry as the User actor.".to_string());
         }
         return Ok(SpaceCliContext {
-            base_url: session.base_url,
+            base_url: session.base_url.clone(),
             space_id,
             space_slug: slug.to_string(),
             space_name,
@@ -7194,10 +7745,11 @@ async fn resolve_space_cli_context(
             workspace_id: effective_space_workspace_id(agent).map(ToString::to_string),
             workspace_path: workspace_root,
             session_binding: SpaceCliSessionBinding::LegacyAgentId,
+            user_session: None,
         });
     }
     Ok(SpaceCliContext {
-        base_url: session.base_url,
+        base_url: session.base_url.clone(),
         space_id,
         space_slug: slug.to_string(),
         space_name,
@@ -7206,13 +7758,20 @@ async fn resolve_space_cli_context(
             name: user_name,
             role,
         },
-        token: session.session_token,
+        token: user_session
+            .as_ref()
+            .map(AuthenticatedSpaceSession::session_token)
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                "SPACE_REAUTH_REQUIRED: MyAgents Space login is required.".to_string()
+            })?,
         workspace_id: workspace_id
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string),
         workspace_path: workspace_root,
         session_binding: SpaceCliSessionBinding::UserFallback,
+        user_session,
     })
 }
 
@@ -7269,7 +7828,7 @@ fn read_current_runnable_local_agents() -> Result<Vec<LocalRegisteredAgent>, Str
     Ok(read_current_local_agents()?
         .into_iter()
         .filter(|agent| agent.status == "active")
-        .filter(|agent| local_agent_matches_current_identity(agent, &session, &local_device_id))
+        .filter(|agent| local_agent_matches_connector_identity(agent, &session, &local_device_id))
         .collect())
 }
 
@@ -7591,16 +8150,79 @@ where
     .map_err(String::from)
 }
 
-fn space_session_binding_id(session: &SpaceSession) -> String {
+fn mark_user_session_reauth_required_at_path(
+    path: &Path,
+    expected_session_binding_id: &str,
+) -> Result<bool, String> {
+    let path = path.to_path_buf();
+    let expected_session_binding_id = expected_session_binding_id.to_string();
+    with_json_file_lock(&path.clone(), move || {
+        let Some(mut current) = read_session_from_path(&path)? else {
+            return Ok(false);
+        };
+        if current.invalidated_session_binding_id() == Some(expected_session_binding_id.as_str()) {
+            return Ok(true);
+        }
+        if current.authenticated_token().is_none()
+            || current.session_binding_id() != expected_session_binding_id
+        {
+            return Ok(false);
+        }
+        current.user_credential = SpaceUserCredential::ReauthRequired {
+            invalidated_session_binding_id: expected_session_binding_id,
+        };
+        current.updated_at = chrono::Utc::now().to_rfc3339();
+        write_private_json_unlocked(&path, &current)?;
+        Ok(true)
+    })
+}
+
+fn commit_authenticated_session_if_unchanged_at_path(
+    path: &Path,
+    expected_session_binding_id: Option<&str>,
+    session: &SpaceSession,
+) -> Result<bool, String> {
+    let path = path.to_path_buf();
+    let expected_session_binding_id = expected_session_binding_id.map(ToString::to_string);
+    let session = session.clone();
+    with_json_file_lock(&path.clone(), move || {
+        let current_session_binding_id = read_session_from_path(&path)?
+            .as_ref()
+            .map(SpaceSession::session_binding_id);
+        if current_session_binding_id != expected_session_binding_id {
+            return Ok(false);
+        }
+        write_private_json_unlocked(&path, &session)?;
+        Ok(true)
+    })
+}
+
+async fn mark_user_session_reauth_required(
+    session: &AuthenticatedSpaceSession,
+) -> Result<bool, String> {
+    let path = session.session_path().to_path_buf();
+    let expected_session_binding_id = session.session_binding_id().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        mark_user_session_reauth_required_at_path(&path, &expected_session_binding_id)
+    })
+    .await
+    .map_err(|error| format!("mark Space session reauth task failed: {error:?}"))?
+}
+
+fn space_session_binding_id_for_token(base_url: &str, session_token: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(session.base_url.trim().trim_end_matches('/').as_bytes());
+    hasher.update(base_url.trim().trim_end_matches('/').as_bytes());
     hasher.update([0]);
-    hasher.update(session.session_token.as_bytes());
+    hasher.update(session_token.as_bytes());
     hasher
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn space_session_binding_id(session: &SpaceSession) -> String {
+    session.session_binding_id()
 }
 
 fn set_active_space_in_session_file(
@@ -7617,6 +8239,9 @@ fn set_active_space_in_session_file(
         let Some(mut session) = read_session_from_path(&path)? else {
             return Ok(None);
         };
+        if session.authenticated_token().is_none() {
+            return Ok(None);
+        }
         if !space_base_urls_equal(&session.base_url, &configured_base_url)
             || space_session_binding_id(&session) != expected_session_binding_id
         {
@@ -7652,8 +8277,10 @@ fn commit_refreshed_session_blocking(
         let Some(current) = read_session_from_path(&path)? else {
             return Err("Space session changed while refresh was in flight".to_string());
         };
-        if !space_base_urls_equal(&current.base_url, &refreshed.base_url)
-            || current.session_token != refreshed.session_token
+        if current.authenticated_token().is_none()
+            || refreshed.authenticated_token().is_none()
+            || !space_base_urls_equal(&current.base_url, &refreshed.base_url)
+            || current.session_binding_id() != refreshed.session_binding_id()
         {
             return Err("Space session changed while refresh was in flight".to_string());
         }
@@ -7672,6 +8299,7 @@ async fn commit_refreshed_session(refreshed: SpaceSession) -> Result<SpaceSessio
     .map_err(|error| format!("commit refreshed Space session task failed: {error:?}"))?
 }
 
+#[cfg(test)]
 fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let path = path.to_path_buf();
     let bytes =
@@ -8743,18 +9371,162 @@ mod tests {
     }
 
     fn test_space_session(user_id: &str) -> SpaceSession {
-        SpaceSession {
-            base_url: "https://space.myagents.test".to_string(),
-            session_token: "session-token".to_string(),
-            expires_at: None,
-            user: serde_json::json!({ "id": user_id }),
-            account_plan: Value::Null,
-            space: serde_json::json!({ "id": "space_test" }),
-            membership: serde_json::json!({ "role": "admin" }),
-            spaces: Vec::new(),
-            last_active_space_id: None,
-            updated_at: "2026-07-03T00:00:00.000Z".to_string(),
+        SpaceSession::authenticated(
+            SpaceAccountPublic {
+                base_url: "https://space.myagents.test".to_string(),
+                user: serde_json::json!({ "id": user_id }),
+                account_plan: Value::Null,
+                space: serde_json::json!({ "id": "space_test" }),
+                membership: serde_json::json!({ "role": "admin" }),
+                spaces: Vec::new(),
+                last_active_space_id: None,
+                updated_at: "2026-07-03T00:00:00.000Z".to_string(),
+            },
+            "session-token".to_string(),
+            None,
+        )
+    }
+
+    #[test]
+    fn legacy_session_is_read_but_next_write_is_canonical() {
+        let legacy = serde_json::json!({
+            "baseUrl": "https://space.myagents.test",
+            "sessionToken": "legacy-token",
+            "expiresAt": "2026-09-01T00:00:00Z",
+            "user": { "id": "usr_legacy" },
+            "accountPlan": null,
+            "space": { "id": "space_test" },
+            "membership": { "role": "admin" },
+            "spaces": [],
+            "lastActiveSpaceId": null,
+            "updatedAt": "2026-08-14T00:00:00Z"
+        });
+
+        let session: SpaceSession =
+            serde_json::from_value(legacy).expect("legacy session should migrate on read");
+        assert_eq!(session.authenticated_token(), Some("legacy-token"));
+
+        let canonical = serde_json::to_value(session).expect("serialize canonical session");
+        assert!(canonical.get("sessionToken").is_none());
+        assert!(canonical.get("expiresAt").is_none());
+        assert_eq!(
+            canonical
+                .pointer("/userCredential/state")
+                .and_then(Value::as_str),
+            Some("authenticated")
+        );
+        assert_eq!(
+            canonical
+                .pointer("/userCredential/sessionToken")
+                .and_then(Value::as_str),
+            Some("legacy-token")
+        );
+    }
+
+    #[test]
+    fn reauth_session_serialization_cannot_retain_a_user_token() {
+        let mut session = test_space_session("usr_current");
+        let binding = session.session_binding_id();
+        session.user_credential = SpaceUserCredential::ReauthRequired {
+            invalidated_session_binding_id: binding.clone(),
+        };
+
+        assert_eq!(session.authenticated_token(), None);
+        let persisted = serde_json::to_string(&session).expect("serialize reauth session");
+        assert!(!persisted.contains("session-token"));
+        let view = SpaceSessionView::from(session);
+        assert!(matches!(
+            view,
+            SpaceSessionView::ReauthRequired {
+                invalidated_session_binding_id,
+                ..
+            } if invalidated_session_binding_id == binding
+        ));
+    }
+
+    #[test]
+    fn only_user_session_http_401_requires_reauthentication() {
+        assert!(should_require_space_reauth(
+            reqwest::StatusCode::UNAUTHORIZED,
+            SpaceCredentialKind::UserSession
+        ));
+        assert!(!should_require_space_reauth(
+            reqwest::StatusCode::UNAUTHORIZED,
+            SpaceCredentialKind::RegisteredAgent
+        ));
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(!should_require_space_reauth(
+                status,
+                SpaceCredentialKind::UserSession
+            ));
         }
+    }
+
+    #[test]
+    fn reauth_transition_is_fenced_by_the_exact_session_binding() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let old = test_space_session("usr_old");
+        let old_binding = old.session_binding_id();
+        let mut replacement = test_space_session("usr_new");
+        replacement.user_credential = SpaceUserCredential::Authenticated {
+            session_token: "replacement-token".to_string(),
+            expires_at: None,
+        };
+        let replacement_binding = replacement.session_binding_id();
+        write_private_json(&path, &replacement).expect("write replacement session");
+
+        assert!(
+            !mark_user_session_reauth_required_at_path(&path, &old_binding)
+                .expect("stale transition should be ignored")
+        );
+        assert_eq!(
+            read_session_from_path(&path)
+                .expect("read replacement")
+                .expect("replacement exists")
+                .authenticated_token(),
+            Some("replacement-token")
+        );
+
+        assert!(
+            mark_user_session_reauth_required_at_path(&path, &replacement_binding)
+                .expect("current transition should commit")
+        );
+        let stored = read_session_from_path(&path)
+            .expect("read reauth session")
+            .expect("reauth session exists");
+        assert_eq!(
+            stored.invalidated_session_binding_id(),
+            Some(replacement_binding.as_str())
+        );
+        assert_eq!(stored.authenticated_token(), None);
+    }
+
+    #[test]
+    fn in_flight_refresh_cannot_restore_an_invalidated_token() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let current = test_space_session("usr_current");
+        let binding = current.session_binding_id();
+        let mut stale_refresh = current.clone();
+        stale_refresh.user = serde_json::json!({ "id": "usr_stale_refresh" });
+        write_private_json(&path, &current).expect("write current session");
+        mark_user_session_reauth_required_at_path(&path, &binding)
+            .expect("invalidate current session");
+
+        assert!(commit_refreshed_session_blocking(&path, stale_refresh).is_err());
+        let stored = read_session_from_path(&path)
+            .expect("read invalidated session")
+            .expect("invalidated session exists");
+        assert_eq!(stored.authenticated_token(), None);
+        assert_eq!(
+            stored.user.pointer("/id").and_then(Value::as_str),
+            Some("usr_current")
+        );
     }
 
     fn test_device_identity() -> DeviceIdentity {
@@ -9031,7 +9803,10 @@ mod tests {
         let old_session = test_space_session("usr_old");
         let old_binding = space_session_binding_id(&old_session);
         let mut new_session = test_space_session("usr_new");
-        new_session.session_token = "new-session-token".to_string();
+        new_session.user_credential = SpaceUserCredential::Authenticated {
+            session_token: "new-session-token".to_string(),
+            expires_at: None,
+        };
         write_private_json(&path, &new_session).expect("write new session");
 
         let error =
@@ -9042,7 +9817,7 @@ mod tests {
             .expect("replacement session should remain present");
 
         assert!(error.contains("session changed"));
-        assert_eq!(stored.session_token, "new-session-token");
+        assert_eq!(stored.authenticated_token(), Some("new-session-token"));
         assert!(stored.last_active_space_id.is_none());
     }
 
@@ -9057,7 +9832,7 @@ mod tests {
             .expect("logout should take the current session")
             .expect("session should be returned for remote revoke");
 
-        assert_eq!(removed.session_token, session.session_token);
+        assert_eq!(removed.authenticated_token(), session.authenticated_token());
         assert!(read_session_from_path(&path)
             .expect("read removed session")
             .is_none());
@@ -9077,6 +9852,52 @@ mod tests {
         assert!(error.contains("session changed"));
         assert!(read_session_from_path(&path)
             .expect("read removed session")
+            .is_none());
+    }
+
+    #[test]
+    fn stale_auth_poll_cannot_replace_a_newer_login_or_explicit_logout() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let reauth = test_space_session("usr_old");
+        let expected_binding = reauth.session_binding_id();
+        let mut reauth = reauth;
+        reauth.user_credential = SpaceUserCredential::ReauthRequired {
+            invalidated_session_binding_id: expected_binding.clone(),
+        };
+        write_private_json(&path, &reauth).expect("write reauth session");
+
+        let mut newer_login = test_space_session("usr_new");
+        newer_login.user_credential = SpaceUserCredential::Authenticated {
+            session_token: "new-session-token".to_string(),
+            expires_at: None,
+        };
+        write_private_json(&path, &newer_login).expect("write newer login");
+        let stale_login = test_space_session("usr_old");
+
+        assert!(!commit_authenticated_session_if_unchanged_at_path(
+            &path,
+            Some(&expected_binding),
+            &stale_login,
+        )
+        .expect("stale poll should be ignored"));
+        assert_eq!(
+            read_session_from_path(&path)
+                .expect("read newer login")
+                .and_then(|session| session.authenticated_token().map(ToString::to_string))
+                .as_deref(),
+            Some("new-session-token")
+        );
+
+        take_session_for_logout(&path).expect("logout should remove newer login");
+        assert!(!commit_authenticated_session_if_unchanged_at_path(
+            &path,
+            Some(&expected_binding),
+            &stale_login,
+        )
+        .expect("logged-out poll should be ignored"));
+        assert!(read_session_from_path(&path)
+            .expect("read logged-out state")
             .is_none());
     }
 
@@ -9751,7 +10572,11 @@ mod tests {
 
     #[test]
     fn normalize_legacy_local_agent_identity_fills_missing_device_for_current_user() {
-        let session = test_space_session("usr_current");
+        let mut session = test_space_session("usr_current");
+        let invalidated_binding = session.session_binding_id();
+        session.user_credential = SpaceUserCredential::ReauthRequired {
+            invalidated_session_binding_id: invalidated_binding,
+        };
         let identity = test_device_identity();
         let mut agent = test_registered_agent(Some("usr_current"), None);
 
@@ -9791,7 +10616,11 @@ mod tests {
 
     #[test]
     fn connector_identity_keeps_current_device_agents_across_spaces() {
-        let session = test_space_session("usr_current");
+        let mut session = test_space_session("usr_current");
+        let invalidated_binding = session.session_binding_id();
+        session.user_credential = SpaceUserCredential::ReauthRequired {
+            invalidated_session_binding_id: invalidated_binding,
+        };
         let mut current_space_agent =
             test_registered_agent(Some("usr_current"), Some("device_current"));
         let mut other_space_agent = current_space_agent.clone();
@@ -9807,6 +10636,7 @@ mod tests {
             &session,
             "device_current"
         ));
+        assert!(session.authenticated_token().is_none());
 
         current_space_agent.owner_user_id = Some("usr_other".to_string());
         assert!(!local_agent_matches_connector_identity(
@@ -9975,6 +10805,7 @@ mod tests {
             origin_context.actor,
             SpaceCliActor::RegisteredAgent { ref id, .. } if id == "rag_mock_frontend"
         ));
+        assert!(origin_context.user_session.is_none());
 
         let wrong_agent_origin = SpaceCliRegisteredAgentOrigin {
             space_id: "space_mock_official".to_string(),
@@ -10975,6 +11806,7 @@ mod tests {
 
         assert!(result
             .expect_err("remote workspace binding update must be rejected")
+            .message
             .contains("workspace binding"));
     }
 
@@ -11699,27 +12531,30 @@ mod tests {
         .await
         .expect_err("TRACE must be rejected");
 
-        assert_eq!(error, "Unsupported Space API method");
+        assert_eq!(error.code, "SPACE_METHOD_UNSUPPORTED");
+        assert_eq!(error.message, "Unsupported Space API method");
         let _ = fs::remove_dir_all(&workspace);
     }
 
     #[test]
     fn session_space_segment_prefers_slug_for_official_route_compatibility() {
-        let session = SpaceSession {
-            base_url: "https://space.myagents.test".to_string(),
-            session_token: "session_test".to_string(),
-            expires_at: None,
-            user: Value::Null,
-            account_plan: Value::Null,
-            space: serde_json::json!({
-                "id": "space_fb63fde836254c9c90146c4f5bb142bd",
-                "slug": "official",
-            }),
-            membership: Value::Null,
-            spaces: Vec::new(),
-            last_active_space_id: None,
-            updated_at: "2026-06-24T00:00:00.000Z".to_string(),
-        };
+        let session = SpaceSession::authenticated(
+            SpaceAccountPublic {
+                base_url: "https://space.myagents.test".to_string(),
+                user: Value::Null,
+                account_plan: Value::Null,
+                space: serde_json::json!({
+                    "id": "space_fb63fde836254c9c90146c4f5bb142bd",
+                    "slug": "official",
+                }),
+                membership: Value::Null,
+                spaces: Vec::new(),
+                last_active_space_id: None,
+                updated_at: "2026-06-24T00:00:00.000Z".to_string(),
+            },
+            "session_test".to_string(),
+            None,
+        );
 
         assert_eq!(session_space_segment(&session), "official");
     }
