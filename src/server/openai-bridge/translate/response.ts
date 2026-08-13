@@ -4,7 +4,7 @@ import type { AnthropicResponse, AnthropicResponseContentBlock, AnthropicStopRea
 import type { OpenAIResponse } from '../types/openai';
 import { translateToolCalls } from './tools';
 import { generateMessageId } from '../utils/id';
-import { fromOpenAIUsage, toAnthropicUsage } from './usage';
+import { fromOpenAIUsage, toAnthropicUsage, type UsageWarningLogger } from './usage';
 
 /** Map OpenAI finish_reason → Anthropic stop_reason */
 export function translateStopReason(reason: string | null): AnthropicStopReason | null {
@@ -22,6 +22,7 @@ export function translateResponse(
   openaiResp: OpenAIResponse,
   requestModel: string,
   translateReasoning = true,
+  usageWarning?: UsageWarningLogger,
 ): AnthropicResponse {
   const choice = openaiResp.choices?.[0];
   const content: AnthropicResponseContentBlock[] = [];
@@ -58,7 +59,7 @@ export function translateResponse(
     content.push({ type: 'text', text: '' });
   }
 
-  const usage = fromOpenAIUsage(openaiResp.usage);
+  const usage = fromOpenAIUsage(openaiResp.usage, usageWarning);
 
   return {
     id: generateMessageId(),

@@ -873,6 +873,8 @@ config.multiAgentRuntime (磁盘/React state)
 - **两系 cache 语义相反**：Anthropic 系（builtin / Claude Code）`input` 不含 cache → `input + cacheRead + cacheCreation`；OpenAI 系（Codex）`inputTokens` 已含 cached → 直接用，不再加。
 - **分母 = `runtime 报的窗口 ?? lookupModelContextLength(model) ?? 200K`**，永远有值，表示模型的有效完整窗口；builtin 会在该窗口的 90% 处自动压缩，external runtime 保留自己的压缩策略。
 
+OpenAI Bridge 属于 builtin 的协议适配边界：OpenAI Chat / Responses 返回的 total input 已包含 cache read / write，Bridge 必须先转换成 Anthropic 的互斥分区：`ordinary = total - read - create`，再把 ordinary/read/create 交给 SDK。下游仍统一按 builtin 的 `input + cacheRead + cacheCreation` 求占用，恰好还原 OpenAI total，不能直接把 OpenAI total 填进 Anthropic `input` 后再次加 cache。异常负数、非有限值或 cache 分区超过 total 时在 Bridge 边界归零/夹紧并记录仅含字段名与归一化数值的 warning，不把 raw provider payload 写入日志。
+
 **每 runtime 占用来源**
 
 | Runtime | 占用 | 窗口 | 备注 |

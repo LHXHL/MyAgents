@@ -1726,6 +1726,8 @@ async function main() {
     bridgeHandlerPromise = (async () => {
       const [{ createBridgeHandler }, {
         lookupBridge,
+        arePromptCacheBreakpointsDisabled,
+        disablePromptCacheBreakpoints,
         disablePromptCacheKey,
         isPromptCacheKeyDisabled,
       }] = await Promise.all([
@@ -1779,6 +1781,8 @@ async function main() {
                     ...cfg.cacheAffinity,
                     promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
                     disablePromptCacheKey: () => disablePromptCacheKey(token),
+                    promptCacheBreakpointsDisabled: arePromptCacheBreakpointsDisabled(token),
+                    disablePromptCacheBreakpoints: () => disablePromptCacheBreakpoints(token),
                   }
                 : undefined,
             };
