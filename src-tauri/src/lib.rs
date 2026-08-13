@@ -448,6 +448,7 @@ pub fn run() {
             // System skills sync (task-alignment / task-implement etc.)
             commands::cmd_sync_system_skills,
             memory_evolution::cmd_configure_memory_evolution_tasks,
+            memory_evolution::cmd_get_memory_evolution_status,
             memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
             cron_task::commands::cmd_create_cron_task,

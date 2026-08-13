@@ -1114,7 +1114,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "47";
+const SYSTEM_SKILLS_VERSION: &str = "48";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1605,8 +1605,8 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v47_keeps_task_cli_and_automation_skills_aligned() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "47");
+    fn v48_keeps_task_cli_and_automation_skills_aligned() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "48");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1649,6 +1649,11 @@ mod system_skills_tests {
         assert!(memory_update.contains("不要落盘“未升级偏好”"));
         assert!(memory_update.contains("commit 后 push 当前分支"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
+
+        let gardener = include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md");
+        assert!(gardener.contains("已有的未提交改动不阻断记忆维护"));
+        assert!(gardener.contains("只暂存并提交本次记忆维护产生的改动"));
+        assert!(!gardener.contains("存在非本次任务的未提交改动时，只做只读体检"));
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
         assert!(product_docs.contains("name: myagents-docs"));

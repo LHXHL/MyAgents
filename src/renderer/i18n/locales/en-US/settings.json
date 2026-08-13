@@ -845,7 +845,9 @@
     "memoryEvolution": {
       "title": "Memory Evolution",
       "description": "Automatically learn from memory, prune stale context, and compact long-term notes through periodic background sessions.",
-      "taskError": "Failed to configure memory evolution tasks"
+      "taskError": "Failed to configure memory evolution tasks",
+      "lastRunSuccess": "Last run succeeded · {{time}}",
+      "lastRunFailure": "Last run failed · {{time}}"
     },
     "heartbeat": {
       "title": "Heartbeat",

@@ -845,7 +845,9 @@
     "memoryEvolution": {
       "title": "长期记忆进化 Evo",
       "description": "基于记忆自动学习、修剪与浓缩更新；会按周期派生后台 session 执行维护。",
-      "taskError": "长期记忆进化任务配置失败"
+      "taskError": "长期记忆进化任务配置失败",
+      "lastRunSuccess": "上次执行成功 · {{time}}",
+      "lastRunFailure": "上次执行失败 · {{time}}"
     },
     "heartbeat": {
       "title": "心跳感知 Heartbeat",

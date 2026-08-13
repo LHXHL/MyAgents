@@ -267,12 +267,7 @@ pub async fn deliver_task_result(handle: &AppHandle, task: &Task, outcome: &Task
         }
     }
 
-    if task
-        .notification
-        .as_ref()
-        .map(|notification| notification.desktop)
-        .unwrap_or(true)
-    {
+    if should_deliver_desktop_notification(task) {
         let title = if outcome.success {
             "定时任务执行完成"
         } else {
@@ -305,6 +300,19 @@ pub async fn deliver_task_result(handle: &AppHandle, task: &Task, outcome: &Task
             Some(badge),
         );
     }
+}
+
+fn should_deliver_desktop_notification(task: &Task) -> bool {
+    if matches!(
+        task.managed_kind.as_deref(),
+        Some(crate::task::MANAGED_KIND_MEMORY_GARDENER | crate::task::MANAGED_KIND_MEMORY_MOLT)
+    ) {
+        return false;
+    }
+    task.notification
+        .as_ref()
+        .map(|notification| notification.desktop)
+        .unwrap_or(true)
 }
 
 pub fn release_task_sessions(handle: &AppHandle, task: &Task, active_session_id: Option<&str>) {
@@ -435,6 +443,25 @@ mod tests {
 
         task.managed_kind = None;
         assert!(uses_session_engine(&task));
+    }
+
+    #[test]
+    fn memory_evolution_tasks_never_deliver_desktop_notifications() {
+        let mut task = single_session_task("unused");
+        task.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_GARDENER.to_string());
+        assert!(!should_deliver_desktop_notification(&task));
+
+        task.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_MOLT.to_string());
+        assert!(!should_deliver_desktop_notification(&task));
+
+        task.managed_kind = None;
+        assert!(should_deliver_desktop_notification(&task));
+
+        task.notification = Some(crate::task::NotificationConfig {
+            desktop: false,
+            ..Default::default()
+        });
+        assert!(!should_deliver_desktop_notification(&task));
     }
 
     #[test]
