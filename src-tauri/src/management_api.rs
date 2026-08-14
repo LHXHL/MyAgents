@@ -121,6 +121,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/trigger", post(trigger_cron_handler))
         .route("/api/cron/runs", get(runs_cron_handler))
         .route("/api/cron/status", get(status_cron_handler))
+        .route("/api/document/convert", post(document_convert_handler))
+        .route("/api/document/status", get(document_status_handler))
+        .route("/api/document/cancel", post(document_cancel_handler))
+        .route("/api/document/list", get(document_list_handler))
         .route("/api/goal/get", get(goal_get_handler))
         .route("/api/goal/create", post(goal_create_handler))
         .route("/api/goal/turn/claim", post(goal_turn_claim_handler))
@@ -3918,6 +3922,88 @@ async fn session_watch_handler(
     Json(serde_json::json!({
         "ok": true,
         "result": result,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentJobQuery {
+    job_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentListQuery {
+    limit: Option<usize>,
+}
+
+async fn document_convert_handler(
+    Json(request): Json<crate::document_processing::DocumentSubmitRequest>,
+) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.submit(request) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_status_handler(Query(query): Query<DocumentJobQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.get(&query.job_id) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_cancel_handler(Json(query): Json<DocumentJobQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.cancel(&query.job_id) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_list_handler(Query(query): Query<DocumentListQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.list(query.limit.unwrap_or(20)) {
+        Ok(items) => Json(serde_json::json!({
+            "ok": true,
+            "items": items,
+            "retentionDays": crate::document_processing::DOCUMENT_HISTORY_RETENTION_DAYS,
+        })),
+        Err(error) => document_error(error),
+    }
+}
+
+fn document_error(
+    error: crate::document_processing::DocumentServiceError,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "code": error.code,
+        "error": error.message,
+        "suggestion": error.suggestion,
+        "recoveryHint": error.recovery_hint,
+    }))
+}
+
+fn document_manager_unavailable() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "code": "DOCUMENT_MANAGER_UNAVAILABLE",
+        "error": "The document manager is unavailable.",
+        "suggestion": "Restart MyAgents and retry.",
+        "recoveryHint": {
+            "message": "Restart MyAgents and retry."
+        }
     }))
 }
 

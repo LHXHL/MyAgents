@@ -69,6 +69,143 @@ describe('myagents CLI command grammar', () => {
     expect(validateCliCommand(['config'], true)).toBeUndefined();
     expect(validateCliCommand(['im'], true)).toBeUndefined();
   });
+
+  it('publishes AnyDoc under one command group and redirects the retired draft name', () => {
+    expect(TOP_HELP).toContain('anydoc');
+    expect(validateCliCommand(['anydoc', 'convert'])).toBeUndefined();
+    expect(validateCliCommand(['anydoc', 'wait'])).toBeUndefined();
+    expect(buildRoute('anydoc', 'wait', ['20260815_7f3a91c2b6d4']))
+      .toBe('anydoc/status');
+    expect(validateCliCommand(['document'])).toMatchObject({
+      code: 'UNKNOWN_COMMAND_GROUP',
+      suggestedCommand: 'myagents anydoc --help',
+    });
+  });
+});
+
+describe('myagents CLI AnyDoc contracts', () => {
+  it('resolves source and output paths locally without forwarding CLI-only wait', () => {
+    const parsed = parseArgs([
+      'anydoc',
+      'convert',
+      '--file',
+      './fixtures/report.docx',
+      '--output',
+      './converted',
+      '--password',
+      'marker-secret',
+      '--wait',
+    ]);
+    expect(parsed.flags.wait).toBe(true);
+    expect(buildRequestBody('anydoc', 'convert', [], parsed.flags)).toEqual({
+      sourcePath: join(process.cwd(), 'fixtures/report.docx'),
+      outputRoot: join(process.cwd(), 'converted'),
+      password: 'marker-secret',
+    });
+  });
+
+  it('keeps list bounded and gives status/cancel one exact job identity', () => {
+    expect(buildRequestBody('anydoc', 'list', [], {})).toEqual({ limit: 20 });
+    expect(buildRequestBody('anydoc', 'list', [], { limit: '100' })).toEqual({ limit: 100 });
+    expect(buildRequestBody('anydoc', 'status', ['20260815_7f3a91c2b6d4'], {}))
+      .toEqual({ jobId: '20260815_7f3a91c2b6d4' });
+    expect(buildRequestBody('anydoc', 'cancel', ['20260815_7f3a91c2b6d4'], {}))
+      .toEqual({ jobId: '20260815_7f3a91c2b6d4' });
+  });
+
+  it('rejects URLs, repeated files, dry-run, and invalid list bounds before transport', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['https://example.test/report.pdf'],
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['one.pdf', 'two.pdf'],
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'convert', [], {
+        file: ['one.pdf'],
+        dryRun: true,
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('anydoc', 'list', [], { limit: '0' }))
+        .toThrow('process.exit(2)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('prints an accepted receipt with actionable status and cancel commands', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'convert', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'queued',
+            output: { documentPath: '/tmp/out/document.md' },
+          },
+        },
+      }, false);
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('myagents anydoc status 20260815_7f3a91c2b6d4');
+      expect(output).toContain('myagents anydoc cancel 20260815_7f3a91c2b6d4');
+      expect(output).toContain('/tmp/out/document.md');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('prints list items from the stable list response contract', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'list', {
+        success: true,
+        data: {
+          items: [{
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'succeeded',
+            output: { documentPath: '/tmp/out/document.md' },
+          }],
+          retentionDays: 30,
+        },
+      }, false);
+      expect(log.mock.calls.flat().join('\n')).toContain(
+        '20260815_7f3a91c2b6d4  succeeded  /tmp/out/document.md',
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps AnyDoc warnings and terminal errors off stdout', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_7f3a91c2b6d4',
+            state: 'succeeded_with_warnings',
+            stage: 'finalizing',
+            output: { documentPath: '/tmp/out/document.md' },
+            warnings: [{ code: 'DOCUMENT_ASSET_SKIPPED', message: 'image omitted' }],
+          },
+        },
+      }, false);
+      expect(log.mock.calls.flat().join('\n')).not.toContain('image omitted');
+      expect(error.mock.calls.flat().join('\n')).toContain(
+        'Warning [DOCUMENT_ASSET_SKIPPED]: image omitted',
+      );
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
 });
 
 describe('myagents CLI Sidecar capability diagnostics', () => {

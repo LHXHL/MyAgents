@@ -464,6 +464,14 @@ MyAgents CLI 同时承载两类“工具”：
 
 `vision` 的开关语义与 MCP 类似：设置页全局启用后，对话内工具菜单还可以做 session 级启用；实际可用性还要求「设置 → 工具箱」中选择了支持图片输入的模型。`vision analyze` 只接受当前 workspace 内的本地图片路径；`--prompt` 用于短指令，`--prompt-file` 用于长/多行指令，但同样只按当前 workspace 解析，拒绝 URL、symlink 与逃逸路径。
 
+#### `myagents anydoc` 本地文档转换
+
+AnyDoc 是官方稳定命令组，不属于 MCP，也不受用户 CLI 工具注册表开关控制。公开 surface 固定为 `convert/status/wait/cancel/list`：Rust backend 始终异步；`convert --wait` 与独立 `wait` 只是 CLI 对 `status` 的有界退避轮询，不新增 Rust wait endpoint。`--output` 是输出根目录，最终 artifact 固定为 `<output-root>/<job-id>/document.md`；省略时 Sidecar 注入自己的 authoritative current Workspace，CLI 不得提交伪造的 workspace 字段。
+
+调用链为 app bundle CLI → 当前 Sidecar `/api/admin/anydoc/*` → Rust Management API `/api/document/*` → App-owned `DocumentProcessingManager`。Admin handler 必须保持薄转发，并用 `wrapMgmtResponse()` 保留 Rust 的 `code/suggestion/recoveryHint`。`wait` 复用 `anydoc/status` Admin route；Ctrl-C 只结束本地轮询并退出 130，不取消 App job。
+
+Agent 使用说明由 required system Skill `/myagents-anydoc` 渐进加载；`myagents-cli` 只在正文速查中登记 `myagents anydoc --help` 与专属 Skill，不复制协议，且其 frontmatter description 不得出现 AnyDoc。AnyDoc 不进入 `system-prompt-cli-tools.ts` 的 always-on 内容。当前参数、退出码和恢复指引以逐级 exact `--help` 为二进制权威，不提供 `readme` 命令。底层 owner、资源和安全契约见 [`document_processing.md`](./document_processing.md)。
+
 ### CLI 工具注册表实验门控
 
 用户注册 CLI 工具注册表（`myagents tool ...`、设置页「工具箱 / CLI 工具」、`tool-creator` skill、用户工具 prompt 注入）受 `config.cliToolRegistryEnabled` 控制。该开关位于「设置 → 关于&反馈 → 实验室」，默认关闭，且不能通过通用 `myagents config set cliToolRegistryEnabled ...` 修改，避免 AI 自行绕过人类可见的实验开关。

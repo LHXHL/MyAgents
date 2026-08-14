@@ -10,6 +10,7 @@ pub mod config_io;
 mod crash_artifact_retention;
 pub mod cron_task;
 pub mod device_identity;
+pub mod document_processing;
 pub mod floating_ball;
 pub mod floating_ball_pets;
 mod global_shortcut;
@@ -1182,6 +1183,50 @@ pub fn run() {
             management_api::set_agent_state(agent_state_for_management);
             management_api::set_sidecar_state(sidecar_state_for_management);
 
+            // The Desktop App owns one global document queue and at most one
+            // isolated Worker. Initialize it before the Management API starts
+            // so every Sidecar observes the same durable job authority.
+            match app.path().resource_dir() {
+                Ok(resource_dir) => {
+                    let resource_dir = sidecar::normalize_external_path(resource_dir);
+                    match app_dirs::myagents_data_dir() {
+                        Some(data_dir) => {
+                            match document_processing::DocumentProcessingManager::initialize(
+                                data_dir,
+                                resource_dir,
+                            ) {
+                                Ok(manager) => {
+                                    if let Err(error) =
+                                        document_processing::set_global(manager.clone())
+                                    {
+                                        ulog_error!(
+                                            "[document] Failed to register manager: {}",
+                                            error
+                                        );
+                                    } else {
+                                        app.manage(manager);
+                                    }
+                                }
+                                Err(error) => {
+                                    ulog_error!(
+                                        "[document] Failed to initialize manager: {}",
+                                        error
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            ulog_error!(
+                                "[document] Failed to resolve private application data directory"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    ulog_error!("[document] Failed to resolve resource directory: {}", error);
+                }
+            }
+
             // Subscribe before automation recovery can create or release a
             // Session Sidecar. The receiver buffers the short gap until its
             // forwarding task starts.
@@ -1426,6 +1471,15 @@ pub fn run() {
                             false
                         }
                     };
+                    if let Some(manager) = document_processing::global() {
+                        if let Err(error) = manager.shutdown() {
+                            ulog_error!(
+                                "[document] shutdown failed reason={} error={}",
+                                shutdown_reason,
+                                error
+                            );
+                        }
+                    }
                     // Record a deliberate-quit marker so the next boot starts
                     // fresh instead of restoring the session (Issue #309), UNLESS
                     // this is an update-restart. Both update paths — plugin

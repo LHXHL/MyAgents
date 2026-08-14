@@ -53,6 +53,7 @@
       "../bundled-skills": "bundled-skills",
       "../bundled-agents": "bundled-agents",
       "../src-tauri/resources/cli": "cli",
+      "../src-tauri/resources/document-processing": "document-processing",
       "../mino": "mino",
       "../LICENSE": "legal/LICENSE",
       "../LICENSING.md": "legal/LICENSING.md",

@@ -52,6 +52,10 @@ CLI 通过 `~/.myagents/bin/myagents` 暴露，你的 SDK 子进程 PATH 已注�
 
 ## 命令速查 + 何时使用
 
+### AnyDoc 本地文档转换
+
+MyAgents 内置 AnyDoc 本地文档转 Markdown/OCR 能力。先运行 `myagents anydoc --help`；需要详细使用说明时加载 `/myagents-anydoc`。
+
 ### MCP 工具（mcp）
 
 ```bash

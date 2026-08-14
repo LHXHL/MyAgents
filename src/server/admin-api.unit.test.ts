@@ -185,6 +185,38 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('provides exact multi-level AnyDoc help without a readme command', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const group = String((handleHelp({ path: ['anydoc'] }).data as { text?: string })?.text ?? '');
+    expect(group).toContain('convert');
+    expect(group).toContain('status');
+    expect(group).toContain('wait');
+    expect(group).toContain('cancel');
+    expect(group).toContain('list');
+    expect(group.toLowerCase()).not.toContain('readme');
+
+    for (const leaf of ['convert', 'status', 'wait', 'cancel', 'list']) {
+      const text = String((handleHelp({ path: ['anydoc', leaf] }).data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents anydoc ${leaf}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('PATH / PASSWORD SAFETY');
+      expect(text).toContain('ASYNC / EXIT');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('ERROR RECOVERY');
+    }
+    const convert = String((handleHelp({ path: ['anydoc', 'convert'] }).data as { text?: string })?.text ?? '');
+    expect(convert).toContain('shell history');
+    expect(convert).toContain('local process inspection');
+    expect(convert).toContain('Queue: 16 jobs');
+    expect(convert).toContain('Source: 512 MiB');
+    expect(convert).toContain('PDF: 500 pages');
+    expect(convert).toContain('Decoded image: 100 megapixels');
+    expect(convert).toContain('Published output: 128 MiB');
+    expect(convert).toContain('Job deadline: 30 minutes');
+  });
+
   it('documents dry-run on the exact mutation leaves that implement it', async () => {
     const { handleHelp } = await import('./admin-api');
     for (const path of [
@@ -476,6 +508,55 @@ describe('admin-api help registry', () => {
     expect(listText).toContain('--include-subtree <true|false>');
     expect(viewText).toContain('issue.goalId');
     expect(viewText).toContain('issue.goalPathLabel');
+  });
+});
+
+describe('admin-api AnyDoc forwarding', () => {
+  it('injects the Sidecar-owned Workspace and forwards the transient password only to Rust', async () => {
+    agentSessionMocks.agentDir = '/workspace/authoritative';
+    managementApiMocks.managementApi.mockResolvedValue({
+      ok: true,
+      job: { jobId: '20260815_7f3a91c2b6d4', state: 'queued' },
+    });
+    const { handleAnydocConvert } = await import('./admin-api');
+
+    const result = await handleAnydocConvert({
+      sourcePath: '/inputs/report.pdf',
+      outputRoot: '/outputs',
+      password: 'marker-secret',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/document/convert',
+      'POST',
+      {
+        sourcePath: '/inputs/report.pdf',
+        outputRoot: '/outputs',
+        password: 'marker-secret',
+        currentWorkspace: '/workspace/authoritative',
+      },
+    );
+    expect(result).toEqual({
+      success: true,
+      data: { job: { jobId: '20260815_7f3a91c2b6d4', state: 'queued' } },
+    });
+  });
+
+  it('keeps status/list read-only and cancel as the only lifecycle mutation', async () => {
+    const {
+      handleAnydocCancel,
+      handleAnydocList,
+      handleAnydocStatus,
+    } = await import('./admin-api');
+    await handleAnydocStatus({ jobId: '20260815_7f3a91c2b6d4' });
+    await handleAnydocList({ limit: 20 });
+    await handleAnydocCancel({ jobId: '20260815_7f3a91c2b6d4' });
+
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/document/status?jobId=20260815_7f3a91c2b6d4'],
+      ['/api/document/list?limit=20'],
+      ['/api/document/cancel', 'POST', { jobId: '20260815_7f3a91c2b6d4' }],
+    ]);
   });
 });
 

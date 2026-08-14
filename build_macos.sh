@@ -695,6 +695,9 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
         exit 1
     fi
 
+    echo -e "  ${CYAN}准备离线文档转换 Worker / OCR / PDFium 资源 (${TARGET})...${NC}"
+    node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$TARGET"
+
     npm run tauri:build -- --target "$TARGET"
 
     echo -e "${GREEN}✓ $TARGET 构建完成${NC}"

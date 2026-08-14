@@ -7,6 +7,16 @@ const repoRoot = resolve(import.meta.dirname, '..');
 const buildDev = readFileSync(resolve(repoRoot, 'build_dev.sh'), 'utf8');
 const buildMacos = readFileSync(resolve(repoRoot, 'build_macos.sh'), 'utf8');
 const esbuildBundle = readFileSync(resolve(repoRoot, 'scripts/esbuild-bundle.mjs'), 'utf8');
+const buildLinux = readFileSync(resolve(repoRoot, 'build_linux.sh'), 'utf8');
+const buildWindows = readFileSync(resolve(repoRoot, 'build_windows.ps1'), 'utf8');
+const documentResourceScript = readFileSync(resolve(repoRoot, 'scripts/prepare-document-processing.mjs'), 'utf8');
+const syncVersionScript = readFileSync(resolve(repoRoot, 'scripts/sync-version.js'), 'utf8');
+const documentWorkerSmoke = readFileSync(resolve(repoRoot, 'scripts/document-worker-smoke.mjs'), 'utf8');
+const documentResourceLock = JSON.parse(readFileSync(
+  resolve(repoRoot, 'src-tauri/document-worker/resource-lock.json'),
+  'utf8',
+));
+const tauriConfig = JSON.parse(readFileSync(resolve(repoRoot, 'src-tauri/tauri.conf.json'), 'utf8'));
 
 test('macOS dev build replaces every mutable native resource staging directory', () => {
   for (const resource of ['claude-agent-sdk', 'sharp-runtime', 'tsx-runtime']) {
@@ -72,4 +82,63 @@ test('CLI bundle staging owns its complete mutable resource inventory', () => {
   assert.match(esbuildBundle, /resources\/cli\/myagents\.cjs/);
   assert.doesNotMatch(esbuildBundle, /resources\/cli\/myagents\.js/);
   assert.doesNotMatch(esbuildBundle, /copyFile|src\/cli\/myagents\.cmd/);
+});
+
+test('every release build prepares target-specific document resources before Tauri snapshots resources', () => {
+  const macPrepare = buildMacos.indexOf('prepare-document-processing.mjs" "$TARGET"');
+  const macBuild = buildMacos.indexOf('npm run tauri:build -- --target "$TARGET"');
+  assert.ok(macPrepare >= 0 && macPrepare < macBuild);
+
+  const linuxPrepare = buildLinux.indexOf('prepare-document-processing.mjs" "$TARGET"');
+  const linuxBuild = buildLinux.indexOf('npm run tauri:build -- --target "$TARGET"');
+  assert.ok(linuxPrepare >= 0 && linuxPrepare < linuxBuild);
+
+  const windowsPrepare = buildWindows.indexOf('prepare-document-processing.mjs');
+  const windowsBuild = buildWindows.indexOf('npm run tauri:build -- --target x86_64-pc-windows-msvc');
+  assert.ok(windowsPrepare >= 0 && windowsPrepare < windowsBuild);
+});
+
+test('document processing locks all release targets and publishes only verified resources', () => {
+  assert.deepEqual(Object.keys(documentResourceLock.targets).sort(), [
+    'aarch64-apple-darwin',
+    'aarch64-unknown-linux-gnu',
+    'x86_64-apple-darwin',
+    'x86_64-pc-windows-msvc',
+    'x86_64-unknown-linux-gnu',
+  ]);
+  assert.equal(documentResourceLock.pipelineVersion, 'anydoc-0.1.9_ppocrv6-small_v1');
+  assert.match(documentResourceLock.shared.dictionary.url, /ppocrv6_dict\.txt$/);
+  for (const resource of Object.values(documentResourceLock.shared)) {
+    assert.match(resource.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(resource.size > 0);
+    assert.ok(resource.upstreamRevision);
+  }
+  for (const target of Object.values(documentResourceLock.targets)) {
+    assert.ok(target.onnxRuntime.sha256 || target.onnxRuntime.sourceBuild?.commit);
+    assert.match(target.pdfium.sha256, /^[0-9a-f]{64}$/);
+  }
+  assert.match(documentResourceScript, /cargo[\s\S]*--locked[\s\S]*--release[\s\S]*--target/);
+  assert.match(documentResourceScript, /Locked size\/digest mismatch/);
+  assert.match(documentResourceScript, /writeFileSync\(join\(stageRoot, 'manifest\.json'\)/);
+  assert.match(documentResourceScript, /renameSync\(stageRoot, publishRoot\)/);
+  assert.match(documentResourceScript, /`MyAgents\/\$\{appVersion\}`/);
+  assert.match(documentResourceScript, /WINDOWS_SIGNTOOL_PATH/);
+  assert.match(documentResourceScript, /WINDOWS_CERTIFICATE_SHA1/);
+  assert.match(documentResourceScript, /'authenticode'/);
+  assert.match(documentResourceScript, /artifactSource/);
+  assert.match(documentResourceScript, /signing/);
+  assert.ok(
+    documentResourceScript.indexOf("'sign', '/fd', 'SHA256'")
+      < documentResourceScript.indexOf("writeFileSync(join(stageRoot, 'manifest.json')"),
+    'Windows native resources must be signed before manifest hashes are committed',
+  );
+  assert.match(syncVersionScript, /src-tauri\/document-worker\/Cargo\.toml/);
+  assert.match(documentWorkerSmoke, /protocolVersion: 1/);
+  assert.match(documentWorkerSmoke, /resourceManifestPath: manifestPath/);
+  assert.match(documentWorkerSmoke, /message\.type === 'ready'/);
+  assert.match(documentWorkerSmoke, /message\.type === 'completed'/);
+  assert.equal(
+    tauriConfig.bundle.resources['../src-tauri/resources/document-processing'],
+    'document-processing',
+  );
 });

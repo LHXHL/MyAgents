@@ -1114,7 +1114,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "48";
+const SYSTEM_SKILLS_VERSION: &str = "49";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1148,6 +1148,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skills, Cloud Space, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "myagents-cli",
+    // v49: progressively disclosed contract for the bundled local document
+    // converter. It is required because every Runtime must discover the same
+    // App-owned job surface without an always-on prompt section.
+    "myagents-anydoc",
     // v44: one Agent workflow owns scheduled, future and conditional Task
     // automation. Command Detector protocol is a progressive reference, not
     // a competing Sensor product entry.
@@ -1605,9 +1609,19 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v48_keeps_task_cli_and_automation_skills_aligned() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "48");
+    fn v49_keeps_task_cli_and_automation_skills_aligned() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "49");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
+        let anydoc = include_str!("../../bundled-skills/myagents-anydoc/SKILL.md");
+        let description = bundled
+            .split("---")
+            .nth(1)
+            .expect("myagents-cli frontmatter");
+        assert!(!description.to_ascii_lowercase().contains("anydoc"));
+        assert!(bundled.contains("AnyDoc"));
+        assert!(bundled.contains("myagents anydoc --help"));
+        assert!(bundled.contains("/myagents-anydoc"));
+        assert!(anydoc.contains("myagents anydoc convert --file <input>"));
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
         assert!(bundled.contains("myagents space goal list --space <slug> --json"));

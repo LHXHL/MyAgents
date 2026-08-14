@@ -935,6 +935,8 @@ const SYSTEM_SKILLS: readonly string[] = [
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v49: progressive instructions for the bundled offline document converter.
+  'myagents-anydoc',
   // v44: one Agent workflow for scheduled, future and conditional Task
   // automation; command Detector protocol is progressively disclosed inside.
   'myagents-task-automation',
@@ -1312,6 +1314,10 @@ async function routeAdminApi(
   if (route === 'tool/env') return await api.handleToolEnv(payload as Parameters<typeof api.handleToolEnv>[0]);
 
   // Official MyAgents CLI tools
+  if (route === 'anydoc/convert') return await api.handleAnydocConvert(payload as Parameters<typeof api.handleAnydocConvert>[0]);
+  if (route === 'anydoc/status') return await api.handleAnydocStatus(payload as Parameters<typeof api.handleAnydocStatus>[0]);
+  if (route === 'anydoc/cancel') return await api.handleAnydocCancel(payload as Parameters<typeof api.handleAnydocCancel>[0]);
+  if (route === 'anydoc/list') return await api.handleAnydocList(payload as Parameters<typeof api.handleAnydocList>[0]);
   if (route === 'vision/readme') return await api.handleVisionReadme();
   if (route === 'vision/models') return api.handleVisionModels();
   if (route === 'vision/analyze') return await api.handleVisionAnalyze(payload as Parameters<typeof api.handleVisionAnalyze>[0]);

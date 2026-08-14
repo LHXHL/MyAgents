@@ -186,6 +186,10 @@ let client = proxy_config::build_client_with_proxy(builder)?;
 
 ### 关键清理步骤
 
+正式 Windows x64 构建在 Tauri snapshot 前运行 `scripts/prepare-document-processing.mjs x86_64-pc-windows-msvc`，按 `resource-lock.json` 下载并校验 ONNX Runtime CPU、PDFium、PP-OCRv6 模型/字典，使用锁定 Rust toolchain 构建 `myagents-document-worker.exe`，再生成包含最终文件 hash 的 target manifest。运行时只从该 manifest 的绝对路径加载 DLL；不得搜索 PATH、系统目录或联网补资源。安装包 smoke 必须在无系统 ONNX Runtime/PDFium、断网环境验证加载、最小推理、Job Object 取消、notices 与安装包签名。
+
+文档 source/output 的每个已存在祖先都拒绝 reparse point；source 使用 no-follow regular-file handle，输出发布前再次比较 held directory identity。Worker 由 `process_cmd::spawn_tree()` 在 resume 前加入 kill-on-close Job Object；不能退回裸 `Command` 或 `taskkill`。详细跨平台资源矩阵和错误码见 `document_processing.md`。
+
 **必须清理的目录**：
 1. `dist/` - 前端构建产物
 2. `src-tauri/target/{arch}/{profile}/bundle/` - Tauri 安装包

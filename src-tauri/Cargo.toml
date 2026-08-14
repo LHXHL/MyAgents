@@ -69,11 +69,12 @@ portable-pty = "0.8"
 tantivy = "0.22"
 tantivy-jieba = "0.11"
 notify-debouncer-full = "0.6"
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo = { version = "0.33", default-features = false, features = ["disk", "system"] }
 same-file = "1.0"
 trash = "5.2.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
+zeroize = "1"
 zip = { version = "2.4.2", default-features = false, features = ["deflate-zlib"] }
 
 # Pattern 5: stale-lock recovery needs `kill(pid, 0)` for liveness probing on Unix.

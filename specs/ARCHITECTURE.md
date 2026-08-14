@@ -261,6 +261,7 @@ Global control request
 |------|------|--------|
 | `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
 | `/api/task/*`（20 条） | Task Center 任务 CRUD、run/run-now/rerun、Trigger validate/test/check-now/reset-checkpoint 与 doc 读写 | CLI、`admin-api.ts` |
+| `/api/document/*`（4 条） | App-owned 本地文档 conversion job submit/status/cancel/list | `admin-api.ts` 的 AnyDoc 薄转发 |
 | `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
 | `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model / MCP mutation |
 | `/api/runtime/sdk-child/{admit,settle}` | Rust-owned Claude SDK native child launch circuit；按 executable identity 限流 deterministic exec denial | Global / Session Sidecar 的 `createGuardedSdkQuery()` |
@@ -410,6 +411,14 @@ pre-warm 不可变语义见
 CLI 业务 bundle 只位于当前 app。由于 SDK 子进程与用户 shell 的 PATH 不应依赖 app 内部路径，Rust 在 `~/.myagents/bin/` 投影确定性的薄启动器；launcher 回到当前 MyAgents executable，再由 Rust 直达同一安装树的 bundled Node + CLI CJS。HOME 不保存第二份 route、help 或请求体实现。
 
 详见 `tech_docs/cli_architecture.md`。
+
+#### App-owned 本地文档转换
+
+`myagents anydoc` 是官方 CLI 工具，但转换状态不属于 CLI、Sidecar、Session 或 Runtime。Tauri App 内唯一的 `DocumentProcessingManager` 拥有全局有界 FIFO、30 天 job metadata、当前 Worker generation、取消、退出收敛和 artifact 发布；任意 Global / Session Sidecar 只经 Admin API → Management API 薄转发到同一个 owner。
+
+每个 job 使用一个独立 Rust `myagents-document-worker` 进程。Manager 通过 `process_cmd::spawn_tree()` 保留精确 `ChildTree`，用有界 length-prefixed JSON 私有协议传入单次任务；Worker 只读取 Manager 已复制的私有输入，并在输出根内的隐藏 staging 目录运行 AnyDoc、pdf-inspector、PDFium 与 PP-OCRv6 Small。成功后由 Manager 校验 active `(jobId, generation)` 与输出根 identity，以私有 crash-durable publish intent + 随目录 marker 协调同卷 no-replace rename、目录 sync 和 terminal `job.json`；未知持久化结果必须保留 intent。启动恢复只能由同一个 Manager owner 完成已 durable 的 success，或清理未提交 authenticated public path 后把非终态收敛为 `interrupted`。durable terminal 不可逆；artifact 发布后由用户拥有，删除/修改只影响派生 `artifactAvailable`。公开 artifact 固定为 `<output-root>/<job-id>/document.md` 和实际引用的 `assets/`。Worker crash、取消、超时或 App 退出均不得发布 partial artifact。
+
+ONNX Runtime CPU、PDFium、PP-OCRv6 Small 模型/字典和 Worker 按 target 随 App 资源发布；启动时 Manager 校验 manifest 和所有文件 hash，Worker 使用同一 manifest 再校验并只从绝对资源路径加载。运行时不联网，不依赖 GPT、API key、系统 Python/Node、GPU 或系统安装的 native runtime。详细状态机、限制、资源矩阵和排查见 [`tech_docs/document_processing.md`](./tech_docs/document_processing.md)。
 
 ### 5. 定时任务系统
 

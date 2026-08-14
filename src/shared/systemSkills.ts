@@ -1,5 +1,5 @@
 /** Version shared with Rust's SYSTEM_SKILLS_VERSION contract. */
-export const SYSTEM_SKILLS_VERSION = '48';
+export const SYSTEM_SKILLS_VERSION = '49';
 
 /**
  * Canonical Skill names that are part of MyAgents' always-available runtime
@@ -17,6 +17,7 @@ export const REQUIRED_SYSTEM_SKILLS = [
   'myagents-memory-gardener',
   'myagents-memory-molt',
   'myagents-cli',
+  'myagents-anydoc',
   'myagents-task-automation',
   'myagents-docs',
 ] as const;
