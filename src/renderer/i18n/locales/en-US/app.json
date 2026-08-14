@@ -241,6 +241,19 @@
       "fork": "Fork",
       "rewind": "Rewind"
     },
+    "turnFileEdits": {
+      "summary": "Edited {{count}} file(s) this turn",
+      "title": "Files edited this turn",
+      "edited": "Edited",
+      "deleted": "Deleted",
+      "status": {
+        "modified": "Modified",
+        "added": "Added",
+        "deleted": "Deleted",
+        "renamed": "Renamed",
+        "edited": "Edited"
+      }
+    },
     "systemTags": {
       "heartbeat": "Heartbeat",
       "cronTask": "Scheduled task",

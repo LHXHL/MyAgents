@@ -241,6 +241,19 @@
       "fork": "分支",
       "rewind": "时间回溯"
     },
+    "turnFileEdits": {
+      "summary": "本轮编辑 {{count}} 个文件",
+      "title": "本轮文件编辑",
+      "edited": "已编辑",
+      "deleted": "已删除",
+      "status": {
+        "modified": "已修改",
+        "added": "已新增",
+        "deleted": "已删除",
+        "renamed": "已重命名",
+        "edited": "已编辑"
+      }
+    },
     "systemTags": {
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",

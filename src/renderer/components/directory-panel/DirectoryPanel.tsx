@@ -303,6 +303,7 @@ const DirectoryPanel = memo(
       setSearchQuery,
       isSearching,
       isRefreshingSearch,
+      folderResults,
       searchResults,
       expandedFiles,
       setExpandedFiles,
@@ -739,7 +740,13 @@ const DirectoryPanel = memo(
     );
 
     const handleRevealSearchResultInTree = useCallback(
-      async (path: string, options?: { silentIfMissing?: boolean }) => {
+      async (
+        path: string,
+        options?: {
+          silentIfMissing?: boolean;
+          expandTargetDirectory?: boolean;
+        },
+      ) => {
         const requestId = ++treeRevealRequestIdRef.current;
         const ancestors = ancestorDirectoryPaths(path);
         // "Missing" is a real error for search/chat reveals (the file should
@@ -778,6 +785,20 @@ const DirectoryPanel = memo(
         if (targetResult.status !== "found") {
           reportMissing();
           return;
+        }
+
+        if (
+          options?.expandTargetDirectory &&
+          targetResult.meta.data.type === "dir"
+        ) {
+          openPath(path);
+          if (targetResult.meta.data.loaded === false) {
+            await expandDir(path);
+          }
+          if (requestId !== treeRevealRequestIdRef.current) {
+            return;
+          }
+          await waitForTreeFrame();
         }
 
         setIsSearchMode(false);
@@ -3272,6 +3293,7 @@ const DirectoryPanel = memo(
               >
                 {isSearchMode ? (
                   <FileSearchResults
+                    folders={folderResults}
                     results={searchResults}
                     isLoading={isSearching}
                     isRefreshing={isRefreshingSearch}
@@ -3284,6 +3306,11 @@ const DirectoryPanel = memo(
                         if (next.has(path)) next.delete(path);
                         else next.add(path);
                         return next;
+                      });
+                    }}
+                    onFolderClick={(hit) => {
+                      void handleRevealSearchResultInTree(hit.path, {
+                        expandTargetDirectory: true,
                       });
                     }}
                     onFileClick={(hit) => handlePreviewSearchHit(hit)}
