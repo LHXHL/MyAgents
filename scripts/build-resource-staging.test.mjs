@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import { resolve } from 'node:path';
 
@@ -52,6 +52,60 @@ const documentResourceLock = JSON.parse(
 const tauriConfig = JSON.parse(
   readFileSync(resolve(repoRoot, 'src-tauri/tauri.conf.json'), 'utf8'),
 );
+
+test('bundled workspace templates are committed, clean, and setup-independent', () => {
+  const templateRoot = resolve(repoRoot, 'bundled-workspaces', 'mino');
+  assert.ok(
+    existsSync(resolve(templateRoot, 'CLAUDE.md')),
+    'the committed mino template must include its workspace marker',
+  );
+  assert.equal(
+    tauriConfig.bundle.resources['../bundled-workspaces'],
+    'bundled-workspaces',
+  );
+  assert.equal(tauriConfig.bundle.resources['../mino'], undefined);
+  assert.equal(existsSync(resolve(repoRoot, 'mino')), false);
+  const bundledSkills = readdirSync(
+    resolve(templateRoot, '.claude', 'skills'),
+    { withFileTypes: true },
+  )
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  assert.deepEqual(bundledSkills, [
+    'apple-notes',
+    'apple-reminders',
+    'bird',
+    'github',
+    'peekaboo',
+    'remotion-best-practices',
+  ]);
+
+  const pending = [templateRoot];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      assert.notEqual(entry.name, '.DS_Store');
+      assert.notEqual(entry.name, '.git');
+      assert.equal(
+        lstatSync(path).isSymbolicLink(),
+        false,
+        `bundled templates cannot contain skipped symlinks: ${path}`,
+      );
+      if (entry.isDirectory()) pending.push(path);
+    }
+  }
+
+  for (const setup of [setupUnix, setupWindows]) {
+    assert.doesNotMatch(setup, /openmino/i);
+    assert.doesNotMatch(setup, /git clone[^\n]*mino/i);
+  }
+  assert.match(
+    buildMacos,
+    /bundled-workspaces\/mino\/CLAUDE\.md/,
+  );
+});
 
 test('macOS dev build replaces every mutable native resource staging directory', () => {
   for (const resource of ['claude-agent-sdk', 'sharp-runtime', 'tsx-runtime']) {

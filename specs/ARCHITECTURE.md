@@ -453,7 +453,7 @@ Project (工作区)
     └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
-**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel。主动能力的 effective state 统一为 `agent.enabled && child.enabled`；Channel 的 effective state 独立为 `channel.enabled && setup/credentials ready && workspace 未归档`，不再读取 `agent.enabled`。
+**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板由仓库内 `bundled-workspaces/mino/` 拥有，并投影为安装包只读资源；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel。主动能力的 effective state 统一为 `agent.enabled && child.enabled`；Channel 的 effective state 独立为 `channel.enabled && setup/credentials ready && workspace 未归档`，不再读取 `agent.enabled`。模板只负责创建新工作区，复制后的用户实例不会被 App 升级覆盖，也不能在安装包资源缺失时反向充当模板。
 
 **Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。Memory Evo 的 managed Task 用 `Task.workspaceId → Project.agentId` 回到精确 Agent，workspace path 只作为实际执行目录，不能反向选择 Agent。`enabled` 只控制 Heartbeat、Memory Update、Memory Evo 三项主动能力，不控制 Channel、显式 addressability 或普通工作区使用。总开关是确定性的批量策略：每次开启/关闭都会把 master 与三个子开关一并设为相同值；之后仍可单独调整子开关。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
 

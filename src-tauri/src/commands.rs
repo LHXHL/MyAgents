@@ -395,8 +395,48 @@ pub struct InitBundledWorkspaceResult {
     pub is_new: bool,
 }
 
+const BUNDLED_WORKSPACE_TEMPLATES_DIR: &str = "bundled-workspaces";
+const DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID: &str = "mino";
+
+/// Resolve one immutable workspace template shipped with the current app.
+///
+/// The bundled template is the only authority for creating a fresh builtin
+/// workspace. A user-owned copy under `~/.myagents/projects/` must never be
+/// used as a fallback source because it may already contain private identity,
+/// memory, credentials references, or other user customizations.
+fn resolve_bundled_workspace_template_at(
+    resource_dir: &Path,
+    template_id: &str,
+) -> Result<PathBuf, String> {
+    validate_template_id(template_id)?;
+    let template_src = resource_dir
+        .join(BUNDLED_WORKSPACE_TEMPLATES_DIR)
+        .join(template_id);
+    if !template_src.is_dir() || !template_src.join("CLAUDE.md").is_file() {
+        return Err(format!(
+            "Bundled workspace template '{}' not found or incomplete: {:?}",
+            template_id, template_src
+        ));
+    }
+    template_src
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve bundled workspace template: {}", e))
+}
+
+fn resolve_bundled_workspace_template<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    template_id: &str,
+) -> Result<PathBuf, String> {
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+    resolve_bundled_workspace_template_at(&resource_dir, template_id)
+}
+
 /// Command: Initialize bundled workspace (mino) on first launch
-/// Copies from app resources to ~/.myagents/projects/mino/
+/// Copies from the immutable app template to ~/.myagents/projects/mino/.
+/// An existing user-owned workspace is never overwritten.
 #[tauri::command]
 pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     app_handle: AppHandle<R>,
@@ -420,17 +460,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
         });
     }
 
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let mino_src = resource_dir.join("mino");
-    if !mino_src.exists() || !mino_src.join("CLAUDE.md").exists() {
-        return Err(format!(
-            "Bundled mino not found or incomplete in resources: {:?}",
-            mino_src
-        ));
-    }
+    let mino_src =
+        resolve_bundled_workspace_template(&app_handle, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)?;
 
     ulog_info!(
         "[workspace] Initializing bundled workspace from {:?}",
@@ -451,9 +482,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     })
 }
 
-/// Command: Create a dedicated workspace for an IM Bot by copying bundled mino template.
+/// Command: Create a dedicated workspace for an IM Bot by copying the bundled mino template.
 /// Sanitizes the name for path safety and auto-appends numeric suffix on collision.
-/// Falls back to local mino copy if bundled resources are incomplete.
 /// Returns the created workspace path.
 #[tauri::command]
 pub fn cmd_create_bot_workspace<R: Runtime>(
@@ -472,44 +502,20 @@ pub fn cmd_create_bot_workspace<R: Runtime>(
     // Find available path (handle collisions with numeric suffix)
     let dest = find_available_workspace_path(&projects_dir, &sanitized);
 
-    // Primary: copy from bundled resources
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let mino_src = resource_dir.join("mino");
-
-    if mino_src.exists() && mino_src.join("CLAUDE.md").exists() {
-        ulog_info!(
-            "[workspace] Copying bundled mino from {:?} to {:?}",
-            mino_src,
-            dest
-        );
-        copy_dir_recursive(&mino_src, &dest)
-            .map_err(|e| format!("Failed to copy workspace template: {}", e))?;
-    }
+    let mino_src =
+        resolve_bundled_workspace_template(&app_handle, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)?;
+    ulog_info!(
+        "[workspace] Copying bundled mino from {:?} to {:?}",
+        mino_src,
+        dest
+    );
+    copy_dir_recursive(&mino_src, &dest)
+        .map_err(|e| format!("Failed to copy workspace template: {}", e))?;
 
     // Validate: CLAUDE.md must exist in destination (marker file for a valid mino template)
     if !dest.join("CLAUDE.md").exists() {
-        // Fallback: copy from the local mino created on first launch
-        let local_mino = projects_dir.join("mino");
-        if local_mino.exists() && local_mino.join("CLAUDE.md").exists() {
-            ulog_warn!(
-                "[workspace] Bundled mino incomplete, falling back to local {:?}",
-                local_mino
-            );
-            // Clean up the potentially empty dest before fallback copy
-            let _ = fs::remove_dir_all(&dest);
-            copy_dir_recursive(&local_mino, &dest)
-                .map_err(|e| format!("Failed to copy from local mino: {}", e))?;
-        } else {
-            // Clean up the empty dest
-            let _ = fs::remove_dir_all(&dest);
-            return Err(
-                "Mino template not found: bundled resources incomplete and no local copy available"
-                    .to_string(),
-            );
-        }
+        let _ = fs::remove_dir_all(&dest);
+        return Err("Bundled mino copy produced incomplete workspace".to_string());
     }
 
     ulog_info!("[workspace] Bot workspace created: {:?}", dest);
@@ -716,8 +722,7 @@ pub fn cmd_create_workspace_from_template(
 }
 
 /// Command: Create a workspace from a bundled (preset) template.
-/// Copies from app resources/<template_id> to dest_path.
-/// Falls back to local copy at ~/.myagents/projects/<template_id> if bundled is incomplete.
+/// Copies from app resources/bundled-workspaces/<template_id> to dest_path.
 /// Safety: template_id is sanitized to prevent path traversal.
 #[tauri::command]
 pub fn cmd_create_workspace_from_bundled_template<R: Runtime>(
@@ -736,46 +741,16 @@ pub fn cmd_create_workspace_from_bundled_template<R: Runtime>(
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {}", e))?;
     }
 
-    // Primary: copy from bundled resources
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let template_src = resource_dir.join(&template_id);
-
-    if template_src.exists() && template_src.join("CLAUDE.md").exists() {
-        ulog_info!(
-            "[template] Copying bundled template '{}' from {:?} to {:?}",
-            template_id,
-            template_src,
-            dst
-        );
-        copy_dir_recursive(&template_src, &dst)
-            .map_err(|e| format!("Failed to copy bundled template: {}", e))?;
-        return Ok(());
-    }
-
-    // Fallback: copy from local projects/<template_id>
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let local_src = home_dir
-        .join(".myagents")
-        .join("projects")
-        .join(&template_id);
-    if local_src.exists() && local_src.join("CLAUDE.md").exists() {
-        ulog_warn!(
-            "[template] Bundled template '{}' incomplete, falling back to local {:?}",
-            template_id,
-            local_src
-        );
-        copy_dir_recursive(&local_src, &dst)
-            .map_err(|e| format!("Failed to copy from local template: {}", e))?;
-        return Ok(());
-    }
-
-    Err(format!(
-        "Template '{}' not found in bundled resources or local copies",
-        template_id
-    ))
+    let template_src = resolve_bundled_workspace_template(&app_handle, &template_id)?;
+    ulog_info!(
+        "[template] Copying bundled template '{}' from {:?} to {:?}",
+        template_id,
+        template_src,
+        dst
+    );
+    copy_dir_recursive(&template_src, &dst)
+        .map_err(|e| format!("Failed to copy bundled template: {}", e))?;
+    Ok(())
 }
 
 /// Validate a bundled template_id — rejects path separators, traversal, and empty IDs.
@@ -813,26 +788,7 @@ fn resolve_template_source<R: Runtime>(
     source_path: Option<String>,
 ) -> Result<PathBuf, String> {
     if let Some(id) = template_id.as_deref() {
-        validate_template_id(id)?;
-        let resource_dir = app_handle
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-        let bundled = resource_dir.join(id);
-        if bundled.exists() && bundled.join("CLAUDE.md").exists() {
-            // Canonicalize so subsequent reads can't be redirected via symlink swap.
-            return bundled
-                .canonicalize()
-                .map_err(|e| format!("Failed to resolve bundled template path: {}", e));
-        }
-        let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-        let local = home_dir.join(".myagents").join("projects").join(id);
-        if local.exists() && local.join("CLAUDE.md").exists() {
-            return local
-                .canonicalize()
-                .map_err(|e| format!("Failed to resolve local template path: {}", e));
-        }
-        return Err(format!("Bundled template '{}' not found", id));
+        return resolve_bundled_workspace_template(app_handle, id);
     }
     if let Some(p) = source_path.as_deref() {
         let src = PathBuf::from(p);
@@ -1546,6 +1502,48 @@ fn merge_dir_recursive_validated_with_home(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bundled_workspace_template_tests {
+    use super::{
+        resolve_bundled_workspace_template_at, BUNDLED_WORKSPACE_TEMPLATES_DIR,
+        DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn committed_mino_template_is_complete_and_resolves_from_resource_root() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must live under the repository root");
+
+        let resolved =
+            resolve_bundled_workspace_template_at(repo_root, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)
+                .expect("committed mino template must resolve");
+
+        assert!(resolved.join("CLAUDE.md").is_file());
+        assert!(resolved.ends_with(
+            Path::new(BUNDLED_WORKSPACE_TEMPLATES_DIR).join(DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)
+        ));
+    }
+
+    #[test]
+    fn bundled_template_resolver_rejects_traversal_and_incomplete_sources() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must live under the repository root");
+
+        assert_eq!(
+            resolve_bundled_workspace_template_at(repo_root, "../mino").unwrap_err(),
+            "Invalid template ID"
+        );
+        assert!(
+            resolve_bundled_workspace_template_at(repo_root, "missing-template")
+                .unwrap_err()
+                .contains("not found or incomplete")
+        );
+    }
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@
 | `src-tauri/` | Tauri v2 Rust 壳、进程与持久化 owner、HTTP/SSE 代理 |
 | `src-tauri/document-worker/` | 独立 Rust 文档转换 Worker；单 job 计算，不拥有队列或持久化 |
 | `bundled-agents/myagents_helper/` | 内置 MA 小助理 |
+| `bundled-workspaces/` | 随 App 发布的只读工作区模板源码；复制出的用户工作区不由此目录升级覆盖 |
 | `specs/` | 当前架构、设计规范、模块技术文档与构建指南 |
 
 Sidecar、Plugin Bridge、MCP Server 与 CLI 共用应用内置的单一 Node.js v24，不依赖用户系统安装的 Node。

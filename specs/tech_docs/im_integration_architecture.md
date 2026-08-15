@@ -1164,10 +1164,12 @@ Mino 默认工作区的"文件内容模板"和 MyAgents 的"产品级 Agent 默�
 
 | 层 | 权威来源 | 职责 |
 |----|----------|------|
-| 文件内容模板 | `resources/mino/`（来自外部 Mino 模板仓库/打包资源） | 初始化工作区里的 Markdown、配置文件、示例内容 |
+| 文件内容模板 | 仓库 `bundled-workspaces/mino/` → 安装包 `resources/bundled-workspaces/mino/` | 初始化工作区里的 Markdown、配置文件、示例内容；复制后用户实例独立演化 |
 | 产品默认能力 | `src/shared/config-types.ts::PRESET_TEMPLATES[].agentDefaults` | 声明新建 builtin Mino project 时 Agent 是否默认开启，以及 heartbeat / memory 默认参数 |
 
 `Project` 会记录 `templateId` / `templateSource`。只有 `templateSource === 'builtin'` 且模板本身带 `agentDefaults` 时，`buildAgentForProject()` 才会把这些默认策略复制进 `AgentConfig`。用户模板即使复用了 `mino` 这个 id，也不会自动继承 builtin 默认能力。
+
+内置模板是当前 App 版本的只读发布资源。首次默认工作区、Bot 工作区、模板库创建及模板预览/应用必须共享同一个 bundled-template resolver；`~/.myagents/projects/mino` 是用户拥有的实例，不参与模板解析，也不会被 App 升级覆盖。
 
 关键不变式：
 - 新建 project / 启动补齐历史 project 的 Agent 配置必须走共享 reconciliation + `buildAgentForProject()`；在 `agent-config-intent.lock` 内先持久化 `Project.agentId`，再以同一 ID 创建 pathless Agent，避免 Launcher、ConfigProvider、migration 路径分叉与中断重复 birth。
