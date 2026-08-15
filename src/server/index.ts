@@ -951,6 +951,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   'myagents-memory-update',
   'myagents-memory-gardener',
   'myagents-memory-molt',
+  // v50: skill-creator promoted from utility → system skill so its bundled
+  // workflow and evaluation scripts update existing installations.
+  'skill-creator',
   // v29: prompt-writer promoted from utility → system skill so content
   // improvements reach existing installs (seed-once never updates).
   'prompt-writer',

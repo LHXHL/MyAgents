@@ -1114,7 +1114,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "49";
+const SYSTEM_SKILLS_VERSION: &str = "50";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1166,6 +1166,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     "myagents-memory-update",
     "myagents-memory-gardener",
     "myagents-memory-molt",
+    // v50: skill-creator promoted from utility → system skill. Its authoring
+    // and evaluation workflow evolves with the bundled scripts, so existing
+    // installs must receive updates instead of retaining the seed-once copy.
+    "skill-creator",
     // v29: prompt-writer promoted from utility → system skill. It is pure
     // methodology (no product-surface coupling), but as a utility skill the
     // seed-once path meant existing installs never received content
@@ -1573,8 +1577,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v49_keeps_task_cli_and_automation_skills_aligned() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "49");
+    fn v50_keeps_task_cli_automation_and_creator_skills_aligned() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "50");
+        assert!(SYSTEM_SKILLS.contains(&"skill-creator"));
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         let anydoc = include_str!("../../bundled-skills/myagents-anydoc/SKILL.md");
         let description = bundled
