@@ -74,9 +74,9 @@ import {
   type WorkspaceTemplate,
 } from '@/config/types';
 import {
-  disableAgentAndStopChannels,
-  enableAgentAndStartChannels,
   getAgentById,
+  setAgentEnabledForLifecycle,
+  stopAgentChannelsForLifecycle,
 } from '@/config/services/agentConfigService';
 import {
   archiveProject,
@@ -709,7 +709,8 @@ export default memo(function GlobalSidebar({
       const wasEnabled = agent?.enabled === true;
       const archived = await archiveProject(latest.id, { agentEnabledBeforeArchive: wasEnabled });
       if (!archived) throw new Error(`Project ${latest.id} not found`);
-      if (agent && wasEnabled) await disableAgentAndStopChannels(agent);
+      if (agent && wasEnabled) await setAgentEnabledForLifecycle(agent.id, false);
+      if (agent) await stopAgentChannelsForLifecycle(agent);
       await refreshConfig();
       toastRef.current.success(tLauncher('toasts.workspaceArchived'));
     } catch (error) {
@@ -730,7 +731,7 @@ export default memo(function GlobalSidebar({
       if (!restored) throw new Error(`Project ${latest.id} not found`);
       if (shouldRestoreAgent && latest.agentId) {
         try {
-          await enableAgentAndStartChannels(latest.agentId);
+          await setAgentEnabledForLifecycle(latest.agentId, true);
         } catch (error) {
           await archiveProject(latest.id, {
             archivedAtIso: latest.archivedAt,

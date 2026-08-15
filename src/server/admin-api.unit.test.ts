@@ -3086,7 +3086,7 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
       key: 'enabled',
       value: false,
     })],
-  ])('%s persists disabled before stopping all Rust channel runtimes', async (_label, run) => {
+  ])('%s resets proactive children without stopping Channel runtimes', async (_label, run) => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
         id: 'agent-disable',
@@ -3095,24 +3095,93 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
         channels: [{ id: 'channel-1', type: 'openclaw:weixin', enabled: true }],
       }],
     });
-    let persistedEnabledAtStop: unknown;
-    managementApiMocks.managementApi.mockImplementation(async () => {
-      const agent = (readConfig().agents as Record<string, unknown>[])[0];
-      persistedEnabledAtStop = agent.enabled;
-      return { ok: true, stoppedChannels: 1 };
-    });
+    managementApiMocks.managementApi.mockResolvedValue({ ok: true });
     const api = await import('./admin-api');
 
     const result = await run(api);
 
     expect(result.success).toBe(true);
     expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
-      '/api/agent/stop-channels',
+      '/api/agent/reload-config',
       'POST',
-      { agentId: 'agent-disable' },
-      expect.any(Object),
+      expect.objectContaining({
+        agentId: 'agent-disable',
+        patch: expect.objectContaining({ enabled: false }),
+      }),
     );
-    expect(persistedEnabledAtStop).toBe(false);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalledWith(
+      '/api/agent/stop-channels',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    const agent = (readConfig().agents as Record<string, unknown>[])[0];
+    expect(agent).toMatchObject({
+      enabled: false,
+      heartbeat: { enabled: false },
+      memoryAutoUpdate: { enabled: false },
+      memoryEvolution: { enabled: false },
+      channels: [{ id: 'channel-1', enabled: true }],
+    });
+  });
+
+  it('returns failure when proactive config saves but runtime or managed tasks do not converge', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-reconcile-fails',
+        name: 'Reconcile Fails',
+        enabled: true,
+        channels: [],
+      }],
+    });
+    managementApiMocks.managementApi.mockResolvedValue({
+      ok: false,
+      error: 'managed task reconcile failed',
+    });
+    const { handleAgentDisable } = await import('./admin-api');
+
+    const result = await handleAgentDisable({ id: 'agent-reconcile-fails' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('managed task reconcile failed');
+    expect(result.data).toMatchObject({ configSaved: true });
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      enabled: false,
+      heartbeat: { enabled: false },
+      memoryAutoUpdate: { enabled: false },
+      memoryEvolution: { enabled: false },
+    });
+  });
+
+  it('agent enable resets all proactive children while preserving their settings', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-enable',
+        name: 'Enable',
+        enabled: false,
+        heartbeat: { enabled: false, intervalMinutes: 48 },
+        memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+        channels: [{ id: 'channel-off', type: 'telegram', enabled: false }],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-enable',
+      name: 'Enable',
+      path: '/tmp/enable',
+      agentId: 'agent-enable',
+    }]);
+    const { handleAgentEnable } = await import('./admin-api');
+
+    const result = await handleAgentEnable({ id: 'agent-enable' });
+
+    expect(result.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      enabled: true,
+      heartbeat: { enabled: true, intervalMinutes: 48 },
+      memoryAutoUpdate: { enabled: true, intervalHours: 24 },
+      memoryEvolution: { enabled: true, lastGardenerStatus: 'completed' },
+      channels: [{ id: 'channel-off', enabled: false }],
+    });
   });
 
   it('still converges runtime state when archiving an already-disabled Agent', async () => {
@@ -3260,7 +3329,7 @@ describe('admin-api Agent workspace archive', () => {
       agentId: 'agent-1',
       pinnedAt: '2026-07-01T00:00:00.000Z',
     }]);
-    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, stoppedChannels: 1 });
+    managementApiMocks.managementApi.mockResolvedValue({ ok: true, stoppedChannels: 1 });
 
     const result = await handleAgentArchive({ id: 'agent-1' });
 
@@ -3271,6 +3340,12 @@ describe('admin-api Agent workspace archive', () => {
     expect(projects[0].archivedAt).toEqual(expect.any(String));
     expect(projects[0].archivedAgentEnabledBeforeArchive).toBe(true);
     expect(projects[0]).not.toHaveProperty('pinnedAt');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      { agentId: 'agent-1', patch: { enabled: false } },
+      expect.any(Object),
+    );
     expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
       '/api/agent/stop-channels',
       'POST',
@@ -3294,7 +3369,10 @@ describe('admin-api Agent workspace archive', () => {
         name: 'Workspace',
         enabled: true,
         workspacePath: '/tmp/workspace',
-        channels: [],
+        heartbeat: { enabled: false, intervalMinutes: 48 },
+        memoryAutoUpdate: { enabled: true, intervalHours: 72 },
+        memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+        channels: [{ id: 'channel-1', type: 'telegram', enabled: true }],
       }],
     });
     writeJson(join(scratch, '.myagents', 'projects.json'), [{
@@ -3311,7 +3389,13 @@ describe('admin-api Agent workspace archive', () => {
 
     expect((await handleAgentUnarchive({ id: 'agent-1' })).success).toBe(true);
     const config = readConfig();
-    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(true);
+    expect((config.agents as Array<Record<string, unknown>>)[0]).toMatchObject({
+      enabled: true,
+      heartbeat: { enabled: false, intervalMinutes: 48 },
+      memoryAutoUpdate: { enabled: true, intervalHours: 72 },
+      memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+      channels: [{ id: 'channel-1', enabled: true }],
+    });
     projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
   });
@@ -3375,5 +3459,40 @@ describe('admin-api Agent workspace archive', () => {
     const projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
     expect(projects[0]).not.toHaveProperty('archivedAgentEnabledBeforeArchive');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      { agentId: 'agent-1', patch: { enabled: true } },
+      expect.any(Object),
+    );
+  });
+
+  it('reports projection failure after unarchive without hiding the saved lifecycle change', async () => {
+    const { handleAgentUnarchive } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: false,
+        workspacePath: '/tmp/workspace',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      archivedAt: '2026-07-03T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: false,
+    }]);
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'task store unavailable' });
+
+    const result = await handleAgentUnarchive({ id: 'agent-1' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('was unarchived');
+    const projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0]).not.toHaveProperty('archivedAt');
   });
 });

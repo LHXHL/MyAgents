@@ -449,13 +449,15 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 ```
 Project (工作区)
   = path 权威 + stable agentId ──exact ID──> AgentConfig（执行默认）
-    └── enabled=true 时可开启主动能力（24h 感知与行动）
-        └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
+    ├── enabled=true 时可开启主动能力（Heartbeat / Memory Update / Memory Evo）
+    └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
-**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
+**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel。主动能力的 effective state 统一为 `agent.enabled && child.enabled`；Channel 的 effective state 独立为 `channel.enabled && setup/credentials ready && workspace 未归档`，不再读取 `agent.enabled`。
 
-**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。`enabled` 只控制主动能力（Channel、heartbeat、memory auto-update），不控制显式 addressability 或普通工作区使用。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。Memory Evo 的 managed Task 用 `Task.workspaceId → Project.agentId` 回到精确 Agent，workspace path 只作为实际执行目录，不能反向选择 Agent。`enabled` 只控制 Heartbeat、Memory Update、Memory Evo 三项主动能力，不控制 Channel、显式 addressability 或普通工作区使用。总开关是确定性的批量策略：每次开启/关闭都会把 master 与三个子开关一并设为相同值；之后仍可单独调整子开关。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+
+**迁移与归档不变量**：`config.json.agentChannelIndependenceMigrationV1` 是 Rust config owner 管理的一次性 completion marker。marker 缺失时在 config lock 内按迁移前的 `agent.enabled` 归一三个子开关；仅当 master 为 false 时同时关闭历史 enabled Channel，避免升级后意外上线。迁移复用配置备份与原子写，失败时 marker 不落盘且 Channel admission fail closed。迁移完成后 Channel 与 master 永久解耦。`Project.archivedAt` 是独立的 lifecycle gate：归档停止运行中的 Channel 和后台能力，但不改写 Channel desired state 或三个子开关组合；取消归档后 enabled Channel 可按自身状态恢复。
 
 Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure policy，并在既有 `agent-config-intent.lock` 下先提交 `Project.agentId`、再以同一 ID 幂等补建 pathless Agent；中断后复用 stale ID，不建立 repair journal 或跨文件补偿事务。重复 Project workspace、重复 Agent ID 仍是硬冲突；多个历史 Agent 命中同 workspace 时按持久化顺序只为缺失链接选择第一个，不覆盖有效链接。一个 Agent 被多个 Project 显式 claim 时只隔离相关目标，健康 Project 继续工作。历史 extra/orphan Agent 继续按 exact ID discovery/config/start，只有 exact `Project.agentId` claim 才能代表 Project 做 archive/unarchive/remove；`agent list` 只把 Project 选中的 Agent 标为 `isCurrent`。
 

@@ -103,6 +103,12 @@ struct EvoJobSpec {
 pub async fn cmd_configure_memory_evolution_tasks(
     request: ConfigureMemoryEvolutionTasksRequest,
 ) -> Result<ConfigureMemoryEvolutionTasksResult, String> {
+    configure_memory_evolution_tasks(request).await
+}
+
+pub async fn configure_memory_evolution_tasks(
+    request: ConfigureMemoryEvolutionTasksRequest,
+) -> Result<ConfigureMemoryEvolutionTasksResult, String> {
     let Some(store) = task::get_task_store() else {
         return Err("task store not initialized".to_string());
     };
@@ -129,8 +135,8 @@ pub async fn cmd_configure_memory_evolution_tasks(
     );
 
     if !request.enabled {
-        stop_existing_job(store, &request.workspace_path, &gardener).await?;
-        stop_existing_job(store, &request.workspace_path, &molt).await?;
+        stop_existing_job(store, &request, &gardener).await?;
+        stop_existing_job(store, &request, &molt).await?;
         backfill_and_log_system_maintenance_session_markers(&request.workspace_path).await;
         return Ok(ConfigureMemoryEvolutionTasksResult {
             enabled: false,
@@ -200,7 +206,7 @@ async fn ensure_job_running(
     request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Result<String, String> {
-    let task = match find_existing_job(store, &request.workspace_path, spec).await {
+    let task = match find_existing_job(store, request, spec).await {
         Some(task) => reconcile_existing_job(store, request, spec, task).await?,
         None => {
             store
@@ -255,10 +261,10 @@ async fn ensure_job_running(
 
 async fn stop_existing_job(
     store: &std::sync::Arc<task::TaskStore>,
-    workspace_path: &str,
+    request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Result<(), String> {
-    let Some(task) = find_existing_job(store, workspace_path, spec).await else {
+    let Some(task) = find_existing_job(store, request, spec).await else {
         return Ok(());
     };
     stop_job_for_update(store, &task, "memory evolution disabled").await
@@ -683,10 +689,9 @@ fn parse_hhmm(s: &str) -> Option<u32> {
 
 async fn find_existing_job(
     store: &std::sync::Arc<task::TaskStore>,
-    workspace_path: &str,
+    request: &ConfigureMemoryEvolutionTasksRequest,
     spec: &EvoJobSpec,
 ) -> Option<task::Task> {
-    let normalized_workspace = crate::cron_task::normalize_path(workspace_path);
     store
         .list(TaskListFilter {
             workspace_id: None,
@@ -699,7 +704,8 @@ async fn find_existing_job(
         .into_iter()
         .find(|task| {
             task.managed_kind.as_deref() == Some(spec.managed_kind)
-                && crate::cron_task::normalize_path(&task.workspace_path) == normalized_workspace
+                && (task.workspace_id == request.workspace_id
+                    || task.workspace_id == request.agent_id)
         })
 }
 

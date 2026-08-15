@@ -802,9 +802,15 @@ fn apply_heartbeat_timezone_fallback(
 }
 
 fn load_disk_memory_auto_update_agents() -> Result<Vec<DiskMemoryAutoUpdateAgent>, String> {
-    Ok(collect_disk_memory_auto_update_agents(
-        crate::im::read_agent_configs_from_disk(),
-    ))
+    let mut agents = crate::im::read_agent_configs_from_disk();
+    for agent in &mut agents {
+        if crate::im::is_agent_workspace_archived(agent) {
+            // Keep the managed task record converged to disabled while the
+            // Project lifecycle gate is closed. Do not mutate config.json.
+            agent.enabled = false;
+        }
+    }
+    Ok(collect_disk_memory_auto_update_agents(agents))
 }
 
 fn collect_disk_memory_auto_update_agents(
@@ -1188,13 +1194,17 @@ async fn update_successful_completion<R: Runtime>(
     }
 }
 
-fn enabled_memory_auto_update_agent_by_id(
+fn enabled_memory_auto_update_agent_by_id_with_archive_gate(
     agent_id: &str,
     agents: Vec<crate::im::types::AgentConfigRust>,
+    is_archived: impl Fn(&crate::im::types::AgentConfigRust) -> bool,
 ) -> Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)> {
     let agent = agents
         .into_iter()
         .find(|agent| agent.id == agent_id && agent.enabled)?;
+    if is_archived(&agent) {
+        return None;
+    }
     let memory_auto_update = agent.memory_auto_update.filter(|config| config.enabled)?;
     Some((
         agent.resolved_workspace_path,
@@ -1206,9 +1216,10 @@ fn enabled_memory_auto_update_agent_by_id(
 fn load_enabled_memory_auto_update_agent_by_id(
     agent_id: &str,
 ) -> Result<Option<(String, MemoryAutoUpdateConfig, Option<HeartbeatConfig>)>, String> {
-    Ok(enabled_memory_auto_update_agent_by_id(
+    Ok(enabled_memory_auto_update_agent_by_id_with_archive_gate(
         agent_id,
         crate::im::read_agent_configs_from_disk(),
+        crate::im::is_agent_workspace_archived,
     ))
 }
 
@@ -1932,25 +1943,38 @@ mod tests {
         let mut exact_config = base_config();
         exact_config.interval_hours = 24;
 
-        let resolved = enabled_memory_auto_update_agent_by_id(
+        let resolved = enabled_memory_auto_update_agent_by_id_with_archive_gate(
             "agent-exact",
             vec![
                 runtime_agent("agent-first", "/repo/shared", Some(first_config)),
                 runtime_agent("agent-exact", "/repo/shared", Some(exact_config)),
             ],
+            |_| false,
         )
         .expect("exact Agent is eligible");
 
         assert_eq!(resolved.0, "/repo/shared");
         assert_eq!(resolved.1.interval_hours, 24);
 
-        assert!(enabled_memory_auto_update_agent_by_id(
+        assert!(enabled_memory_auto_update_agent_by_id_with_archive_gate(
             "agent-exact",
             vec![paused_runtime_agent(
                 "agent-exact",
                 "/repo/shared",
                 Some(base_config()),
             )],
+            |_| false,
+        )
+        .is_none());
+
+        assert!(enabled_memory_auto_update_agent_by_id_with_archive_gate(
+            "agent-exact",
+            vec![runtime_agent(
+                "agent-exact",
+                "/repo/shared",
+                Some(base_config()),
+            )],
+            |_| true,
         )
         .is_none());
     }

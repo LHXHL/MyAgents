@@ -21,6 +21,10 @@ interface AgentChannelsSectionProps {
   agent: AgentConfig;
   status?: AgentStatusData;
   onAgentChanged: () => void;
+  /** Settings registry deep link. It opens this exact wizard once and returns
+   * cancel/complete/close to the Channels section, never the platform picker. */
+  initialAddPlatform?: ChannelType;
+  onInitialAddPlatformConsumed?: () => void;
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -57,16 +61,29 @@ type OverlayState =
   | { view: 'add'; platform?: ChannelType }
   | { view: 'detail'; channelId: string };
 
-export default function AgentChannelsSection({ agent, status, onAgentChanged }: AgentChannelsSectionProps) {
+export default function AgentChannelsSection({
+  agent,
+  status,
+  onAgentChanged,
+  initialAddPlatform,
+  onInitialAddPlatformConsumed,
+}: AgentChannelsSectionProps) {
   const { t } = useTranslation('settings');
   const [loading, setLoading] = useState<string | null>(null);
-  const [overlay, setOverlay] = useState<OverlayState>(null);
+  const [overlay, setOverlay] = useState<OverlayState>(() => (
+    initialAddPlatform ? { view: 'add', platform: initialAddPlatform } : null
+  ));
+  const directEntryRef = useRef(Boolean(initialAddPlatform));
   const isMountedRef = useRef(true);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; };
   }, []);
+
+  useEffect(() => {
+    if (initialAddPlatform) onInitialAddPlatformConsumed?.();
+  }, [initialAddPlatform, onInitialAddPlatformConsumed]);
 
   const handleStartChannel = useCallback(async (channel: ChannelConfig) => {
     setLoading(channel.id);
@@ -102,6 +119,7 @@ export default function AgentChannelsSection({ agent, status, onAgentChanged }: 
 
   // Close overlay and refresh
   const closeOverlay = useCallback(() => {
+    directEntryRef.current = false;
     setOverlay(null);
     onAgentChanged();
   }, [onAgentChanged]);
@@ -118,8 +136,12 @@ export default function AgentChannelsSection({ agent, status, onAgentChanged }: 
 
   // Wizard cancelled → go back to platform select
   const handleWizardCancel = useCallback(() => {
+    if (directEntryRef.current) {
+      closeOverlay();
+      return;
+    }
     setOverlay({ view: 'add' });
-  }, []);
+  }, [closeOverlay]);
 
   // Detail back → close overlay
   const handleDetailBack = useCallback(() => {

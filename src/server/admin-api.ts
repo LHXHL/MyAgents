@@ -85,6 +85,7 @@ import {
   resolvePersistedAgentWorkspaceRegistry,
   type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
+import { buildProactiveAgentTogglePatch } from '../shared/proactiveAgentPolicy';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -1369,30 +1370,40 @@ export async function handleAgentEnable(payload: { id: string }): Promise<AdminR
       error: `Agent '${id}' belongs to an archived workspace.`,
       recoveryHint: {
         recoveryCommand: `myagents agent unarchive ${lifecycleAgentId}`,
-        message: 'Unarchive the Agent workspace before enabling proactive channels.',
+        message: 'Unarchive the Agent workspace before enabling proactive capabilities.',
       },
     };
   }
-  return modifyAgent(id, agent => ({ ...agent, enabled: true }), 'enable');
+  return modifyAgentConfigIntent(id, agent => {
+    const patch = buildProactiveAgentTogglePatch(agent, true);
+    return {
+      ok: true,
+      agent: { ...agent, ...patch },
+      livePatch: {
+        enabled: true,
+        heartbeatConfigJson: JSON.stringify(patch.heartbeat),
+        memoryAutoUpdateConfigJson: JSON.stringify(patch.memoryAutoUpdate),
+        memoryEvolutionConfigJson: JSON.stringify(patch.memoryEvolution),
+      },
+    };
+  }, 'enable');
 }
 
 export async function handleAgentDisable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  const result = await modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
-  if (!result.success) return result;
-
-  const stopped = await managementApi(
-    '/api/agent/stop-channels',
-    'POST',
-    { agentId: id },
-    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
-  );
-  if (stopped.ok !== true) {
-    const failure = mgmtError(stopped, 'Failed to stop Agent channels');
-    failure.error = `Agent '${id}' was disabled in config, but its running channels could not be stopped: ${failure.error}`;
-    return failure;
-  }
-  return result;
+  return modifyAgentConfigIntent(id, agent => {
+    const patch = buildProactiveAgentTogglePatch(agent, false);
+    return {
+      ok: true,
+      agent: { ...agent, ...patch },
+      livePatch: {
+        enabled: false,
+        heartbeatConfigJson: JSON.stringify(patch.heartbeat),
+        memoryAutoUpdateConfigJson: JSON.stringify(patch.memoryAutoUpdate),
+        memoryEvolutionConfigJson: JSON.stringify(patch.memoryEvolution),
+      },
+    };
+  }, 'disable');
 }
 
 export async function handleAgentArchive(payload: { id?: string }): Promise<AdminResponse> {
@@ -1453,8 +1464,14 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
     await modifyAgent(id, current => ({ ...current, enabled: false }), 'archive');
   }
 
-  // Always converge the Rust runtime, even when the durable Agent was already
-  // disabled. Older CLI paths could leave exactly that disk/live drift behind.
+  const reloadResult = await managementApi(
+    '/api/agent/reload-config',
+    'POST',
+    { agentId: id, patch: { enabled: false } },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  // Channels are lifecycle-independent from Proactive Agent, so archiving
+  // explicitly stops them even when proactive/task convergence fails.
   const stopResult = await managementApi(
     '/api/agent/stop-channels',
     'POST',
@@ -1465,6 +1482,11 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
     broadcast('config:changed', { section: 'project', action: 'archive', id });
   }
 
+  if (reloadResult.ok !== true) {
+    const failure = mgmtError(reloadResult, 'Failed to reconcile Agent runtime');
+    failure.error = `Agent workspace '${id}' was archived, but proactive runtime or managed tasks did not converge: ${failure.error}`;
+    return failure;
+  }
   const stopOk = stopResult.ok === true;
   if (!stopOk) {
     const failure = mgmtError(stopResult, 'Failed to stop Agent channels');
@@ -1560,6 +1582,18 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
 
   broadcast('config:changed', { section: 'project', action: 'unarchive', id });
 
+  const reloadResult = await managementApi(
+    '/api/agent/reload-config',
+    'POST',
+    { agentId: id, patch: { enabled: shouldRestoreAgent } },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  if (reloadResult.ok !== true) {
+    const failure = mgmtError(reloadResult, 'Failed to reconcile Agent runtime');
+    failure.error = `Agent workspace '${id}' was unarchived, but proactive runtime or managed tasks did not converge: ${failure.error}`;
+    return failure;
+  }
+
   return {
     success: true,
     data: {
@@ -1567,9 +1601,7 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
       projectId,
       restoredAgentEnabled: shouldRestoreAgent,
     },
-    hint: shouldRestoreAgent
-      ? 'Agent workspace unarchived. Enabled channels will restart automatically shortly.'
-      : 'Agent workspace unarchived.',
+    hint: 'Agent workspace unarchived. Enabled channels will restart automatically shortly.',
   };
 }
 
@@ -6758,7 +6790,6 @@ async function modifyAgentConfigIntent(
 
   if (commitResult) return commitResult;
 
-  let hint: string | undefined;
   if (committedLivePatch) {
     try {
       const response = await managementApi('/api/agent/reload-config', 'POST', {
@@ -6766,15 +6797,25 @@ async function modifyAgentConfigIntent(
         patch: committedLivePatch,
       });
       if (response.ok === false) {
-        hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+        broadcast('config:changed', { section: 'agent', action, id });
+        return {
+          success: false,
+          error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${response.error ?? 'unknown error'}`,
+          data: { id, configSaved: true },
+        };
       }
-    } catch {
-      hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+    } catch (error) {
+      broadcast('config:changed', { section: 'agent', action, id });
+      return {
+        success: false,
+        error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+        data: { id, configSaved: true },
+      };
     }
   }
 
   broadcast('config:changed', { section: 'agent', action, id });
-  return { success: true, data: { id }, ...(hint ? { hint } : {}) };
+  return { success: true, data: { id } };
 }
 
 /** Keys and patterns that contain secrets and must be redacted in config get */

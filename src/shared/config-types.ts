@@ -939,6 +939,9 @@ export interface AppConfig {
 
   // ===== Agent Configuration (v0.1.41) =====
   agents?: import('./types/agent').AgentConfig[];
+  /** One-shot config migration completed before Agent Channels became
+   * independent from the Proactive Agent master switch. */
+  agentChannelIndependenceMigrationV1?: boolean;
 
   // ===== Claude Plugin Configuration (PRD 0.2.17) =====
   /** Installed Claude plugins. Each entry's installPath points at a directory

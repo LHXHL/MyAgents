@@ -79,6 +79,20 @@ fn release_task_owner(sidecar: &ManagedSidecarManager, task_id: &str, session_id
     }
 }
 
+fn proactive_memory_evolution_agent_by_id<'a>(
+    agents: &'a [crate::im::AgentConfigRust],
+    agent_id: &str,
+) -> Option<&'a crate::im::AgentConfigRust> {
+    agents.iter().find(|agent| {
+        agent.id == agent_id
+            && agent.enabled
+            && agent
+                .memory_evolution
+                .as_ref()
+                .is_some_and(|config| config.enabled)
+    })
+}
+
 pub(crate) async fn execute_managed_task(
     handle: &AppHandle,
     task: &Task,
@@ -117,11 +131,38 @@ pub(crate) async fn execute_task(
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
 
-    if matches!(
+    let is_memory_evolution = matches!(
         task.managed_kind.as_deref(),
         Some(crate::task::MANAGED_KIND_MEMORY_GARDENER)
             | Some(crate::task::MANAGED_KIND_MEMORY_MOLT)
-    ) {
+    );
+    if is_memory_evolution {
+        let agents = crate::im::read_agent_configs_from_disk();
+        let target_agent_id = crate::im::agent_id_for_project(&task.workspace_id).or_else(|| {
+            agents
+                .iter()
+                .any(|agent| agent.id == task.workspace_id)
+                .then(|| task.workspace_id.clone())
+        });
+        let effective = target_agent_id
+            .as_deref()
+            .and_then(|agent_id| proactive_memory_evolution_agent_by_id(&agents, agent_id))
+            .is_some_and(|agent| !crate::im::is_agent_workspace_archived(agent));
+        if !effective {
+            return Ok(TaskExecutionOutcome {
+                success: true,
+                turn_dispatched: false,
+                termination_unconfirmed: false,
+                error: None,
+                ai_exit_reason: Some("proactive-agent-disabled".to_string()),
+                output_text: Some(
+                    "Memory evolution skipped because Proactive Agent is disabled or archived."
+                        .to_string(),
+                ),
+                session_id: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
         crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
             &task.workspace_path,
         )
@@ -412,6 +453,47 @@ mod tests {
             "dispatchOrigin": "direct"
         }))
         .unwrap()
+    }
+
+    fn memory_evolution_agent(
+        master_enabled: bool,
+        child_enabled: bool,
+    ) -> crate::im::AgentConfigRust {
+        let mut agent: crate::im::AgentConfigRust = serde_json::from_value(serde_json::json!({
+            "id": "agent-1",
+            "name": "Agent",
+            "enabled": master_enabled,
+            "permissionMode": "auto",
+            "memoryEvolution": { "enabled": child_enabled },
+            "channels": []
+        }))
+        .unwrap();
+        agent.resolved_workspace_path = "/tmp/workspace".to_string();
+        agent
+    }
+
+    #[test]
+    fn memory_evolution_requires_both_master_and_child_switches() {
+        assert!(proactive_memory_evolution_agent_by_id(
+            &[memory_evolution_agent(true, true)],
+            "agent-1",
+        )
+        .is_some());
+        assert!(proactive_memory_evolution_agent_by_id(
+            &[memory_evolution_agent(false, true)],
+            "agent-1",
+        )
+        .is_none());
+        assert!(proactive_memory_evolution_agent_by_id(
+            &[memory_evolution_agent(true, false)],
+            "agent-1",
+        )
+        .is_none());
+        assert!(proactive_memory_evolution_agent_by_id(
+            &[memory_evolution_agent(true, true)],
+            "agent-2",
+        )
+        .is_none());
     }
 
     #[test]

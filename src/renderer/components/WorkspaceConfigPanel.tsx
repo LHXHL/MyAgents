@@ -26,6 +26,7 @@ import IntroductionPanel from './IntroductionPanel';
 import type { IntroductionPanelRef } from './IntroductionPanel';
 import { WorkspaceGeneralTab } from './AgentSettings';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
+import type { ChannelType } from '../../shared/types/agent';
 
 interface WorkspaceConfigPanelProps {
     agentDir: string;
@@ -41,6 +42,10 @@ interface WorkspaceConfigPanelProps {
      *  parent (Chat) is expected to close this overlay and dispatch `/init` to its
      *  current Tab session. Omit to hide the action. */
     onRequestInit?: () => void;
+    /** Open the General tab directly in the selected Channel wizard. */
+    initialAddChannelPlatform?: ChannelType;
+    /** Acknowledge the one-shot Channel deep-link after General consumes it. */
+    onInitialAddChannelPlatformConsumed?: () => void;
 }
 
 export type Tab = 'general' | 'system-prompts' | 'introduction' | 'skills' | 'agent';
@@ -73,7 +78,7 @@ const TAB_ITEMS: { key: Tab; labelKey: string }[] = [
     { key: 'skills', labelKey: 'agentSettings.panel.tabs.skills' },
 ];
 
-export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit }: WorkspaceConfigPanelProps) {
+export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed }: WorkspaceConfigPanelProps) {
     const { t } = useTranslation('settings');
     useCloseLayer(() => { onClose(); return true; }, 200);
     const toast = useToast();
@@ -285,7 +290,11 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                     {detailView.type === 'none' ? (
                         <>
                             {activeTab === 'general' && (
-                                <WorkspaceGeneralTab agentDir={agentDir} />
+                                <WorkspaceGeneralTab
+                                    agentDir={agentDir}
+                                    initialAddChannelPlatform={initialAddChannelPlatform}
+                                    onInitialAddChannelPlatformConsumed={onInitialAddChannelPlatformConsumed}
+                                />
                             )}
                             {activeTab === 'system-prompts' && (
                                 <SystemPromptsPanel ref={systemPromptsRef} agentDir={agentDir} onRequestInit={onRequestInit} />

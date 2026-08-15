@@ -183,6 +183,9 @@ export interface AgentConfigSlim {
   id: string;
   name: string;
   enabled: boolean;
+  heartbeat?: AgentConfig['heartbeat'];
+  memoryAutoUpdate?: AgentConfig['memoryAutoUpdate'];
+  memoryEvolution?: AgentConfig['memoryEvolution'];
   providerId?: string;
   model?: string;
   permissionMode?: string;
