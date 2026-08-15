@@ -19,7 +19,7 @@ import {
 import { parseFullSkillContent, parseSkillFrontmatter } from '../shared/slashCommands';
 import { isRequiredSystemSkill, REQUIRED_SYSTEM_SKILLS } from '../shared/systemSkills';
 import { isCliToolRegistryEnabled, loadConfig } from './utils/admin-config';
-import { getCrossPlatformEnv, isSkillBlockedOnPlatform } from './utils/platform';
+import { getCrossPlatformEnv } from './utils/platform';
 
 const MAX_SKILL_FILE_BYTES = 1024 * 1024;
 
@@ -170,7 +170,6 @@ export function createGlobalSkillInventorySnapshot(
 
   for (const rootEntry of sortedEntries) {
     const folderName = rootEntry.name;
-    if (isSkillBlockedOnPlatform(folderName)) continue;
     const folderPath = join(rootPath, folderName);
     const folderBefore = slotMetadata.get(folderName) ?? null;
     if (!folderBefore) continue;

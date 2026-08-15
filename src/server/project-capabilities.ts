@@ -44,7 +44,6 @@ import {
   withAgentConfigIntentLock,
 } from './utils/admin-config';
 import { getMyAgentsUserDir } from './utils/project-user-config-sync';
-import { isSkillBlockedOnPlatform } from './utils/platform';
 
 const MAX_CAPABILITY_FILE_BYTES = 1024 * 1024;
 const MAX_COMMAND_SCAN_DEPTH = 8;
@@ -156,7 +155,7 @@ function scanSkills(params: {
   }
   const result: Array<Omit<ProjectCapabilityCandidate, 'enabled'>> = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.name.startsWith('.') || isSkillBlockedOnPlatform(entry.name)) continue;
+    if (entry.name.startsWith('.')) continue;
     const diskFolder = join(root, entry.name);
     const lst = (() => {
       try { return lstatSync(diskFolder); } catch { return null; }

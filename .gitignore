@@ -61,7 +61,6 @@ src-tauri/resources/claude-agent-sdk
 src-tauri/resources/cli/myagents.js
 src-tauri/resources/cli/myagents.cjs
 src-tauri/resources/cli/myagents.cmd
-src-tauri/resources/agent-browser-cli
 src-tauri/resources/sharp-runtime
 src-tauri/resources/document-processing/*
 !src-tauri/resources/document-processing/.gitkeep

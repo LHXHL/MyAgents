@@ -601,11 +601,6 @@ try {
     Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
 
-    # NOTE: agent-browser CLI is no longer bundled. The skill at
-    # bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-    # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-    # use. Removing the bundle saves ~84MB installer size + build time.
-
     # 预装 sharp 图像处理（替代 jimp，libvips 原生）
     Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
     $sharpDir = Join-Path $ProjectDir "src-tauri\resources\sharp-runtime"

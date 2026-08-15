@@ -1132,14 +1132,6 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skill. Existing installs retain the dir at ~/.myagents/skills/
     // ultra-research/ until the user deletes it (no orphan cleanup logic).
     "download-anything",
-    // v8: agent-browser promoted from utility → system skill. The CLI is
-    // no longer bundled with the app; the SKILL.md teaches AI to self-install
-    // on first use with a command-local npm prefix. Existing users
-    // need the updated SKILL.md to land or their AI will hit `command not
-    // found` after upgrading. The install uses command-local npm_config_prefix
-    // so it lands under ~/.myagents/npm-global without leaking prefix env to
-    // every shell. System-skill status forces the overwrite.
-    "agent-browser",
     // v9: myagents-cli promoted from helper-bundled skill (was at
     // bundled-agents/myagents_helper/.claude/skills/self-config/) to a
     // global system skill. Every AI session inside MyAgents — Chat / IM Bot
@@ -1186,19 +1178,6 @@ const SYSTEM_SKILLS: &[&str] = &[
 /// survive an upgrade. These directories were force-overwritten by MyAgents,
 /// so removing the exact retired names cannot delete a user-owned skill.
 const RETIRED_SYSTEM_SKILLS: &[&str] = &["myagents-sensor"];
-
-/// Skills unavailable on certain platforms due to upstream bugs.
-/// MUST stay in sync with `src/server/utils/platform.ts::PLATFORM_BLOCKED_SKILLS`.
-/// Used by `cmd_sync_system_skills` to skip force-syncing skills that the
-/// Node-side runtime would later filter out anyway — prevents orphan files
-/// in `~/.myagents/skills/` that confuse users.
-fn is_skill_blocked_on_platform(skill_folder: &str) -> bool {
-    match skill_folder {
-        // agent-browser daemon broken on Windows: vercel-labs/agent-browser#398
-        "agent-browser" => cfg!(target_os = "windows"),
-        _ => false,
-    }
-}
 
 /// Force-sync every system skill from the app bundle to
 /// `~/.myagents/skills/<name>/`. Runs once per `SYSTEM_SKILLS_VERSION`
@@ -1319,18 +1298,7 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     let mut synced = Vec::new();
     let mut missing = Vec::new();
     let mut incomplete = Vec::new();
-    let mut platform_skipped = Vec::new();
     for skill_name in SYSTEM_SKILLS {
-        // Platform block: keep parity with Node-side `isSkillBlockedOnPlatform`
-        // (src/server/utils/platform.ts). Without this, a skill marked
-        // unavailable on the current platform (e.g. agent-browser on Windows
-        // due to upstream daemon bug) would be force-synced into
-        // ~/.myagents/skills/ but invisible to the SDK runtime — orphan
-        // disk files that confuse users and serve no purpose.
-        if is_skill_blocked_on_platform(skill_name) {
-            platform_skipped.push(*skill_name);
-            continue;
-        }
         let src = bundled_skills_dir.join(skill_name);
         let dst = skills_dir.join(skill_name);
         match sync_one_system_skill(&src, &dst)
@@ -1374,8 +1342,7 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     // version on a partial sweep would make the broken state permanent (the
     // old behavior that produced empty `~/.myagents/skills/<name>` dirs on
     // Windows — issue #321). Leaving the version unwritten retries next launch
-    // and keeps the warnings above visible. Platform-skipped skills are
-    // intentional, not defects, so they don't block the advance.
+    // and keeps the warnings above visible.
     let complete =
         missing.is_empty() && incomplete.is_empty() && retired_system_skills_absent(&skills_dir);
     if complete {
@@ -1384,14 +1351,13 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     }
 
     ulog_info!(
-        "[system-skills] Synced v{} (complete={}) — ok: {:?}, retired: {:?}, missing: {:?}, incomplete: {:?}, platform-skipped: {:?}",
+        "[system-skills] Synced v{} (complete={}) — ok: {:?}, retired: {:?}, missing: {:?}, incomplete: {:?}",
         SYSTEM_SKILLS_VERSION,
         complete,
         synced,
         retired,
         missing,
-        incomplete,
-        platform_skipped
+        incomplete
     );
     Ok(complete)
 }
@@ -1417,15 +1383,13 @@ fn skill_dir_is_complete(dir: &Path) -> bool {
     dir.join("SKILL.md").is_file()
 }
 
-/// True iff every system skill that SHOULD be installed on this platform has a
-/// valid SKILL.md on disk under `skills_dir`. Platform-blocked skills are
-/// intentionally absent and don't count against completeness. Used to bypass
-/// the version fast-path so a frozen/incomplete install (issue #321) self-heals
-/// instead of trusting the version stamp.
+/// True iff every system skill has a valid SKILL.md on disk under `skills_dir`.
+/// Used to bypass the version fast-path so a frozen/incomplete install (issue
+/// #321) self-heals instead of trusting the version stamp.
 fn all_installed_system_skills_complete(skills_dir: &Path) -> bool {
-    SYSTEM_SKILLS.iter().all(|name| {
-        is_skill_blocked_on_platform(name) || skill_dir_is_complete(&skills_dir.join(name))
-    })
+    SYSTEM_SKILLS
+        .iter()
+        .all(|name| skill_dir_is_complete(&skills_dir.join(name)))
 }
 
 fn retired_system_skills_absent(skills_dir: &Path) -> bool {
@@ -1584,9 +1548,9 @@ fn merge_dir_recursive_validated_with_home(
 mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
-        is_skill_blocked_on_platform, remove_retired_system_skills, retired_system_skills_absent,
-        skill_dir_is_complete, sync_one_system_skill, SystemSkillSync, ADMIN_AGENT_VERSION,
-        SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        remove_retired_system_skills, retired_system_skills_absent, skill_dir_is_complete,
+        sync_one_system_skill, SystemSkillSync, ADMIN_AGENT_VERSION, SYSTEM_SKILLS,
+        SYSTEM_SKILLS_VERSION,
     };
     use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use std::fs;
@@ -1929,9 +1893,6 @@ mod system_skills_tests {
         let myagents_dir = tmp.path();
         let skills_dir = myagents_dir.join("skills");
         for name in SYSTEM_SKILLS {
-            if is_skill_blocked_on_platform(name) {
-                continue;
-            }
             let dir = skills_dir.join(name);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("SKILL.md"), "x").unwrap();
@@ -1959,15 +1920,12 @@ mod system_skills_tests {
 
     #[test]
     fn version_gate_validation_detects_frozen_install() {
-        // Lay down every platform-available system skill WITH a SKILL.md →
-        // gate may early-return. Then blank one out → gate must bypass so the
-        // (non-destructive) re-sync runs and self-heals.
+        // Lay down every system skill WITH a SKILL.md → gate may early-return.
+        // Then blank one out → gate must bypass so the (non-destructive)
+        // re-sync runs and self-heals.
         let tmp = tempfile::tempdir().unwrap();
         let skills_dir = tmp.path().join("skills");
         for name in SYSTEM_SKILLS {
-            if is_skill_blocked_on_platform(name) {
-                continue;
-            }
             let d = skills_dir.join(name);
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("SKILL.md"), "x").unwrap();
@@ -1978,10 +1936,7 @@ mod system_skills_tests {
         );
 
         // Freeze one into the empty-dir state seen in #321.
-        let victim = SYSTEM_SKILLS
-            .iter()
-            .find(|n| !is_skill_blocked_on_platform(n))
-            .expect("at least one platform-available system skill");
+        let victim = SYSTEM_SKILLS.first().expect("at least one system skill");
         fs::remove_file(skills_dir.join(victim).join("SKILL.md")).unwrap();
         assert!(
             !all_installed_system_skills_complete(&skills_dir),

@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::path_safety::validate_external_read_path;
-use super::platform_blocks::is_skill_blocked_on_platform;
 use super::skills_config::{
     is_required_system_skill, read_cli_tool_registry_enabled, read_disabled_list,
 };
@@ -338,9 +337,6 @@ fn scan_skills_dir(
             .map(|m| m.is_dir())
             .unwrap_or(false);
         if !is_dir_like {
-            continue;
-        }
-        if is_skill_blocked_on_platform(&folder_name) {
             continue;
         }
         if scope == "user" && disabled.iter().any(|d| d == &folder_name) {

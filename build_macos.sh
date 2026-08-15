@@ -267,11 +267,6 @@ SDK_DEST="src-tauri/resources/claude-agent-sdk"
 rm -rf "${SDK_DEST}"
 mkdir -p "${SDK_DEST}"
 
-# NOTE: agent-browser CLI is no longer bundled. The skill at
-# bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-# `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-# use. Removing the bundle saves ~84MB DMG size + ~1-2min build time.
-
 # 构建前端
 echo -e "  ${CYAN}构建前端...${NC}"
 npm run build:web
@@ -356,9 +351,6 @@ done < <(find "$VENDOR_DIR" -type f \( -name "*.node" -o -name "rg" \) -path "*d
 
 echo -e "${GREEN}✓ Vendor 签名完成 (成功: ${SIGNED_COUNT}, 失败: ${FAILED_COUNT})${NC}"
 echo ""
-
-# NOTE: agent-browser-cli signing block removed — bundle no longer ships.
-# AI installs the CLI on first use via the agent-browser skill (npm install -g).
 
 # 构建 Tauri 应用
 echo -e "${BLUE}[7/7] 构建 Tauri 应用 (Release + 签名 + 公证)...${NC}"

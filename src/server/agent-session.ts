@@ -5650,14 +5650,6 @@ export function buildClaudeSessionEnv(
   // and break Anthropic subscription OAuth. Enabled global Skills are instead
   // projected into project .claude/skills/ at Query birth.
 
-  // agent-browser: no env injection needed. The CLI ships its own config
-  // discovery (~/.agent-browser/config.json default path) and is installed
-  // by the AI via the agent-browser skill on first use, not bundled here.
-  // Earlier versions set AGENT_BROWSER_HOME on Windows to bypass a Rust
-  // canonicalize() UNC path issue (vercel-labs/agent-browser#393); that
-  // workaround required the bundled CLI path to derive HOME, and is now
-  // upstream's responsibility.
-
   // Self-Config CLI: expose sidecar port so the `myagents` CLI can call back
   if (sidecarPort > 0) {
     env.MYAGENTS_PORT = String(sidecarPort);
