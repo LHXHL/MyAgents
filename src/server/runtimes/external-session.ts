@@ -474,6 +474,11 @@ export {
   isSuccessfulExternalTurnCompletion,
 } from './external-session/turn-lifecycle';
 
+export function summarizeExternalRuntimeMessageForLog(value: unknown): string {
+  const message = value instanceof Error ? value.message : String(value ?? '');
+  return JSON.stringify(summarizeSensitiveValueForLog(message));
+}
+
 // ─── Module state ───
 // #307: set true while stopExternalSession() is tearing down the process (user
 // pressed Stop / config-change restart / session takeover). When the killed
@@ -5024,7 +5029,10 @@ export async function stopExternalSession(options?: {
     await active.runtime.stopSession(active.process);
   } catch (err) {
     gracefulError = err;
-    console.error('[external-session] Error stopping session:', err);
+    console.error(
+      '[external-session] Error stopping session:',
+      summarizeExternalRuntimeMessageForLog(err),
+    );
     emitPerfTrace({
       trace: 'runtime',
       phase: 'stop_escalated',
@@ -5032,7 +5040,7 @@ export async function stopExternalSession(options?: {
       runtime: runtimeType,
       sessionId: getExternalLifecycleSessionId() || undefined,
       status: 'error',
-      detail: { pid, error: err instanceof Error ? err.message : String(err) },
+      detail: { pid, error: summarizeExternalRuntimeMessageForLog(err) },
     });
   }
 
@@ -6845,7 +6853,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           }
         }
         console.warn(
-          `[external-session] turn_complete: non-success status=${event.status ?? 'unknown'}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms, message=${message}`,
+          `[external-session] turn_complete: non-success status=${event.status ?? 'unknown'}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms, message=${summarizeExternalRuntimeMessageForLog(message)}`,
         );
         if (turnPlan.kind === 'defer-to-stop') {
           console.log('[external-session] turn_complete arrived during intentional stop; deferring idle/drain cleanup to stopExternalSession');
@@ -6860,7 +6868,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           detail: {
             source: 'turn_complete',
             turnStatus: event.status ?? 'unknown',
-            error: message,
+            error: summarizeExternalRuntimeMessageForLog(message),
           },
         });
         if (cleanup !== 'stopped') {
@@ -6982,13 +6990,13 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           );
         }
         if (sessionPlan.kind === 'ignore-idle') {
-          console.log(`[external-session] Ignoring idle-exit "${errorMessage}" — process was between turns; next message will auto-resume`);
+          console.log(`[external-session] Ignoring idle-exit ${summarizeExternalRuntimeMessageForLog(errorMessage)} — process was between turns; next message will auto-resume`);
         } else if (sessionPlan.kind === 'suppress-user-stop') {
           emitExternalTurnTrace('final', {
             status: 'error',
-            detail: { source: 'user_stop', error: errorMessage },
+            detail: { source: 'user_stop', error: summarizeExternalRuntimeMessageForLog(errorMessage) },
           });
-          console.log(`[external-session] Suppressing error banner for user-initiated stop (was: "${errorMessage}")`);
+          console.log(`[external-session] Suppressing error banner for user-initiated stop (was: ${summarizeExternalRuntimeMessageForLog(errorMessage)})`);
           deliverExternalWatchError({
             sessionId: getExternalLifecycleSessionId(),
             text: currentExternalTurnTextSnapshot(),
@@ -7000,7 +7008,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         } else {
           emitExternalTurnTrace('final', {
             status: 'error',
-            detail: { source: 'session_complete', error: errorMessage },
+            detail: { source: 'session_complete', error: summarizeExternalRuntimeMessageForLog(errorMessage) },
           });
           if (!isExternalTurnFinalizationInFlight()) finalizeExternalLiveAssistantInMemory();
           broadcast('chat:agent-error', { message: errorMessage });

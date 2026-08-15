@@ -181,7 +181,7 @@ App 启动时 Manager 校验 manifest target/pipeline、Worker 可执行位和 W
 
 ## 排查
 
-先看 `~/.myagents/logs/unified-<本地日期>.log` 中 `[document]` 的非敏感 job/阶段/error code。不要记录 source 绝对路径、正文、OCR 原文或密码。常见恢复：
+先看 `~/.myagents/logs/unified-<本地日期>.log` 中 `[document]` 的非敏感 Manager 生命周期事件：`accepted / started / stage_changed / cancel_requested / terminal / recovered_terminal`。固定投影只含 job ID、state、stage、format、artifact 可用性、warning/页/OCR/asset 数量、耗时、稳定 error code 与 retryable；不含 source/output 绝对路径、文件名、warning/error 正文、OCR 原文或密码。常见恢复：
 
 | code | 含义 / 下一步 |
 |---|---|

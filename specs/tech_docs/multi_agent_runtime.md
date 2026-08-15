@@ -287,7 +287,7 @@ Codex 的稳定 v2 协议可以精确适配产品级时间回溯与分支；Syst
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
 
-**Codex RPC 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；短 SHA-256 仅用于判断两次启动是否使用同一版本。脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 必须保留原始值。
+**Codex RPC / External terminal 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；Codex command、path、stderr 与 provider error 的 notification/log 投影遵守同一规则。`external-session.ts` 写 non-success terminal 的 `console` 与 perf trace 时也只记录不可逆摘要，但传给 Chat/IM/turn outcome 的原始 terminal error 保持不变。短 SHA-256 仅用于判断两次诊断是否对应同一值；脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 和用户错误事件必须保留原始值。
 
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 

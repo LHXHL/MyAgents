@@ -177,6 +177,55 @@ pub struct DocumentJob {
     pub pipeline: DocumentPipeline,
 }
 
+fn document_job_state_name(state: DocumentJobState) -> &'static str {
+    match state {
+        DocumentJobState::Queued => "queued",
+        DocumentJobState::Running => "running",
+        DocumentJobState::Cancelling => "cancelling",
+        DocumentJobState::Succeeded => "succeeded",
+        DocumentJobState::SucceededWithWarnings => "succeeded_with_warnings",
+        DocumentJobState::Failed => "failed",
+        DocumentJobState::Cancelled => "cancelled",
+        DocumentJobState::Interrupted => "interrupted",
+    }
+}
+
+fn document_log_token(value: Option<&str>) -> &str {
+    value
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        })
+        .unwrap_or("unknown")
+}
+
+/// Emit manager-owned semantic diagnostics only. This projection deliberately
+/// has no source/output path, display name, password, warning message, or body
+/// field, so future transport/Worker payload changes cannot widen log content.
+fn log_document_job(event: &'static str, job: &DocumentJob) {
+    let metrics = job.metrics.as_ref();
+    let error = job.error.as_ref();
+    crate::ulog_info!(
+        "[document] event={} jobId={} state={} stage={} format={} artifactAvailable={} warnings={} durationMs={} pagesTotal={} pagesOcr={} assetsWritten={} errorCode={} retryable={}",
+        event,
+        job.job_id,
+        document_job_state_name(job.state),
+        document_log_token(Some(&job.stage)),
+        document_log_token(job.source.format.as_deref()),
+        job.output.artifact_available,
+        job.warnings.len(),
+        metrics.map_or(0, |metrics| metrics.duration_ms),
+        metrics.and_then(|metrics| metrics.pages_total).unwrap_or(0),
+        metrics.and_then(|metrics| metrics.pages_ocr).unwrap_or(0),
+        metrics.and_then(|metrics| metrics.assets_written).unwrap_or(0),
+        document_log_token(error.map(|error| error.code.as_str())),
+        error.is_some_and(|error| error.retryable),
+    );
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSubmitRequest {
@@ -601,6 +650,7 @@ impl DocumentProcessingManager {
         state.queue.push_back(job_id.clone());
         state.jobs.insert(job_id, job.clone());
         drop(state);
+        log_document_job("accepted", &job);
         self.wake.notify_one();
         Ok(job)
     }
@@ -662,6 +712,7 @@ impl DocumentProcessingManager {
                 if let Some(pending) = pending {
                     cleanup_pending(&pending);
                 }
+                log_document_job("terminal", &job);
                 Ok(job)
             }
             DocumentJobState::Running => {
@@ -679,6 +730,7 @@ impl DocumentProcessingManager {
                 persist_job(&self.root, &job).map_err(store_error)?;
                 state.jobs.insert(job_id.to_string(), job.clone());
                 drop(state);
+                log_document_job("cancel_requested", &job);
                 if let Some((generation, stdin, child)) = running {
                     let _ = send_cancel(&stdin, job_id, generation);
                     let manager = Arc::clone(self);
@@ -741,6 +793,7 @@ impl DocumentProcessingManager {
             if let Err(error) = persist_job(&self.root, &job) {
                 persistence_error.get_or_insert(error);
             }
+            log_document_job("terminal", &job);
         }
         for pending in pending {
             cleanup_pending(&pending);
@@ -833,6 +886,7 @@ impl DocumentProcessingManager {
         state.jobs.insert(job_id.clone(), job.clone());
         state.next_generation = state.next_generation.saturating_add(1).max(1);
         state.active_job = Some((job_id, generation));
+        log_document_job("started", &job);
         Ok(Some((job, pending, generation)))
     }
 
@@ -1085,13 +1139,24 @@ impl DocumentProcessingManager {
             "validating" => "finalizing",
             _ => return,
         };
-        if let Ok(mut state) = self.state.lock() {
+        let changed = if let Ok(mut state) = self.state.lock() {
             if let Some(job) = state.jobs.get_mut(job_id) {
                 if job.state == DocumentJobState::Running {
+                    let stage_changed = job.stage != stage;
                     job.stage = stage.into();
                     job.updated_at = Utc::now();
+                    stage_changed.then(|| job.clone())
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        if let Some(job) = changed {
+            log_document_job("stage_changed", &job);
         }
     }
 
@@ -1162,6 +1227,7 @@ impl DocumentProcessingManager {
             job.error = Some(worker_error(job_id, "DOCUMENT_TIMEOUT", true));
             let snapshot = job.clone();
             let _ = persist_job(&self.root, &snapshot);
+            log_document_job("terminal", &snapshot);
             state
                 .running
                 .as_ref()
@@ -1323,6 +1389,7 @@ impl DocumentProcessingManager {
         } else {
             crate::ulog_warn!("[document] committed publish cleanup deferred to startup");
         }
+        log_document_job("terminal", &job);
         state.jobs.insert(job_id.to_string(), job);
         clear_running_locked(&mut state, job_id, generation);
         Ok(())
@@ -1348,6 +1415,7 @@ impl DocumentProcessingManager {
                         job.error = Some(cancelled_error());
                         let snapshot = job.clone();
                         let _ = persist_job(&self.root, &snapshot);
+                        log_document_job("terminal", &snapshot);
                     } else if !job.state.is_terminal() {
                         let now = Utc::now();
                         job.state = DocumentJobState::Failed;
@@ -1357,6 +1425,7 @@ impl DocumentProcessingManager {
                         job.error = Some(worker_error(job_id, code, retryable));
                         let snapshot = job.clone();
                         let _ = persist_job(&self.root, &snapshot);
+                        log_document_job("terminal", &snapshot);
                     }
                 }
                 clear_running_locked(&mut state, job_id, generation);
@@ -1386,6 +1455,7 @@ impl DocumentProcessingManager {
                     job.error = Some(cancelled_error());
                     let snapshot = job.clone();
                     let _ = persist_job(&self.root, &snapshot);
+                    log_document_job("terminal", &snapshot);
                 }
             }
             clear_running_locked(&mut state, job_id, generation);
@@ -1420,6 +1490,7 @@ impl DocumentProcessingManager {
                 job.finished_at = Some(now);
                 let snapshot = job.clone();
                 let _ = persist_job(&self.root, &snapshot);
+                log_document_job("terminal", &snapshot);
             }
             clear_running_locked(&mut state, job_id, generation);
         }
@@ -2851,6 +2922,7 @@ fn recover_nonterminal_jobs(root: &Path, jobs: &mut HashMap<String, DocumentJob>
         job.finished_at = Some(now);
         job.error = Some(interrupted_error(&job.job_id));
         let _ = persist_job(root, job);
+        log_document_job("recovered_terminal", job);
     }
 }
 
@@ -3231,6 +3303,20 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn document_log_tokens_reject_paths_and_multiline_payloads() {
+        assert_eq!(
+            document_log_token(Some("succeeded_with_warnings")),
+            "succeeded_with_warnings"
+        );
+        assert_eq!(
+            document_log_token(Some("/Users/private/document.pdf")),
+            "unknown"
+        );
+        assert_eq!(document_log_token(Some("secret\nbody")), "unknown");
+        assert_eq!(document_log_token(Some(&"x".repeat(65))), "unknown");
+    }
+
     fn test_job(job_id: &str, output_root: &Path, state: DocumentJobState) -> DocumentJob {
         let now = Utc::now();
         DocumentJob {
@@ -3289,6 +3375,33 @@ mod tests {
             }),
             wake: Notify::new(),
         })
+    }
+
+    #[test]
+    fn repeated_progress_stage_still_refreshes_public_updated_at() {
+        let data = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let job_id = "20260815_7f3a91c2b6d4";
+        let generation = 3;
+        let mut job = test_job(job_id, output.path(), DocumentJobState::Running);
+        job.stage = "ocr".into();
+        job.updated_at = Utc::now() - chrono::Duration::seconds(1);
+        let previous_updated_at = job.updated_at;
+        let manager = test_manager(data.path(), job, generation);
+
+        manager.handle_progress(
+            job_id,
+            generation,
+            WorkerProgress {
+                job_id: job_id.into(),
+                generation,
+                stage: "ocr".into(),
+            },
+        );
+
+        let current = manager.get(job_id).unwrap();
+        assert_eq!(current.stage, "ocr");
+        assert!(current.updated_at > previous_updated_at);
     }
 
     #[test]

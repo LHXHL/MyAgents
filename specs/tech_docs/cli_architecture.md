@@ -468,6 +468,8 @@ MyAgents CLI 同时承载两类“工具”：
 
 AnyDoc 是官方稳定命令组，不属于 MCP，也不受用户 CLI 工具注册表开关控制。公开 surface 固定为 `convert/status/wait/cancel/list`：Rust backend 始终异步；`convert --wait` 与独立 `wait` 只是 CLI 对 `status` 的有界退避轮询，不新增 Rust wait endpoint。`--output` 是输出根目录，最终 artifact 固定为 `<output-root>/<job-id>/document.md`；省略时 Sidecar 注入自己的 authoritative current Workspace，CLI 不得提交伪造的 workspace 字段。
 
+Human output 以 Rust 查询时派生的 `output.artifactAvailable` 为产物真值：只有它为 `true` 才显示 `documentPath`；终态无产物明确显示 `Document: unavailable` / `(no artifact)`，queued/running list 项显示 `(pending)`。`stage` 只描述活跃 job 的当前处理进度，终态不再展示内部提交阶段 `finalizing`。JSON mode 保持完整 wire contract，accepted receipt 仍可把预留路径标为 `Output when ready`，但它不是 artifact 已存在的声明。
+
 调用链为 app bundle CLI → 当前 Sidecar `/api/admin/anydoc/*` → Rust Management API `/api/document/*` → App-owned `DocumentProcessingManager`。Admin handler 必须保持薄转发，并用 `wrapMgmtResponse()` 保留 Rust 的 `code/suggestion/recoveryHint`。`wait` 复用 `anydoc/status` Admin route；Ctrl-C 只结束本地轮询并退出 130，不取消 App job。
 
 Agent 使用说明由 required system Skill `/myagents-anydoc` 渐进加载；`myagents-cli` 只在正文速查中登记 `myagents anydoc --help` 与专属 Skill，不复制协议，且其 frontmatter description 不得出现 AnyDoc。AnyDoc 不进入 `system-prompt-cli-tools.ts` 的 always-on 内容。当前参数、退出码和恢复指引以逐级 exact `--help` 为二进制权威，不提供 `readme` 命令。底层 owner、资源和安全契约见 [`document_processing.md`](./document_processing.md)。

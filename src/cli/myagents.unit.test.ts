@@ -168,7 +168,7 @@ describe('myagents CLI AnyDoc contracts', () => {
           items: [{
             jobId: '20260815_7f3a91c2b6d4',
             state: 'succeeded',
-            output: { documentPath: '/tmp/out/document.md' },
+            output: { documentPath: '/tmp/out/document.md', artifactAvailable: true },
           }],
           retentionDays: 30,
         },
@@ -192,7 +192,7 @@ describe('myagents CLI AnyDoc contracts', () => {
             jobId: '20260815_7f3a91c2b6d4',
             state: 'succeeded_with_warnings',
             stage: 'finalizing',
-            output: { documentPath: '/tmp/out/document.md' },
+            output: { documentPath: '/tmp/out/document.md', artifactAvailable: true },
             warnings: [{ code: 'DOCUMENT_ASSET_SKIPPED', message: 'image omitted' }],
           },
         },
@@ -201,9 +201,77 @@ describe('myagents CLI AnyDoc contracts', () => {
       expect(error.mock.calls.flat().join('\n')).toContain(
         'Warning [DOCUMENT_ASSET_SKIPPED]: image omitted',
       );
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Stage: finalizing');
     } finally {
       log.mockRestore();
       error.mockRestore();
+    }
+  });
+
+  it('does not advertise ghost artifact paths for terminal jobs', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'list', {
+        success: true,
+        data: {
+          items: [
+            {
+              jobId: '20260815_failed000001',
+              state: 'failed',
+              output: { documentPath: '/tmp/ghost-failed/document.md', artifactAvailable: false },
+            },
+            {
+              jobId: '20260815_cancelled001',
+              state: 'cancelled',
+              output: { documentPath: '/tmp/ghost-cancelled/document.md', artifactAvailable: false },
+            },
+          ],
+        },
+      }, false);
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_failed000001',
+            state: 'failed',
+            stage: 'finalizing',
+            output: { documentPath: '/tmp/ghost-status/document.md', artifactAvailable: false },
+          },
+        },
+      }, false);
+
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('20260815_failed000001  failed  (no artifact)');
+      expect(output).toContain('20260815_cancelled001  cancelled  (no artifact)');
+      expect(output).toContain('Document: unavailable');
+      expect(output).not.toContain('/tmp/ghost-');
+      expect(output).not.toContain('Stage: finalizing');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps active job progress visible without claiming an artifact', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printResult('anydoc', 'status', {
+        success: true,
+        data: {
+          job: {
+            jobId: '20260815_running00001',
+            state: 'running',
+            stage: 'ocr',
+            output: { documentPath: '/tmp/future/document.md', artifactAvailable: false },
+          },
+        },
+      }, false);
+
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('Stage: ocr');
+      expect(output).not.toContain('Document:');
+      expect(output).not.toContain('/tmp/future/document.md');
+    } finally {
+      log.mockRestore();
     }
   });
 });

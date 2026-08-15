@@ -2445,7 +2445,12 @@ function printAnydocResult(action: string, result: Record<string, unknown>): voi
     }
     for (const item of jobs) {
       const output = (item.output as Record<string, unknown> | undefined) ?? {};
-      console.log(`${String(item.jobId)}  ${String(item.state)}  ${String(output.documentPath ?? '')}`.trimEnd());
+      const state = String(item.state ?? '(unknown)');
+      const artifactAvailable = output.artifactAvailable === true;
+      const artifact = artifactAvailable && output.documentPath
+        ? String(output.documentPath)
+        : ANYDOC_TERMINAL_STATES.has(state) ? '(no artifact)' : '(pending)';
+      console.log(`${String(item.jobId)}  ${state}  ${artifact}`);
     }
     return;
   }
@@ -2466,8 +2471,13 @@ function printAnydocResult(action: string, result: Record<string, unknown>): voi
   }
   console.log(`AnyDoc job: ${jobId}`);
   console.log(`Status: ${state}`);
-  console.log(`Stage: ${String(job.stage ?? '(unknown)')}`);
-  if (output.documentPath) console.log(`Document: ${String(output.documentPath)}`);
+  const isTerminal = ANYDOC_TERMINAL_STATES.has(state);
+  if (!isTerminal) console.log(`Stage: ${String(job.stage ?? '(unknown)')}`);
+  if (output.artifactAvailable === true && output.documentPath) {
+    console.log(`Document: ${String(output.documentPath)}`);
+  } else if (isTerminal) {
+    console.log('Document: unavailable');
+  }
   const warnings = Array.isArray(job.warnings) ? job.warnings as Array<Record<string, unknown>> : [];
   for (const warning of warnings) {
     console.error(`Warning [${String(warning.code ?? 'DOCUMENT_WARNING')}]: ${String(warning.message ?? '')}`);
