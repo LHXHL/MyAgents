@@ -89,6 +89,7 @@ import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
+import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import { trackServer } from '../analytics';
 import {
   addUsageTotals,
@@ -350,6 +351,7 @@ import {
   appendExternalToolResultDeltaToContent,
   appendExternalToolInputDelta,
   applyExternalReplayedToolResultToContent,
+  applyExternalSubagentLifecycle,
   applyExternalSubagentAttachmentUpdate,
   applyExternalSubagentToolResult as applyExternalSubagentToolResultToContent,
   applyExternalToolAttachmentUpdate,
@@ -358,6 +360,7 @@ import {
   captureExternalTurnContentSnapshot,
   completeExternalSubagentTrace as completeExternalSubagentTraceContent,
   finalizeExternalSubagentToolInput as finalizeExternalSubagentToolInputContent,
+  finalizeExternalSubagentLifecyclesForTurn,
   finalizeExternalToolUseInput,
   flushExternalPendingTextBlock,
   flushExternalPendingThinkingBlock,
@@ -1165,6 +1168,23 @@ function applySubagentToolResult(
     attachments: event.attachments,
   });
   recordRuntimeActivity();
+}
+
+function broadcastExternalSubagentLifecycle(
+  parentToolUseId: string,
+  lifecycle: SubagentLifecycle,
+): void {
+  broadcast('chat:subagent-status', { parentToolUseId, lifecycle });
+  recordRuntimeActivity();
+}
+
+function finalizeExternalSubagentLifecycleProjection(
+  status: 'failed' | 'interrupted',
+): void {
+  const observedAt = Date.now();
+  for (const update of finalizeExternalSubagentLifecyclesForTurn({ status, observedAt })) {
+    broadcastExternalSubagentLifecycle(update.parentToolUseId, update.lifecycle);
+  }
 }
 
 type SubagentTraceName = 'AgentMessage' | 'Thinking';
@@ -6555,6 +6575,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'subagent_lifecycle': {
+      const lifecycle = applyExternalSubagentLifecycle(event);
+      broadcastExternalSubagentLifecycle(event.parentToolUseId, lifecycle);
+      break;
+    }
+
     case 'tool_attachment_update': {
       // Async fulfillment of a placeholder attachment (PRD 0.2.15 §4.7.1).
       // Cross-review (#0.2.29) — a sub-agent tool's attachment lives on a nested
@@ -6832,6 +6858,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // accepted turn/steer input. If an older app-server does not, promote the
       // pending pill at the turn boundary rather than leaving it orphaned.
       surfaceAllPendingRealtimeSteeredUserMessages();
+      finalizeExternalSubagentLifecycleProjection(
+        getExternalUserRequestedStop() ? 'interrupted' : 'failed',
+      );
       const terminalGenerationBefore = getExternalTurnTerminalGeneration();
       const turnPlan = markExternalTurnComplete(event, {
         intentionalStopInProgress: getExternalUserRequestedStop(),
@@ -6922,6 +6951,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'session_complete': {
       clearWatchdog();
+      finalizeExternalSubagentLifecycleProjection(
+        getExternalUserRequestedStop() ? 'interrupted' : 'failed',
+      );
       console.log(`[external-session] session_complete: subtype=${event.subtype}, result=${(event.result || '').length > 0 ? `${(event.result || '').length}chars` : 'empty'}, turnCompleted=${isExternalTurnCompleted()}, assistantText=${getExternalAssistantText().length}chars`);
       // Track whether persistTurnResult is in-flight (or was already fired by
       // turn_complete). When true, persistTurnResult will broadcast

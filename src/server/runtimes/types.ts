@@ -6,6 +6,7 @@ import type { McpServerDefinition } from '../../shared/config-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
 
@@ -243,6 +244,14 @@ export type UnifiedEvent =
     toolUseId: string;
     pendingId: string;
     attachment: ToolAttachment;
+  }
+
+  // === Normalized child-turn lifecycle ===
+  | {
+    kind: 'subagent_lifecycle';
+    parentToolUseId: string;
+    status: SubagentLifecycleStatus;
+    observedAt: number;
   }
 
   // === Turn lifecycle ===

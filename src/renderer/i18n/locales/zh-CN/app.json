@@ -149,7 +149,10 @@
     "expand": "展开 Agent 状态面板",
     "collapse": "收起 Agent 状态面板",
     "background": "后台",
-    "backgroundTooltip": "[后台]"
+    "backgroundTooltip": "[后台]",
+    "completed": "已完成",
+    "failed": "执行失败",
+    "interrupted": "已停止"
   },
   "workspaceTree": {
     "collapseFolder": "收起文件夹",

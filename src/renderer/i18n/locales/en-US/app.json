@@ -149,7 +149,10 @@
     "expand": "Expand Agent status panel",
     "collapse": "Collapse Agent status panel",
     "background": "Background",
-    "backgroundTooltip": "[Background]"
+    "backgroundTooltip": "[Background]",
+    "completed": "Completed",
+    "failed": "Failed",
+    "interrupted": "Stopped"
   },
   "workspaceTree": {
     "collapseFolder": "Collapse folder",

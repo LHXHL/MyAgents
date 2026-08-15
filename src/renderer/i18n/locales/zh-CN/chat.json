@@ -746,6 +746,7 @@
         "statusCompleted": "完成",
         "statusError": "错误",
         "statusRunning": "运行中",
+        "statusStopped": "已停止",
         "backgroundCompleted": "后台完成",
         "backgroundFailed": "后台失败",
         "backgroundRunning": "后台运行中",

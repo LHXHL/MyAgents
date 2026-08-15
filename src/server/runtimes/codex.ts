@@ -45,6 +45,7 @@ import {
   type SaveContext,
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
 import { MYAGENTS_TOOL_CALL_TIMEOUT_MS } from '../session-core/tool-call-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
@@ -776,6 +777,63 @@ function codexTraceId(params: Record<string, unknown>, fallbackItemId?: string, 
   if (!itemId) return undefined;
   const threadId = stringValue(params.threadId);
   return [threadId, itemId, suffix].filter((part): part is string => !!part).join('::');
+}
+
+type CodexReasoningTraceState = {
+  openedReasoningTracesByItem: Map<string, Map<string, number>>;
+};
+
+function codexReasoningItemKey(
+  params: Record<string, unknown>,
+  fallbackItemId?: string,
+): string | undefined {
+  const itemId = stringValue(params.itemId) ?? fallbackItemId;
+  if (!itemId) return undefined;
+  return [stringValue(params.threadId), itemId].filter(Boolean).join('::');
+}
+
+export function buildCodexReasoningDeltaEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  input: { index: number; suffix: string; text: string },
+): UnifiedEvent | UnifiedEvent[] {
+  const traceId = codexTraceId(params, undefined, input.suffix);
+  const delta: UnifiedEvent = {
+    kind: 'thinking_delta',
+    text: input.text,
+    index: input.index,
+    traceId,
+  };
+  const itemKey = codexReasoningItemKey(params);
+  if (!traceId || !itemKey) return delta;
+  let opened = state.openedReasoningTracesByItem.get(itemKey);
+  if (!opened) {
+    opened = new Map<string, number>();
+    state.openedReasoningTracesByItem.set(itemKey, opened);
+  }
+  if (opened.has(traceId)) return delta;
+  opened.set(traceId, input.index);
+  return [
+    { kind: 'thinking_start', index: input.index, traceId },
+    delta,
+  ];
+}
+
+export function takeCodexReasoningStopEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  fallbackItemId: string,
+): UnifiedEvent[] {
+  const itemKey = codexReasoningItemKey(params, fallbackItemId);
+  if (!itemKey) return [];
+  const opened = state.openedReasoningTracesByItem.get(itemKey);
+  state.openedReasoningTracesByItem.delete(itemKey);
+  if (!opened) return [];
+  return [...opened].map(([traceId, index]) => ({
+    kind: 'thinking_stop' as const,
+    index,
+    traceId,
+  }));
 }
 
 export function buildCodexFileChangeResultContent(changes: unknown): string {
@@ -1669,6 +1727,7 @@ export function applyCodexSubAgentActivity(
   notificationThreadId: string | undefined,
   mainThreadId: string,
   rawItem: unknown,
+  interactionDelivery?: 'queue-only' | 'trigger-turn',
 ): UnifiedEvent[] | null {
   if (!isRecord(rawItem) || rawItem.type !== 'subAgentActivity') return null;
   const id = stringValue(rawItem.id);
@@ -1707,10 +1766,14 @@ export function applyCodexSubAgentActivity(
       state.subThreadToParent.set(agentThreadId, senderThreadId);
     }
   } else if (senderThreadId === mainThreadId) {
-    // A current-turn target remains under its original spawn card. When a
-    // persistent v2 child is contacted in a later turn, no current content
-    // block exists for that old card, so this activity becomes the new owner.
-    if (targetRoute.kind === 'subagent') {
+    // A raw-discriminated followup_task starts a new child turn, so this
+    // current-turn activity card becomes its independent lifecycle owner even
+    // when the same child already completed under a spawn card earlier in the
+    // root turn. queue-only send_message remains nested under the current card.
+    if (interactionDelivery === 'trigger-turn' && agentThreadId !== mainThreadId) {
+      state.subThreadToCard.set(agentThreadId, id);
+      state.subThreadToParent.set(agentThreadId, mainThreadId);
+    } else if (targetRoute.kind === 'subagent') {
       scope = targetRoute.scope;
     } else if (agentThreadId !== mainThreadId) {
       state.subThreadToCard.set(agentThreadId, id);
@@ -1835,6 +1898,134 @@ type CodexLegacySpawnLifecycleState = CodexSubAgentCorrelationState & {
   activeSubAgentTurns: Map<string, string | null>;
   completedSubAgentTurnsBeforeActivity: Set<string>;
 };
+
+type CodexSubAgentLifecycleRecord = {
+  startedAt: number;
+  terminalStatus?: Exclude<SubagentLifecycleStatus, 'running'>;
+  finishedAt?: number;
+};
+
+type CodexSubAgentLifecycleState = CodexSubAgentCorrelationState & {
+  threadId: string;
+  activeSubAgentTurns: ReadonlyMap<string, string | null>;
+  subAgentLifecycleByThread: Map<string, CodexSubAgentLifecycleRecord>;
+  emittedSubAgentLifecycleByCard: Map<string, SubagentLifecycleStatus>;
+};
+
+function observeCodexSubAgentTurnStarted(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (!current || current.terminalStatus) {
+    proc.subAgentLifecycleByThread.set(childThreadId, { startedAt: observedAt });
+  }
+}
+
+function observeCodexSubAgentTurnTerminal(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  status: Exclude<SubagentLifecycleStatus, 'running'>,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (current?.terminalStatus) return;
+  const startedAt = current?.startedAt ?? observedAt;
+  proc.subAgentLifecycleByThread.set(childThreadId, {
+    startedAt,
+    terminalStatus: status,
+    finishedAt: Math.max(startedAt, observedAt),
+  });
+}
+
+export function mapCodexChildTurnTerminalStatus(turn: unknown): Exclude<SubagentLifecycleStatus, 'running'> {
+  const status = stringValue(objectValue(turn).status)?.toLowerCase();
+  if (status === 'completed' || status === 'success' || status === 'succeeded') return 'completed';
+  if (
+    status === 'interrupted'
+    || status === 'cancelled'
+    || status === 'canceled'
+    || status === 'stopped'
+  ) return 'interrupted';
+  return 'failed';
+}
+
+function topLevelCardForThread(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+): string | null {
+  return resolveTopLevelSpawnCard(
+    childThreadId,
+    proc.subThreadToCard,
+    proc.subThreadToParent,
+  );
+}
+
+/**
+ * Project native child-turn observations onto the current turn's visible
+ * CollabAgent owner. Records remain turn-local; correlation can arrive before
+ * or after the native notification without creating another lifecycle owner.
+ */
+export function collectCodexSubAgentLifecycleEvents(
+  proc: CodexSubAgentLifecycleState,
+): UnifiedEvent[] {
+  const recordsByCard = new Map<string, Array<{
+    threadId: string;
+    record: CodexSubAgentLifecycleRecord;
+  }>>();
+  for (const [threadId, record] of proc.subAgentLifecycleByThread) {
+    const parentToolUseId = topLevelCardForThread(proc, threadId);
+    if (!parentToolUseId) continue;
+    const records = recordsByCard.get(parentToolUseId) ?? [];
+    records.push({ threadId, record });
+    recordsByCard.set(parentToolUseId, records);
+  }
+
+  const events: UnifiedEvent[] = [];
+  for (const [parentToolUseId, records] of recordsByCard) {
+    const emitted = proc.emittedSubAgentLifecycleByCard.get(parentToolUseId);
+    if (!emitted) {
+      const startedAt = Math.min(...records.map(({ record }) => record.startedAt));
+      events.push({
+        kind: 'subagent_lifecycle',
+        parentToolUseId,
+        status: 'running',
+        observedAt: startedAt,
+      });
+      proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, 'running');
+    }
+    if (proc.emittedSubAgentLifecycleByCard.get(parentToolUseId) !== 'running') continue;
+
+    const hasActiveDescendant = [...proc.activeSubAgentTurns.keys()]
+      .some((threadId) => topLevelCardForThread(proc, threadId) === parentToolUseId);
+    if (hasActiveDescendant) continue;
+
+    const ownerRecords = records.filter(({ threadId }) => {
+      const parentThreadId = proc.subThreadToParent.get(threadId);
+      return proc.subThreadToCard.get(threadId) === parentToolUseId
+        && (!parentThreadId || parentThreadId === proc.threadId);
+    });
+    if (ownerRecords.length === 0 || ownerRecords.some(({ record }) => !record.terminalStatus)) continue;
+
+    const terminalStatus = ownerRecords.some(({ record }) => record.terminalStatus === 'failed')
+      ? 'failed'
+      : ownerRecords.some(({ record }) => record.terminalStatus === 'interrupted')
+        ? 'interrupted'
+        : 'completed';
+    const finishedAt = Math.max(...ownerRecords.map(({ record }) => (
+      record.finishedAt ?? record.startedAt
+    )));
+    events.push({
+      kind: 'subagent_lifecycle',
+      parentToolUseId,
+      status: terminalStatus,
+      observedAt: finishedAt,
+    });
+    proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, terminalStatus);
+  }
+  return events;
+}
 
 /** Observe the v1 spawn signal and reserve each newly correlated child once. */
 function recordLegacySpawnAgentLifecycle(
@@ -2283,6 +2474,13 @@ class CodexProcess implements RuntimeProcess {
   // latter does not install a stale causal fence, but never infer execution
   // ownership from the ambiguous activity alone.
   subAgentActivitySeenBeforeTurnStart = new Set<string>();
+  // Native child-turn observations waiting for / attached to a turn-local
+  // CollabAgent card. Cleared with the existing correlation maps.
+  subAgentLifecycleByThread = new Map<string, CodexSubAgentLifecycleRecord>();
+  emittedSubAgentLifecycleByCard = new Map<string, SubagentLifecycleStatus>();
+  // Reasoning summary/content streams open lazily on their first delta and
+  // close by the exact same trace id at item completion.
+  openedReasoningTracesByItem = new Map<string, Map<string, number>>();
   // Deduplicate force-send and root-failure interrupts targeting the same
   // concrete child turn. The key is threadId + turnId, not just threadId,
   // because persistent children may execute multiple turns in one session.
@@ -3358,6 +3556,9 @@ export class CodexRuntime implements AgentRuntime {
       if (isItemNotification && codexProc.deferredSubAgentEvents.size > 0) {
         flushResolvableCodexSubAgentEvents(codexProc, wrappedOnEvent);
       }
+      for (const event of collectCodexSubAgentLifecycleEvents(codexProc)) {
+        wrappedOnEvent(event);
+      }
       // If a child settled before its parent activity arrived, the held root
       // may become releasable only after the activity and its buffered child
       // events have crossed the stream. Keep the terminal last.
@@ -3894,6 +4095,9 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.completedSubAgentTurnsBeforeActivity.clear();
     codexProc.subAgentThreadsAwaitingActivity.clear();
     codexProc.subAgentActivitySeenBeforeTurnStart.clear();
+    codexProc.subAgentLifecycleByThread.clear();
+    codexProc.emittedSubAgentLifecycleByCard.clear();
+    codexProc.openedReasoningTracesByItem.clear();
     codexProc.codexV2InteractionDeliveryByCallId.clear();
     codexProc.exactUsageByTurn.clear();
     codexProc.subAgentInterruptsInFlight.clear();
@@ -3950,14 +4154,16 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private completeMainTurn(codexProc: CodexProcess, events: UnifiedEvent[]): UnifiedEvent[] {
+    const lifecycleEvents = collectCodexSubAgentLifecycleEvents(codexProc);
+    const terminalEvents = [...lifecycleEvents, ...events];
     this.clearTurnLocalSubAgentState(codexProc);
     const admission = codexProc.activeRootTurnAdmission;
     if (admission && !admission.responseTurnId) {
-      admission.deferredTerminalEvents = events;
+      admission.deferredTerminalEvents = terminalEvents;
       return [];
     }
     codexProc.activeRootTurnAdmission = null;
-    return events;
+    return terminalEvents;
   }
 
   /**
@@ -4257,6 +4463,7 @@ export class CodexRuntime implements AgentRuntime {
       const evtThreadId = stringValue(p.threadId);
       if (evtThreadId && codexProc.threadId && evtThreadId !== codexProc.threadId) {
         if (method === 'turn/started') {
+          observeCodexSubAgentTurnStarted(codexProc, evtThreadId, Date.now());
           const childTurnId = stringValue(p.turnId)
             ?? stringValue(objectValue(p.turn).id);
           const activityAlreadyArrived = (
@@ -4279,6 +4486,10 @@ export class CodexRuntime implements AgentRuntime {
             && objectValue(p.status).type === 'systemError'
           )
         ) {
+          const terminalStatus = method === 'turn/completed'
+            ? mapCodexChildTurnTerminalStatus(p.turn)
+            : 'failed';
+          observeCodexSubAgentTurnTerminal(codexProc, evtThreadId, terminalStatus, Date.now());
           codexProc.activeSubAgentTurns.delete(evtThreadId);
           if (
             codexProc.subAgentThreadsAwaitingActivity.has(evtThreadId)
@@ -4448,21 +4659,19 @@ export class CodexRuntime implements AgentRuntime {
 
       // ── Reasoning streaming ──
       case 'item/reasoning/summaryTextDelta':
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.summaryIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `summary:${(p.summaryIndex as number) || 0}`),
-        };
+          suffix: `summary:${(p.summaryIndex as number) || 0}`,
+        });
 
       case 'item/reasoning/textDelta':
         // Raw reasoning content — also map to thinking for display
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.contentIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `content:${(p.contentIndex as number) || 0}`),
-        };
+          suffix: `content:${(p.contentIndex as number) || 0}`,
+        });
 
       // ── Plan streaming ──
       case 'item/plan/delta':
@@ -4568,6 +4777,11 @@ export class CodexRuntime implements AgentRuntime {
               input: buildCollabAgentInput(item),
             };
           }
+          case 'subAgentActivity':
+            // v2 emits a started notification before the terminal activity
+            // item that carries the correlation payload. The completed side is
+            // authoritative; this is an intentional no-op, not an unknown item.
+            return null;
           case 'plan':
             // PRD 0.2.15 — `plan` items stream via item/plan/delta as thinking_delta.
             // We need a thinking_start so the frontend opens a thinking block.
@@ -4591,7 +4805,7 @@ export class CodexRuntime implements AgentRuntime {
           case 'imageGeneration':
             return { kind: 'tool_use_start', toolUseId: item.id, toolName: 'ImageGeneration' };
           case 'reasoning':
-            return { kind: 'thinking_start', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return null;
           case 'agentMessage':
           case 'contextCompaction':
             return null;
@@ -4843,21 +5057,39 @@ export class CodexRuntime implements AgentRuntime {
             // Codex multi-agent v2 (0.144.1): spawn/message/interrupt tools are
             // represented solely by this terminal activity item. Its id is the
             // originating tool call id and agentThreadId is the correlation key.
+            const activity = item as Record<string, unknown>;
+            const interactionDelivery = activity.kind === 'interacted'
+              ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
+              : undefined;
+            const activityThreadId = stringValue(activity.agentThreadId);
+            if (
+              interactionDelivery === 'trigger-turn'
+              && activityThreadId
+              && activityThreadId !== codexProc.threadId
+              && !codexProc.activeSubAgentTurns.has(activityThreadId)
+              && !codexProc.completedSubAgentTurnsBeforeActivity.has(activityThreadId)
+            ) {
+              // The activity can arrive before the follow-up child turn. Drop
+              // only the previous turn's terminal observation so rebinding the
+              // thread cannot make the new card look running before the native
+              // turn/started notification. If the new child turn already
+              // started (or even completed) its observation remains authoritative.
+              const previous = codexProc.subAgentLifecycleByThread.get(activityThreadId);
+              if (previous?.terminalStatus) {
+                codexProc.subAgentLifecycleByThread.delete(activityThreadId);
+              }
+            }
             const events = applyCodexSubAgentActivity(
               codexProc,
               stringValue(p.threadId),
               codexProc.threadId,
               item,
+              interactionDelivery,
             );
             if (!events) {
               console.warn('[codex] item/completed: malformed subAgentActivity');
             } else {
               codexProc.codexV2SubAgentActivityObserved = true;
-              const activity = item as Record<string, unknown>;
-              const activityThreadId = stringValue(activity.agentThreadId);
-              const interactionDelivery = activity.kind === 'interacted'
-                ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
-                : undefined;
               codexProc.codexV2InteractionDeliveryByCallId.delete(item.id);
               if (
                 (activity.kind === 'started' || activity.kind === 'interacted')
@@ -4941,7 +5173,7 @@ export class CodexRuntime implements AgentRuntime {
             return { kind: 'log', level: 'info', message: '[codex] Hook prompt fragment injected' };
           }
           case 'reasoning':
-            return { kind: 'thinking_stop', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return takeCodexReasoningStopEvents(codexProc, p, item.id);
           case 'agentMessage': {
             const finalText = typeof item.text === 'string' ? item.text : '';
             const streamedText = codexProc.agentMessageTextById.get(item.id) || '';

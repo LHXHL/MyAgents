@@ -746,6 +746,7 @@
         "statusCompleted": "Completed",
         "statusError": "Error",
         "statusRunning": "Running",
+        "statusStopped": "Stopped",
         "backgroundCompleted": "Background completed",
         "backgroundFailed": "Background failed",
         "backgroundRunning": "Background running",
