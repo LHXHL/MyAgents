@@ -1,11 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentConfig, ChannelType } from '../../../../shared/types/agent';
+import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { dismissTopmost } from '@/utils/closeLayer';
 import AgentChannelsSection from './AgentChannelsSection';
 
 vi.mock('@/components/OverlayBackdrop', () => ({
-  default: ({ children }: { children: ReactNode }) => <div data-testid="overlay">{children}</div>,
+  default: ({ children, className }: { children: ReactNode; className?: string }) => (
+    <div data-testid="overlay" className={className}>{children}</div>
+  ),
 }));
 
 vi.mock('../channels/ChannelPlatformSelect', () => ({
@@ -46,6 +50,36 @@ const agent: AgentConfig = {
   channels: [],
 };
 
+function ParentOverlayHarness({ initialAddPlatform }: { initialAddPlatform?: ChannelType }) {
+  const [open, setOpen] = useState(true);
+  useCloseLayer(() => false, 300);
+  useCloseLayer(() => {
+    setOpen(false);
+    return true;
+  }, 200);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !dismissTopmost()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  if (!open) return null;
+  return (
+    <div data-testid="parent-overlay">
+      <AgentChannelsSection
+        agent={agent}
+        onAgentChanged={vi.fn()}
+        initialAddPlatform={initialAddPlatform}
+        onInitialAddPlatformConsumed={vi.fn()}
+      />
+    </div>
+  );
+}
+
 describe('AgentChannelsSection direct entry', () => {
   it('returns a registry deep link to Channels but keeps normal Add navigation intact', () => {
     const onConsumed = vi.fn();
@@ -59,6 +93,7 @@ describe('AgentChannelsSection direct entry', () => {
     );
 
     expect(screen.getByText('wizard-telegram')).toBeInTheDocument();
+    expect(screen.getByTestId('overlay')).toHaveClass('z-[210]');
     expect(onConsumed).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('platform-picker')).not.toBeInTheDocument();
 
@@ -95,5 +130,32 @@ describe('AgentChannelsSection direct entry', () => {
 
     expect(screen.queryByText('wizard-telegram')).not.toBeInTheDocument();
     expect(screen.queryByText('platform-picker')).not.toBeInTheDocument();
+  });
+
+  it('owns a higher close layer than its parent overlay', () => {
+    render(<ParentOverlayHarness initialAddPlatform="telegram" />);
+
+    act(() => {
+      expect(dismissTopmost()).toBe(true);
+    });
+
+    expect(screen.getByTestId('parent-overlay')).toBeInTheDocument();
+    expect(screen.queryByText('wizard-telegram')).not.toBeInTheDocument();
+
+    act(() => {
+      expect(dismissTopmost()).toBe(true);
+    });
+    expect(screen.queryByTestId('parent-overlay')).not.toBeInTheDocument();
+  });
+
+  it('lets Escape close the channel overlay before its parent', () => {
+    render(<ParentOverlayHarness initialAddPlatform="telegram" />);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByTestId('parent-overlay')).toBeInTheDocument();
+    expect(screen.queryByText('wizard-telegram')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('parent-overlay')).not.toBeInTheDocument();
   });
 });

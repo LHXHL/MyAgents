@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import { dismissTopmost } from '@/utils/closeLayer';
 
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { useToast } from '@/components/Toast';
@@ -80,7 +81,6 @@ const TAB_ITEMS: { key: Tab; labelKey: string }[] = [
 
 export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed }: WorkspaceConfigPanelProps) {
     const { t } = useTranslation('settings');
-    useCloseLayer(() => { onClose(); return true; }, 200);
     const toast = useToast();
     // Stabilize toast reference to avoid unnecessary effect re-runs
     const toastRef = useRef(toast);
@@ -137,6 +137,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         }
         onClose();
     }, [isAnyEditing, onClose, t]);
+    useCloseLayer(() => { handleClose(); return true; }, 200);
 
     // Handle back with editing check
     const handleBackFromDetail = useCallback(() => {
@@ -153,8 +154,9 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
             if (e.key === 'Escape') {
                 if (detailView.type !== 'none') {
                     handleBackFromDetail();
-                } else {
-                    handleClose();
+                } else if (dismissTopmost()) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
                 }
             }
         };

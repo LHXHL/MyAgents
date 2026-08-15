@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,12 +14,15 @@ const mocks = vi.hoisted(() => ({
   getAllMcpServers: vi.fn(),
   getEnabledMcpServerIds: vi.fn(),
   getWorkspaceCronTasks: vi.fn(),
+  useCloseLayer: vi.fn(),
+  toastWarning: vi.fn(),
+  systemPromptsEditing: false,
   agentRuntime: 'codex',
   agentPermissionMode: 'plan',
 }));
 
 vi.mock('@/hooks/useCloseLayer', () => ({
-  useCloseLayer: vi.fn(),
+  useCloseLayer: (...args: unknown[]) => mocks.useCloseLayer(...args),
 }));
 
 vi.mock('@/components/OverlayBackdrop', () => ({
@@ -31,14 +34,14 @@ vi.mock('@/components/Toast', () => ({
     error: vi.fn(),
     info: vi.fn(),
     success: vi.fn(),
-    warning: vi.fn(),
+    warning: (...args: unknown[]) => mocks.toastWarning(...args),
   }),
 }));
 
 vi.mock('./SystemPromptsPanel', async () => {
   const React = await import('react');
   const MockSystemPromptsPanel = React.forwardRef(function MockSystemPromptsPanel(_, ref) {
-    React.useImperativeHandle(ref, () => ({ isEditing: () => false }));
+    React.useImperativeHandle(ref, () => ({ isEditing: () => mocks.systemPromptsEditing }));
     return React.createElement('div', null);
   });
   return {
@@ -165,6 +168,7 @@ describe('WorkspaceConfigPanel i18n', () => {
     vi.clearAllMocks();
     mocks.agentRuntime = 'codex';
     mocks.agentPermissionMode = 'plan';
+    mocks.systemPromptsEditing = false;
     await i18n.changeLanguage('en-US');
     mocks.invoke.mockResolvedValue({
       builtin: { installed: true },
@@ -216,5 +220,25 @@ describe('WorkspaceConfigPanel i18n', () => {
     expect(document.querySelector('.lucide-lock-open')).toBeInTheDocument();
     expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /PlanAgent only researches information/ })).toHaveAttribute('aria-current', 'true');
+  });
+
+  it('routes the close layer through the unsaved-edit guard', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<WorkspaceConfigPanel agentDir="/Users/me/mino" onClose={onClose} />);
+
+    await user.click(screen.getByRole('button', { name: 'System Prompt' }));
+    mocks.systemPromptsEditing = true;
+    const closeLayerHandler = mocks.useCloseLayer.mock.calls
+      .filter(([, zIndex]) => zIndex === 200)
+      .at(-1)?.[0] as (() => boolean) | undefined;
+    expect(closeLayerHandler).toBeTypeOf('function');
+
+    act(() => {
+      expect(closeLayerHandler?.()).toBe(true);
+    });
+
+    expect(mocks.toastWarning).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -1,12 +1,14 @@
 // Agent channels section: list channels, add/remove, start/stop, configure
 // All channel operations open in a unified overlay panel (same size as WorkspaceConfigPanel)
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Plus, X, Loader2 } from 'lucide-react';
 import type { AgentConfig, ChannelConfig, ChannelType } from '../../../../shared/types/agent';
 import type { AgentStatusData, ChannelStatusData } from '@/hooks/useAgentStatuses';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { dismissTopmost } from '@/utils/closeLayer';
 import { startAndEnableAgentChannel, stopAndDisableAgentChannel } from '@/config/services/agentConfigService';
 import ChannelPlatformSelect from '../channels/ChannelPlatformSelect';
 import ChannelWizard from '../channels/ChannelWizard';
@@ -60,6 +62,52 @@ type OverlayState =
   | null
   | { view: 'add'; platform?: ChannelType }
   | { view: 'detail'; channelId: string };
+
+const CHANNEL_OVERLAY_Z_INDEX = 210;
+
+function ChannelOverlayPanel({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  useCloseLayer(() => {
+    onClose();
+    return true;
+  }, CHANNEL_OVERLAY_Z_INDEX);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !dismissTopmost()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return createPortal(
+    <OverlayBackdrop onClose={onClose} className="z-[210]">
+      <div
+        className="relative flex h-[90vh] w-[90vw] max-w-5xl flex-col overflow-hidden rounded-2xl bg-[var(--paper-elevated)] shadow-2xl"
+      >
+        <button
+          onClick={onClose}
+          className="absolute right-4 top-4 z-10 rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+        >
+          <X className="h-5 w-5" />
+        </button>
+        <div className="flex-1 overflow-y-auto px-8 py-6">
+          <div className="mx-auto max-w-2xl">
+            {children}
+          </div>
+        </div>
+      </div>
+    </OverlayBackdrop>,
+    document.body,
+  );
+}
 
 export default function AgentChannelsSection({
   agent,
@@ -269,28 +317,10 @@ export default function AgentChannelsSection({
       </div>
 
       {/* === Unified Overlay Panel === */}
-      {overlay && createPortal(
-        <OverlayBackdrop onClose={closeOverlay} className="z-[200]">
-          <div
-            className="relative flex h-[90vh] w-[90vw] max-w-5xl flex-col overflow-hidden rounded-2xl bg-[var(--paper-elevated)] shadow-2xl"
-          >
-            {/* Close button — absolute top-right */}
-            <button
-              onClick={closeOverlay}
-              className="absolute right-4 top-4 z-10 rounded-lg p-2 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-            >
-              <X className="h-5 w-5" />
-            </button>
-
-            {/* Overlay content — scrollable, sub-components handle their own headers */}
-            <div className="flex-1 overflow-y-auto px-8 py-6">
-              <div className="mx-auto max-w-2xl">
-                {renderOverlayContent()}
-              </div>
-            </div>
-          </div>
-        </OverlayBackdrop>,
-        document.body,
+      {overlay && (
+        <ChannelOverlayPanel onClose={closeOverlay}>
+          {renderOverlayContent()}
+        </ChannelOverlayPanel>
       )}
     </>
   );
