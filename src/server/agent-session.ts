@@ -147,6 +147,7 @@ import {
   buildBuiltinSkillAllowlist,
   filterSlashCommandsForCapabilities,
   findDisabledCapabilityForSlashInput,
+  sanitizeSdkSkillAllowlist,
 } from './builtin-session/capabilities';
 import { initLogger, appendLog, getLogLines as getLogLinesFromLogger } from './AgentLogger';
 import { setAmbientLogContext, clearAmbientLogContextField } from './logger-context';
@@ -208,6 +209,7 @@ import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
+  normalizeSdkToolUseResult,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
 import type { ToolAttachment } from '../shared/types/tool-attachment';
@@ -10749,11 +10751,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const enabledPluginSkillNames = enabledPluginConfigs.flatMap(plugin => (
       listPluginQualifiedSkillNames(plugin.path)
     ));
-    const enabledSkillAllowlist = buildBuiltinSkillAllowlist(
+    const rawEnabledSkillAllowlist = buildBuiltinSkillAllowlist(
       launchCapabilitySnapshot,
       enabledPluginSkillNames,
       unavailableBuiltinSkillNames,
     );
+    const {
+      allowlist: enabledSkillAllowlist,
+      rejected: incompatibleSdkSkillNames,
+    } = sanitizeSdkSkillAllowlist(rawEnabledSkillAllowlist);
+    for (const rejected of incompatibleSdkSkillNames) {
+      console.warn(`[skills] Skipping SDK-incompatible Skill ${JSON.stringify(rejected.name)}: ${rejected.reason}`);
+    }
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
@@ -12551,6 +12560,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
           // Check for structured tool_use_result data (e.g., WebSearch results)
           const toolUseResultData = (sdkMessage as { tool_use_result?: unknown }).tool_use_result;
+          const normalizedToolUseResult = normalizeSdkToolUseResult(toolUseResultData);
 
           // Only iterate if content is an array (tool_result blocks)
           if (Array.isArray(messageContent)) {
@@ -12572,14 +12582,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // below; the remaining text has every base64-ish payload redacted to
               // `[N bytes omitted]`. Session JSONL / SSE only ever carry path refs —
               // the SDK's own transcript (what the model sees) is untouched.
-              const renderParts = extractToolResultRenderParts(toolResultBlock.content);
+              const renderParts = extractToolResultRenderParts(
+                normalizedToolUseResult.isMetadataEnvelope
+                  ? normalizedToolUseResult.content
+                  : toolResultBlock.content,
+              );
 
               // For WebSearch/WebFetch, prefer structured tool_use_result data if available
               // This contains query, results array with titles/urls, etc.
               // Otherwise use renderParts.text: passes plain strings / JSON through
               // verbatim, joins non-image blocks, and (finding 2) yields '' for a bare
               // data-URL string whose bytes were extracted — so base64 never persists.
-              const contentStr = (toolUseResultData && typeof toolUseResultData === 'object')
+              const contentStr = normalizedToolUseResult.isMetadataEnvelope
+                ? renderParts.text
+                : (toolUseResultData && typeof toolUseResultData === 'object')
                 ? JSON.stringify(toolUseResultData)
                 : renderParts.text;
 

@@ -7,6 +7,8 @@ import {
   buildBuiltinSkillAllowlist,
   filterSlashCommandsForCapabilities,
   findDisabledCapabilityForSlashInput,
+  sanitizeSdkSkillAllowlist,
+  sdkSkillNameRejectionReason,
 } from './capabilities';
 
 function candidate(
@@ -57,6 +59,46 @@ describe('builtin project capability admission', () => {
       .toEqual(['frontend', 'plugin-a:one']);
     expect(buildBuiltinSkillAllowlist(snapshot(), ['plugin-a:one'], ['frontend']))
       .toEqual(['plugin-a:one']);
+  });
+
+  it('keeps SDK-compatible historical Skill names and plugin-qualified names', () => {
+    expect(sanitizeSdkSkillAllowlist([
+      'review-helper',
+      'owner/skill-name',
+      'plugin-a:one',
+      '名字',
+      'review-helper',
+    ])).toEqual({
+      allowlist: ['owner/skill-name', 'plugin-a:one', 'review-helper', '名字'].sort(),
+      rejected: [],
+    });
+  });
+
+  it('drops only names rejected synchronously by SDK 0.3.221+ so old Sessions still start', () => {
+    const result = sanitizeSdkSkillAllowlist([
+      'healthy',
+      '*',
+      'plugin:*',
+      '/slash-prefixed',
+      ' padded',
+      'bad(name)',
+      'bad,name',
+      `control\nname`,
+      'double\\\\slash',
+      'trailing\\',
+      `broken-${String.fromCharCode(0xd800)}`,
+    ]);
+
+    expect(result.allowlist).toEqual(['healthy']);
+    expect(result.rejected.map(item => item.name)).toHaveLength(10);
+    expect(result.rejected.every(item => item.reason.length > 0)).toBe(true);
+  });
+
+  it('keeps the local compatibility contract aligned with representative SDK boundaries', () => {
+    expect(sdkSkillNameRejectionReason('plugin:skill')).toBeNull();
+    expect(sdkSkillNameRejectionReason('skill *')).toContain('wildcard');
+    expect(sdkSkillNameRejectionReason('path\\segment')).toBeNull();
+    expect(sdkSkillNameRejectionReason('path\\\\segment')).toContain('backslashes');
   });
 
   it('hides and rejects disabled slash capabilities without changing enabled commands', () => {

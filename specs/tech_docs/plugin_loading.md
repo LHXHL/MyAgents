@@ -5,7 +5,7 @@
 > 关联：
 > - PRD：`specs/prd/prd_0.2.17_plugin_basic_support.md`
 > - 研究：`specs/research/0514_research_claude_plugin_mechanism.md`
-> - 当前 SDK 版本：`@anthropic-ai/claude-agent-sdk@0.3.220`；插件入口仍是 `Options.plugins: SdkPluginConfig[]`（仅 `type: 'local'`）
+> - 当前 SDK 版本：`@anthropic-ai/claude-agent-sdk@0.3.233`；插件入口仍是 `Options.plugins: SdkPluginConfig[]`（MyAgents 当前只传 `type: 'local'`）
 
 ---
 
