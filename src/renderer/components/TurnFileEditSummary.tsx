@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Tip from '@/components/Tip';
+import { FileIcon } from '@/components/file-icon';
 import { Popover } from '@/components/ui/Popover';
 import { useFileAction } from '@/context/FileActionContext';
 import type { Message } from '@/types/chat';
@@ -173,6 +174,7 @@ function TurnFileEditRow({
         >
           {statusLetter}
         </span>
+        <FileIcon name={basename} size="regular" />
         <span className="flex min-w-0 flex-1 items-baseline gap-1 text-sm text-[var(--ink)]">
           {showOriginalName && (
             <>

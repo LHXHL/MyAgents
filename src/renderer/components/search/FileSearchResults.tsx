@@ -7,7 +7,7 @@
  */
 
 import { memo, useId } from 'react';
-import { Folder, LocateFixed } from 'lucide-react';
+import { LocateFixed } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -15,7 +15,7 @@ import type {
     FileSearchHit,
     FolderSearchHit,
 } from '@/api/searchClient';
-import { getFileIcon } from '@/utils/fileIcons';
+import { FileIcon } from '@/components/file-icon';
 import {
     isActiveSearchFile,
     isActiveSearchMatch,
@@ -129,7 +129,7 @@ export default memo(function FileSearchResults({
                                     className="flex h-7 w-full items-center gap-1.5 px-4 text-left text-sm hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)]"
                                     onClick={() => onFolderClick(hit)}
                                 >
-                                    <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--accent-warm)]" />
+                                    <FileIcon name={basename} nodeKind="directory" />
                                     <span className="shrink-0 text-[var(--ink)]">
                                         <SearchHighlight
                                             text={basename}
@@ -165,7 +165,6 @@ export default memo(function FileSearchResults({
                                 : hit.matches.slice(0, DEFAULT_VISIBLE_MATCHES);
                             const hasMore = hit.matches.length > DEFAULT_VISIBLE_MATCHES;
                             const isActiveFile = isActiveSearchFile(activeTarget, hit.path);
-                            const FileIcon = getFileIcon(hit.name);
                             const { basename, dirname } = splitSearchPath(hit.path);
 
                             return (
@@ -189,7 +188,7 @@ export default memo(function FileSearchResults({
                                             className="flex h-full min-w-0 flex-1 items-center gap-1.5 pr-2 text-left"
                                             onClick={() => onFileClick(hit)}
                                         >
-                                            <FileIcon className="h-3.5 w-3.5 shrink-0" />
+                                            <FileIcon name={hit.name} />
                                             <span className="shrink-0 text-[var(--ink)]">
                                                 <SearchHighlight
                                                     text={basename}

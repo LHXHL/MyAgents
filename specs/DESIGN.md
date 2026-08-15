@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.47
-> **Last Updated**: 2026-08-04
+> **Version**: 2.8.50
+> **Last Updated**: 2026-08-15
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -813,9 +813,17 @@ transition: opacity var(--duration-slow),
 
 - 默认: `var(--ink-muted)`
 - Hover: `var(--ink)`
-- 文件夹/文件: `var(--accent-warm)` (统一暖色调，保持页面视觉一致性)
+- 具体文件/文件夹身份：使用统一 `FileIcon` 的 Symbols 原生资源色，不按 Theme、hover、selected 或编辑状态重绘
 - 成功: `var(--success)`
 - 错误: `var(--error)`
+
+### 9.3 文件资源图标
+
+- 所有代表一个具体文件或文件夹对象的入口统一使用 `src/renderer/components/file-icon/`；consumer 只传 filename、node kind、folder expanded 和语义尺寸，不自行按扩展名选择图标；
+- dense=16px 用于文件树、搜索与紧凑列表，regular=20px 用于 Turn 摘要、附件和卡片 header，display=24px 用于预览 header/空态；固定 slot 不得改变行高和文字起点；
+- 图标视觉资产来自随应用固定版本打包的 Symbols SVG；不依赖 VS Code、网络或用户安装。PDF、Office 家族、语言和常见资源使用专属图形，长尾进入类别兜底，未知格式进入统一 document 兜底；
+- 图标有可见文件名时使用装饰性空 alt；只有图标独立表达资源时才提供 accessible label；
+- 动作图标、section 装饰、workspace avatar 与图片/音频/视频真实内容预览不属于文件资源图标，继续使用各自 owner。
 
 ---
 
@@ -1418,6 +1426,7 @@ Chat 中选择 `/goal` 后立即在输入框上方进入 Goal 草稿横条，不
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.50 | 2026-08-15 | **统一文件资源图标**：固定 vendoring Symbols SVG，由 MyAgents typed resolver 统一负责文件名、复合扩展名、类别与未知兜底；所有具体文件/文件夹身份入口共用 `FileIcon` 的 16/20/24px 契约，动作图标和真实媒体预览保持独立 |
 | 2.8.49 | 2026-08-09 | **Managed Codex 原生智能压缩**：Managed Codex 斜杠菜单仅新增 `/compact`，与 context 用量卡片右上角「智能压缩」共用 SessionEngine 原生控制动作、忙碌与成功失败状态；其余 Claude SDK 系统指令及其他 external Runtime 继续隐藏，compact control turn 不进入对话消息流 |
 | 2.8.48 | 2026-08-09 | **Goal 快捷启动与斜杠菜单能力归属**：Chat 的 `/goal` 选择后直接进入输入框上方草稿横条，设置弹窗降为横条内二级入口；Claude Agent SDK 系统斜杠指令只随真实 builtin Runtime 展示，不再因 Managed Codex 复用 builtin 输入 chrome 而误露出 |
 | 2.8.47 | 2026-08-04 | **MyAgents Light 默认主题**：新增基于 Claude 完整 light/dark package 的 MyAgents Light，仅将 light Primary CTA 改为中性黑，并置于主题列表第一项成为未显式选择用户的新默认；MyAgents Default / Default Black 的用户可见名分别调整为 MyAgents Classic / MyAgents Classic2，稳定 ID 与显式选择兼容不变；Registry 产品顺序与 canonical fallback 注册顺序解耦，两组受控按钮差异由逐 Token 测试锁定 |

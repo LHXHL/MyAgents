@@ -3,7 +3,6 @@ import {
   AtSign,
   ChevronRight,
   ChevronUp,
-  FileText,
   Gauge,
   Loader,
   Paperclip,
@@ -18,6 +17,7 @@ import {
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { FileIcon } from '@/components/file-icon';
 import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -1626,7 +1626,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                             }
                           }}
                         >
-                          <FileText className={`h-4 w-4 flex-shrink-0 ${isSelected ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]/80'}`} />
+                          <FileIcon name={file.name} />
                           <span className={`min-w-0 truncate font-medium ${isSelected ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'}`}>
                             {file.name}
                           </span>
