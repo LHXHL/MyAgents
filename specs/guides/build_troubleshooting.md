@@ -332,7 +332,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 npm run prepare:document-processing
 ```
 
-原始下载和完整 prepared bundle 会持久缓存在 `src-tauri/resources/document-processing-cache/`，不受 `npm run clean` 删除 `src-tauri/target` 的影响。只要 target、锁文件、相关 Rust 源码/toolchain 与签名配置没有变化，重复 setup/dev/release build 应直接报告 `already ready`，不会再次下载、展开、编译或签名。首次升级会自动复用并迁移旧的 `src-tauri/target/document-processing-cache` 中校验有效的原始文件。
+原始下载和完整 prepared bundle 会持久缓存在 `src-tauri/resources/document-processing-cache/`，不受 `npm run clean` 删除 `src-tauri/target` 的影响。只要 App 版本、target、锁文件、相关 Rust 源码/toolchain 与签名配置都没有变化，重复 setup/dev/release build 应直接报告 `already ready`，不会再次下载、展开、编译或签名。提升 App 版本会产生新的 prepared fingerprint，但仍会复用已校验的内容寻址下载；首次升级还会自动迁移旧的 `src-tauri/target/document-processing-cache` 中校验有效的原始文件。
 
 验证机器是否具备完整离线缓存：
 

@@ -3554,7 +3554,8 @@ Commands:
 Every user-visible Workspace selects one stable Agent identity through
 Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
 The Agent owns execution defaults; Project.path owns the current workspace.
-enabled=false only pauses proactive capabilities such as channels and heartbeat.
+enabled=false pauses Heartbeat, Memory Update, and Memory Evo. Channels remain
+independently controlled by channel.enabled.
 
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent

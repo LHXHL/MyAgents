@@ -397,7 +397,7 @@ IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.a
 | `imageGeneration` | `ImageGeneration` | **生图核心**：优先 `savedPath`（零拷贝引用 Codex 自动保存），fallback `result` (base64) 解码落盘 → ToolAttachment[]；content 留 `revisedPrompt` 文字 |
 | `collabAgentToolCall` | `CollabAgent` | tool / prompt / model / senderThreadId / receiverThreadIds 摘要 |
 | `plan` | — (started 走 thinking_start) | text 通过 `item/plan/delta` 流式 |
-| `reasoning` | — (started 走 thinking_start) | summary 通过 `summaryTextDelta` 流式 |
+| `reasoning` | —（started 不渲染；首个 exact summary/content delta 才走 thinking_start） | summary 通过 `summaryTextDelta` 流式 |
 | `enteredReviewMode` / `exitedReviewMode` | — (log level event) | review-mode 进入/退出提示 |
 | `hookPrompt` | — (log level event) | hook 注入的提示 fragment |
 | `contextCompaction` / `agentMessage` / `userMessage` | — | 通过 turn/agentMessage 路径处理 |

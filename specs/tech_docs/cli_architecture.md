@@ -175,8 +175,8 @@ Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-i
 
 Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：
 `Project.agentId → AgentConfig.id` 是配置 selector，`Project.path` 是 Project-backed
-当前工作区，`enabled=false` 只关闭 Channel、heartbeat、memory auto-update 等主动能力，
-不影响显式 addressability 或普通工作区使用。Renderer
+当前工作区，`enabled=false` 只关闭 Heartbeat、Memory Update、Memory Evo 三项主动能力，
+不关闭由 `channel.enabled` 独立控制的 Channel，也不影响显式 addressability 或普通工作区使用。Renderer
 birth/repair 与 Node discovery 都复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure
 policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：先落
 `Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按

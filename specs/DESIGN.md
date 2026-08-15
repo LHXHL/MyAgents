@@ -822,7 +822,7 @@ transition: opacity var(--duration-slow),
 ### 9.3 文件资源图标
 
 - 所有代表一个具体文件或文件夹对象的入口统一使用 `src/renderer/components/file-icon/`；consumer 只传 filename、node kind、folder expanded 和语义尺寸，不自行按扩展名选择图标；
-- dense=16px 用于文件树、搜索与紧凑列表，regular=20px 用于 Turn 摘要、附件和卡片 header，display=24px 用于预览 header/空态；固定 slot 不得改变行高和文字起点；
+- dense=16px 用于文件树、搜索与紧凑附件行，regular=20px 用于 Turn 摘要、附件卡片和卡片 header，display=24px 用于预览 header/空态；固定 slot 不得改变行高和文字起点；
 - 图标视觉资产来自随应用固定版本打包的 Symbols SVG；不依赖 VS Code、网络或用户安装。PDF、Office 家族、语言和常见资源使用专属图形，长尾进入类别兜底，未知格式进入统一 document 兜底；
 - 图标有可见文件名时使用装饰性空 alt；只有图标独立表达资源时才提供 accessible label；
 - 动作图标、section 装饰、workspace avatar 与图片/音频/视频真实内容预览不属于文件资源图标，继续使用各自 owner。

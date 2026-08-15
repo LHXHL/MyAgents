@@ -449,9 +449,9 @@ myagents im readme                                      # 拉 IM 工具完整文
 ### Agent 身份与 Session 协作（agent / session, PRD 0.4.3）
 
 每个 user-visible Workspace 都有一个稳定 Agent identity。Agent 是工作区
-及其执行默认的长期地址；`enabled=false` 只关闭 channel / heartbeat 等主动
-能力，不会取消身份，也不妨碍显式发起 Session。一个 Agent 可以拥有多个
-相互隔离的 Session。
+及其执行默认的长期地址；`enabled=false` 只关闭 Heartbeat、Memory Update、
+Memory Evo 三项主动能力，不会关闭由 `channel.enabled` 独立控制的 Channel，
+也不会取消身份或妨碍显式发起 Session。一个 Agent 可以拥有多个相互隔离的 Session。
 
 ```bash
 # 先发现 Agent，并确认哪个是当前 CLI 调用方

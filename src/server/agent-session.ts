@@ -10783,13 +10783,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // an outward data flow MyAgents has not product-decided to expose.
         // Keep the tool surface frozen; revisit as its own feature if wanted.
         disableArtifact: true,
-        // CC's own bundled skills duplicate the skill set MyAgents ships and
-        // seeds itself (bundled-skills/ → ~/.myagents/skills → <cwd>/.claude/skills
-        // symlinks): docx/pdf/pptx/xlsx/skill-creator all collide. Disabling
-        // removes the duplicate listings + their per-turn context cost; our
-        // seeded copies load via .claude/skills/ which this flag does NOT
-        // touch. Built-in slash commands stay typable (programmatic /compact
-        // unaffected) — they are only hidden from the model.
+        // Claude Code's native bundled skills can duplicate identities owned by
+        // MyAgents' effective Skill inventory (for example skill-creator).
+        // Disabling them removes duplicate listings and per-turn context cost;
+        // MyAgents-owned Skills still load through <cwd>/.claude/skills, which
+        // this flag does not touch. Built-in slash commands remain typable
+        // (programmatic /compact is unaffected); they are only hidden from the model.
         disableBundledSkills: true,
       },
       // Permission mode mapping (uses mapToSdkPermissionMode):
