@@ -72,19 +72,17 @@ vi.mock('@/utils/openExternal', () => ({
 
 vi.mock('@/components/HistorySearchOverlayContent', () => ({
   default: ({
-    initialMode,
     onClose,
     onOpenSession,
     projects,
     taskCenterData,
   }: {
-    initialMode?: string;
     onClose: () => void;
     onOpenSession: (session: Record<string, unknown>, project: Record<string, unknown>) => void;
     projects: Array<Record<string, unknown>>;
     taskCenterData: { sessions: Array<Record<string, unknown>> };
   }) => (
-    <div data-testid="task-center-overlay" data-initial-mode={initialMode}>
+    <div data-testid="task-center-overlay">
       <button type="button" onClick={onClose}>Close search test overlay</button>
       {taskCenterData.sessions[0] && projects[0] && (
         <button
@@ -1023,13 +1021,17 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByText('Animated session')).toBeInTheDocument();
   });
 
-  it('opens the global search overlay directly in search mode', async () => {
+  it('opens the global search overlay with one stable lazy-loaded shell', async () => {
     mocks.isTauri = true;
     const { container } = renderSidebar();
 
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
     const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
     expect(coldPanel).toBeInTheDocument();
+    const coldFilters = document.querySelector('[data-history-search-fallback-filters]');
+    expect(coldFilters).toHaveTextContent(String(i18n.t('app:historyOverlay.filters.all')));
+    expect(coldFilters).toHaveTextContent(String(i18n.t('app:historyOverlay.filters.favorite')));
+    expect(document.querySelector('[data-history-search-fallback-compact]')).toBeInTheDocument();
 
     const backdrop = coldPanel?.parentElement ?? null;
     expect(container).not.toContainElement(backdrop);
@@ -1039,8 +1041,7 @@ describe('GlobalSidebar rail flyout', () => {
       await vi.dynamicImportSettled();
     });
 
-    const overlay = screen.getByTestId('task-center-overlay');
-    expect(overlay).toHaveAttribute('data-initial-mode', 'search');
+    expect(screen.getByTestId('task-center-overlay')).toBeInTheDocument();
     expect(document.querySelector('[data-history-search-overlay-panel]')).toBe(coldPanel);
   });
 

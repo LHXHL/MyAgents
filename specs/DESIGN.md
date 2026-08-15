@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.50
+> **Version**: 2.8.51
 > **Last Updated**: 2026-08-15
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -540,6 +540,8 @@ Item 选中: 文字 var(--accent-warm)
 内嵌 `BrowserPanel` 是全表面例外：它承载浮于 React DOM 之上的原生 child Webview，窄布局时必须让同一个 Chat / Tab-owned host 原位铺满 Chat，不能通过 `OverlayBackdrop` 重挂载或重建 Webview。其全屏关闭层 z-index 必须与视觉层级一致，并与分屏、工具栏、Browser Tab × 复用同一个关闭 callback；只有当前 active Browser view 可以消费该关闭层。
 
 全局历史搜索由 DOM 顺序早于 Tab 工作区的 `GlobalSidebar` 声明，因此 `HistorySearchOverlayFrame` 的稳定外壳必须 portal 到 `document.body`。这里不能只提高 `z-index`：macOS WKWebView 的 overflow scrollbar 使用独立合成层，后续 Tab 滚动面仍可能穿透较早的 backdrop。未来新增或重构同类 App 级 Overlay 时应先核对 owner 与 DOM 绘制顺序；页面内部、天然位于自身滚动面之后的局部 Overlay不受此约束。
+
+历史搜索 Overlay 打开时保留浏览筛选器，并在筛选栏右侧呈现约 30% 宽的紧凑搜索框；用户点击或键盘激活后，搜索表面以右侧为锚点向左延伸占满整行，筛选器同步淡出。展开和收起只允许使用 transform / opacity 的短动效并提供 `prefers-reduced-motion` 退化；Escape 与输入框关闭按钮清空查询、恢复紧凑态和焦点。Suspense fallback 必须保持同一紧凑框几何，避免懒加载完成时从全宽搜索框跳变。
 
 **适用范围**：
 - 模态框（ConfirmDialog、SessionStatsModal 等）
@@ -1426,6 +1428,7 @@ Chat 中选择 `/goal` 后立即在输入框上方进入 Goal 草稿横条，不
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.51 | 2026-08-15 | **历史搜索连续展开**：Overlay 首帧保留筛选器并在右侧展示紧凑搜索框，激活后以 transform/opacity 向左展开为整行输入；Escape/X 恢复紧凑态与焦点，Suspense fallback 保持相同几何 |
 | 2.8.50 | 2026-08-15 | **统一文件资源图标**：固定 vendoring Symbols SVG，由 MyAgents typed resolver 统一负责文件名、复合扩展名、类别与未知兜底；所有具体文件/文件夹身份入口共用 `FileIcon` 的 16/20/24px 契约，动作图标和真实媒体预览保持独立 |
 | 2.8.49 | 2026-08-09 | **Managed Codex 原生智能压缩**：Managed Codex 斜杠菜单仅新增 `/compact`，与 context 用量卡片右上角「智能压缩」共用 SessionEngine 原生控制动作、忙碌与成功失败状态；其余 Claude SDK 系统指令及其他 external Runtime 继续隐藏，compact control turn 不进入对话消息流 |
 | 2.8.48 | 2026-08-09 | **Goal 快捷启动与斜杠菜单能力归属**：Chat 的 `/goal` 选择后直接进入输入框上方草稿横条，设置弹窗降为横条内二级入口；Claude Agent SDK 系统斜杠指令只随真实 builtin Runtime 展示，不再因 Managed Codex 复用 builtin 输入 chrome 而误露出 |

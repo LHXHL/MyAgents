@@ -256,7 +256,7 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 | 入口 | 文件 | 触发路径 |
 |------|------|---------|
-| **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → `initialMode='search'` 自动聚焦输入框 |
+| **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → 以浏览态打开，右侧紧凑搜索框获得键盘焦点 → 用户激活后向左展开并聚焦输入框 |
 | **文件搜索模式** | `components/DirectoryPanel.tsx` facade → `components/directory-panel/DirectoryPanel.tsx` + `hooks/useDirectorySearch.ts` | 侧边栏搜索按钮切换 mode → 用户输入 query → `searchWorkspaceFiles` 原子返回 folder/file → 后台 `refreshWorkspaceFileIndex` → 重搜当前 query |
 | **结果项** | `search/SessionSearchItem.tsx`, `search/FileSearchResults.tsx` | Folder 固定置于 file 上方；folder 点击定位并展开目录，file 点击预览，chunk 点击预览并定位行 |
 | **文件跳转定位行** | `components/directory-panel/DirectoryPanel.tsx` + `FilePreviewModal.tsx` + `MonacoEditor.tsx` | `FileSearchResults` 触发 `FilePreviewFocusTarget` 事件，已打开 editor 也会重新 `revealLineInCenter()`；`initialLineNumber` 仅保留为兼容字段 |
