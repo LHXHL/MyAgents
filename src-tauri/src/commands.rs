@@ -395,8 +395,48 @@ pub struct InitBundledWorkspaceResult {
     pub is_new: bool,
 }
 
+const BUNDLED_WORKSPACE_TEMPLATES_DIR: &str = "bundled-workspaces";
+const DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID: &str = "mino";
+
+/// Resolve one immutable workspace template shipped with the current app.
+///
+/// The bundled template is the only authority for creating a fresh builtin
+/// workspace. A user-owned copy under `~/.myagents/projects/` must never be
+/// used as a fallback source because it may already contain private identity,
+/// memory, credentials references, or other user customizations.
+fn resolve_bundled_workspace_template_at(
+    resource_dir: &Path,
+    template_id: &str,
+) -> Result<PathBuf, String> {
+    validate_template_id(template_id)?;
+    let template_src = resource_dir
+        .join(BUNDLED_WORKSPACE_TEMPLATES_DIR)
+        .join(template_id);
+    if !template_src.is_dir() || !template_src.join("CLAUDE.md").is_file() {
+        return Err(format!(
+            "Bundled workspace template '{}' not found or incomplete: {:?}",
+            template_id, template_src
+        ));
+    }
+    template_src
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve bundled workspace template: {}", e))
+}
+
+fn resolve_bundled_workspace_template<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    template_id: &str,
+) -> Result<PathBuf, String> {
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+    resolve_bundled_workspace_template_at(&resource_dir, template_id)
+}
+
 /// Command: Initialize bundled workspace (mino) on first launch
-/// Copies from app resources to ~/.myagents/projects/mino/
+/// Copies from the immutable app template to ~/.myagents/projects/mino/.
+/// An existing user-owned workspace is never overwritten.
 #[tauri::command]
 pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     app_handle: AppHandle<R>,
@@ -420,17 +460,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
         });
     }
 
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let mino_src = resource_dir.join("mino");
-    if !mino_src.exists() || !mino_src.join("CLAUDE.md").exists() {
-        return Err(format!(
-            "Bundled mino not found or incomplete in resources: {:?}",
-            mino_src
-        ));
-    }
+    let mino_src =
+        resolve_bundled_workspace_template(&app_handle, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)?;
 
     ulog_info!(
         "[workspace] Initializing bundled workspace from {:?}",
@@ -451,9 +482,8 @@ pub fn cmd_initialize_bundled_workspace<R: Runtime>(
     })
 }
 
-/// Command: Create a dedicated workspace for an IM Bot by copying bundled mino template.
+/// Command: Create a dedicated workspace for an IM Bot by copying the bundled mino template.
 /// Sanitizes the name for path safety and auto-appends numeric suffix on collision.
-/// Falls back to local mino copy if bundled resources are incomplete.
 /// Returns the created workspace path.
 #[tauri::command]
 pub fn cmd_create_bot_workspace<R: Runtime>(
@@ -472,44 +502,20 @@ pub fn cmd_create_bot_workspace<R: Runtime>(
     // Find available path (handle collisions with numeric suffix)
     let dest = find_available_workspace_path(&projects_dir, &sanitized);
 
-    // Primary: copy from bundled resources
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let mino_src = resource_dir.join("mino");
-
-    if mino_src.exists() && mino_src.join("CLAUDE.md").exists() {
-        ulog_info!(
-            "[workspace] Copying bundled mino from {:?} to {:?}",
-            mino_src,
-            dest
-        );
-        copy_dir_recursive(&mino_src, &dest)
-            .map_err(|e| format!("Failed to copy workspace template: {}", e))?;
-    }
+    let mino_src =
+        resolve_bundled_workspace_template(&app_handle, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)?;
+    ulog_info!(
+        "[workspace] Copying bundled mino from {:?} to {:?}",
+        mino_src,
+        dest
+    );
+    copy_dir_recursive(&mino_src, &dest)
+        .map_err(|e| format!("Failed to copy workspace template: {}", e))?;
 
     // Validate: CLAUDE.md must exist in destination (marker file for a valid mino template)
     if !dest.join("CLAUDE.md").exists() {
-        // Fallback: copy from the local mino created on first launch
-        let local_mino = projects_dir.join("mino");
-        if local_mino.exists() && local_mino.join("CLAUDE.md").exists() {
-            ulog_warn!(
-                "[workspace] Bundled mino incomplete, falling back to local {:?}",
-                local_mino
-            );
-            // Clean up the potentially empty dest before fallback copy
-            let _ = fs::remove_dir_all(&dest);
-            copy_dir_recursive(&local_mino, &dest)
-                .map_err(|e| format!("Failed to copy from local mino: {}", e))?;
-        } else {
-            // Clean up the empty dest
-            let _ = fs::remove_dir_all(&dest);
-            return Err(
-                "Mino template not found: bundled resources incomplete and no local copy available"
-                    .to_string(),
-            );
-        }
+        let _ = fs::remove_dir_all(&dest);
+        return Err("Bundled mino copy produced incomplete workspace".to_string());
     }
 
     ulog_info!("[workspace] Bot workspace created: {:?}", dest);
@@ -716,8 +722,7 @@ pub fn cmd_create_workspace_from_template(
 }
 
 /// Command: Create a workspace from a bundled (preset) template.
-/// Copies from app resources/<template_id> to dest_path.
-/// Falls back to local copy at ~/.myagents/projects/<template_id> if bundled is incomplete.
+/// Copies from app resources/bundled-workspaces/<template_id> to dest_path.
 /// Safety: template_id is sanitized to prevent path traversal.
 #[tauri::command]
 pub fn cmd_create_workspace_from_bundled_template<R: Runtime>(
@@ -736,46 +741,16 @@ pub fn cmd_create_workspace_from_bundled_template<R: Runtime>(
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {}", e))?;
     }
 
-    // Primary: copy from bundled resources
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-    let template_src = resource_dir.join(&template_id);
-
-    if template_src.exists() && template_src.join("CLAUDE.md").exists() {
-        ulog_info!(
-            "[template] Copying bundled template '{}' from {:?} to {:?}",
-            template_id,
-            template_src,
-            dst
-        );
-        copy_dir_recursive(&template_src, &dst)
-            .map_err(|e| format!("Failed to copy bundled template: {}", e))?;
-        return Ok(());
-    }
-
-    // Fallback: copy from local projects/<template_id>
-    let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-    let local_src = home_dir
-        .join(".myagents")
-        .join("projects")
-        .join(&template_id);
-    if local_src.exists() && local_src.join("CLAUDE.md").exists() {
-        ulog_warn!(
-            "[template] Bundled template '{}' incomplete, falling back to local {:?}",
-            template_id,
-            local_src
-        );
-        copy_dir_recursive(&local_src, &dst)
-            .map_err(|e| format!("Failed to copy from local template: {}", e))?;
-        return Ok(());
-    }
-
-    Err(format!(
-        "Template '{}' not found in bundled resources or local copies",
-        template_id
-    ))
+    let template_src = resolve_bundled_workspace_template(&app_handle, &template_id)?;
+    ulog_info!(
+        "[template] Copying bundled template '{}' from {:?} to {:?}",
+        template_id,
+        template_src,
+        dst
+    );
+    copy_dir_recursive(&template_src, &dst)
+        .map_err(|e| format!("Failed to copy bundled template: {}", e))?;
+    Ok(())
 }
 
 /// Validate a bundled template_id — rejects path separators, traversal, and empty IDs.
@@ -813,26 +788,7 @@ fn resolve_template_source<R: Runtime>(
     source_path: Option<String>,
 ) -> Result<PathBuf, String> {
     if let Some(id) = template_id.as_deref() {
-        validate_template_id(id)?;
-        let resource_dir = app_handle
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-        let bundled = resource_dir.join(id);
-        if bundled.exists() && bundled.join("CLAUDE.md").exists() {
-            // Canonicalize so subsequent reads can't be redirected via symlink swap.
-            return bundled
-                .canonicalize()
-                .map_err(|e| format!("Failed to resolve bundled template path: {}", e));
-        }
-        let home_dir = dirs::home_dir().ok_or("Failed to get home dir")?;
-        let local = home_dir.join(".myagents").join("projects").join(id);
-        if local.exists() && local.join("CLAUDE.md").exists() {
-            return local
-                .canonicalize()
-                .map_err(|e| format!("Failed to resolve local template path: {}", e));
-        }
-        return Err(format!("Bundled template '{}' not found", id));
+        return resolve_bundled_workspace_template(app_handle, id);
     }
     if let Some(p) = source_path.as_deref() {
         let src = PathBuf::from(p);
@@ -997,7 +953,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "25";
+const ADMIN_AGENT_VERSION: &str = "26";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1114,7 +1070,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "47";
+const SYSTEM_SKILLS_VERSION: &str = "50";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1132,14 +1088,6 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skill. Existing installs retain the dir at ~/.myagents/skills/
     // ultra-research/ until the user deletes it (no orphan cleanup logic).
     "download-anything",
-    // v8: agent-browser promoted from utility → system skill. The CLI is
-    // no longer bundled with the app; the SKILL.md teaches AI to self-install
-    // on first use with a command-local npm prefix. Existing users
-    // need the updated SKILL.md to land or their AI will hit `command not
-    // found` after upgrading. The install uses command-local npm_config_prefix
-    // so it lands under ~/.myagents/npm-global without leaking prefix env to
-    // every shell. System-skill status forces the overwrite.
-    "agent-browser",
     // v9: myagents-cli promoted from helper-bundled skill (was at
     // bundled-agents/myagents_helper/.claude/skills/self-config/) to a
     // global system skill. Every AI session inside MyAgents — Chat / IM Bot
@@ -1148,6 +1096,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skills, Cloud Space, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "myagents-cli",
+    // v49: progressively disclosed contract for the bundled local document
+    // converter. It is required because every Runtime must discover the same
+    // App-owned job surface without an always-on prompt section.
+    "myagents-anydoc",
     // v44: one Agent workflow owns scheduled, future and conditional Task
     // automation. Command Detector protocol is a progressive reference, not
     // a competing Sensor product entry.
@@ -1170,6 +1122,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     "myagents-memory-update",
     "myagents-memory-gardener",
     "myagents-memory-molt",
+    // v50: skill-creator promoted from utility → system skill. Its authoring
+    // and evaluation workflow evolves with the bundled scripts, so existing
+    // installs must receive updates instead of retaining the seed-once copy.
+    "skill-creator",
     // v29: prompt-writer promoted from utility → system skill. It is pure
     // methodology (no product-surface coupling), but as a utility skill the
     // seed-once path meant existing installs never received content
@@ -1182,19 +1138,6 @@ const SYSTEM_SKILLS: &[&str] = &[
 /// survive an upgrade. These directories were force-overwritten by MyAgents,
 /// so removing the exact retired names cannot delete a user-owned skill.
 const RETIRED_SYSTEM_SKILLS: &[&str] = &["myagents-sensor"];
-
-/// Skills unavailable on certain platforms due to upstream bugs.
-/// MUST stay in sync with `src/server/utils/platform.ts::PLATFORM_BLOCKED_SKILLS`.
-/// Used by `cmd_sync_system_skills` to skip force-syncing skills that the
-/// Node-side runtime would later filter out anyway — prevents orphan files
-/// in `~/.myagents/skills/` that confuse users.
-fn is_skill_blocked_on_platform(skill_folder: &str) -> bool {
-    match skill_folder {
-        // agent-browser daemon broken on Windows: vercel-labs/agent-browser#398
-        "agent-browser" => cfg!(target_os = "windows"),
-        _ => false,
-    }
-}
 
 /// Force-sync every system skill from the app bundle to
 /// `~/.myagents/skills/<name>/`. Runs once per `SYSTEM_SKILLS_VERSION`
@@ -1315,18 +1258,7 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     let mut synced = Vec::new();
     let mut missing = Vec::new();
     let mut incomplete = Vec::new();
-    let mut platform_skipped = Vec::new();
     for skill_name in SYSTEM_SKILLS {
-        // Platform block: keep parity with Node-side `isSkillBlockedOnPlatform`
-        // (src/server/utils/platform.ts). Without this, a skill marked
-        // unavailable on the current platform (e.g. agent-browser on Windows
-        // due to upstream daemon bug) would be force-synced into
-        // ~/.myagents/skills/ but invisible to the SDK runtime — orphan
-        // disk files that confuse users and serve no purpose.
-        if is_skill_blocked_on_platform(skill_name) {
-            platform_skipped.push(*skill_name);
-            continue;
-        }
         let src = bundled_skills_dir.join(skill_name);
         let dst = skills_dir.join(skill_name);
         match sync_one_system_skill(&src, &dst)
@@ -1370,8 +1302,7 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     // version on a partial sweep would make the broken state permanent (the
     // old behavior that produced empty `~/.myagents/skills/<name>` dirs on
     // Windows — issue #321). Leaving the version unwritten retries next launch
-    // and keeps the warnings above visible. Platform-skipped skills are
-    // intentional, not defects, so they don't block the advance.
+    // and keeps the warnings above visible.
     let complete =
         missing.is_empty() && incomplete.is_empty() && retired_system_skills_absent(&skills_dir);
     if complete {
@@ -1380,14 +1311,13 @@ fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<b
     }
 
     ulog_info!(
-        "[system-skills] Synced v{} (complete={}) — ok: {:?}, retired: {:?}, missing: {:?}, incomplete: {:?}, platform-skipped: {:?}",
+        "[system-skills] Synced v{} (complete={}) — ok: {:?}, retired: {:?}, missing: {:?}, incomplete: {:?}",
         SYSTEM_SKILLS_VERSION,
         complete,
         synced,
         retired,
         missing,
-        incomplete,
-        platform_skipped
+        incomplete
     );
     Ok(complete)
 }
@@ -1413,15 +1343,13 @@ fn skill_dir_is_complete(dir: &Path) -> bool {
     dir.join("SKILL.md").is_file()
 }
 
-/// True iff every system skill that SHOULD be installed on this platform has a
-/// valid SKILL.md on disk under `skills_dir`. Platform-blocked skills are
-/// intentionally absent and don't count against completeness. Used to bypass
-/// the version fast-path so a frozen/incomplete install (issue #321) self-heals
-/// instead of trusting the version stamp.
+/// True iff every system skill has a valid SKILL.md on disk under `skills_dir`.
+/// Used to bypass the version fast-path so a frozen/incomplete install (issue
+/// #321) self-heals instead of trusting the version stamp.
 fn all_installed_system_skills_complete(skills_dir: &Path) -> bool {
-    SYSTEM_SKILLS.iter().all(|name| {
-        is_skill_blocked_on_platform(name) || skill_dir_is_complete(&skills_dir.join(name))
-    })
+    SYSTEM_SKILLS
+        .iter()
+        .all(|name| skill_dir_is_complete(&skills_dir.join(name)))
 }
 
 fn retired_system_skills_absent(skills_dir: &Path) -> bool {
@@ -1577,12 +1505,54 @@ fn merge_dir_recursive_validated_with_home(
 }
 
 #[cfg(test)]
+mod bundled_workspace_template_tests {
+    use super::{
+        resolve_bundled_workspace_template_at, BUNDLED_WORKSPACE_TEMPLATES_DIR,
+        DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn committed_mino_template_is_complete_and_resolves_from_resource_root() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must live under the repository root");
+
+        let resolved =
+            resolve_bundled_workspace_template_at(repo_root, DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)
+                .expect("committed mino template must resolve");
+
+        assert!(resolved.join("CLAUDE.md").is_file());
+        assert!(resolved.ends_with(
+            Path::new(BUNDLED_WORKSPACE_TEMPLATES_DIR).join(DEFAULT_BUNDLED_WORKSPACE_TEMPLATE_ID)
+        ));
+    }
+
+    #[test]
+    fn bundled_template_resolver_rejects_traversal_and_incomplete_sources() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must live under the repository root");
+
+        assert_eq!(
+            resolve_bundled_workspace_template_at(repo_root, "../mino").unwrap_err(),
+            "Invalid template ID"
+        );
+        assert!(
+            resolve_bundled_workspace_template_at(repo_root, "missing-template")
+                .unwrap_err()
+                .contains("not found or incomplete")
+        );
+    }
+}
+
+#[cfg(test)]
 mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
-        is_skill_blocked_on_platform, remove_retired_system_skills, retired_system_skills_absent,
-        skill_dir_is_complete, sync_one_system_skill, SystemSkillSync, ADMIN_AGENT_VERSION,
-        SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        remove_retired_system_skills, retired_system_skills_absent, skill_dir_is_complete,
+        sync_one_system_skill, SystemSkillSync, ADMIN_AGENT_VERSION, SYSTEM_SKILLS,
+        SYSTEM_SKILLS_VERSION,
     };
     use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use std::fs;
@@ -1605,9 +1575,20 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v47_keeps_task_cli_and_automation_skills_aligned() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "47");
+    fn v50_keeps_task_cli_automation_and_creator_skills_aligned() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "50");
+        assert!(SYSTEM_SKILLS.contains(&"skill-creator"));
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
+        let anydoc = include_str!("../../bundled-skills/myagents-anydoc/SKILL.md");
+        let description = bundled
+            .split("---")
+            .nth(1)
+            .expect("myagents-cli frontmatter");
+        assert!(!description.to_ascii_lowercase().contains("anydoc"));
+        assert!(bundled.contains("AnyDoc"));
+        assert!(bundled.contains("myagents anydoc --help"));
+        assert!(bundled.contains("/myagents-anydoc"));
+        assert!(anydoc.contains("myagents anydoc convert --file <input>"));
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
         assert!(bundled.contains("myagents space goal list --space <slug> --json"));
@@ -1649,6 +1630,11 @@ mod system_skills_tests {
         assert!(memory_update.contains("不要落盘“未升级偏好”"));
         assert!(memory_update.contains("commit 后 push 当前分支"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
+
+        let gardener = include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md");
+        assert!(gardener.contains("已有的未提交改动不阻断记忆维护"));
+        assert!(gardener.contains("只暂存并提交本次记忆维护产生的改动"));
+        assert!(!gardener.contains("存在非本次任务的未提交改动时，只做只读体检"));
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
         assert!(product_docs.contains("name: myagents-docs"));
@@ -1770,16 +1756,22 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v25_helper_routes_product_knowledge_and_diagnosis() {
-        assert_eq!(ADMIN_AGENT_VERSION, "25");
+    fn v26_helper_routes_product_knowledge_diagnosis_and_tool_install() {
+        assert_eq!(ADMIN_AGENT_VERSION, "26");
         let helper = include_str!("../../bundled-agents/myagents_helper/CLAUDE.md");
         let support =
             include_str!("../../bundled-agents/myagents_helper/.claude/skills/support/SKILL.md");
+        let tool_install = include_str!(
+            "../../bundled-agents/myagents_helper/.claude/skills/tool-install/SKILL.md"
+        );
         assert!(helper.contains("`/myagents-docs`"));
         assert!(helper.contains("`/myagents-cli`"));
         assert!(helper.contains("`/support`"));
+        assert!(helper.contains("`/tool-install`"));
         assert!(support.contains("先用 `/myagents-docs` 确认正确产品预期"));
         assert!(support.contains("不读取 `~/.myagents/credentials/`"));
+        assert!(tool_install.contains("MYAGENTS_NPM_GLOBAL_PREFIX"));
+        assert!(tool_install.contains("不写 Agent-CLI Registry"));
     }
 
     #[test]
@@ -1910,9 +1902,6 @@ mod system_skills_tests {
         let myagents_dir = tmp.path();
         let skills_dir = myagents_dir.join("skills");
         for name in SYSTEM_SKILLS {
-            if is_skill_blocked_on_platform(name) {
-                continue;
-            }
             let dir = skills_dir.join(name);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("SKILL.md"), "x").unwrap();
@@ -1940,15 +1929,12 @@ mod system_skills_tests {
 
     #[test]
     fn version_gate_validation_detects_frozen_install() {
-        // Lay down every platform-available system skill WITH a SKILL.md →
-        // gate may early-return. Then blank one out → gate must bypass so the
-        // (non-destructive) re-sync runs and self-heals.
+        // Lay down every system skill WITH a SKILL.md → gate may early-return.
+        // Then blank one out → gate must bypass so the (non-destructive)
+        // re-sync runs and self-heals.
         let tmp = tempfile::tempdir().unwrap();
         let skills_dir = tmp.path().join("skills");
         for name in SYSTEM_SKILLS {
-            if is_skill_blocked_on_platform(name) {
-                continue;
-            }
             let d = skills_dir.join(name);
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("SKILL.md"), "x").unwrap();
@@ -1959,10 +1945,7 @@ mod system_skills_tests {
         );
 
         // Freeze one into the empty-dir state seen in #321.
-        let victim = SYSTEM_SKILLS
-            .iter()
-            .find(|n| !is_skill_blocked_on_platform(n))
-            .expect("at least one platform-available system skill");
+        let victim = SYSTEM_SKILLS.first().expect("at least one system skill");
         fs::remove_file(skills_dir.join(victim).join("SKILL.md")).unwrap();
         assert!(
             !all_installed_system_skills_complete(&skills_dir),

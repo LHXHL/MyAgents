@@ -117,7 +117,7 @@ import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { EffectiveProjectCapabilitySnapshot } from '../shared/projectCapabilities';
 import type { OfficialToolId } from '../shared/official-tools';
-import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
+import { claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData, loadSessionTranscript } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromTurnAttribution } from '../shared/session-origin';
@@ -147,6 +147,7 @@ import {
   buildBuiltinSkillAllowlist,
   filterSlashCommandsForCapabilities,
   findDisabledCapabilityForSlashInput,
+  sanitizeSdkSkillAllowlist,
 } from './builtin-session/capabilities';
 import { initLogger, appendLog, getLogLines as getLogLinesFromLogger } from './AgentLogger';
 import { setAmbientLogContext, clearAmbientLogContextField } from './logger-context';
@@ -156,6 +157,7 @@ import { localTimestamp } from '../shared/logTime';
 import { trackServer } from './analytics';
 import { getCurrentRuntimeType, isExternalRuntime } from './runtimes/factory';
 import { decideBuiltinSessionResume } from './utils/builtin-session-resume';
+import { resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import {
   commitPendingProductSession,
   currentProductSessionId as sessionId,
@@ -207,6 +209,7 @@ import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
+  normalizeSdkToolUseResult,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
 import type { ToolAttachment } from '../shared/types/tool-attachment';
@@ -2988,7 +2991,7 @@ function dispatchSetModelToSdk(model: string): Promise<void> {
   return promise;
 }
 
-export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): void {
+export async function setSessionModel(model: string, opts?: { imConfigSync?: boolean }): Promise<void> {
   // #327 — snapshot authority. An owned (snapshotted) desktop session's model is
   // frozen at the snapshot, and the per-turn /api/im/enqueue resolver already
   // applies "snapshot wins" (index.ts). But the Rust IM router ALSO pushes the
@@ -3026,7 +3029,12 @@ export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }
       console.log('[agent] model switch crosses provider-history boundary during active turn -> deferred fresh SDK session');
       if (lifecycleState.query) scheduleDeferredRestart('provider-history');
     } else {
-      resetForProviderHistoryBoundary();
+      try {
+        await resetForProviderHistoryBoundary();
+      } catch (error) {
+        if (configState.currentModel === model) configSetModel(oldModel);
+        throw error;
+      }
       console.log('[agent] model switch crosses provider-history boundary -> created fresh SDK session id');
       if (lifecycleState.query) {
         abortPersistentSession();
@@ -3142,22 +3150,40 @@ export function getSessionProviderId(): string | null {
   return configState.currentProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID;
 }
 
-function resetForProviderHistoryBoundary(): void {
-  const previousSessionId = sessionId;
-  setPendingProviderHistoryBoundaryReset(false);
-  sessionRegistered = false;
-  setCurrentSessionId(randomUUID());
-  hasInitialPrompt = false;
-  resetSessionMaterializationState({ allowLazySessionMaterialization: true });
-  clearMessages();
-  resetTranscriptPersistenceForSession(previousSessionId);
-  clearCurrentSessionUuids();
-  clearLiveSessionUuids();
-  setMessageSequence(0);
-  pendingResumeSessionAt = undefined;
-  setPendingReloadAnchor(undefined);
-  setSystemInitInfo(null);
-  setSdkControlReady(false);
+async function resetForProviderHistoryBoundary(): Promise<void> {
+  return runSerializedSessionMutation(async () => {
+    const productSessionId = sessionId;
+    const metadata = getSessionMetadata(productSessionId);
+    if (metadata) {
+      const sourceSdkSessionId = resolveBuiltinSdkSessionId(metadata);
+      const replacementSdkSessionId = randomUUID();
+      const updated = await updateSessionMetadata(productSessionId, {
+        sdkSessionId: replacementSdkSessionId,
+        unifiedSession: false,
+        forkFrom: undefined,
+        runtimeUsageTotals: undefined,
+        lastContextUsage: undefined,
+      }, (current) => (
+        (current.runtime ?? 'builtin') === 'builtin'
+        && resolveBuiltinSdkSessionId(current) === sourceSdkSessionId
+        && !current.pendingConversationMutation
+      ));
+      if (!updated) {
+        throw new Error(`[agent] provider history boundary reset lost Session authority for ${productSessionId}`);
+      }
+    } else if (transcriptState.messages.length > 0) {
+      throw new Error(`[agent] provider history boundary reset refused unindexed Session ${productSessionId}`);
+    }
+
+    setPendingProviderHistoryBoundaryReset(false);
+    sessionRegistered = false;
+    clearCurrentSessionUuids();
+    clearLiveSessionUuids();
+    pendingResumeSessionAt = undefined;
+    setPendingReloadAnchor(undefined);
+    setSystemInitInfo(null);
+    setSdkControlReady(false);
+  });
 }
 
 /** Set provider env (called by Rust IM router via /api/provider/set on sidecar creation or config hot-reload).
@@ -3170,7 +3196,7 @@ function resetForProviderHistoryBoundary(): void {
  * go through schedulePreWarm's 500ms debounce — provider changes are discrete
  * Rust-layer calls, not rapid-fire React state sync.
  */
-export function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): void {
+export async function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): Promise<void> {
   const oldLabel = configState.currentProviderEnv?.baseUrl ?? 'anthropic';
   const newLabel = providerEnv?.baseUrl ?? 'anthropic';
   // Full equality check — all ProviderEnv fields affect subprocess env (authType, apiProtocol, etc.)
@@ -3196,7 +3222,12 @@ export function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): voi
       setPendingProviderHistoryBoundaryReset(true);
       console.log('[agent] provider switch crosses history boundary during active turn — fresh SDK session will be created after restart');
     } else {
-      resetForProviderHistoryBoundary();
+      try {
+        await resetForProviderHistoryBoundary();
+      } catch (error) {
+        if (configState.currentProviderEnv === providerEnv) configSetProviderEnv(providerUpdate.oldProviderEnv);
+        throw error;
+      }
       console.log('[agent] provider switch crosses history boundary — created fresh SDK session id');
     }
   }
@@ -4931,6 +4962,12 @@ export async function ensureSessionMetadataForSdkSystemInit(
     const updated = await updateSessionMetadata(targetSessionId, {
       sdkSessionId,
       unifiedSession: sdkSessionId === targetSessionId,
+    }, (current) => {
+      const currentSdkSessionId = resolveBuiltinSdkSessionId(current);
+      return isCurrentQueryAuthority(authority)
+        && sessionId === authority.productSessionId
+        && !current.pendingConversationMutation
+        && (currentSdkSessionId === undefined || currentSdkSessionId === sdkSessionId);
     });
     if (!updated) {
       throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
@@ -5612,14 +5649,6 @@ export function buildClaudeSessionEnv(
   // DO NOT set CLAUDE_CONFIG_DIR here — it would change the Keychain service name
   // and break Anthropic subscription OAuth. Enabled global Skills are instead
   // projected into project .claude/skills/ at Query birth.
-
-  // agent-browser: no env injection needed. The CLI ships its own config
-  // discovery (~/.agent-browser/config.json default path) and is installed
-  // by the AI via the agent-browser skill on first use, not bundled here.
-  // Earlier versions set AGENT_BROWSER_HOME on Windows to bypass a Rust
-  // canonicalize() UNC path issue (vercel-labs/agent-browser#393); that
-  // workaround required the bundled CLI path to derive HOME, and is now
-  // upstream's responsibility.
 
   // Self-Config CLI: expose sidecar port so the `myagents` CLI can call back
   if (sidecarPort > 0) {
@@ -7440,7 +7469,16 @@ export async function initializeAgent(
   // function called getSessionMetadata(initialSessionId) three times (at resume
   // decision, message load, and MCP self-resolve); each call scans sessions.json
   // and a large JSONL can cost ~30-100ms. Read once, reuse.
-  const initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
+  let initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
+  if (initialSessionId && initMeta?.pendingConversationMutation) {
+    const resolved = await resolvePendingConversationMutation(initialSessionId);
+    if (!resolved.success) {
+      throw new Error(
+        `[agent] refused to initialize ${initialSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+      );
+    }
+    initMeta = resolved.metadata;
+  }
   resetSessionMaterializationState({ allowLazySessionMaterialization: !initialSessionId });
 
   if (initialSessionId) {
@@ -7472,7 +7510,7 @@ export async function initializeAgent(
           console.log(`[agent] initializeAgent: external runtime ${currentRuntimeType}, builtin SDK resume disabled for ${initialSessionId}`);
         } else if (resumeDecision.reason === 'probe-error') {
           const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
-          console.warn(`[agent] initializeAgent: SDK transcript probe failed for ${initialSessionId}, will create fresh session: ${msg}`);
+          throw new Error(`[agent] SDK transcript probe failed for ${initialSessionId}; refusing to replace its bound SDK identity: ${msg}`);
         } else {
           console.log(`[agent] initializeAgent: will create fresh SDK session ${initialSessionId} (resume skipped: ${resumeDecision.reason})`);
         }
@@ -7666,10 +7704,30 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   }
 
   // Get the target session metadata to find SDK session_id
-  const sessionMeta = getSessionMetadata(targetSessionId);
+  let sessionMeta = getSessionMetadata(targetSessionId);
   if (!sessionMeta) {
     console.error(`[agent] switchToSession: session ${targetSessionId} not found`);
     return false;
+  }
+  if (sessionMeta.pendingConversationMutation) {
+    const resolved = await resolvePendingConversationMutation(targetSessionId);
+    if (!resolved.success) {
+      throw new Error(
+        `[agent] refused to switch to ${targetSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+      );
+    }
+    sessionMeta = resolved.metadata;
+  }
+  const targetAgentDir = sessionMeta.agentDir || agentDir;
+  const resumeDecision = await decideBuiltinSessionResume({
+    meta: sessionMeta,
+    currentRuntime: getCurrentRuntimeType(),
+    agentDir: targetAgentDir,
+    probeSdkTranscript: sdkGetSessionMessages,
+  });
+  if (!resumeDecision.shouldResume && resumeDecision.reason === 'probe-error') {
+    const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
+    throw new Error(`[agent] SDK transcript probe failed for ${targetSessionId}; refusing to replace its bound SDK identity: ${msg}`);
   }
 
   // Properly terminate the old session if one is running
@@ -7730,13 +7788,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
 
   // Set sessionRegistered based on whether the SDK can actually resume this
   // session. Metadata-only sessions must start fresh with the same sessionId.
-  const targetAgentDir = sessionMeta.agentDir || agentDir;
-  const resumeDecision = await decideBuiltinSessionResume({
-    meta: sessionMeta,
-    currentRuntime: getCurrentRuntimeType(),
-    agentDir: targetAgentDir,
-    probeSdkTranscript: sdkGetSessionMessages,
-  });
   if (resumeDecision.shouldResume) {
     sessionRegistered = true;
     console.log(`[agent] switchToSession: will resume session ${resumeDecision.resumeSessionId} (reason=${resumeDecision.reason})`);
@@ -7744,10 +7795,6 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
     // External runtimes (codex/gemini/CC) don't use builtin SDK resume state.
     // Their resume is driven by runtimeSessionId in external-session.ts.
     sessionRegistered = false;
-  } else if (resumeDecision.reason === 'probe-error') {
-    sessionRegistered = false;
-    const msg = resumeDecision.error instanceof Error ? resumeDecision.error.message : String(resumeDecision.error);
-    console.warn(`[agent] switchToSession: SDK transcript probe failed, will start fresh: ${msg}`);
   } else {
     // 从未 query 过的 session，用 sessionId 创建
     sessionRegistered = false;
@@ -8135,6 +8182,38 @@ function scheduleWatchdogAutoResumeAfterAbort(
   })();
 }
 
+/** Recover or reject the exact persisted builtin rewind intent before Runtime use. */
+async function resolvePendingBuiltinConversationMutationForActiveSession(): Promise<void> {
+  const productSessionId = sessionId;
+  const metadata = getSessionMetadata(productSessionId);
+  const intent = metadata?.pendingConversationMutation;
+  if (!intent) return;
+  if (intent.kind !== 'builtin-rewind') {
+    throw new Error(`[agent] refusing builtin Runtime for ${productSessionId}: incompatible pending conversation mutation`);
+  }
+
+  const resolved = await resolvePendingConversationMutation(productSessionId);
+  if (!resolved.success) {
+    throw new Error(
+      `[agent] refusing builtin Runtime for ${productSessionId}: pending conversation mutation could not recover: ${resolved.error}`,
+    );
+  }
+  if (sessionId !== productSessionId) {
+    throw new Error(
+      `[agent] refusing recovered conversation mutation after Product Session changed from ${productSessionId} to ${sessionId}`,
+    );
+  }
+
+  clearCurrentSessionUuids();
+  clearLiveSessionUuids();
+  loadTranscriptFromSessionMessages(resolved.messages, resolved.cursor);
+  if (resolved.metadata.sdkSessionId === intent.replacementSdkSessionId) {
+    sessionRegistered = false;
+    pendingResumeSessionAt = undefined;
+    setPendingReloadAnchor(undefined);
+  }
+}
+
 export async function enqueueUserMessage(
   text: string,
   images?: ImagePayload[],
@@ -8305,6 +8384,7 @@ export async function enqueueUserMessage(
   if (rewindPromise) {
     await rewindPromise;
   }
+  await resolvePendingBuiltinConversationMutationForActiveSession();
   if (admissionTicket?.canceled) {
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
   }
@@ -8498,14 +8578,14 @@ export async function enqueueUserMessage(
     imTextBlockIndices.clear();
 
     if (crossesProviderHistoryBoundary) {
-      resetForProviderHistoryBoundary();
+      await resetForProviderHistoryBoundary();
       console.log('[agent] Fresh session: provider history boundary changed');
     }
 
     if (isDebugMode) console.log(`[agent] session terminated for provider switch`);
   } else if (providerChanged || crossesProviderHistoryBoundary) {
     if (crossesProviderHistoryBoundary) {
-      resetForProviderHistoryBoundary();
+      await resetForProviderHistoryBoundary();
       console.log('[agent] Fresh session: provider history boundary changed');
     }
     if (providerChanged) {
@@ -9797,6 +9877,7 @@ export async function rewindSession(userMessageId: string): Promise<{
   fileRewindStatus?: FileRewindStatus;
 }> {
   const doRewind = async () => {
+    const productSessionId = sessionId;
     // 1. 找到目标 user message
     const targetIndex = transcriptState.messages.findIndex(m => m.id === userMessageId && m.role === 'user');
     if (targetIndex < 0) return { success: false as const, error: 'Message not found' };
@@ -9855,13 +9936,9 @@ export async function rewindSession(userMessageId: string): Promise<{
     const removedContent = typeof targetMessage.content === 'string' ? targetMessage.content : '';
     const removedAttachments = targetMessage.attachments;
 
-    // 6. SessionStore validates and commits the durable truncation before the
-    // live/UI projection changes. The returned cursor remains the sole append
-    // authority for the shortened transcript.
-    await truncateTranscriptPersistenceForRewind(sessionId, targetMessage.id, targetIndex);
-    truncateMessages(targetIndex);
-
-    // 7. 设置下次 query 的对话截断点 — 三分支决策树
+    // 6. Decide whether the existing SDK transcript can remain the execution
+    // identity. This decision is made before persistence so a fresh branch can
+    // commit the transcript truncation and SDK binding replacement together.
     //    UUID 有效性校验（OR 逻辑）：
     //    - transcriptState.liveSessionUuids: SDK subprocess stdout 确认过的 UUID（权威但不完整 — resume 后
     //      SDK 不会重新输出旧历史的 UUID）
@@ -9870,7 +9947,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    分支：
     //      A. uuidIsLive=true        → 设 anchor，传给 SDK 截断
     //      B. 锚点 stale 但 session 仍活跃 → 仅清 anchor，**保留 session id** (#189 修复)
-    //      C. 没有锚点 / session 未注册 → 真正的 fresh start，新建 session id
+    //      C. 没有锚点 / session 未注册 → Product Session 不变，仅换 fresh SDK identity
     //
     //    **注意**：这两个集合只是 MyAgents 自己的视角，**不是 SDK 持久化状态的权威 proxy**。
     //    MyAgents 的 JSONL 与 SDK 的 JSONL (~/.claude/projects/.../*.jsonl) 是双份存储、
@@ -9883,8 +9960,33 @@ export async function rewindSession(userMessageId: string): Promise<{
     //    AI 看到的历史可能比 UI 截断后更多（短期分歧），但绝对优于上下文全失忆。
     //    这一行为与 catch-block 的 "No message found" recovery (~line 9219) 对齐 —
     //    SDK 真正拒绝 anchor 时也走同样语义。
-    const uuidIsLive = lastAssistantUuid
+    const uuidIsLive = sessionRegistered && lastAssistantUuid
       && (transcriptState.liveSessionUuids.has(lastAssistantUuid) || transcriptState.currentSessionUuids.has(lastAssistantUuid));
+    const requiresFreshSdkIdentity = !uuidIsLive && !(lastAssistantUuid && sessionRegistered);
+    let freshSdkIdentity: {
+      sourceSdkSessionId: string | null;
+      replacementSdkSessionId: string;
+    } | undefined;
+    if (requiresFreshSdkIdentity) {
+      const metadata = getSessionMetadata(productSessionId);
+      freshSdkIdentity = {
+        sourceSdkSessionId: metadata ? (resolveBuiltinSdkSessionId(metadata) ?? null) : null,
+        replacementSdkSessionId: randomUUID(),
+      };
+    }
+
+    // SessionStore validates and commits the durable truncation before the
+    // live/UI projection changes. When SDK history cannot be reused, the same
+    // bounded intent also replaces only A's SDK binding (S1 -> S2).
+    await truncateTranscriptPersistenceForRewind(
+      productSessionId,
+      targetMessage.id,
+      targetIndex,
+      freshSdkIdentity,
+    );
+    truncateMessages(targetIndex);
+
+    // 7. 设置下次 query 的对话截断点 — 三分支决策树
     if (uuidIsLive) {
       pendingResumeSessionAt = lastAssistantUuid;
     } else if (lastAssistantUuid && sessionRegistered) {
@@ -9899,15 +10001,17 @@ export async function rewindSession(userMessageId: string): Promise<{
       // 关键：**不**修改 sessionId / sessionRegistered / hasInitialPrompt。
       // 下次 startStreamingSession 会用 resume: sessionId 加载 SDK 全量历史。
     } else {
-      // 两种合法的"fresh start"场景：
+      // 两种合法的"fresh SDK start"场景：
       //   (a) lastAssistantUuid 为 undefined：rewind 到第一条 user message 之前 / 无 SDK
       //       tracked assistant —— 没有 SDK 上下文可保留
       //   (b) sessionRegistered=false：SDK 从未注册过这个 session（首次 pre-warm 失败等）
       pendingResumeSessionAt = undefined;
       sessionRegistered = false;
-      setCurrentSessionId(randomUUID());
-      hasInitialPrompt = false; // Reset so next message creates metadata for the new session
-      resetSessionMaterializationState({ allowLazySessionMaterialization: true });
+      setPendingReloadAnchor(undefined);
+      clearCurrentSessionUuids();
+      clearLiveSessionUuids();
+      // Product Session A, its transcript cursor, title, config and Sidecar
+      // ownership remain unchanged. Only the persisted SDK identity is fresh.
     }
 
     // 8. 预热下次 session
@@ -9922,7 +10026,7 @@ export async function rewindSession(userMessageId: string): Promise<{
     };
   };
 
-  const promise = doRewind();
+  const promise = runSerializedSessionMutation(doRewind);
   rewindPromise = promise;
   try {
     return await promise;
@@ -10174,6 +10278,9 @@ export async function forkSession(assistantMessageId: string): Promise<{
 }
 
 async function startStreamingSession(preWarm = false): Promise<void> {
+  const sessionMutationBarrier = getSessionMutationBarrier();
+  if (sessionMutationBarrier) await sessionMutationBarrier;
+  await resolvePendingBuiltinConversationMutationForActiveSession();
   await awaitSessionTermination(10_000, 'startStreamingSession');
 
   // (issue #174) Cold-start abort race: enqueueUserMessage schedules this
@@ -10245,7 +10352,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   setPreWarmInProgress(preWarm);
   if (configState.pendingProviderHistoryBoundaryReset) {
     console.log('[agent] applying deferred provider history boundary reset before SDK start');
-    resetForProviderHistoryBoundary();
+    await resetForProviderHistoryBoundary();
   }
   const adminConfigForSession = loadAdminConfig();
   const cliToolRegistryEnabled = isCliToolRegistryEnabled(adminConfigForSession);
@@ -10413,8 +10520,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
     } else {
       resumeFrom = undefined;
-      // For new sessions, ensure SDK gets a valid UUID
-      effectiveSdkSessionId = UUID_RE.test(sessionId) ? sessionId : randomUUID();
+      // A fresh launch may still have an explicitly persisted SDK identity
+      // (for example, builtin Rewind replaced only the execution identity).
+      // Create that exact candidate; do not mint a third identity.
+      const meta = getSessionMetadata(sessionId);
+      const sdkSid = meta && (meta.runtime ?? 'builtin') === 'builtin'
+        ? resolveBuiltinSdkSessionId(meta)
+        : undefined;
+      effectiveSdkSessionId = sdkSid && UUID_RE.test(sdkSid)
+        ? sdkSid
+        : UUID_RE.test(sessionId)
+          ? sessionId
+          : randomUUID();
     }
     // sessionRegistered 不在此处修改 — 等待 system_init 确认
 
@@ -10626,11 +10743,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const enabledPluginSkillNames = enabledPluginConfigs.flatMap(plugin => (
       listPluginQualifiedSkillNames(plugin.path)
     ));
-    const enabledSkillAllowlist = buildBuiltinSkillAllowlist(
+    const rawEnabledSkillAllowlist = buildBuiltinSkillAllowlist(
       launchCapabilitySnapshot,
       enabledPluginSkillNames,
       unavailableBuiltinSkillNames,
     );
+    const {
+      allowlist: enabledSkillAllowlist,
+      rejected: incompatibleSdkSkillNames,
+    } = sanitizeSdkSkillAllowlist(rawEnabledSkillAllowlist);
+    for (const rejected of incompatibleSdkSkillNames) {
+      console.warn(`[skills] Skipping SDK-incompatible Skill ${JSON.stringify(rejected.name)}: ${rejected.reason}`);
+    }
 
     const commonQueryOptions = {
       enableFileCheckpointing: true,
@@ -10659,13 +10783,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // an outward data flow MyAgents has not product-decided to expose.
         // Keep the tool surface frozen; revisit as its own feature if wanted.
         disableArtifact: true,
-        // CC's own bundled skills duplicate the skill set MyAgents ships and
-        // seeds itself (bundled-skills/ → ~/.myagents/skills → <cwd>/.claude/skills
-        // symlinks): docx/pdf/pptx/xlsx/skill-creator all collide. Disabling
-        // removes the duplicate listings + their per-turn context cost; our
-        // seeded copies load via .claude/skills/ which this flag does NOT
-        // touch. Built-in slash commands stay typable (programmatic /compact
-        // unaffected) — they are only hidden from the model.
+        // Claude Code's native bundled skills can duplicate identities owned by
+        // MyAgents' effective Skill inventory (for example skill-creator).
+        // Disabling them removes duplicate listings and per-turn context cost;
+        // MyAgents-owned Skills still load through <cwd>/.claude/skills, which
+        // this flag does not touch. Built-in slash commands remain typable
+        // (programmatic /compact is unaffected); they are only hidden from the model.
         disableBundledSkills: true,
       },
       // Permission mode mapping (uses mapToSdkPermissionMode):
@@ -12428,6 +12551,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
           // Check for structured tool_use_result data (e.g., WebSearch results)
           const toolUseResultData = (sdkMessage as { tool_use_result?: unknown }).tool_use_result;
+          const normalizedToolUseResult = normalizeSdkToolUseResult(toolUseResultData);
 
           // Only iterate if content is an array (tool_result blocks)
           if (Array.isArray(messageContent)) {
@@ -12449,14 +12573,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // below; the remaining text has every base64-ish payload redacted to
               // `[N bytes omitted]`. Session JSONL / SSE only ever carry path refs —
               // the SDK's own transcript (what the model sees) is untouched.
-              const renderParts = extractToolResultRenderParts(toolResultBlock.content);
+              const renderParts = extractToolResultRenderParts(
+                normalizedToolUseResult.isMetadataEnvelope
+                  ? normalizedToolUseResult.content
+                  : toolResultBlock.content,
+              );
 
               // For WebSearch/WebFetch, prefer structured tool_use_result data if available
               // This contains query, results array with titles/urls, etc.
               // Otherwise use renderParts.text: passes plain strings / JSON through
               // verbatim, joins non-image blocks, and (finding 2) yields '' for a bare
               // data-URL string whose bytes were extracted — so base64 never persists.
-              const contentStr = (toolUseResultData && typeof toolUseResultData === 'object')
+              const contentStr = normalizedToolUseResult.isMetadataEnvelope
+                ? renderParts.text
+                : (toolUseResultData && typeof toolUseResultData === 'object')
                 ? JSON.stringify(toolUseResultData)
                 : renderParts.text;
 

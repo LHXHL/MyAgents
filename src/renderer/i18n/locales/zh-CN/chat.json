@@ -363,12 +363,15 @@
     "search": {
       "searching": "搜索中...",
       "searchInWorkspace": "在当前工作区中搜索",
-      "fileNameAndContent": "文件名和文件内容",
+      "fileNameAndContent": "文件夹、文件名和文件内容",
       "zeroResults": "0 个结果",
       "refreshingSuffix": " · 正在更新索引...",
-      "summary": "{{files}} 个文件中找到 {{matches}} 个结果",
-      "collapseResults": "折叠结果",
-      "expandResults": "展开结果",
+      "summary": "找到 {{folders}} 个文件夹、{{files}} 个文件",
+      "folderSection": "文件夹（{{count}}）",
+      "fileSection": "文件（{{count}}）",
+      "contentMatchCount": "{{count}} 条正文命中",
+      "collapseResults": "收起",
+      "expandResults": "展开",
       "moreResults": "... 还有 {{count}} 个结果"
     }
   },
@@ -743,6 +746,7 @@
         "statusCompleted": "完成",
         "statusError": "错误",
         "statusRunning": "运行中",
+        "statusStopped": "已停止",
         "backgroundCompleted": "后台完成",
         "backgroundFailed": "后台失败",
         "backgroundRunning": "后台运行中",

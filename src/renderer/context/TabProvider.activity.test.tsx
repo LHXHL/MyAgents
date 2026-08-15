@@ -8,7 +8,12 @@ import {
   tryClaimSessionResourceTransition,
 } from '@/utils/sessionDeletionCoordinator';
 import { useTabState } from './TabContext';
-import TabProvider, { handleApiResponse } from './TabProvider';
+import type { Message } from '@/types/chat';
+import TabProvider, {
+  applySubagentLifecycleUpdate,
+  finalizeMessageSubagentProjection,
+  handleApiResponse,
+} from './TabProvider';
 
 type EventHandler = (
   eventName: string,
@@ -217,6 +222,81 @@ function readStreamingContent(): string | unknown[] | null {
 }
 
 const allowSessionOpening = () => () => undefined;
+
+function collabMessage(status: 'running' | 'completed' = 'running'): Message {
+  return {
+    id: 'assistant-collab',
+    role: 'assistant',
+    timestamp: new Date(0),
+    content: [{
+      type: 'tool_use',
+      tool: {
+        id: 'spawn-card',
+        name: 'CollabAgent',
+        input: { tool: 'spawnAgent' },
+        streamIndex: 0,
+        subagentLifecycle: status === 'running'
+          ? { status, startedAt: 100 }
+          : { status, startedAt: 100, finishedAt: 200 },
+        subagentCalls: [{ id: 'nested', name: 'Thinking', input: {}, isLoading: true }],
+      },
+    }],
+  };
+}
+
+describe('TabProvider sub-agent lifecycle projection', () => {
+  it('applies a lifecycle update to archived message content and ignores a late regression', () => {
+    const completed = applySubagentLifecycleUpdate(
+      collabMessage(),
+      'spawn-card',
+      { status: 'completed', startedAt: 100, finishedAt: 250 },
+    );
+    expect(completed?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          subagentLifecycle: { status: 'completed', startedAt: 100, finishedAt: 250 },
+        }),
+      }),
+    ]));
+    expect(applySubagentLifecycleUpdate(
+      completed!,
+      'spawn-card',
+      { status: 'running', startedAt: 300 },
+    )).toBe(completed);
+  });
+
+  it('fails closed on root success and recursively closes residual nested calls', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage(), 'completed', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle).toEqual({
+      status: 'failed',
+      startedAt: 100,
+      finishedAt: 500,
+    });
+    expect(content[0].tool?.subagentCalls?.[0]).toMatchObject({
+      isLoading: false,
+      isError: true,
+    });
+  });
+
+  it('preserves an explicit child terminal while closing stale nested trace flags', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage('completed'), 'failed', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle?.status).toBe('completed');
+    expect(content[0].tool?.subagentCalls?.[0].isLoading).toBe(false);
+  });
+
+  it('renders a resultless nested call as interrupted when the root is stopped', () => {
+    const finalized = finalizeMessageSubagentProjection(collabMessage(), 'stopped', 500);
+    const content = finalized.content as Exclude<Message['content'], string>;
+    expect(content[0].tool?.subagentLifecycle?.status).toBe('interrupted');
+    expect(content[0].tool?.subagentCalls?.[0]).toMatchObject({
+      isLoading: false,
+      isError: true,
+      result: 'Interrupted',
+    });
+  });
+});
 
 describe('TabProvider session activity ownership', () => {
   it('preserves structured operation error codes across the Tab API boundary', async () => {

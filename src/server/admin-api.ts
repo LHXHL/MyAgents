@@ -85,6 +85,7 @@ import {
   resolvePersistedAgentWorkspaceRegistry,
   type PersistedAgentWorkspaceProjection,
 } from './utils/agent-workspace-identity';
+import { buildProactiveAgentTogglePatch } from '../shared/proactiveAgentPolicy';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -1369,30 +1370,40 @@ export async function handleAgentEnable(payload: { id: string }): Promise<AdminR
       error: `Agent '${id}' belongs to an archived workspace.`,
       recoveryHint: {
         recoveryCommand: `myagents agent unarchive ${lifecycleAgentId}`,
-        message: 'Unarchive the Agent workspace before enabling proactive channels.',
+        message: 'Unarchive the Agent workspace before enabling proactive capabilities.',
       },
     };
   }
-  return modifyAgent(id, agent => ({ ...agent, enabled: true }), 'enable');
+  return modifyAgentConfigIntent(id, agent => {
+    const patch = buildProactiveAgentTogglePatch(agent, true);
+    return {
+      ok: true,
+      agent: { ...agent, ...patch },
+      livePatch: {
+        enabled: true,
+        heartbeatConfigJson: JSON.stringify(patch.heartbeat),
+        memoryAutoUpdateConfigJson: JSON.stringify(patch.memoryAutoUpdate),
+        memoryEvolutionConfigJson: JSON.stringify(patch.memoryEvolution),
+      },
+    };
+  }, 'enable');
 }
 
 export async function handleAgentDisable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  const result = await modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
-  if (!result.success) return result;
-
-  const stopped = await managementApi(
-    '/api/agent/stop-channels',
-    'POST',
-    { agentId: id },
-    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
-  );
-  if (stopped.ok !== true) {
-    const failure = mgmtError(stopped, 'Failed to stop Agent channels');
-    failure.error = `Agent '${id}' was disabled in config, but its running channels could not be stopped: ${failure.error}`;
-    return failure;
-  }
-  return result;
+  return modifyAgentConfigIntent(id, agent => {
+    const patch = buildProactiveAgentTogglePatch(agent, false);
+    return {
+      ok: true,
+      agent: { ...agent, ...patch },
+      livePatch: {
+        enabled: false,
+        heartbeatConfigJson: JSON.stringify(patch.heartbeat),
+        memoryAutoUpdateConfigJson: JSON.stringify(patch.memoryAutoUpdate),
+        memoryEvolutionConfigJson: JSON.stringify(patch.memoryEvolution),
+      },
+    };
+  }, 'disable');
 }
 
 export async function handleAgentArchive(payload: { id?: string }): Promise<AdminResponse> {
@@ -1453,8 +1464,14 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
     await modifyAgent(id, current => ({ ...current, enabled: false }), 'archive');
   }
 
-  // Always converge the Rust runtime, even when the durable Agent was already
-  // disabled. Older CLI paths could leave exactly that disk/live drift behind.
+  const reloadResult = await managementApi(
+    '/api/agent/reload-config',
+    'POST',
+    { agentId: id, patch: { enabled: false } },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  // Channels are lifecycle-independent from Proactive Agent, so archiving
+  // explicitly stops them even when proactive/task convergence fails.
   const stopResult = await managementApi(
     '/api/agent/stop-channels',
     'POST',
@@ -1465,6 +1482,11 @@ export async function handleAgentArchive(payload: { id?: string }): Promise<Admi
     broadcast('config:changed', { section: 'project', action: 'archive', id });
   }
 
+  if (reloadResult.ok !== true) {
+    const failure = mgmtError(reloadResult, 'Failed to reconcile Agent runtime');
+    failure.error = `Agent workspace '${id}' was archived, but proactive runtime or managed tasks did not converge: ${failure.error}`;
+    return failure;
+  }
   const stopOk = stopResult.ok === true;
   if (!stopOk) {
     const failure = mgmtError(stopResult, 'Failed to stop Agent channels');
@@ -1560,6 +1582,18 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
 
   broadcast('config:changed', { section: 'project', action: 'unarchive', id });
 
+  const reloadResult = await managementApi(
+    '/api/agent/reload-config',
+    'POST',
+    { agentId: id, patch: { enabled: shouldRestoreAgent } },
+    { timeoutMs: AGENT_LIFECYCLE_LOOPBACK_TIMEOUT_MS },
+  );
+  if (reloadResult.ok !== true) {
+    const failure = mgmtError(reloadResult, 'Failed to reconcile Agent runtime');
+    failure.error = `Agent workspace '${id}' was unarchived, but proactive runtime or managed tasks did not converge: ${failure.error}`;
+    return failure;
+  }
+
   return {
     success: true,
     data: {
@@ -1567,9 +1601,7 @@ export async function handleAgentUnarchive(payload: { id?: string }): Promise<Ad
       projectId,
       restoredAgentEnabled: shouldRestoreAgent,
     },
-    hint: shouldRestoreAgent
-      ? 'Agent workspace unarchived. Enabled channels will restart automatically shortly.'
-      : 'Agent workspace unarchived.',
+    hint: 'Agent workspace unarchived. Enabled channels will restart automatically shortly.',
   };
 }
 
@@ -2124,6 +2156,153 @@ RECOVERY
 }
 
 const HELP_TEXTS: Record<string, string> = {
+  anydoc: `myagents anydoc — Convert one local document to Markdown with offline OCR
+
+Commands:
+  convert                  Submit one local document conversion job
+  status <job-id>          Inspect one job
+  wait <job-id>            Poll one job until it reaches a terminal state
+  cancel <job-id>          Cancel a queued or running job
+  list                     List recent jobs
+
+Run myagents anydoc <command> --help for the exact contract.`,
+  'anydoc/convert': `myagents anydoc convert — Submit one local document conversion
+
+WHEN TO CALL
+  Convert one Office, OpenDocument, RTF, EPUB, CSV, PDF, PNG, JPEG, or WebP file to Markdown.
+
+EFFECT
+  Creates an app-owned asynchronous job. Conversion and OCR are fully local; no GPT, cloud API, user Python, or network is required.
+
+OPTIONS
+  --file <input>           Required exactly once; local file path
+  --output <directory>     Optional output root directory, never a document filename
+  --password <password>    Optional transient document password
+  --wait                   Poll this same job until terminal
+  --json                   Emit one machine-readable JSON document
+
+PATH / PASSWORD SAFETY
+  Relative paths resolve from the CLI working directory. Links, directories, special files, and URL input are rejected. A literal --password value can be visible in shell history and local process inspection; it is never persisted, logged, echoed, or copied into recovery commands.
+
+FIXED LIMITS
+  Queue: 16 jobs. Source: 512 MiB. PDF: 500 pages. Decoded image: 100 megapixels. Published output: 128 MiB. Job deadline: 30 minutes. Control frame: 1 MiB.
+
+ASYNC / EXIT
+  Without --wait, acceptance exits 0 immediately. With --wait, success/warnings exit 0; failed/cancelled/interrupted exit 1. Ctrl-C exits 130 without cancelling the job.
+
+OUTPUT
+  <output-root>/<job-id>/document.md and referenced assets/. Omitting --output uses the current Workspace; if none is available, pass --output explicitly.
+
+EXAMPLES
+  myagents anydoc convert --file ./proposal.docx
+  myagents anydoc convert --file ./scan.pdf --output ./converted --wait
+
+ERROR RECOVERY
+  Follow the returned code, suggestion, and recovery command. Use status or cancel with the accepted job ID.`,
+  'anydoc/status': `myagents anydoc status <job-id> — Inspect one conversion job
+
+WHEN TO CALL
+  Check the current stage, terminal result, warnings, metrics, or artifact path.
+
+EFFECT
+  Performs one short read-only status request.
+
+OPTIONS
+  <job-id>                 Required YYYYMMDD_<12 lowercase hex>
+  --json                   Machine-readable output
+
+PATH / PASSWORD SAFETY
+  Does not read source content or accept a password.
+
+ASYNC / EXIT
+  The query exits 0 when found even if the job itself failed.
+
+OUTPUT
+  Current job state, stage, output paths, warnings, error, metrics, and pipeline versions.
+
+EXAMPLES
+  myagents anydoc status 20260815_7f3a91c2b6d4
+
+ERROR RECOVERY
+  Copy the exact ID from myagents anydoc list.`,
+  'anydoc/wait': `myagents anydoc wait <job-id> — Wait for one conversion job
+
+WHEN TO CALL
+  Continue only after a previously accepted job has finished.
+
+EFFECT
+  Polls short status requests with bounded backoff; it does not create another job.
+
+OPTIONS
+  <job-id>                 Required YYYYMMDD_<12 lowercase hex>
+  --json                   Emit one JSON document only after completion
+
+PATH / PASSWORD SAFETY
+  Does not reopen the source or accept a password.
+
+ASYNC / EXIT
+  succeeded/succeeded_with_warnings exit 0; failed/cancelled/interrupted exit 1. Ctrl-C exits 130 and leaves the app-owned job running.
+
+OUTPUT
+  The terminal job and artifact path, or its structured terminal error.
+
+EXAMPLES
+  myagents anydoc wait 20260815_7f3a91c2b6d4
+
+ERROR RECOVERY
+  After Ctrl-C, run status or cancel with the printed job ID.`,
+  'anydoc/cancel': `myagents anydoc cancel <job-id> — Cancel one conversion job
+
+WHEN TO CALL
+  Stop a queued or running conversion whose result is no longer needed.
+
+EFFECT
+  Queued jobs are cancelled immediately; running Workers receive graceful cancel and are force-stopped after the bounded grace period.
+
+OPTIONS
+  <job-id>                 Required YYYYMMDD_<12 lowercase hex>
+  --json                   Machine-readable output
+
+PATH / PASSWORD SAFETY
+  Partial output is never published as a successful artifact.
+
+ASYNC / EXIT
+  A running job may first report cancelling. Repeating cancel is safe.
+
+OUTPUT
+  The updated job receipt.
+
+EXAMPLES
+  myagents anydoc cancel 20260815_7f3a91c2b6d4
+
+ERROR RECOVERY
+  Use list to recover an exact job ID; terminal jobs cannot be cancelled.`,
+  'anydoc/list': `myagents anydoc list — List recent conversion jobs
+
+WHEN TO CALL
+  Discover a job ID or review recent local conversion history.
+
+EFFECT
+  Reads durable metadata only; it does not scan or delete artifact directories.
+
+OPTIONS
+  --limit <1..100>         Number of newest jobs; default 20
+  --json                   Machine-readable output
+
+PATH / PASSWORD SAFETY
+  Passwords and document contents are never included.
+
+ASYNC / EXIT
+  Read-only; exits 0 when the query succeeds.
+
+OUTPUT
+  Jobs ordered by createdAt, newest first.
+
+EXAMPLES
+  myagents anydoc list --limit 20
+
+ERROR RECOVERY
+  Retry with a limit from 1 through 100.`,
   'mcp/add': taskLeafHelp({
     usage: 'myagents mcp add --id <id> [connection options] [--dry-run]',
     when: 'Use when registering a new custom MCP server.',
@@ -3375,7 +3554,8 @@ Commands:
 Every user-visible Workspace selects one stable Agent identity through
 Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
 The Agent owns execution defaults; Project.path owns the current workspace.
-enabled=false only pauses proactive capabilities such as channels and heartbeat.
+enabled=false pauses Heartbeat, Memory Update, and Memory Evo. Channels remain
+independently controlled by channel.enabled.
 
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent
@@ -3685,6 +3865,35 @@ Leaf commands:
   ${leafCommands.join(', ')}`,
     },
   };
+}
+
+export async function handleAnydocConvert(payload: {
+  sourcePath?: string;
+  outputRoot?: string;
+  password?: string;
+}): Promise<AdminResponse> {
+  const response = await managementApi('/api/document/convert', 'POST', {
+    sourcePath: payload.sourcePath,
+    outputRoot: payload.outputRoot,
+    password: payload.password,
+    currentWorkspace: getCurrentWorkspacePath(),
+  });
+  return wrapMgmtResponse(response);
+}
+
+export async function handleAnydocStatus(payload: { jobId?: string }): Promise<AdminResponse> {
+  const response = await managementApi(`/api/document/status${qsFrom({ jobId: payload.jobId })}`);
+  return wrapMgmtResponse(response);
+}
+
+export async function handleAnydocCancel(payload: { jobId?: string }): Promise<AdminResponse> {
+  const response = await managementApi('/api/document/cancel', 'POST', { jobId: payload.jobId });
+  return wrapMgmtResponse(response);
+}
+
+export async function handleAnydocList(payload: { limit?: number }): Promise<AdminResponse> {
+  const response = await managementApi(`/api/document/list${qsFrom({ limit: payload.limit })}`);
+  return wrapMgmtResponse(response);
 }
 
 // ---------------------------------------------------------------------------
@@ -6582,7 +6791,6 @@ async function modifyAgentConfigIntent(
 
   if (commitResult) return commitResult;
 
-  let hint: string | undefined;
   if (committedLivePatch) {
     try {
       const response = await managementApi('/api/agent/reload-config', 'POST', {
@@ -6590,15 +6798,25 @@ async function modifyAgentConfigIntent(
         patch: committedLivePatch,
       });
       if (response.ok === false) {
-        hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+        broadcast('config:changed', { section: 'agent', action, id });
+        return {
+          success: false,
+          error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${response.error ?? 'unknown error'}`,
+          data: { id, configSaved: true },
+        };
       }
-    } catch {
-      hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+    } catch (error) {
+      broadcast('config:changed', { section: 'agent', action, id });
+      return {
+        success: false,
+        error: `Agent configuration was saved, but runtime or managed-task reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+        data: { id, configSaved: true },
+      };
     }
   }
 
   broadcast('config:changed', { section: 'agent', action, id });
-  return { success: true, data: { id }, ...(hint ? { hint } : {}) };
+  return { success: true, data: { id } };
 }
 
 /** Keys and patterns that contain secrets and must be redacted in config get */

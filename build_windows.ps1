@@ -601,11 +601,6 @@ try {
     Copy-Item $claudeSrc (Join-Path $sdkDest "claude.exe") -Force
     Write-Host "    OK - Claude native binary 就绪 ($sdkTriple)" -ForegroundColor Green
 
-    # NOTE: agent-browser CLI is no longer bundled. The skill at
-    # bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-    # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-    # use. Removing the bundle saves ~84MB installer size + build time.
-
     # 预装 sharp 图像处理（替代 jimp，libvips 原生）
     Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
     $sharpDir = Join-Path $ProjectDir "src-tauri\resources\sharp-runtime"
@@ -664,6 +659,10 @@ try {
     # ========================================
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
     Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
+
+    Write-Host "  准备离线文档转换 Worker / OCR / PDFium 资源..." -ForegroundColor Cyan
+    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) { throw "文档转换资源准备失败" }
 
     & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
     if ($LASTEXITCODE -ne 0) {

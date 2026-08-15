@@ -4,7 +4,7 @@ import type { AnthropicStreamEvent, AnthropicResponse, AnthropicStopReason } fro
 import type { OpenAIStreamChunk, OpenAIStreamToolCall } from '../types/openai';
 import { translateStopReason } from './response';
 import { generateMessageId, generateToolUseId } from '../utils/id';
-import { emptyUsage, mergeUsage, toAnthropicUsage, type UsageSnapshot } from './usage';
+import { emptyUsage, mergeUsage, toAnthropicUsage, type UsageSnapshot, type UsageWarningLogger } from './usage';
 
 interface ToolCallBuffer {
   id: string;
@@ -23,11 +23,20 @@ export class StreamTranslator {
   private hasFinished = false;
   private stopReason: AnthropicStopReason | null = null;
   private translateReasoning: boolean;
+  private usageWarning: UsageWarningLogger | undefined;
 
-  constructor(requestModel: string, translateReasoning = true) {
+  constructor(requestModel: string, translateReasoning = true, usageWarning?: UsageWarningLogger) {
     this.messageId = generateMessageId();
     this.requestModel = requestModel;
     this.translateReasoning = translateReasoning;
+    let warned = false;
+    this.usageWarning = usageWarning
+      ? (message) => {
+          if (warned) return;
+          warned = true;
+          usageWarning(message);
+        }
+      : undefined;
   }
 
   /** Feed an OpenAI stream chunk, returns Anthropic SSE events to emit */
@@ -42,7 +51,7 @@ export class StreamTranslator {
 
     // Track usage
     if (chunk.usage) {
-      this.usage = mergeUsage(this.usage, chunk.usage);
+      this.usage = mergeUsage(this.usage, chunk.usage, this.usageWarning);
     }
 
     const choice = chunk.choices?.[0];

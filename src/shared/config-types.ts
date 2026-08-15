@@ -939,6 +939,9 @@ export interface AppConfig {
 
   // ===== Agent Configuration (v0.1.41) =====
   agents?: import('./types/agent').AgentConfig[];
+  /** One-shot config migration completed before Agent Channels became
+   * independent from the Proactive Agent master switch. */
+  agentChannelIndependenceMigrationV1?: boolean;
 
   // ===== Claude Plugin Configuration (PRD 0.2.17) =====
   /** Installed Claude plugins. Each entry's installPath points at a directory
@@ -1411,7 +1414,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Zhipu',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'glm-5.2',
+    primaryModel: 'glm-5.3',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://bigmodel.cn/console/overview',
@@ -1421,10 +1424,10 @@ export const PRESET_PROVIDERS: Provider[] = [
       timeout: 600000,
       disableNonessential: true,
     },
-    modelAliases: { sonnet: 'glm-5.2', opus: 'glm-5.2', haiku: 'glm-5-turbo' },
+    modelAliases: { sonnet: 'glm-5.3', opus: 'glm-5.3', haiku: 'glm-5-turbo' },
     models: [
       // GLM-5.x chat 端点为纯文本；视觉能力在独立的 GLM-5V 模型族。
-      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
+      { model: 'glm-5.3', modelName: 'GLM 5.3', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
       { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
     ],
   },
@@ -1439,7 +1442,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Zhipu',
     cloudProvider: '模型官方',
     type: 'api',
-    primaryModel: 'glm-5.2',
+    primaryModel: 'glm-5.3',
     isBuiltin: true,
     authType: 'api_key',
     apiProtocol: 'openai',
@@ -1449,10 +1452,10 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
       timeout: 600000,
     },
-    modelAliases: { sonnet: 'glm-5.2', opus: 'glm-5.2', haiku: 'glm-5-turbo' },
+    modelAliases: { sonnet: 'glm-5.3', opus: 'glm-5.3', haiku: 'glm-5-turbo' },
     models: [
       // GLM-5.x chat 端点为纯文本；视觉能力在独立的 GLM-5V 模型族。
-      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
+      { model: 'glm-5.3', modelName: 'GLM 5.3', modelSeries: 'zhipu', contextLength: 1_000_000, maxOutputTokens: 131_072, inputModalities: ['text'] },
       { model: 'glm-5-turbo', modelName: 'GLM 5 Turbo', modelSeries: 'zhipu', contextLength: 202_752, maxOutputTokens: 131_072, inputModalities: ['text'] },
     ],
   },

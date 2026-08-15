@@ -64,6 +64,26 @@ describe('AgentCapabilitiesPanel — divider ownership (#314)', () => {
         expect(screen.getByText('docx')).toBeInTheDocument();
     });
 
+    it('shows Command display metadata but inserts the path-derived invocation token', () => {
+        const onInsertSlashCommand = vi.fn();
+        renderPanel({
+            enabledAgents: {},
+            enabledSkills: [],
+            enabledCommands: [{
+                name: '中文 总结',
+                invocationName: '中文-总结',
+                description: '总结当前工作',
+                scope: 'user',
+            }],
+            onInsertSlashCommand,
+        });
+
+        fireEvent.click(screen.getByRole('button', { expanded: false }));
+        fireEvent.click(screen.getByRole('button', { name: '中文 总结' }));
+
+        expect(onInsertSlashCommand).toHaveBeenCalledWith('中文-总结');
+    });
+
     it('opens workspace Skill settings without changing expanded state', () => {
         const onOpenSettings = vi.fn();
         renderPanel({

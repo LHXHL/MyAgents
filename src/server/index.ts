@@ -434,7 +434,7 @@ import {
   setBackgroundAgentPermissionMode,
 } from './agent-session';
 import type { ProviderEnv } from './provider-types';
-import { getHomeDirOrNull, isSkillBlockedOnPlatform } from './utils/platform';
+import { getHomeDirOrNull } from './utils/platform';
 import { getScriptDir } from './utils/runtime';
 import {
   createSession,
@@ -926,15 +926,13 @@ const SYSTEM_SKILLS: readonly string[] = [
   'task-implement',
   // v10: ultra-research removed — not generic enough.
   'download-anything',
-  // v8: see commands.rs::SYSTEM_SKILLS — agent-browser promoted to system
-  // skill so existing users get the updated command-local npm self-install
-  // SKILL.md after the bundled CLI is removed.
-  'agent-browser',
   // v9: myagents-cli — global skill that exposes the entire `myagents`
   // CLI surface (cron / task / mcp / model / agent / runtime / skill /
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v49: progressive instructions for the bundled offline document converter.
+  'myagents-anydoc',
   // v44: one Agent workflow for scheduled, future and conditional Task
   // automation; command Detector protocol is progressively disclosed inside.
   'myagents-task-automation',
@@ -953,6 +951,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   'myagents-memory-update',
   'myagents-memory-gardener',
   'myagents-memory-molt',
+  // v50: skill-creator promoted from utility → system skill so its bundled
+  // workflow and evaluation scripts update existing installations.
+  'skill-creator',
   // v29: prompt-writer promoted from utility → system skill so content
   // improvements reach existing installs (seed-once never updates).
   'prompt-writer',
@@ -996,10 +997,6 @@ function seedBundledSkills(): void {
     for (const folder of bundledFolders) {
       if (isSystemSkillName(folder)) {
         // Owned by Rust version gate — skip silently.
-        continue;
-      }
-      if (isSkillBlockedOnPlatform(folder)) {
-        console.log(`[seed] Skipping ${folder} on ${process.platform} (platform blocked)`);
         continue;
       }
       const dst = join(userSkillsDir, folder);
@@ -1106,7 +1103,6 @@ function ensurePluginsDirs(): void {
 /**
  * Clean up stale Playwright MCP profile lock files left by a crashed Chromium.
  *
- * Independent of the agent-browser bundle removal — this exists because
  * Chromium leaves SingletonLock / SingletonSocket / SingletonCookie files in
  * the user-data-dir when the process crashes (or the OS kills it on app exit
  * without a clean shutdown). Subsequent Chromium launches with the same
@@ -1312,6 +1308,10 @@ async function routeAdminApi(
   if (route === 'tool/env') return await api.handleToolEnv(payload as Parameters<typeof api.handleToolEnv>[0]);
 
   // Official MyAgents CLI tools
+  if (route === 'anydoc/convert') return await api.handleAnydocConvert(payload as Parameters<typeof api.handleAnydocConvert>[0]);
+  if (route === 'anydoc/status') return await api.handleAnydocStatus(payload as Parameters<typeof api.handleAnydocStatus>[0]);
+  if (route === 'anydoc/cancel') return await api.handleAnydocCancel(payload as Parameters<typeof api.handleAnydocCancel>[0]);
+  if (route === 'anydoc/list') return await api.handleAnydocList(payload as Parameters<typeof api.handleAnydocList>[0]);
   if (route === 'vision/readme') return await api.handleVisionReadme();
   if (route === 'vision/models') return api.handleVisionModels();
   if (route === 'vision/analyze') return await api.handleVisionAnalyze(payload as Parameters<typeof api.handleVisionAnalyze>[0]);
@@ -1726,6 +1726,8 @@ async function main() {
     bridgeHandlerPromise = (async () => {
       const [{ createBridgeHandler }, {
         lookupBridge,
+        arePromptCacheBreakpointsDisabled,
+        disablePromptCacheBreakpoints,
         disablePromptCacheKey,
         isPromptCacheKeyDisabled,
       }] = await Promise.all([
@@ -1779,6 +1781,8 @@ async function main() {
                     ...cfg.cacheAffinity,
                     promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
                     disablePromptCacheKey: () => disablePromptCacheKey(token),
+                    promptCacheBreakpointsDisabled: arePromptCacheBreakpointsDisabled(token),
+                    disablePromptCacheBreakpoints: () => disablePromptCacheBreakpoints(token),
                   }
                 : undefined,
             };
@@ -4766,7 +4770,6 @@ async function main() {
                 }
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
                 if (!isDirEntry(folder, folderPath)) continue;
-                if (isSkillBlockedOnPlatform(folder.name)) continue;
                 const skillMdPath = join(folderPath, 'SKILL.md');
                 if (!existsSync(skillMdPath)) continue;
 

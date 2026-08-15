@@ -17,7 +17,6 @@ import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import GlobalPluginsPanel from '@/components/GlobalPluginsPanel';
 import CronTaskDebugPanel from '@/components/dev/CronTaskDebugPanel';
 import { BotPlatformRegistry } from '@/components/ImSettings';
-import { WorkspaceSelectDialog } from '@/components/AgentSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
@@ -106,6 +105,9 @@ import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
+import type { ChannelType } from '../../../shared/types/agent';
+import { reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
+import { getBotWorkspaceCandidates } from '@/components/ImSettings/botWorkspaceSelection';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
 import FloatingBallPetSettings from '@/components/FloatingBallPetSettings';
 import {
@@ -373,9 +375,10 @@ export default function Settings({ mode = 'settings', initialSection, navigation
         setActiveSection('skills');
     }, [activeSection, mode, setActiveSection]);
     // Agent overlay state for viewing agent config from Settings card list
-    const [overlayAgent, setOverlayAgent] = useState<{ agentId?: string; workspacePath: string } | null>(null);
-
-    const [showWorkspaceSelect, setShowWorkspaceSelect] = useState(false);
+    const [overlayAgent, setOverlayAgent] = useState<{
+        workspacePath: string;
+        initialAddChannelPlatform?: ChannelType;
+    } | null>(null);
 
     // Global summon shortcut (PRD 0.2.16) — load from Rust on mount, mutate
     // via cmd_set_global_summon_shortcut which validates + registers + saves.
@@ -435,9 +438,32 @@ export default function Settings({ mode = 'settings', initialSection, navigation
         if (propUpdateReady) setDownloadProgress(null);
     }, [propUpdateReady]);
 
-    const handleWorkspaceSelected = useCallback((project: import('@/config/types').Project) => {
-        setShowWorkspaceSelect(false);
-        setOverlayAgent({ workspacePath: project.path });
+    const handleAddBotToWorkspace = useCallback(async (
+        platform: ChannelType,
+        selectedProject: import('@/config/types').Project,
+    ) => {
+        try {
+            const identity = await reconcilePersistedAgentWorkspaceIdentities();
+            const project = getBotWorkspaceCandidates(identity.projects, config.defaultWorkspacePath)
+                .find(candidate => candidate.id === selectedProject.id);
+            if (!project) throw new Error(`Project '${selectedProject.id}' is no longer available.`);
+            const projection = identity.agentProjections.find(item => item.projectId === project.id);
+            if (!projection) throw new Error(`Agent identity is unavailable for Project '${project.id}'.`);
+            await refreshConfig();
+            setOverlayAgent({
+                workspacePath: project.path,
+                initialAddChannelPlatform: platform,
+            });
+        } catch (error) {
+            console.error('[Settings] Failed to prepare workspace for Channel setup:', error);
+            toastRef.current.error(tSettingsRef.current('agentSettings.botRegistry.openWorkspaceFailed'));
+        }
+    }, [config.defaultWorkspacePath, refreshConfig]);
+
+    const handleInitialAddChannelPlatformConsumed = useCallback(() => {
+        setOverlayAgent(current => current
+            ? { workspacePath: current.workspacePath }
+            : current);
     }, []);
 
     // #230: The proxy host/port fields previously called updateConfig() on every
@@ -4044,7 +4070,11 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                 {/* Bot Platform Registry (formerly Agent / IM Bot) */}
                 {activeSection === 'agent' && (
                     <div className="mx-auto max-w-4xl px-8 py-8">
-                        <BotPlatformRegistry />
+                        <BotPlatformRegistry
+                            projects={projects}
+                            defaultWorkspacePath={config.defaultWorkspacePath}
+                            onAddToWorkspace={handleAddBotToWorkspace}
+                        />
                     </div>
                 )}
 
@@ -8037,15 +8067,8 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                     agentDir={overlayAgent.workspacePath}
                     onClose={() => setOverlayAgent(null)}
                     initialTab="agent"
-                />
-            )}
-
-            {/* Workspace select dialog for Agent upgrade */}
-            {showWorkspaceSelect && (
-                <WorkspaceSelectDialog
-                    projects={projects}
-                    onSelect={handleWorkspaceSelected}
-                    onClose={() => setShowWorkspaceSelect(false)}
+                    initialAddChannelPlatform={overlayAgent.initialAddChannelPlatform}
+                    onInitialAddChannelPlatformConsumed={handleInitialAddChannelPlatformConsumed}
                 />
             )}
         </div>

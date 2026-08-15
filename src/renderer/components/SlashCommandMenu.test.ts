@@ -100,4 +100,19 @@ describe('slash command source merging', () => {
 
     expect(out.map((c) => c.name)).toEqual(['plugin:skill']);
   });
+
+  it('deduplicates by invocation identity without replacing the display label', () => {
+    const local = [{
+      ...cmd('中文 总结', 'custom'),
+      invocationName: '中文-总结',
+    }];
+    const sdk = [cmd('中文-总结', 'sdk')];
+    const out = mergeSdkSlashCommands(local, sdk);
+
+    expect(out).toBe(local);
+    expect(out).toEqual([expect.objectContaining({
+      name: '中文 总结',
+      invocationName: '中文-总结',
+    })]);
+  });
 });

@@ -363,12 +363,15 @@
     "search": {
       "searching": "Searching...",
       "searchInWorkspace": "Search in the current workspace",
-      "fileNameAndContent": "File names and file contents",
+      "fileNameAndContent": "Folders, file names, and file contents",
       "zeroResults": "0 results",
       "refreshingSuffix": " · updating index...",
-      "summary": "{{files}} file(s), {{matches}} result(s)",
-      "collapseResults": "Collapse results",
-      "expandResults": "Expand results",
+      "summary": "Found {{folders}} folder(s) and {{files}} file(s)",
+      "folderSection": "Folders ({{count}})",
+      "fileSection": "Files ({{count}})",
+      "contentMatchCount": "{{count}} content match(es)",
+      "collapseResults": "Collapse",
+      "expandResults": "Expand",
       "moreResults": "... {{count}} more result(s)"
     }
   },
@@ -743,6 +746,7 @@
         "statusCompleted": "Completed",
         "statusError": "Error",
         "statusRunning": "Running",
+        "statusStopped": "Stopped",
         "backgroundCompleted": "Background completed",
         "backgroundFailed": "Background failed",
         "backgroundRunning": "Background running",

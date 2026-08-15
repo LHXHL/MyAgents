@@ -20,6 +20,10 @@ license does not automatically license them.
 | sharp | Apache License 2.0 |
 | libvips distributed with sharp platform packages | LGPL-3.0-or-later |
 | SheetJS `xlsx` | Apache License 2.0 |
+| AnyDoc, pdf-inspector, and office-crypto document parsers | MIT License |
+| PP-OCRv6 Small ONNX models and PaddleOCR dictionary | Apache License 2.0 |
+| ONNX Runtime CPU | MIT License |
+| PDFium and its Chromium third-party components | BSD-style and the licenses identified by the accompanying PDFium/Chromium notices |
 | Tauri, React, and other npm or Cargo dependencies | Licenses declared by the respective packages |
 | User-installed Skills, plugins, MCP servers, and external runtimes | Licenses or service terms specified by their respective publishers |
 
@@ -64,6 +68,10 @@ MyAgents 包含、分发或集成第三方软件、SDK、运行时、Skills、�
 | sharp | Apache License 2.0 |
 | 随 sharp 平台包分发的 libvips | LGPL-3.0-or-later |
 | SheetJS `xlsx` | Apache License 2.0 |
+| AnyDoc、pdf-inspector 与 office-crypto 文档解析器 | MIT License |
+| PP-OCRv6 Small ONNX 模型与 PaddleOCR 字典 | Apache License 2.0 |
+| ONNX Runtime CPU | MIT License |
+| PDFium 及其 Chromium 第三方组件 | BSD-style 及随附 PDFium/Chromium 声明中列明的许可 |
 | Tauri、React 及其他 npm 或 Cargo 依赖 | 各软件包声明的许可 |
 | 用户安装的 Skills、插件、MCP servers 及外部运行时 | 各发布者声明的许可或服务条款 |
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { REQUIRED_SYSTEM_SKILLS } from '../shared/systemSkills';
 
 import {
+  projectCapabilitySnapshotForWire,
   resolveEffectiveProjectCapabilities,
   setProjectCapabilityEnabled,
 } from './project-capabilities';
@@ -50,6 +51,43 @@ afterEach(() => {
 });
 
 describe('effective project capabilities', () => {
+  it('keeps display metadata separate from a Unicode filename-derived invocation identity', () => {
+    const { home, workspace } = makeFixture();
+    write(
+      join(home, '.myagents', 'commands', '中文-总结.md'),
+      '---\nname: 中文 总结\ndescription: 总结当前工作\n---\n执行总结。\n',
+    );
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.enabledCommands).toContainEqual(expect.objectContaining({
+      source: 'global',
+      sourceLocalId: '中文-总结',
+      canonicalName: '中文-总结',
+      name: '中文 总结',
+    }));
+    expect(projectCapabilitySnapshotForWire(snapshot).commands).toContainEqual(expect.objectContaining({
+      name: '中文 总结',
+      invocationName: '中文-总结',
+      fileName: '中文-总结',
+    }));
+  });
+
+  it('uses the same nested path identity for global Commands', () => {
+    const { home, workspace } = makeFixture();
+    write(
+      join(home, '.myagents', 'commands', '发布', '生成-周报.md'),
+      '---\nname: 全局周报\ndescription: 总结当前工作\n---\n执行总结。\n',
+    );
+
+    const snapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(snapshot.enabledCommands).toContainEqual(expect.objectContaining({
+      source: 'global',
+      sourceLocalId: '发布/生成-周报',
+      canonicalName: '发布:生成-周报',
+      name: '全局周报',
+    }));
+  });
+
   it('defaults candidates on, resolves project before global, and disables the winner without fallback', async () => {
     const { home, workspace } = makeFixture();
     write(join(home, '.myagents', 'skills', 'global-review', 'SKILL.md'), skill('review', 'global'));

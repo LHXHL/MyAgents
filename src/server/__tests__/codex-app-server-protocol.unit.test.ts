@@ -16,6 +16,7 @@ import {
   buildCodexSandboxPolicy,
   buildCodexTurnStartParams,
   buildCodexStartedFileChangeInput,
+  classifyAndForwardCodexStderr,
   CodexRuntime,
   codexModelCacheKey,
   CODEX_SKILL_EXTRA_ROOTS_SET_TIMEOUT_MS,
@@ -32,6 +33,7 @@ import {
   resolveCodexConversationBranchPoint,
   resolveCodexSkillExtraRoots,
   serializeCodexPermissionResponse,
+  summarizeCodexNotificationForLog,
   summarizeCodexThreadParamsForLog,
   type PendingCodexRequest,
 } from '../runtimes/codex';
@@ -246,18 +248,25 @@ describe('Codex app-server protocol helpers', () => {
     expect(rpc.respond).toHaveBeenCalledWith(42, expect.objectContaining({ success: false }));
   });
 
-  it('logs developer instructions as irreversible metadata, never a prefix', () => {
+  it('logs thread paths and developer instructions as irreversible metadata, never prefixes', () => {
     const developerInstructions = 'private identity and workspace instructions';
+    const cwd = '/workspace/private-project';
     const summary = summarizeCodexThreadParamsForLog({
-      cwd: '/workspace',
+      cwd,
       model: 'gpt-5',
       threadId: 'native-thread-secret',
       developerInstructions,
+      dynamicTools: [{ name: 'private-tool', description: 'private schema' }],
     });
 
     expect(summary).toMatchObject({
-      cwd: '/workspace',
+      cwd: {
+        present: true,
+        chars: cwd.length,
+        hash: expect.stringMatching(/^[a-f0-9]{12}$/),
+      },
       model: 'gpt-5',
+      dynamicToolCount: 1,
       threadId: {
         present: true,
         chars: 'native-thread-secret'.length,
@@ -271,6 +280,89 @@ describe('Codex app-server protocol helpers', () => {
     });
     expect(JSON.stringify(summary)).not.toContain('private identity');
     expect(JSON.stringify(summary)).not.toContain('native-thread-secret');
+    expect(JSON.stringify(summary)).not.toContain('/workspace/private-project');
+    expect(JSON.stringify(summary)).not.toContain('private-tool');
+  });
+
+  it('logs Codex notification commands, file paths, tools, and errors only as irreversible metadata', () => {
+    const markers = {
+      password: 'CODEX_PASSWORD_MARKER',
+      input: '/Users/private/CODEX_INPUT_MARKER.pdf',
+      output: '/Users/private/CODEX_OUTPUT_MARKER',
+      error: 'CODEX_ERROR_MARKER from /Users/private',
+    };
+    const command = `myagents anydoc convert ${markers.input} --password ${markers.password} --output ${markers.output}`;
+    const commandDetail = summarizeCodexNotificationForLog('item/completed', {
+      threadId: 'thread-private',
+      item: {
+        type: 'commandExecution',
+        id: 'item-private',
+        command,
+        exitCode: 1,
+        error: { message: markers.error },
+      },
+    });
+    const fileDetail = summarizeCodexNotificationForLog('item/completed', {
+      item: {
+        type: 'fileChange',
+        changes: [
+          { path: markers.input, kind: 'update' },
+          { path: markers.output, kind: 'add' },
+        ],
+      },
+    });
+
+    expect(commandDetail).toContain('type=commandExecution');
+    expect(commandDetail).toContain('command={"present":true');
+    expect(commandDetail).toContain('error={"present":true');
+    expect(commandDetail).toContain('exit=1');
+    expect(fileDetail).toContain('type=fileChange');
+    expect(fileDetail).toContain('files=2');
+    expect(fileDetail).toContain('paths={"present":true');
+    const combined = `${commandDetail} ${fileDetail}`;
+    for (const marker of Object.values(markers)) {
+      expect(combined).not.toContain(marker);
+    }
+    expect(combined).not.toContain('myagents anydoc convert');
+  });
+
+  it('keeps promoted stderr and generic error events semantic without retaining provider payloads', () => {
+    const stderrMarker = 'CODEX_STDERR_PRIVATE_MARKER';
+    const providerMarker = 'CODEX_PROVIDER_PRIVATE_MARKER';
+    const emitted: unknown[] = [];
+    classifyAndForwardCodexStderr(
+      `error sending request for url (https://private.invalid/${stderrMarker})`,
+      event => emitted.push(event),
+    );
+
+    const runtime = new CodexRuntime();
+    const parsed = (
+      runtime as unknown as {
+        parseNotification(
+          process: { compactControl: null; threadId: string },
+          method: string,
+          params: unknown,
+          emit: (event: unknown) => void,
+        ): unknown;
+      }
+    ).parseNotification(
+      { compactControl: null, threadId: '' },
+      'error',
+      { error: { message: `${providerMarker} at /Users/private/provider-body` } },
+      () => {},
+    );
+
+    const messages = [...emitted, parsed].map(event => (
+      event as { message: string }
+    ).message);
+    const combined = messages.join('\n');
+    expect(combined).toContain('Codex HTTP request failed');
+    expect(combined).toContain('Runtime error detail=');
+    expect(messages.every(message => /"hash":"[a-f0-9]{12}"/.test(message))).toBe(true);
+    expect(combined).not.toContain(stderrMarker);
+    expect(combined).not.toContain(providerMarker);
+    expect(combined).not.toContain('private.invalid');
+    expect(combined).not.toContain('/Users/private');
   });
 
   it('uses v2 initialize capabilities and sends initialized notification', async () => {
@@ -1422,6 +1514,9 @@ describe('Codex app-server protocol helpers', () => {
       codexV2SubAgentActivityObserved: false,
       codexV2InteractionDeliveryByCallId: new Map(),
       subAgentActivitySeenBeforeTurnStart: new Set(),
+      subAgentLifecycleByThread: new Map(),
+      emittedSubAgentLifecycleByCard: new Map(),
+      openedReasoningTracesByItem: new Map(),
       exactUsageByTurn: new Map(),
       subAgentInterruptsInFlight: new Map(),
       pendingMainTurnCompletion: null,

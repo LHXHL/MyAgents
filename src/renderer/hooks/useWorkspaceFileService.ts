@@ -19,6 +19,7 @@ import { useCallback, useMemo } from 'react';
 
 import { i18n } from '@/i18n';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import type { SlashCommand } from '../../shared/slashCommands';
 
 function workspaceFileText(key: string): string {
   return String(i18n.t(`app:workspaceFile.${key}`));
@@ -150,16 +151,6 @@ interface FileSearchResult {
   path: string;
   name: string;
   type: 'file' | 'dir';
-}
-
-interface SlashCommand {
-  name: string;
-  description: string;
-  source: 'builtin' | 'custom' | 'skill';
-  scope?: 'user' | 'project';
-  path?: string;
-  folderName?: string;
-  fileName?: string;
 }
 
 interface SlashCommandsResponse {

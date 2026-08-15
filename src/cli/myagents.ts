@@ -113,8 +113,12 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'include-archived' ||
         key === 'clear-goal' ||
         key === 'create-attached' ||
+        key === 'wait' ||
         key === 'rollback'
       ) {
+        if (key === 'wait' && inlineValue !== undefined) {
+          flags.waitInvalidValue = inlineValue;
+        }
         flags[camelCase(key)] = key === 'create-attached'
           ? parseInlineBooleanFlag(key, inlineValue)
           : true;
@@ -326,6 +330,7 @@ export const TOP_HELP = `myagents — MyAgents Self-Configuration CLI
 Usage: myagents <command> [options]
 
 Commands:
+  anydoc    Convert one local document to Markdown (including offline OCR)
   mcp       Manage MCP tool servers
   vision    Official image-understanding CLI tool
   tool      Manage registered CLI tools (Lab-gated; enable in Settings first)
@@ -553,6 +558,11 @@ export function printResult(
       output = { ...result, data };
     }
     console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+
+  if (group === 'anydoc') {
+    printAnydocResult(action, result);
     return;
   }
 
@@ -2411,6 +2421,149 @@ function formatObject(obj: Record<string, unknown> | undefined, indent = '  '): 
     .join('\n');
 }
 
+function printAnydocResult(action: string, result: Record<string, unknown>): void {
+  const data = (result.data as Record<string, unknown> | undefined) ?? {};
+  const job = data.job as Record<string, unknown> | undefined;
+  if (!result.success) {
+    const code = typeof result.code === 'string' ? ` [${result.code}]` : '';
+    console.error(`Error${code}: ${String(result.error ?? 'Document conversion failed.')}`);
+    if (job) {
+      console.error(`Job: ${String(job.jobId ?? '(unknown)')}`);
+      console.error(`Status: ${String(job.state ?? '(unknown)')}`);
+    }
+    if (typeof result.suggestion === 'string' && result.suggestion.trim()) {
+      console.error(`Suggestion: ${result.suggestion}`);
+    }
+    printAnydocRecovery(result.recoveryHint);
+    return;
+  }
+  if (action === 'list') {
+    const jobs = Array.isArray(data.items) ? data.items as Array<Record<string, unknown>> : [];
+    if (jobs.length === 0) {
+      console.log('No recent AnyDoc jobs.');
+      return;
+    }
+    for (const item of jobs) {
+      const output = (item.output as Record<string, unknown> | undefined) ?? {};
+      const state = String(item.state ?? '(unknown)');
+      const artifactAvailable = output.artifactAvailable === true;
+      const artifact = artifactAvailable && output.documentPath
+        ? String(output.documentPath)
+        : ANYDOC_TERMINAL_STATES.has(state) ? '(no artifact)' : '(pending)';
+      console.log(`${String(item.jobId)}  ${state}  ${artifact}`);
+    }
+    return;
+  }
+  if (!job) {
+    console.log(formatObject(data));
+    return;
+  }
+  const output = (job.output as Record<string, unknown> | undefined) ?? {};
+  const jobId = String(job.jobId ?? '(unknown)');
+  const state = String(job.state ?? '(unknown)');
+  if (action === 'convert' && (state === 'queued' || state === 'running')) {
+    console.log(`AnyDoc job accepted: ${jobId}`);
+    console.log(`Status: ${state}`);
+    console.log(`Output when ready: ${String(output.documentPath ?? '(unknown)')}`);
+    console.log(`→ Run: myagents anydoc status ${jobId}`);
+    console.log(`→ Run: myagents anydoc cancel ${jobId}`);
+    return;
+  }
+  console.log(`AnyDoc job: ${jobId}`);
+  console.log(`Status: ${state}`);
+  const isTerminal = ANYDOC_TERMINAL_STATES.has(state);
+  if (!isTerminal) console.log(`Stage: ${String(job.stage ?? '(unknown)')}`);
+  if (output.artifactAvailable === true && output.documentPath) {
+    console.log(`Document: ${String(output.documentPath)}`);
+  } else if (isTerminal) {
+    console.log('Document: unavailable');
+  }
+  const warnings = Array.isArray(job.warnings) ? job.warnings as Array<Record<string, unknown>> : [];
+  for (const warning of warnings) {
+    console.error(`Warning [${String(warning.code ?? 'DOCUMENT_WARNING')}]: ${String(warning.message ?? '')}`);
+  }
+  const terminalError = job.error as Record<string, unknown> | undefined;
+  if (terminalError) {
+    console.error(`Error [${String(terminalError.code ?? 'DOCUMENT_FAILED')}]: ${String(terminalError.message ?? '')}`);
+    printAnydocRecovery(terminalError.recoveryHint);
+  }
+}
+
+function printAnydocRecovery(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const hint = value as { recoveryCommand?: unknown; message?: unknown };
+  if (typeof hint.recoveryCommand === 'string' && hint.recoveryCommand) {
+    const message = typeof hint.message === 'string' && hint.message ? `   ${hint.message}` : '';
+    console.error(`→ Run: ${hint.recoveryCommand}${message}`);
+  } else if (typeof hint.message === 'string' && hint.message) {
+    console.error(hint.message);
+  }
+}
+
+const ANYDOC_TERMINAL_STATES = new Set([
+  'succeeded',
+  'succeeded_with_warnings',
+  'failed',
+  'cancelled',
+  'interrupted',
+]);
+
+async function waitForAnydocJob(
+  jobId: string,
+  initial: Record<string, unknown>,
+  jsonMode: boolean,
+): Promise<Record<string, unknown>> {
+  let result = initial;
+  let delayMs = 250;
+  let lastStage = '';
+  const onInterrupt = () => {
+    console.error(`AnyDoc wait interrupted; job ${jobId} is still app-owned and was not cancelled.`);
+    console.error(`→ Run: myagents anydoc status ${jobId}`);
+    console.error(`→ Run: myagents anydoc cancel ${jobId}`);
+    process.exit(130);
+  };
+  process.once('SIGINT', onInterrupt);
+  try {
+    while (result.success) {
+      const data = (result.data as Record<string, unknown> | undefined) ?? {};
+      const job = data.job as Record<string, unknown> | undefined;
+      if (!job || job.jobId !== jobId) {
+        return {
+          success: false,
+          code: 'DOCUMENT_PROTOCOL_ERROR',
+          error: 'The status response did not contain the expected document job.',
+          suggestion: `Retry with myagents anydoc status ${jobId}.`,
+        };
+      }
+      const state = String(job.state ?? '');
+      if (ANYDOC_TERMINAL_STATES.has(state)) {
+        if (state === 'failed' || state === 'cancelled' || state === 'interrupted') {
+          const terminalError = (job.error as Record<string, unknown> | undefined) ?? {};
+          return {
+            ...result,
+            success: false,
+            code: terminalError.code ?? 'DOCUMENT_FAILED',
+            error: terminalError.message ?? `Document job ended as ${state}.`,
+            recoveryHint: terminalError.recoveryHint,
+          };
+        }
+        return result;
+      }
+      const stage = String(job.stage ?? state);
+      if (!jsonMode && stage !== lastStage) {
+        console.error(`AnyDoc ${jobId}: ${stage}`);
+        lastStage = stage;
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
+      delayMs = Math.min(delayMs * 2, 2_000);
+      result = await callApi('anydoc/status', { jobId });
+    }
+    return result;
+  } finally {
+    process.removeListener('SIGINT', onInterrupt);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Command routing
 // ---------------------------------------------------------------------------
@@ -2488,6 +2641,14 @@ async function main(): Promise<void> {
       result = await completeSpaceIssueWithLocalFollowup(body, flags);
     } else {
       result = await callApi(route, body);
+    }
+
+    if (group === 'anydoc' && result.success) {
+      const job = ((result.data as Record<string, unknown> | undefined)?.job ?? undefined) as Record<string, unknown> | undefined;
+      const shouldWait = action === 'wait' || (action === 'convert' && flags.wait === true);
+      if (shouldWait && job && typeof job.jobId === 'string') {
+        result = await waitForAnydocJob(job.jobId, result, jsonMode);
+      }
     }
 
     // --run bundled with `task create-from-alignment`: chain immediately
@@ -2594,6 +2755,9 @@ export function rejectUnsupportedSpaceDryRun(
 }
 
 export function buildRoute(group: string, action: string, rest: string[]): string {
+  if (group === 'anydoc' && action === 'wait') {
+    return 'anydoc/status';
+  }
   if (group === 'task' && action === 'trigger') {
     const triggerAction = rest[0] || 'validate';
     return `task/trigger/${triggerAction}`;
@@ -2691,6 +2855,7 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
 }
 
 const PUBLISHED_ADMIN_ROUTES = new Set([
+  'anydoc/convert', 'anydoc/status', 'anydoc/cancel', 'anydoc/list',
   'mcp/list', 'mcp/show', 'mcp/add', 'mcp/remove', 'mcp/enable', 'mcp/disable', 'mcp/env', 'mcp/test',
   'mcp/oauth/discover', 'mcp/oauth/start', 'mcp/oauth/status', 'mcp/oauth/revoke',
   'tool/list', 'tool/info', 'tool/add', 'tool/remove', 'tool/enable', 'tool/disable', 'tool/readme', 'tool/env',
@@ -2720,7 +2885,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
 ]);
 
 const PUBLISHED_COMMAND_GROUPS = new Set([
-  'mcp', 'tool', 'vision', 'model', 'agent', 'runtime', 'diagnose', 'cron', 'goal', 'im', 'widget',
+  'anydoc', 'mcp', 'tool', 'vision', 'model', 'agent', 'runtime', 'diagnose', 'cron', 'goal', 'im', 'widget',
   'plugin', 'cc-plugin', 'skill', 'config', 'task', 'thought', 'space', 'issue', 'session',
   'status', 'reload', 'version',
 ]);
@@ -2732,11 +2897,14 @@ export function validateCliCommand(
   const group = positional[0];
   if (!group) return undefined;
   if (!PUBLISHED_COMMAND_GROUPS.has(group)) {
+    const isRetiredDocumentDraft = group === 'document';
     return {
       code: 'UNKNOWN_COMMAND_GROUP',
       error: `Unknown command group: ${group}`,
-      suggestion: 'List the commands supported by this MyAgents build.',
-      suggestedCommand: 'myagents --help',
+      suggestion: isRetiredDocumentDraft
+        ? 'Use the published local document conversion command group.'
+        : 'List the commands supported by this MyAgents build.',
+      suggestedCommand: isRetiredDocumentDraft ? 'myagents anydoc --help' : 'myagents --help',
     };
   }
   if (helpMode && positional.length === 1) return undefined;
@@ -3693,12 +3861,140 @@ function resolveSessionPromptText(
   return promptText;
 }
 
+function buildAnydocRequestBody(
+  action: string,
+  rest: string[],
+  flags: Record<string, unknown>,
+): Record<string, unknown> {
+  const allowedByAction: Record<string, Set<string>> = {
+    convert: new Set(['file', 'fileValueMissing', 'output', 'password', 'wait', 'waitInvalidValue', 'json', 'port']),
+    status: new Set(['json', 'port']),
+    wait: new Set(['json', 'port']),
+    cancel: new Set(['json', 'port']),
+    list: new Set(['limit', 'json', 'port']),
+  };
+  const allowed = allowedByAction[action];
+  if (!allowed) {
+    return exitAgentCliError(flags, {
+      code: 'UNKNOWN_COMMAND',
+      error: `Unknown AnyDoc command: ${action}`,
+      suggestion: 'Inspect the published AnyDoc commands.',
+      suggestedCommand: 'myagents anydoc --help',
+    });
+  }
+  const unsupported = Object.keys(flags).find(key => !allowed.has(key));
+  if (unsupported) {
+    const displayFlag = unsupported.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`);
+    return exitAgentCliError(flags, {
+      code: unsupported === 'dryRun' ? 'DRY_RUN_UNSUPPORTED' : 'FLAG_UNSUPPORTED',
+      error: `myagents anydoc ${action} does not support --${displayFlag}.`,
+      suggestion: 'Read the exact leaf help and retry with only documented options.',
+      suggestedCommand: `myagents anydoc ${action} --help`,
+    });
+  }
+
+  if (action === 'convert') {
+    const files = Array.isArray(flags.file) ? flags.file : [];
+    if (flags.fileValueMissing || files.length !== 1 || typeof files[0] !== 'string' || !files[0].trim()) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_FILE_COUNT_INVALID',
+        error: 'anydoc convert requires exactly one --file <input>.',
+        suggestion: 'Choose one supported local document and retry.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    if (rest.length > 0) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_ARGUMENT_UNEXPECTED',
+        error: `anydoc convert does not accept positional input: ${rest.join(' ')}`,
+        suggestion: 'Pass the single input through --file <input>.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    if (flags.waitInvalidValue !== undefined) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_WAIT_VALUE_INVALID',
+        error: '--wait is a presence flag and does not accept true or false.',
+        suggestion: 'Use bare --wait, or omit it for immediate acceptance.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    if (flags.output !== undefined && (typeof flags.output !== 'string' || !flags.output.trim())) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_OUTPUT_PATH_INVALID',
+        error: '--output requires a directory path.',
+        suggestion: 'Pass an output root directory, not a document filename.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    if (flags.password !== undefined && typeof flags.password !== 'string') {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_PASSWORD_VALUE_REQUIRED',
+        error: '--password requires a value.',
+        suggestion: 'Pass the document password or omit --password.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    const source = files[0].trim();
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_SOURCE_PATH_INVALID',
+        error: 'anydoc convert accepts one local file path, not a URL.',
+        suggestion: 'Choose a local file and retry.',
+        suggestedCommand: 'myagents anydoc convert --help',
+      });
+    }
+    const pathMod = require('path') as typeof import('path');
+    return {
+      sourcePath: pathMod.resolve(process.cwd(), source),
+      ...(typeof flags.output === 'string'
+        ? { outputRoot: pathMod.resolve(process.cwd(), flags.output.trim()) }
+        : {}),
+      ...(typeof flags.password === 'string' ? { password: flags.password } : {}),
+    };
+  }
+
+  if (action === 'list') {
+    if (rest.length > 0) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_ARGUMENT_UNEXPECTED',
+        error: 'anydoc list does not accept positional arguments.',
+        suggestedCommand: 'myagents anydoc list --help',
+      });
+    }
+    const rawLimit = flags.limit ?? '20';
+    const limit = typeof rawLimit === 'string' && /^\d+$/.test(rawLimit) ? Number(rawLimit) : Number.NaN;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return exitAgentCliError(flags, {
+        code: 'DOCUMENT_LIST_LIMIT_INVALID',
+        error: '--limit must be an integer from 1 to 100.',
+        suggestion: 'Retry with --limit 20 or another allowed value.',
+        suggestedCommand: 'myagents anydoc list --help',
+      });
+    }
+    return { limit };
+  }
+
+  if (rest.length !== 1 || typeof rest[0] !== 'string' || !rest[0].trim()) {
+    return exitAgentCliError(flags, {
+      code: 'DOCUMENT_JOB_ID_REQUIRED',
+      error: `anydoc ${action} requires exactly one <job-id>.`,
+      suggestion: 'Copy the exact job ID from anydoc list.',
+      suggestedCommand: 'myagents anydoc list',
+    });
+  }
+  return { jobId: rest[0].trim() };
+}
+
 export function buildRequestBody(
   group: string,
   action: string,
   rest: string[],
   flags: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (group === 'anydoc') {
+    return buildAnydocRequestBody(action, rest, flags);
+  }
   // Official image understanding tool. Unlike the user-defined CLI tool
   // registry, this is a built-in product capability backed by AppConfig model
   // settings, so it routes directly to the official vision admin handlers.

@@ -57,6 +57,7 @@ pub const REQUIRED_SYSTEM_SKILLS: &[&str] = &[
     "myagents-memory-gardener",
     "myagents-memory-molt",
     "myagents-cli",
+    "myagents-anydoc",
     "myagents-task-automation",
     "myagents-docs",
 ];

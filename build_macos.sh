@@ -153,12 +153,12 @@ check_dependency "codesign" "需要 Xcode Command Line Tools"
 check_dependency "lipo" "需要 Xcode Command Line Tools"
 check_dependency "otool" "需要 Xcode Command Line Tools"
 
-# 检查 mino 默认工作区
-if [ ! -d "${PROJECT_DIR}/mino" ] || [ ! -f "${PROJECT_DIR}/mino/CLAUDE.md" ]; then
-    echo -e "${RED}错误: mino/ 目录不存在或不完整! 请先运行 ./setup.sh${NC}"
+# 检查仓库内置的 mino 工作区模板
+if [ ! -f "${PROJECT_DIR}/bundled-workspaces/mino/CLAUDE.md" ]; then
+    echo -e "${RED}错误: bundled-workspaces/mino/ 模板不存在或不完整!${NC}"
     exit 1
 fi
-echo -e "${GREEN}  ✓ mino 默认工作区已就绪${NC}"
+echo -e "${GREEN}  ✓ mino 内置工作区模板已就绪${NC}"
 
 # Rust toolchain/components/target 必须与 rust-toolchain.toml 和 CI 对齐。
 "${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh" "${BUILD_TARGETS[@]}"
@@ -267,11 +267,6 @@ SDK_DEST="src-tauri/resources/claude-agent-sdk"
 rm -rf "${SDK_DEST}"
 mkdir -p "${SDK_DEST}"
 
-# NOTE: agent-browser CLI is no longer bundled. The skill at
-# bundled-skills/agent-browser/SKILL.md teaches AI to self-install via
-# `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
-# use. Removing the bundle saves ~84MB DMG size + ~1-2min build time.
-
 # 构建前端
 echo -e "  ${CYAN}构建前端...${NC}"
 npm run build:web
@@ -356,9 +351,6 @@ done < <(find "$VENDOR_DIR" -type f \( -name "*.node" -o -name "rg" \) -path "*d
 
 echo -e "${GREEN}✓ Vendor 签名完成 (成功: ${SIGNED_COUNT}, 失败: ${FAILED_COUNT})${NC}"
 echo ""
-
-# NOTE: agent-browser-cli signing block removed — bundle no longer ships.
-# AI installs the CLI on first use via the agent-browser skill (npm install -g).
 
 # 构建 Tauri 应用
 echo -e "${BLUE}[7/7] 构建 Tauri 应用 (Release + 签名 + 公证)...${NC}"
@@ -694,6 +686,9 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
         echo -e "    ${RED}✗ claude 签名失败${NC}"
         exit 1
     fi
+
+    echo -e "  ${CYAN}准备离线文档转换 Worker / OCR / PDFium 资源 (${TARGET})...${NC}"
+    node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$TARGET"
 
     npm run tauri:build -- --target "$TARGET"
 

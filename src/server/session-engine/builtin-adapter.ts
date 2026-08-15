@@ -846,7 +846,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async updateModel(model, opts) {
-      setSessionModel(model, opts);
+      await setSessionModel(model, opts);
       return { success: true };
     },
 
@@ -902,7 +902,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async updateProviderEnv(providerEnv) {
-      setSessionProviderEnv(providerEnv);
+      await setSessionProviderEnv(providerEnv);
       return { success: true };
     },
 

@@ -169,6 +169,18 @@ try {
 Write-ColorOutput "✓ Rust toolchain ready" "Green"
 Write-Host ""
 
+# Prepare the same target-locked document Worker/OCR/PDFium projection used by
+# release builds. The prepare owner is fingerprinted, so a warm invocation is
+# an offline no-op instead of repeating downloads, extraction, or signing.
+Write-ColorOutput "[准备] 准备离线文档转换资源 (x86_64-pc-windows-msvc)..." "Blue"
+& node "$PROJECT_DIR\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+if ($LASTEXITCODE -ne 0) {
+    Write-ColorOutput "✗ 文档转换资源准备失败" "Red"
+    exit 1
+}
+Write-ColorOutput "✓ 文档转换资源 ready" "Green"
+Write-Host ""
+
 # TypeScript 检查
 Write-ColorOutput "[1/3] TypeScript 类型检查..." "Blue"
 Set-Location $PROJECT_DIR

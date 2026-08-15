@@ -45,6 +45,7 @@ import {
   type SaveContext,
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
 import { MYAGENTS_TOOL_CALL_TIMEOUT_MS } from '../session-core/tool-call-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
@@ -142,16 +143,32 @@ export function buildCodexInitializeParams(experimentalApi = false): Record<stri
 export function summarizeCodexThreadParamsForLog(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
-  const { developerInstructions, threadId, ...safeParams } = params;
+  const dynamicTools = Array.isArray(params.dynamicTools) ? params.dynamicTools.length : 0;
   return {
-    ...safeParams,
-    ...(typeof threadId === 'string'
-      ? { threadId: summarizeSensitiveValueForLog(threadId) }
+    ...(typeof params.cwd === 'string'
+      ? { cwd: summarizeSensitiveValueForLog(params.cwd) }
       : {}),
+    ...(typeof params.threadId === 'string'
+      ? { threadId: summarizeSensitiveValueForLog(params.threadId) }
+      : {}),
+    ...(typeof params.model === 'string' || params.model === null ? { model: params.model } : {}),
+    ...(typeof params.modelProvider === 'string' ? { modelProvider: params.modelProvider } : {}),
+    ...(typeof params.approvalPolicy === 'string' ? { approvalPolicy: params.approvalPolicy } : {}),
+    ...(typeof params.sandbox === 'string' ? { sandbox: params.sandbox } : {}),
+    ...(typeof params.ephemeral === 'boolean' ? { ephemeral: params.ephemeral } : {}),
+    ...(typeof params.experimentalRawEvents === 'boolean'
+      ? { experimentalRawEvents: params.experimentalRawEvents }
+      : {}),
+    ...(dynamicTools > 0 ? { dynamicToolCount: dynamicTools } : {}),
     developerInstructions: summarizeSensitiveValueForLog(
-      typeof developerInstructions === 'string' ? developerInstructions : null,
+      typeof params.developerInstructions === 'string' ? params.developerInstructions : null,
     ),
   };
+}
+
+function summarizeCodexErrorForLog(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return JSON.stringify(summarizeSensitiveValueForLog(message));
 }
 
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
@@ -378,7 +395,7 @@ export function materializeManagedCodexExtensions(
   } catch (error) {
     console.warn(
       '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
-      error instanceof Error ? error.message : String(error),
+      summarizeCodexErrorForLog(error),
     );
     return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
   }
@@ -399,14 +416,14 @@ export function materializeManagedCodexExtensions(
         } catch (error) {
           console.warn(
             `[codex] managed Agent materialization failed; continuing without ${role.name}:`,
-            error instanceof Error ? error.message : String(error),
+            summarizeCodexErrorForLog(error),
           );
         }
       }
     } catch (error) {
       console.warn(
         '[codex] managed Agent materialization unavailable; continuing without projected Agents:',
-        error instanceof Error ? error.message : String(error),
+        summarizeCodexErrorForLog(error),
       );
     }
   }
@@ -422,7 +439,7 @@ export function materializeManagedCodexExtensions(
         } catch (error) {
           console.warn(
             `[codex] managed Skill materialization failed; continuing without ${skill.name}:`,
-            error instanceof Error ? error.message : String(error),
+            summarizeCodexErrorForLog(error),
           );
         }
       }
@@ -430,7 +447,7 @@ export function materializeManagedCodexExtensions(
     } catch (error) {
       console.warn(
         '[codex] managed Skill materialization unavailable; continuing without projected Skills:',
-        error instanceof Error ? error.message : String(error),
+        summarizeCodexErrorForLog(error),
       );
     }
   }
@@ -446,7 +463,7 @@ export function materializeManagedCodexExtensions(
       } catch (error) {
         console.warn(
           '[codex] failed to clean managed extension temp files:',
-          error instanceof Error ? error.message : String(error),
+          summarizeCodexErrorForLog(error),
         );
       }
     },
@@ -540,7 +557,7 @@ export async function configureCodexSkillExtraRoots(
       console.warn(
         `[codex] skills/extraRoots/set failed: roots=${extraRoots.length}`
         + ` durationMs=${Date.now() - setStartedAt} timeoutMs=${setTimeoutMs}`
-        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+        + ` reason=${summarizeCodexErrorForLog(error)}`,
       );
       throw error;
     }
@@ -557,7 +574,7 @@ export async function configureCodexSkillExtraRoots(
         `[codex] skills/list failed: roots=${extraRoots.length}`
         + ` expected=${expectedSkills.length}`
         + ` durationMs=${Date.now() - listStartedAt} timeoutMs=${listTimeoutMs}`
-        + ` reason=${error instanceof Error ? error.message : String(error)}`,
+        + ` reason=${summarizeCodexErrorForLog(error)}`,
       );
       throw error;
     }
@@ -605,7 +622,7 @@ export async function configureCodexSkillExtraRoots(
   } catch (err) {
     console.warn(
       '[codex] skills extra roots injection failed; continuing without projected Skills:',
-      err instanceof Error ? err.message : String(err),
+      summarizeCodexErrorForLog(err),
     );
     return { extraRoots: [], loadedSkillNames: [] };
   }
@@ -760,6 +777,63 @@ function codexTraceId(params: Record<string, unknown>, fallbackItemId?: string, 
   if (!itemId) return undefined;
   const threadId = stringValue(params.threadId);
   return [threadId, itemId, suffix].filter((part): part is string => !!part).join('::');
+}
+
+type CodexReasoningTraceState = {
+  openedReasoningTracesByItem: Map<string, Map<string, number>>;
+};
+
+function codexReasoningItemKey(
+  params: Record<string, unknown>,
+  fallbackItemId?: string,
+): string | undefined {
+  const itemId = stringValue(params.itemId) ?? fallbackItemId;
+  if (!itemId) return undefined;
+  return [stringValue(params.threadId), itemId].filter(Boolean).join('::');
+}
+
+export function buildCodexReasoningDeltaEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  input: { index: number; suffix: string; text: string },
+): UnifiedEvent | UnifiedEvent[] {
+  const traceId = codexTraceId(params, undefined, input.suffix);
+  const delta: UnifiedEvent = {
+    kind: 'thinking_delta',
+    text: input.text,
+    index: input.index,
+    traceId,
+  };
+  const itemKey = codexReasoningItemKey(params);
+  if (!traceId || !itemKey) return delta;
+  let opened = state.openedReasoningTracesByItem.get(itemKey);
+  if (!opened) {
+    opened = new Map<string, number>();
+    state.openedReasoningTracesByItem.set(itemKey, opened);
+  }
+  if (opened.has(traceId)) return delta;
+  opened.set(traceId, input.index);
+  return [
+    { kind: 'thinking_start', index: input.index, traceId },
+    delta,
+  ];
+}
+
+export function takeCodexReasoningStopEvents(
+  state: CodexReasoningTraceState,
+  params: Record<string, unknown>,
+  fallbackItemId: string,
+): UnifiedEvent[] {
+  const itemKey = codexReasoningItemKey(params, fallbackItemId);
+  if (!itemKey) return [];
+  const opened = state.openedReasoningTracesByItem.get(itemKey);
+  state.openedReasoningTracesByItem.delete(itemKey);
+  if (!opened) return [];
+  return [...opened].map(([traceId, index]) => ({
+    kind: 'thinking_stop' as const,
+    index,
+    traceId,
+  }));
 }
 
 export function buildCodexFileChangeResultContent(changes: unknown): string {
@@ -1653,6 +1727,7 @@ export function applyCodexSubAgentActivity(
   notificationThreadId: string | undefined,
   mainThreadId: string,
   rawItem: unknown,
+  interactionDelivery?: 'queue-only' | 'trigger-turn',
 ): UnifiedEvent[] | null {
   if (!isRecord(rawItem) || rawItem.type !== 'subAgentActivity') return null;
   const id = stringValue(rawItem.id);
@@ -1691,10 +1766,14 @@ export function applyCodexSubAgentActivity(
       state.subThreadToParent.set(agentThreadId, senderThreadId);
     }
   } else if (senderThreadId === mainThreadId) {
-    // A current-turn target remains under its original spawn card. When a
-    // persistent v2 child is contacted in a later turn, no current content
-    // block exists for that old card, so this activity becomes the new owner.
-    if (targetRoute.kind === 'subagent') {
+    // A raw-discriminated followup_task starts a new child turn, so this
+    // current-turn activity card becomes its independent lifecycle owner even
+    // when the same child already completed under a spawn card earlier in the
+    // root turn. queue-only send_message remains nested under the current card.
+    if (interactionDelivery === 'trigger-turn' && agentThreadId !== mainThreadId) {
+      state.subThreadToCard.set(agentThreadId, id);
+      state.subThreadToParent.set(agentThreadId, mainThreadId);
+    } else if (targetRoute.kind === 'subagent') {
       scope = targetRoute.scope;
     } else if (agentThreadId !== mainThreadId) {
       state.subThreadToCard.set(agentThreadId, id);
@@ -1819,6 +1898,134 @@ type CodexLegacySpawnLifecycleState = CodexSubAgentCorrelationState & {
   activeSubAgentTurns: Map<string, string | null>;
   completedSubAgentTurnsBeforeActivity: Set<string>;
 };
+
+type CodexSubAgentLifecycleRecord = {
+  startedAt: number;
+  terminalStatus?: Exclude<SubagentLifecycleStatus, 'running'>;
+  finishedAt?: number;
+};
+
+type CodexSubAgentLifecycleState = CodexSubAgentCorrelationState & {
+  threadId: string;
+  activeSubAgentTurns: ReadonlyMap<string, string | null>;
+  subAgentLifecycleByThread: Map<string, CodexSubAgentLifecycleRecord>;
+  emittedSubAgentLifecycleByCard: Map<string, SubagentLifecycleStatus>;
+};
+
+function observeCodexSubAgentTurnStarted(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (!current || current.terminalStatus) {
+    proc.subAgentLifecycleByThread.set(childThreadId, { startedAt: observedAt });
+  }
+}
+
+function observeCodexSubAgentTurnTerminal(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+  status: Exclude<SubagentLifecycleStatus, 'running'>,
+  observedAt: number,
+): void {
+  const current = proc.subAgentLifecycleByThread.get(childThreadId);
+  if (current?.terminalStatus) return;
+  const startedAt = current?.startedAt ?? observedAt;
+  proc.subAgentLifecycleByThread.set(childThreadId, {
+    startedAt,
+    terminalStatus: status,
+    finishedAt: Math.max(startedAt, observedAt),
+  });
+}
+
+export function mapCodexChildTurnTerminalStatus(turn: unknown): Exclude<SubagentLifecycleStatus, 'running'> {
+  const status = stringValue(objectValue(turn).status)?.toLowerCase();
+  if (status === 'completed' || status === 'success' || status === 'succeeded') return 'completed';
+  if (
+    status === 'interrupted'
+    || status === 'cancelled'
+    || status === 'canceled'
+    || status === 'stopped'
+  ) return 'interrupted';
+  return 'failed';
+}
+
+function topLevelCardForThread(
+  proc: CodexSubAgentLifecycleState,
+  childThreadId: string,
+): string | null {
+  return resolveTopLevelSpawnCard(
+    childThreadId,
+    proc.subThreadToCard,
+    proc.subThreadToParent,
+  );
+}
+
+/**
+ * Project native child-turn observations onto the current turn's visible
+ * CollabAgent owner. Records remain turn-local; correlation can arrive before
+ * or after the native notification without creating another lifecycle owner.
+ */
+export function collectCodexSubAgentLifecycleEvents(
+  proc: CodexSubAgentLifecycleState,
+): UnifiedEvent[] {
+  const recordsByCard = new Map<string, Array<{
+    threadId: string;
+    record: CodexSubAgentLifecycleRecord;
+  }>>();
+  for (const [threadId, record] of proc.subAgentLifecycleByThread) {
+    const parentToolUseId = topLevelCardForThread(proc, threadId);
+    if (!parentToolUseId) continue;
+    const records = recordsByCard.get(parentToolUseId) ?? [];
+    records.push({ threadId, record });
+    recordsByCard.set(parentToolUseId, records);
+  }
+
+  const events: UnifiedEvent[] = [];
+  for (const [parentToolUseId, records] of recordsByCard) {
+    const emitted = proc.emittedSubAgentLifecycleByCard.get(parentToolUseId);
+    if (!emitted) {
+      const startedAt = Math.min(...records.map(({ record }) => record.startedAt));
+      events.push({
+        kind: 'subagent_lifecycle',
+        parentToolUseId,
+        status: 'running',
+        observedAt: startedAt,
+      });
+      proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, 'running');
+    }
+    if (proc.emittedSubAgentLifecycleByCard.get(parentToolUseId) !== 'running') continue;
+
+    const hasActiveDescendant = [...proc.activeSubAgentTurns.keys()]
+      .some((threadId) => topLevelCardForThread(proc, threadId) === parentToolUseId);
+    if (hasActiveDescendant) continue;
+
+    const ownerRecords = records.filter(({ threadId }) => {
+      const parentThreadId = proc.subThreadToParent.get(threadId);
+      return proc.subThreadToCard.get(threadId) === parentToolUseId
+        && (!parentThreadId || parentThreadId === proc.threadId);
+    });
+    if (ownerRecords.length === 0 || ownerRecords.some(({ record }) => !record.terminalStatus)) continue;
+
+    const terminalStatus = ownerRecords.some(({ record }) => record.terminalStatus === 'failed')
+      ? 'failed'
+      : ownerRecords.some(({ record }) => record.terminalStatus === 'interrupted')
+        ? 'interrupted'
+        : 'completed';
+    const finishedAt = Math.max(...ownerRecords.map(({ record }) => (
+      record.finishedAt ?? record.startedAt
+    )));
+    events.push({
+      kind: 'subagent_lifecycle',
+      parentToolUseId,
+      status: terminalStatus,
+      observedAt: finishedAt,
+    });
+    proc.emittedSubAgentLifecycleByCard.set(parentToolUseId, terminalStatus);
+  }
+  return events;
+}
 
 /** Observe the v1 spawn signal and reserve each newly correlated child once. */
 function recordLegacySpawnAgentLifecycle(
@@ -2110,7 +2317,7 @@ export class JsonRpcClient {
     } catch (err) {
       // Stream closed or process exited
       if (String(err).includes('cancel') || String(err).includes('closed')) return;
-      console.error('[codex-rpc] Reader error:', err);
+      console.error('[codex-rpc] Reader error:', summarizeCodexErrorForLog(err));
     } finally {
       reader.releaseLock();
       // Reject all pending requests
@@ -2267,6 +2474,13 @@ class CodexProcess implements RuntimeProcess {
   // latter does not install a stale causal fence, but never infer execution
   // ownership from the ambiguous activity alone.
   subAgentActivitySeenBeforeTurnStart = new Set<string>();
+  // Native child-turn observations waiting for / attached to a turn-local
+  // CollabAgent card. Cleared with the existing correlation maps.
+  subAgentLifecycleByThread = new Map<string, CodexSubAgentLifecycleRecord>();
+  emittedSubAgentLifecycleByCard = new Map<string, SubagentLifecycleStatus>();
+  // Reasoning summary/content streams open lazily on their first delta and
+  // close by the exact same trace id at item completion.
+  openedReasoningTracesByItem = new Map<string, Map<string, number>>();
   // Deduplicate force-send and root-failure interrupts targeting the same
   // concrete child turn. The key is threadId + turnId, not just threadId,
   // because persistent children may execute multiple turns in one session.
@@ -2397,7 +2611,8 @@ function mapPermissionMode(mode: string): { approval: CodexApprovalPolicy; sandb
 //
 // Conservative pattern matcher: forwards a small set of high-signal failures
 // to the UnifiedEvent log stream so the renderer/IM bus can surface them.
-// Anything not matching here still ends up in the unified log via console.error.
+// Anything not matching here is reduced to an irreversible stderr summary by
+// the process reader and is not promoted into the user-facing log stream.
 //
 // Adding patterns: prefer specific phrases over broad terms. A false-positive
 // log line in the renderer is annoying; a false-negative just means the user
@@ -2426,7 +2641,7 @@ const CODEX_STDERR_PATTERNS: StderrPattern[] = [
   { re: /(connection (refused|reset)|tls handshake|dns (failure|resolve))/i, level: 'error', prefix: 'Codex network error' },
 ];
 
-function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallback): void {
+export function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallback): void {
   // Many stderr writes are multi-line. Process each line independently — one
   // matching line should fire one event, not block the rest of the chunk.
   for (const line of text.split('\n')) {
@@ -2435,13 +2650,10 @@ function classifyAndForwardCodexStderr(text: string, onEvent: UnifiedEventCallba
     for (const p of CODEX_STDERR_PATTERNS) {
       const m = trimmed.match(p.re);
       if (!m) continue;
-      // Keep the message short — the renderer shows these as toast/log lines.
-      // The full stderr line still went to console.error / unified log.
-      const detail = trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
       onEvent({
         kind: 'log',
         level: p.level,
-        message: `[codex] ${p.prefix}: ${detail}`,
+        message: `[codex] ${p.prefix} detail=${summarizeCodexValueForLog(trimmed)}`,
       });
       break; // first match wins per line
     }
@@ -2462,6 +2674,91 @@ export function mapCodexTurnCompletedNotification(
     ...(errorMessage ? { error: errorMessage, result: errorMessage } : {}),
     ...(status !== 'completed' && !errorMessage ? { result: `Turn ended with status ${status}` } : {}),
   };
+}
+
+function codexLogProtocolToken(value: unknown): string {
+  const token = stringValue(value);
+  return token && /^[A-Za-z][A-Za-z0-9_./:-]{0,95}$/.test(token) ? token : 'unknown';
+}
+
+function summarizeCodexValueForLog(value: unknown): string {
+  if (typeof value === 'string') {
+    return JSON.stringify(summarizeSensitiveValueForLog(value));
+  }
+  try {
+    return JSON.stringify(summarizeSensitiveValueForLog(JSON.stringify(value) ?? null));
+  } catch {
+    return JSON.stringify(summarizeSensitiveValueForLog(null));
+  }
+}
+
+/**
+ * Project one Codex notification into bounded semantic diagnostics.
+ * Notification payloads can contain commands, file paths, tool arguments,
+ * provider error bodies, and user messages, so sensitive values are never
+ * retained as plaintext prefixes.
+ */
+export function summarizeCodexNotificationForLog(method: string, params: unknown): string {
+  const p = objectValue(params);
+  if (method === 'item/started' || method === 'item/completed') {
+    const item = objectValue(p.item);
+    if (Object.keys(item).length === 0) return '';
+    const itemType = codexLogProtocolToken(item.type);
+    let detail = ` type=${itemType}`;
+    if (typeof item.id === 'string') detail += ` id=${summarizeCodexValueForLog(item.id)}`;
+    if (typeof p.threadId === 'string') detail += ` thread=${summarizeCodexValueForLog(p.threadId)}`;
+    if (itemType === 'commandExecution' && item.command != null) {
+      detail += ` command=${summarizeCodexValueForLog(item.command)}`;
+    }
+    if (itemType === 'fileChange' && Array.isArray(item.changes)) {
+      const paths = coerceFileChanges(item.changes).map((change) => change.path).filter(Boolean);
+      detail += ` files=${paths.length}`;
+      if (paths.length > 0) detail += ` paths=${summarizeCodexValueForLog(paths.join('\n'))}`;
+    }
+    if ((itemType === 'mcpToolCall' || itemType === 'dynamicToolCall') && item.tool != null) {
+      detail += ` tool=${summarizeCodexValueForLog(item.tool)}`;
+    }
+    if (itemType === 'agentMessage' && typeof item.text === 'string') {
+      detail += ` textChars=${Array.from(item.text).length}`;
+    }
+    if (itemType === 'userMessage') {
+      const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p);
+      if (clientId) detail += ` client=${summarizeCodexValueForLog(clientId)}`;
+    }
+    if (method === 'item/completed') {
+      if (typeof item.exitCode === 'number' && Number.isFinite(item.exitCode)) {
+        detail += ` exit=${item.exitCode}`;
+      }
+      const errorMessage = stringValue(objectValue(item.error).message);
+      if (errorMessage) detail += ` error=${summarizeCodexValueForLog(errorMessage)}`;
+    }
+    return detail;
+  }
+  if (method === 'turn/completed') {
+    const turn = objectValue(p.turn);
+    let detail = Object.keys(turn).length > 0 ? ` status=${codexLogProtocolToken(turn.status)}` : '';
+    const errorMessage = stringValue(objectValue(turn.error).message);
+    if (errorMessage) detail += ` error=${summarizeCodexValueForLog(errorMessage)}`;
+    return detail;
+  }
+  if (method === 'thread/tokenUsage/updated') {
+    const usage = objectValue(objectValue(p.tokenUsage).total);
+    const inputTokens = typeof usage.inputTokens === 'number' ? usage.inputTokens : 'unknown';
+    const outputTokens = typeof usage.outputTokens === 'number' ? usage.outputTokens : 'unknown';
+    return Object.keys(usage).length > 0 ? ` in=${inputTokens} out=${outputTokens}` : '';
+  }
+  if (method === 'thread/status/changed') {
+    const status = objectValue(p.status);
+    return Object.keys(status).length > 0 ? ` type=${codexLogProtocolToken(status.type)}` : '';
+  }
+  if (method === 'thread/started') {
+    const threadId = stringValue(objectValue(p.thread).id);
+    return threadId ? ` threadId=${summarizeCodexValueForLog(threadId)}` : '';
+  }
+  if (method === 'mcpServer/startupStatus/updated') {
+    return ` name=${summarizeCodexValueForLog(p.name)} status=${codexLogProtocolToken(p.status)}`;
+  }
+  return '';
 }
 
 function normalizeCodexPlanStatus(status: unknown): AgentPlanTodo['status'] {
@@ -2912,7 +3209,10 @@ export class CodexRuntime implements AgentRuntime {
     try {
       context = resolveCodexCommandContext({ source: runtimeSource });
     } catch (err) {
-      console.error(`[codex] Failed to resolve model runtime for source=${runtimeSource}:`, err);
+      console.error(
+        `[codex] Failed to resolve model runtime for source=${runtimeSource}:`,
+        summarizeCodexErrorForLog(err),
+      );
       return [];
     }
     const cacheKey = codexModelCacheKey(runtimeSource, context);
@@ -2927,7 +3227,10 @@ export class CodexRuntime implements AgentRuntime {
       modelCache.set(cacheKey, { models, timestamp: Date.now() });
       return models;
     } catch (err) {
-      console.error(`[codex] Failed to query models for source=${runtimeSource}:`, err);
+      console.error(
+        `[codex] Failed to query models for source=${runtimeSource}:`,
+        summarizeCodexErrorForLog(err),
+      );
       // Return cached even if stale, or empty
       return cached?.models ?? [];
     }
@@ -3197,14 +3500,13 @@ export class CodexRuntime implements AgentRuntime {
             emitMcpToolCatalog(servers);
           })
           .catch((err) => {
-            console.warn('[codex] MCP tool catalog refresh failed:', err instanceof Error ? err.message : String(err));
+            console.warn('[codex] MCP tool catalog refresh failed:', summarizeCodexErrorForLog(err));
           });
       }, 100);
     };
 
     // Wire up notification handler to emit UnifiedEvents
     codexProc.rpc.setNotificationHandler((method, params) => {
-      const p = params as Record<string, unknown> | undefined;
       if (method === 'mcpServer/startupStatus/updated') {
         const status = params as CodexMcpStartupStatusNotification;
         const belongsToActiveThread = status.threadId === null
@@ -3229,52 +3531,9 @@ export class CodexRuntime implements AgentRuntime {
         || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta'
         || method === 'rawResponse/completed';
       if (!isNoisy) {
-        let detail = '';
-        if (method === 'item/started' || method === 'item/completed') {
-          const item = p?.item as Record<string, unknown> | undefined;
-          if (item) {
-            detail = ` type=${item.type}`;
-            if (typeof item.id === 'string') detail += ` id=${JSON.stringify(summarizeSensitiveValueForLog(item.id))}`;
-            // PRD 0.2.27 — log threadId so sub-agent items are distinguishable
-            // from main-thread items in production triage (Codex carries it; we
-            // previously dropped it from logs, making this class of issue opaque).
-            if (typeof p?.threadId === 'string') detail += ` thread=${JSON.stringify(summarizeSensitiveValueForLog(p.threadId))}`;
-            // Tool-specific context
-            if (item.type === 'commandExecution' && item.command) detail += ` cmd=${(item.command as string).slice(0, 80)}`;
-            if (item.type === 'fileChange' && Array.isArray(item.changes)) {
-              const paths = coerceFileChanges(item.changes).map((change) => change.path).filter(Boolean);
-              if (paths.length > 0) detail += ` files=${paths.join(',')}`;
-            }
-            if ((item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') && item.tool) detail += ` tool=${item.tool}`;
-            if (item.type === 'agentMessage' && typeof item.text === 'string') detail += ` text=${(item.text as string).length}chars`;
-            if (item.type === 'userMessage') {
-              const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p ?? {});
-              if (clientId) detail += ` client=${JSON.stringify(summarizeSensitiveValueForLog(clientId))}`;
-            }
-            // Exit code / error for completed items
-            if (method === 'item/completed') {
-              if (item.exitCode != null) detail += ` exit=${item.exitCode}`;
-              if (item.error) detail += ` error=${((item.error as Record<string, unknown>).message as string || '')}`;
-            }
-          }
-        } else if (method === 'turn/completed') {
-          const turn = p?.turn as Record<string, unknown> | undefined;
-          detail = turn ? ` status=${turn.status}` : '';
-          if (turn?.error) detail += ` error=${((turn.error as Record<string, unknown>).message as string || '')}`;
-        } else if (method === 'thread/tokenUsage/updated') {
-          const usage = (p?.tokenUsage as Record<string, unknown>)?.total as Record<string, unknown> | undefined;
-          if (usage) detail = ` in=${usage.inputTokens} out=${usage.outputTokens}`;
-        } else if (method === 'thread/status/changed') {
-          const status = p?.status as Record<string, unknown> | undefined;
-          if (status) detail = ` type=${status.type}`;
-        } else if (method === 'thread/started') {
-          const thread = p?.thread as Record<string, unknown> | undefined;
-          if (typeof thread?.id === 'string') detail = ` threadId=${JSON.stringify(summarizeSensitiveValueForLog(thread.id))}`;
-        } else if (method === 'mcpServer/startupStatus/updated') {
-          detail = ` name=${String(p?.name ?? '(unknown)')} status=${String(p?.status ?? '(unknown)')}`;
-        }
+        const detail = summarizeCodexNotificationForLog(method, params);
         withLogContext({ runtime: 'codex', runtimeSource }, () => {
-          console.log(`[codex] ${method}${detail}`);
+          console.log(`[codex] ${codexLogProtocolToken(method)}${detail}`);
         });
       }
       const notifParams = params as Record<string, unknown> | undefined;
@@ -3296,6 +3555,9 @@ export class CodexRuntime implements AgentRuntime {
       // Emit the parent card first, then release causally-earlier child events.
       if (isItemNotification && codexProc.deferredSubAgentEvents.size > 0) {
         flushResolvableCodexSubAgentEvents(codexProc, wrappedOnEvent);
+      }
+      for (const event of collectCodexSubAgentLifecycleEvents(codexProc)) {
+        wrappedOnEvent(event);
       }
       // If a child settled before its parent activity arrived, the held root
       // may become releasable only after the activity and its buffered child
@@ -3365,7 +3627,7 @@ export class CodexRuntime implements AgentRuntime {
             if (!raw) continue;
             const text = stripAnsi(raw);
             withLogContext({ runtime: 'codex', runtimeSource }, () => {
-              console.error(`[codex-stderr] ${text}`);
+              console.error(`[codex-stderr] ${summarizeCodexValueForLog(text)}`);
             });
             classifyAndForwardCodexStderr(text, wrappedOnEvent);
           }
@@ -3546,7 +3808,7 @@ export class CodexRuntime implements AgentRuntime {
         } catch (err) {
           // collectCodexDiagnostics already degrades per-call; reaching here
           // means an unexpected error in the helper itself.
-          console.warn('[codex] collectDiagnostics failed:', err instanceof Error ? err.message : String(err));
+          console.warn('[codex] collectDiagnostics failed:', summarizeCodexErrorForLog(err));
         }
       })();
     } catch (err) {
@@ -3833,6 +4095,9 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.completedSubAgentTurnsBeforeActivity.clear();
     codexProc.subAgentThreadsAwaitingActivity.clear();
     codexProc.subAgentActivitySeenBeforeTurnStart.clear();
+    codexProc.subAgentLifecycleByThread.clear();
+    codexProc.emittedSubAgentLifecycleByCard.clear();
+    codexProc.openedReasoningTracesByItem.clear();
     codexProc.codexV2InteractionDeliveryByCallId.clear();
     codexProc.exactUsageByTurn.clear();
     codexProc.subAgentInterruptsInFlight.clear();
@@ -3889,14 +4154,16 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   private completeMainTurn(codexProc: CodexProcess, events: UnifiedEvent[]): UnifiedEvent[] {
+    const lifecycleEvents = collectCodexSubAgentLifecycleEvents(codexProc);
+    const terminalEvents = [...lifecycleEvents, ...events];
     this.clearTurnLocalSubAgentState(codexProc);
     const admission = codexProc.activeRootTurnAdmission;
     if (admission && !admission.responseTurnId) {
-      admission.deferredTerminalEvents = events;
+      admission.deferredTerminalEvents = terminalEvents;
       return [];
     }
     codexProc.activeRootTurnAdmission = null;
-    return events;
+    return terminalEvents;
   }
 
   /**
@@ -3954,7 +4221,7 @@ export class CodexRuntime implements AgentRuntime {
           || codexProc.releaseHeldMainTurnOnExit
         ) return;
         console.warn(
-          `[codex] Child turn interrupt failed thread=${JSON.stringify(summarizeSensitiveValueForLog(threadId))}; restarting runtime to preserve the held root boundary: ${err instanceof Error ? err.message : String(err)}`,
+          `[codex] Child turn interrupt failed thread=${JSON.stringify(summarizeSensitiveValueForLog(threadId))}; restarting runtime to preserve the held root boundary: ${summarizeCodexErrorForLog(err)}`,
         );
         codexProc.releaseHeldMainTurnOnExit = true;
         await this.stopSession(codexProc);
@@ -4077,8 +4344,9 @@ export class CodexRuntime implements AgentRuntime {
         });
       } catch (err) {
         // Verbose detail to server log; safe enum code travels over SSE.
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(`[codex] saveToolAttachment failed (toolUseId=${ctx.toolUseId}): ${reason}`);
+        console.warn(
+          `[codex] saveToolAttachment failed (toolUseId=${JSON.stringify(summarizeSensitiveValueForLog(ctx.toolUseId))}): ${summarizeCodexErrorForLog(err)}`,
+        );
         asyncEmit({
           kind: 'tool_attachment_update',
           toolUseId: ctx.toolUseId,
@@ -4195,6 +4463,7 @@ export class CodexRuntime implements AgentRuntime {
       const evtThreadId = stringValue(p.threadId);
       if (evtThreadId && codexProc.threadId && evtThreadId !== codexProc.threadId) {
         if (method === 'turn/started') {
+          observeCodexSubAgentTurnStarted(codexProc, evtThreadId, Date.now());
           const childTurnId = stringValue(p.turnId)
             ?? stringValue(objectValue(p.turn).id);
           const activityAlreadyArrived = (
@@ -4217,6 +4486,10 @@ export class CodexRuntime implements AgentRuntime {
             && objectValue(p.status).type === 'systemError'
           )
         ) {
+          const terminalStatus = method === 'turn/completed'
+            ? mapCodexChildTurnTerminalStatus(p.turn)
+            : 'failed';
+          observeCodexSubAgentTurnTerminal(codexProc, evtThreadId, terminalStatus, Date.now());
           codexProc.activeSubAgentTurns.delete(evtThreadId);
           if (
             codexProc.subAgentThreadsAwaitingActivity.has(evtThreadId)
@@ -4386,21 +4659,19 @@ export class CodexRuntime implements AgentRuntime {
 
       // ── Reasoning streaming ──
       case 'item/reasoning/summaryTextDelta':
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.summaryIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `summary:${(p.summaryIndex as number) || 0}`),
-        };
+          suffix: `summary:${(p.summaryIndex as number) || 0}`,
+        });
 
       case 'item/reasoning/textDelta':
         // Raw reasoning content — also map to thinking for display
-        return {
-          kind: 'thinking_delta',
+        return buildCodexReasoningDeltaEvents(codexProc, p, {
           text: (p.delta as string) || '',
           index: (p.contentIndex as number) || 0,
-          traceId: codexTraceId(p, undefined, `content:${(p.contentIndex as number) || 0}`),
-        };
+          suffix: `content:${(p.contentIndex as number) || 0}`,
+        });
 
       // ── Plan streaming ──
       case 'item/plan/delta':
@@ -4506,6 +4777,11 @@ export class CodexRuntime implements AgentRuntime {
               input: buildCollabAgentInput(item),
             };
           }
+          case 'subAgentActivity':
+            // v2 emits a started notification before the terminal activity
+            // item that carries the correlation payload. The completed side is
+            // authoritative; this is an intentional no-op, not an unknown item.
+            return null;
           case 'plan':
             // PRD 0.2.15 — `plan` items stream via item/plan/delta as thinking_delta.
             // We need a thinking_start so the frontend opens a thinking block.
@@ -4529,7 +4805,7 @@ export class CodexRuntime implements AgentRuntime {
           case 'imageGeneration':
             return { kind: 'tool_use_start', toolUseId: item.id, toolName: 'ImageGeneration' };
           case 'reasoning':
-            return { kind: 'thinking_start', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return null;
           case 'agentMessage':
           case 'contextCompaction':
             return null;
@@ -4781,21 +5057,39 @@ export class CodexRuntime implements AgentRuntime {
             // Codex multi-agent v2 (0.144.1): spawn/message/interrupt tools are
             // represented solely by this terminal activity item. Its id is the
             // originating tool call id and agentThreadId is the correlation key.
+            const activity = item as Record<string, unknown>;
+            const interactionDelivery = activity.kind === 'interacted'
+              ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
+              : undefined;
+            const activityThreadId = stringValue(activity.agentThreadId);
+            if (
+              interactionDelivery === 'trigger-turn'
+              && activityThreadId
+              && activityThreadId !== codexProc.threadId
+              && !codexProc.activeSubAgentTurns.has(activityThreadId)
+              && !codexProc.completedSubAgentTurnsBeforeActivity.has(activityThreadId)
+            ) {
+              // The activity can arrive before the follow-up child turn. Drop
+              // only the previous turn's terminal observation so rebinding the
+              // thread cannot make the new card look running before the native
+              // turn/started notification. If the new child turn already
+              // started (or even completed) its observation remains authoritative.
+              const previous = codexProc.subAgentLifecycleByThread.get(activityThreadId);
+              if (previous?.terminalStatus) {
+                codexProc.subAgentLifecycleByThread.delete(activityThreadId);
+              }
+            }
             const events = applyCodexSubAgentActivity(
               codexProc,
               stringValue(p.threadId),
               codexProc.threadId,
               item,
+              interactionDelivery,
             );
             if (!events) {
               console.warn('[codex] item/completed: malformed subAgentActivity');
             } else {
               codexProc.codexV2SubAgentActivityObserved = true;
-              const activity = item as Record<string, unknown>;
-              const activityThreadId = stringValue(activity.agentThreadId);
-              const interactionDelivery = activity.kind === 'interacted'
-                ? codexProc.codexV2InteractionDeliveryByCallId.get(item.id)
-                : undefined;
               codexProc.codexV2InteractionDeliveryByCallId.delete(item.id);
               if (
                 (activity.kind === 'started' || activity.kind === 'interacted')
@@ -4879,7 +5173,7 @@ export class CodexRuntime implements AgentRuntime {
             return { kind: 'log', level: 'info', message: '[codex] Hook prompt fragment injected' };
           }
           case 'reasoning':
-            return { kind: 'thinking_stop', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
+            return takeCodexReasoningStopEvents(codexProc, p, item.id);
           case 'agentMessage': {
             const finalText = typeof item.text === 'string' ? item.text : '';
             const streamedText = codexProc.agentMessageTextById.get(item.id) || '';
@@ -4957,7 +5251,11 @@ export class CodexRuntime implements AgentRuntime {
       // ── Errors ──
       case 'error': {
         const error = p.error as { message: string } | undefined;
-        return { kind: 'log', level: 'error', message: error?.message || 'Unknown error' };
+        return {
+          kind: 'log',
+          level: 'error',
+          message: `[codex] Runtime error detail=${summarizeCodexValueForLog(error?.message || 'Unknown error')}`,
+        };
       }
 
       // ── Thread name / diff / plan updates ──

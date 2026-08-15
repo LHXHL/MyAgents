@@ -1299,6 +1299,134 @@ describe('external SessionEngine with fake runtime', () => {
     }
   });
 
+  it('persists one terminal CollabAgent lifecycle and closes residual nested trace on success', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'root reply', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-success';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate'), 'subagent turn admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'spawn-card' });
+    harness.runtime.emitForTest({ kind: 'tool_result', toolUseId: 'spawn-card', content: 'spawned' });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'running',
+      observedAt: 100,
+    });
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'nested-thinking',
+      toolName: 'Thinking',
+      subAgent: { parentToolUseId: 'spawn-card' },
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card',
+      status: 'completed',
+      observedAt: 300,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+      .filter(message => message.role === 'assistant').at(-1);
+    expect(assistant).toBeDefined();
+    const blocks = JSON.parse(String(assistant?.content)) as Array<{
+      tool?: {
+        id?: string;
+        subagentLifecycle?: { status?: string; startedAt?: number; finishedAt?: number };
+        subagentCalls?: Array<{ isLoading?: boolean }>;
+      };
+    }>;
+    const card = blocks.find(block => block.tool?.id === 'spawn-card')?.tool;
+    expect(card?.subagentLifecycle).toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
+    expect(card?.subagentCalls?.every(call => call.isLoading === false)).toBe(true);
+    expect(broadcastEvents.filter(event => event.event === 'chat:subagent-status').map(event => (
+      (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
+    ))).toEqual(expect.arrayContaining(['running', 'completed']));
+  });
+
+  it('persists terminal-before-parent lifecycle when root flush materializes the card', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'root reply', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-pending-parent';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate'), 'pending parent admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card-pending',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-pending',
+      status: 'running',
+      observedAt: 100,
+    });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-pending',
+      status: 'completed',
+      observedAt: 300,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+      .filter(message => message.role === 'assistant').at(-1);
+    const blocks = JSON.parse(String(assistant?.content)) as Array<{
+      tool?: {
+        id?: string;
+        subagentLifecycle?: { status?: string; startedAt?: number; finishedAt?: number };
+      };
+    }>;
+    expect(blocks.find(block => block.tool?.id === 'spawn-card-pending')?.tool?.subagentLifecycle)
+      .toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
+  });
+
+  it('fails a missing child terminal live before discarding a failed root partial assistant', async () => {
+    const harness = await createHarness([
+      { kind: 'failure', error: 'root failed', partialText: 'partial', completeDelayMs: 50 },
+    ]);
+    const sessionId = 'session-subagent-lifecycle-failure';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'delegate and fail'));
+    await waitFor(() => harness.runtime.sentMessages.includes('delegate and fail'), 'failed subagent turn admission');
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'spawn-card-failed',
+      toolName: 'CollabAgent',
+      input: { tool: 'spawnAgent' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'spawn-card-failed' });
+    harness.runtime.emitForTest({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'spawn-card-failed',
+      status: 'running',
+      observedAt: 100,
+    });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const statuses = broadcastEvents.filter(event => event.event === 'chat:subagent-status').map(event => (
+      (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
+    ));
+    expect(statuses).toEqual(expect.arrayContaining(['running', 'failed']));
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages
+      .some(message => message.role === 'assistant')).toBe(false);
+  });
+
   it('advances durable activity at external admission and terminal finalization', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'meaningful result', completeDelayMs: 60 },

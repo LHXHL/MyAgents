@@ -41,6 +41,8 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/admin/goal/update', 'session'],
     ['POST', '/api/admin/task/create-attached', 'session'],
     ['POST', '/api/admin/status', 'common'],
+    ['POST', '/api/admin/anydoc/convert', 'common'],
+    ['POST', '/api/admin/anydoc/status', 'common'],
     ['POST', '/api/admin/reload', 'session'],
     ['POST', '/api/admin/task/run', 'common'],
     ['POST', '/api/admin/mcp/remove', 'common'],

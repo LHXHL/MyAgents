@@ -175,8 +175,8 @@ Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-i
 
 Agent identity 是所有 Project 的必备底层事实，不等同于主动 Agent 开关：
 `Project.agentId → AgentConfig.id` 是配置 selector，`Project.path` 是 Project-backed
-当前工作区，`enabled=false` 只关闭 Channel、heartbeat、memory auto-update 等主动能力，
-不影响显式 addressability 或普通工作区使用。Renderer
+当前工作区，`enabled=false` 只关闭 Heartbeat、Memory Update、Memory Evo 三项主动能力，
+不关闭由 `channel.enabled` 独立控制的 Channel，也不影响显式 addressability 或普通工作区使用。Renderer
 birth/repair 与 Node discovery 都复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure
 policy，并在 `agent-config-intent.lock` 内按 Project-first 顺序提交：先落
 `Project.agentId`，再以同一 ID 幂等补建不含 `workspacePath` 的 Agent。有效 ID 不按
@@ -463,6 +463,16 @@ MyAgents CLI 同时承载两类“工具”：
 - 用户注册 CLI 工具：用户通过 `myagents tool add` 注册的自定义 Agent-CLI 工具，受实验室开关控制，并通过 registry 注入新 session prompt。
 
 `vision` 的开关语义与 MCP 类似：设置页全局启用后，对话内工具菜单还可以做 session 级启用；实际可用性还要求「设置 → 工具箱」中选择了支持图片输入的模型。`vision analyze` 只接受当前 workspace 内的本地图片路径；`--prompt` 用于短指令，`--prompt-file` 用于长/多行指令，但同样只按当前 workspace 解析，拒绝 URL、symlink 与逃逸路径。
+
+#### `myagents anydoc` 本地文档转换
+
+AnyDoc 是官方稳定命令组，不属于 MCP，也不受用户 CLI 工具注册表开关控制。公开 surface 固定为 `convert/status/wait/cancel/list`：Rust backend 始终异步；`convert --wait` 与独立 `wait` 只是 CLI 对 `status` 的有界退避轮询，不新增 Rust wait endpoint。`--output` 是输出根目录，最终 artifact 固定为 `<output-root>/<job-id>/document.md`；省略时 Sidecar 注入自己的 authoritative current Workspace，CLI 不得提交伪造的 workspace 字段。
+
+Human output 以 Rust 查询时派生的 `output.artifactAvailable` 为产物真值：只有它为 `true` 才显示 `documentPath`；终态无产物明确显示 `Document: unavailable` / `(no artifact)`，queued/running list 项显示 `(pending)`。`stage` 只描述活跃 job 的当前处理进度，终态不再展示内部提交阶段 `finalizing`。JSON mode 保持完整 wire contract，accepted receipt 仍可把预留路径标为 `Output when ready`，但它不是 artifact 已存在的声明。
+
+调用链为 app bundle CLI → 当前 Sidecar `/api/admin/anydoc/*` → Rust Management API `/api/document/*` → App-owned `DocumentProcessingManager`。Admin handler 必须保持薄转发，并用 `wrapMgmtResponse()` 保留 Rust 的 `code/suggestion/recoveryHint`。`wait` 复用 `anydoc/status` Admin route；Ctrl-C 只结束本地轮询并退出 130，不取消 App job。
+
+Agent 使用说明由 required system Skill `/myagents-anydoc` 渐进加载；`myagents-cli` 只在正文速查中登记 `myagents anydoc --help` 与专属 Skill，不复制协议，且其 frontmatter description 不得出现 AnyDoc。AnyDoc 不进入 `system-prompt-cli-tools.ts` 的 always-on 内容。当前参数、退出码和恢复指引以逐级 exact `--help` 为二进制权威，不提供 `readme` 命令。底层 owner、资源和安全契约见 [`document_processing.md`](./document_processing.md)。
 
 ### CLI 工具注册表实验门控
 

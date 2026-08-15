@@ -148,4 +148,27 @@ describe('GlobalSkillsPanel required skill controls', () => {
     expect(screen.queryByRole('button', { name: /修复/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: '在文件夹中显示' })).toHaveLength(2);
   });
+
+  it('invalidates mounted project capability snapshots after creating a global Command', async () => {
+    const changed = vi.fn();
+    window.addEventListener('project-capabilities-changed', changed);
+    try {
+      render(<GlobalSkillsPanel />);
+      const newButtons = await screen.findAllByRole('button', { name: /New|新建/ });
+      fireEvent.click(newButtons.at(-1)!);
+
+      const inputs = await screen.findAllByRole('textbox');
+      fireEvent.change(inputs[0]!, { target: { value: '中文 总结' } });
+      fireEvent.click(screen.getByRole('button', { name: /Create|创建/ }));
+
+      await waitFor(() => expect(apiMocks.post).toHaveBeenCalledWith('/api/command-item/create', {
+        name: '中文 总结',
+        scope: 'user',
+        description: undefined,
+      }));
+      await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    } finally {
+      window.removeEventListener('project-capabilities-changed', changed);
+    }
+  });
 });

@@ -4,7 +4,7 @@
 
 ## Session ID
 
-每个 Session 由一个 UUID v4 标识，作为消息存储、前端展示、SDK 上下文恢复的统一 key。SDK 通过 `query({ sessionId })` 接收并使用此 UUID 作为它内部的 session_id，两端 ID 始终一致。
+每个 Product Session 由一个稳定 ID 标识，拥有消息存储、前端展示、Tab/Sidecar scope、title 与 config。Claude Agent SDK 另有 execution identity：普通新会话两者通常相同，但 Rewind 或 provider history 边界可以只把 `sdkSessionId` 从 S1 换成 S2，Product Session A 始终不变。
 
 ### 数据结构
 
@@ -15,8 +15,8 @@ interface SessionMetadata {
     title: string;
     createdAt: string;
     lastActiveAt: string;
-    sdkSessionId?: string;      // SDK session_id（统一架构下 === id）
-    unifiedSession?: boolean;   // true = 当前架构创建
+    sdkSessionId?: string;      // exact SDK create/resume candidate；不证明 transcript 已存在
+    unifiedSession?: boolean;   // legacy birth marker；true 时缺省 SDK candidate 为 id
     stats?: SessionStats;
     cronTaskId?: string;
     runtime?: RuntimeType;      // 'builtin' | 'claude-code' | 'codex' | 'gemini'
@@ -51,6 +51,8 @@ interface SessionStats {
     totalCacheCreationTokens?: number;
 }
 ```
+
+`id` 与 `sdkSessionId` 不能相互代写。Product owner 决定 A 的创建、持久化、Tab/Sidecar 绑定和释放；builtin lifecycle 只决定 SDK candidate S 的 create/resume。启动时先 probe `sdkSessionId ?? (unifiedSession ? id : undefined)`：有 SDK transcript 才 resume；空结果用同一 candidate fresh create；probe error 拒绝启动。禁止把 candidate 字段当作“必然可 resume”，也禁止 probe 失败后回退到 Product id 或随机 S3。
 
 `configSnapshotAt` 是配置权威边界：存在时，session snapshot 拥有当前会话配置；缺字段不是“自动读 Agent 默认值”的许可。Agent/Project 只作为新 session 模板、legacy/no-snapshot 兼容源、以及 IM 无 Tab owner live-follow 源。
 
@@ -87,11 +89,11 @@ SDK 约束：`sessionId` 和 `resume` 参数不能同时传递。
 querySession = query({
     prompt: messageGenerator(),
     options: {
-        // 新 session：传 sessionId 让 SDK 使用我们的 UUID
+        // fresh SDK：传已持久化的 exact SDK candidate（不必等于 Product id）
         // 历史 session：传 resume 恢复对话上下文
         ...(resumeFrom
             ? { resume: resumeFrom }
-            : { sessionId: sessionId }
+            : { sessionId: effectiveSdkSessionId }
         ),
         // 可选：rewind 截断点（与 resume 配合）
         ...(rewindResumeAt
@@ -410,7 +412,7 @@ let sessionRegistered = false;
 ```
 
 - `true` —— SDK 已持久化此 session，后续只能用 `resume` 访问
-- `false` —— SDK 未注册，可以用 `sessionId` 创建新 session
+- `false` —— SDK transcript 未证明存在；用 metadata 的 exact SDK candidate 创建，不回退生成其它 identity
 
 system-init 事件中验证 SDK 确认使用了我们的 UUID：
 ```typescript
@@ -455,7 +457,7 @@ if (sdkMessage.uuid) {
 | 追加 | SDK 返回 assistant / user 消息时 |
 | 校验 | rewind / fork 时判断 UUID 是否属于当前 session |
 
-**新鲜度规则**：若 `lastAssistantUuid ∉ currentSessionUuids`（旧 UUID，来自其他 session），rewind 拒绝使用 `resumeSessionAt`，改为新建 session。
+**新鲜度规则**：若 `lastAssistantUuid ∉ currentSessionUuids`，它不能直接证明 SDK transcript 已失效。已注册 SDK session 只放弃 stale anchor 并裸 resume；确实没有可用 anchor / binding 时，Product Session 不变，只持久化 fresh `sdkSessionId`。
 
 `currentSessionUuids` 是 MyAgents 侧的 freshness cache，不是 SDK transcript 权威。
 从磁盘 seed 的 UUID 只能说明 MyAgents store 里存在过该身份；它可用于避免明显
@@ -466,6 +468,12 @@ stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SD
 `rewindFiles()` 的 `skippedLinks` 表示 SDK 因 symlink / hard link / 非普通文件安全检查
 而没有恢复的文件数。对话截断仍可成功，但该计数必须沿既有 `/chat/rewind` 返回契约
 传到 Chat warning，不能把部分文件回溯展示成完整成功；文件路径不进入通知或日志。
+
+### Builtin Rewind 的 identity 与崩溃恢复（0.4.9）
+
+Builtin Rewind 有两条合法路径：SDK anchor 可用时，Product A 与 SDK S1 都不变，只把 `resumeSessionAt` 指向目标前的 assistant；SDK history 不可用时，JSONL 仍在 Product A 下截断，只把 execution binding 从 S1 换成 fresh S2。`setCurrentProductSessionId()`、`clearMessages()`、`resetTranscriptPersistenceForSession()` 与 lazy materialization 都不属于这条路径。
+
+第二条路径同时改变 A 的 JSONL 与 `SessionMetadata.sdkSessionId`，所以 `commitBuiltinConversationRewind()` 使用现有 per-Session lock 和 metadata 内的 bounded intent：`{schemaVersion:1,kind:'builtin-rewind',sourceSdkSessionId,replacementSdkSessionId,sourceMessageCount,targetMessageCount}`。先写 intent，再原子替换 JSONL，最后写 S2、清 intent/usage/context 并重算 stats/preview。恢复只接受 source count（保留 S1、清 intent）或 target count（完成 S2）；count 或 source binding 不匹配时保留证据并拒绝启动。它与 Codex intent 是一个 discriminated union，但不是通用 journal、数据库事务或 renderer 补偿协议。
 
 ### Codex root turn 锚点与可恢复 Rewind（0.4.5）
 
@@ -573,7 +581,7 @@ await withSessionFileLock(sessionId, async () => {
 
 JSONL append / atomic replace 是 transcript 的 durability commit point；`sessions.json.stats` 与 preview 等 metadata 是派生投影，后续更新失败只能告警，调用方不得回滚已经落盘的消息。若 append 抛错，SessionStore 在锁内只接受三种可证明状态：旧 EOF 未变、完整 expected suffix 已提交、或 expected suffix 的严格前缀（截回旧 EOF）；其它状态返回 storage consistency error 并使 cursor 失效。Builtin direct 与 turn-boundary user surface 必须在 SDK dispatch 前完成持久化；失败回滚通过 `builtin-admission-rollback` 命名 mutation 先提交 durable target，再撤回 UI/live row，不存在 full-rewrite latch。
 
-缩短/删除不是普通 append 的选项。`mutateSessionTranscript()` 接受 cursor 与 `builtin-rewind`、`sdk-retraction`、`builtin-admission-rollback`、`builtin-transient-retry`、`external-retry` 或 `external-rejected-message` intent，在同一锁内严格读取 durable rows、验证 metadata/cursor/operation 参数、从 source 派生 target 并 temp+rename；`sdk-retraction` 按 durable `sdkUuid` 删除命名 rows，仅允许用 exact message id 额外删除当前 open streaming tail。malformed source 一律拒绝。legacy JSON 迁移先 temp+rename 原子发布 JSONL，成功后才删除 legacy 文件；任何失败保留 source 并向 owner 报错。Builtin/external fork 在写入前验证 target transcript 为空，不能把分支追加到已有历史。Codex rewind 的 transcript 与 native binding 仍由 `commitCodexConversationRewind()` 的 recoverable composite intent 独占。
+缩短/删除不是普通 append 的选项。`mutateSessionTranscript()` 接受 cursor 与 `builtin-rewind`、`sdk-retraction`、`builtin-admission-rollback`、`builtin-transient-retry`、`external-retry` 或 `external-rejected-message` intent，在同一锁内严格读取 durable rows、验证 metadata/cursor/operation 参数、从 source 派生 target 并 temp+rename；`sdk-retraction` 按 durable `sdkUuid` 删除命名 rows，仅允许用 exact message id 额外删除当前 open streaming tail。malformed source 一律拒绝。legacy JSON 迁移先 temp+rename 原子发布 JSONL，成功后才删除 legacy 文件；任何失败保留 source 并向 owner 报错。Builtin/external fork 在写入前验证 target transcript 为空，不能把分支追加到已有历史。只改 transcript 的 builtin rewind 走命名 mutation；同时更换 binding 时走 `commitBuiltinConversationRewind()`；Codex 对应走 `commitCodexConversationRewind()`。两者共用 bounded intent 形状与恢复原则，不抽象成通用事务系统。
 
 ### 损坏行容错
 

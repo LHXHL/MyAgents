@@ -72,10 +72,6 @@ MyAgents executable，再由 `src-tauri/src/cli.rs` 同时定位上面的 bundle
 HOME 不保存 CLI 业务脚本，也不使用系统 Node fallback；bundle 资源缺失会在 Sidecar
 admission 前 fail closed。
 
-注：v0.2.0+ 起 `agent-browser` 不再 bundle —— 改由 bundled-skills/agent-browser/SKILL.md
-教 AI 在首次使用时通过命令级 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_PREFIX" npm install -g agent-browser@<pinned>`
-自装到 `~/.myagents/npm-global/bin/`。`buildClaudeSessionEnv` 只暴露
-`MYAGENTS_NPM_GLOBAL_PREFIX`，不把 `npm_config_prefix` 泄漏到整个 SDK shell env。
 ```
 
 ## 运行时路径工具 (`src/server/utils/runtime.ts`)

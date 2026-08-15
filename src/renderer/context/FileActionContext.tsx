@@ -62,6 +62,16 @@ interface FileMenuState {
   displayPath: string;
   contextIdentity: string;
   initialLineNumber?: number;
+  zIndex?: number;
+}
+
+export interface FileActionMenuOptions {
+  displayPath?: string;
+  /** Render above the caller's host overlay when the menu is nested. */
+  zIndex?: number;
+  /** Lifecycle callbacks describe the standard menu surface, not its actions. */
+  onOpen?: () => void;
+  onClose?: () => void;
 }
 
 export interface FileActionContextValue {
@@ -80,8 +90,8 @@ export interface FileActionContextValue {
     x: number,
     y: number,
     target: FileActionTarget,
-    options?: { displayPath?: string },
-  ) => void;
+    options?: FileActionMenuOptions,
+  ) => () => void;
   /** Execute the target's primary action. Previewable files open internally,
    *  workspace directories reveal in the tree, and unsupported targets report
    *  a non-destructive hint instead of launching an OS application. */
@@ -208,6 +218,15 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
   toastRef.current = toast;
 
   const [menuState, setMenuState] = useState<FileMenuState | null>(null);
+  const menuCloseCallbackRef = useRef<(() => void) | null>(null);
+  const menuIntentIdRef = useRef(0);
+  const closeMenu = useCallback(() => {
+    menuIntentIdRef.current += 1;
+    setMenuState(null);
+    const onClose = menuCloseCallbackRef.current;
+    menuCloseCallbackRef.current = null;
+    onClose?.();
+  }, []);
 
   // Stabilise callbacks via refs
   const onInsertReferenceRef = useRef(onInsertReference);
@@ -306,7 +325,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
     cacheGenerationRef.current += 1;
     pathCacheRef.current.clear();
-    setMenuState(null);
+    closeMenu();
     const currentPrefix = `${cacheContextIdentity}\0`;
     for (const key of pendingTargetsRef.current.keys()) {
       if (!key.startsWith(currentPrefix)) pendingTargetsRef.current.delete(key);
@@ -335,7 +354,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       }
     }
     setCacheVersion(v => v + 1);
-  }, [cacheContextIdentity]);
+  }, [cacheContextIdentity, closeMenu]);
 
   // Clean up batch timer on unmount
   useEffect(() => {
@@ -517,8 +536,15 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     path: string,
     pathType: 'file' | 'dir',
     displayPath?: string,
-    options?: { scope?: FileActionScope; initialLineNumber?: number },
+    options?: {
+      scope?: FileActionScope;
+      initialLineNumber?: number;
+      zIndex?: number;
+      onOpen?: () => void;
+      onClose?: () => void;
+    },
   ) => {
+    menuCloseCallbackRef.current = options?.onClose ?? null;
     setMenuState({
       x,
       y,
@@ -528,10 +554,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       displayPath: displayPath ?? path,
       contextIdentity: cacheContextIdentityRef.current,
       initialLineNumber: options?.initialLineNumber,
+      zIndex: options?.zIndex,
     });
+    options?.onOpen?.();
   }, []);
-
-  const closeMenu = useCallback(() => setMenuState(null), []);
 
   // ---------- Preview state ----------
   const [previewFile, setPreviewFile] = useState<{
@@ -544,11 +570,14 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     richDocKind?: RichDocKind;
     initialLineNumber?: number;
     focusTarget?: FilePreviewFocusTarget;
+    requestId: number;
     isLoading: boolean;
     error: string | null;
   } | null>(null);
 
   const previewFocusRequestIdRef = useRef(0);
+  const previewRequestIdRef = useRef(0);
+  const openTargetIntentIdRef = useRef(0);
 
   const createFocusTarget = useCallback((lineNumber?: number) => {
     if (!lineNumber) return undefined;
@@ -592,6 +621,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     const fileName = targetFileName(path);
     const svc = fileServiceRef.current;
     if (scope === 'workspace' && !svc.isAvailable) return false;
+    const requestId = ++previewRequestIdRef.current;
     const focusTarget = createFocusTarget(options?.initialLineNumber);
     const localPath = scope === 'local' ? path : undefined;
     const workspaceForLocal = workspacePath;
@@ -612,7 +642,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       if (onFilePreviewExternalRef.current) {
         onFilePreviewExternalRef.current(fileData);
       } else {
-        setPreviewFile({ ...fileData, isLoading: false, error: null });
+        setPreviewFile({ ...fileData, requestId, isLoading: false, error: null });
       }
       return true;
     }
@@ -626,10 +656,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
           const resp = scope === 'local'
             ? await svc.downloadLocalFile({ fullPath: path, workspace: workspaceForLocal })
             : await svc.downloadFile({ path });
-          if (!isMountedRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
           openImagePreview(`data:${resp.mimeType};base64,${resp.data}`, resp.name || fileName);
         } catch (err) {
-          if (!isMountedRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
           invalidateTarget({ scope, path });
           console.error('[FileAction] Failed to load image:', err);
           toastRef.current?.error(t('fileActions.imageLoadFailed'));
@@ -647,7 +677,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
           const resp = scope === 'local'
             ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
             : await svc.readPreview({ path });
-          if (!isMountedRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
           onFilePreviewExternalRef.current?.({
             name: resp.name,
             content: resp.content,
@@ -659,7 +689,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
             focusTarget,
           });
         } catch (err) {
-          if (!isMountedRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
           invalidateTarget({ scope, path });
           console.error('[FileAction] Failed to load preview:', err);
           toastRef.current?.error(t('fileActions.previewLoadFailed'));
@@ -672,6 +702,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
             localPath,
             initialLineNumber: options?.initialLineNumber,
             focusTarget,
+            requestId,
             isLoading: false,
             error: err instanceof Error ? err.message : 'Failed to load file',
           });
@@ -690,6 +721,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       localPath,
       initialLineNumber: options?.initialLineNumber,
       focusTarget,
+      requestId,
       isLoading: true,
       error: null,
     });
@@ -699,17 +731,17 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         const resp = scope === 'local'
           ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
           : await svc.readPreview({ path });
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
         setPreviewFile(prev => (
-          prev?.path === path && prev.sourceScope === scope
+          prev?.requestId === requestId
             ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false }
             : prev
         ));
       } catch (err) {
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
         invalidateTarget({ scope, path });
         setPreviewFile(prev => (
-          prev?.path === path && prev.sourceScope === scope
+          prev?.requestId === requestId
             ? { ...prev, isLoading: false, error: err instanceof Error ? err.message : 'Failed to load file' }
             : prev
         ));
@@ -717,6 +749,21 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     })();
     return true;
   }, [createFocusTarget, invalidateTarget, openImagePreview, t, workspacePath]);
+
+  const handleChatPreviewIntent = useCallback((
+    path: string,
+    options?: { initialLineNumber?: number; scope?: FileActionScope },
+  ): boolean => {
+    const scope = options?.scope ?? 'workspace';
+    if (
+      menuProfile === 'default' &&
+      scope === 'workspace' &&
+      onRevealInTreeRef.current
+    ) {
+      onRevealInTreeRef.current(path);
+    }
+    return handlePreview(path, options);
+  }, [handlePreview, menuProfile]);
 
   const getTargetPathInfo = useCallback(async (target: FileActionTarget): Promise<PathInfo | null> => {
     try {
@@ -782,9 +829,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     target: FileActionTarget,
     options?: { displayPath?: string; forceExternal?: boolean },
   ): void => {
+    const intentId = ++openTargetIntentIdRef.current;
     void (async () => {
       const result = await revalidateTarget(target);
-      if (!result.current) return;
+      if (!result.current || intentId !== openTargetIntentIdRef.current) return;
       const pathInfo = result.info;
       if (!pathInfo?.exists) {
         toastRef.current?.error(t('fileActions.targetUnavailable'));
@@ -816,7 +864,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         }
       }
 
-      if (handlePreview(target.path, {
+      if (handleChatPreviewIntent(target.path, {
         initialLineNumber: target.initialLineNumber,
         scope: target.scope,
       })) {
@@ -825,17 +873,22 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
       toastRef.current?.info(t('fileActions.previewUnsupported'));
     })();
-  }, [handlePreview, menuProfile, openTargetWithDefault, revalidateTarget, t]);
+  }, [handleChatPreviewIntent, menuProfile, openTargetWithDefault, revalidateTarget, t]);
 
   const openFileTargetMenu = useCallback((
     x: number,
     y: number,
     target: FileActionTarget,
-    options?: { displayPath?: string },
-  ): void => {
+    options?: FileActionMenuOptions,
+  ): (() => void) => {
+    // Replace an already-open menu before the next target's async revalidation.
+    // Otherwise keyboard activation can leave stale actions usable while the
+    // newer menu intent is pending.
+    closeMenu();
+    const intentId = ++menuIntentIdRef.current;
     void (async () => {
       const result = await revalidateTarget(target);
-      if (!result.current) return;
+      if (!result.current || intentId !== menuIntentIdRef.current) return;
       const pathInfo = result.info;
       if (!pathInfo?.exists) {
         toastRef.current?.error(t('fileActions.targetUnavailable'));
@@ -844,9 +897,16 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       showFileMenu(x, y, target.path, pathInfo.type, options?.displayPath, {
         scope: target.scope,
         initialLineNumber: target.initialLineNumber,
+        zIndex: options?.zIndex,
+        onOpen: options?.onOpen,
+        onClose: options?.onClose,
       });
     })();
-  }, [revalidateTarget, showFileMenu, t]);
+    return () => {
+      if (intentId !== menuIntentIdRef.current) return;
+      closeMenu();
+    };
+  }, [closeMenu, revalidateTarget, showFileMenu, t]);
 
   const openFileLink = useCallback((href: string, options?: { forceExternal?: boolean }): boolean => {
     const target = resolveFileLinkTarget(href, workspacePath);
@@ -969,7 +1029,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         label: t('fileActions.preview'),
         icon: <Eye className="h-4 w-4" />,
         disabled: !canPreview,
-        onClick: () => handlePreview(path, { scope, initialLineNumber }),
+        onClick: () => openFileTarget(
+          initialLineNumber ? { scope, path, initialLineNumber } : { scope, path },
+          { displayPath },
+        ),
       });
     }
 
@@ -1008,7 +1071,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     }
 
     return items;
-  }, [cacheContextIdentity, menuState, menuProfile, t, handlePreview, handleCopyPath, handleReference, handleOpenWithDefault, handleOpenInFinder, handleRevealInTree, handleOpenMyAgentsPreview]);
+  }, [cacheContextIdentity, menuState, menuProfile, t, openFileTarget, handleCopyPath, handleReference, handleOpenWithDefault, handleOpenInFinder, handleRevealInTree, handleOpenMyAgentsPreview]);
 
   // ---------- Context value ----------
   const contextValue = useMemo<FileActionContextValue>(() => ({
@@ -1038,6 +1101,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
             y={menuState.y}
             items={menuItems}
             onClose={closeMenu}
+            zIndex={menuState.zIndex}
           />
         )}
 
@@ -1060,7 +1124,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
               workspacePath={previewFile.sourceScope === 'local' ? null : workspacePath}
               initialLineNumber={previewFile.initialLineNumber}
               focusTarget={previewFile.focusTarget}
-              onClose={() => setPreviewFile(null)}
+              onClose={() => {
+                previewRequestIdRef.current += 1;
+                setPreviewFile(null);
+              }}
               onRenamed={(newPath, newName) => {
                 // Update local preview state so subsequent saves target the new
                 // location. The fs watcher refreshes the directory tree.

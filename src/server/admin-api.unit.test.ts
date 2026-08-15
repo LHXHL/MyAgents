@@ -185,6 +185,38 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('provides exact multi-level AnyDoc help without a readme command', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const group = String((handleHelp({ path: ['anydoc'] }).data as { text?: string })?.text ?? '');
+    expect(group).toContain('convert');
+    expect(group).toContain('status');
+    expect(group).toContain('wait');
+    expect(group).toContain('cancel');
+    expect(group).toContain('list');
+    expect(group.toLowerCase()).not.toContain('readme');
+
+    for (const leaf of ['convert', 'status', 'wait', 'cancel', 'list']) {
+      const text = String((handleHelp({ path: ['anydoc', leaf] }).data as { text?: string })?.text ?? '');
+      expect(text).toContain(`myagents anydoc ${leaf}`);
+      expect(text).toContain('WHEN TO CALL');
+      expect(text).toContain('EFFECT');
+      expect(text).toContain('OPTIONS');
+      expect(text).toContain('PATH / PASSWORD SAFETY');
+      expect(text).toContain('ASYNC / EXIT');
+      expect(text).toContain('OUTPUT');
+      expect(text).toContain('ERROR RECOVERY');
+    }
+    const convert = String((handleHelp({ path: ['anydoc', 'convert'] }).data as { text?: string })?.text ?? '');
+    expect(convert).toContain('shell history');
+    expect(convert).toContain('local process inspection');
+    expect(convert).toContain('Queue: 16 jobs');
+    expect(convert).toContain('Source: 512 MiB');
+    expect(convert).toContain('PDF: 500 pages');
+    expect(convert).toContain('Decoded image: 100 megapixels');
+    expect(convert).toContain('Published output: 128 MiB');
+    expect(convert).toContain('Job deadline: 30 minutes');
+  });
+
   it('documents dry-run on the exact mutation leaves that implement it', async () => {
     const { handleHelp } = await import('./admin-api');
     for (const path of [
@@ -476,6 +508,55 @@ describe('admin-api help registry', () => {
     expect(listText).toContain('--include-subtree <true|false>');
     expect(viewText).toContain('issue.goalId');
     expect(viewText).toContain('issue.goalPathLabel');
+  });
+});
+
+describe('admin-api AnyDoc forwarding', () => {
+  it('injects the Sidecar-owned Workspace and forwards the transient password only to Rust', async () => {
+    agentSessionMocks.agentDir = '/workspace/authoritative';
+    managementApiMocks.managementApi.mockResolvedValue({
+      ok: true,
+      job: { jobId: '20260815_7f3a91c2b6d4', state: 'queued' },
+    });
+    const { handleAnydocConvert } = await import('./admin-api');
+
+    const result = await handleAnydocConvert({
+      sourcePath: '/inputs/report.pdf',
+      outputRoot: '/outputs',
+      password: 'marker-secret',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/document/convert',
+      'POST',
+      {
+        sourcePath: '/inputs/report.pdf',
+        outputRoot: '/outputs',
+        password: 'marker-secret',
+        currentWorkspace: '/workspace/authoritative',
+      },
+    );
+    expect(result).toEqual({
+      success: true,
+      data: { job: { jobId: '20260815_7f3a91c2b6d4', state: 'queued' } },
+    });
+  });
+
+  it('keeps status/list read-only and cancel as the only lifecycle mutation', async () => {
+    const {
+      handleAnydocCancel,
+      handleAnydocList,
+      handleAnydocStatus,
+    } = await import('./admin-api');
+    await handleAnydocStatus({ jobId: '20260815_7f3a91c2b6d4' });
+    await handleAnydocList({ limit: 20 });
+    await handleAnydocCancel({ jobId: '20260815_7f3a91c2b6d4' });
+
+    expect(managementApiMocks.managementApi.mock.calls).toEqual([
+      ['/api/document/status?jobId=20260815_7f3a91c2b6d4'],
+      ['/api/document/list?limit=20'],
+      ['/api/document/cancel', 'POST', { jobId: '20260815_7f3a91c2b6d4' }],
+    ]);
   });
 });
 
@@ -3005,7 +3086,7 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
       key: 'enabled',
       value: false,
     })],
-  ])('%s persists disabled before stopping all Rust channel runtimes', async (_label, run) => {
+  ])('%s resets proactive children without stopping Channel runtimes', async (_label, run) => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{
         id: 'agent-disable',
@@ -3014,24 +3095,93 @@ describe('admin-api Agent runtime lifecycle convergence', () => {
         channels: [{ id: 'channel-1', type: 'openclaw:weixin', enabled: true }],
       }],
     });
-    let persistedEnabledAtStop: unknown;
-    managementApiMocks.managementApi.mockImplementation(async () => {
-      const agent = (readConfig().agents as Record<string, unknown>[])[0];
-      persistedEnabledAtStop = agent.enabled;
-      return { ok: true, stoppedChannels: 1 };
-    });
+    managementApiMocks.managementApi.mockResolvedValue({ ok: true });
     const api = await import('./admin-api');
 
     const result = await run(api);
 
     expect(result.success).toBe(true);
     expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
-      '/api/agent/stop-channels',
+      '/api/agent/reload-config',
       'POST',
-      { agentId: 'agent-disable' },
-      expect.any(Object),
+      expect.objectContaining({
+        agentId: 'agent-disable',
+        patch: expect.objectContaining({ enabled: false }),
+      }),
     );
-    expect(persistedEnabledAtStop).toBe(false);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalledWith(
+      '/api/agent/stop-channels',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    const agent = (readConfig().agents as Record<string, unknown>[])[0];
+    expect(agent).toMatchObject({
+      enabled: false,
+      heartbeat: { enabled: false },
+      memoryAutoUpdate: { enabled: false },
+      memoryEvolution: { enabled: false },
+      channels: [{ id: 'channel-1', enabled: true }],
+    });
+  });
+
+  it('returns failure when proactive config saves but runtime or managed tasks do not converge', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-reconcile-fails',
+        name: 'Reconcile Fails',
+        enabled: true,
+        channels: [],
+      }],
+    });
+    managementApiMocks.managementApi.mockResolvedValue({
+      ok: false,
+      error: 'managed task reconcile failed',
+    });
+    const { handleAgentDisable } = await import('./admin-api');
+
+    const result = await handleAgentDisable({ id: 'agent-reconcile-fails' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('managed task reconcile failed');
+    expect(result.data).toMatchObject({ configSaved: true });
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      enabled: false,
+      heartbeat: { enabled: false },
+      memoryAutoUpdate: { enabled: false },
+      memoryEvolution: { enabled: false },
+    });
+  });
+
+  it('agent enable resets all proactive children while preserving their settings', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-enable',
+        name: 'Enable',
+        enabled: false,
+        heartbeat: { enabled: false, intervalMinutes: 48 },
+        memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+        channels: [{ id: 'channel-off', type: 'telegram', enabled: false }],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-enable',
+      name: 'Enable',
+      path: '/tmp/enable',
+      agentId: 'agent-enable',
+    }]);
+    const { handleAgentEnable } = await import('./admin-api');
+
+    const result = await handleAgentEnable({ id: 'agent-enable' });
+
+    expect(result.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      enabled: true,
+      heartbeat: { enabled: true, intervalMinutes: 48 },
+      memoryAutoUpdate: { enabled: true, intervalHours: 24 },
+      memoryEvolution: { enabled: true, lastGardenerStatus: 'completed' },
+      channels: [{ id: 'channel-off', enabled: false }],
+    });
   });
 
   it('still converges runtime state when archiving an already-disabled Agent', async () => {
@@ -3179,7 +3329,7 @@ describe('admin-api Agent workspace archive', () => {
       agentId: 'agent-1',
       pinnedAt: '2026-07-01T00:00:00.000Z',
     }]);
-    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, stoppedChannels: 1 });
+    managementApiMocks.managementApi.mockResolvedValue({ ok: true, stoppedChannels: 1 });
 
     const result = await handleAgentArchive({ id: 'agent-1' });
 
@@ -3190,6 +3340,12 @@ describe('admin-api Agent workspace archive', () => {
     expect(projects[0].archivedAt).toEqual(expect.any(String));
     expect(projects[0].archivedAgentEnabledBeforeArchive).toBe(true);
     expect(projects[0]).not.toHaveProperty('pinnedAt');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      { agentId: 'agent-1', patch: { enabled: false } },
+      expect.any(Object),
+    );
     expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
       '/api/agent/stop-channels',
       'POST',
@@ -3213,7 +3369,10 @@ describe('admin-api Agent workspace archive', () => {
         name: 'Workspace',
         enabled: true,
         workspacePath: '/tmp/workspace',
-        channels: [],
+        heartbeat: { enabled: false, intervalMinutes: 48 },
+        memoryAutoUpdate: { enabled: true, intervalHours: 72 },
+        memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+        channels: [{ id: 'channel-1', type: 'telegram', enabled: true }],
       }],
     });
     writeJson(join(scratch, '.myagents', 'projects.json'), [{
@@ -3230,7 +3389,13 @@ describe('admin-api Agent workspace archive', () => {
 
     expect((await handleAgentUnarchive({ id: 'agent-1' })).success).toBe(true);
     const config = readConfig();
-    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(true);
+    expect((config.agents as Array<Record<string, unknown>>)[0]).toMatchObject({
+      enabled: true,
+      heartbeat: { enabled: false, intervalMinutes: 48 },
+      memoryAutoUpdate: { enabled: true, intervalHours: 72 },
+      memoryEvolution: { enabled: false, lastGardenerStatus: 'completed' },
+      channels: [{ id: 'channel-1', enabled: true }],
+    });
     projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
   });
@@ -3294,5 +3459,40 @@ describe('admin-api Agent workspace archive', () => {
     const projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
     expect(projects[0]).not.toHaveProperty('archivedAgentEnabledBeforeArchive');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      { agentId: 'agent-1', patch: { enabled: true } },
+      expect.any(Object),
+    );
+  });
+
+  it('reports projection failure after unarchive without hiding the saved lifecycle change', async () => {
+    const { handleAgentUnarchive } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: false,
+        workspacePath: '/tmp/workspace',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      archivedAt: '2026-07-03T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: false,
+    }]);
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'task store unavailable' });
+
+    const result = await handleAgentUnarchive({ id: 'agent-1' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('was unarchived');
+    const projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0]).not.toHaveProperty('archivedAt');
   });
 });

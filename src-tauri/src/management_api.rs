@@ -121,6 +121,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/trigger", post(trigger_cron_handler))
         .route("/api/cron/runs", get(runs_cron_handler))
         .route("/api/cron/status", get(status_cron_handler))
+        .route("/api/document/convert", post(document_convert_handler))
+        .route("/api/document/status", get(document_status_handler))
+        .route("/api/document/cancel", post(document_cancel_handler))
+        .route("/api/document/list", get(document_list_handler))
         .route("/api/goal/get", get(goal_get_handler))
         .route("/api/goal/create", post(goal_create_handler))
         .route("/api/goal/turn/claim", post(goal_turn_claim_handler))
@@ -3274,124 +3278,124 @@ fn space_result(result: Result<serde_json::Value, String>) -> Json<serde_json::V
 }
 
 async fn space_list_handler() -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_space_list().await)
+    space_result(crate::space_cloud::cli::space_cli_space_list().await)
 }
 
 async fn space_whoami_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliContextInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliContextInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_whoami(input).await)
+    space_result(crate::space_cloud::cli::space_cli_whoami(input).await)
 }
 
 async fn space_assignee_list_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliContextInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliContextInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_assignee_list(input).await)
+    space_result(crate::space_cloud::cli::space_cli_assignee_list(input).await)
 }
 
 async fn space_goal_list_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliGoalListInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliGoalListInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_goal_list(input).await)
+    space_result(crate::space_cloud::cli::space_cli_goal_list(input).await)
 }
 
 async fn space_issue_create_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueCreateInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueCreateInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_create(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_create(input).await)
 }
 
 async fn space_issue_update_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueUpdateInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueUpdateInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_update(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_update(input).await)
 }
 
 async fn space_issue_get_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueGetInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueGetInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_get(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_get(input).await)
 }
 
 async fn space_issue_list_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueListInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueListInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_list(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_list(input).await)
 }
 
 async fn space_issue_comment_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueCommentInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueCommentInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_comment(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_comment(input).await)
 }
 
 async fn space_issue_comments_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueCommentsInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueCommentsInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_comments(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_comments(input).await)
 }
 
 async fn space_issue_comment_get_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueCommentGetInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueCommentGetInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_comment_get(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_comment_get(input).await)
 }
 
 async fn space_issue_status_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueStatusInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueStatusInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_status(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_status(input).await)
 }
 
 async fn space_issue_claim_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueClaimInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueClaimInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_claim(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_claim(input).await)
 }
 
 async fn space_issue_close_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueActionInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_close(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_close(input).await)
 }
 
 async fn space_issue_complete_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueActionInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_complete(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_complete(input).await)
 }
 
 async fn space_issue_cancel_claim_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliIssueActionInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_cancel_claim(input).await)
+    space_result(crate::space_cloud::cli::space_cli_issue_cancel_claim(input).await)
 }
 
 async fn space_claim_local_task_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliClaimLocalTaskInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliClaimLocalTaskInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_claim_local_task(input).await)
+    space_result(crate::space_cloud::cli::space_cli_claim_local_task(input).await)
 }
 
 async fn space_attachment_download_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliAttachmentDownloadInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliAttachmentDownloadInput>,
 ) -> Json<serde_json::Value> {
-    match crate::space_cloud::space_cli_attachment_download(input).await {
+    match crate::space_cloud::cli::space_cli_attachment_download(input).await {
         Ok(data) => Json(serde_json::json!({ "ok": true, "data": data })),
         Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
 
 async fn space_attachment_add_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliAttachmentAddInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliAttachmentAddInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_attachment_add(input).await)
+    space_result(crate::space_cloud::cli::space_cli_attachment_add(input).await)
 }
 
 async fn space_attachment_inspect_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliAttachmentAddInput>,
+    Json(input): Json<crate::space_cloud::cli::SpaceCliAttachmentAddInput>,
 ) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_attachment_inspect(input).await)
+    space_result(crate::space_cloud::cli::space_cli_attachment_inspect(input).await)
 }
 
 // ========================================================================
@@ -3921,6 +3925,88 @@ async fn session_watch_handler(
     }))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentJobQuery {
+    job_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentListQuery {
+    limit: Option<usize>,
+}
+
+async fn document_convert_handler(
+    Json(request): Json<crate::document_processing::DocumentSubmitRequest>,
+) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.submit(request) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_status_handler(Query(query): Query<DocumentJobQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.get(&query.job_id) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_cancel_handler(Json(query): Json<DocumentJobQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.cancel(&query.job_id) {
+        Ok(job) => Json(serde_json::json!({ "ok": true, "job": job })),
+        Err(error) => document_error(error),
+    }
+}
+
+async fn document_list_handler(Query(query): Query<DocumentListQuery>) -> Json<serde_json::Value> {
+    let Some(manager) = crate::document_processing::global() else {
+        return document_manager_unavailable();
+    };
+    match manager.list(query.limit.unwrap_or(20)) {
+        Ok(items) => Json(serde_json::json!({
+            "ok": true,
+            "items": items,
+            "retentionDays": crate::document_processing::DOCUMENT_HISTORY_RETENTION_DAYS,
+        })),
+        Err(error) => document_error(error),
+    }
+}
+
+fn document_error(
+    error: crate::document_processing::DocumentServiceError,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "code": error.code,
+        "error": error.message,
+        "suggestion": error.suggestion,
+        "recoveryHint": error.recovery_hint,
+    }))
+}
+
+fn document_manager_unavailable() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "code": "DOCUMENT_MANAGER_UNAVAILABLE",
+        "error": "The document manager is unavailable.",
+        "suggestion": "Restart MyAgents and retry.",
+        "recoveryHint": {
+            "message": "Restart MyAgents and retry."
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4313,7 +4399,7 @@ mod tests {
             .to_string();
 
         let Json(comment_result) =
-            space_issue_comment_handler(Json(crate::space_cloud::SpaceCliIssueCommentInput {
+            space_issue_comment_handler(Json(crate::space_cloud::cli::SpaceCliIssueCommentInput {
                 issue_id: "iss_mock_004".to_string(),
                 body: "management api comment".to_string(),
                 space_slug: "official".to_string(),
@@ -4342,7 +4428,7 @@ mod tests {
             .expect("comment id")
             .to_string();
         let Json(exact_result) = space_issue_comment_get_handler(Json(
-            crate::space_cloud::SpaceCliIssueCommentGetInput {
+            crate::space_cloud::cli::SpaceCliIssueCommentGetInput {
                 issue_id: "iss_mock_004".to_string(),
                 comment_id,
                 space_slug: "official".to_string(),
@@ -4362,7 +4448,7 @@ mod tests {
         );
 
         let Json(detail_result) =
-            space_issue_get_handler(Json(crate::space_cloud::SpaceCliIssueGetInput {
+            space_issue_get_handler(Json(crate::space_cloud::cli::SpaceCliIssueGetInput {
                 issue_id: "iss_mock_004".to_string(),
                 space_slug: "official".to_string(),
                 session_id: None,

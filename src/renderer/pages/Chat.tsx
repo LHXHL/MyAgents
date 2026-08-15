@@ -52,6 +52,7 @@ import { useTabState, useTabActive } from '@/context/TabContext';
 import { useChatScrollController } from '@/hooks/useChatScrollController';
 import { useChatScrollModel } from '@/hooks/useChatScrollModel';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
+import { useProjectCapabilities } from '@/hooks/useProjectCapabilities';
 import { useSessionSurfaces, type ChannelSurface } from '@/hooks/useSessionSurfaces';
 import { resolveFloatingBallBoundSession } from '@/hooks/taskCenterStore';
 import { useConfig } from '@/hooks/useConfig';
@@ -1322,10 +1323,12 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
 
   // Enabled sub-agents for sidebar display
   const [enabledAgents, setEnabledAgents] = useState<Record<string, { description: string; prompt?: string; model?: string; scope?: 'user' | 'project'; folderName?: string }> | undefined>();
-  // Enabled skills/commands for sidebar display
-  const [enabledSkills, setEnabledSkills] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project'; folderName?: string }>>([]);
-  const [enabledCommands, setEnabledCommands] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project'; fileName?: string }>>([]);
-  const [globalSkillFolderNames, setGlobalSkillFolderNames] = useState<Set<string>>(new Set());
+  const {
+    enabledSkills,
+    enabledCommands,
+    globalSkillFolderNames,
+    loadSkillsAndCommands,
+  } = useProjectCapabilities(apiGet);
   // Initial tab for workspace config panel (set when opening from capabilities panel)
   const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<WorkspaceTab | undefined>();
   // Initial item selection — when set, WorkspaceConfigPanel opens already showing that item's detail.
@@ -1333,6 +1336,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   const workspaceCapabilitySlashCommands = useMemo<InputSlashCommand[]>(() => [
     ...enabledCommands.map(command => ({
       name: command.name,
+      invocationName: command.invocationName,
       description: command.description,
       source: 'custom' as const,
       scope: command.scope,
@@ -2533,40 +2537,6 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiGet, configPending, pushSessionConfig]);
 
-  // Load the authoritative enabled project capability snapshot. The settings
-  // page uses the same endpoint for all candidates; the sidebar projects only
-  // enabled winners from that shared source of truth.
-  const loadSkillsAndCommands = useCallback(async () => {
-    try {
-      const response = await apiGet<{
-        success: boolean;
-        skills?: Array<{ name: string; description: string; scope: 'user' | 'project'; folderName: string; enabled: boolean; origin?: 'global' | 'project' }>;
-        commands?: Array<{ name: string; description: string; scope: 'user' | 'project'; fileName: string; enabled?: boolean }>;
-      }>('/api/project-capabilities');
-      if (response.success) {
-        const skills = response.skills ?? [];
-        const commands = response.commands ?? [];
-        setEnabledSkills(skills.filter(item => item.enabled).map(item => ({
-          name: item.name,
-          description: item.description,
-          scope: item.scope,
-          folderName: item.folderName,
-        })));
-        setEnabledCommands(commands.filter(item => item.enabled !== false).map(item => ({
-          name: item.name,
-          description: item.description,
-          scope: item.scope,
-          fileName: item.fileName,
-        })));
-        setGlobalSkillFolderNames(new Set(
-          skills.filter(item => item.origin === 'global').map(item => item.folderName),
-        ));
-      }
-    } catch (err) {
-      console.error('[Chat] Failed to load skills/commands:', err);
-    }
-  }, [apiGet]);
-
   // Sync project skill to global
   const loadSkillsAndCommandsRef = useRef(loadSkillsAndCommands);
   loadSkillsAndCommandsRef.current = loadSkillsAndCommands;
@@ -2577,6 +2547,7 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
       if (res.success) {
         toastRef.current.success(t('shell.toasts.skillSyncedToGlobal'));
         loadSkillsAndCommandsRef.current();
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
       } else {
         toastRef.current.error(res.error || t('shell.toasts.syncFailed'));
       }
@@ -3396,14 +3367,14 @@ export default function Chat({ isWindowFocused, onNewSession, onOpenSession, onO
     setWorkspaceRefreshTrigger(prev => prev + 1);
   }, [isActive, refreshProviderData]);
 
-  // Listen for skill copy events to refresh DirectoryPanel (file tree shows .claude/skills/)
+  // Persisted capability mutations invalidate every mounted Tab snapshot.
   // Note: WorkspaceConfigPanel has its own event listener for internalRefreshKey
   useEffect(() => {
-    const handleSkillCopied = () => {
+    const handleCapabilitiesChanged = () => {
       setWorkspaceRefreshTrigger(k => k + 1);
     };
-    window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-    return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+    window.addEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
+    return () => window.removeEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
   }, []);
 
   // Workspace refresh on sidecar reconnect (mid-session crash recovery, Rust

@@ -131,6 +131,15 @@ echo -e "${BLUE}[准备] 准备 Rust toolchain / components...${NC}"
 echo -e "${GREEN}✓ Rust toolchain ready${NC}"
 echo ""
 
+DEV_DOCUMENT_TARGET="x86_64-apple-darwin"
+if [[ "$(uname -m)" == "arm64" || "$(uname -m)" == "aarch64" ]]; then
+    DEV_DOCUMENT_TARGET="aarch64-apple-darwin"
+fi
+echo -e "${BLUE}[准备] 准备离线文档转换资源 (${DEV_DOCUMENT_TARGET})...${NC}"
+node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$DEV_DOCUMENT_TARGET"
+echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
+echo ""
+
 # TypeScript 检查
 echo -e "${BLUE}[1/3] TypeScript 类型检查...${NC}"
 cd "${PROJECT_DIR}"

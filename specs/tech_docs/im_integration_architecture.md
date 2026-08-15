@@ -1099,7 +1099,11 @@ IM Bot 升级为 Agent 实体，Channel 为可插拔连接。新旧 Tauri Comman
 
 > 旧命令 `cmd_start_im_bot` 等已标 `@deprecated`，内部转发到新 Agent API。
 
-归档 Agent 工作区时，`Project.archivedAt` 是权威状态。Rust IM runtime 在 `cmd_start_agent_channel`、开机 `schedule_agent_auto_start()`、以及 `monitor_agent_channels()` 的缺失/异常频道重启路径都会读取 `projects.json`，跳过 archived workspace。CLI/Admin API 的 `agent archive`、`agent disable` 与 `agent set <id> enabled false` 会在 durable intent 落盘后通过 Management API `/api/agent/stop-channels` 立即停止已运行的 Channel；`agent channel remove` 则通过 `/api/agent/stop-channel` 收敛精确 runtime。Rust stop lifecycle 位于 `im/agent_channel.rs`，负责释放 Channel Sidecar owner、Plugin Bridge 与 plugin-use registry；整组停止同时锁住 durable 与 live Channel identity，因此会等待尚未发布进运行表的启动流程。`config:changed` 只负责配置刷新，不能替代资源释放。重复删除/禁用/归档必须仍然执行 stop，以修复历史上可能存在的 disk/live drift。
+Channel desired state 由 `channel.enabled` 持久化，运行准入统一检查 `channel.enabled && setup/credentials ready && workspace 未归档`。`agent.enabled` 只门控 Heartbeat、Memory Update、Memory Evo，不参与手动启动、开机 `schedule_agent_auto_start()`、`monitor_agent_channels()` 重启或投递候选选择；因此关闭主动 Agent 不会停止或重启 Channel。用户显式停止/启动 Channel 时仍由对称 helper 先持久化 `channel.enabled`，再收敛 runtime。
+
+归档 Agent 工作区时，`Project.archivedAt` 是权威状态。Rust IM runtime 在 `cmd_start_agent_channel`、auto-start 和 monitor 的缺失/异常频道重启路径都会读取 `projects.json`，跳过 archived workspace。CLI/Admin API 与 Renderer 的 archive lifecycle 会在 durable intent 落盘后复用 `/api/agent/reload-config` 收敛主动能力与 managed Task，并通过 `/api/agent/stop-channels` 立即停止已运行的 Channel，即使主动 Agent 原本已经关闭；unarchive 不改写 Channel desired state，enabled Channel 按自身状态恢复。Memory Evo managed Task 以持久化的 Project/workspace ID 精确回查 `Project.agentId`，workspace path 仅是执行目录，不参与 Agent 选择。`agent disable` / `agent set <id> enabled false` 只批量关闭 master 与三个主动能力子开关，不停止 Channel。`agent channel remove` 则通过 `/api/agent/stop-channel` 收敛精确 runtime。Rust stop lifecycle 位于 `im/agent_channel.rs`，负责释放 Channel Sidecar owner、Plugin Bridge 与 plugin-use registry；整组停止同时锁住 durable 与 live Channel identity，因此会等待尚未发布进运行表的启动流程。`config:changed` 只负责配置刷新，不能替代资源释放。重复删除或归档必须仍然执行 stop，以修复历史上可能存在的 disk/live drift。
+
+一次性 `agentChannelIndependenceMigrationV1` 由 Rust config owner 在 Channel admission 前执行：marker 缺失时以迁移前的 `agent.enabled` 为源，把 Heartbeat、Memory Update、Memory Evo 三个子开关全部归一到同一值；master=false 时还会把历史 enabled Channel 设为 false，master=true 时保留各 Channel 状态。迁移在 config lock 内 re-read，复用 `.bak` 与原子写；畸形配置或写入失败不会写 marker，并让本次自动启动 fail closed，后续读取重试。marker 存在后不再覆盖用户后来对单项能力的调整。
 
 ### InteractionScenario 扩展
 
@@ -1160,15 +1164,18 @@ Mino 默认工作区的"文件内容模板"和 MyAgents 的"产品级 Agent 默�
 
 | 层 | 权威来源 | 职责 |
 |----|----------|------|
-| 文件内容模板 | `resources/mino/`（来自外部 Mino 模板仓库/打包资源） | 初始化工作区里的 Markdown、配置文件、示例内容 |
+| 文件内容模板 | 仓库 `bundled-workspaces/mino/` → 安装包 `resources/bundled-workspaces/mino/` | 初始化工作区里的 Markdown、配置文件、示例内容；复制后用户实例独立演化 |
 | 产品默认能力 | `src/shared/config-types.ts::PRESET_TEMPLATES[].agentDefaults` | 声明新建 builtin Mino project 时 Agent 是否默认开启，以及 heartbeat / memory 默认参数 |
 
 `Project` 会记录 `templateId` / `templateSource`。只有 `templateSource === 'builtin'` 且模板本身带 `agentDefaults` 时，`buildAgentForProject()` 才会把这些默认策略复制进 `AgentConfig`。用户模板即使复用了 `mino` 这个 id，也不会自动继承 builtin 默认能力。
 
+内置模板是当前 App 版本的只读发布资源。首次默认工作区、Bot 工作区、模板库创建及模板预览/应用必须共享同一个 bundled-template resolver；`~/.myagents/projects/mino` 是用户拥有的实例，不参与模板解析，也不会被 App 升级覆盖。
+
 关键不变式：
 - 新建 project / 启动补齐历史 project 的 Agent 配置必须走共享 reconciliation + `buildAgentForProject()`；在 `agent-config-intent.lock` 内先持久化 `Project.agentId`，再以同一 ID 创建 pathless Agent，避免 Launcher、ConfigProvider、migration 路径分叉与中断重复 birth。
 - `ensureAllProjectsHaveAgent()` 只负责保证每个 project 有一个基础 Agent；对 builtin Mino project 会应用 `agentDefaults`。只有所选或新建 Agent 已 enabled 时才把历史 projection `project.isAgent` 升为 `true`；disabled 不会强制设为 `true`，也不会清除旧值。
-- `agentDefaults.enabled = true` 只表示这个 workspace 的 Agent 能力默认打开；它不自动创建 Channel，也不绕过运行时门槛。
+- `agentDefaults.enabled = true` 只表示这个 workspace 的主动能力默认打开；它不自动创建 Channel，也不绕过运行时门槛。
 - `memoryAutoUpdate.enabled = true` 不要求 Mino 文件模板预置 `UPDATE_MEMORY.md`。自动更新真正执行时由 Rust `memory_update.rs` 在工作区根目录 ensure 该文件：已存在则读取用户内容；缺失则从 `src/shared/default-update-memory.md` 初始化默认指令。
-- Rust 启动 Channel / heartbeat 仍以 `agent.enabled && channel.enabled && credentials` 为准。没有 channel 或 credential 时不会产生外部 IM 连接。
+- Heartbeat、Memory Update、Memory Evo 分别以 `agent.enabled && child.enabled` 为 effective gate；master false 时即使外部写者留下 child=true 也不能执行。
+- Rust 启动 Channel 只以 `channel.enabled && setup/credentials ready && workspace 未归档` 为准。没有 Channel 或 credential 时不会产生外部 IM 连接；主动 Agent 关闭不影响已配置 Channel。
 - 后续如果要让用户模板也配置默认能力，需要新增用户可见的模板编辑能力和持久化 schema；不能把产品 builtin 默认值隐式套到 user template。

@@ -163,6 +163,7 @@ const SESSION_ADMIN_PREFIXES = ['goal/', 'session/'] as const;
 
 const COMMON_ADMIN_PREFIXES = [
   'agent/',
+  'anydoc/',
   'cc-plugin/',
   'config/',
   'cron/',

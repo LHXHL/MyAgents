@@ -53,10 +53,15 @@ import { isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
 import type { AgentStatusTodoSnapshot, Message, MessageAttachment, ContentBlock, ToolUseSimple, ToolInput, TaskStats, SubagentToolCall } from '@/types/chat';
 import type { ToolUse } from '@/types/stream';
 import type { SystemInitInfo } from '../../shared/types/system';
+import {
+    finalizeResidualSubagentCall,
+    type SubagentLifecycle,
+} from '../../shared/types/subagent-lifecycle';
 import type { ContextUsage } from '../../shared/types/context-usage';
 import type { TerminalReason } from '../../shared/terminalReason';
 import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
+import { applySubagentLifecycleToContent } from '@/components/tools/subagentActivity';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
@@ -376,6 +381,56 @@ function applySubagentCallsUpdate(
         }
     };
     return { ...msg, content: updated };
+}
+
+export function applySubagentLifecycleUpdate(
+    msg: Message,
+    parentToolUseId: string,
+    lifecycle: SubagentLifecycle,
+): Message | null {
+    if (msg.role !== 'assistant' || typeof msg.content === 'string') return null;
+    const content = applySubagentLifecycleToContent(msg.content, parentToolUseId, lifecycle);
+    if (!content) return null;
+    if (content === msg.content) return msg;
+    return { ...msg, content };
+}
+
+export function finalizeMessageSubagentProjection(
+    message: Message,
+    rootStatus: 'completed' | 'stopped' | 'failed',
+    observedAt = Date.now(),
+): Message {
+    if (message.role !== 'assistant' || typeof message.content === 'string') return message;
+    let changed = false;
+    const fallbackStatus = rootStatus === 'stopped' ? 'interrupted' : 'failed';
+    const content = message.content.map(block => {
+        if (block.type !== 'tool_use' || !block.tool?.subagentLifecycle) return block;
+        const tool = block.tool;
+        let lifecycle: SubagentLifecycle = block.tool.subagentLifecycle;
+        if (lifecycle.status === 'running') {
+            lifecycle = {
+                status: fallbackStatus,
+                startedAt: lifecycle.startedAt,
+                finishedAt: Math.max(lifecycle.startedAt, observedAt),
+            };
+            changed = true;
+        }
+        const subagentCalls = tool.subagentCalls?.map(call => {
+            const finalized = finalizeResidualSubagentCall(call, fallbackStatus);
+            if (finalized !== call) changed = true;
+            return finalized;
+        });
+        if (lifecycle === tool.subagentLifecycle && subagentCalls === tool.subagentCalls) return block;
+        return {
+            ...block,
+            tool: {
+                ...tool,
+                subagentLifecycle: lifecycle,
+                subagentCalls,
+            },
+        };
+    });
+    return changed ? { ...message, content } : message;
 }
 
 function replaceFinalSubagentToolInput(
@@ -1851,6 +1906,8 @@ export default function TabProvider({
                     };
                 }
             }
+
+            finalMsg = finalizeMessageSubagentProjection(finalMsg, status);
 
             finalMsg = applyAssistantCompletionPatch(finalMsg, completionPatch);
 
@@ -3379,6 +3436,28 @@ export default function TabProvider({
                         return { calls: updatedCalls };
                     }) ?? prev;
                 });
+                break;
+            }
+
+            case 'chat:subagent-status': {
+                const payload = data as {
+                    parentToolUseId: string;
+                    lifecycle: SubagentLifecycle;
+                };
+                setStreamingMessage(prev => (
+                    prev ? applySubagentLifecycleUpdate(
+                        prev,
+                        payload.parentToolUseId,
+                        payload.lifecycle,
+                    ) ?? prev : prev
+                ));
+                setHistoryMessages(prev => prev.map(message => (
+                    applySubagentLifecycleUpdate(
+                        message,
+                        payload.parentToolUseId,
+                        payload.lifecycle,
+                    ) ?? message
+                )));
                 break;
             }
 

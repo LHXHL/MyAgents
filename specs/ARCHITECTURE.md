@@ -21,7 +21,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 |------|------|
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
 | 桌面框架 | Tauri v2 (Rust) |
-| 后端 | Node.js v24 Sidecar（一个 Global + 每个 Session 一个）；Builtin Runtime 集成 Claude Agent SDK 0.3.220 |
+| 后端 | Node.js v24 Sidecar（一个 Global + 每个 Session 一个）；Builtin Runtime 集成 Claude Agent SDK 0.3.233 |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 拖拽 | @dnd-kit/sortable |
 
@@ -261,6 +261,7 @@ Global control request
 |------|------|--------|
 | `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
 | `/api/task/*`（20 条） | Task Center 任务 CRUD、run/run-now/rerun、Trigger validate/test/check-now/reset-checkpoint 与 doc 读写 | CLI、`admin-api.ts` |
+| `/api/document/*`（4 条） | App-owned 本地文档 conversion job submit/status/cancel/list | `admin-api.ts` 的 AnyDoc 薄转发 |
 | `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
 | `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model / MCP mutation |
 | `/api/runtime/sdk-child/{admit,settle}` | Rust-owned Claude SDK native child launch circuit；按 executable identity 限流 deterministic exec denial | Global / Session Sidecar 的 `createGuardedSdkQuery()` |
@@ -411,6 +412,14 @@ CLI 业务 bundle 只位于当前 app。由于 SDK 子进程与用户 shell 的 
 
 详见 `tech_docs/cli_architecture.md`。
 
+#### App-owned 本地文档转换
+
+`myagents anydoc` 是官方 CLI 工具，但转换状态不属于 CLI、Sidecar、Session 或 Runtime。Tauri App 内唯一的 `DocumentProcessingManager` 拥有全局有界 FIFO、30 天 job metadata、当前 Worker generation、取消、退出收敛和 artifact 发布；任意 Global / Session Sidecar 只经 Admin API → Management API 薄转发到同一个 owner。
+
+每个 job 使用一个独立 Rust `myagents-document-worker` 进程。Manager 通过 `process_cmd::spawn_tree()` 保留精确 `ChildTree`，用有界 length-prefixed JSON 私有协议传入单次任务；Worker 只读取 Manager 已复制的私有输入，并在输出根内的隐藏 staging 目录运行 AnyDoc、pdf-inspector、PDFium 与 PP-OCRv6 Small。成功后由 Manager 校验 active `(jobId, generation)` 与输出根 identity，以私有 crash-durable publish intent + 随目录 marker 协调同卷 no-replace rename、目录 sync 和 terminal `job.json`；未知持久化结果必须保留 intent。启动恢复只能由同一个 Manager owner 完成已 durable 的 success，或清理未提交 authenticated public path 后把非终态收敛为 `interrupted`。durable terminal 不可逆；artifact 发布后由用户拥有，删除/修改只影响派生 `artifactAvailable`。公开 artifact 固定为 `<output-root>/<job-id>/document.md` 和实际引用的 `assets/`。Worker crash、取消、超时或 App 退出均不得发布 partial artifact。
+
+ONNX Runtime CPU、PDFium、PP-OCRv6 Small 模型/字典和 Worker 按 target 随 App 资源发布；启动时 Manager 校验 manifest 和所有文件 hash，Worker 使用同一 manifest 再校验并只从绝对资源路径加载。运行时不联网，不依赖 GPT、API key、系统 Python/Node、GPU 或系统安装的 native runtime。详细状态机、限制、资源矩阵和排查见 [`tech_docs/document_processing.md`](./tech_docs/document_processing.md)。
+
 ### 5. 定时任务系统
 
 0.3.0 起，Task 是所有新定时自动化的唯一持久权威：
@@ -440,13 +449,15 @@ Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`
 ```
 Project (工作区)
   = path 权威 + stable agentId ──exact ID──> AgentConfig（执行默认）
-    └── enabled=true 时可开启主动能力（24h 感知与行动）
-        └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
+    ├── enabled=true 时可开启主动能力（Heartbeat / Memory Update / Memory Evo）
+    └── Channels: Telegram / Dingtalk / OpenClaw Plugin（飞书/微信/QQ 等）
 ```
 
-**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
+**模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板由仓库内 `bundled-workspaces/mino/` 拥有，并投影为安装包只读资源；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel。主动能力的 effective state 统一为 `agent.enabled && child.enabled`；Channel 的 effective state 独立为 `channel.enabled && setup/credentials ready && workspace 未归档`，不再读取 `agent.enabled`。模板只负责创建新工作区，复制后的用户实例不会被 App 升级覆盖，也不能在安装包资源缺失时反向充当模板。
 
-**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。`enabled` 只控制主动能力（Channel、heartbeat、memory auto-update），不控制显式 addressability 或普通工作区使用。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+**Agent identity 不变量**：每个 Project（含 `enabled=false` 与 hidden/internal）用 `Project.agentId → AgentConfig.id` 精确选择一个 stable Agent；`Project.path` 是 Project-backed UI、文件入口和新运行的当前 workspace authority。Memory Evo 的 managed Task 用 `Task.workspaceId → Project.agentId` 回到精确 Agent，workspace path 只作为实际执行目录，不能反向选择 Agent。`enabled` 只控制 Heartbeat、Memory Update、Memory Evo 三项主动能力，不控制 Channel、显式 addressability 或普通工作区使用。总开关是确定性的批量策略：每次开启/关闭都会把 master 与三个子开关一并设为相同值；之后仍可单独调整子开关。新 `AgentConfig` 不持久化 `workspacePath`；旧字段原样保留，只能由 compatibility raw-record adapter 在缺失/失效链接修复、历史 extra 关联或真 orphan runtime fallback 时读取。有效 ID 不因旧 path mismatch 被阻断或重绑；已有 Session 仍服从自己的 birth snapshot。
+
+**迁移与归档不变量**：`config.json.agentChannelIndependenceMigrationV1` 是 Rust config owner 管理的一次性 completion marker。marker 缺失时在 config lock 内按迁移前的 `agent.enabled` 归一三个子开关；仅当 master 为 false 时同时关闭历史 enabled Channel，避免升级后意外上线。迁移复用配置备份与原子写，失败时 marker 不落盘且 Channel admission fail closed。迁移完成后 Channel 与 master 永久解耦。`Project.archivedAt` 是独立的 lifecycle gate：归档停止运行中的 Channel 和后台能力，但不改写 Channel desired state 或三个子开关组合；取消归档后 enabled Channel 可按自身状态恢复。
 
 Project birth/repair 与 Agent-facing discovery 统一复用 `src/shared/agentWorkspaceIdentity.ts` 的 pure policy，并在既有 `agent-config-intent.lock` 下先提交 `Project.agentId`、再以同一 ID 幂等补建 pathless Agent；中断后复用 stale ID，不建立 repair journal 或跨文件补偿事务。重复 Project workspace、重复 Agent ID 仍是硬冲突；多个历史 Agent 命中同 workspace 时按持久化顺序只为缺失链接选择第一个，不覆盖有效链接。一个 Agent 被多个 Project 显式 claim 时只隔离相关目标，健康 Project 继续工作。历史 extra/orphan Agent 继续按 exact ID discovery/config/start，只有 exact `Project.agentId` claim 才能代表 Project 做 archive/unarchive/remove；`agent list` 只把 Project 选中的 Agent 标为 `isCurrent`。
 
@@ -549,7 +560,9 @@ Builtin Session 的 reset、legacy internal switch 与 stale-SDK recovery 都必
 
 Builtin `Query` 启动时由 `lifecycle.ts` 绑定 launch Product Session id 与 expected SDK Session id；abort 或 Query replacement 必须先同步 revoke 该 authority、清除该 Query 的 buffered control state。旧 Query 的后续 streamed event（包括 retraction/result）全部只可丢弃。streamed / pre-warm buffered `system_init` 只有在 authority 仍是当前 Query、Product binding 仍属于 launch/已完成 pending adoption 的 identity、且 `session_id` 精确等于 expected SDK id 时，才可更新 metadata 或执行 `pending-* → SDK UUID` adoption；adoption 在持有 transcript/index locks 的 commit point 再检查同一 authority。legacy Product id 与 SDK id 不同、以及非 UUID Product id 启动 fresh SDK UUID 时，Product id 保持不变，只更新其 `sdkSessionId`；不得把迟到事件解释成 real→real Product identity migration。
 
-Session transcript 的普通写入只接受 `SessionStore.loadSessionTranscript()` 签发的进程内 `TranscriptWriteCursor` 与新 tail；cursor 封装 durable file identity 和公开的 `persistedMessageCount`，Runtime 不另存 index/cache。短 live projection、stale cursor 或未知 append 结果不能触发 full rewrite；owner 必须重载 durable transcript并拒绝当前操作。rewind、retry、SDK retraction 与 admission rollback 通过 `mutateSessionTranscript()` 的命名 intent，在既有 per-Session lock 内从 durable rows 派生 target 后 temp+rename；SDK retraction 以 durable `sdkUuid` 为选择器，仅可额外删除明确传入的 open streaming tail id。legacy JSON 首次加载先原子发布 JSONL，失败保留 legacy source 并向调用方报错。Fork 只可写入空 target transcript，已有 target 一律冲突退出。Codex 的 transcript + native binding 仍使用既有 `commitCodexConversationRewind()` composite intent，不并入通用 mutation。
+Product Session identity 与 builtin SDK execution identity 是两个 lifecycle：前者拥有 Tab/Sidecar、JSONL、title/config 与所有产品事件 scope；后者只回答下一次 Claude SDK `query()` 应 create/resume 哪份 native transcript。两者在普通 birth 时可以相同，但 `sdkSessionId` 只是 exact SDK candidate，不是 transcript 已存在的证明。Builtin Rewind 无可用 SDK anchor、或 provider history 不兼容时，只给同一个 Product Session 持久化新的 `sdkSessionId`；禁止通过 `setCurrentProductSessionId()`、清空产品 transcript 或开启 lazy materialization 来表达执行层 fresh start。恢复时必须先 probe exact candidate：有 SDK transcript 才 `resume`，没有则用同一 candidate `sessionId` 创建，probe 异常 fail closed，不能退回 Product id 或再生成第三个 UUID。
+
+Session transcript 的普通写入只接受 `SessionStore.loadSessionTranscript()` 签发的进程内 `TranscriptWriteCursor` 与新 tail；cursor 封装 durable file identity 和公开的 `persistedMessageCount`，Runtime 不另存 index/cache。短 live projection、stale cursor 或未知 append 结果不能触发 full rewrite；owner 必须重载 durable transcript并拒绝当前操作。rewind、retry、SDK retraction 与 admission rollback 通过 `mutateSessionTranscript()` 的命名 intent，在既有 per-Session lock 内从 durable rows 派生 target 后 temp+rename；SDK retraction 以 durable `sdkUuid` 为选择器，仅可额外删除明确传入的 open streaming tail id。legacy JSON 首次加载先原子发布 JSONL，失败保留 legacy source 并向调用方报错。Fork 只可写入空 target transcript，已有 target 一律冲突退出。Builtin Rewind 若同时更换 SDK binding，则由 `commitBuiltinConversationRewind()` 复用同一 per-Session lock 与 metadata 中 bounded `pendingConversationMutation`，只接受 source/target 两个 message count 完成崩溃恢复；Codex 对应使用 `commitCodexConversationRewind()`。这两个显式 composite command 不扩展成通用事务层。
 
 **Builtin MCP soft pre-warm：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。初始 Query 或成功安装新 MCP map 时，`lifecycle.ts` 以 Query identity + generation + 单调 installed-map revision + runtime fingerprint 建立一次性 owner，并在 owner 上记录 `startedAt + deadlineAt`；默认预算只由 `session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 定义（当前 10 秒）。Desktop、IM 与 Cron / Goal / Heartbeat / Memory Update 等 injected turn 全部在 `messageGenerator()` promotion 后、live mutation fence 之后消费该 owner 的**剩余**预算。只有 `pending` 会继续等待；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期都把当前 generation 标为 degraded 并继续 AI turn。ready / degraded 都是 terminal one-shot，后续 turn 不再读 status、不开新 timer。用户取消仍立即取消 promotion；Query/map owner replacement 则 requeue 给 replacement generator，不能让旧 control response放行旧 Query。
 
@@ -578,13 +591,15 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `runtime-config.ts` | desired/live model、permission、reasoning effort state；snapshot/source guard integration |
 | `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、成功终态 commit 与 user-before-assistant delivery tail |
-| `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state |
+| `content-blocks.ts` | streaming text/thinking/tool/subagent content state、父级 `CollabAgent` lifecycle 单调投影、tool result/attachment mutation、live/turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory session messages、SessionStore transcript cursor、persisted runtime usage totals、tail append、命名 retry/removal mutation、last assistant read、metadata preview/context update |
 | `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
 
 Codex 对话回溯与分支仍走现有 `/chat/rewind`、`/sessions/fork` → `SessionEngine` → external adapter 路径，不建立 Codex 专用 route 或第二套 Session。`codex.ts` 独占 `thread/read(includeTurns:true)`、`thread/fork(lastTurnId)`、`thread/unsubscribe` 与 root `turn/start` admission；`external-session.ts` 在既有 operation serialization 边界内编排 native branch、进程切换和产品 Session；`SessionStore` 独占 transcript/metadata 的可恢复提交。成功 root terminal assistant 才持久化 `{turnId, rootUserMessageId}` 锚点。Rewind 只改变对话上下文，不恢复工作区文件；有 replacement native thread 时在 durable rebind 和 mutation lease 释放后异步复用既有 prewarm，失败只影响下一次 send 的启动延迟；第一 native Turn 之前继续用“无 runtimeSessionId”表示，不预热空 thread，下一次发送复用既有 fresh-start。Claude Code / Gemini 继续明确不支持该能力。
 
 Managed Codex 的产品扩展也必须沿同一条链路进入：route 只调用 `SessionEngine` config 方法，external adapter 交给 `external-session` 从服务端权威配置编译一份 immutable Session Extension Snapshot，并在 idle/terminal 边界 replacement process。Codex 进程启动且 MCP startup barrier 完成 terminal/timeout 观察后，desired revision 提升为该 process generation 的 effective revision；单个 Skill、MCP、Agent 或 Plugin 的失败只降级对应组件并进入 Logs，不阻断 Runtime generation。Codex adapter 只拥有 app-server 协议投影；外部 MCP 使用启动配置，Agent 使用原生 role config，合并后的有效 Workspace/全局/Plugin Skill 通过临时 extra-root 精确投影，SDK in-process MCP 与 IM Bridge 通过 runtime-neutral Host dispatcher 暴露为 `thread/start.dynamicTools`。Codex 0.146.0 的 dynamic-tool catalog 不能在 native thread resume 时更换，因此 Session metadata 只持久化协议版本与非敏感 catalog fingerprint：catalog 未变可 resume，变化或 legacy 未证明一致时必须新建 Product Session；历史 Session 的 desired/legacy catalog 都为空时允许 resume。不能偷偷恢复旧目录或建立第二套 bridge。`system-cli` Codex 不进入这套 MyAgents-owned 投影。
+
+Managed Codex 子 Agent 的原生 child turn lifecycle 只由 `codex.ts` 在既有 turn-local ancestry / activity correlation 内归一；`external-session/content-blocks.ts` 拥有父级 `CollabAgent` 的单调内容投影、成功 turn 持久化和 root terminal fail-closed 收口。状态沿现有 `UnifiedEvent → session SSE → Renderer` 控制面传递，Renderer 只派生工具卡、Agent Status Panel 与 Companion 展示，不维护 thread registry、轮询器或第二份执行 authority。没有真实 child turn 的 control-only activity 不获得 lifecycle；builtin `Task` / `Agent` 继续走 SDK 自有状态。
 
 全局 Skill 的 Runtime authority 是 Node `global-skill-inventory.ts` 在每个 admission / Settings 业务边界构造的 immutable、ephemeral 完整根快照；不持久化注册表、cache 或 watcher 状态。同一边界的 project capability resolver 与 `.claude/skills` 兼容投影必须消费同一个快照：强证据损坏项既不进入 builtin allowlist / Managed Codex compiler，也不进入新建 workspace 链接，但任何单个 Skill 的缺失、损坏或投影失败都只淘汰该候选并记录日志，不能阻断 Runtime 或 Session。Project Skill（包括项目目录 symlink）按 canonical name 覆盖 global；MyAgents 只维护指向 `~/.myagents/skills` 的兼容 junction/symlink，不覆盖项目条目。Builtin/Managed 可在投影失败时从本次 admission 精确排除受影响 canonical；Managed 的临时 Skill/Agent materialization 与原生 read-back 同样逐候选降级，依赖 Required Skill 的 operation 只按当前 process 的 native read-back 决定是否执行。System Codex、Claude Code 等兼容 Runtime 直接扫描共享磁盘，若 OS 拒绝删除既有链接则只记录物理歧义并继续，不为这个极端状态新增进程协议或阻断 Session。Rust Launcher 只镜像同一份分类契约并跳过这种 project 投影，跨语言 JSON fixtures 负责锁定口径，而不是新增 RPC。已有 active turn 不 retroactive 改写；effective revision 继续表达 Runtime winner 内容，integrity revision 表达诊断与 desired-link set。纯诊断变化不换代；external lifecycle 随 active process 保存启动时采用的 effective capability/projection revision，后续 admission 发现 revision 变化才复用既有 deferred process/Query replacement，不能以“当前 Sidecar 是否实际写了链接”代替进程配置 identity。
 
@@ -683,7 +698,7 @@ Cmd+W 层级关闭：Overlay → 分屏面板 → Tab，高 z-index 优先。
 - 读写并发：`Arc<SessionIndex>`（无外层 mutex）；正常读写共享 state 读锁，仅损坏恢复独占替换
 - 中文分词：`tantivy-jieba`（~37 万词词典），字段 MUST 显式 `"chinese"` tokenizer
 - Schema 版本门控：`SCHEMA_VERSION` + `.schema_version` 磁盘 marker，不一致时自动删除重建
-- 工作区文件搜索结果导航：Rust 只返回 `FileSearchHit`；预览、命中行定位、右键菜单、回到文件树是 renderer-side 协议，复用 `DirectoryPanel` / `WorkspaceTreeViewport` / `useWorkspaceFileService`，不新增 Sidecar HTTP 或 Rust IPC
+- 工作区文件搜索结果导航：Rust 由同一 search generation 原子返回 `FolderSearchHit` + `FileSearchHit`；文件夹/文件定位、预览、命中行定位、右键菜单与回到文件树是 renderer-side 协议，复用 `DirectoryPanel` / `WorkspaceTreeViewport` / `useWorkspaceFileService`，不新增 Sidecar HTTP 或 Rust IPC
 
 详见 `tech_docs/search_architecture.md`。
 
@@ -830,7 +845,7 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 ---
 
-### 19. MyAgents Cloud Space（实验室，`src-tauri/src/space_cloud.rs` + `src/renderer/pages/Space.tsx`）
+### 19. MyAgents Cloud Space（实验室，`src-tauri/src/space_cloud.rs` + `src-tauri/src/space_cloud/` + `src/renderer/pages/Space.tsx`）
 
 Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
 
@@ -839,17 +854,20 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 **核心边界：**
 
 - Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent IssueDelivery poll/process 都由 Rust Tauri command 拥有。
+- Rust 内部以 `space_cloud.rs` 为 facade 与 account/session、统一 authorized Cloud client owner；`space_cloud/{registered_agents,delivery,cli,skills,attachments}.rs` 分别拥有现有领域状态与操作，`tests.rs` 承载跨模块契约。依赖只能从领域模块指向根 auth/client，且 `delivery → registered_agents`、`cli → registered_agents + attachments`；Agent mutation 后唤醒 connector、Attachment 下载的 User/Agent credential 选择由根 facade 编排，禁止 `registered_agents → delivery`、`attachments → registered_agents`、平行 HTTP/auth helper 或第二套状态。
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
 - build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；实验室入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`，release profile 机制性丢弃 Dev origin。
 - `config.spaceEnvironment` 只在烘焙的 `production` / `dev` origin 之间二选一，Renderer 不提供自由 URL 输入。旧配置值 `staging` 仅在 debug 构建包含 Dev origin 时读取为 `dev`；新写入永远使用 `dev`，release 构建一律回落 Production。
 - 本地状态 production 在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，Dev 在 `~/.myagents/space/dev/{...}`；二者不进入 SessionStore，旧 `space/staging` 不自动迁移。全局 Skill 安装仍是 `~/.myagents/skills`，不随 Space 环境切换。
+- `session.json` 同时承载 redacted account context 与 tagged user credential：`authenticated` 才持有 token，Cloud 对该 user credential 返回 HTTP 401 时 Rust 在文件锁内按 opaque binding 原子改写为不含 token 的 `reauth_required`；文件不存在才表示 explicit signed out。403、429、5xx、网络与解码失败不改变认证状态，`expiresAt` 也不是本地有效性 authority。
+- Rust Space HTTP boundary 是 user-session 认证终态的唯一 owner；generic JSON、typed JSON、multipart 与 raw download 共用同一结构化 response policy。Renderer `spaceStore` 只按 matching binding 派生 `reauthRequired`、清理请求/cache 并复用现有登录流，不能从错误文案、时间或组件 catch 猜测登录状态。
 - Space renderer cache identity 包含服务 origin；切换 production/Dev 时即使 space slug 同为 `official` 也必须清缓存。
 - 本地端点身份统一由 `~/.myagents/device_id` 表达，Rust owner 是 `src-tauri/src/device_identity.rs`。Analytics 的 `device_id` 与 Space 的 `deviceId` 消费同一个值，不再派生第二套云端 device id。
 - 云端概念是 `user_devices(userId, deviceId)`，用于记录某个登录用户在某个本地端点上的设备名、平台、系统版本、客户端版本与 last seen。客户端登录/授权后会尝试 upsert；registered-agent 注册/编辑 payload 也携带这些字段供服务端落表。
 - Registered Agent 是执行实例，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区；workspace 不是身份。同一 workspace 可登记多个实例，各自拥有 id/token、Instruction/revision、Subscription 集合与 Session binding。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。
-- Registered Agent 执行端点使用 token-only capability：本地轮询时只带 registered-agent token，服务端由 token 映射到 user / space / device / agent 权限边界；MyAgents Desktop 只从“当前 Space user + 当前 device”的本地 token 集合中选择 token。
+- Registered Agent 执行端点使用 token-only capability：本地轮询时只带 registered-agent token，服务端由 token 映射到 user / space / device / agent 权限边界；MyAgents Desktop 用保留的 account context + 当前 device 选择本地 token，user credential 进入 `reauth_required` 不停止 exact Agent，Agent 401 也不得反向修改 user credential。
 - Registered Agent delivery 处理由 Rust 长驻 connector 拥有：每个 agent 维护内存级 due time / empty streak，云端返回 transport-only v2 package 与 `poll` 提示，本地负责严格解析、Prompt 组装、clamp/jitter/错误退避、exact Session origin、inbox 注入、本地 receipt 与自动 ACK。Renderer 只能唤醒 connector，不自己 poll/process delivery，也不持有 registered-agent token。
-- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 binding fail-closed。只有持久 Session origin 中 exact `spaceId + registeredAgentId`（或显式 legacy localAgentId）可选择 Agent；workspace path/id 只做 containment/binding 校验，绝不推断 actor。0.3.2 删除 Agent-facing Delivery ignore，no-op 不需要 CLI 动作；`space goal list`、`space issue --help` 与业务 leaf 继续复用既有路径。Space mutation 不实现伪 preview，出现 `--dry-run` 时由 CLI 在 HTTP 和文件 IO 前 fail closed。
+- Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 User/Registered Agent token 选择与 binding fail-closed。普通 User actor 先验证 user credential，`reauth_required` 稳定返回 `SPACE_REAUTH_REQUIRED`；持久 Session origin 中 exact `spaceId + registeredAgentId` 直接使用缓存 account binding + exact Agent token，不先调用用户 `/api/me` 且绝不 fallback。workspace path/id 只做 containment/binding 校验，不能推断 actor。0.3.2 删除 Agent-facing Delivery ignore，no-op 不需要 CLI 动作；`space goal list`、`space issue --help` 与业务 leaf 继续复用既有路径。Space mutation 不实现伪 preview，出现 `--dry-run` 时由 CLI 在 HTTP 和文件 IO 前 fail closed。
 - Issue 正文附件与评论附件共用 Cloud `issue_attachments`，以 nullable `comment_id` 决定归属。Renderer 文件选择只形成 Rust inspect 后的本地 metadata draft；创建/评论/完成在一次 JSON 或 multipart mutation 内提交。已发布 Issue 顶部“上传”仍是独立即时 mutation，并产生正常 update/delivery。
 - Space 附件字节 IO 由 Rust owner：上传最多 5 个/单个 25MB、workspace CLI no-follow containment；Windows child/leaf/temp 全部相对已验证目录 handle 打开，最终覆盖也用 `RootDirectory` handle-relative rename，阻断目录替换与原地 reparse。下载流式累计 25MB且只在完整成功后提交。二进制不进入 Renderer state、Delivery 或 Session prompt。
 - Cloud Worker 侧的容量与一致性策略属于 `MyAgents_space` 服务端：D1 访问走 bookmark-aware facade，delivery poll 是读路径，poll 数字由服务端策略 owner 返回，prune/rate limit/placement 由 Worker 配置与服务端代码承担。
