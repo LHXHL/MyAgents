@@ -61,17 +61,74 @@ afterEach(() => {
 });
 
 describe('Managed Codex extension compiler', () => {
+  it('expands a Unicode filename-derived Command even when its display name contains spaces', () => {
+    const workspace = tempRoot();
+    const userRoot = tempRoot();
+    write(join(userRoot, 'commands', '中文-总结.md'), [
+      '---',
+      'name: 中文 总结',
+      'description: 总结当前工作',
+      '---',
+      '请总结 $ARGUMENTS。',
+    ].join('\n'));
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+
+    expect(snapshot.commands).toContainEqual(expect.objectContaining({
+      name: '中文-总结',
+      scope: 'user',
+    }));
+    expect(compileManagedCodexCommand('/中文-总结 本轮', snapshot)?.runtimeText).toBe('请总结 本轮。');
+  });
+
+  it('keeps the legacy ASCII-only naming contract for plugin Commands', () => {
+    const workspace = tempRoot();
+    const pluginRoot = tempRoot();
+    write(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({
+      name: 'legacy-command-plugin',
+    }));
+    write(
+      join(pluginRoot, 'commands', 'unicode.md'),
+      '---\nname: 中文总结\ndescription: Plugin command\n---\nRun it.',
+    );
+    pluginStore.entries = [{
+      id: 'legacy-command-plugin@local',
+      enabled: true,
+      installPath: pluginRoot,
+    }];
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: ['legacy-command-plugin@local'],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+
+    expect(snapshot.commands).toEqual([]);
+    expect(snapshot.components).toContainEqual(expect.objectContaining({
+      component: 'commands',
+      code: 'command_invalid_name',
+    }));
+  });
+
   it('compiles deterministic project/global Commands, Skills, and native Agent roles', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();
-    write(join(workspace, '.claude', 'commands', 'review.md'), [
+    write(join(workspace, '.claude', 'commands', 'review-local.md'), [
       '---',
       'name: review-local',
       'description: Review locally',
       '---',
       'Inspect $ARGUMENTS carefully.',
     ].join('\n'));
-    write(join(userRoot, 'commands', 'review.md'), [
+    write(join(userRoot, 'commands', 'review-local.md'), [
       '---',
       'name: review-local',
       'description: Global duplicate',

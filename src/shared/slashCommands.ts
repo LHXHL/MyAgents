@@ -5,7 +5,8 @@
 import { load as yamlLoad } from 'js-yaml';
 
 export interface SlashCommand {
-    name: string;           // Command name without slash, e.g., "review"
+    name: string;           // Human-readable menu label
+    invocationName?: string; // Stable slash token; falls back to name for legacy/builtin entries
     description: string;    // Human readable description
     source: 'builtin' | 'client' | 'custom' | 'skill' | 'sdk';  // Source type: runtime builtin, renderer action, custom command, local skill, or SDK-provided command
     scope?: 'user' | 'project';  // Where the item is defined
@@ -67,7 +68,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
     { name: 'security-review', description: '进行安全相关的代码审查', source: 'builtin' },
 ];
 
-const SLASH_COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+const SLASH_COMMAND_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}:_-]{0,127}$/u;
 const RESERVED_PRODUCT_COMMAND_NAMES = new Set([
     ...BUILTIN_SLASH_COMMANDS.map(command => command.name),
     // Renderer client action plus its public alias. Their behavior remains in
@@ -78,6 +79,16 @@ const RESERVED_PRODUCT_COMMAND_NAMES = new Set([
 
 export function isValidSlashCommandName(name: string): boolean {
     return SLASH_COMMAND_NAME_RE.test(name);
+}
+
+/**
+ * Command invocation identity comes from its lexical path below the Command
+ * root. Frontmatter `name` is display metadata and must not rename the slash
+ * token. Nested project paths use Claude's colon namespace convention.
+ */
+export function slashCommandNameFromSourceLocalId(sourceLocalId: string): string | null {
+    const name = sourceLocalId.replaceAll('\\', '/').split('/').join(':');
+    return isValidSlashCommandName(name) ? name : null;
 }
 
 export function isReservedSlashCommandName(name: string): boolean {

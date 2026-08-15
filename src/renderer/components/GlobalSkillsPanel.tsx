@@ -16,6 +16,7 @@ import { CreateDialog, NewSkillChooser, InstallFromUrlDialog, type InstallFromUr
 import { SkillCard, CommandCard, SkillIntegrityIssuesPanel } from './SkillsCommandsList';
 import type { SkillItem, CommandItem, CapabilityInitialSelect, SkillsListResponse } from '../../shared/skillsTypes';
 import type { SkillIntegrityIssue } from '../../shared/skillIntegrity';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 
 type ViewState =
     | { type: 'list' }
@@ -174,6 +175,7 @@ export default function GlobalSkillsPanel({
                 // 使用返回的 folderName（sanitized）而非 tempName
                 setViewState({ type: 'skill-detail', name: response.folderName || tempName, isNewSkill: true });
                 setRefreshKey(k => k + 1);
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.createFailed'));
             }
@@ -202,6 +204,9 @@ export default function GlobalSkillsPanel({
                 }
                 setShowNewSkillDialog(false);
                 setRefreshKey(k => k + 1);
+                if (response.synced > 0) {
+                    window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+                }
             } else {
                 toastRef.current.error(tRef.current('agentSettings.skillCommandList.syncFailed'));
             }
@@ -234,6 +239,7 @@ export default function GlobalSkillsPanel({
                             : tRef.current('agentSettings.skillCommandList.skillImportSuccess'));
                         setShowNewSkillDialog(false);
                         setRefreshKey(k => k + 1);
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                         if (response.folderName) {
                             setViewState({ type: 'skill-detail', name: response.folderName });
                         }
@@ -285,6 +291,7 @@ export default function GlobalSkillsPanel({
                     : tRef.current('agentSettings.skillCommandList.skillImportSuccess'));
                 setShowNewSkillDialog(false);
                 setRefreshKey(k => k + 1);
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                 if (response.folderName) {
                     setViewState({ type: 'skill-detail', name: response.folderName });
                 }
@@ -311,6 +318,7 @@ export default function GlobalSkillsPanel({
                 setNewItemName('');
                 setNewItemDescription('');
                 setRefreshKey(k => k + 1);
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.createFailed'));
             }
@@ -330,6 +338,7 @@ export default function GlobalSkillsPanel({
                 setSkills(prev => prev.map(s =>
                     s.folderName === folderName ? { ...s, enabled } : s
                 ));
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(res.error || tRef.current('agentSettings.common.operationFailed'));
             }
@@ -340,6 +349,7 @@ export default function GlobalSkillsPanel({
 
     const handleItemSaved = useCallback((autoClose?: boolean) => {
         setRefreshKey(k => k + 1);
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
         if (autoClose) {
             setViewState({ type: 'list' });
         }
@@ -348,6 +358,7 @@ export default function GlobalSkillsPanel({
     const handleItemDeleted = useCallback(() => {
         setViewState({ type: 'list' });
         setRefreshKey(k => k + 1);
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
     }, []);
 
     if (loading && viewState.type === 'list') {
@@ -511,6 +522,7 @@ export default function GlobalSkillsPanel({
                     onInstalled={(folderNames) => {
                         setShowInstallFromUrlDialog(false);
                         setRefreshKey(k => k + 1);
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                         if (folderNames.length === 1) {
                             toastRef.current.success(tRef.current('agentSettings.skillCommandList.installedSingle', { name: folderNames[0] }));
                             setViewState({ type: 'skill-detail', name: folderNames[0] });

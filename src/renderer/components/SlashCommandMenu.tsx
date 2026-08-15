@@ -57,7 +57,7 @@ export default function SlashCommandMenu({
         <div className="w-80 max-h-64 overflow-auto">
             {commands.map((cmd, index) => (
                 <div
-                    key={`${cmd.source}-${cmd.name}`}
+                    key={`${cmd.source}-${commandIdentity(cmd)}`}
                     ref={index === selectedIndex ? selectedItemRef : null}
                     className={`flex items-center gap-3 px-3 py-2 cursor-pointer text-sm ${index === selectedIndex
                         ? 'bg-[var(--accent)]/10 text-[var(--ink)]'
@@ -101,9 +101,11 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
     );
     const matches = (cmd: SlashCommand) => {
         const name = cmd.name.toLowerCase();
+        const invocationName = (cmd.invocationName ?? cmd.name).toLowerCase();
         const description = cmd.description.toLowerCase();
         const aliases = cmd.aliases ?? [];
         return name.includes(q) ||
+            invocationName.includes(q) ||
             description.includes(q) ||
             aliases.some((alias) => alias.toLowerCase().includes(q));
     };
@@ -137,7 +139,7 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
 }
 
 function commandIdentity(command: SlashCommand): string {
-    return command.name.trim().replace(/^\/+/, '').toLowerCase();
+    return (command.invocationName ?? command.name).trim().replace(/^\/+/, '').toLowerCase();
 }
 
 function appendUniqueSlashCommands(
@@ -151,10 +153,10 @@ function appendUniqueSlashCommands(
     let merged = primaryCommands;
 
     for (const command of supplementalCommands) {
-        const name = command.name.trim().replace(/^\/+/, '');
-        if (!name) continue;
+        const invocationName = (command.invocationName ?? command.name).trim().replace(/^\/+/, '');
+        if (!invocationName) continue;
 
-        const key = name.toLowerCase();
+        const key = invocationName.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -163,7 +165,9 @@ function appendUniqueSlashCommands(
         }
         merged.push({
             ...command,
-            name,
+            ...(command.invocationName
+                ? { invocationName }
+                : { name: invocationName }),
             ...(sourceOverride ? { source: sourceOverride } : {}),
         });
     }

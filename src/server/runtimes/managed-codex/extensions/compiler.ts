@@ -17,6 +17,7 @@ import {
   isValidSlashCommandName,
   parseFullCommandContent,
   parseFullSkillContent,
+  slashCommandNameFromSourceLocalId,
 } from '../../../../shared/slashCommands';
 import type { InteractionScenario } from '../../../system-prompt';
 import type {
@@ -44,6 +45,7 @@ import type {
 } from './contracts';
 import { projectManagedCodexMcpLaunchConfig } from './mcp-launch-projection';
 
+const LEGACY_PLUGIN_SLASH_COMMAND_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const MAX_EXTENSION_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_DEPTH = 8;
 const AGENT_ROLE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -440,8 +442,16 @@ function readCommandFile(
   try {
     const content = readFileSync(safePath, 'utf8');
     const parsed = parseFullCommandContent(content);
-    const name = parsed.frontmatter.name?.trim() || fallbackName;
-    if (!isValidSlashCommandName(name)) {
+    const sourceLocalId = relative(root, safePath).split(sep).join('/').replace(/\.md$/i, '');
+    // Plugin manifests keep their own command naming contract. Product
+    // project/global Commands share the capability owner's path-derived token.
+    const name = scope === 'plugin'
+      ? parsed.frontmatter.name?.trim() || fallbackName
+      : slashCommandNameFromSourceLocalId(sourceLocalId);
+    const validName = scope === 'plugin'
+      ? LEGACY_PLUGIN_SLASH_COMMAND_NAME_RE.test(name ?? '')
+      : Boolean(name && isValidSlashCommandName(name));
+    if (!name || !validName) {
       reports.push(component('commands', 'failed', 'command_invalid_name', `${sourceId}:${fallbackName}`));
       return null;
     }
@@ -459,7 +469,7 @@ function readCommandFile(
       body: parsed.body.trim(),
       scope,
       sourceId,
-      sourceLocalId: relative(root, safePath).split(sep).join('/').replace(/\.md$/i, ''),
+      sourceLocalId,
     };
   } catch {
     reports.push(component('commands', 'failed', 'command_read_failed', `${sourceId}:${fallbackName}`));

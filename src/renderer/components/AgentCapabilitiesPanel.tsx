@@ -23,6 +23,7 @@ import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 
 interface CapabilityItem {
     name: string;
+    invocationName?: string;
     description: string;
     scope?: 'user' | 'project';
     model?: string;
@@ -339,7 +340,7 @@ export default memo(function AgentCapabilitiesPanel({
                                 {commandsList.map(item => (
                                     <ItemTooltip key={`cmd-${item.name}`} scope={item.scope} description={item.description}>
                                         <button
-                                            onClick={() => handleCommandClick(item.name)}
+                                            onClick={() => handleCommandClick(item.invocationName ?? item.name)}
                                             onContextMenu={e => handleCommandContextMenu(e, item.scope, item.fileName)}
                                             // handleCommandClick inserts /name then focuses the chat textarea;
                                             // without this the click is dropped on a macOS WebKit trackpad tap

@@ -46,6 +46,9 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommand {
     pub name: String,
+    /// Stable slash token. Absent when display and invocation identity match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocation_name: Option<String>,
     pub description: String,
     /// "builtin" | "custom" | "skill"
     pub source: String,
@@ -130,6 +133,7 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
     for (name, desc) in BUILTIN_SLASH_COMMANDS {
         commands.push(SlashCommand {
             name: name.to_string(),
+            invocation_name: None,
             description: desc.to_string(),
             source: "builtin".to_string(),
             scope: None,
@@ -147,11 +151,11 @@ pub async fn cmd_list_slash_commands(workspace: String) -> Result<SlashCommandsR
         .filter_map(|c| c.folder_name.clone())
         .collect();
 
-    // Dedup by `name` — first occurrence wins.
+    // Dedup by invocation identity — first occurrence wins.
     let mut seen: HashSet<String> = HashSet::new();
     let unique: Vec<SlashCommand> = commands
         .into_iter()
-        .filter(|c| seen.insert(c.name.clone()))
+        .filter(|c| seen.insert(c.invocation_name.as_deref().unwrap_or(&c.name).to_string()))
         .collect();
 
     Ok(SlashCommandsResponse {
@@ -171,8 +175,23 @@ fn disabled_skill_names_for_slash(myagents_root: &Path) -> Vec<String> {
     disabled
 }
 
-fn scan_commands_dir(dir: &Path, scope: &str, out: &mut Vec<SlashCommand>) {
-    let entries = match std::fs::read_dir(dir) {
+const MAX_COMMAND_SCAN_DEPTH: usize = 8;
+
+fn scan_commands_dir(root: &Path, scope: &str, out: &mut Vec<SlashCommand>) {
+    scan_commands_dir_at(root, root, scope, 0, out);
+}
+
+fn scan_commands_dir_at(
+    root: &Path,
+    current: &Path,
+    scope: &str,
+    depth: usize,
+    out: &mut Vec<SlashCommand>,
+) {
+    if depth > MAX_COMMAND_SCAN_DEPTH {
+        return;
+    }
+    let entries = match std::fs::read_dir(current) {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -181,31 +200,93 @@ fn scan_commands_dir(dir: &Path, scope: &str, out: &mut Vec<SlashCommand>) {
             Ok(e) => e,
             Err(_) => continue,
         };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            scan_commands_dir_at(root, &path, scope, depth + 1, out);
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if !name_str.ends_with(".md") {
             continue;
         }
-        let path = entry.path();
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
         };
         let frontmatter = parse_command_frontmatter(&content);
-        let file_name = name_str.trim_end_matches(".md").to_string();
+        let source_local_id = match path.strip_prefix(root) {
+            Ok(relative) => relative
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let invocation_name = source_local_id.replace('/', ":");
+        if !is_valid_slash_command_name(&invocation_name)
+            || is_reserved_slash_command_name(&invocation_name)
+        {
+            continue;
+        }
+        let display_name = frontmatter
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| invocation_name.clone());
         out.push(SlashCommand {
-            name: frontmatter
-                .name
-                .clone()
-                .unwrap_or_else(|| file_name.clone()),
+            name: display_name,
+            invocation_name: Some(invocation_name),
             description: frontmatter.description.unwrap_or_default(),
             source: "custom".to_string(),
             scope: Some(scope.to_string()),
             path: Some(path.to_string_lossy().to_string()),
             folder_name: None,
-            file_name: Some(file_name),
+            file_name: Some(source_local_id),
         });
     }
+}
+
+fn is_valid_slash_command_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !first.is_alphanumeric() {
+        return false;
+    }
+    let mut count = 1;
+    for character in characters {
+        count += 1;
+        if count > 128 || !(character.is_alphanumeric() || matches!(character, ':' | '_' | '-')) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_reserved_slash_command_name(name: &str) -> bool {
+    matches!(
+        name,
+        "compact"
+            | "context"
+            | "cost"
+            | "init"
+            | "pr-comments"
+            | "release-notes"
+            | "review"
+            | "security-review"
+            | "goal"
+            | "loop"
+    )
 }
 
 fn scan_skills_dir(
@@ -348,6 +429,7 @@ fn scan_skills_dir(
         let name = parsed.name.clone().unwrap_or_else(|| folder_name.clone());
         out.push(SlashCommand {
             name,
+            invocation_name: None,
             description: parsed.description.unwrap_or_default(),
             source: "skill".to_string(),
             scope: Some(scope.to_string()),
@@ -951,6 +1033,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_invocation_uses_unicode_filename_instead_of_display_name() {
+        let ws = make_tmp_workspace();
+        let cmd_dir = ws.join(".claude").join("commands");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        fs::write(
+            cmd_dir.join("中文-总结.md"),
+            "---\nname: 中文 总结\ndescription: 总结当前工作\n---\nbody\n",
+        )
+        .unwrap();
+
+        let res = cmd_list_slash_commands(ws.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let hit = res
+            .commands
+            .iter()
+            .find(|command| command.file_name.as_deref() == Some("中文-总结"))
+            .unwrap();
+        assert_eq!(hit.name, "中文 总结");
+        assert_eq!(hit.invocation_name.as_deref(), Some("中文-总结"));
+        assert_eq!(hit.description, "总结当前工作");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn nested_project_command_uses_colon_namespace() {
+        let ws = make_tmp_workspace();
+        let cmd_dir = ws.join(".claude").join("commands").join("发布");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        fs::write(
+            cmd_dir.join("生成-周报.md"),
+            "---\nname: 生成周报\ndescription: 生成当前周报\n---\nbody\n",
+        )
+        .unwrap();
+
+        let res = cmd_list_slash_commands(ws.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let hit = res
+            .commands
+            .iter()
+            .find(|command| command.invocation_name.as_deref() == Some("发布:生成-周报"))
+            .unwrap();
+        assert_eq!(hit.name, "生成周报");
+        assert_eq!(hit.file_name.as_deref(), Some("发布/生成-周报"));
+        assert_eq!(hit.description, "生成当前周报");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn nested_global_command_uses_the_same_colon_namespace() {
+        let root = make_tmp_workspace().join("commands");
+        let cmd_dir = root.join("发布");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        fs::write(
+            cmd_dir.join("生成-周报.md"),
+            "---\nname: 全局周报\ndescription: 生成当前周报\n---\nbody\n",
+        )
+        .unwrap();
+
+        let mut commands = Vec::new();
+        scan_commands_dir(&root, "user", &mut commands);
+        let hit = commands
+            .iter()
+            .find(|command| command.invocation_name.as_deref() == Some("发布:生成-周报"))
+            .unwrap();
+        assert_eq!(hit.name, "全局周报");
+        assert_eq!(hit.file_name.as_deref(), Some("发布/生成-周报"));
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[tokio::test]
     async fn lists_project_skills() {
         let ws = make_tmp_workspace();
         let skill_dir = ws.join(".claude").join("skills").join("my-skill");
@@ -971,7 +1125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_overrides_builtin_with_same_name() {
+    async fn reserved_product_command_cannot_be_overridden_by_a_project_file() {
         let ws = make_tmp_workspace();
         let cmd_dir = ws.join(".claude").join("commands");
         fs::create_dir_all(&cmd_dir).unwrap();
@@ -984,7 +1138,7 @@ mod tests {
             .await
             .unwrap();
         let review = res.commands.iter().find(|c| c.name == "review").unwrap();
-        assert_eq!(review.source, "custom");
+        assert_eq!(review.source, "builtin");
         // Should appear only once.
         assert_eq!(
             res.commands.iter().filter(|c| c.name == "review").count(),

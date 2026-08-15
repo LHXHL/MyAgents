@@ -496,6 +496,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashSearchQuery, setSlashSearchQuery] = useState('');
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const slashCommandLoadIdRef = useRef(0);
   const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
   const [slashPosition, setSlashPosition] = useState<number | null>(null);
 
@@ -637,8 +638,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // sidebar and Runtime. Launcher has no Sidecar and retains the read-only
   // workspace scan fallback.
   const fetchCommands = useCallback(async () => {
+    const requestId = ++slashCommandLoadIdRef.current;
     const apply = (list: SlashCommand[]) =>
-      setSlashCommands(list);
+      requestId === slashCommandLoadIdRef.current && setSlashCommands(list);
     if (workspaceSlashCommands !== undefined) {
       // Product builtins own their reserved names; disk-backed capabilities
       // fill only the remaining namespace.
@@ -659,8 +661,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         apply(localizedFallbackSlashCommands);
       }
     } catch (err) {
-      console.error('Failed to fetch slash commands, using fallback:', err);
-      apply(localizedFallbackSlashCommands);
+      if (requestId === slashCommandLoadIdRef.current) {
+        console.error('Failed to fetch slash commands, using fallback:', err);
+        apply(localizedFallbackSlashCommands);
+      }
     }
   }, [fileService, localizedFallbackSlashCommands, workspaceSlashCommands]);
 
@@ -670,16 +674,17 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     fetchCommands();
   }, [workspacePath, fetchCommands]);
 
-  // Listen for skill copy events to refresh commands list
+  // Launcher has no Sidecar snapshot, so capability mutations refresh its
+  // read-only filesystem inventory through the same invalidation event.
   useEffect(() => {
-    const handleSkillCopied = () => {
+    const handleCapabilitiesChanged = () => {
       // Delay slightly to ensure file system is updated
       setTimeout(() => {
         fetchCommands();
       }, 100);
     };
-    window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-    return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+    window.addEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
+    return () => window.removeEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
   }, [fetchCommands]);
 
   // Selection is already represented by the injected effective snapshot (or
@@ -1137,7 +1142,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     }
 
     handleSkillSelect(cmd);
-    setInputValue(`${before}/${cmd.name} ${after}`);
+    setInputValue(`${before}/${cmd.invocationName ?? cmd.name} ${after}`);
     setShowSlashMenu(false);
     setSlashPosition(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is a stable ref

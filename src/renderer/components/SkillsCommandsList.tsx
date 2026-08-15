@@ -141,6 +141,7 @@ export default function SkillsCommandsList({
             setSkills(response.skills);
             setCommands(response.commands);
             setIntegrityIssues(response.integrityIssues ?? []);
+            window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
         } catch (error) {
             // Roll back synchronously to the last authoritative response. A
             // best-effort refresh follows, but a second network failure must
@@ -178,8 +179,7 @@ export default function SkillsCommandsList({
                 // 使用返回的 folderName（sanitized）而非 tempName
                 onSelectSkill(response.folderName || tempName, scope, true);
                 loadData();
-                // Notify SimpleChatInput to refresh slash commands
-                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, { detail: { skillName: response.folderName || tempName } }));
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.createFailed'));
             }
@@ -217,8 +217,7 @@ export default function SkillsCommandsList({
                         if (response.folderName) {
                             onSelectSkill(response.folderName, scope, true);
                         }
-                        // Notify SimpleChatInput to refresh slash commands
-                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, { detail: { skillName: response.folderName } }));
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                     } else {
                         toastRef.current.error(response.error || tRef.current('agentSettings.common.importFailed'));
                     }
@@ -274,8 +273,7 @@ export default function SkillsCommandsList({
                 if (response.folderName) {
                     onSelectSkill(response.folderName, scope, true);
                 }
-                // Notify SimpleChatInput to refresh slash commands
-                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, { detail: { skillName: response.folderName } }));
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.importFailed'));
             }
@@ -299,6 +297,7 @@ export default function SkillsCommandsList({
                 setNewItemName('');
                 setNewItemDescription('');
                 loadData();
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.createFailed'));
             }
@@ -324,6 +323,7 @@ export default function SkillsCommandsList({
                 toastRef.current.success(tRef.current('agentSettings.common.deleteSuccess'));
                 setDeleteTarget(null);
                 loadData();
+                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
             } else {
                 toastRef.current.error(response.error || tRef.current('agentSettings.common.deleteFailed'));
             }
@@ -478,11 +478,7 @@ export default function SkillsCommandsList({
                         } else {
                             toastRef.current.success(tRef.current('agentSettings.skillCommandList.installedMultiple', { count: folderNames.length }));
                         }
-                        window.dispatchEvent(
-                            new CustomEvent(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, {
-                                detail: { skillName: folderNames[0] },
-                            }),
-                        );
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
                     }}
                 />
             )}

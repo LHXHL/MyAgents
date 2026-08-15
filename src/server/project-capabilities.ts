@@ -8,7 +8,7 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Dirent } from 'node:fs';
 
 import {
@@ -25,9 +25,9 @@ import {
 } from '../shared/projectCapabilities';
 import {
   isReservedSlashCommandName,
-  isValidSlashCommandName,
   parseFullCommandContent,
   parseFullSkillContent,
+  slashCommandNameFromSourceLocalId,
 } from '../shared/slashCommands';
 import { isRequiredSystemSkill } from '../shared/systemSkills';
 import { workspacePathsEqual } from '../shared/workspacePath';
@@ -242,9 +242,6 @@ function walkCommands(params: {
       params.projectSlots?.add(`command:${rel.slice(0, -extname(rel).length)}`);
     }
     if (entry.isDirectory()) {
-      // MyAgents global Commands are a flat installed collection. Project
-      // Commands retain Claude's nested namespace support.
-      if (params.source === 'global') continue;
       result.push(...walkCommands({ ...params, current: diskPath, depth: depth + 1, visited }));
       continue;
     }
@@ -258,15 +255,14 @@ function walkCommands(params: {
       // Identity is the lexical location under the source root, never the
       // canonical target of an allowed global symlink.
       const sourceLocalId = rel.slice(0, -extname(rel).length);
-      const fallbackName = basename(diskPath, extname(diskPath));
-      const canonicalName = parsed.frontmatter.name?.trim() || fallbackName;
-      if (!isValidSlashCommandName(canonicalName) || isReservedSlashCommandName(canonicalName)) continue;
+      const canonicalName = slashCommandNameFromSourceLocalId(sourceLocalId);
+      if (!canonicalName || isReservedSlashCommandName(canonicalName)) continue;
       result.push(candidate({
         kind: 'command',
         source: params.source,
         sourceLocalId,
         canonicalName,
-        name: canonicalName,
+        name: parsed.frontmatter.name?.trim() || canonicalName,
         description: parsed.frontmatter.description?.trim() || '',
         path: commandPath,
         content,
@@ -498,6 +494,7 @@ export function projectCapabilitySnapshotForWire(snapshot: EffectiveProjectCapab
   });
   const toCommand = (item: ProjectCapabilityCandidate) => ({
     name: item.name,
+    invocationName: item.canonicalName,
     fileName: item.sourceLocalId,
     description: item.description,
     scope: item.source === 'global' ? 'user' as const : 'project' as const,

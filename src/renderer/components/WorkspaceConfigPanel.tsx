@@ -165,13 +165,13 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         };
     }, []);
 
-    // Listen for skill copy events to refresh the list
+    // Keep this panel on the same persisted capability generation as Chat.
     useEffect(() => {
-        const handleSkillCopied = () => {
+        const handleCapabilitiesChanged = () => {
             setInternalRefreshKey(k => k + 1);
         };
-        window.addEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
-        return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
+        window.addEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
+        return () => window.removeEventListener(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED, handleCapabilitiesChanged);
     }, []);
 
     const handleSelectSkill = useCallback((name: string, scope: 'user' | 'project', isNewSkill?: boolean) => {
@@ -197,6 +197,16 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
         setDetailView({ type: 'none' });
         setInternalRefreshKey(k => k + 1);
     }, []);
+
+    const handleCapabilityItemSaved = useCallback((autoClose?: boolean) => {
+        handleItemSaved(autoClose);
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+    }, [handleItemSaved]);
+
+    const handleCapabilityItemDeleted = useCallback(() => {
+        handleItemDeleted();
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+    }, [handleItemDeleted]);
 
     // Handle tab switch with editing check
     const handleTabSwitch = useCallback((tab: Tab) => {
@@ -308,8 +318,8 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                             name={detailView.name}
                             scope={detailView.scope}
                             onBack={handleBackFromDetail}
-                            onSaved={handleItemSaved}
-                            onDeleted={handleItemDeleted}
+                            onSaved={handleCapabilityItemSaved}
+                            onDeleted={handleCapabilityItemDeleted}
                             startInEditMode={detailView.isNewSkill}
                             agentDir={agentDir}
                         />
@@ -319,8 +329,8 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                             name={detailView.name}
                             scope={detailView.scope}
                             onBack={handleBackFromDetail}
-                            onSaved={handleItemSaved}
-                            onDeleted={handleItemDeleted}
+                            onSaved={handleCapabilityItemSaved}
+                            onDeleted={handleCapabilityItemDeleted}
                             agentDir={agentDir}
                         />
                     ) : detailView.type === 'agent' ? (

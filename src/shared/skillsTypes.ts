@@ -35,6 +35,7 @@ export interface SkillItem {
  */
 export interface CommandItem {
     name: string;           // Display name (from frontmatter or fallback to fileName)
+    invocationName?: string; // Slash token derived from the source path in project capability snapshots
     fileName: string;       // Actual file name without .md extension
     description: string;
     scope: 'user' | 'project';

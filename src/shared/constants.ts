@@ -74,8 +74,8 @@ export const Z_INDEX = {
  * Custom event names for cross-component communication
  */
 export const CUSTOM_EVENTS = {
-    /** Fired when a user-level skill is copied to project directory */
-    SKILL_COPIED_TO_PROJECT: 'skill-copied-to-project',
+    /** Fired after persisted project/global Skill or Command authority changes. */
+    PROJECT_CAPABILITIES_CHANGED: 'project-capabilities-changed',
     /** Fired to open Settings page with optional section (e.g., 'mcp', 'providers') */
     OPEN_SETTINGS: 'open-settings',
     /** Fired to open the Task Center singleton tab. Optional payload:

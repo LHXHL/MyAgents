@@ -27,6 +27,14 @@ const workspaceMocks = vi.hoisted(() => ({
   },
 }));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 vi.mock('@/config/useConfigData', () => ({
   useConfigData: () => ({ config: { chatSendShortcut: 'enter' } }),
 }));
@@ -291,6 +299,96 @@ describe('SimpleChatInput send paths', () => {
       expect(screen.queryByText('/context')).not.toBeInTheDocument();
       expect(screen.queryByText('/plugin:review')).not.toBeInTheDocument();
     } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('shows a Command display name but inserts its stable invocation name', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        workspaceSlashCommands: [{
+          name: '中文 总结',
+          invocationName: '中文-总结',
+          description: '总结当前工作',
+          source: 'custom',
+        }],
+        showBuiltinSdkSlashCommands: false,
+      });
+
+      const textarea = screen.getByRole('textbox');
+      await user.type(textarea, '/');
+      await user.click(await screen.findByText('/中文 总结'));
+
+      expect(textarea).toHaveValue('/中文-总结 ');
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
+  it('does not let an older Launcher scan overwrite a newer invalidation result', async () => {
+    vi.useFakeTimers();
+    const older = deferred<unknown>();
+    const newer = deferred<unknown>();
+    workspaceMocks.service.listSlashCommands
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    try {
+      renderInput({
+        mode: 'launcher',
+        workspacePath: '/tmp/workspace',
+        showBuiltinSdkSlashCommands: false,
+      });
+      act(() => {
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.PROJECT_CAPABILITIES_CHANGED));
+        vi.advanceTimersByTime(100);
+      });
+
+      newer.resolve({
+        success: true,
+        commands: [{
+          name: '新 展示名',
+          invocationName: '新-指令',
+          description: '',
+          source: 'custom',
+        }],
+        globalSkillFolderNames: [],
+      });
+      await act(async () => { await newer.promise; });
+
+      older.resolve({
+        success: true,
+        commands: [{ name: '旧展示名', invocationName: '旧-指令', description: '', source: 'custom' }],
+        globalSkillFolderNames: [],
+      });
+      await act(async () => { await older.promise; });
+
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: '/' } });
+      expect(screen.getByText('/新 展示名')).toBeInTheDocument();
+      expect(screen.queryByText('/旧展示名')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
       if (scrollIntoViewDescriptor) {
         Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
       } else {
