@@ -953,7 +953,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "25";
+const ADMIN_AGENT_VERSION: &str = "26";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1756,16 +1756,22 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v25_helper_routes_product_knowledge_and_diagnosis() {
-        assert_eq!(ADMIN_AGENT_VERSION, "25");
+    fn v26_helper_routes_product_knowledge_diagnosis_and_tool_install() {
+        assert_eq!(ADMIN_AGENT_VERSION, "26");
         let helper = include_str!("../../bundled-agents/myagents_helper/CLAUDE.md");
         let support =
             include_str!("../../bundled-agents/myagents_helper/.claude/skills/support/SKILL.md");
+        let tool_install = include_str!(
+            "../../bundled-agents/myagents_helper/.claude/skills/tool-install/SKILL.md"
+        );
         assert!(helper.contains("`/myagents-docs`"));
         assert!(helper.contains("`/myagents-cli`"));
         assert!(helper.contains("`/support`"));
+        assert!(helper.contains("`/tool-install`"));
         assert!(support.contains("先用 `/myagents-docs` 确认正确产品预期"));
         assert!(support.contains("不读取 `~/.myagents/credentials/`"));
+        assert!(tool_install.contains("MYAGENTS_NPM_GLOBAL_PREFIX"));
+        assert!(tool_install.contains("不写 Agent-CLI Registry"));
     }
 
     #[test]
