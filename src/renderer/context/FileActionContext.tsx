@@ -62,6 +62,16 @@ interface FileMenuState {
   displayPath: string;
   contextIdentity: string;
   initialLineNumber?: number;
+  zIndex?: number;
+}
+
+export interface FileActionMenuOptions {
+  displayPath?: string;
+  /** Render above the caller's host overlay when the menu is nested. */
+  zIndex?: number;
+  /** Lifecycle callbacks describe the standard menu surface, not its actions. */
+  onOpen?: () => void;
+  onClose?: () => void;
 }
 
 export interface FileActionContextValue {
@@ -80,8 +90,8 @@ export interface FileActionContextValue {
     x: number,
     y: number,
     target: FileActionTarget,
-    options?: { displayPath?: string },
-  ) => void;
+    options?: FileActionMenuOptions,
+  ) => () => void;
   /** Execute the target's primary action. Previewable files open internally,
    *  workspace directories reveal in the tree, and unsupported targets report
    *  a non-destructive hint instead of launching an OS application. */
@@ -208,6 +218,15 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
   toastRef.current = toast;
 
   const [menuState, setMenuState] = useState<FileMenuState | null>(null);
+  const menuCloseCallbackRef = useRef<(() => void) | null>(null);
+  const menuIntentIdRef = useRef(0);
+  const closeMenu = useCallback(() => {
+    menuIntentIdRef.current += 1;
+    setMenuState(null);
+    const onClose = menuCloseCallbackRef.current;
+    menuCloseCallbackRef.current = null;
+    onClose?.();
+  }, []);
 
   // Stabilise callbacks via refs
   const onInsertReferenceRef = useRef(onInsertReference);
@@ -306,7 +325,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
 
     cacheGenerationRef.current += 1;
     pathCacheRef.current.clear();
-    setMenuState(null);
+    closeMenu();
     const currentPrefix = `${cacheContextIdentity}\0`;
     for (const key of pendingTargetsRef.current.keys()) {
       if (!key.startsWith(currentPrefix)) pendingTargetsRef.current.delete(key);
@@ -335,7 +354,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       }
     }
     setCacheVersion(v => v + 1);
-  }, [cacheContextIdentity]);
+  }, [cacheContextIdentity, closeMenu]);
 
   // Clean up batch timer on unmount
   useEffect(() => {
@@ -517,8 +536,15 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     path: string,
     pathType: 'file' | 'dir',
     displayPath?: string,
-    options?: { scope?: FileActionScope; initialLineNumber?: number },
+    options?: {
+      scope?: FileActionScope;
+      initialLineNumber?: number;
+      zIndex?: number;
+      onOpen?: () => void;
+      onClose?: () => void;
+    },
   ) => {
+    menuCloseCallbackRef.current = options?.onClose ?? null;
     setMenuState({
       x,
       y,
@@ -528,10 +554,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       displayPath: displayPath ?? path,
       contextIdentity: cacheContextIdentityRef.current,
       initialLineNumber: options?.initialLineNumber,
+      zIndex: options?.zIndex,
     });
+    options?.onOpen?.();
   }, []);
-
-  const closeMenu = useCallback(() => setMenuState(null), []);
 
   // ---------- Preview state ----------
   const [previewFile, setPreviewFile] = useState<{
@@ -853,11 +879,16 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     x: number,
     y: number,
     target: FileActionTarget,
-    options?: { displayPath?: string },
-  ): void => {
+    options?: FileActionMenuOptions,
+  ): (() => void) => {
+    // Replace an already-open menu before the next target's async revalidation.
+    // Otherwise keyboard activation can leave stale actions usable while the
+    // newer menu intent is pending.
+    closeMenu();
+    const intentId = ++menuIntentIdRef.current;
     void (async () => {
       const result = await revalidateTarget(target);
-      if (!result.current) return;
+      if (!result.current || intentId !== menuIntentIdRef.current) return;
       const pathInfo = result.info;
       if (!pathInfo?.exists) {
         toastRef.current?.error(t('fileActions.targetUnavailable'));
@@ -866,9 +897,16 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       showFileMenu(x, y, target.path, pathInfo.type, options?.displayPath, {
         scope: target.scope,
         initialLineNumber: target.initialLineNumber,
+        zIndex: options?.zIndex,
+        onOpen: options?.onOpen,
+        onClose: options?.onClose,
       });
     })();
-  }, [revalidateTarget, showFileMenu, t]);
+    return () => {
+      if (intentId !== menuIntentIdRef.current) return;
+      closeMenu();
+    };
+  }, [closeMenu, revalidateTarget, showFileMenu, t]);
 
   const openFileLink = useCallback((href: string, options?: { forceExternal?: boolean }): boolean => {
     const target = resolveFileLinkTarget(href, workspacePath);
@@ -1063,6 +1101,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
             y={menuState.y}
             items={menuItems}
             onClose={closeMenu}
+            zIndex={menuState.zIndex}
           />
         )}
 

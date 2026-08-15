@@ -1,5 +1,5 @@
-import { FilePenLine } from 'lucide-react';
-import { useId, useMemo, useRef, useState } from 'react';
+import { Ellipsis, FilePenLine } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Tip from '@/components/Tip';
@@ -12,6 +12,8 @@ import {
 } from '@/utils/turnFileEdits';
 import { resolveFileActionTarget } from '@/utils/workspaceFileLinks';
 
+const TURN_FILE_MENU_Z_INDEX = 270;
+
 export function TurnFileEditSummary({ content }: { content: Message['content'] }) {
   const { t } = useTranslation('app');
   const fileAction = useFileAction();
@@ -20,8 +22,15 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
     [content, fileAction?.workspacePath],
   );
   const [open, setOpen] = useState(false);
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
+  const cancelFileMenuRef = useRef<(() => void) | null>(null);
   const popoverId = useId();
+
+  useEffect(() => () => {
+    cancelFileMenuRef.current?.();
+    cancelFileMenuRef.current = null;
+  }, []);
 
   if (!summary) return null;
 
@@ -30,7 +39,14 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
   });
   const showTotals = summary.allStatsReliable
     && (summary.totalAdded > 0 || summary.totalRemoved > 0);
+  const cancelFileMenu = () => {
+    const cancel = cancelFileMenuRef.current;
+    cancelFileMenuRef.current = null;
+    cancel?.();
+    setFileMenuOpen(false);
+  };
   const closeAndRestoreFocus = () => {
+    cancelFileMenu();
     setOpen(false);
     anchorRef.current?.focus();
   };
@@ -44,7 +60,10 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
           className="flex h-7 max-w-full items-center gap-1.5 rounded-full px-2 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
           aria-expanded={open}
           aria-controls={popoverId}
-          onClick={() => setOpen((current) => !current)}
+          onClick={() => {
+            if (open) cancelFileMenu();
+            setOpen((current) => !current);
+          }}
         >
           <FilePenLine className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{capsuleLabel}</span>
@@ -63,6 +82,7 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
         anchorRef={anchorRef}
         placement="top-start"
         offset={6}
+        closeOnEscape={!fileMenuOpen}
         className="w-[min(380px,calc(100vw-24px))]"
       >
         <div id={popoverId} role="dialog" aria-label={t('message.turnFileEdits.title')}>
@@ -80,8 +100,26 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
                     file.displayPath,
                     fileAction.workspacePath,
                   ) ?? file.actionTarget;
+                  cancelFileMenu();
                   setOpen(false);
                   fileAction.openFileTarget(target, { displayPath: file.displayPath });
+                }}
+                canOpenMenu={file.status !== 'deleted' && !!fileAction}
+                onOpenMenu={(x, y) => {
+                  if (file.status === 'deleted' || !fileAction) return;
+                  const target = resolveFileActionTarget(
+                    file.displayPath,
+                    fileAction.workspacePath,
+                  ) ?? file.actionTarget;
+                  cancelFileMenuRef.current = fileAction.openFileTargetMenu(x, y, target, {
+                    displayPath: file.displayPath,
+                    zIndex: TURN_FILE_MENU_Z_INDEX,
+                    onOpen: () => setFileMenuOpen(true),
+                    onClose: () => {
+                      cancelFileMenuRef.current = null;
+                      setFileMenuOpen(false);
+                    },
+                  });
                 }}
               />
             ))}
@@ -95,38 +133,48 @@ export function TurnFileEditSummary({ content }: { content: Message['content'] }
 function TurnFileEditRow({
   file,
   onOpen,
+  canOpenMenu,
+  onOpenMenu,
 }: {
   file: TurnFileEditItem;
   onOpen: () => void;
+  canOpenMenu: boolean;
+  onOpenMenu: (x: number, y: number) => void;
 }) {
   const { t } = useTranslation('app');
   const deleted = file.status === 'deleted';
-  const { basename, parent } = splitPath(file.displayPath);
-  const original = file.originalPath ? splitPath(file.originalPath) : null;
-  const originalName = original?.basename ?? null;
-  const parentLabel = original && original.parent !== parent
-    ? `${original.parent || '.'} → ${parent || '.'}`
-    : parent;
+  const basename = basenameOf(file.displayPath);
+  const originalName = file.originalPath ? basenameOf(file.originalPath) : null;
+  const showOriginalName = !!originalName && originalName !== basename;
   const statusLetter = statusLetterFor(file.status);
   const statusLabel = t(`message.turnFileEdits.status.${file.status}`);
+  const moreActionsLabel = `${t('dropdown.moreActions')}: ${basename}`;
 
   return (
-    <button
-      type="button"
-      disabled={deleted}
-      className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] disabled:cursor-default disabled:opacity-65"
-      aria-label={`${statusLabel}: ${file.originalPath ? `${file.originalPath} → ` : ''}${file.displayPath}`}
-      onClick={onOpen}
+    <div
+      className="flex min-h-9 w-full items-center px-1 hover:bg-[var(--hover-bg)] focus-within:bg-[var(--hover-bg)]"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!canOpenMenu) return;
+        onOpenMenu(event.clientX, event.clientY);
+      }}
     >
-      <span
-        aria-hidden="true"
-        className={`w-4 shrink-0 text-center font-mono text-xs font-semibold ${statusColor(file.status)}`}
+      <button
+        type="button"
+        disabled={deleted}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left focus-visible:outline-none disabled:cursor-default disabled:opacity-65"
+        aria-label={`${statusLabel}: ${file.originalPath ? `${file.originalPath} → ` : ''}${file.displayPath}`}
+        onClick={onOpen}
       >
-        {statusLetter}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-baseline gap-1 text-sm text-[var(--ink)]">
-          {originalName && (
+        <span
+          aria-hidden="true"
+          className={`w-4 shrink-0 text-center font-mono text-xs font-semibold ${statusColor(file.status)}`}
+        >
+          {statusLetter}
+        </span>
+        <span className="flex min-w-0 flex-1 items-baseline gap-1 text-sm text-[var(--ink)]">
+          {showOriginalName && (
             <>
               <span className="truncate">{originalName}</span>
               <span className="shrink-0 text-[var(--ink-muted)]">→</span>
@@ -134,26 +182,33 @@ function TurnFileEditRow({
           )}
           <span className="truncate">{basename}</span>
         </span>
-        {parentLabel && (
-          <span className="block truncate text-xs text-[var(--ink-muted)]/70">
-            {parentLabel}
-          </span>
-        )}
-      </span>
-      <span className="shrink-0 font-mono text-xs text-[var(--ink-muted)]">
-        {formatStats(file, t)}
-      </span>
-    </button>
+        <span className="shrink-0 font-mono text-xs text-[var(--ink-muted)]">
+          {formatStats(file, t)}
+        </span>
+      </button>
+      <button
+        type="button"
+        disabled={!canOpenMenu}
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-border)]/30 disabled:cursor-default disabled:opacity-40"
+        aria-label={moreActionsLabel}
+        title={moreActionsLabel}
+        aria-haspopup="menu"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          onOpenMenu(rect.right, rect.bottom + 4);
+        }}
+      >
+        <Ellipsis className="size-4" aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
-function splitPath(path: string): { basename: string; parent: string } {
+function basenameOf(path: string): string {
   const normalized = path.replace(/\\/g, '/');
-  const parts = normalized.split('/');
-  return {
-    basename: parts.pop() || normalized,
-    parent: parts.join('/'),
-  };
+  return normalized.split('/').pop() || normalized;
 }
 
 function statusLetterFor(status: TurnFileEditItem['status']): string {

@@ -15,13 +15,24 @@ vi.mock('@/components/Toast', () => ({
 }));
 
 vi.mock('@/components/ContextMenu', () => ({
-  default: ({ items }: { items: Array<{ label: string; onClick: () => void; disabled?: boolean }> }) => (
-    <div data-testid="file-context-menu">
+  default: ({
+    items,
+    onClose,
+    zIndex,
+  }: {
+    items: Array<{ label: string; onClick: () => void; disabled?: boolean }>;
+    onClose: () => void;
+    zIndex?: number;
+  }) => (
+    <div data-testid="file-context-menu" data-z-index={zIndex}>
       {items.map((item) => (
         <button key={item.label} type="button" disabled={item.disabled} onClick={item.onClick}>
           {item.label}
         </button>
       ))}
+      <button type="button" data-testid="dismiss-file-context-menu" onClick={onClose}>
+        dismiss
+      </button>
     </div>
   ),
 }));
@@ -48,7 +59,12 @@ vi.mock('@/hooks/useWorkspaceFileService', () => ({
   }),
 }));
 
-import { FileActionProvider, useFileAction, useFileTargetInfo } from './FileActionContext';
+import {
+  FileActionProvider,
+  useFileAction,
+  useFileTargetInfo,
+  type FileActionMenuOptions,
+} from './FileActionContext';
 import type { FileActionTarget } from '@/utils/workspaceFileLinks';
 
 function Probe({ target, testId = 'state' }: { target: FileActionTarget; testId?: string }) {
@@ -60,15 +76,28 @@ function Probe({ target, testId = 'state' }: { target: FileActionTarget; testId?
   );
 }
 
-function MenuProbe({ target }: { target: FileActionTarget }) {
+function MenuProbe({
+  target,
+  options,
+  testId = 'open-menu',
+  onCancel,
+}: {
+  target: FileActionTarget;
+  options?: FileActionMenuOptions;
+  testId?: string;
+  onCancel?: (cancel: () => void) => void;
+}) {
   const fileAction = useFileAction();
   const info = useFileTargetInfo(target);
   return (
     <button
-      data-testid="open-menu"
+      data-testid={testId}
       type="button"
       disabled={!info?.exists}
-      onClick={() => fileAction?.openFileTargetMenu(10, 20, target)}
+      onClick={() => {
+        const cancel = fileAction?.openFileTargetMenu(10, 20, target, options);
+        if (cancel) onCancel?.(cancel);
+      }}
     >
       open
     </button>
@@ -317,6 +346,129 @@ describe('FileActionProvider verified target cache', () => {
       </FileActionProvider>,
     );
     await waitFor(() => expect(screen.queryByTestId('file-context-menu')).not.toBeInTheDocument());
+  });
+
+  it('forwards nested menu presentation and lifecycle without changing file actions', async () => {
+    const onOpen = vi.fn();
+    const onClose = vi.fn();
+    mocks.checkPaths.mockResolvedValue({
+      results: { 'docs/a.md': { exists: true, type: 'file' } },
+    });
+
+    render(
+      <FileActionProvider workspacePath="/workspace">
+        <MenuProbe
+          target={{ scope: 'workspace', path: 'docs/a.md' }}
+          options={{ zIndex: 270, onOpen, onClose }}
+        />
+      </FileActionProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('open-menu')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('open-menu'));
+    await waitFor(() => expect(screen.getByTestId('file-context-menu')).toBeInTheDocument());
+
+    expect(screen.getByTestId('file-context-menu')).toHaveAttribute('data-z-index', '270');
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('dismiss-file-context-menu'));
+    expect(screen.queryByTestId('file-context-menu')).not.toBeInTheDocument();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels delayed revalidation so a dismissed parent cannot reopen a ghost menu', async () => {
+    const delayedRevalidation = deferred<{
+      results: Record<string, { exists: boolean; type: 'file' }>;
+    }>();
+    const onOpen = vi.fn();
+    const onCancel = vi.fn();
+    mocks.checkPaths
+      .mockResolvedValueOnce({
+        results: { 'docs/a.md': { exists: true, type: 'file' } },
+      })
+      .mockReturnValueOnce(delayedRevalidation.promise);
+
+    render(
+      <FileActionProvider workspacePath="/workspace">
+        <MenuProbe
+          target={{ scope: 'workspace', path: 'docs/a.md' }}
+          options={{ onOpen }}
+          onCancel={onCancel}
+        />
+      </FileActionProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('open-menu')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('open-menu'));
+    const cancel = onCancel.mock.calls[0]?.[0] as (() => void) | undefined;
+    expect(cancel).toBeTypeOf('function');
+    cancel?.();
+
+    await act(async () => {
+      delayedRevalidation.resolve({
+        results: { 'docs/a.md': { exists: true, type: 'file' } },
+      });
+      await delayedRevalidation.promise;
+    });
+
+    expect(screen.queryByTestId('file-context-menu')).not.toBeInTheDocument();
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('closes the previous menu before a replacement target finishes revalidation', async () => {
+    const delayedB = deferred<{
+      results: Record<string, { exists: boolean; type: 'file' }>;
+    }>();
+    const onOpenA = vi.fn();
+    const onCloseA = vi.fn();
+    const onOpenB = vi.fn();
+    mocks.checkPaths
+      .mockResolvedValueOnce({
+        results: {
+          'docs/a.md': { exists: true, type: 'file' },
+          'docs/b.md': { exists: true, type: 'file' },
+        },
+      })
+      .mockResolvedValueOnce({
+        results: { 'docs/a.md': { exists: true, type: 'file' } },
+      })
+      .mockReturnValueOnce(delayedB.promise);
+
+    render(
+      <FileActionProvider workspacePath="/workspace">
+        <MenuProbe
+          testId="open-menu-a"
+          target={{ scope: 'workspace', path: 'docs/a.md' }}
+          options={{ onOpen: onOpenA, onClose: onCloseA }}
+        />
+        <MenuProbe
+          testId="open-menu-b"
+          target={{ scope: 'workspace', path: 'docs/b.md' }}
+          options={{ onOpen: onOpenB }}
+        />
+      </FileActionProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('open-menu-a')).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByTestId('open-menu-b')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('open-menu-a'));
+    await waitFor(() => expect(screen.getByTestId('file-context-menu')).toBeInTheDocument());
+    expect(onOpenA).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('open-menu-b'));
+    expect(screen.queryByTestId('file-context-menu')).not.toBeInTheDocument();
+    expect(onCloseA).toHaveBeenCalledTimes(1);
+    expect(onOpenB).not.toHaveBeenCalled();
+
+    await act(async () => {
+      delayedB.resolve({
+        results: { 'docs/b.md': { exists: true, type: 'file' } },
+      });
+      await delayedB.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('file-context-menu')).toBeInTheDocument());
+    expect(onOpenB).toHaveBeenCalledTimes(1);
   });
 
   it('does not renew an early local chunk while a later 200-path chunk is stalled', async () => {
