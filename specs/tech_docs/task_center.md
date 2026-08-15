@@ -103,7 +103,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 
 ## 4. Managed Task
 
-memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。
+memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。`memory_auto_update_batch` 是遍历多个候选存量 Session 的调度器，本身不拥有持久 Session binding：Task row 使用现有 schema 的非固定绑定形态 `runMode=new-session` 且不写 `preselectedSessionId`，但该 `managedKind` 明确绕过 Session Engine，不会为调度器新建 Session；实际运行时才在 queue authority 下逐个绑定存量 Session 并发送 Memory Update query。历史 single-session 行由配置 reconcile 原位归一。Memory Gardener / Molt 才是实际创建新 Session 执行 Skill 的独立 managed Task。
 
 Memory Gardener / Molt 的执行 Session 对用户保持隐藏，因此不发送逐次桌面通知，也不生成指向隐藏 Session 的 deep-link。Agent 设置中的 Evo 区域直接读取这两类 managed Task 的最近一条权威 run record，只展示最近一次执行成功或失败及其时间；Renderer 不从隐藏 Session 文本推断结果，也不复制一份独立运行状态。
 
