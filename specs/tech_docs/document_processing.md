@@ -151,7 +151,15 @@ AnyDoc 自身 package entry、展开与 asset hard cap 继续生效。上限不�
 
 ## 随包资源与构建
 
-权威供应链锁为 `src-tauri/document-worker/resource-lock.json`，生成脚本为 `scripts/prepare-document-processing.mjs`。脚本先下载到 `src-tauri/target/document-processing-cache`，按 size + SHA 校验后原子提交缓存；构建 Worker 使用 `cargo build --locked --release --target ...`；所有文件和 notices 放入 target staging。macOS 有 signing identity 时先 codesign native 文件和 Worker；Windows 同时提供 `WINDOWS_SIGNTOOL_PATH` 与 `WINDOWS_CERTIFICATE_SHA1` 时先做 Authenticode 签名与验证。manifest 最后按签名后的实际 bytes 生成，并记录每个 artifact 的来源及 signing kind/identity，再 rename 到 `src-tauri/resources/document-processing/v1`。生成目录不入 Git，由 Tauri resources 在构建时快照。
+权威供应链锁为 `src-tauri/document-worker/resource-lock.json`，唯一 prepare owner 为 `scripts/prepare-document-processing.mjs`。`setup.sh`、`setup_windows.ps1`、macOS/Windows dev build、三平台 release build 与 `npm run tauri:dev` 都只能调用该 owner，不得各自实现下载、展开、Worker 构建或签名逻辑。
+
+prepare owner 把生命周期分成三层：
+
+- `src-tauri/resources/document-processing-cache/downloads/` 是按锁定 digest 内容寻址的原始下载缓存；每次命中仍校验 regular file、size 与 SHA，损坏文件不得命中。旧版 `src-tauri/target/document-processing-cache` 中的有效原始文件仅作为一次性迁移源。
+- `.../prepared/<target>/<build-fingerprint>/` 是完整的已验证 bundle 缓存。fingerprint 覆盖 target、resource lock、prepare/helper 源码、Worker/AnyDoc/office-crypto 源码与 Cargo lock、固定 Rust toolchain identity 和签名 identity/配置；只有这些输入完全相同时才能复用，因此 warm build 不重复下载、展开、Worker build 或签名。
+- `src-tauri/resources/document-processing/v1` 只是当前 Tauri build 要快照的投影，不是缓存 authority。prepare 在仓库级跨进程锁内使用唯一 work/staging，完整校验 manifest 与所有 artifact 后才切换投影；切换失败会恢复上一份有效投影。
+
+持久缓存不入 Git，也不在 `npm run clean`/Cargo `target` 生命周期内；这是刻意的 repo-local derived cache，不读取用户级模型 cache，也不会随 App 打包。可用 `--offline` 验证全离线路径，缓存缺项时 fail closed；`--force` 只用于显式重建当前 fingerprint。构建 Worker 使用 `cargo build --locked --release --target ...`。macOS 有 signing identity 时先 codesign native 文件和 Worker；Windows 同时提供 `WINDOWS_SIGNTOOL_PATH` 与 `WINDOWS_CERTIFICATE_SHA1` 时先做 Authenticode 签名与验证。manifest 最后按签名后的实际 bytes 生成，并记录 fingerprint、每个 artifact 的来源及 signing kind/identity。
 
 正式目标：
 

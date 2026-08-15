@@ -107,6 +107,13 @@ cd ..
 echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
+# 准备 host target 的离线文档转换资源。setup 完成后用户可直接运行
+# `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
+echo -e "${BLUE}[5.5/6] 准备离线文档转换资源${NC}"
+node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs"
+echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
+echo ""
+
 # 准备默认工作区 (mino) — 每次拉取最新版本
 # .git 不保留：避免 Tauri 资源打包权限问题 + rerun-if-changed 性能问题
 echo -e "${BLUE}[6/6] 准备默认工作区 (mino)${NC}"

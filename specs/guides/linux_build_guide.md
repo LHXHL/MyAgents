@@ -50,6 +50,7 @@ sudo apt-get install -y \
 - `scripts/download_nodejs.sh` 下载 Node.js v24 Linux x64/arm64 tarball（按 `uname -m` 自动选择）
 - `npm install` 拉取依赖（包括 SDK platform optional dep `@anthropic-ai/claude-agent-sdk-linux-<arch>`）
 - Rust `cargo fetch`
+- 准备当前架构的离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
 - 克隆 mino 默认工作区
 
 ## 构建

@@ -553,6 +553,16 @@ try {
     Pop-Location
     Write-Host "OK - Rust 依赖下载完成" -ForegroundColor Green
 
+    Write-Host "`nStep 7.5/9: 准备离线文档转换资源" -ForegroundColor Blue
+    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  文档转换资源准备失败" -ForegroundColor Red
+        Write-Host "`n按回车键退出..." -ForegroundColor Yellow
+        Read-Host
+        exit 1
+    }
+    Write-Host "OK - 文档转换资源 ready" -ForegroundColor Green
+
     # 准备默认工作区 (mino) — 每次拉取最新版本
     # .git 不保留：避免 Tauri 资源打包权限问题 + rerun-if-changed 性能问题
     Write-Host "`nStep 8/9: 准备默认工作区 (mino)" -ForegroundColor Blue
