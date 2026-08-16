@@ -215,6 +215,18 @@ test('CLI bundle staging owns its complete mutable resource inventory', () => {
 });
 
 test('every setup, dev, and release entry point delegates document resources to the prepare owner', () => {
+  const macPreflight = buildMacos.indexOf(
+    'prepare-document-processing.mjs" "$TARGET" --check-prerequisites',
+  );
+  const macTargetBuildLoop = buildMacos.indexOf(
+    'for TARGET in "${BUILD_TARGETS[@]}"; do',
+    macPreflight + 1,
+  );
+  assert.ok(
+    macPreflight >= 0 && macPreflight < macTargetBuildLoop,
+    'macOS selected targets must run owner preflight before the app build loop',
+  );
+
   const macDevPrepare = buildDev.indexOf(
     'prepare-document-processing.mjs" "$DEV_DOCUMENT_TARGET"',
   );

@@ -169,7 +169,7 @@ prepare owner 把生命周期分成三层：
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 
-ONNX Runtime 官方 1.28 release 未提供 macOS x64 binary，因此该 target 从精确 commit `da9b5e364c465de65c49d91e696cd6485270757f`、固定 recipe 构建 x86_64 shared library；其余 target 使用锁定官方 archive。PDFium 全部使用 `chromium/7999` 锁定 archive。安装资源同时包含 AnyDoc/Paddle/ORT/PDFium license 与 PDFium 第三方 license tree；顶层 `THIRD_PARTY_NOTICES.md` 保留组件分类。
+ONNX Runtime 官方 1.28 release 未提供 macOS x64 binary，因此该 target 从精确 commit `da9b5e364c465de65c49d91e696cd6485270757f`、固定 recipe 构建 x86_64 shared library；其余 target 使用锁定官方 archive。该源码路径由 prepare owner 在 cache miss 后、任何文档资源网络/源码 mutation 前统一检查 Git、Python 3.8+、CMake 3.28+ 与 Apple Clang；`--check-prerequisites` 提供给平台 build 做早期只读预检。已有有效 prepared bundle 时不要求源码工具，脚本也不自动安装系统包。PDFium 全部使用 `chromium/7999` 锁定 archive。安装资源同时包含 AnyDoc/Paddle/ORT/PDFium license 与 PDFium 第三方 license tree；顶层 `THIRD_PARTY_NOTICES.md` 保留组件分类。
 
 App 启动时 Manager 校验 manifest target/pipeline、Worker 可执行位和 Worker/native/model/dictionary 的 size + SHA；资源问题只让 document admission fail closed，不阻止 MyAgents UI 启动。Worker 启动后再次校验它实际要加载的五个资源。运行时不得下载、访问 Hugging Face 或使用用户 cache。
 

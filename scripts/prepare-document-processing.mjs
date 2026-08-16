@@ -24,6 +24,7 @@ import {
   validatePreparedBundle,
   withResourcePrepareLock,
 } from './document-processing-resource-cache.mjs';
+import { macX64SourceBuildPrerequisiteFailures } from './document-processing-build-tools.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appVersion = JSON.parse(
@@ -36,18 +37,25 @@ const args = process.argv.slice(2);
 const positional = args.filter((argument) => !argument.startsWith('--'));
 const unknownFlags = args.filter(
   (argument) =>
-    argument.startsWith('--') && !['--force', '--offline'].includes(argument),
+    argument.startsWith('--') &&
+    !['--force', '--offline', '--check-prerequisites'].includes(argument),
 );
 if (positional.length > 1 || unknownFlags.length > 0) {
   throw new Error(
-    'Usage: node scripts/prepare-document-processing.mjs [target] [--force] [--offline]',
+    'Usage: node scripts/prepare-document-processing.mjs [target] [--force] [--offline] [--check-prerequisites]',
   );
 }
 const target = positional[0] ?? hostDocumentTarget();
 const force = args.includes('--force');
+const checkPrerequisites = args.includes('--check-prerequisites');
 const offline =
   args.includes('--offline') ||
   process.env.MYAGENTS_DOCUMENT_RESOURCES_OFFLINE === '1';
+if (checkPrerequisites && (force || args.includes('--offline'))) {
+  throw new Error(
+    '--check-prerequisites cannot be combined with --force or --offline',
+  );
+}
 if (!lock.targets[target])
   throw new Error(`Unsupported document-processing target: ${target}`);
 const targetLock = lock.targets[target];
@@ -87,6 +95,48 @@ const requiredLegalFiles = [
 const cacheStats = { hits: 0, migrated: 0, downloaded: 0 };
 let extractRoot;
 let stageRoot;
+
+function probeCommand(command, commandArgs) {
+  try {
+    return execFileSync(command, commandArgs, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function assertSourceBuildPrerequisites() {
+  if (!targetLock.onnxRuntime.sourceBuild) return;
+  const failures = macX64SourceBuildPrerequisiteFailures({
+    gitVersion: probeCommand('git', ['--version']),
+    pythonVersion: probeCommand('python3', ['--version']),
+    cmakeVersion: probeCommand('cmake', ['--version']),
+    appleClangPath: probeCommand('xcrun', ['--find', 'clang']),
+    appleClangPlusPlusPath: probeCommand('xcrun', ['--find', 'clang++']),
+  });
+  if (failures.length === 0) {
+    console.log(
+      `Document-processing source build prerequisites ready for ${target}`,
+    );
+    return;
+  }
+
+  const details = failures.flatMap((failure) => [
+    `- ${failure.name}: ${failure.reason}`,
+    `  Install: ${failure.install}`,
+    `  Verify: ${failure.verify}`,
+  ]);
+  throw new Error(
+    [
+      `Document-processing source build prerequisites are missing for ${target}.`,
+      'MyAgents builds ONNX Runtime from its locked source because upstream does not publish a macOS x64 binary.',
+      ...details,
+      'The source cache is preserved; install the missing tools and rerun the same command.',
+    ].join('\n'),
+  );
+}
 
 mkdirSync(cacheRoot, { recursive: true });
 
@@ -448,6 +498,19 @@ function publishPreparedBundle(source) {
 await withResourcePrepareLock(
   cacheRoot,
   async () => {
+    if (checkPrerequisites) {
+      if (
+        validatePreparedBundle(publishRoot, expectedBundle) ||
+        validatePreparedBundle(preparedRoot, expectedBundle)
+      ) {
+        console.log(
+          `Document-processing build prerequisites not needed for ${target} (prepared cache hit)`,
+        );
+        return;
+      }
+      assertSourceBuildPrerequisites();
+      return;
+    }
     recoverProjection();
     if (!force && validatePreparedBundle(publishRoot, expectedBundle)) {
       console.log(
@@ -467,6 +530,11 @@ await withResourcePrepareLock(
         `Offline prepared document bundle cache miss for ${target} (${preparedRoot}); run the prepare command online once`,
       );
     }
+
+    // This is deliberately after prepared-cache validation but before any
+    // download/source mutation: a warm cache remains fully reusable without
+    // local source-build tools, while a cold build fails before large fetches.
+    assertSourceBuildPrerequisites();
 
     if (existsSync(preparedRoot))
       rmSync(preparedRoot, { recursive: true, force: true });

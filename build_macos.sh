@@ -163,6 +163,14 @@ echo -e "${GREEN}  ✓ mino 内置工作区模板已就绪${NC}"
 # Rust toolchain/components/target 必须与 rust-toolchain.toml 和 CI 对齐。
 "${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh" "${BUILD_TARGETS[@]}"
 
+# Fail before TypeScript/app builds or large source downloads when a selected
+# target has a cold document-resource cache but lacks its source-build tools.
+# The prepare owner keeps this target/cache-aware; build_macos does not mirror
+# CMake/Python/Git version policy or install system packages itself.
+for TARGET in "${BUILD_TARGETS[@]}"; do
+    node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$TARGET" --check-prerequisites
+done
+
 echo -e "${GREEN}✓ 依赖检查通过${NC}"
 echo ""
 

@@ -324,6 +324,21 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
 ## Resources 缓存问题
 
+### 问题：macOS Intel 构建提示缺少 ONNX Runtime 源码构建工具
+
+ONNX Runtime 1.28 没有提供 macOS x64 预编译包，因此 `x86_64-apple-darwin` 的冷构建需要 Git、Python 3.8+、CMake 3.28+ 与 Apple Clang。`build_macos.sh` 会在 TypeScript/App 构建和 ONNX Runtime 源码下载前检查；直接运行 prepare 命令也会在 cache miss 后、文档资源网络动作前执行同一检查。固定 Rust toolchain 仍会先由现有 owner 准备，因为它既是 App 构建依赖，也是 prepared fingerprint 的输入。
+
+常见修复：
+
+```bash
+xcode-select --install
+brew install cmake python
+cmake --version
+python3 --version
+```
+
+构建脚本不会自动安装系统包。已经完整验证的 prepared cache 可以继续离线复用，不要求本机保留源码构建工具；失败前已经下载的 source cache 也会保留，安装缺失工具后直接重跑即可。
+
 ### 问题：每次构建都重新下载或签名文档转换资源
 
 文档 Worker、OCR 模型、ONNX Runtime 与 PDFium 由统一入口准备：
