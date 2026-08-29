@@ -86,6 +86,8 @@ export interface SessionMetadata {
     runtimeSessionId?: string;
     /** Crash-recoverable, bounded commit intent for a conversation rewind. */
     pendingConversationMutation?: PendingConversationMutation;
+    /** Crash-recoverable coordination journal for a DSH native mutation. */
+    pendingDshMutation?: PendingDshMutation;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */
     runtimeUsageTotals?: MessageUsage;
     /**
@@ -264,6 +266,45 @@ export type PendingConversationMutation =
         replacementSdkSessionId: string;
         sourceMessageCount: number;
         targetMessageCount: number;
+    };
+
+type PendingDshMutationBase = {
+    schemaVersion: 1;
+    clientMutationId: string;
+    sourceRuntimeSessionId: string;
+    sourceMessageCount: number;
+    /** Persisted after prepare and deliberately optional for prepare-response crash recovery. */
+    token?: string;
+};
+
+export type PendingDshMutation =
+    | PendingDshMutationBase & {
+        kind: 'dsh-fork';
+        sourceAssistantMessageId: string;
+        sourceRuntimeTurnId: string;
+        targetProductSessionId: string;
+        targetRuntimeSessionId: string;
+        targetRuntimeHome: string;
+        targetPersistenceRef: string;
+        targetWorkspaceIdentity: string;
+        targetMessageCount: number;
+        settlement?: 'commit' | 'abort';
+        sourceStableBoundaryId?: string;
+    }
+    | PendingDshMutationBase & {
+        kind: 'dsh-rewind';
+        targetUserMessageId: string;
+        /** The retained assistant turn immediately before the removed user turn. */
+        targetRuntimeTurnId: string;
+        targetMessageCount: number;
+        targetStableBoundaryId?: string;
+        sourceTranscriptPostcondition?: string;
+        targetTranscriptPostcondition?: string;
+    }
+    | PendingDshMutationBase & {
+        kind: 'dsh-delete';
+        /** DSH has tombstoned native state; Product must finish purge and removal. */
+        runtimeCommitted?: true;
     };
 
 /**

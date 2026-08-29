@@ -33,11 +33,13 @@ import type {
   SessionStartOptions,
   UnifiedEventCallback,
 } from '../../runtimes/types';
+import { recoverPendingDshMutation } from '../../session-engine/dsh-mutation-recovery';
 import { DshAttachmentRegistry } from './attachments';
 import { DshRuntimeEventProjector } from './event-projector';
 import { compileDshExtensionSnapshot } from './extension-compiler';
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation } from './installation';
+import { DshMutationController } from './mutations';
 import {
   compileDshModelExecutionProfile,
   type DshModelExecutionProfile,
@@ -342,6 +344,7 @@ class DshProcess implements RuntimeProcess {
     readonly runtimeSessionId: string,
     readonly extensionDigest: string,
     readonly tools: readonly string[],
+    readonly productTranscriptChangedAtStartup: boolean,
   ) {
     this.configuration = configuration;
     this.runtimeGeneration = string(host.identity?.runtimeGeneration, 'DSH Runtime generation');
@@ -373,6 +376,38 @@ class DshProcess implements RuntimeProcess {
 function dshProcess(process: RuntimeProcess): DshProcess {
   if (!(process instanceof DshProcess)) throw new Error('Runtime process is not owned by DSH');
   return process;
+}
+
+export type DshConversationMutationContext = Readonly<{
+  controller: DshMutationController;
+  runtimeSessionId: string;
+  runtimeHome: string;
+  workspaceIdentity: string;
+}>;
+
+export function getDshConversationMutationContext(
+  runtimeProcess: RuntimeProcess,
+): DshConversationMutationContext {
+  const process = dshProcess(runtimeProcess);
+  return Object.freeze({
+    controller: new DshMutationController(process.host, process.runtimeSessionId),
+    runtimeSessionId: process.runtimeSessionId,
+    runtimeHome: process.host.runtimeHome,
+    workspaceIdentity: process.executionEnvironment.workspace.identity,
+  });
+}
+
+export async function createDshForkTargetFacts(
+  productSessionId: string,
+): Promise<Readonly<{
+  runtimeHome: string;
+  persistenceRef: string;
+}>> {
+  const roots = await createOwnedRoots(productSessionId);
+  return Object.freeze({
+    runtimeHome: roots.runtimeHome,
+    persistenceRef: `product-session-${hash(productSessionId)}`,
+  });
 }
 
 export class DshRuntime implements AgentRuntime {
@@ -585,14 +620,33 @@ export class DshRuntime implements AgentRuntime {
         interactionScenario: OFFICIAL_INTERACTION_REVISION,
         ...(options.resumeSessionId ? { runtimeSessionId: options.resumeSessionId } : {}),
       };
-      const binding = await host.request(
+      let binding = await host.request(
         options.resumeSessionId ? 'session/resume' : 'session/create',
         bindingParams,
       );
+      const runtimeSessionId = string(binding.runtimeSessionId, 'DSH Runtime Session id');
+      const recovery = await recoverPendingDshMutation({
+        productSessionId: options.sessionId,
+        runtimeSessionId,
+        binding,
+        controller: new DshMutationController(host, runtimeSessionId),
+      });
+      if (recovery.productDeleted) {
+        throw new Error('The DSH Product Session was deleted during recovery');
+      }
+      if (binding.state === 'recovery_required' || recovery.recovered) {
+        binding = await host.request('session/resume', {
+          ...bindingParams,
+          clientOperationId: `session-rebind-${randomUUID()}`,
+          runtimeSessionId,
+        });
+      }
       if (binding.state !== 'ready') {
         throw new Error(`DSH Session requires recovery: ${String(binding.reason ?? 'unknown')}`);
       }
-      const runtimeSessionId = string(binding.runtimeSessionId, 'DSH Runtime Session id');
+      if (binding.runtimeSessionId !== runtimeSessionId) {
+        throw new Error('DSH recovery changed the Runtime Session identity');
+      }
       const toolCatalog = object(binding.toolCatalog, 'DSH tool catalog');
       const boundExtensionCatalog = object(binding.extensionCatalog, 'DSH bound extension catalog');
       if (boundExtensionCatalog.digest !== extensionDigest) {
@@ -612,6 +666,7 @@ export class DshRuntime implements AgentRuntime {
         runtimeSessionId,
         extensionDigest,
         tools,
+        recovery.recovered,
       );
       await this.applyConfiguration(processValue, configuration);
       await this.applyPlanMode(

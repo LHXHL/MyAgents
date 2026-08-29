@@ -517,6 +517,7 @@ async function createHarness(
     getCurrentRuntimeSource: () => options.runtimeSource ?? 'system-cli',
     getCurrentRuntimeType: () => 'codex',
     getExternalRuntime: () => runtime,
+    isDshRuntime: (type: RuntimeType | undefined) => type === 'dsh',
     isExternalRuntime: (type: RuntimeType | undefined) => Boolean(type && type !== 'builtin'),
     isRuntimeSupported: () => true,
   }));

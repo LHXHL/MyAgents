@@ -304,6 +304,10 @@ export class DshRuntimeProcessHost {
     return this.child?.pid;
   }
 
+  get runtimeHome(): string {
+    return this.options.initialize.runtimeHome;
+  }
+
   async waitForExit(): Promise<number> {
     const exit = await this.exitPromise;
     return exit?.code ?? (exit?.signal ? 1 : 0);

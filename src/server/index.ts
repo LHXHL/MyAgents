@@ -489,7 +489,6 @@ import { getHomeDirOrNull } from './utils/platform';
 import { getScriptDir } from './utils/runtime';
 import {
   createSession,
-  deleteSession,
   getAllSessionMetadata,
   getSessionData,
   getSessionDataFromMetadata,
@@ -499,6 +498,7 @@ import {
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
+import { deleteProductSessionWithRuntime } from './session-engine/dsh-delete';
 import { findProjectAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
 import {
   projectCapabilitySnapshotForWire,
@@ -2902,7 +2902,7 @@ async function main() {
           return jsonResponse({ success: false, reason: 'missing-authority', error: 'Session deletion requires the Rust lifecycle authority.' }, 403);
         }
 
-        const deletion = await deleteSession(sessionId, { kind: 'user-delete' });
+        const deletion = await deleteProductSessionWithRuntime(sessionId);
         if (!deletion.deleted) {
           if (deletion.reason === 'protected-session') {
             return jsonResponse({ success: false, reason: deletion.reason, error: 'System maintenance session is not user-editable.' }, 403);

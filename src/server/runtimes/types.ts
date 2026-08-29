@@ -117,6 +117,8 @@ export interface RuntimeProcess {
   readonly pid: number;
   /** Optional adapter-owned identity for generation-scoped projections/callbacks. */
   readonly runtimeGeneration?: string;
+  /** Runtime admission completed a durable mutation that changed Product transcript state. */
+  readonly productTranscriptChangedAtStartup?: boolean;
   /** Runtime-native Skill names confirmed after startup, when the adapter can inspect them. */
   loadedSkillNames?: readonly string[];
   /** Write a line to the process stdin */

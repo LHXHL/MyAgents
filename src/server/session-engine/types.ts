@@ -373,6 +373,7 @@ export type ConversationOperationErrorCode =
   | 'session_busy'
   | 'anchor_unavailable'
   | 'native_fork_failed'
+  | 'native_mutation_failed'
   | 'persistence_failed'
   | 'storage_consistency_error'
   | 'restore_failed';

@@ -64,9 +64,18 @@ import {
 import {
   commitPreparedSessionForFirstUserTurn,
   commitCodexConversationRewind,
+  abortDshForkProduct,
+  beginDshForkMutation,
+  beginDshRewindMutation,
+  commitDshForkProduct,
+  commitDshRewindProduct,
   deleteSession,
+  recordPreparedDshFork,
+  recordPreparedDshRewind,
+  requestDshForkAbort,
   resolvePendingConversationMutation,
   saveSessionMetadata,
+  stageDshForkProduct,
   updateSessionMetadata,
   getSessionMetadata,
   getSessionData,
@@ -508,6 +517,12 @@ let currentTurnTraceSessionId = '';
 let currentTurnAnalyticsSource: TurnAnalyticsSource | null = null;
 let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let externalSessionMutationInFlight = false;
+
+function hasPendingDshConversationMutation(): boolean {
+  if (getCurrentRuntimeType() !== 'dsh') return false;
+  const sessionId = getExternalLifecycleSessionId();
+  return Boolean(sessionId && getSessionMetadata(sessionId)?.pendingDshMutation);
+}
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
@@ -2179,7 +2194,7 @@ export async function updateExternalRuntimeConfig(
     getExternalOperationQueueLength(),
     isExternalOperationDrainInFlight(),
     isExternalTurnFinalizationInFlight(),
-  ) || externalSessionMutationInFlight;
+  ) || externalSessionMutationInFlight || hasPendingDshConversationMutation();
   const noop = isExternalRuntimeConfigPatchNoopAgainstDesired(
     normalized,
     { allowLiveReportedModel: !shouldDefer },
@@ -3277,7 +3292,13 @@ async function _doStartExternalSession(options: {
       && options.dispatchPromotion
       && options.requiredSystemSkill,
     );
-    if (options.initialMessage && !deferRequiredAdmission) {
+    const deferDshMutationRecoveryAdmission = Boolean(
+      options.initialMessage
+      && runtimeType === 'dsh'
+      && existingMetadataAtStart?.pendingDshMutation,
+    );
+    const deferInitialAdmission = deferRequiredAdmission || deferDshMutationRecoveryAdmission;
+    if (options.initialMessage && !deferInitialAdmission) {
       const clientUserMessageId = await admitInitialMessage();
       if (!options.dispatchPromotion) {
         if (!clientUserMessageId) {
@@ -3346,6 +3367,14 @@ async function _doStartExternalSession(options: {
     if (process.exited) {
       throw new Error(`${runtimeType} process exited before startup completed`);
     }
+    if (process.productTranscriptChangedAtStartup) {
+      const recoveredTranscript = await loadSessionTranscript(options.sessionId);
+      setExternalSessionMessages(
+        options.sessionId,
+        recoveredTranscript.messages,
+        recoveredTranscript.cursor,
+      );
+    }
     startedProcess = process;
     setExternalActiveProcess(process, enabledOfficialToolIds, externalSkillAdmission.revision);
     if (managedCodexExtensionSnapshot) {
@@ -3361,7 +3390,7 @@ async function _doStartExternalSession(options: {
     if (options.requiredSystemSkill) {
       await requireCurrentExternalSkill(options.requiredSystemSkill, externalSkillAdmission);
     }
-    if (deferRequiredAdmission) {
+    if (deferInitialAdmission) {
       await admitInitialMessage();
     }
     if (options.dispatchPromotion && options.initialMessage) {
@@ -4445,10 +4474,14 @@ export function enqueueExternalSendForDesktop(
   // Return the queueId SYNCHRONOUSLY so /chat/send can hand it back to the renderer, which
   // reconciles its optimistic `opt-` pill with this real queueId (exactly like the builtin
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
-  if (externalSessionMutationInFlight || shouldQueueExternalOperation(getExternalLifecycleState(), {
-    responseMode: queueResponseMode,
-    canSteerActiveTurn,
-  })) {
+  if (
+    externalSessionMutationInFlight
+    || hasPendingDshConversationMutation()
+    || shouldQueueExternalOperation(getExternalLifecycleState(), {
+      responseMode: queueResponseMode,
+      canSteerActiveTurn,
+    })
+  ) {
     const queued = enqueueExternalTurnBoundaryOperation(
       text,
       images,
@@ -4569,10 +4602,11 @@ export function enqueueExternalSendForIm(
 } {
   if (
     externalSessionMutationInFlight
+    || hasPendingDshConversationMutation()
     || hasExternalSendInFlight()
     || shouldQueueExternalOperation(getExternalLifecycleState(), {
-    responseMode: 'turn',
-    canSteerActiveTurn: false,
+      responseMode: 'turn',
+      canSteerActiveTurn: false,
     })
   ) {
     return enqueueExternalTurnBoundaryOperation(
@@ -4624,12 +4658,20 @@ export function enqueueExternalSendForIm(
  * chat:message-complete on the SSE wire (see persistTurnResult idle-ordering notes).
  */
 function drainExternalQueueAfterTurn(): void {
-  if (externalSessionMutationInFlight || !canDrainExternalOperations(getExternalLifecycleState())) return;
+  if (
+    externalSessionMutationInFlight
+    || hasPendingDshConversationMutation()
+    || !canDrainExternalOperations(getExternalLifecycleState())
+  ) return;
   void drainExternalOperationsAfterTurn();
 }
 
 async function drainExternalOperationsAfterTurn(): Promise<void> {
-  if (externalSessionMutationInFlight || !canDrainExternalOperations(getExternalLifecycleState())) return;
+  if (
+    externalSessionMutationInFlight
+    || hasPendingDshConversationMutation()
+    || !canDrainExternalOperations(getExternalLifecycleState())
+  ) return;
   const drainGeneration = getExternalOperationGeneration();
   setExternalOperationDrainInFlight(true);
   let reservedItem: ReturnType<typeof reserveExternalOperationForDrain> | undefined;
@@ -5171,6 +5213,7 @@ export function isExternalSessionActive(): boolean {
 /** External turn admission includes work accepted into the serialized queue. */
 export function isExternalSessionBusy(): boolean {
   return externalSessionMutationInFlight
+    || hasPendingDshConversationMutation()
     || isExternalTurnBusy()
     || hasExternalSendInFlight()
     || hasExternalQueuedOperations()
@@ -5292,12 +5335,14 @@ export type ExternalConversationOperationResult = {
     | 'session_busy'
     | 'anchor_unavailable'
     | 'native_fork_failed'
+    | 'native_mutation_failed'
     | 'persistence_failed'
     | 'storage_consistency_error'
     | 'restore_failed';
   content?: string;
   attachments?: SessionMessage['attachments'];
   rewindScope?: 'conversation-only';
+  fileRewindStatus?: 'complete' | 'partial' | 'failed' | 'not_attempted';
   newSessionId?: string;
   agentDir?: string;
   title?: string;
@@ -5357,7 +5402,33 @@ async function withExternalConversationMutation(
     return await operation();
   } finally {
     lease.release();
+    await recoverPendingDshConversationMutationAfterLease();
     setTimeout(drainExternalQueueAfterTurn, 0);
+  }
+}
+
+async function recoverPendingDshConversationMutationAfterLease(): Promise<void> {
+  if (!hasPendingDshConversationMutation()) return;
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  if (!sessionId || !workspacePath) {
+    restartSidecarForConversationMutation('storage-inconsistent');
+    return;
+  }
+  const scenario = getExternalLifecycleScenario();
+  const stopped = !hasExternalRuntimeProcess()
+    || await stopExternalSession({ preserveQueue: true, reason: 'conversation-mutation' });
+  if (!stopped) {
+    restartSidecarForConversationMutation('source-stop-unconfirmed');
+    return;
+  }
+  const recovery = await prewarmExternalSession({
+    sessionId,
+    workspacePath,
+    scenario,
+  }).catch(() => ({ prewarmed: false }));
+  if (!recovery.prewarmed && getSessionMetadata(sessionId)?.pendingDshMutation) {
+    restartSidecarForConversationMutation('storage-inconsistent');
   }
 }
 
@@ -5377,8 +5448,280 @@ async function getCodexConversationBranchPair(): Promise<ReturnType<typeof getEx
   return active && !active.process.exited ? active : null;
 }
 
+async function getDshConversationMutationPair(): Promise<ReturnType<typeof getExternalActivePair>> {
+  let active = getExternalActivePair();
+  if (active && !active.process.exited) return active;
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  if (!sessionId || !workspacePath) return null;
+  const prewarm = await prewarmExternalSession({
+    sessionId,
+    workspacePath,
+    scenario: getExternalLifecycleScenario(),
+  });
+  if (!prewarm.prewarmed && !hasExternalRuntimeProcess()) return null;
+  active = getExternalActivePair();
+  return active && !active.process.exited ? active : null;
+}
+
+function dshMutationFailureResult(
+  error: unknown,
+  errorCode: 'native_fork_failed' | 'native_mutation_failed' | 'persistence_failed' = 'native_mutation_failed',
+): ExternalConversationOperationResult {
+  return {
+    success: false,
+    status: errorCode === 'persistence_failed' ? 500 : 502,
+    errorCode,
+    error: error instanceof Error ? error.message : 'DSH conversation mutation failed',
+  };
+}
+
+function dshStoreFailureResult(
+  result: { success: false; reason: string; error: string },
+): ExternalConversationOperationResult {
+  return {
+    success: false,
+    status: result.reason === 'precondition_failed' ? 409 : 500,
+    errorCode: result.reason === 'storage_consistency_error'
+      ? 'storage_consistency_error'
+      : result.reason === 'precondition_failed'
+        ? 'anchor_unavailable'
+        : 'persistence_failed',
+    error: result.error,
+  };
+}
+
+async function forkDshConversation(
+  assistantMessageId: string,
+): Promise<ExternalConversationOperationResult> {
+  return withExternalConversationMutation(async () => {
+    const sessionId = getExternalLifecycleSessionId();
+    const source = sessionId ? getSessionMetadata(sessionId) : null;
+    if (!source?.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The DSH Session binding is unavailable' };
+    }
+    const active = await getDshConversationMutationPair();
+    if (!active) {
+      return { success: false, status: 502, errorCode: 'native_mutation_failed', error: 'The DSH Runtime is unavailable' };
+    }
+    const {
+      createDshForkTargetFacts,
+      getDshConversationMutationContext,
+    } = await import('../integrated-runtimes/dsh/runtime');
+    let context;
+    try {
+      context = getDshConversationMutationContext(active.process);
+    } catch (error) {
+      return dshMutationFailureResult(error, 'native_fork_failed');
+    }
+    if (context.runtimeSessionId !== source.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The active DSH Runtime owns a different Session' };
+    }
+
+    const forked = createSessionMetadata(source.agentDir, snapshotForForkedSession(source));
+    forked.runtimeSessionId = `dsh-${crypto.randomUUID()}`;
+    forked.title = `🌿 ${source.title || 'Chat'}`;
+    forked.titleSource = 'auto';
+    forked.origin = { kind: 'desktop', surface: 'session_fork' };
+    forked.materializationState = 'prepared';
+    forked.materializationSourceSessionId = sessionId;
+    const targetFacts = await createDshForkTargetFacts(forked.id);
+    const clientMutationId = `dsh-fork-${crypto.randomUUID()}`;
+    const begun = await beginDshForkMutation({
+      sourceSessionId: sessionId,
+      sourceAssistantMessageId: assistantMessageId,
+      clientMutationId,
+      targetProductSessionId: forked.id,
+      targetRuntimeSessionId: forked.runtimeSessionId,
+      targetRuntimeHome: targetFacts.runtimeHome,
+      targetPersistenceRef: targetFacts.persistenceRef,
+      targetWorkspaceIdentity: context.workspaceIdentity,
+    });
+    if (!begun.success) return dshStoreFailureResult(begun);
+
+    let prepared;
+    try {
+      prepared = await context.controller.prepareFork({
+        clientMutationId,
+        sourceRuntimeTurnId: begun.value.intent.sourceRuntimeTurnId,
+        targetRuntimeHome: targetFacts.runtimeHome,
+        targetPersistenceRef: targetFacts.persistenceRef,
+        targetWorkspaceIdentity: context.workspaceIdentity,
+        targetRuntimeSessionId: forked.runtimeSessionId,
+      });
+    } catch (error) {
+      // Runtime prepare can commit before a transport failure. The journal is
+      // intentionally retained so restart can replay this exact mutation ID.
+      return dshMutationFailureResult(error, 'native_fork_failed');
+    }
+    const recorded = await recordPreparedDshFork({
+      sourceSessionId: sessionId,
+      clientMutationId,
+      token: prepared.mutation.token,
+      sourceStableBoundaryId: prepared.boundary.stableBoundaryId,
+    });
+    if (!recorded.success) return dshStoreFailureResult(recorded);
+
+    const staged = await stageDshForkProduct({
+      sourceSessionId: sessionId,
+      clientMutationId,
+      targetMetadata: forked,
+      targetMessages: begun.value.targetMessages,
+    });
+    if (!staged.success) {
+      const abortIntent = await requestDshForkAbort({
+        sourceSessionId: sessionId,
+        clientMutationId,
+        token: prepared.mutation.token,
+      });
+      if (!abortIntent.success) return dshStoreFailureResult(abortIntent);
+      try {
+        const aborted = await context.controller.abortFork(clientMutationId, prepared.mutation.token);
+        if (aborted.state === 'aborted') {
+          await abortDshForkProduct({ sourceSessionId: sessionId, clientMutationId });
+        }
+      } catch {
+        // Both durable journals remain available for restart recovery.
+      }
+      return dshStoreFailureResult(staged);
+    }
+    let committed = prepared.mutation;
+    if (committed.state !== 'committed') {
+      try {
+        committed = await context.controller.commitFork(clientMutationId, committed.token);
+      } catch (error) {
+        return dshMutationFailureResult(error, 'native_fork_failed');
+      }
+    }
+    if (committed.state !== 'committed') {
+      return dshMutationFailureResult(new Error(`DSH fork settled as ${committed.state}`), 'native_fork_failed');
+    }
+    const product = await commitDshForkProduct({
+      sourceSessionId: sessionId,
+      clientMutationId,
+      token: committed.token,
+    });
+    if (!product.success) return dshStoreFailureResult(product);
+    return {
+      success: true,
+      newSessionId: product.value.id,
+      agentDir: product.value.agentDir,
+      title: product.value.title,
+    };
+  });
+}
+
+async function rewindDshConversation(
+  userMessageId: string,
+): Promise<ExternalConversationOperationResult> {
+  let restart: { sessionId: string; workspacePath: string; scenario: InteractionScenario } | undefined;
+  const result = await withExternalConversationMutation(async () => {
+    const sessionId = getExternalLifecycleSessionId();
+    const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+    if (!metadata?.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The DSH Session binding is unavailable' };
+    }
+    const active = await getDshConversationMutationPair();
+    if (!active) {
+      return { success: false, status: 502, errorCode: 'native_mutation_failed', error: 'The DSH Runtime is unavailable' };
+    }
+    const { getDshConversationMutationContext } = await import('../integrated-runtimes/dsh/runtime');
+    let context;
+    try {
+      context = getDshConversationMutationContext(active.process);
+    } catch (error) {
+      return dshMutationFailureResult(error);
+    }
+    if (context.runtimeSessionId !== metadata.runtimeSessionId) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The active DSH Runtime owns a different Session' };
+    }
+    const clientMutationId = `dsh-rewind-${crypto.randomUUID()}`;
+    const begun = await beginDshRewindMutation({
+      sessionId,
+      targetUserMessageId: userMessageId,
+      clientMutationId,
+    });
+    if (!begun.success) return dshStoreFailureResult(begun);
+
+    let prepared;
+    try {
+      const history = await context.controller.readHistory();
+      const { stableBoundaryForRuntimeTurn } = await import('../integrated-runtimes/dsh/mutations');
+      const boundary = stableBoundaryForRuntimeTurn(history, begun.value.intent.targetRuntimeTurnId);
+      const mutation = await context.controller.prepareRewind({
+        clientMutationId,
+        target: boundary,
+        sourceTranscriptPostcondition: history.transcriptPostcondition,
+      });
+      prepared = { mutation, boundary, history };
+    } catch (error) {
+      return dshMutationFailureResult(error);
+    }
+    const recorded = await recordPreparedDshRewind({
+      sessionId,
+      clientMutationId,
+      token: prepared.mutation.token,
+      targetStableBoundaryId: prepared.boundary.stableBoundaryId,
+      sourceTranscriptPostcondition: prepared.history.transcriptPostcondition,
+      targetTranscriptPostcondition: prepared.boundary.transcriptPostcondition,
+    });
+    if (!recorded.success) return dshStoreFailureResult(recorded);
+    let committed = prepared.mutation;
+    if (committed.state !== 'committed') {
+      try {
+        committed = await context.controller.commitRewind(clientMutationId, committed.token);
+      } catch (error) {
+        return dshMutationFailureResult(error);
+      }
+    }
+    if (committed.state !== 'committed') {
+      return dshMutationFailureResult(new Error(`DSH rewind settled as ${committed.state}`));
+    }
+    const product = await commitDshRewindProduct({
+      sessionId,
+      clientMutationId,
+      token: committed.token,
+    });
+    if (!product.success) return dshStoreFailureResult(product);
+    const transcript = await loadSessionTranscript(sessionId);
+    setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
+    const stopped = !hasExternalRuntimeProcess()
+      || await stopExternalSession({ reason: 'conversation-mutation' });
+    if (!stopped) {
+      restartSidecarForConversationMutation('source-stop-unconfirmed');
+      return {
+        success: true,
+        content: begun.value.targetUserMessage.content,
+        attachments: begun.value.targetUserMessage.attachments,
+        fileRewindStatus: 'complete',
+        errorCode: 'restore_failed',
+        error: 'The conversation was rewound and the DSH Sidecar is restarting',
+      };
+    }
+    restart = {
+      sessionId,
+      workspacePath: metadata.agentDir,
+      scenario: getExternalLifecycleScenario(),
+    };
+    return {
+      success: true,
+      content: begun.value.targetUserMessage.content,
+      attachments: begun.value.targetUserMessage.attachments,
+      fileRewindStatus: 'complete',
+    };
+  });
+  if (restart) {
+    void prewarmExternalSession({
+      sessionId: restart.sessionId,
+      workspacePath: restart.workspacePath,
+      scenario: restart.scenario,
+    }).catch(() => undefined);
+  }
+  return result;
+}
+
 function restartSidecarForConversationMutation(reason: 'storage-inconsistent' | 'source-stop-unconfirmed'): void {
-  console.error(`[external-session] Codex conversation mutation requires a clean Sidecar restart reason=${reason}`);
+  console.error(`[external-session] Conversation mutation requires a clean Sidecar restart reason=${reason}`);
   const timer = setTimeout(() => process.kill(process.pid, 'SIGTERM'), 0);
   timer.unref();
 }
@@ -5409,6 +5752,9 @@ function startCodexReplacementPrewarm(options: {
 export async function rewindExternalConversation(
   userMessageId: string,
 ): Promise<ExternalConversationOperationResult> {
+  if (getCurrentRuntimeType() === 'dsh') {
+    return rewindDshConversation(userMessageId);
+  }
   if (getCurrentRuntimeType() !== 'codex') {
     return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation rewind is only supported by Codex' };
   }
@@ -5526,6 +5872,9 @@ export async function rewindExternalConversation(
 export async function forkExternalConversation(
   assistantMessageId: string,
 ): Promise<ExternalConversationOperationResult> {
+  if (getCurrentRuntimeType() === 'dsh') {
+    return forkDshConversation(assistantMessageId);
+  }
   if (getCurrentRuntimeType() !== 'codex') {
     return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation fork is only supported by Codex' };
   }
@@ -5985,7 +6334,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       // reported one. Null omits the metadata key, preserving the previous value.
       contextUsage: turnContextUsage,
       lastActiveAt: terminalActivityAt,
-      runtimeTurnAnchor: getCurrentRuntimeType() === 'codex'
+      runtimeTurnAnchor: (getCurrentRuntimeType() === 'codex' || getCurrentRuntimeType() === 'dsh')
         ? runtimeTurnAnchor ?? undefined
         : undefined,
     });
@@ -6385,7 +6734,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
   switch (event.kind) {
     case 'root_turn_admitted':
-      if (getCurrentRuntimeType() === 'codex') {
+      if (getCurrentRuntimeType() === 'codex' || getCurrentRuntimeType() === 'dsh') {
         setExternalRuntimeTurnAnchor({
           turnId: event.runtimeTurnId,
           rootUserMessageId: event.clientUserMessageId,

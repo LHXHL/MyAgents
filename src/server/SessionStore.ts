@@ -18,10 +18,11 @@ import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSyn
 import { homedir } from 'os';
 import { join } from 'path';
 
-import type { PendingConversationMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { PendingConversationMutation, PendingDshMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
+import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import {
     normalizeSessionOrigin,
@@ -621,6 +622,8 @@ export function isLegacyPreQueryManagedCodexDraft(session: SessionMetadata): boo
 
 export function isHistoryVisibleSession(session: SessionMetadata): boolean {
     return session.materializationState !== 'prepared'
+        && !(session.pendingDshMutation?.kind === 'dsh-delete'
+            && session.pendingDshMutation.runtimeCommitted === true)
         && !isSystemMaintenanceSession(session)
         && !isLegacyPreQueryManagedCodexDraft(session);
 }
@@ -1234,6 +1237,690 @@ export type ConversationMutationResult =
         reason: 'precondition_failed' | 'storage_consistency_error' | 'write_error';
         error: string;
     };
+
+export type DshMutationStoreResult<T> =
+    | { success: true; value: T }
+    | {
+        success: false;
+        reason: 'precondition_failed' | 'storage_consistency_error' | 'write_error';
+        error: string;
+    };
+
+type PendingDshFork = Extract<PendingDshMutation, { kind: 'dsh-fork' }>;
+type PendingDshRewind = Extract<PendingDshMutation, { kind: 'dsh-rewind' }>;
+type PendingDshDelete = Extract<PendingDshMutation, { kind: 'dsh-delete' }>;
+
+function dshMutationFailure(
+    reason: Exclude<DshMutationStoreResult<never>, { success: true }>['reason'],
+    error: string,
+): DshMutationStoreResult<never> {
+    return { success: false, reason, error };
+}
+
+function exactPendingDshMutation(
+    metadata: SessionMetadata,
+    clientMutationId: string,
+): PendingDshMutation | undefined {
+    const pending = metadata.pendingDshMutation;
+    return pending?.schemaVersion === 1 && pending.clientMutationId === clientMutationId
+        ? pending
+        : undefined;
+}
+
+function sessionUsesDsh(metadata: SessionMetadata): boolean {
+    return metadata.runtimeBinding !== undefined
+        && runtimeTypeForBinding(metadata.runtimeBinding) === 'dsh';
+}
+
+/** Persist a DSH delete intent while Product metadata and transcript still exist. */
+export async function beginDshDeleteMutation(input: {
+    sessionId: string;
+    clientMutationId: string;
+}): Promise<DshMutationStoreResult<PendingDshDelete>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const messages = readSessionMessagesForMutation(input.sessionId);
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                if (!current) return dshMutationFailure('precondition_failed', 'The DSH Session is unavailable');
+                const existing = exactPendingDshMutation(current, input.clientMutationId);
+                if (existing?.kind === 'dsh-delete') return { success: true, value: existing };
+                if (
+                    !sessionUsesDsh(current)
+                    || !current.runtimeSessionId
+                    || current.pendingDshMutation
+                    || isSystemMaintenanceSession(current)
+                ) {
+                    return dshMutationFailure('precondition_failed', 'The DSH delete authority changed');
+                }
+                const intent: PendingDshDelete = {
+                    schemaVersion: 1,
+                    kind: 'dsh-delete',
+                    clientMutationId: input.clientMutationId,
+                    sourceRuntimeSessionId: current.runtimeSessionId,
+                    sourceMessageCount: messages.length,
+                };
+                all[index] = { ...current, pendingDshMutation: intent };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: intent };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+export async function recordPreparedDshDelete(input: {
+    sessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<PendingDshDelete>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (!current || pending?.kind !== 'dsh-delete') {
+                return dshMutationFailure('precondition_failed', 'The DSH delete intent changed');
+            }
+            if (pending.token && pending.token !== input.token) {
+                return dshMutationFailure('storage_consistency_error', 'The DSH delete token changed');
+            }
+            const updatedIntent: PendingDshDelete = { ...pending, token: input.token };
+            all[index] = { ...current, pendingDshMutation: updatedIntent };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updatedIntent };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+export async function recordCommittedDshDelete(input: {
+    sessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<PendingDshDelete>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (
+                !current
+                || pending?.kind !== 'dsh-delete'
+                || (pending.token && pending.token !== input.token)
+            ) {
+                return dshMutationFailure('precondition_failed', 'The DSH delete journal changed before tombstone publication');
+            }
+            const updatedIntent: PendingDshDelete = {
+                ...pending,
+                token: input.token,
+                runtimeCommitted: true,
+            };
+            all[index] = { ...current, pendingDshMutation: updatedIntent };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updatedIntent };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Remove Product data only after DSH reports the delete journal as purged. */
+export async function deleteCommittedDshProduct(input: {
+    sessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<{ deleted: true }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (
+                !current
+                || pending?.kind !== 'dsh-delete'
+                || pending.token !== input.token
+                || pending.runtimeCommitted !== true
+            ) {
+                return dshMutationFailure('precondition_failed', 'The Product delete journal is not purge-ready');
+            }
+            const jsonlFile = getSessionFilePath(input.sessionId);
+            const legacyFile = getLegacySessionFilePath(input.sessionId);
+            if (existsSync(jsonlFile)) unlinkSync(jsonlFile);
+            if (existsSync(legacyFile)) unlinkSync(legacyFile);
+            all.splice(index, 1);
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: { deleted: true } };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Persist the immutable Product half of a DSH fork before Runtime prepare. */
+export async function beginDshForkMutation(input: {
+    sourceSessionId: string;
+    sourceAssistantMessageId: string;
+    clientMutationId: string;
+    targetProductSessionId: string;
+    targetRuntimeSessionId: string;
+    targetRuntimeHome: string;
+    targetPersistenceRef: string;
+    targetWorkspaceIdentity: string;
+}): Promise<DshMutationStoreResult<{
+    intent: PendingDshFork;
+    source: SessionMetadata;
+    targetMessages: SessionMessage[];
+}>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLocks(
+            [input.sourceSessionId, input.targetProductSessionId],
+            async () => {
+                const messages = readSessionMessagesForMutation(input.sourceSessionId);
+                const targetIndex = messages.findIndex(message => (
+                    message.id === input.sourceAssistantMessageId && message.role === 'assistant'
+                ));
+                const target = targetIndex >= 0 ? messages[targetIndex] : undefined;
+                if (!target?.runtimeTurnAnchor) {
+                    return dshMutationFailure('precondition_failed', 'This message has no exact DSH turn anchor');
+                }
+                const sourceRuntimeTurnId = target.runtimeTurnAnchor.turnId;
+                const targetMessages = messages.slice(0, targetIndex + 1);
+                return withSessionsLock(async () => {
+                    const all = readSessionsIndexForWrite();
+                    const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
+                    if (sourceIndex < 0) {
+                        return dshMutationFailure('precondition_failed', 'The source Session is unavailable');
+                    }
+                    const source = all[sourceIndex];
+                    const existing = exactPendingDshMutation(source, input.clientMutationId);
+                    if (existing?.kind === 'dsh-fork') {
+                        return {
+                            success: true,
+                            value: { intent: existing, source, targetMessages },
+                        };
+                    }
+                    if (
+                        !sessionUsesDsh(source)
+                        || !source.runtimeSessionId
+                        || source.pendingDshMutation
+                        || all.some(session => session.id === input.targetProductSessionId)
+                    ) {
+                        return dshMutationFailure('precondition_failed', 'The DSH fork source or target changed');
+                    }
+                    const intent: PendingDshFork = {
+                        schemaVersion: 1,
+                        kind: 'dsh-fork',
+                        clientMutationId: input.clientMutationId,
+                        sourceRuntimeSessionId: source.runtimeSessionId,
+                        sourceMessageCount: messages.length,
+                        sourceAssistantMessageId: input.sourceAssistantMessageId,
+                        sourceRuntimeTurnId,
+                        targetProductSessionId: input.targetProductSessionId,
+                        targetRuntimeSessionId: input.targetRuntimeSessionId,
+                        targetRuntimeHome: input.targetRuntimeHome,
+                        targetPersistenceRef: input.targetPersistenceRef,
+                        targetWorkspaceIdentity: input.targetWorkspaceIdentity,
+                        targetMessageCount: targetMessages.length,
+                        settlement: 'commit',
+                    };
+                    const updated = { ...source, pendingDshMutation: intent };
+                    all[sourceIndex] = updated;
+                    atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                    return {
+                        success: true,
+                        value: { intent, source: updated, targetMessages },
+                    };
+                });
+            },
+        );
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+/** Persist the Runtime prepare token before either authority may commit. */
+export async function recordPreparedDshFork(input: {
+    sourceSessionId: string;
+    clientMutationId: string;
+    token: string;
+    sourceStableBoundaryId: string;
+}): Promise<DshMutationStoreResult<PendingDshFork>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sourceSessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sourceSessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (!current || pending?.kind !== 'dsh-fork') {
+                return dshMutationFailure('precondition_failed', 'The DSH fork intent changed before prepare settled');
+            }
+            if (
+                (pending.token && pending.token !== input.token)
+                || (pending.sourceStableBoundaryId && pending.sourceStableBoundaryId !== input.sourceStableBoundaryId)
+            ) {
+                return dshMutationFailure('storage_consistency_error', 'The DSH fork receipt changed');
+            }
+            const updatedIntent: PendingDshFork = {
+                ...pending,
+                token: input.token,
+                sourceStableBoundaryId: input.sourceStableBoundaryId,
+            };
+            all[index] = { ...current, pendingDshMutation: updatedIntent };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updatedIntent };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Persist rollback intent before asking Runtime to abort a prepared fork. */
+export async function requestDshForkAbort(input: {
+    sourceSessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<PendingDshFork>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sourceSessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sourceSessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (!current || pending?.kind !== 'dsh-fork' || pending.token !== input.token) {
+                return dshMutationFailure('precondition_failed', 'The DSH fork journal changed before abort');
+            }
+            const updatedIntent: PendingDshFork = { ...pending, settlement: 'abort' };
+            all[index] = { ...current, pendingDshMutation: updatedIntent };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updatedIntent };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Stage the Product branch invisibly while the DSH target generation is prepared. */
+export async function stageDshForkProduct(input: {
+    sourceSessionId: string;
+    clientMutationId: string;
+    targetMetadata: SessionMetadata;
+    targetMessages: SessionMessage[];
+}): Promise<DshMutationStoreResult<SessionMetadata>> {
+    ensureStorageDir();
+    const targetSessionId = input.targetMetadata.id;
+    try {
+        return await withSessionFileLocks([input.sourceSessionId, targetSessionId], async () => {
+            const sourceMessages = readSessionMessagesForMutation(input.sourceSessionId);
+            if (
+                sourceMessages.length < input.targetMessages.length
+                || input.targetMessages.some((message, index) => message.id !== sourceMessages[index]?.id)
+            ) {
+                return dshMutationFailure('precondition_failed', 'The DSH fork transcript prefix changed');
+            }
+            const targetPath = getSessionFilePath(targetSessionId);
+            if (existsSync(targetPath)) {
+                const existingMessages = readSessionMessagesForMutation(targetSessionId);
+                if (
+                    existingMessages.length !== input.targetMessages.length
+                    || existingMessages.some((message, index) => message.id !== input.targetMessages[index]?.id)
+                ) {
+                    return dshMutationFailure('storage_consistency_error', 'The staged DSH fork transcript conflicts');
+                }
+            } else {
+                atomicRewriteSessionMessages(targetSessionId, input.targetMessages);
+            }
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const source = all.find(session => session.id === input.sourceSessionId);
+                const pending = source && exactPendingDshMutation(source, input.clientMutationId);
+                if (
+                    pending?.kind !== 'dsh-fork'
+                    || pending.targetProductSessionId !== targetSessionId
+                    || input.targetMetadata.materializationState !== 'prepared'
+                    || input.targetMetadata.materializationSourceSessionId !== input.sourceSessionId
+                ) {
+                    return dshMutationFailure('precondition_failed', 'The DSH fork staging authority changed');
+                }
+                const targetIndex = all.findIndex(session => session.id === targetSessionId);
+                if (targetIndex >= 0) {
+                    const existing = all[targetIndex];
+                    if (
+                        existing.materializationState !== 'prepared'
+                        || existing.materializationSourceSessionId !== input.sourceSessionId
+                        || existing.runtimeSessionId !== pending.targetRuntimeSessionId
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH fork target identity conflicts');
+                    }
+                    return { success: true, value: existing };
+                }
+                all.push(input.targetMetadata);
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: input.targetMetadata };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+/** Publish the staged Product branch and retire the source journal in one index write. */
+export async function commitDshForkProduct(input: {
+    sourceSessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<SessionMetadata>> {
+    ensureStorageDir();
+    try {
+        const source = getSessionMetadata(input.sourceSessionId);
+        const pending = source && exactPendingDshMutation(source, input.clientMutationId);
+        if (pending?.kind !== 'dsh-fork') {
+            return dshMutationFailure('precondition_failed', 'The DSH fork journal is unavailable');
+        }
+        return await withSessionFileLocks(
+            [input.sourceSessionId, pending.targetProductSessionId],
+            async () => withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
+                const targetIndex = all.findIndex(session => session.id === pending.targetProductSessionId);
+                const currentSource = sourceIndex >= 0 ? all[sourceIndex] : undefined;
+                const currentPending = currentSource
+                    && exactPendingDshMutation(currentSource, input.clientMutationId);
+                const target = targetIndex >= 0 ? all[targetIndex] : undefined;
+                if (
+                    !currentSource
+                    || currentPending?.kind !== 'dsh-fork'
+                    || currentPending.token !== input.token
+                    || !target
+                    || target.materializationState !== 'prepared'
+                    || target.materializationSourceSessionId !== input.sourceSessionId
+                ) {
+                    return dshMutationFailure('precondition_failed', 'The staged DSH fork changed before commit');
+                }
+                const targetMessages = readSessionMessagesForMutation(target.id);
+                if (targetMessages.length !== currentPending.targetMessageCount) {
+                    return dshMutationFailure('storage_consistency_error', 'The staged DSH fork transcript is incomplete');
+                }
+                const committedTarget: SessionMetadata = {
+                    ...target,
+                    materializationState: undefined,
+                    materializationSourceSessionId: undefined,
+                };
+                all[sourceIndex] = { ...currentSource, pendingDshMutation: undefined };
+                all[targetIndex] = committedTarget;
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: committedTarget };
+            }),
+        );
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+/** Remove an invisible Product fork after DSH durably reports abort. */
+export async function abortDshForkProduct(input: {
+    sourceSessionId: string;
+    clientMutationId: string;
+}): Promise<DshMutationStoreResult<SessionMetadata>> {
+    ensureStorageDir();
+    try {
+        const source = getSessionMetadata(input.sourceSessionId);
+        const pending = source && exactPendingDshMutation(source, input.clientMutationId);
+        if (pending?.kind !== 'dsh-fork') {
+            return dshMutationFailure('precondition_failed', 'The DSH fork journal is unavailable');
+        }
+        return await withSessionFileLocks(
+            [input.sourceSessionId, pending.targetProductSessionId],
+            async () => withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const sourceIndex = all.findIndex(session => session.id === input.sourceSessionId);
+                const currentSource = sourceIndex >= 0 ? all[sourceIndex] : undefined;
+                const currentPending = currentSource
+                    && exactPendingDshMutation(currentSource, input.clientMutationId);
+                if (!currentSource || currentPending?.kind !== 'dsh-fork') {
+                    return dshMutationFailure('precondition_failed', 'The DSH fork journal changed');
+                }
+                const targetIndex = all.findIndex(session => session.id === currentPending.targetProductSessionId);
+                const target = targetIndex >= 0 ? all[targetIndex] : undefined;
+                if (target && (
+                    target.materializationState !== 'prepared'
+                    || target.materializationSourceSessionId !== input.sourceSessionId
+                )) {
+                    return dshMutationFailure('storage_consistency_error', 'The DSH fork target is no longer rollback-owned');
+                }
+                if (target) {
+                    const targetJsonl = getSessionFilePath(target.id);
+                    const targetLegacy = getLegacySessionFilePath(target.id);
+                    if (existsSync(targetJsonl)) unlinkSync(targetJsonl);
+                    if (existsSync(targetLegacy)) unlinkSync(targetLegacy);
+                }
+                const updatedSource = { ...currentSource, pendingDshMutation: undefined };
+                all[sourceIndex] = updatedSource;
+                if (target) all.splice(targetIndex, 1);
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: updatedSource };
+            }),
+        );
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Persist the immutable Product half of a DSH rewind before Runtime prepare. */
+export async function beginDshRewindMutation(input: {
+    sessionId: string;
+    targetUserMessageId: string;
+    clientMutationId: string;
+}): Promise<DshMutationStoreResult<{
+    intent: PendingDshRewind;
+    targetUserMessage: SessionMessage;
+    targetMessages: SessionMessage[];
+}>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const messages = readSessionMessagesForMutation(input.sessionId);
+            const targetUserIndex = messages.findIndex(message => (
+                message.id === input.targetUserMessageId && message.role === 'user'
+            ));
+            const targetUserMessage = targetUserIndex >= 0 ? messages[targetUserIndex] : undefined;
+            const priorAssistant = targetUserIndex > 0
+                ? messages.slice(0, targetUserIndex).findLast(message => message.role === 'assistant')
+                : undefined;
+            if (!targetUserMessage || !priorAssistant?.runtimeTurnAnchor) {
+                return dshMutationFailure(
+                    'precondition_failed',
+                    'This message has no preceding stable DSH turn boundary',
+                );
+            }
+            const targetRuntimeTurnId = priorAssistant.runtimeTurnAnchor.turnId;
+            const targetMessages = messages.slice(0, targetUserIndex);
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                if (!current) return dshMutationFailure('precondition_failed', 'The DSH Session is unavailable');
+                const existing = exactPendingDshMutation(current, input.clientMutationId);
+                if (existing?.kind === 'dsh-rewind') {
+                    return {
+                        success: true,
+                        value: { intent: existing, targetUserMessage, targetMessages },
+                    };
+                }
+                if (!sessionUsesDsh(current) || !current.runtimeSessionId || current.pendingDshMutation) {
+                    return dshMutationFailure('precondition_failed', 'The DSH rewind source changed');
+                }
+                const intent: PendingDshRewind = {
+                    schemaVersion: 1,
+                    kind: 'dsh-rewind',
+                    clientMutationId: input.clientMutationId,
+                    sourceRuntimeSessionId: current.runtimeSessionId,
+                    sourceMessageCount: messages.length,
+                    targetUserMessageId: input.targetUserMessageId,
+                    targetRuntimeTurnId,
+                    targetMessageCount: targetMessages.length,
+                };
+                all[index] = { ...current, pendingDshMutation: intent };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return {
+                    success: true,
+                    value: { intent, targetUserMessage, targetMessages },
+                };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+export async function recordPreparedDshRewind(input: {
+    sessionId: string;
+    clientMutationId: string;
+    token: string;
+    targetStableBoundaryId: string;
+    sourceTranscriptPostcondition: string;
+    targetTranscriptPostcondition: string;
+}): Promise<DshMutationStoreResult<PendingDshRewind>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+            if (!current || pending?.kind !== 'dsh-rewind') {
+                return dshMutationFailure('precondition_failed', 'The DSH rewind intent changed');
+            }
+            for (const [stored, incoming] of [
+                [pending.token, input.token],
+                [pending.targetStableBoundaryId, input.targetStableBoundaryId],
+                [pending.sourceTranscriptPostcondition, input.sourceTranscriptPostcondition],
+                [pending.targetTranscriptPostcondition, input.targetTranscriptPostcondition],
+            ]) {
+                if (stored && stored !== incoming) {
+                    return dshMutationFailure('storage_consistency_error', 'The DSH rewind receipt changed');
+                }
+            }
+            const updatedIntent: PendingDshRewind = {
+                ...pending,
+                token: input.token,
+                targetStableBoundaryId: input.targetStableBoundaryId,
+                sourceTranscriptPostcondition: input.sourceTranscriptPostcondition,
+                targetTranscriptPostcondition: input.targetTranscriptPostcondition,
+            };
+            all[index] = { ...current, pendingDshMutation: updatedIntent };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updatedIntent };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Finish the Product transcript half after DSH has committed its generation. */
+export async function commitDshRewindProduct(input: {
+    sessionId: string;
+    clientMutationId: string;
+    token: string;
+}): Promise<DshMutationStoreResult<{ metadata: SessionMetadata; messages: SessionMessage[] }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            let messages = readSessionMessagesForMutation(input.sessionId);
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                const pending = current && exactPendingDshMutation(current, input.clientMutationId);
+                if (!current || pending?.kind !== 'dsh-rewind' || pending.token !== input.token) {
+                    return dshMutationFailure('precondition_failed', 'The DSH rewind journal changed before commit');
+                }
+                if (messages.length === pending.sourceMessageCount) {
+                    const targetIndex = messages.findIndex(message => (
+                        message.id === pending.targetUserMessageId && message.role === 'user'
+                    ));
+                    if (targetIndex !== pending.targetMessageCount) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH rewind target changed');
+                    }
+                    messages = messages.slice(0, pending.targetMessageCount);
+                    atomicRewriteSessionMessages(input.sessionId, messages);
+                } else if (messages.length !== pending.targetMessageCount) {
+                    return dshMutationFailure('storage_consistency_error', 'The DSH rewind transcript has an unknown length');
+                }
+                const { preview } = resolveLastVisibleTurnPreview(messages);
+                const updated: SessionMetadata = {
+                    ...current,
+                    pendingDshMutation: undefined,
+                    runtimeUsageTotals: undefined,
+                    lastContextUsage: undefined,
+                    stats: calculateSessionStats(messages),
+                    lastMessagePreview: preview,
+                };
+                all[index] = updated;
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: { metadata: updated, messages } };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+}
+
+/** Clear an uncommitted/rolled-back DSH journal without weakening exact identity checks. */
+export async function clearPendingDshMutation(input: {
+    sessionId: string;
+    clientMutationId: string;
+}): Promise<DshMutationStoreResult<SessionMetadata>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            if (!current || !exactPendingDshMutation(current, input.clientMutationId)) {
+                return dshMutationFailure('precondition_failed', 'The DSH mutation journal changed');
+            }
+            const updated = { ...current, pendingDshMutation: undefined };
+            all[index] = updated;
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: updated };
+        }));
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
 
 type CodexRewindIntent = Extract<PendingConversationMutation, { kind: 'codex-rewind' }>;
 type BuiltinRewindIntent = Extract<PendingConversationMutation, { kind: 'builtin-rewind' }>;

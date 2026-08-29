@@ -1697,7 +1697,9 @@ pub async fn cmd_delete_session_if_unowned(
         };
         drop(manager);
         let client = crate::local_http::blocking_builder()
-            .timeout(Duration::from_secs(15))
+            // Integrated DSH deletion verifies and starts the pinned Runtime,
+            // tombstones native state, purges it, then commits Product removal.
+            .timeout(Duration::from_secs(120))
             .build()
             .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
         let delete_url = delete_dispatch.url_for_path(&format!("/sessions/{sessionId}"))?;

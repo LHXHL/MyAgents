@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.10
+version: 0.11
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -634,6 +634,14 @@ General transaction rule:
 Rewind's file rollback claim remains limited to governed root-origin Write/Edit. The UI and documentation must not imply shell, child or external modifications are rolled back.
 
 No operation ever resumes DSH native history using Claude SDK, Pi, managed Codex or an External CLI.
+
+H4 now implements the Product half as a bounded `pendingDshMutation` journal in authoritative Session metadata and the Runtime half through `src/server/integrated-runtimes/dsh/mutations.ts`. `session/read` is assembled only after its cursor chain, durable head, contiguous sequence, event SHA-256 values, chunk boundaries, transcript postcondition and unique stable boundary all verify. The method-specific settlement is:
+
+- fork: persist Product intent, prepare DSH, fsync the token and stable boundary, stage an invisible Product target, commit DSH, then atomically publish the target and retire the source journal;
+- rewind: persist the target Product prefix and DSH turn anchor, prepare and commit DSH native generation plus governed root-origin Write/Edit rollback, then replace Product JSONL and retire the journal;
+- delete: persist Product intent, prepare and tombstone DSH, hide the Product projection, purge native state, then remove Product JSONL and metadata through the existing Rust-owned deletion lifecycle fence.
+
+If fork Product staging fails, the Host persists an abort decision before asking DSH to abort; recovery never guesses between publish and rollback. A token lost after Runtime prepare is recovered only by exact replay of the same mutation ID and immutable fingerprint. Any remaining journal keeps the Session busy, blocks queue drain and triggers a clean Runtime resume/recovery before later admission. Fork targets remain history-invisible until both commit identities match; tombstoned deletes remain invisible until purge and Product removal finish. Fault-injected Product tests cover hidden fork publication, exact prepare replay, durable abort choice, rewind recovery between JSONL replacement and index publication, and delete tombstone/purge recovery.
 
 ## 14. Desktop and settings UX
 
