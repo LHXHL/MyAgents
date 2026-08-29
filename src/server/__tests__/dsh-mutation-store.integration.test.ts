@@ -280,6 +280,121 @@ describe('DSH Product mutation journal', () => {
     });
   });
 
+  it('retains an exact Product admission until native DSH terminal settlement', async () => {
+    const sessionId = 'dsh-root-operation-journal';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    await store.saveSessionMetadata(createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    }));
+    const transcript = await store.loadSessionTranscript(sessionId);
+    const user: SessionMessage = {
+      id: 'user-journal-owner',
+      role: 'user',
+      content: 'replay this exact input',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    };
+
+    await expect(store.beginDshRootOperation({
+      sessionId,
+      cursor: transcript.cursor,
+      runtimeSessionId,
+      clientOperationId: 'operation-journal-owner',
+      userMessage: user,
+      productImageSha256: [],
+    })).resolves.toMatchObject({ success: true });
+    await expect(store.discardUnpersistedDshRootOperation({
+      sessionId,
+      clientOperationId: 'operation-journal-owner',
+      clientUserMessageId: user.id,
+    })).resolves.toEqual({ success: true, value: { discarded: true } });
+
+    await expect(store.beginDshRootOperation({
+      sessionId,
+      cursor: transcript.cursor,
+      runtimeSessionId,
+      clientOperationId: 'operation-journal-owner',
+      userMessage: user,
+      productImageSha256: [],
+    })).resolves.toMatchObject({ success: true });
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [user]))
+      .resolves.toMatchObject({ ok: true });
+
+    const emptyHistory = vi.fn(async () => ({
+      runtimeSessionId,
+      durableSequence: 0,
+      events: [],
+      mutationBoundaries: [],
+      transcriptPostcondition: '1'.repeat(64),
+    }));
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId,
+      runtimeSessionId,
+      controller: { readHistory: emptyHistory, getTurn: vi.fn() } as never,
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0 });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshRootOperation).toMatchObject({
+      clientOperationId: 'operation-journal-owner',
+      clientUserMessageId: user.id,
+      sourceRuntimeSessionId: runtimeSessionId,
+    });
+
+    const terminal = {
+      kind: 'failed',
+      code: 'provider_error',
+      message: 'native terminal is authoritative',
+      retryable: true,
+    };
+    const events = [
+      {
+        sequence: 0,
+        eventType: 'myagents/operation/accepted',
+        eventSha256: '2'.repeat(64),
+        data: {
+          clientOperationId: 'operation-journal-owner',
+          clientUserMessageId: user.id,
+          productTurnId: 'product-turn-journal-owner',
+          acceptedAt: 1_777_507_200_000,
+        },
+      },
+      {
+        sequence: 1,
+        eventType: 'myagents/operation/terminal',
+        eventSha256: '3'.repeat(64),
+        data: {
+          clientOperationId: 'operation-journal-owner',
+          productTurnId: 'product-turn-journal-owner',
+          terminal,
+          terminalAt: 1_777_507_201_000,
+        },
+      },
+    ];
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId,
+      runtimeSessionId,
+      controller: {
+        readHistory: vi.fn(async () => ({
+          runtimeSessionId,
+          durableSequence: events.length,
+          events,
+          mutationBoundaries: [],
+          transcriptPostcondition: '4'.repeat(64),
+        })),
+        getTurn: vi.fn(async () => ({
+          clientOperationId: 'operation-journal-owner',
+          admission: {
+            clientOperationId: 'operation-journal-owner',
+            turnId: 'product-turn-journal-owner',
+            admittedAt: new Date(1_777_507_200_000).toISOString(),
+          },
+          terminal,
+        })),
+      } as never,
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0 });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshRootOperation).toBeUndefined();
+  });
+
   it('publishes a missing terminal assistant exactly once with its verified native cursor', async () => {
     const sessionId = 'dsh-turn-reconciliation';
     const metadata = createSessionMetadata('/tmp/dsh-workspace', {
@@ -319,6 +434,7 @@ describe('DSH Product mutation journal', () => {
       runtimeSessionId: `runtime-${sessionId}`,
       cursor,
       assistantMessages: [assistant],
+      nativeRootOperations: [],
       runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
     })).resolves.toEqual({
       success: true,
@@ -329,6 +445,7 @@ describe('DSH Product mutation journal', () => {
       runtimeSessionId: `runtime-${sessionId}`,
       cursor,
       assistantMessages: [assistant],
+      nativeRootOperations: [],
       runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
     })).resolves.toEqual({
       success: true,

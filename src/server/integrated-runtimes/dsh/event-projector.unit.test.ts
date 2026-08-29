@@ -79,7 +79,11 @@ describe('DshRuntimeEventProjector', () => {
       contextOccupiedTokens: 13,
       runtimeContextWindow: 200_000,
     }));
-    expect(events.at(-1)).toEqual({ kind: 'turn_complete', status: 'success' });
+    expect(events.at(-1)).toEqual({
+      kind: 'turn_complete',
+      clientOperationId: 'operation-1',
+      status: 'success',
+    });
     expect(events).not.toContainEqual({ kind: 'status_change', state: 'idle' });
     expect(onTerminal).toHaveBeenCalledWith({
       clientOperationId: 'operation-1',

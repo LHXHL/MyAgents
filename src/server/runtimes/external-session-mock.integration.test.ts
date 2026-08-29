@@ -229,7 +229,7 @@ class FakeRuntime implements AgentRuntime {
     process.loadedSkillNames = (options.managedCodexExtensions?.skills ?? [])
       .map(skill => skill.name)
       .filter(name => !this.omittedLoadedSkillNames.has(name));
-    this.defer(() => {
+    const initialize = () => {
       const threadId = options.resumeSessionId ?? `fake-thread-${this.nextThreadNumber++}`;
       this.emit({ kind: 'session_init', sessionId: threadId, model: options.model ?? 'fake-model', tools: ['FakeTool'] });
       if (this.activeRootOperation && !options.initialTurn) {
@@ -244,7 +244,9 @@ class FakeRuntime implements AgentRuntime {
         this.emitRootTurnAdmission(options.initialTurn.clientUserMessageId);
         this.playTurn(options.initialTurn.message);
       }
-    });
+    };
+    if (this.type === 'dsh') initialize();
+    else this.defer(initialize);
     return process;
   }
 
@@ -258,6 +260,15 @@ class FakeRuntime implements AgentRuntime {
       this.sentMessages.push(message);
       if (this.rejectedSendGate) await this.rejectedSendGate;
       throw new Error('fake dispatch acknowledgement lost');
+    }
+    if (this.type === 'dsh') {
+      if (!options?.clientOperationId || !options.clientUserMessageId) {
+        throw new Error('fake DSH dispatch lacks Product operation identity');
+      }
+      this.activeRootOperation = {
+        clientOperationId: options.clientOperationId,
+        clientUserMessageId: options.clientUserMessageId,
+      };
     }
     this.emitRootTurnAdmission(options?.clientUserMessageId);
     this.playTurn(message);
@@ -404,8 +415,13 @@ class FakeRuntime implements AgentRuntime {
 
   private emit(event: Parameters<UnifiedEventCallback>[0]): void {
     if (!this.callback) throw new Error('fake runtime callback not installed');
+    const projected = event.kind === 'turn_complete'
+      && this.type === 'dsh'
+      && this.activeRootOperation
+      ? { ...event, clientOperationId: this.activeRootOperation.clientOperationId }
+      : event;
     if (event.kind === 'turn_complete') this.activeRootOperation = null;
-    this.callback(event);
+    this.callback(projected);
   }
 
   private defer(fn: () => void, delayMs = 0): void {
@@ -771,6 +787,133 @@ describe('external SessionEngine with fake runtime', () => {
         role: 'assistant',
         content: expect.stringContaining('new turn finished'),
       }),
+    ]);
+  });
+
+  it('replays a journaled Product user with the same DSH operation id before later work', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'journaled turn finished', completeDelayMs: 20 },
+      { kind: 'success', text: 'later turn finished' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-journal-replay';
+    const runtimeSessionId = 'runtime-dsh-journal-replay';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await harness.sessionStore.saveSessionMetadata(createSessionMetadata(workspacePath, {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    }));
+    const transcript = await harness.sessionStore.loadSessionTranscript(sessionId);
+    const journaledUser = {
+      id: 'user-before-native-admission',
+      role: 'user' as const,
+      content: 'persisted before native admission',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    };
+    await expect(harness.sessionStore.beginDshRootOperation({
+      sessionId,
+      cursor: transcript.cursor,
+      runtimeSessionId,
+      clientOperationId: 'operation-before-native-admission',
+      userMessage: journaledUser,
+      productImageSha256: [],
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.sessionStore.appendSessionMessages(
+      sessionId,
+      transcript.cursor,
+      [journaledUser],
+    )).resolves.toMatchObject({ ok: true });
+
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId,
+      workspacePath,
+      { type: 'desktop' },
+    )).resolves.toEqual({ success: true });
+    await expect(runInjectedTurn(harness, {
+      prompt: 'later work must wait',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.sentMessages).toEqual([
+      'persisted before native admission',
+      'later work must wait',
+    ]);
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
+      .toBeUndefined();
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ id: journaledUser.id, role: 'user' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('journaled turn finished'),
+      }),
+      expect.objectContaining({ role: 'user', content: 'later work must wait' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('later turn finished'),
+      }),
+    ]);
+  });
+
+  it('persists DSH Runtime identity before admitting a fresh Product root turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'fresh DSH turn finished' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-fresh-admission';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    await expect(runInjectedTurn(harness, {
+      prompt: 'first Product input',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toEqual([undefined]);
+    expect(harness.runtime.sentMessages).toEqual(['first Product input']);
+    const metadata = harness.sessionStore.getSessionMetadata(sessionId);
+    expect(metadata).toMatchObject({
+      runtime: 'builtin',
+      runtimeSessionId: 'fake-thread-1',
+      runtimeBinding: { family: 'integrated', id: 'dsh' },
+    });
+    expect(metadata).not.toHaveProperty('pendingDshRootOperation');
+  });
+
+  it('retires the Product DSH journal after an authoritative failed terminal', async () => {
+    const harness = await createHarness([
+      { kind: 'failure', error: 'provider failed' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-failed-terminal';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    await expect(runInjectedTurn(harness, {
+      prompt: 'this native turn fails',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: false, error: 'provider failed' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(
+      () => !harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation,
+      'failed DSH journal settlement',
+    );
+
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ role: 'user', content: 'this native turn fails' }),
     ]);
   });
 

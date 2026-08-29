@@ -5,6 +5,8 @@
 // the external CLI handles all SDK interaction, tool execution, and session persistence.
 // We only need to: spawn process, relay events, and handle permission delegation.
 
+import { createHash } from 'node:crypto';
+
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from '../sse';
 import { participatesInLiveRestore } from '../../shared/liveRevision';
 import { killWithEscalation } from './utils/kill-with-escalation';
@@ -18,6 +20,7 @@ import {
   supportsAskUserQuestionNativeCard,
 } from '../host-interaction';
 import type {
+  AgentRuntime,
   ExternalRuntimeConfigPatch,
   ExternalRuntimeConfigSnapshot,
   RuntimeConfigApplyMode,
@@ -45,7 +48,10 @@ import {
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
 import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
-import { runtimeTypeForBinding } from '../../shared/integrated-runtimes/identity';
+import {
+  runtimeSourceForBinding,
+  runtimeTypeForBinding,
+} from '../../shared/integrated-runtimes/identity';
 import { createLiveUserMessageReplay } from '../../shared/chatMessageReplay';
 import {
   withSessionCompletionTerminal,
@@ -76,6 +82,7 @@ import {
   requestDshForkAbort,
   resolvePendingConversationMutation,
   saveSessionMetadata,
+  settleDshRootOperation,
   stageDshForkProduct,
   updateSessionMetadata,
   getSessionMetadata,
@@ -107,6 +114,10 @@ import {
 import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
 import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
+import {
+  assertDshResolvedImagesMatch,
+  replayDshProductInput,
+} from '../session-engine/dsh-root-operation';
 import type { SystemInitInfo } from '../../shared/types/system';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import { trackServer } from '../analytics';
@@ -520,10 +531,11 @@ let currentTurnAnalyticsSource: TurnAnalyticsSource | null = null;
 let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let externalSessionMutationInFlight = false;
 
-function hasPendingDshConversationMutation(): boolean {
+function hasPendingDshNativeWork(): boolean {
   if (getCurrentRuntimeType() !== 'dsh') return false;
   const sessionId = getExternalLifecycleSessionId();
-  return Boolean(sessionId && getSessionMetadata(sessionId)?.pendingDshMutation);
+  const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+  return Boolean(metadata?.pendingDshMutation || metadata?.pendingDshRootOperation);
 }
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
@@ -1398,8 +1410,28 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   lastActiveAt?: string;
   channelDelivery: TurnChannelDelivery;
   userChannelProjection: ExternalUserChannelProjection;
+  runtimeImages?: readonly ResolvedImagePayload[];
 }): Promise<void> {
   const userMsg = params.operation.userProjection.message;
+  let dshRootOperation: {
+    clientOperationId: string;
+    runtimeSessionId: string;
+    productImageSha256: readonly string[];
+  } | undefined;
+  if (getCurrentRuntimeType() === 'dsh') {
+    const runtimeSessionId = getExternalRuntimeSessionId();
+    if (!runtimeSessionId) {
+      throw new Error('DSH Product admission has no persisted Runtime Session owner');
+    }
+    params.operation.dshClientOperationId ??= `turn-${crypto.randomUUID()}`;
+    dshRootOperation = {
+      clientOperationId: params.operation.dshClientOperationId,
+      runtimeSessionId,
+      productImageSha256: (params.runtimeImages ?? []).map(image => createHash('sha256')
+        .update(Buffer.from(image.data, 'base64'))
+        .digest('hex')),
+    };
+  }
   const metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
     sessionId: params.sessionId,
     workspacePath: params.workspacePath,
@@ -1416,6 +1448,7 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
     params.failureContext,
     metadataResult.preparedExisting ? undefined : params.lastActiveAt,
     metadataResult.preparedExisting ? 'skip' : 'update',
+    dshRootOperation,
   );
   markExternalUserMessagePersisted(params.operation);
 
@@ -1444,6 +1477,64 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       deliverUser: () => deliverExternalSessionBoundUser(params.sessionId, userProjection),
     };
   admitExternalTurnChannelDelivery(params.channelDelivery, userAdmission);
+}
+
+async function resumePendingDshRootOperation(
+  runtime: AgentRuntime,
+  process: RuntimeProcess,
+): Promise<boolean> {
+  if (runtime.type !== 'dsh') return false;
+  const sessionId = getExternalLifecycleSessionId();
+  if (!sessionId) throw new Error('DSH recovery has no Product Session owner');
+  const pending = getSessionMetadata(sessionId)?.pendingDshRootOperation;
+  const runtimeSessionId = getExternalRuntimeSessionId();
+  const active = runtime.getActiveRootOperation?.(process) ?? null;
+  if (active) {
+    if (pending && (
+      pending.clientOperationId !== active.clientOperationId
+      || pending.clientUserMessageId !== active.clientUserMessageId
+      || pending.sourceRuntimeSessionId !== runtimeSessionId
+    )) {
+      throw new Error('The active DSH operation differs from the Product admission journal');
+    }
+    return true;
+  }
+  if (!pending) return false;
+  if (pending.sourceRuntimeSessionId !== runtimeSessionId) {
+    throw new Error('The pending DSH operation changed Runtime Session authority');
+  }
+
+  const transcript = await loadSessionTranscript(sessionId);
+  const users = transcript.messages.filter(message => (
+    message.role === 'user' && message.id === pending.clientUserMessageId
+  ));
+  if (users.length !== 1) {
+    throw new Error('The pending DSH operation lacks one exact Product user');
+  }
+  const replay = replayDshProductInput(pending, users[0]!);
+  setExternalSessionMessages(sessionId, transcript.messages, transcript.cursor);
+  const images = resolveImagePayloads(sessionId, replay.images);
+  assertDshResolvedImagesMatch(pending, images);
+
+  clearExternalPrewarmingSession();
+  setExternalTurnCompleted(false);
+  setExternalLastTurnSucceeded(false);
+  resetTurnAccumulators();
+  seedTurnWatchdogEstimate();
+  resetWatchdog();
+  markExternalTurnStarted();
+  beginExternalTurnTrace('dsh_recovered_product_admission', sessionId);
+  setExternalSessionState('running');
+  await runtime.sendMessage(
+    process,
+    replay.message,
+    images,
+    {
+      clientUserMessageId: pending.clientUserMessageId,
+      clientOperationId: pending.clientOperationId,
+    },
+  );
+  return true;
 }
 
 /** Register a new session in SessionStore on the first real user message.
@@ -2067,6 +2158,16 @@ export async function restoreExternalSessionState(
     sessionId,
   });
   console.log(`[external-session] Restored state for session ${sessionId}, runtimeSessionId=${JSON.stringify(summarizeSensitiveValueForLog(getExternalRuntimeSessionId()))} (${getExternalSessionMessageCount()} messages), permissionMode=${getExternalRuntimeDesiredPermissionMode() || '(default)'}, model=${getExternalRuntimeDesiredModel() || '(default)'}, effort=${getExternalRuntimeDesiredReasoningEffort() || '(default)'}`);
+  if (currentRuntimeType === 'dsh' && meta?.pendingDshRootOperation) {
+    try {
+      await prewarmExternalSession({ sessionId, workspacePath, scenario });
+    } catch (error) {
+      return {
+        success: false,
+        error: `DSH root operation recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
   return { success: true };
 }
 
@@ -2200,7 +2301,7 @@ export async function updateExternalRuntimeConfig(
     getExternalOperationQueueLength(),
     isExternalOperationDrainInFlight(),
     isExternalTurnFinalizationInFlight(),
-  ) || externalSessionMutationInFlight || hasPendingDshConversationMutation();
+  ) || externalSessionMutationInFlight || hasPendingDshNativeWork();
   const noop = isExternalRuntimeConfigPatchNoopAgainstDesired(
     normalized,
     { allowLiveReportedModel: !shouldDefer },
@@ -3121,7 +3222,9 @@ async function _doStartExternalSession(options: {
     setManagedCodexDesiredSnapshot(managedCodexExtensionSnapshot, 'no-live-process');
   }
   if (shouldTrackPendingExternalSessionBirth({
-    hasInitialMessage: Boolean(options.initialMessage),
+    // DSH deliberately starts protocol/session authority before Product root
+    // admission, so even an initial-message birth must retain the native id.
+    hasInitialMessage: Boolean(options.initialMessage && runtimeType !== 'dsh'),
     hasResumeSessionId: Boolean(options.resumeSessionId),
     hasMetadata: Boolean(existingMetadataAtStart),
   })) {
@@ -3237,6 +3340,7 @@ async function _doStartExternalSession(options: {
       lastActiveAt: admissionActivityAt,
       channelDelivery,
       userChannelProjection,
+      runtimeImages: options.initialImages,
     });
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
     return messageOperation.userProjection.message.id;
@@ -3299,9 +3403,7 @@ async function _doStartExternalSession(options: {
       && options.requiredSystemSkill,
     );
     const deferDshStartupRecoveryAdmission = Boolean(
-      options.initialMessage
-      && runtimeType === 'dsh'
-      && (options.resumeSessionId || existingMetadataAtStart?.pendingDshMutation),
+      options.initialMessage && runtimeType === 'dsh',
     );
     const deferInitialAdmission = deferRequiredAdmission || deferDshStartupRecoveryAdmission;
     if (options.initialMessage && !deferInitialAdmission) {
@@ -3313,6 +3415,7 @@ async function _doStartExternalSession(options: {
         runtimeInitialTurn = {
           message: options.initialRuntimeMessage ?? options.initialMessage,
           clientUserMessageId,
+          clientOperationId: options.messageOperation?.dshClientOperationId,
           images: options.initialImages,
         };
       }
@@ -3401,11 +3504,14 @@ async function _doStartExternalSession(options: {
     if (options.requiredSystemSkill) {
       await requireCurrentExternalSkill(options.requiredSystemSkill, externalSkillAdmission);
     }
+    let recoveredDshRootInFlight = false;
+    if (runtimeType === 'dsh') {
+      await waitExternalTurnFinalization(60_000);
+      recoveredDshRootInFlight = await resumePendingDshRootOperation(runtime, process);
+    }
     let deferredInitialDispatched = false;
     if (deferInitialAdmission) {
-      await waitExternalTurnFinalization(60_000);
-      const recoveredActiveRoot = runtime.getActiveRootOperation?.(process) ?? null;
-      if (recoveredActiveRoot) {
+      if (recoveredDshRootInFlight) {
         if (!options.messageOperation) {
           throw new Error('Deferred DSH input is missing its Product operation owner');
         }
@@ -3434,7 +3540,10 @@ async function _doStartExternalSession(options: {
           process,
           options.initialRuntimeMessage ?? options.initialMessage!,
           options.initialImages,
-          { clientUserMessageId },
+          {
+            clientUserMessageId,
+            clientOperationId: options.messageOperation?.dshClientOperationId,
+          },
         );
         deferredInitialDispatched = true;
       }
@@ -3447,7 +3556,10 @@ async function _doStartExternalSession(options: {
         process,
         options.initialRuntimeMessage ?? options.initialMessage,
         options.initialImages,
-        { clientUserMessageId: options.messageOperation?.userProjection.message.id },
+        {
+          clientUserMessageId: options.messageOperation?.userProjection.message.id,
+          clientOperationId: options.messageOperation?.dshClientOperationId,
+        },
       );
     }
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
@@ -4246,6 +4358,7 @@ async function dispatchExternalMessageOperation(
       lastActiveAt: admissionActivityAt,
       channelDelivery,
       userChannelProjection,
+      runtimeImages: resolvedImages,
     });
     if (activeProcess.exited || getExternalActiveProcess() !== activeProcess) {
       return { queued: true };
@@ -4255,7 +4368,10 @@ async function dispatchExternalMessageOperation(
       activeProcess,
       runtimeText,
       hasImages ? resolvedImages : undefined,
-      { clientUserMessageId: userMsg.id },
+      {
+        clientUserMessageId: userMsg.id,
+        clientOperationId: operation.dshClientOperationId,
+      },
     );
     return { queued: true };
   } catch (err) {
@@ -4522,7 +4638,7 @@ export function enqueueExternalSendForDesktop(
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
   if (
     externalSessionMutationInFlight
-    || hasPendingDshConversationMutation()
+    || hasPendingDshNativeWork()
     || shouldQueueExternalOperation(getExternalLifecycleState(), {
       responseMode: queueResponseMode,
       canSteerActiveTurn,
@@ -4648,7 +4764,7 @@ export function enqueueExternalSendForIm(
 } {
   if (
     externalSessionMutationInFlight
-    || hasPendingDshConversationMutation()
+    || hasPendingDshNativeWork()
     || hasExternalSendInFlight()
     || shouldQueueExternalOperation(getExternalLifecycleState(), {
       responseMode: 'turn',
@@ -4706,7 +4822,7 @@ export function enqueueExternalSendForIm(
 function drainExternalQueueAfterTurn(): void {
   if (
     externalSessionMutationInFlight
-    || hasPendingDshConversationMutation()
+    || hasPendingDshNativeWork()
     || !canDrainExternalOperations(getExternalLifecycleState())
   ) return;
   void drainExternalOperationsAfterTurn();
@@ -4715,7 +4831,7 @@ function drainExternalQueueAfterTurn(): void {
 async function drainExternalOperationsAfterTurn(): Promise<void> {
   if (
     externalSessionMutationInFlight
-    || hasPendingDshConversationMutation()
+    || hasPendingDshNativeWork()
     || !canDrainExternalOperations(getExternalLifecycleState())
   ) return;
   const drainGeneration = getExternalOperationGeneration();
@@ -5261,7 +5377,7 @@ export function isExternalSessionActive(): boolean {
 /** External turn admission includes work accepted into the serialized queue. */
 export function isExternalSessionBusy(): boolean {
   return externalSessionMutationInFlight
-    || hasPendingDshConversationMutation()
+    || hasPendingDshNativeWork()
     || isExternalTurnBusy()
     || hasExternalSendInFlight()
     || hasExternalQueuedOperations()
@@ -5456,7 +5572,7 @@ async function withExternalConversationMutation(
 }
 
 async function recoverPendingDshConversationMutationAfterLease(): Promise<void> {
-  if (!hasPendingDshConversationMutation()) return;
+  if (!hasPendingDshNativeWork()) return;
   const sessionId = getExternalLifecycleSessionId();
   const workspacePath = getExternalLifecycleWorkspacePath();
   if (!sessionId || !workspacePath) {
@@ -6079,9 +6195,9 @@ export async function prewarmExternalSession(options: {
     runtime: runtimeType,
     sessionId: options.sessionId,
   });
-  // Only Gemini and Codex run as persistent JSON-RPC processes — pre-warming
-  // CC's `-p` mode is wasted because the process exits after each turn.
-  if (runtimeType !== 'gemini' && runtimeType !== 'codex') {
+  // Gemini, Codex, and Integrated DSH own persistent protocol processes.
+  // CC's `-p` mode exits after every turn, so pre-warming it is wasted.
+  if (runtimeType !== 'gemini' && runtimeType !== 'codex' && runtimeType !== 'dsh') {
     emitPerfTrace({
       trace: 'runtime',
       phase: 'prewarm_skipped',
@@ -6112,7 +6228,10 @@ export async function prewarmExternalSession(options: {
   // effect may fire before that state settles. Backend check uses the
   // authoritative source (SessionStore) and closes the race-window hole.
   const meta = getSessionMetadata(options.sessionId);
-  if (meta?.runtime && meta.runtime !== runtimeType) {
+  const persistedRuntimeType = meta?.runtimeBinding
+    ? runtimeTypeForBinding(meta.runtimeBinding)
+    : meta?.runtime;
+  if (persistedRuntimeType && persistedRuntimeType !== runtimeType) {
     emitPerfTrace({
       trace: 'runtime',
       phase: 'prewarm_skipped',
@@ -6122,10 +6241,12 @@ export async function prewarmExternalSession(options: {
       status: 'skipped',
       detail: { reason: 'runtime_mismatch' },
     });
-    return { prewarmed: false, reason: `Session runtime mismatch: persisted=${meta.runtime}, current=${runtimeType}` };
+    return { prewarmed: false, reason: `Session runtime mismatch: persisted=${persistedRuntimeType}, current=${runtimeType}` };
   }
-  if (meta?.runtime) {
-    const persistedRuntimeSource = normalizeRuntimeSourceForRuntime(meta.runtime, meta.runtimeSource);
+  if (persistedRuntimeType) {
+    const persistedRuntimeSource = meta?.runtimeBinding
+      ? runtimeSourceForBinding(meta.runtimeBinding)
+      : normalizeRuntimeSourceForRuntime(persistedRuntimeType, meta?.runtimeSource);
     const currentRuntimeSource = normalizeRuntimeSourceForRuntime(runtimeType, getCurrentRuntimeSource());
     if (persistedRuntimeSource !== currentRuntimeSource) {
       emitPerfTrace({
@@ -6259,7 +6380,10 @@ export function getRuntimePermissionModes(runtimeType: RuntimeType): unknown[] {
 
 /** Flush accumulated content blocks, persist to SessionStore, and broadcast completion.
  * Called by both turn_complete (Codex) and session_complete (CC) to avoid duplication. */
-async function persistTurnResult(terminalGeneration: number): Promise<void> {
+async function persistTurnResult(
+  terminalGeneration: number,
+  clientOperationId?: string,
+): Promise<void> {
   // Defense-in-depth: the `session_complete` handler reads `persistInFlight`
   // to decide whether to fire `setExternalSessionState('idle')` synchronously.
   // When persistInFlight=true, idle is deferred to this function. If we throw
@@ -6393,6 +6517,18 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       persistFailed = true;
       persistFailureReason = persistResult.failureReason;
       console.error(`[external-session] Failed to save session messages: ${persistFailureReason ?? 'unknown error'}`);
+    }
+    if (runtimeType === 'dsh' && persistResult.ok) {
+      if (!clientOperationId) {
+        throw new Error('DSH terminal persistence lacks its exact operation identity');
+      }
+      const settlement = await settleDshRootOperation({
+        sessionId: lifecycleSessionId,
+        clientOperationId,
+      });
+      if (!settlement.success) {
+        throw new Error(`Failed to settle DSH Product operation journal: ${settlement.error}`);
+      }
     }
     if (turnSucceededAtTerminal && persistResult.ok && assistantChannelDeliveryBatch) {
       commitExternalAssistantChannelDelivery(assistantChannelDeliveryBatch);
@@ -7286,6 +7422,21 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
       if (turnPlan.kind !== 'persist-success') {
         const message = turnPlan.message;
+        let dshTerminalSettlement: Promise<void> | null = null;
+        if (getCurrentRuntimeType() === 'dsh') {
+          dshTerminalSettlement = event.clientOperationId
+            ? settleDshRootOperation({
+                sessionId: getExternalLifecycleSessionId(),
+                clientOperationId: event.clientOperationId,
+              }).then((result) => {
+                if (!result.success) throw new Error(result.error);
+              })
+            : Promise.reject(new Error('DSH non-success terminal lacks its exact operation identity'));
+          dshTerminalSettlement = dshTerminalSettlement.catch((error) => {
+            console.error('[external-session] failed to settle DSH terminal journal:', error);
+          });
+          trackExternalTurnFinalization(dshTerminalSettlement);
+        }
         let completionTerminal: SessionCompletionTerminal | null = null;
         if (terminalGeneration > terminalGenerationBefore && turnPlan.kind === 'failure') {
           const terminalText = currentExternalTurnTextSnapshot();
@@ -7305,6 +7456,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           console.log('[external-session] turn_complete arrived during intentional stop; deferring idle/drain cleanup to stopExternalSession');
           clearExternalPermissionSuggestions();
           drainPendingInteractiveRequestsAsExpired('stop');
+          if (dshTerminalSettlement) {
+            void dshTerminalSettlement.finally(() => setTimeout(drainExternalQueueAfterTurn, 0));
+          }
           break;
         }
 
@@ -7348,7 +7502,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             withSessionCompletionTerminal(null, completionTerminal),
           );
         }
-        scheduleExternalQueueDrainAfterTurnBoundary();
+        if (dshTerminalSettlement) {
+          void dshTerminalSettlement.finally(scheduleExternalQueueDrainAfterTurnBoundary);
+        } else {
+          scheduleExternalQueueDrainAfterTurnBoundary();
+        }
         break;
       }
 
@@ -7362,7 +7520,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       console.log(`[external-session] turn_complete: text=${getExternalAssistantText().length}chars, blocks=${getExternalContentBlockCount()}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms`);
       // Fire-and-forget: handleUnifiedEvent is a sync stream callback; persistTurnResult is async.
       // Tracked by turnFinalization so idle-waiters / the next turn wait for the flush.
-      trackExternalTurnFinalization(persistTurnResult(terminalGeneration).catch((err) => console.error('[external-session] persistTurnResult (turn_complete) failed:', err)));
+      trackExternalTurnFinalization(persistTurnResult(
+        terminalGeneration,
+        event.clientOperationId,
+      ).catch((err) => console.error('[external-session] persistTurnResult (turn_complete) failed:', err)));
       break;
     }
 

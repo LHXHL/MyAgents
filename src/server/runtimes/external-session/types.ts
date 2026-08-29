@@ -137,6 +137,8 @@ export interface ExternalMessageOperation {
   userProjection: ExternalUserMessageProjectionState;
   /** In-memory callback retained when startup recovery requeues this exact operation. */
   deferredDispatchAccepted?: () => void;
+  /** Stable Product-minted identity reused by DSH admission and crash recovery. */
+  dshClientOperationId?: string;
 }
 
 export interface ExternalQueuedMessageOperation extends ExternalMessageOperation {

@@ -739,6 +739,7 @@ export class DshRuntime implements AgentRuntime {
           options.initialTurn.message,
           options.initialTurn.images,
           options.initialTurn.clientUserMessageId,
+          options.initialTurn.clientOperationId,
         );
       }
       return processValue;
@@ -769,9 +770,10 @@ export class DshRuntime implements AgentRuntime {
     message: string,
     images: readonly ResolvedImagePayload[] | undefined,
     clientUserMessageId: string,
+    requestedClientOperationId?: string,
   ): Promise<void> {
     if (process.activeOperationId) throw new Error('DSH already owns an active root turn');
-    const clientOperationId = `turn-${randomUUID()}`;
+    const clientOperationId = requestedClientOperationId ?? `turn-${randomUUID()}`;
     process.activeOperationId = clientOperationId;
     process.operationUserMessages.set(clientOperationId, clientUserMessageId);
     try {
@@ -801,13 +803,14 @@ export class DshRuntime implements AgentRuntime {
     runtimeProcess: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string },
+    options?: { clientUserMessageId?: string; clientOperationId?: string },
   ): Promise<void> {
     await this.startTurn(
       dshProcess(runtimeProcess),
       message,
       images,
       options?.clientUserMessageId ?? `user-${randomUUID()}`,
+      options?.clientOperationId,
     );
   }
 

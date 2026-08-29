@@ -63,9 +63,14 @@ export type DshRecoveredTurnProjection = Readonly<{
   assistantMessage: SessionMessage;
 }>;
 
+export type DshNativeRootOperation = DshUnsettledTurn & Readonly<{
+  terminal: boolean;
+}>;
+
 export type DshTurnProjectionSnapshot = Readonly<{
   cursor: DshProjectionCursor;
   assistantTurns: readonly DshRecoveredTurnProjection[];
+  rootOperations: readonly DshNativeRootOperation[];
   unsettledTurns: readonly DshUnsettledTurn[];
   runtimeUsageTotals?: MessageUsage;
 }>;
@@ -408,6 +413,7 @@ export function buildDshTurnProjectionSnapshot(
   }
 
   const assistantTurns: DshRecoveredTurnProjection[] = [];
+  const rootOperations: DshNativeRootOperation[] = [];
   const unsettledTurns: DshUnsettledTurn[] = [];
   let runtimeUsageTotals: MessageUsage | undefined;
   for (const operation of [...accepted].sort((left, right) => left.sequence - right.sequence)) {
@@ -423,6 +429,12 @@ export function buildDshTurnProjectionSnapshot(
       throw new Error('DSH turn/get admission differs from durable Session truth');
     }
     const terminal = terminalById.get(operation.clientOperationId);
+    rootOperations.push(Object.freeze({
+      clientOperationId: operation.clientOperationId,
+      clientUserMessageId: operation.clientUserMessageId,
+      productTurnId: operation.productTurnId,
+      terminal: terminal !== undefined,
+    }));
     if (!terminal) {
       if (lookup.terminal) throw new DshHistoryAdvancedError('DSH history advanced after session/read');
       unsettledTurns.push(Object.freeze({
@@ -497,6 +509,7 @@ export function buildDshTurnProjectionSnapshot(
       transcriptPostcondition: history.transcriptPostcondition,
     }),
     assistantTurns: Object.freeze(assistantTurns),
+    rootOperations: Object.freeze(rootOperations),
     unsettledTurns: Object.freeze(unsettledTurns),
     ...(runtimeUsageTotals ? { runtimeUsageTotals: Object.freeze(runtimeUsageTotals) } : {}),
   });
@@ -543,8 +556,10 @@ export async function reconcileDshTurnsAtStartup(input: {
     runtimeSessionId: input.runtimeSessionId,
     cursor: snapshot.cursor,
     assistantMessages: snapshot.assistantTurns.map(turn => turn.assistantMessage),
+    nativeRootOperations: snapshot.rootOperations,
     ...(activeTurn ? {
       unsettledTurn: {
+        clientOperationId: activeTurn.clientOperationId,
         productTurnId: activeTurn.productTurnId,
         clientUserMessageId: activeTurn.clientUserMessageId,
       },

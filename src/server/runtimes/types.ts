@@ -50,6 +50,8 @@ export type ResolvedImagePayload = InlineImagePayload & { data: string };
 export interface RuntimeInitialTurn {
   message: string;
   clientUserMessageId: string;
+  /** Product-owned stable operation identity for runtimes with durable admission. */
+  clientOperationId?: string;
   images?: ResolvedImagePayload[];
 }
 
@@ -278,7 +280,14 @@ export type UnifiedEvent =
   // === Session lifecycle ===
   | { kind: 'session_init'; sessionId: string; model: string; tools: string[] }
   | { kind: 'status_change'; state: 'idle' | 'running' | 'waiting_permission' | 'error' }
-  | { kind: 'turn_complete'; result?: string; status?: string; error?: string }
+  | {
+    kind: 'turn_complete';
+    result?: string;
+    status?: string;
+    error?: string;
+    /** Exact durable operation owner when the Runtime exposes one. */
+    clientOperationId?: string;
+  }
   | {
     kind: 'session_complete';
     result: string;
@@ -417,7 +426,7 @@ export interface AgentRuntime {
     process: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string },
+    options?: { clientUserMessageId?: string; clientOperationId?: string },
   ): Promise<void>;
 
   /** Exact root operation currently owned by a resumed Runtime, when any. */

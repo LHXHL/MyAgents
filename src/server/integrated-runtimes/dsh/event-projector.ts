@@ -318,7 +318,11 @@ export class DshRuntimeEventProjector {
           this.options.onEvent(usageEvent(summary, 'delta', summary.contextOccupiedTokens, summary.runtimeContextWindow));
         }
         this.options.onTurnTerminal?.({ clientOperationId, turnId: envelope.turnId, terminal });
-        this.options.onEvent({ kind: 'turn_complete', ...terminalStatus(terminal) });
+        this.options.onEvent({
+          kind: 'turn_complete',
+          clientOperationId,
+          ...terminalStatus(terminal),
+        });
         return;
       }
       case 'message_event':

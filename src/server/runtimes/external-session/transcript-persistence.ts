@@ -1,6 +1,8 @@
 import type { MessageUsage, RuntimeTurnAnchor, SessionMessage } from '../../types/session';
 import {
   appendSessionMessages,
+  beginDshRootOperation,
+  discardUnpersistedDshRootOperation,
   loadSessionTranscript,
   mutateSessionTranscript,
   updateSessionMetadata,
@@ -162,12 +164,45 @@ export async function persistExternalUserMessageAppend(
   failureContext: string,
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
+  dshRootOperation?: {
+    clientOperationId: string;
+    runtimeSessionId: string;
+    productImageSha256: readonly string[];
+  },
 ): Promise<{ lastMessagePreview?: string }> {
   const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
   const cursor = await ensureExternalTranscriptCursor(sessionId);
   const tail = allSessionMessages.slice(cursor.persistedMessageCount);
+  const rootUser = dshRootOperation
+    ? tail.find(message => message.role === 'user' && message.id === _userMessageId)
+    : undefined;
+  if (dshRootOperation && (tail.length !== 1 || !rootUser)) {
+    throw new Error(`${failureContext}: DSH admission requires one exact Product user tail`);
+  }
+  if (dshRootOperation && rootUser) {
+    const begun = await beginDshRootOperation({
+      sessionId,
+      cursor,
+      runtimeSessionId: dshRootOperation.runtimeSessionId,
+      clientOperationId: dshRootOperation.clientOperationId,
+      userMessage: rootUser,
+      productImageSha256: dshRootOperation.productImageSha256,
+    });
+    if (!begun.success) throw new Error(`${failureContext}: ${begun.error}`);
+  }
   const saveResult = await appendSessionMessages(sessionId, cursor, tail);
-  transcriptCursor = assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  try {
+    transcriptCursor = assertExternalSessionMessagesPersisted(saveResult, failureContext);
+  } catch (error) {
+    if (dshRootOperation) {
+      await discardUnpersistedDshRootOperation({
+        sessionId,
+        clientOperationId: dshRootOperation.clientOperationId,
+        clientUserMessageId: _userMessageId,
+      });
+    }
+    throw error;
+  }
 
   if (metadataDisposition === 'skip') return { lastMessagePreview };
   try {

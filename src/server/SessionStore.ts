@@ -18,7 +18,7 @@ import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSyn
 import { homedir } from 'os';
 import { join } from 'path';
 
-import type { DshProjectionCursor, MessageUsage, PendingConversationMutation, PendingDshMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { DshProjectionCursor, MessageUsage, PendingConversationMutation, PendingDshMutation, PendingDshRootOperation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
@@ -34,6 +34,7 @@ import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
 import { withFileLock } from './utils/file-lock';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
+import { assertDshProductInputMatches, fingerprintDshProductInput } from './session-engine/dsh-root-operation';
 import { normalizeSessionRuntimeIdentity, resolveBuiltinSdkSessionId } from './utils/session-runtime-identity';
 import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 
@@ -1272,6 +1273,153 @@ function sessionUsesDsh(metadata: SessionMetadata): boolean {
         && runtimeTypeForBinding(metadata.runtimeBinding) === 'dsh';
 }
 
+function validDshOperationIdentifier(value: string): boolean {
+    return value.length > 0
+        && value.length <= 256
+        && !Array.from(value).some(character => {
+            const code = character.charCodeAt(0);
+            return code < 0x20 || code === 0x7f;
+        });
+}
+
+/**
+ * Persist Product ownership before a root user row may be dispatched to DSH.
+ * The journal intentionally lands first; an absent user row is a recoverable
+ * pre-admission abort, while a present row requires exact native replay.
+ */
+export async function beginDshRootOperation(input: {
+    sessionId: string;
+    cursor: TranscriptWriteCursor;
+    runtimeSessionId: string;
+    clientOperationId: string;
+    userMessage: SessionMessage;
+    productImageSha256: readonly string[];
+}): Promise<DshMutationStoreResult<PendingDshRootOperation>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const currentFile = getTranscriptFileIdentity(getSessionFilePath(input.sessionId));
+            if (!cursorMatches(input.sessionId, input.cursor, currentFile)) {
+                return dshMutationFailure('precondition_failed', 'The Product transcript changed before DSH admission');
+            }
+            if (
+                !validDshOperationIdentifier(input.clientOperationId)
+                || !validDshOperationIdentifier(input.userMessage.id)
+                || input.userMessage.role !== 'user'
+            ) {
+                return dshMutationFailure('precondition_failed', 'The DSH root operation identity is invalid');
+            }
+            const transcript = readJsonlSnapshot(getSessionFilePath(input.sessionId));
+            if (transcript.hasMalformedRows) {
+                return dshMutationFailure('storage_consistency_error', 'The Product transcript is malformed');
+            }
+            if (transcript.messages.some(message => message.id === input.userMessage.id)) {
+                return dshMutationFailure('precondition_failed', 'The DSH root user identity is already persisted');
+            }
+            const operation: PendingDshRootOperation = {
+                schemaVersion: 1,
+                clientOperationId: input.clientOperationId,
+                clientUserMessageId: input.userMessage.id,
+                sourceRuntimeSessionId: input.runtimeSessionId,
+                productImageSha256: [...input.productImageSha256],
+                productInputFingerprint: fingerprintDshProductInput(
+                    input.userMessage,
+                    input.clientOperationId,
+                    input.productImageSha256,
+                ),
+            };
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                if (
+                    !current
+                    || !sessionUsesDsh(current)
+                    || current.runtimeSessionId !== input.runtimeSessionId
+                    || current.pendingDshMutation
+                ) {
+                    return dshMutationFailure('precondition_failed', 'The DSH Session authority changed before root admission');
+                }
+                const existing = current.pendingDshRootOperation;
+                if (existing) {
+                    if (JSON.stringify(existing) !== JSON.stringify(operation)) {
+                        return dshMutationFailure('precondition_failed', 'Another DSH root operation owns Product admission');
+                    }
+                    return { success: true, value: structuredClone(existing) };
+                }
+                all[index] = { ...current, pendingDshRootOperation: operation };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: structuredClone(operation) };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Clear a journal only when its root user never became durable. */
+export async function discardUnpersistedDshRootOperation(input: {
+    sessionId: string;
+    clientOperationId: string;
+    clientUserMessageId: string;
+}): Promise<DshMutationStoreResult<{ discarded: boolean }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const transcript = readJsonlSnapshot(getSessionFilePath(input.sessionId));
+            if (transcript.hasMalformedRows) {
+                return dshMutationFailure('storage_consistency_error', 'The Product transcript is malformed');
+            }
+            if (transcript.messages.some(message => message.id === input.clientUserMessageId)) {
+                return { success: true, value: { discarded: false } };
+            }
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                const pending = current?.pendingDshRootOperation;
+                if (!current || !pending) return { success: true, value: { discarded: false } };
+                if (
+                    pending.clientOperationId !== input.clientOperationId
+                    || pending.clientUserMessageId !== input.clientUserMessageId
+                ) {
+                    return dshMutationFailure('storage_consistency_error', 'The DSH root operation owner changed before discard');
+                }
+                all[index] = { ...current, pendingDshRootOperation: undefined };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return { success: true, value: { discarded: true } };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** Retire the exact Product journal only after the matching native terminal is handled. */
+export async function settleDshRootOperation(input: {
+    sessionId: string;
+    clientOperationId: string;
+}): Promise<DshMutationStoreResult<{ settled: boolean }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = index >= 0 ? all[index] : undefined;
+            const pending = current?.pendingDshRootOperation;
+            if (!current || !pending) return { success: true, value: { settled: false } };
+            if (pending.clientOperationId !== input.clientOperationId) {
+                return dshMutationFailure('storage_consistency_error', 'The DSH terminal changed its Product operation owner');
+            }
+            all[index] = { ...current, pendingDshRootOperation: undefined };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: { settled: true } };
+        });
+    } catch (error) {
+        return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
+    }
+}
+
 /**
  * Reconcile Runtime-owned terminal turns into the Product-owned transcript
  * projection. The native cursor and every inserted assistant row are committed
@@ -1282,7 +1430,17 @@ export async function reconcileDshTurnProjections(input: {
     runtimeSessionId: string;
     cursor: DshProjectionCursor;
     assistantMessages: readonly SessionMessage[];
-    unsettledTurn?: { productTurnId: string; clientUserMessageId: string };
+    nativeRootOperations: readonly {
+        clientOperationId: string;
+        clientUserMessageId: string;
+        productTurnId: string;
+        terminal: boolean;
+    }[];
+    unsettledTurn?: {
+        clientOperationId: string;
+        productTurnId: string;
+        clientUserMessageId: string;
+    };
     runtimeUsageTotals?: MessageUsage;
 }): Promise<DshMutationStoreResult<{ transcriptChanged: boolean; cursor: DshProjectionCursor }>> {
     ensureStorageDir();
@@ -1397,6 +1555,64 @@ export async function reconcileDshTurnProjections(input: {
                     }
                 }
 
+                const nativeRoots = new Map<string, (typeof input.nativeRootOperations)[number]>();
+                for (const operation of input.nativeRootOperations) {
+                    if (
+                        !validDshOperationIdentifier(operation.clientOperationId)
+                        || !validDshOperationIdentifier(operation.clientUserMessageId)
+                        || !validDshOperationIdentifier(operation.productTurnId)
+                        || nativeRoots.has(operation.clientOperationId)
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH native root operation set is ambiguous');
+                    }
+                    nativeRoots.set(operation.clientOperationId, operation);
+                }
+                let pendingDshRootOperation = current.pendingDshRootOperation;
+                if (pendingDshRootOperation) {
+                    if (
+                        pendingDshRootOperation.schemaVersion !== 1
+                        || pendingDshRootOperation.sourceRuntimeSessionId !== input.runtimeSessionId
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH root operation journal changed Runtime authority');
+                    }
+                    const journalUsers = target.filter(message => (
+                        message.role === 'user'
+                        && message.id === pendingDshRootOperation?.clientUserMessageId
+                    ));
+                    const native = nativeRoots.get(pendingDshRootOperation.clientOperationId);
+                    if (journalUsers.length === 0) {
+                        if (native) {
+                            return dshMutationFailure('storage_consistency_error', 'DSH admitted a root operation without its Product user');
+                        }
+                        pendingDshRootOperation = undefined;
+                    } else if (journalUsers.length !== 1) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH root operation journal has a duplicated Product user');
+                    } else {
+                        try {
+                            assertDshProductInputMatches(pendingDshRootOperation, journalUsers[0]!);
+                        } catch (error) {
+                            return dshMutationFailure(
+                                'storage_consistency_error',
+                                error instanceof Error ? error.message : String(error),
+                            );
+                        }
+                        if (native && (
+                            native.clientUserMessageId !== pendingDshRootOperation.clientUserMessageId
+                            || native.clientOperationId !== pendingDshRootOperation.clientOperationId
+                        )) {
+                            return dshMutationFailure('storage_consistency_error', 'DSH changed the journaled root operation identity');
+                        }
+                        if (native?.terminal) pendingDshRootOperation = undefined;
+                    }
+                    if (
+                        input.unsettledTurn
+                        && pendingDshRootOperation
+                        && input.unsettledTurn.clientOperationId !== pendingDshRootOperation.clientOperationId
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'A different DSH root operation is active beside the Product journal');
+                    }
+                }
+
                 if (transcriptChanged) atomicRewriteSessionMessages(input.sessionId, target);
                 const { preview } = resolveLastVisibleTurnPreview(target);
                 all[index] = {
@@ -1404,6 +1620,9 @@ export async function reconcileDshTurnProjections(input: {
                     stats: calculateSessionStats(target),
                     lastMessagePreview: preview,
                     dshProjectionCursor: structuredClone(input.cursor),
+                    pendingDshRootOperation: pendingDshRootOperation
+                        ? structuredClone(pendingDshRootOperation)
+                        : undefined,
                     runtimeUsageTotals: input.runtimeUsageTotals
                         ? structuredClone(input.runtimeUsageTotals)
                         : undefined,
@@ -1443,6 +1662,7 @@ export async function beginDshDeleteMutation(input: {
                     !sessionUsesDsh(current)
                     || !current.runtimeSessionId
                     || current.pendingDshMutation
+                    || current.pendingDshRootOperation
                     || isSystemMaintenanceSession(current)
                 ) {
                     return dshMutationFailure('precondition_failed', 'The DSH delete authority changed');
@@ -1610,6 +1830,7 @@ export async function beginDshForkMutation(input: {
                         !sessionUsesDsh(source)
                         || !source.runtimeSessionId
                         || source.pendingDshMutation
+                        || source.pendingDshRootOperation
                         || all.some(session => session.id === input.targetProductSessionId)
                     ) {
                         return dshMutationFailure('precondition_failed', 'The DSH fork source or target changed');
@@ -1924,7 +2145,12 @@ export async function beginDshRewindMutation(input: {
                         value: { intent: existing, targetUserMessage, targetMessages },
                     };
                 }
-                if (!sessionUsesDsh(current) || !current.runtimeSessionId || current.pendingDshMutation) {
+                if (
+                    !sessionUsesDsh(current)
+                    || !current.runtimeSessionId
+                    || current.pendingDshMutation
+                    || current.pendingDshRootOperation
+                ) {
                     return dshMutationFailure('precondition_failed', 'The DSH rewind source changed');
                 }
                 const intent: PendingDshRewind = {
