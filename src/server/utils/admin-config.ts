@@ -80,6 +80,10 @@ import { normalizeThemeConfigRecord } from '../../shared/theme';
 import { buildAvailableProvidersJson } from '../../shared/availableProvidersProjection';
 import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIdentity';
 import { lookupModelModalitySupport } from './model-capabilities';
+import {
+  runtimeSourceForBinding,
+  runtimeTypeForBinding,
+} from '../../shared/integrated-runtimes/identity';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -1620,11 +1624,14 @@ export function resolveWorkspaceConfig(
     runtime: typeof agent?.runtime === 'string' ? agent.runtime : undefined,
     runtimeConfig: agent?.runtimeConfig as { source?: string } | undefined,
   });
-  const resolvedRuntime: RuntimeType = agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
+  const boundRuntime = sessionMeta?.runtimeBinding
+    ? runtimeTypeForBinding(sessionMeta.runtimeBinding)
+    : undefined;
+  const resolvedRuntime: RuntimeType = boundRuntime ?? (agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
     ? 'codex'
     : normalizeRuntime(
         (sessionMeta?.runtime as string | undefined) ?? (agent?.runtime as string | undefined),
-      );
+      ));
   const agentRuntimeConfig = agent?.runtimeConfig as {
     source?: string;
     model?: string;
@@ -1634,9 +1641,13 @@ export function resolveWorkspaceConfig(
   const agentProductPermissionMode = isProductPermissionMode(agent?.permissionMode)
     ? agent.permissionMode
     : undefined;
-  const resolvedRuntimeSource = resolvedRuntime === 'builtin'
-    ? undefined
-    : (sessionMeta?.runtime !== undefined
+  const resolvedRuntimeSource = sessionMeta?.runtimeBinding
+    ? runtimeSourceForBinding(sessionMeta.runtimeBinding)
+    : resolvedRuntime === 'builtin'
+      ? undefined
+      : resolvedRuntime === 'dsh'
+        ? 'integrated'
+        : (sessionMeta?.runtime !== undefined
       ? (sessionMeta.runtimeSource
         ?? sessionMeta.providerExecutionIdentity?.runtimeSource
         ?? 'system-cli')
@@ -1649,13 +1660,14 @@ export function resolveWorkspaceConfig(
   let providerEnv: ResolvedProviderEnv | undefined;
   let providerRoute: ProviderRoute | undefined;
   let providerId: string | undefined;
-  if (resolvedRuntime === 'builtin' && snapshotOwnsConfig) {
+  const usesIntegratedProvider = resolvedRuntime === 'builtin' || resolvedRuntime === 'dsh';
+  if (usesIntegratedProvider && snapshotOwnsConfig) {
     providerRoute = resolveOwnedBuiltinProviderRoute({ sessionMeta, config });
     providerId = isConcreteProviderRoute(providerRoute) ? providerRoute.providerId : sessionMeta?.providerId;
     providerEnv = isConcreteProviderRoute(providerRoute)
       ? materializeProviderRouteEnv(providerRoute, config)
       : (providerId ? resolveProviderEnv(providerId, config) : undefined);
-  } else if (resolvedRuntime === 'builtin') {
+  } else if (usesIntegratedProvider) {
     providerId = sessionMeta?.providerId
       || (agent?.providerId as string | undefined)
       || (config.defaultProviderId as string | undefined);
@@ -1686,7 +1698,7 @@ export function resolveWorkspaceConfig(
   // Runtime-aware priority:
   // - builtin: session.model → agent.model → provider primary model
   // - external: session.model → agent.runtimeConfig.model → runtime default
-  const rawModel = resolvedRuntime === 'builtin'
+  const rawModel = usesIntegratedProvider
     ? (snapshotOwnsConfig
       ? (isConcreteProviderRoute(providerRoute) ? providerRoute.model : sessionMeta?.model)
       : (sessionMeta?.model ?? (agent?.model as string | undefined) ?? undefined))
@@ -1702,7 +1714,7 @@ export function resolveWorkspaceConfig(
       `[runtime-coerce] dropping stale workspace model='${rawModel}' on runtime='${resolvedRuntime}'; falling back to runtime default. sessionId=${sessionMeta?.id ?? '<none>'} agentDir=${agentDir}`,
     );
   }
-  if (!model && providerId && resolvedRuntime === 'builtin') {
+  if (!model && providerId && usesIntegratedProvider) {
     const provider = findEffectiveProvider(providerId, config);
     if (provider && isProviderEnabled(provider)) {
       model = (provider as Record<string, unknown>).primaryModel as string | undefined;
@@ -1718,10 +1730,10 @@ export function resolveWorkspaceConfig(
   const rawReasoningEffort = snapshotOwnsConfig
     ? sessionMeta?.reasoningEffort
     : (sessionMeta?.reasoningEffort
-      ?? (resolvedRuntime === 'builtin'
+      ?? (usesIntegratedProvider
         ? (agent?.reasoningEffort as string | undefined)
         : agentRuntimeConfig?.reasoningEffort));
-  const reasoningEffort = resolvedRuntime === 'builtin'
+  const reasoningEffort = usesIntegratedProvider
     ? rawReasoningEffort
     : coerceReasoningEffortSettingForRuntime(rawReasoningEffort, resolvedRuntime);
   if (resolvedRuntime !== 'builtin'
@@ -1754,6 +1766,12 @@ export function resolveWorkspaceConfig(
         ?? asBuiltinPermissionMode(project?.permissionMode)
         ?? asBuiltinPermissionMode(config.defaultPermissionMode)
         ?? 'auto');
+  } else if (resolvedRuntime === 'dsh') {
+    const rawPermissionMode = snapshotOwnsConfig
+      ? sessionMeta?.permissionMode
+      : (sessionMeta?.permissionMode ?? agentProductPermissionMode);
+    const coercedPermissionMode = projectPermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
+    permissionMode = coercedPermissionMode ?? getDefaultRuntimePermissionMode(resolvedRuntime);
   } else {
     const rawPermissionMode = sessionMeta
       ? sessionMeta.permissionMode

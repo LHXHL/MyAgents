@@ -39,6 +39,7 @@ import {
   getExternalRuntime,
   getCurrentRuntimeSource,
   getCurrentRuntimeType,
+  isDshRuntime,
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
@@ -2250,7 +2251,8 @@ export function getExternalSessionReasoningEffort(): string | undefined {
  * Check if we should use an external runtime for this sidecar
  */
 export function shouldUseExternalRuntime(): boolean {
-  return isExternalRuntime(getCurrentRuntimeType());
+  const runtime = getCurrentRuntimeType();
+  return isExternalRuntime(runtime) || isDshRuntime(runtime);
 }
 
 /**

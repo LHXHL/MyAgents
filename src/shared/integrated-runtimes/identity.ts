@@ -367,6 +367,19 @@ export function legacyProjectionForBinding(
   return { runtime: "builtin" };
 }
 
+/** Runtime implementation selected by an authoritative binding, independent of its legacy projection. */
+export function runtimeTypeForBinding(binding: EffectiveRuntimeBinding): RuntimeType {
+  if (binding.family === "external") return binding.id;
+  if (binding.family === "managed-provider") return "codex";
+  return binding.id === "dsh" ? "dsh" : "builtin";
+}
+
+export function runtimeSourceForBinding(binding: EffectiveRuntimeBinding): RuntimeSource | undefined {
+  if (binding.family === "external") return "system-cli";
+  if (binding.family === "managed-provider") return "managed-provider";
+  return binding.id === "dsh" ? "integrated" : undefined;
+}
+
 export function runtimeBindingKey(binding: EffectiveRuntimeBinding): string {
   switch (binding.family) {
     case "integrated":

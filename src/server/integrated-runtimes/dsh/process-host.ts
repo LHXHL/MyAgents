@@ -300,6 +300,15 @@ export class DshRuntimeProcessHost {
     return this.identityValue;
   }
 
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
+
+  async waitForExit(): Promise<number> {
+    const exit = await this.exitPromise;
+    return exit?.code ?? (exit?.signal ? 1 : 0);
+  }
+
   start(): Promise<DshRuntimeProcessIdentity> {
     if (this.startPromise) return this.startPromise;
     if (this.stateValue !== "idle") {

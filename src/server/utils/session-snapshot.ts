@@ -15,6 +15,7 @@ import {
   createRuntimeBackedProviderIdentity,
   managedCodexProviderPermissionToRuntimePermission,
 } from '../../shared/providerExecution';
+import { createDshBinding } from '../../shared/integrated-runtimes/identity';
 
 /**
  * Session config snapshot helpers (v0.1.69).
@@ -148,6 +149,33 @@ interface SessionSnapshotRuntimeOptions {
   managedCodexProviderReady?: boolean;
 }
 
+function dshPlatformTarget(): string {
+  const target = `${process.platform}-${process.arch}`;
+  if (target !== 'darwin-arm64' && target !== 'win32-x64' && target !== 'linux-x64') {
+    throw new Error(`DSH Session binding has no accepted platform target for ${target}`);
+  }
+  return target;
+}
+
+export function snapshotRuntimeIdentity(
+  runtime: RuntimeType,
+  runtimeSource?: RuntimeSource,
+): Pick<SessionMetadata, 'runtime' | 'runtimeSource' | 'runtimeBinding'> {
+  if (runtime === 'dsh') {
+    return {
+      runtime,
+      runtimeSource: 'integrated',
+      runtimeBinding: createDshBinding(dshPlatformTarget()),
+    };
+  }
+  return {
+    runtime,
+    runtimeSource: runtime === 'builtin'
+      ? undefined
+      : (runtimeSource ?? 'system-cli'),
+  };
+}
+
 function agentForSnapshotRuntime(
   agent: AgentConfig,
   options?: SessionSnapshotRuntimeOptions,
@@ -203,10 +231,10 @@ export function snapshotForImSession(
   const snapshotAgent = agentForSnapshotRuntime(agent, options);
   const runtime = snapshotAgent.runtime ?? 'builtin';
   return {
-    runtime,
-    runtimeSource: runtime !== 'builtin'
-      ? (options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source ?? 'system-cli')
-      : undefined,
+    ...snapshotRuntimeIdentity(
+      runtime,
+      options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source,
+    ),
   };
 }
 
@@ -268,7 +296,8 @@ export function snapshotForOwnedSession(
   }
   const snapshotAgent = agentForSnapshotRuntime(agent, options);
   const runtime = snapshotAgent.runtime ?? 'builtin';
-  const isExternal = runtime !== 'builtin';
+  const isDsh = runtime === 'dsh';
+  const isExternal = runtime !== 'builtin' && !isDsh;
   const hasStaleManagedProviderId = snapshotAgent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID;
   const builtinProviderId = !isExternal && !hasStaleManagedProviderId
     ? snapshotAgent.providerId
@@ -280,10 +309,10 @@ export function snapshotForOwnedSession(
     ? createConcreteProviderRoute(builtinProviderId, model)
     : undefined;
   return {
-    runtime,
-    runtimeSource: isExternal
-      ? (options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source ?? 'system-cli')
-      : undefined,
+    ...snapshotRuntimeIdentity(
+      runtime,
+      options?.runtimeSourceOverride ?? snapshotAgent.runtimeConfig?.source,
+    ),
     model,
     // #324 — same runtime-aware dispatch as model (issue #224 rationale).
     reasoningEffort: isExternal

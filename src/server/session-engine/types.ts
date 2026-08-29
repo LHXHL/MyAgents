@@ -27,7 +27,7 @@ import type { AssistantChannelDelivery } from '../session-core/channel-delivery'
 import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
-export type SessionEngineKind = 'builtin' | 'external';
+export type SessionEngineKind = 'builtin' | 'integrated' | 'external';
 
 export type { PermissionMode } from '../agent-session';
 

@@ -179,6 +179,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     // below the input. We detect once on mount, mirroring Chat.tsx's pattern.
     const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
         builtin: { installed: true },
+        dsh: { installed: false },
         'claude-code': { installed: false },
         codex: { installed: false },
         gemini: { installed: false },

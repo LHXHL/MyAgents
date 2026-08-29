@@ -8,13 +8,13 @@
  * - codex: OpenAI Codex CLI (user-installed `codex`)
  * - gemini: Google Gemini CLI in ACP mode (user-installed `gemini`, v0.1.66+)
  */
-export type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
+export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex' | 'gemini';
 
 /**
  * Distinguishes user-managed CLI runtimes from product-managed runtime-backed
  * providers. Missing source is treated as `system-cli` for existing sessions.
  */
-export type RuntimeSource = 'system-cli' | 'managed-provider';
+export type RuntimeSource = 'integrated' | 'system-cli' | 'managed-provider';
 
 /**
  * Canonical runtime type list — single source of truth.
@@ -31,6 +31,7 @@ export type RuntimeSource = 'system-cli' | 'managed-provider';
  */
 export const VALID_RUNTIMES = [
   'builtin',
+  'dsh',
   'claude-code',
   'codex',
   'gemini',
@@ -56,6 +57,7 @@ export const _exhaustiveRuntimeCheck: _AssertRuntimeExhaustive = true;
 /** Human-readable display names keyed by runtime type. */
 export const RUNTIME_DISPLAY_NAMES: Record<RuntimeType, string> = {
   builtin: 'Built-in (Claude Agent SDK)',
+  dsh: 'MyAgents (DSH)',
   'claude-code': 'Claude Code CLI',
   codex: 'OpenAI Codex CLI',
   gemini: 'Google Gemini CLI (ACP)',
@@ -440,6 +442,11 @@ export const BUILTIN_PERMISSION_MODES: RuntimePermissionMode[] = [
   },
 ];
 
+/** DSH keeps the universal MyAgents product vocabulary at the Host boundary. */
+export const DSH_PERMISSION_MODES: RuntimePermissionMode[] = BUILTIN_PERMISSION_MODES
+  .filter(mode => mode.value !== 'custom')
+  .map(mode => ({ ...mode }));
+
 // ─── Codex permission modes (pre-defined for v2) ───
 
 export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
@@ -478,6 +485,7 @@ export const CODEX_PERMISSION_MODES: RuntimePermissionMode[] = [
  */
 export function getRuntimePermissionModes(runtime: RuntimeType): RuntimePermissionMode[] {
   switch (runtime) {
+    case 'dsh': return DSH_PERMISSION_MODES;
     case 'claude-code': return CC_PERMISSION_MODES;
     case 'codex': return CODEX_PERMISSION_MODES;
     case 'gemini': return GEMINI_PERMISSION_MODES;
@@ -561,6 +569,7 @@ export const CC_MODELS: RuntimeModelInfo[] = [
  */
 export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
   switch (runtime) {
+    case 'dsh': return 'auto';
     case 'claude-code': return 'manual';
     case 'codex': return 'full-auto';
     case 'gemini': return 'autoEdit';  // D5: desktop default = Auto Edit
@@ -590,6 +599,7 @@ export function getDefaultRuntimePermissionMode(runtime: RuntimeType): string {
  */
 export function getMaxPermissionForRuntime(runtime: RuntimeType): string {
   switch (runtime) {
+    case 'dsh':         return 'fullAgency';
     case 'builtin':     return 'fullAgency';
     case 'claude-code': return 'bypassPermissions';
     case 'codex':       return 'no-restrictions';

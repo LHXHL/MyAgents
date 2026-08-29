@@ -3,7 +3,7 @@ import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import { originFromMaterializationScenario } from '../../shared/session-origin';
 import type { SessionOrigin } from '../../shared/session-origin';
 import { createSessionMetadata, type SessionMetadata } from '../types/session';
-import { snapshotForImSession, snapshotForOwnedSession } from './session-snapshot';
+import { snapshotForImSession, snapshotForOwnedSession, snapshotRuntimeIdentity } from './session-snapshot';
 
 export type SessionMaterializationScenario = 'desktop' | 'cron' | 'im' | 'agent-channel' | 'registeredAgent';
 
@@ -27,10 +27,7 @@ export function bindOwnedSnapshotToRuntimeIdentity(
 ): Partial<SessionMetadata> {
   return {
     ...snapshot,
-    runtime: identity.runtime,
-    runtimeSource: identity.runtime === 'builtin'
-      ? undefined
-      : (identity.runtimeSource ?? 'system-cli'),
+    ...snapshotRuntimeIdentity(identity.runtime, identity.runtimeSource),
   };
 }
 
@@ -53,14 +50,11 @@ export function createMaterializedSessionMetadata(params: {
         managedCodexProviderReady: params.managedCodexProviderReady,
       })
     : undefined;
-  const meta = createSessionMetadata(params.agentDir, snapshot);
   const fallbackRuntime = params.runtimeOverride ?? params.fallbackRuntime;
-  if (!params.agent && fallbackRuntime) {
-    meta.runtime = fallbackRuntime;
-    meta.runtimeSource = fallbackRuntime !== 'builtin'
-      ? (params.runtimeSourceOverride ?? 'system-cli')
-      : undefined;
-  }
+  const fallbackSnapshot = !params.agent && fallbackRuntime
+    ? snapshotRuntimeIdentity(fallbackRuntime, params.runtimeSourceOverride)
+    : undefined;
+  const meta = createSessionMetadata(params.agentDir, snapshot ?? fallbackSnapshot);
   meta.id = params.sessionId;
   meta.title = params.scenario === 'registeredAgent'
     ? (params.agent?.name.trim() || 'New Chat')

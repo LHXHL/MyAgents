@@ -20,6 +20,36 @@ function makeAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
+  it('DSH freezes an authoritative integrated binding and ordinary Provider route', () => {
+    const snap = snapshotForOwnedSession(makeAgent({
+      runtime: 'dsh',
+      providerId: 'anthropic-api',
+      model: 'claude-sonnet-4-6',
+      reasoningEffort: 'default',
+      permissionMode: 'plan',
+      runtimeConfig: {
+        model: 'stale-external-model',
+        permissionMode: 'full-auto',
+      },
+    }));
+
+    expect(snap).toMatchObject({
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      runtimeBinding: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-api',
+      providerRoute: {
+        kind: 'provider',
+        providerId: 'anthropic-api',
+        model: 'claude-sonnet-4-6',
+      },
+      model: 'claude-sonnet-4-6',
+      reasoningEffort: 'default',
+      permissionMode: 'plan',
+    });
+    expect(snap.providerEnvJson).toBeUndefined();
+  });
+
   it('builtin: captures agent.reasoningEffort', () => {
     const snap = snapshotForOwnedSession(makeAgent({ reasoningEffort: 'max', model: 'claude-fable-5' }));
     expect(snap.reasoningEffort).toBe('max');

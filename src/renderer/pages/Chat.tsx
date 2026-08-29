@@ -1369,6 +1369,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Agent Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
     'builtin': { installed: true },
+    'dsh': { installed: false },
     'claude-code': { installed: false },
     'codex': { installed: false },
     'gemini': { installed: false },

@@ -36,6 +36,7 @@ export type InteractionScenario =
 // of which CLI is driving it.
 function getRuntimeDisplayName(runtime: RuntimeType | undefined): string {
   switch (runtime) {
+    case 'dsh':         return 'MyAgents integrated DeepSeek Harness';
     case 'claude-code': return 'Anthropic Claude Code CLI';
     case 'codex':       return 'OpenAI Codex CLI';
     case 'gemini':      return 'Google Gemini CLI';

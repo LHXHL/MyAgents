@@ -4,8 +4,11 @@ import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { PRESET_PROVIDERS, type Provider } from "../../../shared/config-types";
+import { compileDshExtensionSnapshot } from "./extension-compiler";
 import { createDshInitializeParams } from "./initialize";
 import { resolveDshRuntimeInstallation } from "./installation";
+import { compileDshModelExecutionProfile } from "./profile-compiler";
 import { DshRuntimeProcessHost, redactDshDiagnosticLine } from "./process-host";
 import {
   DSH_REVERSE_METHOD_NAMES,
@@ -45,14 +48,14 @@ describe.runIf(nativeSmokeEnabled)(
           allowedWriteRoots: [workspace],
         },
         executables: {
-          bundledNodeRef: "myagents-bundled-node-v24",
-          bashRef: "myagents-bash",
-          ripgrepRef: "myagents-ripgrep",
+          bundledNodeRef: "bundled-node",
+          bashRef: "bundled-bash",
+          ripgrepRef: "bundled-ripgrep",
           bashDialect: "bash",
           allowedCommandRefs: [
-            "myagents-bundled-node-v24",
-            "myagents-bash",
-            "myagents-ripgrep",
+            "bundled-bash",
+            "bundled-node",
+            "bundled-ripgrep",
           ],
           pathPolicy: "sealed",
         },
@@ -81,7 +84,14 @@ describe.runIf(nativeSmokeEnabled)(
       const hostHandlers = Object.fromEntries(
         DSH_REVERSE_METHOD_NAMES.map((method) => [
           method,
-          async () => {
+          async (params: Record<string, unknown>) => {
+            if (method === "host/credential/resolve") {
+              return {
+                kind: "availability",
+                available: true,
+                authoritativeCredentialRevision: String(params.profileRevision),
+              };
+            }
             throw new Error("Native smoke does not admit reverse work");
           },
         ]),
@@ -125,6 +135,64 @@ describe.runIf(nativeSmokeEnabled)(
           sessionFormat: "dsh-session-events-v1",
         });
         expect(host.state).toBe("protocol-ready");
+        const extension = compileDshExtensionSnapshot();
+        const extensionResult = await host.request(
+          "extension/replace",
+          extension as unknown as Record<string, unknown>,
+        );
+        expect(extensionResult).toMatchObject({
+          state: "applied",
+          effectiveRevision: extension.revision,
+        });
+        const extensionCatalog = await host.request("extension/catalog", {});
+        const provider = PRESET_PROVIDERS.find(({ id }) => id === "deepseek");
+        if (!provider) throw new Error("DeepSeek Provider fixture is unavailable");
+        const profile = compileDshModelExecutionProfile({
+          provider: structuredClone(provider) as Provider,
+          modelId: "deepseek-v4-flash",
+        });
+        const binding = await host.request("session/create", {
+          clientOperationId: "native-smoke-session-create",
+          persistenceRef: "native-smoke-persistence",
+          provider: profile as unknown as Record<string, unknown>,
+          configRevision: "native-smoke-config-v1",
+          extensionDigest: String(extensionCatalog.digest),
+          systemPrompt: "",
+          permissionMode: "default",
+          interactionScenario: "host-interaction-v1",
+        });
+        expect(binding).toMatchObject({ state: "ready" });
+        const applied = await host.request("config/apply", {
+          revision: "native-smoke-config-v2",
+          provider: profile as unknown as Record<string, unknown>,
+          permissionMode: "acceptEdits",
+          interactionScenario: "host-interaction-v1",
+          systemPrompt: "",
+          executionEnvironmentRevision: executionEnvironment.revision,
+          executionEnvironmentDigest: createDshInitializeParams({
+            productSessionId: "native-smoke-product-session",
+            productVersion: "0.4.11",
+            runtimeHome,
+            workspace: { path: workspace, identity: "native-smoke-workspace" },
+            executionEnvironment,
+            interaction: "deterministic-headless",
+          }).executionEnvironment.digest,
+        });
+        expect(applied).toMatchObject({
+          state: "applied",
+          effectiveRevision: "native-smoke-config-v2",
+        });
+        const plan = await host.request("plan/apply", {
+          clientOperationId: "native-smoke-plan-normal",
+          expectedRevision: "native-smoke-plan-probe",
+          mode: "normal",
+        });
+        expect(plan).toMatchObject({ state: "already_effective", mode: "normal" });
+        const rules = await host.request("permission/rules/list", {});
+        expect(rules).toMatchObject({ permissionMode: "acceptEdits", rules: [] });
+        await host.request("session/close", {
+          clientOperationId: "native-smoke-session-close",
+        });
         expect(JSON.stringify(stderr)).not.toMatch(
           /(api.?key|authorization|credential-canary)/i,
         );

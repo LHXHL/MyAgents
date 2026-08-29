@@ -5,17 +5,21 @@ import type { AgentRuntime } from './types';
 import { ClaudeCodeRuntime } from './claude-code';
 import { CodexRuntime } from './codex';
 import { GeminiRuntime } from './gemini';
+import { DshRuntime } from '../integrated-runtimes/dsh/runtime';
 
 // ─── Runtime registry ───
 
 const runtimes: Partial<Record<RuntimeType, AgentRuntime>> = {};
 
 // Runtime types that have actual implementations
-const SUPPORTED_EXTERNAL_RUNTIMES = new Set<RuntimeType>(['claude-code', 'codex', 'gemini']);
+const SUPPORTED_AGENT_RUNTIMES = new Set<RuntimeType>(['dsh', 'claude-code', 'codex', 'gemini']);
 
 function ensureRuntime(type: RuntimeType): AgentRuntime {
   if (!runtimes[type]) {
     switch (type) {
+      case 'dsh':
+        runtimes[type] = new DshRuntime();
+        break;
       case 'claude-code':
         runtimes[type] = new ClaudeCodeRuntime();
         break;
@@ -26,7 +30,7 @@ function ensureRuntime(type: RuntimeType): AgentRuntime {
         runtimes[type] = new GeminiRuntime();
         break;
       default:
-        throw new Error(`Runtime "${type}" is not yet supported. Available: ${[...SUPPORTED_EXTERNAL_RUNTIMES].join(', ')}`);
+        throw new Error(`Runtime "${type}" is not yet supported. Available: ${[...SUPPORTED_AGENT_RUNTIMES].join(', ')}`);
     }
   }
   return runtimes[type]!;
@@ -36,7 +40,7 @@ function ensureRuntime(type: RuntimeType): AgentRuntime {
  * Check if a runtime type has an actual implementation (not just type definition)
  */
 export function isRuntimeSupported(type: RuntimeType): boolean {
-  return type === 'builtin' || SUPPORTED_EXTERNAL_RUNTIMES.has(type);
+  return type === 'builtin' || SUPPORTED_AGENT_RUNTIMES.has(type);
 }
 
 /**
@@ -54,7 +58,11 @@ export function getExternalRuntime(type: RuntimeType): AgentRuntime {
  * Check if a runtime type is external (not builtin)
  */
 export function isExternalRuntime(type: RuntimeType | undefined): boolean {
-  return type !== undefined && type !== 'builtin';
+  return type === 'claude-code' || type === 'codex' || type === 'gemini';
+}
+
+export function isDshRuntime(type: RuntimeType | undefined): type is 'dsh' {
+  return type === 'dsh';
 }
 
 /**
@@ -62,7 +70,7 @@ export function isExternalRuntime(type: RuntimeType | undefined): boolean {
  */
 export function getCurrentRuntimeType(): RuntimeType {
   const env = process.env.MYAGENTS_RUNTIME;
-  if (env === 'claude-code' || env === 'codex' || env === 'gemini') return env;
+  if (env === 'dsh' || env === 'claude-code' || env === 'codex' || env === 'gemini') return env;
   return 'builtin';
 }
 
@@ -73,6 +81,7 @@ export function getCurrentRuntimeType(): RuntimeType {
  * interpreted as system-cli for backward compatibility.
  */
 export function getCurrentRuntimeSource(): RuntimeSource | undefined {
+  if (getCurrentRuntimeType() === 'dsh') return 'integrated';
   if (!isExternalRuntime(getCurrentRuntimeType())) return undefined;
   return process.env.MYAGENTS_RUNTIME_SOURCE === 'managed-provider'
     ? 'managed-provider'

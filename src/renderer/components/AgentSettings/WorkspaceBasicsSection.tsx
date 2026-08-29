@@ -71,6 +71,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // Runtime detection (v0.1.59)
   const [runtimeDetections, setRuntimeDetections] = useState<RuntimeDetections>({
     'builtin': { installed: true },
+    'dsh': { installed: false },
     'claude-code': { installed: false },
     'codex': { installed: false },
     'gemini': { installed: false },

@@ -12,6 +12,8 @@ import {
 } from '../runtimes/external-session';
 import { createBuiltinSessionEngine } from './builtin-adapter';
 import { createExternalSessionEngine } from './external-adapter';
+import { createDshSessionEngine } from '../integrated-runtimes/dsh/adapter';
+import { getCurrentRuntimeType, isDshRuntime } from '../runtimes/factory';
 import type { ExternalRuntimeConfigPatch } from '../runtimes/types';
 import type {
   ExternalConfigSource,
@@ -24,7 +26,12 @@ import { managementApi } from '../utils/management-api-client';
 import { cancelTaskSessionBirth } from './task-session-birth';
 
 const builtinEngine = createBuiltinSessionEngine();
+const dshEngine = createDshSessionEngine();
 const externalEngine = createExternalSessionEngine();
+
+function selectedNonBuiltinEngine(): SessionEngine {
+  return isDshRuntime(getCurrentRuntimeType()) ? dshEngine : externalEngine;
+}
 
 const EXTERNAL_CONFIG_SOURCES = new Set<ExternalConfigSource>([
   'runtime-config',
@@ -153,11 +160,11 @@ export function retryLastExternalUserMessageAtSelector(
 }
 
 export function getSessionEngine(): SessionEngine {
-  return shouldUseExternalRuntime() ? externalEngine : builtinEngine;
+  return shouldUseExternalRuntime() ? selectedNonBuiltinEngine() : builtinEngine;
 }
 
 export function getSessionEngineKind(): SessionEngineKind {
-  return shouldUseExternalRuntime() ? 'external' : 'builtin';
+  return shouldUseExternalRuntime() ? selectedNonBuiltinEngine().kind : 'builtin';
 }
 
 export function getSessionRuntimeType(): ReturnType<typeof getActiveRuntimeType> {
@@ -206,7 +213,7 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
       : { success: false, error: String(settled.error ?? 'Failed to settle paused Goal turn') };
   }
   if (shouldUseExternalRuntime()) {
-    const externalResult = await externalEngine.stopTurn();
+    const externalResult = await selectedNonBuiltinEngine().stopTurn();
     if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
     const stopped = await interruptCurrentResponse();
     return stopped ? { success: true } : { success: true, alreadyStopped: true };
@@ -216,7 +223,7 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
 
 export async function stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   if (shouldUseExternalRuntime()) {
-    const externalResult = await externalEngine.stopOwnedTurn(owner);
+    const externalResult = await selectedNonBuiltinEngine().stopOwnedTurn(owner);
     if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
   }
   return builtinEngine.stopOwnedTurn(owner);
@@ -276,7 +283,7 @@ export async function stopOwnedTurnByQueueId(
  */
 export function getPermissionResponseEngine(): SessionEngine {
   return shouldUseExternalRuntime() && isExternalSessionActive()
-    ? externalEngine
+    ? selectedNonBuiltinEngine()
     : builtinEngine;
 }
 
@@ -288,6 +295,6 @@ export function getPermissionResponseEngine(): SessionEngine {
  */
 export function getAskUserQuestionResponseEngine(requestId: string): SessionEngine {
   return shouldUseExternalRuntime() && hasPendingExternalAskUserQuestion(requestId)
-    ? externalEngine
+    ? selectedNonBuiltinEngine()
     : builtinEngine;
 }

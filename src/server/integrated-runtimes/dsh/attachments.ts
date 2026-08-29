@@ -1,0 +1,153 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { access, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
+
+import type { ResolvedImagePayload } from '../../runtimes/types';
+import type { DshRpcObject } from './protocol-types';
+
+type StoredAttachment = Readonly<{
+  attachmentId: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  path: string;
+}>;
+
+function inside(root: string, target: string): boolean {
+  return target === root || target.startsWith(`${root}${sep}`);
+}
+
+function text(value: unknown, description: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`${description} is invalid`);
+  return value;
+}
+
+async function sha256File(path: string): Promise<string> {
+  return createHash('sha256').update(await readFile(path)).digest('hex');
+}
+
+export class DshAttachmentRegistry {
+  private readonly leases = new Map<string, string>();
+  private rootValue: string | undefined;
+
+  constructor(private readonly requestedRoot: string) {}
+
+  async initialize(): Promise<void> {
+    await mkdir(join(this.requestedRoot, 'objects'), { recursive: true, mode: 0o700 });
+    this.rootValue = await realpath(this.requestedRoot);
+  }
+
+  private get root(): string {
+    if (!this.rootValue) throw new Error('DSH attachment registry is not initialized');
+    return this.rootValue;
+  }
+
+  private objectPath(sha256: string): string {
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('DSH attachment digest is invalid');
+    return join(this.root, 'objects', sha256);
+  }
+
+  private async storeBytes(bytes: Uint8Array, mimeType: string): Promise<StoredAttachment> {
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const path = this.objectPath(sha256);
+    try {
+      await access(path, fsConstants.F_OK);
+    } catch {
+      await writeFile(path, bytes, { mode: 0o600, flag: 'wx' }).catch(async error => {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      });
+    }
+    return {
+      attachmentId: `sha256:${sha256}`,
+      mimeType,
+      sizeBytes: bytes.byteLength,
+      sha256,
+      path,
+    };
+  }
+
+  async registerImages(images: readonly ResolvedImagePayload[] | undefined): Promise<DshRpcObject[]> {
+    if (!images?.length) return [];
+    const parts: DshRpcObject[] = [];
+    for (const image of images) {
+      const bytes = Buffer.from(image.data, 'base64');
+      if (bytes.byteLength < 1 || bytes.byteLength > 5 * 1_024 * 1_024) {
+        throw new Error('DSH image attachment size is outside the protocol bound');
+      }
+      if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(image.mimeType)) {
+        throw new Error(`DSH does not support image type ${image.mimeType}`);
+      }
+      const stored = await this.storeBytes(bytes, image.mimeType);
+      parts.push({
+        kind: 'image_ref',
+        attachmentId: stored.attachmentId,
+        name: image.name,
+        mimeType: stored.mimeType,
+        sizeBytes: stored.sizeBytes,
+        sha256: stored.sha256,
+      });
+    }
+    return parts;
+  }
+
+  async put(params: DshRpcObject): Promise<DshRpcObject> {
+    const stagingPath = await realpath(text(params.stagingPath, 'DSH attachment staging path'));
+    if (!inside(this.root, stagingPath)) throw new Error('DSH attachment staging path escaped its root');
+    const details = await stat(stagingPath);
+    const expectedSize = params.sizeBytes;
+    const expectedSha = text(params.sha256, 'DSH attachment digest');
+    if (!details.isFile() || details.size !== expectedSize || await sha256File(stagingPath) !== expectedSha) {
+      throw new Error('DSH staged attachment differs from its declared identity');
+    }
+    const destination = this.objectPath(expectedSha);
+    if (destination !== stagingPath) {
+      await copyFile(stagingPath, destination, fsConstants.COPYFILE_EXCL).catch(async error => {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      });
+    }
+    return {
+      attachmentId: `sha256:${expectedSha}`,
+      mimeType: text(params.mimeType, 'DSH attachment MIME type'),
+      sizeBytes: details.size,
+      sha256: expectedSha,
+    };
+  }
+
+  async acquire(params: DshRpcObject): Promise<DshRpcObject> {
+    const attachmentId = text(params.attachmentId, 'DSH attachment id');
+    const match = /^sha256:([a-f0-9]{64})$/.exec(attachmentId);
+    if (!match) throw new Error('DSH attachment id is not content addressed');
+    const sha256 = match[1]!;
+    const path = resolve(this.objectPath(sha256));
+    if (!inside(this.root, path)) throw new Error('DSH attachment object escaped its root');
+    const details = await stat(path);
+    if (
+      !details.isFile()
+      || details.size !== params.expectedSizeBytes
+      || sha256 !== params.expectedSha256
+      || await sha256File(path) !== sha256
+    ) {
+      throw new Error('DSH attachment acquire postcondition failed');
+    }
+    const leaseId = `lease-${randomUUID()}`;
+    this.leases.set(leaseId, attachmentId);
+    return {
+      leaseId,
+      readOnlyPath: path,
+      mimeType: text(params.expectedMimeType, 'DSH expected attachment MIME type'),
+      sizeBytes: details.size,
+      sha256,
+    };
+  }
+
+  release(params: DshRpcObject): DshRpcObject {
+    const leaseId = text(params.leaseId, 'DSH attachment lease id');
+    if (!this.leases.delete(leaseId)) throw new Error('DSH attachment lease is not active');
+    return { ok: true };
+  }
+
+  close(): void {
+    this.leases.clear();
+  }
+}

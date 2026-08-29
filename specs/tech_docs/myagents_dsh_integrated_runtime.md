@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.8
+version: 0.9
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -513,6 +513,8 @@ Reverse calls are bounded, cancellable and generation-fenced. Host disconnect or
 
 H3 provides the runtime-neutral handler contract and exact registration/fencing layer. Each request must carry the active Product Session and Runtime generation plus a protocol-bounded deadline; stale authority is rejected before a product callback, peer cancellation is propagated as an `AbortSignal`, and a deadline settles as one retryable protocol failure. H4/H4P connect these callbacks to the existing credential, interaction, tool, Hook and attachment domain owners; an unwired callback can never make a Runtime selectable.
 
+H4 now connects credential resolution, permission/question/Plan interaction settlement and content-addressed attachment leases to those fenced reverse ports. Provider material is resolved only inside `host/credential/resolve` and is neither copied into the declarative execution profile nor persisted in Product metadata. The Host Hook boundary currently returns the explicit continue result, while the canonical Host Web executor remains fail-closed with `host_tool_unavailable`; therefore this implementation does not yet advertise complete 20-tool readiness. Declarative Skill/MCP/agent/Host-tool compilation and the runtime-neutral Web backend remain H4 blockers.
+
 ### 9.1 Permission and Plan ownership
 
 MyAgents keeps its product vocabulary and translates it at the DSH adapter boundary:
@@ -528,6 +530,8 @@ Plan is not encoded as a DSH permission string. At Session birth, `plan` compile
 Inline permission requests continue through `host/interaction/request`. One-shot allow/deny settles only that request. `always_allow` creates an exact durable Runtime rule. The adapter also exposes the generated `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke` operations so settings, diagnostics, or later policy UI can inspect and revoke authoritative Runtime state without scraping transcript events. Batch 3 need not add `default` or `dontAsk` to the ordinary desktop selector, but it must preserve them as valid protocol values and must not coerce them silently.
 
 Visibility and permission remain independent: hiding a tool is configuration; allowing it is execution policy. `fullAgency` removes interactive permission prompts but is not an OS sandbox and does not contain arbitrary Bash subprocess effects. Its UI copy must say this explicitly. Hard policy, origin/workspace/revision constraints and Hooks remain enforceable even in `fullAgency`.
+
+The current H4P slice applies the exact birth mapping before the first turn: Session creation uses the composition-supported `default`/`host-interaction-v1` admission pair, then `config/apply` establishes `acceptEdits` or `bypassPermissions`, and `plan/apply` establishes normal or Plan state. A stale Plan revision is reconciled by reading the current mode and retrying only the desired exact transition. Live product permission/model/reasoning changes use the same configuration owner. Runtime rule list/add/revoke UI and persistent desired/effective drift reporting are not yet complete, so H4P remains in progress.
 
 ## 10. Events, transcript and conversation UI
 
@@ -559,6 +563,8 @@ Project canonical DSH events into existing MyAgents domains:
 
 If an event cannot be represented without losing user-visible semantics, extend `UnifiedEvent` and all exhaustive consumers. Do not serialize raw DSH protocol cards into the chat.
 
+H4 implements this projection in `src/server/integrated-runtimes/dsh/event-projector.ts`. One serialized inbox fences Product Session, Runtime generation and Runtime Session, accepts only exact duplicate replay, rejects conflicting replay or a sequence gap, and projects assistant/thinking/tool/usage/context/queue/plan/work/compaction/warning/terminal events into existing `UnifiedEvent` shapes. Runtime terminal produces the Product terminal, but idle publication remains downstream of Product transcript persistence so a fast status transition cannot discard the final projected chunks.
+
 ### 10.3 Dual authorities without dual transcript
 
 DSH native history is the durable model-conversation authority for DSH resume. MyAgents `SessionStore` is the Product transcript authority for product UI, search and cross-feature linkage.
@@ -589,6 +595,8 @@ MyAgents projects canonical compaction events and context metrics into its exist
 
 The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
 
+H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Crash reconciliation through `turn/get` and durable `session/read` is still required before H4 completion.
+
 ## 12. Configuration and extension updates
 
 MyAgents maintains desired and effective revisions for:
@@ -607,6 +615,8 @@ Apply according to negotiated DSH modes:
 - failed apply leaves desired/effective drift visible and recoverable.
 
 Declarative extension snapshots contain only validated descriptors and references. Arbitrary Plugin JavaScript is never sent into DSH; trusted runtime plugins remain build-time DSH composition.
+
+H4 establishes deterministic extension replacement and verifies the Runtime-returned effective catalog digest before Session admission. The present compiler intentionally emits an empty validated snapshot; selector exposure remains blocked until MyAgents Skills/MCP/agents/Host tools are compiled into the declarative contract and their degraded-component behavior is tested.
 
 ## 13. Mutations and native history
 
@@ -854,8 +864,8 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
 | MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `complete`    |
 | MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `complete`    |
-| MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `not_started` |
-| MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `not_started` |
+| MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `in_progress` |
+| MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `in_progress` |
 | MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `not_started` |
 | MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `not_started` |
 

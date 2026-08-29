@@ -8,6 +8,7 @@ import RuntimeSelector from './RuntimeSelector';
 
 const detections: RuntimeDetections = {
   builtin: { installed: true },
+  dsh: { installed: true, version: '0.0.0' },
   'claude-code': { installed: true, version: '1.0.0' },
   codex: { installed: true, version: '1.0.0' },
   gemini: { installed: false },

@@ -14,6 +14,10 @@ import {
   agentUsesManagedCodexProvider,
   projectManagedCodexPermissionToRuntime,
 } from '../../shared/providerExecution';
+import {
+  runtimeSourceForBinding,
+  runtimeTypeForBinding,
+} from '../../shared/integrated-runtimes/identity';
 
 /**
  * Effective runtime config for a single query (v0.1.69).
@@ -99,11 +103,16 @@ export function resolveSessionConfig(
     }
     const permissionMode = effectiveRuntime === 'builtin'
       ? eff.permissionMode
+      : effectiveRuntime === 'dsh'
+        ? (projectPermissionModeForRuntime(eff.permissionMode, effectiveRuntime)
+          ?? getDefaultRuntimePermissionMode(effectiveRuntime))
       : (projectPermissionModeForRuntime(eff.permissionMode, effectiveRuntime)
         ?? getMaxPermissionForRuntime(effectiveRuntime));
     return {
       runtime: effectiveRuntime,
-      runtimeSource: effectiveRuntime !== 'builtin' ? 'system-cli' : undefined,
+      runtimeSource: effectiveRuntime === 'dsh'
+        ? 'integrated'
+        : effectiveRuntime !== 'builtin' ? 'system-cli' : undefined,
       model: eff.model,
       permissionMode,
       mcpEnabledServers: eff.mcpEnabledServers,
@@ -123,10 +132,16 @@ export function resolveSessionConfig(
     && managedCodexProviderReady
     && typeof agent?.model === 'string'
     && agent.model.trim().length > 0;
-  const runtime = meta?.runtime ?? (agentUsesManagedProvider ? 'codex' : agent?.runtime) ?? 'builtin';
-  const runtimeSource = runtime === 'builtin'
-    ? undefined
-    : (meta?.runtime !== undefined
+  const runtime = meta?.runtimeBinding
+    ? runtimeTypeForBinding(meta.runtimeBinding)
+    : meta?.runtime ?? (agentUsesManagedProvider ? 'codex' : agent?.runtime) ?? 'builtin';
+  const runtimeSource = meta?.runtimeBinding
+    ? runtimeSourceForBinding(meta.runtimeBinding)
+    : runtime === 'builtin'
+      ? undefined
+      : runtime === 'dsh'
+        ? 'integrated'
+        : (meta?.runtime !== undefined
       ? (meta.runtimeSource
         ?? meta.providerExecutionIdentity?.runtimeSource
         ?? 'system-cli')
@@ -139,7 +154,8 @@ export function resolveSessionConfig(
   // (which is the builtin/provider field). Without this branch a fresh
   // unsnapshotted external session would read `agent.model` (Claude) and
   // hand it to Codex → 400 (issue #224).
-  const rawModel = runtime === 'builtin'
+  const usesIntegratedProvider = runtime === 'builtin' || runtime === 'dsh';
+  const rawModel = usesIntegratedProvider
     ? (snapshotOwnsConfig ? meta?.model : (meta?.model ?? agent?.model))
     : (snapshotOwnsConfig
       ? meta?.model
@@ -163,7 +179,7 @@ export function resolveSessionConfig(
     model = coercedModel;
   }
 
-  const rawPermissionMode = runtime === 'builtin'
+  const rawPermissionMode = usesIntegratedProvider
     ? (snapshotOwnsConfig ? meta?.permissionMode : (meta?.permissionMode ?? agent?.permissionMode))
     : (meta ? meta.permissionMode : (managedCodexSession
       ? agent?.permissionMode
@@ -187,11 +203,11 @@ export function resolveSessionConfig(
     model,
     permissionMode,
     mcpEnabledServers: snapshotOwnsConfig ? meta?.mcpEnabledServers : (meta?.mcpEnabledServers ?? agent?.mcpEnabledServers),
-    providerId: runtime === 'builtin'
+    providerId: usesIntegratedProvider
       ? (snapshotOwnsConfig ? meta?.providerId : (meta?.providerId ?? agent?.providerId))
       : undefined,
-    providerRoute: runtime === 'builtin' && snapshotOwnsConfig ? meta?.providerRoute : undefined,
-    providerEnvJson: runtime === 'builtin'
+    providerRoute: usesIntegratedProvider && snapshotOwnsConfig ? meta?.providerRoute : undefined,
+    providerEnvJson: usesIntegratedProvider
       ? (snapshotOwnsConfig ? meta?.providerEnvJson : (meta?.providerEnvJson ?? agent?.providerEnvJson))
       : undefined,
   };

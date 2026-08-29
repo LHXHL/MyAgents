@@ -26,6 +26,32 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 describe('createMaterializedSessionMetadata', () => {
+  it('materializes DSH with an authoritative binding while retaining ordinary Provider facts', () => {
+    const meta = createMaterializedSessionMetadata({
+      agentDir: '/tmp/workspace',
+      sessionId: 'dsh-session-id',
+      scenario: 'desktop',
+      agent: makeAgent({
+        runtime: 'dsh',
+        providerId: 'anthropic-api',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'plan',
+      }),
+      runtimeOverride: 'dsh',
+      runtimeSourceOverride: 'integrated',
+    });
+
+    expect(meta.runtime).toBe('builtin');
+    expect(meta.runtimeSource).toBeUndefined();
+    expect(meta.runtimeBinding).toMatchObject({ family: 'integrated', id: 'dsh' });
+    expect(meta.providerRoute).toEqual({
+      kind: 'provider',
+      providerId: 'anthropic-api',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(meta.permissionMode).toBe('plan');
+  });
+
   it('binds owned metadata to the live Sidecar identity after Agent config drifts', () => {
     const staleAgentSnapshot = {
       runtime: 'builtin' as const,

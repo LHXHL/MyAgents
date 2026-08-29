@@ -10,7 +10,7 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { RuntimeType, RuntimeDetections } from '../../shared/types/runtime';
 
 // Runtime types that have backend implementations (not just type definitions)
-const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'claude-code', 'codex', 'gemini']);
+const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'dsh', 'claude-code', 'codex', 'gemini']);
 
 // ─── Runtime icon assets ───
 import myagentsIcon from '@/assets/runtime-icons/myagents.png';
@@ -20,6 +20,7 @@ import geminiIcon from '@/assets/runtime-icons/gemini.png';
 
 const RUNTIME_ICON_MAP: Record<RuntimeType, string> = {
   builtin: myagentsIcon,
+  dsh: myagentsIcon,
   'claude-code': claudeCodeIcon,
   codex: codexIcon,
   gemini: geminiIcon,
@@ -32,6 +33,7 @@ const RUNTIME_OPTIONS: {
   name: string;
 }[] = [
     { type: 'builtin', name: 'MyAgents (Claude Agent SDK)' },
+    { type: 'dsh', name: 'MyAgents (DSH)' },
     { type: 'claude-code', name: 'Claude Code CLI' },
     { type: 'codex', name: 'Codex CLI' },
     { type: 'gemini', name: 'Gemini CLI' },
