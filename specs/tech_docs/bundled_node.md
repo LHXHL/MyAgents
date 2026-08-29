@@ -4,7 +4,7 @@
 
 ## 概述
 
-MyAgents 将 Node.js v24 运行时打包到应用内，实现**单一 runtime、零外部依赖**分发。用户无需安装 Node.js 即可运行所有功能（Sidecar、Plugin Bridge、MCP Server、社区 npm 包、`myagents` CLI）。
+MyAgents 将精确 Node.js `24.14.0` 运行时打包到应用内，实现**单一 runtime、零外部依赖**分发。用户无需安装 Node.js 即可运行所有功能（Sidecar、DSH Runtime、Plugin Bridge、MCP Server、社区 npm 包、`myagents` CLI）。
 
 ## 二进制获取方式
 
@@ -14,10 +14,12 @@ Node.js v24 官方二进制通过 `scripts/download_nodejs.sh` / `.ps1` 从 node
 ./setup.sh  # 首次 clone 自动调用；build_dev.sh / build_macos.sh / build_windows.ps1 / build_linux.sh 也会幂等调用
 ```
 
-- **版本变量**：`NODE_VERSION` 在 `scripts/download_nodejs.sh` 顶部定义
+- **版本变量**：`NODE_VERSION=24.14.0` 与产品侧 `NPM_VERSION=11.15.0` 在 `scripts/download_nodejs.sh` 顶部定义；Windows setup/release 入口使用相同精确值
+- **npm 边界**：资源下载使用 `npm-11.15.0.tgz`，不解析 `npm/latest`；开发包管理器 `npm@11.13.0` 与 DSH 构建 provenance `npm@11.8.0` 是另外两个独立权威
 - **打包位置**：`src-tauri/resources/nodejs/`（Tauri staging 目录，已加入 `.gitignore`）
 - **缓存位置**：`src-tauri/resources/nodejs-cache/<platform>-<arch>-v<version>/`（按平台 / 架构 / 版本隔离，已加入 `.gitignore`）
 - **ABI 保护**：脚本先检查对应架构缓存；`resources/nodejs/` 只在构建某个 target 前从缓存同步。`build_dev.sh` 启动时用 `file(1)` 验证 binary 架构匹配 host，避免 macOS 双架构 release 构建后留下 x64 staging 影响 arm64 dev 构建
+- **版本证明**：每个 cache/staging 同时记录 `.myagents-nodejs-version` 与 `.myagents-npm-version`；DSH 资源 verifier 在构建前既检查元数据也执行目标 `node`/`npm-cli.js`，任何漂移都在进程创建前失败
 
 ### 支持的平台
 
@@ -65,6 +67,7 @@ MyAgents.app/
         ├── plugin-bridge-dist.mjs     # Plugin Bridge 打包产物
         ├── plugin-bridge-sdk-shim/    # OpenClaw SDK shim（ESM, v2026.4.24+）
         ├── claude-agent-sdk/          # SDK native binary（独立运行时）
+        ├── integrated-runtimes/dsh/   # 完整、锁定并验证过的 DSH handoff
         └── cli/myagents.cjs           # myagents CLI（esbuild CommonJS bundle）
 
 ~/.myagents/bin/{myagents,myagents.cmd} 只是一对由 Rust 生成的薄启动器：它们回到当前
@@ -144,7 +147,8 @@ Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/s
 3. **Plugin Bridge 打包**：esbuild bundle `src/server/plugin-bridge/index.ts` → `plugin-bridge-dist.mjs`
 4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.cjs`；扩展名固定 CommonJS 语义，不受安装目录上层 `package.json` 影响
 5. **SDK native binary**：按 target triple 拷贝 + codesign
-6. **Tauri 构建**：`npm run tauri:build -- --target <triple>`；该命令不下载、不 staging 也不打包 Chromium/Headless Shell/FFmpeg
+6. **DSH 资源验证**：`npm run verify:dsh-runtime` 重验 handoff/Runtime inventory、契约快照和目标 Node/npm；它不从网络或兄弟仓库取 Runtime
+7. **Tauri 构建**：`npm run tauri:build -- --target <triple>`；该命令不下载、不 staging 也不打包 Chromium/Headless Shell/FFmpeg
 
 「浏览器」不建立 MyAgents 自有的 Chromium 镜像或 runtime publisher。版本升级时，维护者显式核对锁定 `playwright-core` 的 Chromium descriptor，为五个平台更新 `managed-browser-runtime.json` 中的官方 source/final URL、size、SHA-256 与 executable layout；该核对不属于 `tauri:dev`、`tauri:build` 或桌面 release build，任何 App 构建入口都不下载浏览器。
 
@@ -194,7 +198,7 @@ v0.2.0 之前这些步骤用 `bun build` + `bun install` — 完全切到 Node.j
 | MCP 安装失败 | 包管理器未找到 | 确认 `getPackageManagerPath()` 返回 npm（固定 npm） |
 | `Claude Code process exited with code 1` (Windows) | 缺少 Git for Windows | NSIS 安装程序内置 Git；或设 `CLAUDE_CODE_GIT_BASH_PATH` 环境变量 |
 | `Claude Code process exited with code 3221226505` / `0xC0000409` (Windows) | SDK 自带 `claude.exe` 是 native binary；可能受系统组件、DLL 环境或上游 binary 兼容性影响 | 提示 `Claude Agent SDK 启动失败（exit code ...），请检查运行环境。` |
-| npm v11.9.0 minizlib CJS bug (Windows) | bundled npm 与 Windows 某些文件锁冲突 | `setup_windows.ps1` / `build_windows.ps1` 自动升级到 latest npm |
+| npm v11.9.0 minizlib CJS bug (Windows) | Node 官方包自带的旧 npm 在该环境不可用 | `setup_windows.ps1` / `build_windows.ps1` 直接安装并验证精确 npm `11.15.0` |
 
 ### Windows Git 依赖说明
 

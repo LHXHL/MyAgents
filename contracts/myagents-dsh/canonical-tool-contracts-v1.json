@@ -1,0 +1,4340 @@
+{
+  "artifactFormatVersion": 1,
+  "canonicalJsonLimits": {
+    "maxArrayItems": 4096,
+    "maxDepth": 64,
+    "maxNodes": 20000,
+    "maxObjectProperties": 4096
+  },
+  "canonicalTools": [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Bash",
+    "ls",
+    "WebFetch",
+    "WebSearch",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "Skill",
+    "Agent",
+    "TaskStop",
+    "SendMessage",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate"
+  ],
+  "contracts": [
+    {
+      "behaviorFixtureIds": [
+        "text_range_and_read_receipt",
+        "image_attachment_projection",
+        "pdf_page_projection",
+        "notebook_normalized_text",
+        "symlink_and_size_rejection"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Reads one allowed workspace or Runtime-output file. Supports bounded text ranges, images, notebooks, and visual PDF pages. Use an absolute path and read an existing file completely before overwriting it.",
+      "errorCodes": [
+        {
+          "code": "path_denied",
+          "retryable": false,
+          "when": "The canonical target is outside an allowed read root or crosses a forbidden symlink."
+        },
+        {
+          "code": "file_not_found",
+          "retryable": false,
+          "when": "The canonical target is absent or not a regular readable file."
+        },
+        {
+          "code": "unsupported_format",
+          "retryable": false,
+          "when": "The requested projection is unsupported."
+        },
+        {
+          "code": "read_limit_exceeded",
+          "retryable": false,
+          "when": "The requested or decoded content exceeds a declared bound."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pages": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pages": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "Read",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxAttachmentBytes": 20971520,
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 2048
+      },
+      "outputSchema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  {
+                    "const": "notebook",
+                    "type": "string"
+                  }
+                ]
+              },
+              "lineCount": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mimeType": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "offset": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "kind",
+              "mimeType",
+              "offset",
+              "lineCount",
+              "truncated",
+              "content"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "attachment": {
+                "additionalProperties": false,
+                "properties": {
+                  "attachmentId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "mimeType": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
+                  "sizeBytes": {
+                    "maximum": 20971520,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "attachmentId",
+                  "name",
+                  "mimeType",
+                  "sizeBytes",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  {
+                    "const": "pdf",
+                    "type": "string"
+                  }
+                ]
+              },
+              "mimeType": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "kind",
+              "mimeType",
+              "truncated",
+              "attachment"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "workspace.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return bounded text with line metadata or one validated image/PDF attachment projection; notebook content is normalized text.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "new_file_absent_precondition",
+        "existing_file_requires_complete_read",
+        "atomic_replace_and_checkpoint_receipt",
+        "external_change_conflict",
+        "abort_before_commit"
+      ],
+      "checkpoint": "root_managed_file",
+      "concurrency": "canonical_path",
+      "description": "Creates a new file or atomically replaces a previously read file inside an allowed workspace. Existing files require a current complete Read receipt.",
+      "errorCodes": [
+        {
+          "code": "read_required",
+          "retryable": false,
+          "when": "An existing target has no current complete Read receipt."
+        },
+        {
+          "code": "stale_read",
+          "retryable": true,
+          "when": "The target changed after its qualifying Read."
+        },
+        {
+          "code": "path_denied",
+          "retryable": false,
+          "when": "The target is outside an allowed write root or changes identity."
+        },
+        {
+          "code": "mutation_conflict",
+          "retryable": true,
+          "when": "The atomic commit precondition no longer matches."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "bounded_executor"
+      },
+      "name": "Write",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 16384,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "checkpointReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "checkpointId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "policyRevision": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "checkpointId",
+              "policyRevision"
+            ],
+            "type": "object"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256",
+          "created"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "workspace.write",
+      "planPolicy": {
+        "denialCode": "plan_mode_side_effect_forbidden",
+        "mode": "managed-plan-file-only",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Atomically create or replace one managed file and return its committed identity and eligible checkpoint receipt.",
+      "sideEffect": "workspace",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "single_exact_replacement",
+        "replace_all_non_overlapping",
+        "zero_and_ambiguous_match_errors",
+        "safe_external_change_retention",
+        "notebook_rejected"
+      ],
+      "checkpoint": "root_managed_file",
+      "concurrency": "canonical_path",
+      "description": "Performs an exact string replacement in a text file. By default old_string must occur exactly once; replace_all replaces every non-overlapping occurrence. Notebook files are unsupported.",
+      "errorCodes": [
+        {
+          "code": "read_required",
+          "retryable": false,
+          "when": "The target has no qualifying Read receipt."
+        },
+        {
+          "code": "match_not_found",
+          "retryable": false,
+          "when": "old_string has no exact occurrence."
+        },
+        {
+          "code": "ambiguous_match",
+          "retryable": false,
+          "when": "old_string is ambiguous while replace_all is false."
+        },
+        {
+          "code": "mutation_conflict",
+          "retryable": true,
+          "when": "The target or publication precondition changed."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "new_string": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "old_string": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "replace_all": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "new_string": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "old_string": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "replace_all": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "bounded_executor"
+      },
+      "name": "Edit",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 16384,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpointReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "checkpointId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "policyRevision": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "checkpointId",
+              "policyRevision"
+            ],
+            "type": "object"
+          },
+          "externalChangesRetained": {
+            "type": "boolean"
+          },
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "replacements": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "replacements",
+          "sha256",
+          "externalChangesRetained"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "workspace.write",
+      "planPolicy": {
+        "denialCode": "plan_mode_side_effect_forbidden",
+        "mode": "managed-plan-file-only",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Commit exact non-fuzzy replacement and return count, new identity, retained-change notice, and eligible checkpoint receipt.",
+      "sideEffect": "workspace",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "mtime_order_and_100_cap",
+        "ignored_files_included",
+        "workspace_relative_projection",
+        "invalid_pattern",
+        "abort_search"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Finds files by glob pattern under an allowed directory. Results include ignored files, are ordered by modification time, and are capped at 100 paths.",
+      "errorCodes": [
+        {
+          "code": "path_denied",
+          "retryable": false,
+          "when": "The search root is outside an allowed workspace."
+        },
+        {
+          "code": "invalid_pattern",
+          "retryable": false,
+          "when": "The glob pattern is invalid or over limit."
+        },
+        {
+          "code": "search_failed",
+          "retryable": true,
+          "when": "The bounded search failed after validation."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "pattern": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "pattern": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "Glob",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 65536,
+        "maxStructuredItems": 100
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "durationMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "filenames": {
+            "items": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "numFiles": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "durationMs",
+          "numFiles",
+          "filenames",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "workspace.search",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return at most 100 canonical paths ordered by modification time with explicit truncation.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "content_mode_context",
+        "files_with_matches_mode",
+        "count_mode",
+        "head_limit_and_offset",
+        "multiline_and_abort"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Searches file content with the artifact-pinned ripgrep executable. Supports content, file-name, and count modes without invoking a shell.",
+      "errorCodes": [
+        {
+          "code": "path_denied",
+          "retryable": false,
+          "when": "The search root is outside an allowed read root."
+        },
+        {
+          "code": "invalid_pattern",
+          "retryable": false,
+          "when": "The expression or option combination is invalid."
+        },
+        {
+          "code": "search_dependency_missing",
+          "retryable": false,
+          "when": "The pinned ripgrep executable is unavailable."
+        },
+        {
+          "code": "search_failed",
+          "retryable": true,
+          "when": "The bounded search process fails."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "-A": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-B": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-C": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-i": {
+            "type": "boolean"
+          },
+          "-n": {
+            "type": "boolean"
+          },
+          "-o": {
+            "type": "boolean"
+          },
+          "context": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "glob": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "head_limit": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "multiline": {
+            "type": "boolean"
+          },
+          "offset": {
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "const": "content",
+                "type": "string"
+              },
+              {
+                "const": "files_with_matches",
+                "type": "string"
+              },
+              {
+                "const": "count",
+                "type": "string"
+              }
+            ]
+          },
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "pattern": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 128,
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "-A": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-B": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-C": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "-i": {
+            "type": "boolean"
+          },
+          "-n": {
+            "type": "boolean"
+          },
+          "-o": {
+            "type": "boolean"
+          },
+          "context": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "glob": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "head_limit": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "multiline": {
+            "type": "boolean"
+          },
+          "offset": {
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_mode": {
+            "anyOf": [
+              {
+                "const": "content",
+                "type": "string"
+              },
+              {
+                "const": "files_with_matches",
+                "type": "string"
+              },
+              {
+                "const": "count",
+                "type": "string"
+              }
+            ]
+          },
+          "path": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "pattern": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 128,
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "Grep",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 10000
+      },
+      "outputSchema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "durationMs": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mode": {
+                "const": "content",
+                "type": "string"
+              },
+              "offset": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "line": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "path": {
+                      "maxLength": 8192,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "text": {
+                      "maxLength": 65536,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "mode",
+              "records",
+              "offset",
+              "limit",
+              "truncated",
+              "durationMs"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "durationMs": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mode": {
+                "const": "files_with_matches",
+                "type": "string"
+              },
+              "offset": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "maxLength": 8192,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "mode",
+              "records",
+              "offset",
+              "limit",
+              "truncated",
+              "durationMs"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "durationMs": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mode": {
+                "const": "count",
+                "type": "string"
+              },
+              "offset": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "count": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "path": {
+                      "maxLength": 8192,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "count"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "mode",
+              "records",
+              "offset",
+              "limit",
+              "truncated",
+              "durationMs"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "workspace.search",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return bounded content, file-name, or count records with stable pagination and truncation metadata.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "foreground_success_and_nonzero_exit",
+        "explicit_background_handle",
+        "timeout_promotes_same_work_entry",
+        "disabled_background_kills_tree",
+        "session_close_generation_cleanup"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Runs a Bash command in the workspace using the sealed execution environment. Commands may run in the background and return a read-only output path. The Runtime does not provide an OS sandbox.",
+      "errorCodes": [
+        {
+          "code": "shell_dependency_missing",
+          "retryable": false,
+          "when": "The sealed Bash prerequisite is unavailable."
+        },
+        {
+          "code": "permission_denied",
+          "retryable": false,
+          "when": "Hard policy or permission denies process execution."
+        },
+        {
+          "code": "process_timeout",
+          "retryable": true,
+          "when": "A non-promotable bounded execution timed out."
+        },
+        {
+          "code": "process_spawn_failed",
+          "retryable": true,
+          "when": "The sealed environment cannot start the process."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "maxLength": 262144,
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "run_in_background": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "maximum": 600000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "maxLength": 262144,
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "run_in_background": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "maximum": 600000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "work_registry"
+      },
+      "name": "Bash",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxRetainedOutputBytes": 262144,
+        "maxStructuredItems": 32
+      },
+      "outputSchema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "background": {
+                "const": false,
+                "type": "boolean"
+              },
+              "durationMs": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "exitCode": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "interrupted": {
+                "type": "boolean"
+              },
+              "outputTruncated": {
+                "type": "boolean"
+              },
+              "stderr": {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              "stdout": {
+                "maxLength": 262144,
+                "type": "string"
+              }
+            },
+            "required": [
+              "background",
+              "stdout",
+              "stderr",
+              "exitCode",
+              "durationMs",
+              "interrupted",
+              "outputTruncated"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "background": {
+                "const": true,
+                "type": "boolean"
+              },
+              "outputPath": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "taskId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "taskId",
+              "background",
+              "outputPath"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "process.execute",
+      "planPolicy": {
+        "denialCode": "plan_mode_side_effect_forbidden",
+        "mode": "denied",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Foreground returns bounded streams and process terminal; background returns one retained WorkRegistry identity and output path.",
+      "sideEffect": "process",
+      "timeoutMs": 600000
+    },
+    {
+      "behaviorFixtureIds": [
+        "exact_pi_description_and_schema",
+        "alphabetical_directory_suffix",
+        "dotfiles",
+        "500_entry_or_50kb_truncation",
+        "runtime_path_gate"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).",
+      "errorCodes": [
+        {
+          "code": "path_denied",
+          "retryable": false,
+          "when": "The target directory is outside the allowed workspace."
+        },
+        {
+          "code": "directory_not_found",
+          "retryable": false,
+          "when": "The target is absent or not a readable directory."
+        },
+        {
+          "code": "list_failed",
+          "retryable": true,
+          "when": "The bounded provider enumeration fails."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum number of entries to return (default: 500)",
+            "type": "number"
+          },
+          "path": {
+            "description": "Directory to list (default: current directory)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum number of entries to return (default: 500)",
+            "type": "number"
+          },
+          "path": {
+            "description": "Directory to list (default: current directory)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "ls",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 53248,
+        "maxStructuredItems": 500
+      },
+      "outputSchema": {
+        "maxLength": 53248,
+        "type": "string"
+      },
+      "permissionClass": "workspace.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return the retained lowercase ls textual result with alphabetical entries, directory suffixes, dotfiles, and exact truncation bounds.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "http_html_to_markdown_answer",
+        "pdf_or_text_fetch",
+        "dns_pin_and_redirect_revalidation",
+        "response_and_usage_bounds",
+        "cancel_fetch_and_utility_call"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Fetches an HTTP or HTTPS URL under the Runtime network policy, converts supported content, and answers the supplied prompt with a tool-free utility model call.",
+      "errorCodes": [
+        {
+          "code": "network_policy_denied",
+          "retryable": false,
+          "when": "The operation network policy denies the request or redirect."
+        },
+        {
+          "code": "unsafe_destination",
+          "retryable": false,
+          "when": "Scheme, credentials, DNS, IP, redirect, or rebinding checks reject the destination."
+        },
+        {
+          "code": "unsupported_content",
+          "retryable": false,
+          "when": "The response cannot be converted safely."
+        },
+        {
+          "code": "utility_model_failed",
+          "retryable": true,
+          "when": "The isolated tool-free utility call fails."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "bounded_executor"
+      },
+      "name": "WebFetch",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxAttachmentBytes": 20971520,
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 256
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "format": "uri",
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "url"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "finalUrl": {
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "url": {
+            "format": "uri",
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "cacheReadTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cacheWriteTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "inputTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outputTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totalTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "inputTokens",
+              "outputTokens",
+              "cacheReadTokens",
+              "cacheWriteTokens",
+              "totalTokens"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "url",
+          "finalUrl",
+          "answer",
+          "citations",
+          "usage",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "network.fetch",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return a bounded utility-model answer with final URL, citations, converted-content provenance, and separately metered usage.",
+      "sideEffect": "network",
+      "timeoutMs": 120000
+    },
+    {
+      "behaviorFixtureIds": [
+        "provider_adapter_gating",
+        "allowed_and_blocked_domains",
+        "citations_and_usage",
+        "max_uses_and_rate_limit",
+        "cancel_provider_search"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Searches the web through a supported Provider server-side adapter and returns cited results. This tool is absent when the operation-frozen Provider has no compatible adapter.",
+      "errorCodes": [
+        {
+          "code": "web_search_unavailable",
+          "retryable": false,
+          "when": "The frozen Provider has no approved server-side search adapter."
+        },
+        {
+          "code": "domain_policy_invalid",
+          "retryable": false,
+          "when": "Domain constraints conflict or exceed bounds."
+        },
+        {
+          "code": "provider_search_failed",
+          "retryable": true,
+          "when": "The Provider returns a failure, rate limit, or invalid result."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_domains": {
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "blocked_domains": {
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "query": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_domains": {
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "blocked_domains": {
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "query": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "bounded_executor"
+      },
+      "name": "WebSearch",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 256
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "format": "uri",
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "url"
+              ],
+              "type": "object"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "durationMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "snippet": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "title": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "url": {
+                  "format": "uri",
+                  "maxLength": 2048,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "snippet"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "searchCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "cacheReadTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cacheWriteTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "inputTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outputTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totalTokens": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "inputTokens",
+              "outputTokens",
+              "cacheReadTokens",
+              "cacheWriteTokens",
+              "totalTokens"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "query",
+          "results",
+          "citations",
+          "usage",
+          "truncated",
+          "searchCount",
+          "durationMs"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "network.search",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return Provider-native cited results and separately attributable usage; HTML scraping fallback is forbidden.",
+      "sideEffect": "network",
+      "timeoutMs": 120000
+    },
+    {
+      "behaviorFixtureIds": [
+        "single_and_multi_select",
+        "other_free_text",
+        "answer_cancel_race",
+        "deterministic_headless_policy",
+        "background_child_unavailable"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Asks one to four structured questions and returns the single registered response to this tool call. Use only when the interaction owner is available.",
+      "errorCodes": [
+        {
+          "code": "interaction_unavailable",
+          "retryable": false,
+          "when": "No interactive or deterministic headless provider can answer."
+        },
+        {
+          "code": "interaction_rejected",
+          "retryable": false,
+          "when": "The interaction owner rejects or expires the request."
+        },
+        {
+          "code": "stale_interaction",
+          "retryable": false,
+          "when": "A late or duplicate response loses exactly-one settlement."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "header": {
+                  "maxLength": 12,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "multiSelect": {
+                  "type": "boolean"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "description": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "label": {
+                        "maxLength": 80,
+                        "minLength": 1,
+                        "pattern": "^(?:\\S+)(?:\\s+\\S+){0,4}$",
+                        "type": "string"
+                      },
+                      "preview": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 4,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "question": {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "question",
+                "header",
+                "options",
+                "multiSelect"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "header": {
+                  "maxLength": 12,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "multiSelect": {
+                  "type": "boolean"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "description": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "label": {
+                        "maxLength": 80,
+                        "minLength": 1,
+                        "pattern": "^(?:\\S+)(?:\\s+\\S+){0,4}$",
+                        "type": "string"
+                      },
+                      "preview": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 4,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "question": {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "question",
+                "header",
+                "options",
+                "multiSelect"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "host_policy"
+      },
+      "name": "AskUserQuestion",
+      "originPolicy": {
+        "denialCode": "background_interaction_forbidden",
+        "mode": "no-background-child",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 65536,
+        "maxStructuredItems": 32
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "otherText": {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                "questionIndex": {
+                  "maximum": 3,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "selectedLabels": {
+                  "items": {
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 4,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "questionIndex",
+                "selectedLabels"
+              ],
+              "type": "object"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          },
+          "interactionId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "policyRevision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "interactionId",
+          "answers",
+          "policyRevision"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "interaction.ask",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return the one registered answer set, including explicit free text when Other is selected.",
+      "sideEffect": "interaction",
+      "timeoutMs": 600000
+    },
+    {
+      "behaviorFixtureIds": [
+        "root_enters_and_catalog_restricts",
+        "idempotent_existing_plan",
+        "child_entry_rejected",
+        "persistence_failure",
+        "restart_restores_plan_mode"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Enters persisted plan mode and allocates or resumes its managed plan artifact. Plan mode immediately restricts execution to plan-safe actions.",
+      "errorCodes": [
+        {
+          "code": "plan_entry_forbidden",
+          "retryable": false,
+          "when": "The caller is not the root Agent or hard policy disallows entry."
+        },
+        {
+          "code": "plan_state_conflict",
+          "retryable": true,
+          "when": "The durable plan state cannot be created or resumed atomically."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "EnterPlanMode",
+      "originPolicy": {
+        "denialCode": "child_plan_entry_forbidden",
+        "mode": "root-only",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 16384,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "plan",
+            "type": "string"
+          },
+          "planPath": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "planPath",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "session.plan.enter",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Persist plan mode and return the managed plan artifact identity and revision before the restricted catalog becomes visible.",
+      "sideEffect": "session_state",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "approve_exits_atomically",
+        "reject_preserves_plan_mode",
+        "cancel_and_expire_preserve_plan_mode",
+        "stale_revision",
+        "restart_during_approval"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Submits the current managed plan revision for approval. Approval exits plan mode; rejection or cancellation keeps plan mode active.",
+      "errorCodes": [
+        {
+          "code": "interaction_unavailable",
+          "retryable": false,
+          "when": "No approval provider is available."
+        },
+        {
+          "code": "stale_plan_revision",
+          "retryable": true,
+          "when": "The submitted revision is no longer current."
+        },
+        {
+          "code": "plan_approval_rejected",
+          "retryable": false,
+          "when": "Approval is rejected, cancelled, or expired while plan mode remains active."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "host_policy"
+      },
+      "name": "ExitPlanMode",
+      "originPolicy": {
+        "denialCode": "background_interaction_forbidden",
+        "mode": "no-background-child",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "disposition": {
+                "const": "approved",
+                "type": "string"
+              },
+              "feedback": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "mode": {
+                "const": "normal",
+                "type": "string"
+              },
+              "plan": {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              "revision": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "disposition",
+              "plan",
+              "revision",
+              "mode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "disposition": {
+                "anyOf": [
+                  {
+                    "const": "rejected",
+                    "type": "string"
+                  },
+                  {
+                    "const": "cancelled",
+                    "type": "string"
+                  }
+                ]
+              },
+              "feedback": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "mode": {
+                "const": "plan",
+                "type": "string"
+              },
+              "plan": {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              "revision": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "disposition",
+              "plan",
+              "revision",
+              "mode"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "session.plan.exit",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Approval returns the submitted plan and normal mode; rejection or cancellation returns feedback while plan mode remains active.",
+      "sideEffect": "interaction",
+      "timeoutMs": 600000
+    },
+    {
+      "behaviorFixtureIds": [
+        "visible_catalog_load",
+        "frontmatter_removed",
+        "argument_placeholder_expansion",
+        "disabled_or_unknown_rejected",
+        "duplicate_name_uses_catalog_winner"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Loads one model-invocable SKILL.md from the operation-visible approved DSH Skill catalog, strips frontmatter, expands deterministic arguments, and returns its bounded instructions inline.",
+      "errorCodes": [
+        {
+          "code": "skill_not_found",
+          "retryable": false,
+          "when": "The named Skill is absent from the frozen catalog."
+        },
+        {
+          "code": "skill_invocation_disabled",
+          "retryable": false,
+          "when": "The Skill disables model invocation."
+        },
+        {
+          "code": "skill_invalid",
+          "retryable": false,
+          "when": "The resource cannot be validated or expanded within bounds."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "maxLength": 65536,
+            "type": "string"
+          },
+          "skill": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "maxLength": 65536,
+            "type": "string"
+          },
+          "skill": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "Skill",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "argumentsExpanded": {
+            "type": "boolean"
+          },
+          "content": {
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "skill": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "sourceSha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill",
+          "content",
+          "source",
+          "sourceSha256",
+          "argumentsExpanded"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "skill.load",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return bounded frontmatter-stripped instructions from the exact operation-visible declarative Skill catalog.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "foreground_child_terminal",
+        "default_background_child_handle",
+        "exact_model_alias",
+        "background_permission_fail_closed",
+        "stop_and_generation_cleanup"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type to use the built-in general descriptor. General children have coordination tools but no direct filesystem authority, so include the material to review in the prompt. Background returns a retained work handle; foreground waits for the child terminal.",
+      "errorCodes": [
+        {
+          "code": "agent_unavailable",
+          "retryable": false,
+          "when": "No compatible child descriptor or model alias is visible."
+        },
+        {
+          "code": "child_nesting_forbidden",
+          "retryable": false,
+          "when": "A child attempts to spawn another child."
+        },
+        {
+          "code": "interaction_unavailable",
+          "retryable": false,
+          "when": "A background child requires unavailable interaction."
+        },
+        {
+          "code": "child_failed",
+          "retryable": true,
+          "when": "The supervised child reaches a failed terminal."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^(?:\\S+)(?:\\s+\\S+){2,4}$",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_in_background": {
+            "type": "boolean"
+          },
+          "subagent_type": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^(?:\\S+)(?:\\s+\\S+){2,4}$",
+            "type": "string"
+          },
+          "model": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_in_background": {
+            "type": "boolean"
+          },
+          "subagent_type": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "policy_required",
+        "timeout": "work_registry"
+      },
+      "name": "Agent",
+      "originPolicy": {
+        "denialCode": "child_agent_nesting_forbidden",
+        "mode": "root-only",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxRetainedOutputBytes": 8388608,
+        "maxStructuredItems": 64
+      },
+      "outputSchema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "agentId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "model": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "outputPath": {
+                "maxLength": 8192,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "state": {
+                "const": "background",
+                "type": "string"
+              },
+              "taskId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "taskId",
+              "agentId",
+              "state",
+              "outputPath",
+              "model"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "agentId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "model": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "result": {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              "resultTruncated": {
+                "type": "boolean"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "const": "succeeded",
+                    "type": "string"
+                  },
+                  {
+                    "const": "failed",
+                    "type": "string"
+                  },
+                  {
+                    "const": "aborted",
+                    "type": "string"
+                  }
+                ]
+              },
+              "taskId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "usage": {
+                "additionalProperties": false,
+                "properties": {
+                  "cacheReadTokens": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "cacheWriteTokens": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "inputTokens": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "outputTokens": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "totalTokens": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "inputTokens",
+                  "outputTokens",
+                  "cacheReadTokens",
+                  "cacheWriteTokens",
+                  "totalTokens"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "taskId",
+              "agentId",
+              "state",
+              "result",
+              "resultTruncated",
+              "usage",
+              "model"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "agent.spawn",
+      "planPolicy": {
+        "denialCode": "plan_safe_agent_unavailable",
+        "mode": "plan-safe-child-only",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Foreground returns the child terminal and usage; background returns one supervised WorkRegistry handle and output path.",
+      "sideEffect": "delegation",
+      "timeoutMs": 600000
+    },
+    {
+      "behaviorFixtureIds": [
+        "stop_process_tree",
+        "stop_child",
+        "already_terminal_idempotent",
+        "cross_session_id_rejected",
+        "waits_for_resource_finalizer"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Stops an owned background Bash process or child Agent by task ID and waits for terminal state and resource finalization.",
+      "errorCodes": [
+        {
+          "code": "task_not_found",
+          "retryable": false,
+          "when": "The task is unknown or belongs to another Runtime Session."
+        },
+        {
+          "code": "task_stop_failed",
+          "retryable": true,
+          "when": "The WorkRegistry cannot establish terminal cleanup."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "work_registry"
+      },
+      "name": "TaskStop",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 16384,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "alreadyTerminal": {
+            "type": "boolean"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "process",
+                "type": "string"
+              },
+              {
+                "const": "agent",
+                "type": "string"
+              }
+            ]
+          },
+          "taskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "terminal": {
+            "anyOf": [
+              {
+                "const": "succeeded",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "type": "string"
+              },
+              {
+                "const": "aborted",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "taskId",
+          "kind",
+          "terminal",
+          "alreadyTerminal"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "work.stop",
+      "planPolicy": {
+        "denialCode": "plan_mode_tool_forbidden",
+        "mode": "denied",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Wait for the addressed work item to reach its existing or newly stopped terminal and finalize owned resources.",
+      "sideEffect": "session_state",
+      "timeoutMs": 120000
+    },
+    {
+      "behaviorFixtureIds": [
+        "parent_child_sibling_delivery",
+        "ordered_sequence",
+        "stopped_child_resume",
+        "terminal_recipient_notification",
+        "broadcast_and_cross_session_rejected"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Delivers an ordered plain-text message to one resolvable parent, child, or sibling Agent in this Runtime Session. Cross-Session and broadcast delivery are unsupported.",
+      "errorCodes": [
+        {
+          "code": "recipient_not_found",
+          "retryable": false,
+          "when": "The local recipient cannot be resolved."
+        },
+        {
+          "code": "recipient_out_of_scope",
+          "retryable": false,
+          "when": "The target is cross-Session, broadcast, team, or cloud-owned."
+        },
+        {
+          "code": "delivery_failed",
+          "retryable": true,
+          "when": "The ordered mailbox or resume path cannot accept the message."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "summary",
+          "message"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 1000000,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "summary",
+          "message"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "work_registry"
+      },
+      "name": "SendMessage",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 16384,
+        "maxStructuredItems": 16
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "recipient": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "sequence": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "const": "delivered",
+                "type": "string"
+              },
+              {
+                "const": "queued",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "messageId",
+          "recipient",
+          "state",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "agent.message",
+      "planPolicy": {
+        "denialCode": "plan_mode_tool_forbidden",
+        "mode": "denied",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return an ordered delivery receipt after resolving one in-scope collaborator.",
+      "sideEffect": "delegation",
+      "timeoutMs": 120000
+    },
+    {
+      "behaviorFixtureIds": [
+        "create_minimal_task",
+        "create_with_active_form_and_metadata",
+        "bounded_metadata",
+        "append_snapshot_recovery",
+        "session_local_scope"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Creates a task in the current Runtime Session-local TaskGraph. It does not create a product task or scheduled automation.",
+      "errorCodes": [
+        {
+          "code": "task_graph_limit",
+          "retryable": false,
+          "when": "The graph or metadata bound is reached."
+        },
+        {
+          "code": "task_graph_conflict",
+          "retryable": true,
+          "when": "The append cannot commit against the current revision."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "activeForm": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "maxProperties": 128,
+            "patternProperties": {
+              "^.*$": {
+                "$defs": {
+                  "MetadataJsonValue": {
+                    "$id": "MetadataJsonValue",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "$ref": "MetadataJsonValue"
+                        },
+                        "maxItems": 128,
+                        "type": "array"
+                      },
+                      {
+                        "maxProperties": 128,
+                        "patternProperties": {
+                          "^.*$": {
+                            "$ref": "MetadataJsonValue"
+                          }
+                        },
+                        "propertyNames": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "$ref": "MetadataJsonValue"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "subject": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "description"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "activeForm": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "maxProperties": 128,
+            "patternProperties": {
+              "^.*$": {
+                "$defs": {
+                  "MetadataJsonValue": {
+                    "$id": "MetadataJsonValue",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "$ref": "MetadataJsonValue"
+                        },
+                        "maxItems": 128,
+                        "type": "array"
+                      },
+                      {
+                        "maxProperties": 128,
+                        "patternProperties": {
+                          "^.*$": {
+                            "$ref": "MetadataJsonValue"
+                          }
+                        },
+                        "propertyNames": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "$ref": "MetadataJsonValue"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "subject": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "description"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "TaskCreate",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 65536,
+        "maxStructuredItems": 512
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "task": {
+            "additionalProperties": false,
+            "properties": {
+              "activeForm": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "blockedBy": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "maxItems": 256,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "createdSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "description": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "metadata": {
+                "maxProperties": 128,
+                "patternProperties": {
+                  "^.*$": {
+                    "$defs": {
+                      "MetadataJsonValue": {
+                        "$id": "MetadataJsonValue",
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "maxLength": 65536,
+                            "type": "string"
+                          },
+                          {
+                            "items": {
+                              "$ref": "MetadataJsonValue"
+                            },
+                            "maxItems": 128,
+                            "type": "array"
+                          },
+                          {
+                            "maxProperties": 128,
+                            "patternProperties": {
+                              "^.*$": {
+                                "$ref": "MetadataJsonValue"
+                              }
+                            },
+                            "propertyNames": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "$ref": "MetadataJsonValue"
+                  }
+                },
+                "propertyNames": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "owner": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "pending",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in_progress",
+                    "type": "string"
+                  },
+                  {
+                    "const": "completed",
+                    "type": "string"
+                  },
+                  {
+                    "const": "cancelled",
+                    "type": "string"
+                  }
+                ]
+              },
+              "subject": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "updatedSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "subject",
+              "status",
+              "blockedBy",
+              "createdSequence",
+              "updatedSequence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "task_graph.mutate",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Append one task to the Session-local TaskGraph and return its immutable ID and committed revision.",
+      "sideEffect": "session_state",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "get_current_task",
+        "dependency_and_owner_projection",
+        "unknown_task",
+        "deleted_visibility",
+        "restart_snapshot"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Gets one task and its current dependency, owner, metadata, and revision snapshot from the Session-local TaskGraph.",
+      "errorCodes": [
+        {
+          "code": "task_not_found",
+          "retryable": false,
+          "when": "The task is absent or not visible."
+        },
+        {
+          "code": "task_graph_unavailable",
+          "retryable": true,
+          "when": "The durable graph projection cannot be read safely."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "TaskGet",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 65536,
+        "maxStructuredItems": 512
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "task": {
+            "additionalProperties": false,
+            "properties": {
+              "activeForm": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "blockedBy": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "maxItems": 256,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "createdSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "description": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "metadata": {
+                "maxProperties": 128,
+                "patternProperties": {
+                  "^.*$": {
+                    "$defs": {
+                      "MetadataJsonValue": {
+                        "$id": "MetadataJsonValue",
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "maxLength": 65536,
+                            "type": "string"
+                          },
+                          {
+                            "items": {
+                              "$ref": "MetadataJsonValue"
+                            },
+                            "maxItems": 128,
+                            "type": "array"
+                          },
+                          {
+                            "maxProperties": 128,
+                            "patternProperties": {
+                              "^.*$": {
+                                "$ref": "MetadataJsonValue"
+                              }
+                            },
+                            "propertyNames": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "$ref": "MetadataJsonValue"
+                  }
+                },
+                "propertyNames": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "owner": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "pending",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in_progress",
+                    "type": "string"
+                  },
+                  {
+                    "const": "completed",
+                    "type": "string"
+                  },
+                  {
+                    "const": "cancelled",
+                    "type": "string"
+                  }
+                ]
+              },
+              "subject": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "updatedSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "subject",
+              "status",
+              "blockedBy",
+              "createdSequence",
+              "updatedSequence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "task_graph.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return one task and graph revision from the durable Session-local projection.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "empty_graph",
+        "stable_order",
+        "cancelled_tasks_retained",
+        "bounded_projection",
+        "concurrent_snapshot_consistency"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Lists a bounded, stable snapshot of non-deleted tasks in the current Runtime collaboration domain.",
+      "errorCodes": [
+        {
+          "code": "task_graph_unavailable",
+          "retryable": true,
+          "when": "The durable graph projection cannot be read safely."
+        },
+        {
+          "code": "task_graph_limit",
+          "retryable": false,
+          "when": "The projection exceeds its declared output bound."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "TaskList",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 2000
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "activeForm": {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                "blockedBy": {
+                  "items": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "maxItems": 256,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "createdSequence": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "description": {
+                  "maxLength": 65536,
+                  "type": "string"
+                },
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "metadata": {
+                  "maxProperties": 128,
+                  "patternProperties": {
+                    "^.*$": {
+                      "$defs": {
+                        "MetadataJsonValue": {
+                          "$id": "MetadataJsonValue",
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "maxLength": 65536,
+                              "type": "string"
+                            },
+                            {
+                              "items": {
+                                "$ref": "MetadataJsonValue"
+                              },
+                              "maxItems": 128,
+                              "type": "array"
+                            },
+                            {
+                              "maxProperties": 128,
+                              "patternProperties": {
+                                "^.*$": {
+                                  "$ref": "MetadataJsonValue"
+                                }
+                              },
+                              "propertyNames": {
+                                "maxLength": 128,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      "$ref": "MetadataJsonValue"
+                    }
+                  },
+                  "propertyNames": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "owner": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "pending",
+                      "type": "string"
+                    },
+                    {
+                      "const": "in_progress",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "cancelled",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "subject": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "updatedSequence": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "subject",
+                "status",
+                "blockedBy",
+                "createdSequence",
+                "updatedSequence"
+              ],
+              "type": "object"
+            },
+            "maxItems": 2000,
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tasks",
+          "revision",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "task_graph.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Return a bounded stable task list and graph revision from the Session-local projection.",
+      "sideEffect": "read",
+      "timeoutMs": 30000
+    },
+    {
+      "behaviorFixtureIds": [
+        "status_and_text_update",
+        "owner_and_metadata_update",
+        "dependency_cycle_rejected",
+        "terminal_transition_rejected",
+        "append_snapshot_crash_recovery"
+      ],
+      "checkpoint": "none",
+      "concurrency": "session_serial",
+      "description": "Atomically updates one Session-local task, including status, ownership, dependencies, text, and bounded metadata. Set owner to root in the same update (or earlier) before status can become in_progress. Dependencies must remain acyclic.",
+      "errorCodes": [
+        {
+          "code": "task_not_found",
+          "retryable": false,
+          "when": "The target task does not exist."
+        },
+        {
+          "code": "task_dependency_invalid",
+          "retryable": false,
+          "when": "A dependency is absent, cross-Session, self-referential, or cyclic."
+        },
+        {
+          "code": "task_terminal_conflict",
+          "retryable": false,
+          "when": "The update attempts an invalid terminal transition."
+        },
+        {
+          "code": "task_graph_conflict",
+          "retryable": true,
+          "when": "The graph revision precondition fails."
+        }
+      ],
+      "executionInputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "activeForm": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "addBlockedBy": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "addBlocks": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "description": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "maxProperties": 128,
+            "patternProperties": {
+              "^.*$": {
+                "$defs": {
+                  "MetadataJsonValue": {
+                    "$id": "MetadataJsonValue",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "$ref": "MetadataJsonValue"
+                        },
+                        "maxItems": 128,
+                        "type": "array"
+                      },
+                      {
+                        "maxProperties": 128,
+                        "patternProperties": {
+                          "^.*$": {
+                            "$ref": "MetadataJsonValue"
+                          }
+                        },
+                        "propertyNames": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "$ref": "MetadataJsonValue"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "pending",
+                "type": "string"
+              },
+              {
+                "const": "in_progress",
+                "type": "string"
+              },
+              {
+                "const": "completed",
+                "type": "string"
+              },
+              {
+                "const": "cancelled",
+                "type": "string"
+              }
+            ]
+          },
+          "subject": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "taskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "activeForm": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "addBlockedBy": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "addBlocks": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "description": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "maxProperties": 128,
+            "patternProperties": {
+              "^.*$": {
+                "$defs": {
+                  "MetadataJsonValue": {
+                    "$id": "MetadataJsonValue",
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "$ref": "MetadataJsonValue"
+                        },
+                        "maxItems": 128,
+                        "type": "array"
+                      },
+                      {
+                        "maxProperties": 128,
+                        "patternProperties": {
+                          "^.*$": {
+                            "$ref": "MetadataJsonValue"
+                          }
+                        },
+                        "propertyNames": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "$ref": "MetadataJsonValue"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "pending",
+                "type": "string"
+              },
+              {
+                "const": "in_progress",
+                "type": "string"
+              },
+              {
+                "const": "completed",
+                "type": "string"
+              },
+              {
+                "const": "cancelled",
+                "type": "string"
+              }
+            ]
+          },
+          "subject": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "taskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "TaskUpdate",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 65536,
+        "maxStructuredItems": 512
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changedFields": {
+            "items": {
+              "anyOf": [
+                {
+                  "const": "status",
+                  "type": "string"
+                },
+                {
+                  "const": "subject",
+                  "type": "string"
+                },
+                {
+                  "const": "description",
+                  "type": "string"
+                },
+                {
+                  "const": "activeForm",
+                  "type": "string"
+                },
+                {
+                  "const": "owner",
+                  "type": "string"
+                },
+                {
+                  "const": "addBlocks",
+                  "type": "string"
+                },
+                {
+                  "const": "addBlockedBy",
+                  "type": "string"
+                },
+                {
+                  "const": "metadata",
+                  "type": "string"
+                }
+              ]
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "task": {
+            "additionalProperties": false,
+            "properties": {
+              "activeForm": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "blockedBy": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "maxItems": 256,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "createdSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "description": {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "metadata": {
+                "maxProperties": 128,
+                "patternProperties": {
+                  "^.*$": {
+                    "$defs": {
+                      "MetadataJsonValue": {
+                        "$id": "MetadataJsonValue",
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "maxLength": 65536,
+                            "type": "string"
+                          },
+                          {
+                            "items": {
+                              "$ref": "MetadataJsonValue"
+                            },
+                            "maxItems": 128,
+                            "type": "array"
+                          },
+                          {
+                            "maxProperties": 128,
+                            "patternProperties": {
+                              "^.*$": {
+                                "$ref": "MetadataJsonValue"
+                              }
+                            },
+                            "propertyNames": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
+                    "$ref": "MetadataJsonValue"
+                  }
+                },
+                "propertyNames": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "owner": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "const": "pending",
+                    "type": "string"
+                  },
+                  {
+                    "const": "in_progress",
+                    "type": "string"
+                  },
+                  {
+                    "const": "completed",
+                    "type": "string"
+                  },
+                  {
+                    "const": "cancelled",
+                    "type": "string"
+                  }
+                ]
+              },
+              "subject": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "updatedSequence": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "subject",
+              "status",
+              "blockedBy",
+              "createdSequence",
+              "updatedSequence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "revision",
+          "changedFields"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "task_graph.mutate",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Atomically update one task and dependency graph and return the committed task, graph revision, and changed fields.",
+      "sideEffect": "session_state",
+      "timeoutMs": 30000
+    }
+  ],
+  "profile": "canonical-agent-experience-v1",
+  "source": {
+    "commit": "b7bbcadb172254defc0ea86229dd5de043fbb5f3",
+    "engineAdaptation": "Pi registration and lifecycle glue replaced by public DSH service seams",
+    "inventoryDecision": "canonical-tool-contracts",
+    "migratedAuthorities": [
+      "packages/runtime-core/src/tools/contracts.ts",
+      "packages/runtime-core/src/tools/golden-contracts.ts",
+      "packages/runtime-core/src/tools/profile.ts"
+    ],
+    "migratedTests": [
+      "packages/runtime-core/src/tools/contracts.unit.test.ts"
+    ],
+    "repository": "myagents-runtime",
+    "sourceTreeSnapshotSha256": "405aeeba942c46029c6cbac568e909bd149774d0b9f1547ebc9e7a3d6239bebc"
+  }
+}

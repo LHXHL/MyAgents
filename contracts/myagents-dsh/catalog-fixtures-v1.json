@@ -1,0 +1,577 @@
+{
+  "artifactFormatVersion": 1,
+  "contractSha256": "b150cf36eed203391a99d5c12d9fbd4dd09ff2bb4400ab635bee95ccb3302092",
+  "tools": [
+    {
+      "behaviorFixtureIds": [
+        "text_range_and_read_receipt",
+        "image_attachment_projection",
+        "pdf_page_projection",
+        "notebook_normalized_text",
+        "symlink_and_size_rejection"
+      ],
+      "invalidInput": {
+        "file_path": "/fixture/read.txt",
+        "unexpected": true
+      },
+      "name": "Read",
+      "validInput": {
+        "file_path": "/fixture/read.txt"
+      },
+      "validOutput": {
+        "content": "fixture",
+        "kind": "text",
+        "lineCount": 1,
+        "mimeType": "text/plain",
+        "offset": 1,
+        "path": "/fixture/read.txt",
+        "truncated": false
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "new_file_absent_precondition",
+        "existing_file_requires_complete_read",
+        "atomic_replace_and_checkpoint_receipt",
+        "external_change_conflict",
+        "abort_before_commit"
+      ],
+      "invalidInput": {
+        "content": "fixture",
+        "file_path": "/fixture/write.txt",
+        "unexpected": true
+      },
+      "name": "Write",
+      "validInput": {
+        "content": "fixture",
+        "file_path": "/fixture/write.txt"
+      },
+      "validOutput": {
+        "bytes": 7,
+        "created": true,
+        "path": "/fixture/write.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "single_exact_replacement",
+        "replace_all_non_overlapping",
+        "zero_and_ambiguous_match_errors",
+        "safe_external_change_retention",
+        "notebook_rejected"
+      ],
+      "invalidInput": {
+        "file_path": "/fixture/edit.txt",
+        "new_string": "new",
+        "old_string": "old",
+        "unexpected": true
+      },
+      "name": "Edit",
+      "validInput": {
+        "file_path": "/fixture/edit.txt",
+        "new_string": "new",
+        "old_string": "old"
+      },
+      "validOutput": {
+        "externalChangesRetained": false,
+        "path": "/fixture/edit.txt",
+        "replacements": 1,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "mtime_order_and_100_cap",
+        "ignored_files_included",
+        "workspace_relative_projection",
+        "invalid_pattern",
+        "abort_search"
+      ],
+      "invalidInput": {
+        "pattern": "**/*.ts",
+        "unexpected": true
+      },
+      "name": "Glob",
+      "validInput": {
+        "pattern": "**/*.ts"
+      },
+      "validOutput": {
+        "durationMs": 1,
+        "filenames": [
+          "src/index.ts"
+        ],
+        "numFiles": 1,
+        "truncated": false
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "content_mode_context",
+        "files_with_matches_mode",
+        "count_mode",
+        "head_limit_and_offset",
+        "multiline_and_abort"
+      ],
+      "invalidInput": {
+        "pattern": "fixture",
+        "unexpected": true
+      },
+      "name": "Grep",
+      "validInput": {
+        "pattern": "fixture"
+      },
+      "validOutput": {
+        "durationMs": 1,
+        "limit": 1,
+        "mode": "content",
+        "offset": 0,
+        "records": [
+          {
+            "line": 1,
+            "path": "src/index.ts",
+            "text": "fixture"
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "foreground_success_and_nonzero_exit",
+        "explicit_background_handle",
+        "timeout_promotes_same_work_entry",
+        "disabled_background_kills_tree",
+        "session_close_generation_cleanup"
+      ],
+      "invalidInput": {
+        "command": "printf fixture",
+        "unexpected": true
+      },
+      "name": "Bash",
+      "validInput": {
+        "command": "printf fixture"
+      },
+      "validOutput": {
+        "background": false,
+        "durationMs": 1,
+        "exitCode": 0,
+        "interrupted": false,
+        "outputTruncated": false,
+        "stderr": "",
+        "stdout": "fixture"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "exact_pi_description_and_schema",
+        "alphabetical_directory_suffix",
+        "dotfiles",
+        "500_entry_or_50kb_truncation",
+        "runtime_path_gate"
+      ],
+      "invalidInput": {
+        "unexpected": true
+      },
+      "name": "ls",
+      "validInput": {},
+      "validOutput": "src/\npackage.json"
+    },
+    {
+      "behaviorFixtureIds": [
+        "http_html_to_markdown_answer",
+        "pdf_or_text_fetch",
+        "dns_pin_and_redirect_revalidation",
+        "response_and_usage_bounds",
+        "cancel_fetch_and_utility_call"
+      ],
+      "invalidInput": {
+        "prompt": "Summarize",
+        "unexpected": true,
+        "url": "https://example.invalid/fixture"
+      },
+      "name": "WebFetch",
+      "validInput": {
+        "prompt": "Summarize",
+        "url": "https://example.invalid/fixture"
+      },
+      "validOutput": {
+        "answer": "fixture",
+        "citations": [],
+        "finalUrl": "https://example.invalid/fixture",
+        "truncated": false,
+        "url": "https://example.invalid/fixture",
+        "usage": {
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "totalTokens": 2
+        }
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "provider_adapter_gating",
+        "allowed_and_blocked_domains",
+        "citations_and_usage",
+        "max_uses_and_rate_limit",
+        "cancel_provider_search"
+      ],
+      "invalidInput": {
+        "query": "fixture",
+        "unexpected": true
+      },
+      "name": "WebSearch",
+      "validInput": {
+        "query": "fixture"
+      },
+      "validOutput": {
+        "citations": [],
+        "durationMs": 1,
+        "query": "fixture",
+        "results": [],
+        "searchCount": 1,
+        "truncated": false,
+        "usage": {
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "totalTokens": 2
+        }
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "single_and_multi_select",
+        "other_free_text",
+        "answer_cancel_race",
+        "deterministic_headless_policy",
+        "background_child_unavailable"
+      ],
+      "invalidInput": {
+        "questions": [
+          {
+            "header": "Choice",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "Continue",
+                "label": "Yes"
+              },
+              {
+                "description": "Stop",
+                "label": "No"
+              }
+            ],
+            "question": "Continue?"
+          }
+        ],
+        "unexpected": true
+      },
+      "name": "AskUserQuestion",
+      "validInput": {
+        "questions": [
+          {
+            "header": "Choice",
+            "multiSelect": false,
+            "options": [
+              {
+                "description": "Continue",
+                "label": "Yes"
+              },
+              {
+                "description": "Stop",
+                "label": "No"
+              }
+            ],
+            "question": "Continue?"
+          }
+        ]
+      },
+      "validOutput": {
+        "answers": [
+          {
+            "questionIndex": 0,
+            "selectedLabels": [
+              "Yes"
+            ]
+          }
+        ],
+        "interactionId": "interaction-1",
+        "policyRevision": "policy-1"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "root_enters_and_catalog_restricts",
+        "idempotent_existing_plan",
+        "child_entry_rejected",
+        "persistence_failure",
+        "restart_restores_plan_mode"
+      ],
+      "invalidInput": {
+        "unexpected": true
+      },
+      "name": "EnterPlanMode",
+      "validInput": {},
+      "validOutput": {
+        "mode": "plan",
+        "planPath": "/fixture/plan.md",
+        "revision": "plan-1"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "approve_exits_atomically",
+        "reject_preserves_plan_mode",
+        "cancel_and_expire_preserve_plan_mode",
+        "stale_revision",
+        "restart_during_approval"
+      ],
+      "invalidInput": {
+        "unexpected": true
+      },
+      "name": "ExitPlanMode",
+      "validInput": {},
+      "validOutput": {
+        "disposition": "approved",
+        "mode": "normal",
+        "plan": "fixture plan",
+        "revision": "plan-1"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "visible_catalog_load",
+        "frontmatter_removed",
+        "argument_placeholder_expansion",
+        "disabled_or_unknown_rejected",
+        "duplicate_name_uses_catalog_winner"
+      ],
+      "invalidInput": {
+        "skill": "fixture",
+        "unexpected": true
+      },
+      "name": "Skill",
+      "validInput": {
+        "skill": "fixture"
+      },
+      "validOutput": {
+        "argumentsExpanded": false,
+        "content": "instructions",
+        "skill": "fixture",
+        "source": "skills/fixture/SKILL.md",
+        "sourceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "foreground_child_terminal",
+        "default_background_child_handle",
+        "exact_model_alias",
+        "background_permission_fail_closed",
+        "stop_and_generation_cleanup"
+      ],
+      "invalidInput": {
+        "description": "Review fixture changes",
+        "prompt": "Review the fixture",
+        "unexpected": true
+      },
+      "name": "Agent",
+      "validInput": {
+        "description": "Review fixture changes",
+        "prompt": "Review the fixture"
+      },
+      "validOutput": {
+        "agentId": "agent-1",
+        "model": "fixture-model",
+        "result": "done",
+        "resultTruncated": false,
+        "state": "succeeded",
+        "taskId": "work-1",
+        "usage": {
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "inputTokens": 1,
+          "outputTokens": 1,
+          "totalTokens": 2
+        }
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "stop_process_tree",
+        "stop_child",
+        "already_terminal_idempotent",
+        "cross_session_id_rejected",
+        "waits_for_resource_finalizer"
+      ],
+      "invalidInput": {
+        "task_id": "work-1",
+        "unexpected": true
+      },
+      "name": "TaskStop",
+      "validInput": {
+        "task_id": "work-1"
+      },
+      "validOutput": {
+        "alreadyTerminal": false,
+        "kind": "agent",
+        "taskId": "work-1",
+        "terminal": "aborted"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "parent_child_sibling_delivery",
+        "ordered_sequence",
+        "stopped_child_resume",
+        "terminal_recipient_notification",
+        "broadcast_and_cross_session_rejected"
+      ],
+      "invalidInput": {
+        "message": "done",
+        "summary": "Fixture update",
+        "to": "agent-1",
+        "unexpected": true
+      },
+      "name": "SendMessage",
+      "validInput": {
+        "message": "done",
+        "summary": "Fixture update",
+        "to": "agent-1"
+      },
+      "validOutput": {
+        "messageId": "message-1",
+        "recipient": "agent-1",
+        "sequence": 1,
+        "state": "delivered"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "create_minimal_task",
+        "create_with_active_form_and_metadata",
+        "bounded_metadata",
+        "append_snapshot_recovery",
+        "session_local_scope"
+      ],
+      "invalidInput": {
+        "description": "A deterministic fixture",
+        "subject": "Fixture task",
+        "unexpected": true
+      },
+      "name": "TaskCreate",
+      "validInput": {
+        "description": "A deterministic fixture",
+        "subject": "Fixture task"
+      },
+      "validOutput": {
+        "revision": "task-graph-1",
+        "task": {
+          "blockedBy": [],
+          "createdSequence": 1,
+          "description": "A deterministic fixture",
+          "id": "task-1",
+          "status": "pending",
+          "subject": "Fixture task",
+          "updatedSequence": 1
+        }
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "get_current_task",
+        "dependency_and_owner_projection",
+        "unknown_task",
+        "deleted_visibility",
+        "restart_snapshot"
+      ],
+      "invalidInput": {
+        "taskId": "task-1",
+        "unexpected": true
+      },
+      "name": "TaskGet",
+      "validInput": {
+        "taskId": "task-1"
+      },
+      "validOutput": {
+        "revision": "task-graph-1",
+        "task": {
+          "blockedBy": [],
+          "createdSequence": 1,
+          "description": "A deterministic fixture",
+          "id": "task-1",
+          "status": "pending",
+          "subject": "Fixture task",
+          "updatedSequence": 1
+        }
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "empty_graph",
+        "stable_order",
+        "cancelled_tasks_retained",
+        "bounded_projection",
+        "concurrent_snapshot_consistency"
+      ],
+      "invalidInput": {
+        "unexpected": true
+      },
+      "name": "TaskList",
+      "validInput": {},
+      "validOutput": {
+        "revision": "task-graph-1",
+        "tasks": [
+          {
+            "blockedBy": [],
+            "createdSequence": 1,
+            "description": "A deterministic fixture",
+            "id": "task-1",
+            "status": "pending",
+            "subject": "Fixture task",
+            "updatedSequence": 1
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "status_and_text_update",
+        "owner_and_metadata_update",
+        "dependency_cycle_rejected",
+        "terminal_transition_rejected",
+        "append_snapshot_crash_recovery"
+      ],
+      "invalidInput": {
+        "status": "in_progress",
+        "taskId": "task-1",
+        "unexpected": true
+      },
+      "name": "TaskUpdate",
+      "validInput": {
+        "status": "in_progress",
+        "taskId": "task-1"
+      },
+      "validOutput": {
+        "changedFields": [
+          "status"
+        ],
+        "revision": "task-graph-2",
+        "task": {
+          "blockedBy": [],
+          "createdSequence": 1,
+          "description": "A deterministic fixture",
+          "id": "task-1",
+          "status": "in_progress",
+          "subject": "Fixture task",
+          "updatedSequence": 2
+        }
+      }
+    }
+  ]
+}

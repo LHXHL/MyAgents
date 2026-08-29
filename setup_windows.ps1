@@ -183,6 +183,52 @@ try {
         Write-Host "OK - Git installer ready" -ForegroundColor Green
     }
 
+    function Install-BundledNpm {
+        param(
+            [string]$NodeDir,
+            [string]$NodeExe,
+            [string]$NodeVersion
+        )
+
+        $BundledNpmVersion = "11.15.0"
+        $npmDir = Join-Path $NodeDir "node_modules\npm"
+        $npmCli = Join-Path $npmDir "bin\npm-cli.js"
+        if (-not (Test-Path $npmCli)) {
+            throw "bundled npm is missing: $npmCli"
+        }
+
+        $currentVersion = & $NodeExe $npmCli --version 2>&1
+        if ("$currentVersion" -ne $BundledNpmVersion) {
+            Write-Host "  安装固定 npm v$BundledNpmVersion (当前 v$currentVersion)..." -ForegroundColor Yellow
+            $npmTmpDir = Join-Path $env:TEMP "npm_upgrade_$(Get-Random)"
+            try {
+                New-Item -ItemType Directory -Path $npmTmpDir -Force | Out-Null
+                $tarballUrl = "https://registry.npmjs.org/npm/-/npm-$BundledNpmVersion.tgz"
+                $tgzPath = Join-Path $npmTmpDir "npm.tgz"
+                Invoke-WebRequest -Uri $tarballUrl -OutFile $tgzPath -TimeoutSec 60
+                tar -xzf $tgzPath -C $npmTmpDir 2>&1 | Out-Null
+                $extractedPkg = Join-Path $npmTmpDir "package"
+                if (-not (Test-Path $extractedPkg)) {
+                    throw "npm tarball is missing package/"
+                }
+                Remove-Item -Recurse -Force $npmDir
+                Move-Item -Path $extractedPkg -Destination $npmDir
+            } finally {
+                Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
+            }
+        }
+
+        $installedVersion = & $NodeExe (Join-Path $npmDir "bin\npm-cli.js") --version 2>&1
+        if ("$installedVersion" -ne $BundledNpmVersion) {
+            throw "bundled npm version mismatch: expected $BundledNpmVersion, got $installedVersion"
+        }
+        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-version") -Value $NodeVersion -NoNewline
+        Set-Content -Path (Join-Path $NodeDir ".myagents-npm-version") -Value $BundledNpmVersion -NoNewline
+        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-platform") -Value "win" -NoNewline
+        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-arch") -Value "x64" -NoNewline
+        Write-Host "  npm v$installedVersion ✓" -ForegroundColor Green
+    }
+
     function Get-NodeJSBinary {
         $NodeVersion = "24.14.0"
         $NodeDir = Join-Path $ProjectDir "src-tauri\resources\nodejs"
@@ -198,36 +244,7 @@ try {
             $existingVer = & $NodeExe --version 2>$null
             if ($existingVer -eq "v$NodeVersion") {
                 Write-Host "  OK - Node.js v$NodeVersion (already exists)" -ForegroundColor Green
-                # Node.js 已存在，但仍需确保 npm 已升级
-                $npmDir = Join-Path $NodeDir "node_modules\npm"
-                if (Test-Path $npmDir) {
-                    $npmCli = Join-Path $npmDir "bin\npm-cli.js"
-                    $curVer = & $NodeExe $npmCli --version 2>&1
-                    if ("$curVer" -match "^11\.[0-9]\.") {
-                        Write-Host "  npm v$curVer 需要升级..." -ForegroundColor Yellow
-                        try {
-                            $npmTmpDir = Join-Path $env:TEMP "npm_upgrade_$(Get-Random)"
-                            New-Item -ItemType Directory -Path $npmTmpDir -Force | Out-Null
-                            $registryJson = Invoke-RestMethod -Uri "https://registry.npmjs.org/npm/latest" -TimeoutSec 30
-                            $tarballUrl = $registryJson.dist.tarball
-                            $tgzPath = Join-Path $npmTmpDir "npm.tgz"
-                            Invoke-WebRequest -Uri $tarballUrl -OutFile $tgzPath -TimeoutSec 60
-                            tar -xzf $tgzPath -C $npmTmpDir 2>&1 | Out-Null
-                            $extractedPkg = Join-Path $npmTmpDir "package"
-                            if (Test-Path $extractedPkg) {
-                                Remove-Item -Recurse -Force $npmDir
-                                Move-Item -Path $extractedPkg -Destination $npmDir
-                                $newVer = & $NodeExe (Join-Path $npmDir "bin\npm-cli.js") --version 2>&1
-                                Write-Host "  npm 升级: v$curVer → v$newVer ✓" -ForegroundColor Green
-                            }
-                            Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
-                        } catch {
-                            Write-Host "  npm 升级失败: $_" -ForegroundColor Red
-                        }
-                    } else {
-                        Write-Host "  npm v$curVer ✓" -ForegroundColor Green
-                    }
-                }
+                Install-BundledNpm -NodeDir $NodeDir -NodeExe $NodeExe -NodeVersion $NodeVersion
                 Write-Host "OK - Node.js runtime ready" -ForegroundColor Green
                 return
             }
@@ -278,40 +295,7 @@ try {
             if (Test-Path $corepackCmd) { Remove-Item -Force $corepackCmd }
             if (Test-Path $corepackDir) { Remove-Item -Recurse -Force $corepackDir }
 
-            # Upgrade npm — bundled npm 11.9.0 has minizlib CJS bug on Windows.
-            # CANNOT use `npm install npm@latest` (catch-22: broken npm can't upgrade itself).
-            Write-Host "  升级 npm (curl + tar)..." -ForegroundColor Cyan
-            $npmDir = Join-Path $NodeDir "node_modules\npm"
-            try {
-                $nodeExe = Join-Path $NodeDir "node.exe"
-                $oldNpmCli = Join-Path $npmDir "bin\npm-cli.js"
-                $oldVer = if (Test-Path $oldNpmCli) { & $nodeExe $oldNpmCli --version 2>&1 } else { "unknown" }
-                Write-Host "  当前: v$oldVer" -ForegroundColor Gray
-
-                $npmTmpDir = Join-Path $env:TEMP "npm_upgrade_$(Get-Random)"
-                New-Item -ItemType Directory -Path $npmTmpDir -Force | Out-Null
-                $registryJson = Invoke-RestMethod -Uri "https://registry.npmjs.org/npm/latest" -TimeoutSec 30
-                $tarballUrl = $registryJson.dist.tarball
-                Write-Host "  下载: $($registryJson.version) ← $tarballUrl"
-                $tgzPath = Join-Path $npmTmpDir "npm.tgz"
-                Invoke-WebRequest -Uri $tarballUrl -OutFile $tgzPath -TimeoutSec 60
-                tar -xzf $tgzPath -C $npmTmpDir 2>&1 | Out-Null
-                $extractedPkg = Join-Path $npmTmpDir "package"
-                if (Test-Path $extractedPkg) {
-                    Remove-Item -Recurse -Force $npmDir
-                    Move-Item -Path $extractedPkg -Destination $npmDir
-                    $newNpmCli = Join-Path $npmDir "bin\npm-cli.js"
-                    $newVer = & $nodeExe $newNpmCli --version 2>&1
-                    Write-Host "  npm 已升级: v$oldVer → v$newVer" -ForegroundColor Green
-                } else {
-                    Write-Host "  npm 解压失败" -ForegroundColor Red
-                }
-                Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
-            } catch {
-                Write-Host "  npm 升级失败: $_" -ForegroundColor Red
-                Write-Host "  ⚠ 插件安装可能失败，请检查网络后重试" -ForegroundColor Yellow
-                Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
-            }
+            Install-BundledNpm -NodeDir $NodeDir -NodeExe (Join-Path $NodeDir "node.exe") -NodeVersion $NodeVersion
 
             Write-Host "  OK - Windows x64" -ForegroundColor Green
         } catch {

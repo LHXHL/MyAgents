@@ -20,6 +20,7 @@ set -e
 # Configuration
 # ========================================
 NODE_VERSION="24.14.0"  # Active LTS — moltbot 等包要求 >=24，不可降级
+NPM_VERSION="11.15.0"   # Product-owned bundled npm; independent of DSH build provenance
 NODE_BASE_URL="https://nodejs.org/dist/v${NODE_VERSION}"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,6 +75,7 @@ write_metadata() {
     local arch
     arch=$(normalize_arch "$3")
     printf "%s\n" "$NODE_VERSION" > "${dir}/.myagents-nodejs-version"
+    printf "%s\n" "$NPM_VERSION" > "${dir}/.myagents-npm-version"
     printf "%s\n" "$platform" > "${dir}/.myagents-nodejs-platform"
     printf "%s\n" "$arch" > "${dir}/.myagents-nodejs-arch"
 }
@@ -122,19 +124,16 @@ upgrade_npm() {
     if [[ -n "$node_bin" && -x "$node_bin" ]]; then
         old_ver=$("$node_bin" "${npm_dir}/bin/npm-cli.js" --version 2>/dev/null || echo "unknown")
     fi
-    log_info "Upgrading npm (curl + tar, bypasses broken npm)... current: v${old_ver}"
+    if [[ "$old_ver" == "$NPM_VERSION" ]]; then
+        log_ok "Bundled npm v${NPM_VERSION} already present"
+        return 0
+    fi
+    log_info "Installing bundled npm v${NPM_VERSION} (curl + tar, bypasses broken npm)... current: v${old_ver}"
 
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
-    # Query npm registry for latest tarball URL
-    local tarball_url
-    tarball_url=$(curl -sL https://registry.npmjs.org/npm/latest | grep -o '"tarball":"[^"]*"' | head -1 | cut -d'"' -f4)
-    if [[ -z "$tarball_url" ]]; then
-        log_error "Failed to query npm registry (no tarball URL returned)"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
+    local tarball_url="https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"
     log_info "Downloading: ${tarball_url}"
 
     # Download and extract
@@ -168,7 +167,12 @@ upgrade_npm() {
     else
         new_ver=$(grep '"version"' "${npm_dir}/package.json" 2>/dev/null | head -1 | grep -o '"[0-9][^"]*"' | tr -d '"')
     fi
-    log_ok "npm upgraded: v${old_ver} → v${new_ver}"
+    if [[ "$new_ver" != "$NPM_VERSION" ]]; then
+        log_error "Bundled npm verification failed: expected v${NPM_VERSION}, got v${new_ver}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    log_ok "npm installed: v${old_ver} → v${new_ver}"
 
     rm -rf "$tmp_dir"
 }
@@ -204,6 +208,20 @@ check_existing() {
             existing_ver=$("$node_bin" --version 2>/dev/null | sed 's/^v//' || echo "")
         fi
         if [[ "$existing_ver" != "${NODE_VERSION}" ]]; then
+            return 1
+        fi
+        if [[ ! -f "${dir}/.myagents-npm-version" ]] ||
+           [[ "$(cat "${dir}/.myagents-npm-version" 2>/dev/null || echo "")" != "${NPM_VERSION}" ]]; then
+            return 1
+        fi
+        local npm_package
+        if [[ "$platform" == "win" ]]; then
+            npm_package="${dir}/node_modules/npm/package.json"
+        else
+            npm_package="${dir}/lib/node_modules/npm/package.json"
+        fi
+        if [[ ! -f "$npm_package" ]] ||
+           ! grep -q '"version": "'"${NPM_VERSION}"'"' "$npm_package"; then
             return 1
         fi
         if [[ -f "${dir}/.myagents-nodejs-platform" ]]; then

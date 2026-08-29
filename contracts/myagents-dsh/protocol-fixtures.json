@@ -1,0 +1,1505 @@
+{
+  "artifactFormatVersion": 1,
+  "invalid": [
+    {
+      "name": "initialize-extra-property",
+      "target": {
+        "kind": "methodParams",
+        "name": "initialize"
+      },
+      "value": {
+        "executionEnvironment": {
+          "attachmentStagingRoot": "/fixture/attachments",
+          "checkpoint": {
+            "mode": "managed-file-tools",
+            "policyRevision": "checkpoint-v1",
+            "trackedTools": [
+              "Write",
+              "Edit"
+            ],
+            "tracksChildAgents": false,
+            "tracksExternalChanges": false,
+            "tracksShell": false,
+            "version": 1
+          },
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "environment": {
+            "allowedKeys": [
+              "LANG"
+            ],
+            "inheritedKeys": [],
+            "secretValues": "reverse-port-only"
+          },
+          "executables": {
+            "allowedCommandRefs": [
+              "node-v24",
+              "bash",
+              "rg"
+            ],
+            "bashDialect": "bash",
+            "bashRef": "bash",
+            "bundledNodeRef": "node-v24",
+            "pathPolicy": "sealed",
+            "ripgrepRef": "rg"
+          },
+          "network": {
+            "mode": "deny"
+          },
+          "process": {
+            "backgroundRetention": "allow",
+            "killTreeOnAbort": true,
+            "maxChildren": 8
+          },
+          "revision": "execution-v1",
+          "workspace": {
+            "allowedReadRoots": [
+              "/fixture/workspace"
+            ],
+            "allowedWriteRoots": [
+              "/fixture/workspace"
+            ],
+            "canonicalRoot": "/fixture/workspace",
+            "identity": "workspace-1"
+          }
+        },
+        "host": {
+          "arch": "fixture",
+          "name": "standard-test-host",
+          "nodeVersion": "v24.14.0",
+          "platform": "fixture",
+          "version": "0.1.0"
+        },
+        "hostCapabilities": {
+          "attachments": "generation-leases-v1",
+          "credentialAuthority": "revisioned-reverse-port-v1",
+          "interaction": "interactive",
+          "productProjection": "transactional-postconditions-v1",
+          "webSearchAdapters": [
+            "anthropic-server-web-search-v1"
+          ]
+        },
+        "limits": {
+          "eventQueueHighWatermark": 2048,
+          "maxAttachmentLeases": 128,
+          "maxConcurrentReverseRequests": 32,
+          "maxFrameBytes": 1048576,
+          "maxPendingRequests": 128
+        },
+        "productSessionId": "product-session-1",
+        "protocol": {
+          "maxVersion": "2.0.0",
+          "minVersion": "2.0.0"
+        },
+        "runtimeHome": "/fixture/runtime-home",
+        "unexpected": true,
+        "workspace": {
+          "identity": "workspace-1",
+          "path": "/fixture/workspace"
+        }
+      }
+    },
+    {
+      "name": "initialize-runtime-home-must-be-absolute",
+      "target": {
+        "kind": "methodParams",
+        "name": "initialize"
+      },
+      "value": {
+        "executionEnvironment": {
+          "attachmentStagingRoot": "/fixture/attachments",
+          "checkpoint": {
+            "mode": "managed-file-tools",
+            "policyRevision": "checkpoint-v1",
+            "trackedTools": [
+              "Write",
+              "Edit"
+            ],
+            "tracksChildAgents": false,
+            "tracksExternalChanges": false,
+            "tracksShell": false,
+            "version": 1
+          },
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "environment": {
+            "allowedKeys": [
+              "LANG"
+            ],
+            "inheritedKeys": [],
+            "secretValues": "reverse-port-only"
+          },
+          "executables": {
+            "allowedCommandRefs": [
+              "node-v24",
+              "bash",
+              "rg"
+            ],
+            "bashDialect": "bash",
+            "bashRef": "bash",
+            "bundledNodeRef": "node-v24",
+            "pathPolicy": "sealed",
+            "ripgrepRef": "rg"
+          },
+          "network": {
+            "mode": "deny"
+          },
+          "process": {
+            "backgroundRetention": "allow",
+            "killTreeOnAbort": true,
+            "maxChildren": 8
+          },
+          "revision": "execution-v1",
+          "workspace": {
+            "allowedReadRoots": [
+              "/fixture/workspace"
+            ],
+            "allowedWriteRoots": [
+              "/fixture/workspace"
+            ],
+            "canonicalRoot": "/fixture/workspace",
+            "identity": "workspace-1"
+          }
+        },
+        "host": {
+          "arch": "fixture",
+          "name": "standard-test-host",
+          "nodeVersion": "v24.14.0",
+          "platform": "fixture",
+          "version": "0.1.0"
+        },
+        "hostCapabilities": {
+          "attachments": "generation-leases-v1",
+          "credentialAuthority": "revisioned-reverse-port-v1",
+          "interaction": "interactive",
+          "productProjection": "transactional-postconditions-v1",
+          "webSearchAdapters": [
+            "anthropic-server-web-search-v1"
+          ]
+        },
+        "limits": {
+          "eventQueueHighWatermark": 2048,
+          "maxAttachmentLeases": 128,
+          "maxConcurrentReverseRequests": 32,
+          "maxFrameBytes": 1048576,
+          "maxPendingRequests": 128
+        },
+        "productSessionId": "product-session-1",
+        "protocol": {
+          "maxVersion": "2.0.0",
+          "minVersion": "2.0.0"
+        },
+        "runtimeHome": "relative/runtime-home",
+        "workspace": {
+          "identity": "workspace-1",
+          "path": "/fixture/workspace"
+        }
+      }
+    },
+    {
+      "name": "pi-runtime-field-is-not-v2",
+      "target": {
+        "kind": "methodResult",
+        "name": "initialize"
+      },
+      "value": {
+        "limits": {
+          "eventQueueHighWatermark": 2048,
+          "maxAttachmentLeases": 128,
+          "maxConcurrentReverseRequests": 32,
+          "maxFrameBytes": 1048576,
+          "maxPendingRequests": 128
+        },
+        "piVersion": "0.50.3",
+        "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocolVersion": "2.0.0",
+        "runtimeCapabilities": {
+          "configuration": {
+            "agents": "next-turn",
+            "interactionScenario": "next-turn",
+            "mcp": "restart-when-idle",
+            "model": "next-turn",
+            "permissionMode": "next-turn",
+            "provider": "next-turn",
+            "reasoningEffort": "next-turn",
+            "systemPrompt": "next-turn"
+          },
+          "extensions": {
+            "arbitraryJavascript": "unsupported",
+            "componentStatus": "per-component",
+            "snapshot": "replace-by-digest"
+          },
+          "hostPorts": {
+            "attachments": "generation-leases-v1",
+            "credentials": "request-connection-scoped",
+            "hooks": "reverse-request-v1",
+            "interaction": "registration-ack-plus-explicit-response",
+            "tools": "reverse-request-v1"
+          },
+          "interaction": {
+            "askUser": "structured-host-request",
+            "headless": "deterministic-scenario-policy",
+            "permission": "deny-allow-once-always-rule",
+            "plan": "runtime-state-with-host-approval",
+            "settlement": "register-then-respond"
+          },
+          "profile": "myagents-dsh-foundation-v1",
+          "security": {
+            "checkpoint": "root-write-edit-only-v1",
+            "execution": "trusted-local-user-process",
+            "osSandbox": false,
+            "secrets": "reverse-port-only"
+          },
+          "sessions": {
+            "compact": "operation-event-v1",
+            "delete": "transactional-tombstone-v1",
+            "fork": "transactional-stable-boundary-v1",
+            "history": "dsh-event-log-read-v1",
+            "resume": "dsh-native",
+            "rewind": "transactional-stable-boundary-v1"
+          },
+          "telemetry": {
+            "compaction": "dsh-operation-event-v1",
+            "context": "provider-native-occupancy-v1",
+            "usage": "normalized-turn-total-v1"
+          },
+          "tools": {
+            "catalog": "agent-experience-v1",
+            "hooks": "governed-pre-post",
+            "hostTools": "reverse-request",
+            "pipeline": "dsh-ctx-tools-only"
+          },
+          "turns": {
+            "followUp": "identified-fifo",
+            "idempotency": "client-operation-id",
+            "interrupt": "abort-signal",
+            "steer": "dsh-step-boundary",
+            "terminal": "durable-explicit"
+          },
+          "work": {
+            "background": "dsh-jobs-v1",
+            "children": "dsh-agent-scope-v1",
+            "mailbox": "identified-delivery-v1",
+            "taskGraph": "product-durable-events-v1"
+          }
+        },
+        "runtimeEngine": {
+          "distribution": "myagents-dsh",
+          "distributionVersion": "0.0.0",
+          "name": "deepseek-harness",
+          "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367"
+        },
+        "runtimeGeneration": "generation-1",
+        "runtimeVersion": "0.0.0",
+        "schemaSha256": "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
+        "sessionFormat": "dsh-session-events-v1"
+      }
+    },
+    {
+      "name": "native-leaf-is-not-session-binding",
+      "target": {
+        "kind": "methodResult",
+        "name": "session/create"
+      },
+      "value": {
+        "durableHead": {
+          "sequence": 0
+        },
+        "effectiveConfigRevision": "config-v1",
+        "extensionCatalog": {
+          "agents": [],
+          "commands": [],
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mcpServers": [],
+          "revision": "extensions-v1",
+          "skills": [],
+          "tools": []
+        },
+        "historyFormat": "dsh-session-events-v1",
+        "nativeLeafId": "pi-leaf-1",
+        "runtimeSessionId": "runtime-session-1",
+        "state": "ready",
+        "toolCatalog": {
+          "contractSha256": "b150cf36eed203391a99d5c12d9fbd4dd09ff2bb4400ab635bee95ccb3302092",
+          "diagnostics": [
+            {
+              "available": true,
+              "tool": "Read"
+            },
+            {
+              "available": true,
+              "tool": "Write"
+            },
+            {
+              "available": true,
+              "tool": "Edit"
+            },
+            {
+              "available": true,
+              "tool": "Glob"
+            },
+            {
+              "available": true,
+              "tool": "Grep"
+            },
+            {
+              "available": true,
+              "tool": "Bash"
+            },
+            {
+              "available": true,
+              "tool": "ls"
+            },
+            {
+              "available": true,
+              "tool": "WebFetch"
+            },
+            {
+              "available": true,
+              "tool": "WebSearch"
+            },
+            {
+              "available": true,
+              "tool": "AskUserQuestion"
+            },
+            {
+              "available": true,
+              "tool": "EnterPlanMode"
+            },
+            {
+              "available": true,
+              "tool": "ExitPlanMode"
+            },
+            {
+              "available": true,
+              "tool": "Skill"
+            },
+            {
+              "available": true,
+              "tool": "Agent"
+            },
+            {
+              "available": true,
+              "tool": "TaskStop"
+            },
+            {
+              "available": true,
+              "tool": "SendMessage"
+            },
+            {
+              "available": true,
+              "tool": "TaskCreate"
+            },
+            {
+              "available": true,
+              "tool": "TaskGet"
+            },
+            {
+              "available": true,
+              "tool": "TaskList"
+            },
+            {
+              "available": true,
+              "tool": "TaskUpdate"
+            }
+          ],
+          "digest": "eb81e11e2a1a24e1d8531b184c30442e7ecac92a6f865aea1cd886c8a515fac9",
+          "effectiveTools": [
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "Bash",
+            "ls",
+            "WebFetch",
+            "WebSearch",
+            "AskUserQuestion",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "Skill",
+            "Agent",
+            "TaskStop",
+            "SendMessage",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate"
+          ],
+          "formatVersion": 1,
+          "implementationCatalog": [
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "Bash",
+            "ls",
+            "WebFetch",
+            "WebSearch",
+            "AskUserQuestion",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "Skill",
+            "Agent",
+            "TaskStop",
+            "SendMessage",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate"
+          ],
+          "revision": "tools-v1"
+        }
+      }
+    },
+    {
+      "name": "event-chunk-requires-byte-boundary",
+      "target": {
+        "kind": "methodResult",
+        "name": "session/read"
+      },
+      "value": {
+        "durableHead": {
+          "sequence": 1
+        },
+        "historyFormat": "dsh-session-events-v1",
+        "records": [
+          {
+            "chunkCount": 1,
+            "chunkIndex": 0,
+            "dataBase64": "YWJj",
+            "eventSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "eventType": "dsh.large-event",
+            "kind": "event_chunk",
+            "offsetBytes": 0,
+            "sequence": 1
+          }
+        ],
+        "runtimeSessionId": "runtime-session-1"
+      }
+    },
+    {
+      "name": "event-chunk-cannot-cross-total-byte-boundary",
+      "target": {
+        "kind": "methodResult",
+        "name": "session/read"
+      },
+      "value": {
+        "durableHead": {
+          "sequence": 1
+        },
+        "historyFormat": "dsh-session-events-v1",
+        "records": [
+          {
+            "chunkCount": 1,
+            "chunkIndex": 0,
+            "dataBase64": "YWJj",
+            "eventSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "eventType": "dsh.large-event",
+            "kind": "event_chunk",
+            "offsetBytes": 2,
+            "sequence": 1,
+            "totalBytes": 3
+          }
+        ],
+        "runtimeSessionId": "runtime-session-1"
+      }
+    },
+    {
+      "name": "malformed-cancel",
+      "target": {
+        "kind": "notificationParams",
+        "name": "rpc/cancel"
+      },
+      "value": {
+        "requestId": null
+      }
+    },
+    {
+      "name": "child-origin-is-not-a-host-turn-origin",
+      "target": {
+        "kind": "methodParams",
+        "name": "turn/start"
+      },
+      "value": {
+        "clientOperationId": "operation-1",
+        "clientUserMessageId": "message-1",
+        "configRevision": "config-v1",
+        "executionEnvironmentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executionEnvironmentRevision": "execution-v1",
+        "extensionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input": {
+          "parts": [
+            {
+              "kind": "text",
+              "text": "synthetic"
+            }
+          ]
+        },
+        "limits": {},
+        "origin": {
+          "agentId": "agent-1",
+          "kind": "child"
+        }
+      }
+    },
+    {
+      "name": "extension-module-field-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "description": "Reviews a synthetic fixture",
+              "maxTurns": 4,
+              "modelProfileRef": "model-reviewer",
+              "module": "fixture-module",
+              "prompt": "Review the synthetic input.",
+              "skills": [
+                "skill-review"
+              ],
+              "tools": [
+                "Read"
+              ]
+            },
+            "enabled": true,
+            "id": "reviewer",
+            "kind": "agent"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-source-and-code-fields-are-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "code": "synthetic code payload",
+              "description": "Reviews a synthetic fixture",
+              "maxTurns": 4,
+              "modelProfileRef": "model-reviewer",
+              "prompt": "Review the synthetic input.",
+              "skills": [
+                "skill-review"
+              ],
+              "source": "synthetic source payload",
+              "tools": [
+                "Read"
+              ]
+            },
+            "enabled": true,
+            "id": "reviewer",
+            "kind": "agent"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-package-launch-specifier-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "launchProfileRef": "@scope/fixture-server",
+              "transport": "stdio"
+            },
+            "enabled": true,
+            "id": "fixture-mcp",
+            "kind": "mcp"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-credential-value-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "credential": {
+                "credentialRef": "credential-fixture-mcp",
+                "credentialRevision": "credential-v1",
+                "materialSlot": "env",
+                "value": "synthetic-credential-value"
+              },
+              "launchProfileRef": "launch-fixture-mcp",
+              "transport": "stdio"
+            },
+            "enabled": true,
+            "id": "fixture-mcp",
+            "kind": "mcp"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-env-map-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "env": {
+                "FIXTURE_TOKEN": "synthetic-value"
+              },
+              "launchProfileRef": "launch-fixture-mcp",
+              "transport": "stdio"
+            },
+            "enabled": true,
+            "id": "fixture-mcp",
+            "kind": "mcp"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-executable-resource-media-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "description": "Reviews a synthetic fixture",
+              "maxTurns": 4,
+              "modelProfileRef": "model-reviewer",
+              "prompt": "Review the synthetic input.",
+              "skills": [
+                "skill-review"
+              ],
+              "tools": [
+                "Read"
+              ]
+            },
+            "enabled": true,
+            "id": "reviewer",
+            "kind": "agent"
+          },
+          {
+            "descriptor": {
+              "argumentHint": "path",
+              "description": "Inspect a synthetic fixture",
+              "resourceId": "command-template:inspect"
+            },
+            "enabled": true,
+            "id": "inspect",
+            "kind": "command"
+          },
+          {
+            "descriptor": {
+              "event": "PreToolUse",
+              "failurePolicy": "deny",
+              "matcher": "Read",
+              "timeoutMs": 5000
+            },
+            "enabled": true,
+            "id": "pre-read-policy",
+            "kind": "hook"
+          },
+          {
+            "descriptor": {
+              "credential": {
+                "credentialRef": "credential-fixture-mcp",
+                "credentialRevision": "credential-v1",
+                "materialSlot": "env"
+              },
+              "launchProfileRef": "launch-fixture-mcp",
+              "transport": "stdio"
+            },
+            "enabled": true,
+            "id": "fixture-mcp",
+            "kind": "mcp"
+          },
+          {
+            "descriptor": {
+              "annotations": {
+                "readOnlyHint": true
+              },
+              "description": "Looks up synthetic fixture data",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              },
+              "serverId": "fixture",
+              "toolName": "lookup"
+            },
+            "enabled": true,
+            "id": "fixture-lookup",
+            "kind": "host_tool"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "synthetic executable payload",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "application/javascript",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-unknown-component-field-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "description": "Reviews a synthetic fixture",
+              "maxTurns": 4,
+              "modelProfileRef": "model-reviewer",
+              "prompt": "Review the synthetic input.",
+              "skills": [
+                "skill-review"
+              ],
+              "tools": [
+                "Read"
+              ]
+            },
+            "enabled": true,
+            "id": "reviewer",
+            "kind": "agent",
+            "unexpected": true
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "review"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "extension-skill-glob-is-forbidden",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      },
+      "value": {
+        "components": [
+          {
+            "descriptor": {
+              "description": "Reviews a synthetic fixture",
+              "maxTurns": 4,
+              "modelProfileRef": "model-reviewer",
+              "prompt": "Review the synthetic input.",
+              "skills": [
+                "skill-review"
+              ],
+              "tools": [
+                "Read"
+              ]
+            },
+            "enabled": true,
+            "id": "reviewer",
+            "kind": "agent"
+          },
+          {
+            "descriptor": {
+              "argumentHint": "path",
+              "description": "Inspect a synthetic fixture",
+              "resourceId": "command-template:inspect"
+            },
+            "enabled": true,
+            "id": "inspect",
+            "kind": "command"
+          },
+          {
+            "descriptor": {
+              "event": "PreToolUse",
+              "failurePolicy": "deny",
+              "matcher": "Read",
+              "timeoutMs": 5000
+            },
+            "enabled": true,
+            "id": "pre-read-policy",
+            "kind": "hook"
+          },
+          {
+            "descriptor": {
+              "credential": {
+                "credentialRef": "credential-fixture-mcp",
+                "credentialRevision": "credential-v1",
+                "materialSlot": "env"
+              },
+              "launchProfileRef": "launch-fixture-mcp",
+              "transport": "stdio"
+            },
+            "enabled": true,
+            "id": "fixture-mcp",
+            "kind": "mcp"
+          },
+          {
+            "descriptor": {
+              "annotations": {
+                "readOnlyHint": true
+              },
+              "description": "Looks up synthetic fixture data",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              },
+              "serverId": "fixture",
+              "toolName": "lookup"
+            },
+            "enabled": true,
+            "id": "fixture-lookup",
+            "kind": "host_tool"
+          }
+        ],
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "formatVersion": 1,
+        "resources": [
+          {
+            "content": "Inspect $ARGUMENTS.",
+            "id": "command-template:inspect",
+            "kind": "command_template",
+            "mediaType": "text/markdown",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "revision": "extensions-v1",
+        "skillSourcePolicy": {
+          "revision": "skills-v1",
+          "roots": [
+            {
+              "enabledPaths": [
+                "**/*"
+              ],
+              "root": "/fixture/workspace/.agents/skills",
+              "sourceId": "project-skills"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "protocolVersion": "2.0.0",
+  "schemaSha256": "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
+  "valid": [
+    {
+      "frame": {
+        "id": "h:initialize-1",
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "executionEnvironment": {
+            "attachmentStagingRoot": "/fixture/attachments",
+            "checkpoint": {
+              "mode": "managed-file-tools",
+              "policyRevision": "checkpoint-v1",
+              "trackedTools": [
+                "Write",
+                "Edit"
+              ],
+              "tracksChildAgents": false,
+              "tracksExternalChanges": false,
+              "tracksShell": false,
+              "version": 1
+            },
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "environment": {
+              "allowedKeys": [
+                "LANG"
+              ],
+              "inheritedKeys": [],
+              "secretValues": "reverse-port-only"
+            },
+            "executables": {
+              "allowedCommandRefs": [
+                "node-v24",
+                "bash",
+                "rg"
+              ],
+              "bashDialect": "bash",
+              "bashRef": "bash",
+              "bundledNodeRef": "node-v24",
+              "pathPolicy": "sealed",
+              "ripgrepRef": "rg"
+            },
+            "network": {
+              "mode": "deny"
+            },
+            "process": {
+              "backgroundRetention": "allow",
+              "killTreeOnAbort": true,
+              "maxChildren": 8
+            },
+            "revision": "execution-v1",
+            "workspace": {
+              "allowedReadRoots": [
+                "/fixture/workspace"
+              ],
+              "allowedWriteRoots": [
+                "/fixture/workspace"
+              ],
+              "canonicalRoot": "/fixture/workspace",
+              "identity": "workspace-1"
+            }
+          },
+          "host": {
+            "arch": "fixture",
+            "name": "standard-test-host",
+            "nodeVersion": "v24.14.0",
+            "platform": "fixture",
+            "version": "0.1.0"
+          },
+          "hostCapabilities": {
+            "attachments": "generation-leases-v1",
+            "credentialAuthority": "revisioned-reverse-port-v1",
+            "interaction": "interactive",
+            "productProjection": "transactional-postconditions-v1",
+            "webSearchAdapters": [
+              "anthropic-server-web-search-v1"
+            ]
+          },
+          "limits": {
+            "eventQueueHighWatermark": 2048,
+            "maxAttachmentLeases": 128,
+            "maxConcurrentReverseRequests": 32,
+            "maxFrameBytes": 1048576,
+            "maxPendingRequests": 128
+          },
+          "productSessionId": "product-session-1",
+          "protocol": {
+            "maxVersion": "2.0.0",
+            "minVersion": "2.0.0"
+          },
+          "runtimeHome": "/fixture/runtime-home",
+          "workspace": {
+            "identity": "workspace-1",
+            "path": "/fixture/workspace"
+          }
+        }
+      },
+      "name": "initialize-request",
+      "target": {
+        "kind": "methodParams",
+        "name": "initialize"
+      }
+    },
+    {
+      "frame": {
+        "id": "h:initialize-1",
+        "jsonrpc": "2.0",
+        "result": {
+          "limits": {
+            "eventQueueHighWatermark": 2048,
+            "maxAttachmentLeases": 128,
+            "maxConcurrentReverseRequests": 32,
+            "maxFrameBytes": 1048576,
+            "maxPendingRequests": 128
+          },
+          "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "protocolVersion": "2.0.0",
+          "runtimeCapabilities": {
+            "configuration": {
+              "agents": "next-turn",
+              "interactionScenario": "next-turn",
+              "mcp": "restart-when-idle",
+              "model": "next-turn",
+              "permissionMode": "next-turn",
+              "provider": "next-turn",
+              "reasoningEffort": "next-turn",
+              "systemPrompt": "next-turn"
+            },
+            "extensions": {
+              "arbitraryJavascript": "unsupported",
+              "componentStatus": "per-component",
+              "snapshot": "replace-by-digest"
+            },
+            "hostPorts": {
+              "attachments": "generation-leases-v1",
+              "credentials": "request-connection-scoped",
+              "hooks": "reverse-request-v1",
+              "interaction": "registration-ack-plus-explicit-response",
+              "tools": "reverse-request-v1"
+            },
+            "interaction": {
+              "askUser": "structured-host-request",
+              "headless": "deterministic-scenario-policy",
+              "permission": "deny-allow-once-always-rule",
+              "plan": "runtime-state-with-host-approval",
+              "settlement": "register-then-respond"
+            },
+            "profile": "myagents-dsh-foundation-v1",
+            "security": {
+              "checkpoint": "root-write-edit-only-v1",
+              "execution": "trusted-local-user-process",
+              "osSandbox": false,
+              "secrets": "reverse-port-only"
+            },
+            "sessions": {
+              "compact": "operation-event-v1",
+              "delete": "transactional-tombstone-v1",
+              "fork": "transactional-stable-boundary-v1",
+              "history": "dsh-event-log-read-v1",
+              "resume": "dsh-native",
+              "rewind": "transactional-stable-boundary-v1"
+            },
+            "telemetry": {
+              "compaction": "dsh-operation-event-v1",
+              "context": "provider-native-occupancy-v1",
+              "usage": "normalized-turn-total-v1"
+            },
+            "tools": {
+              "catalog": "agent-experience-v1",
+              "hooks": "governed-pre-post",
+              "hostTools": "reverse-request",
+              "pipeline": "dsh-ctx-tools-only"
+            },
+            "turns": {
+              "followUp": "identified-fifo",
+              "idempotency": "client-operation-id",
+              "interrupt": "abort-signal",
+              "steer": "dsh-step-boundary",
+              "terminal": "durable-explicit"
+            },
+            "work": {
+              "background": "dsh-jobs-v1",
+              "children": "dsh-agent-scope-v1",
+              "mailbox": "identified-delivery-v1",
+              "taskGraph": "product-durable-events-v1"
+            }
+          },
+          "runtimeEngine": {
+            "distribution": "myagents-dsh",
+            "distributionVersion": "0.0.0",
+            "name": "deepseek-harness",
+            "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367"
+          },
+          "runtimeGeneration": "generation-1",
+          "runtimeVersion": "0.0.0",
+          "schemaSha256": "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
+          "sessionFormat": "dsh-session-events-v1"
+        }
+      },
+      "name": "initialize-result",
+      "target": {
+        "kind": "methodResult",
+        "name": "initialize"
+      }
+    },
+    {
+      "frame": {
+        "id": "r:credential-1",
+        "jsonrpc": "2.0",
+        "method": "host/credential/resolve",
+        "params": {
+          "authority": {
+            "deadlineMs": 30000,
+            "productSessionId": "product-session-1",
+            "requestId": "credential-request-1",
+            "runtimeGeneration": "generation-1"
+          },
+          "credentialRef": "provider-credential",
+          "profileRevision": "profile-v1",
+          "providerRouteId": "route-1",
+          "purpose": "availability",
+          "subject": "provider"
+        }
+      },
+      "name": "reverse-credential-request",
+      "target": {
+        "kind": "methodParams",
+        "name": "host/credential/resolve"
+      }
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "runtime/event",
+        "params": {
+          "emittedAt": "2026-08-15T00:00:00.000Z",
+          "event": {
+            "code": "fixture_warning",
+            "kind": "warning",
+            "message": "synthetic fixture"
+          },
+          "productSessionId": "product-session-1",
+          "runtimeGeneration": "generation-1",
+          "runtimeSessionId": "runtime-session-1",
+          "sequence": 1
+        }
+      },
+      "name": "runtime-event",
+      "target": {
+        "kind": "notificationParams",
+        "name": "runtime/event"
+      }
+    },
+    {
+      "frame": {
+        "id": "h:session-read-1",
+        "jsonrpc": "2.0",
+        "result": {
+          "durableHead": {
+            "sequence": 2,
+            "stableBoundaryId": "boundary-1"
+          },
+          "historyFormat": "dsh-session-events-v1",
+          "records": [
+            {
+              "data": {
+                "content": "synthetic",
+                "role": "user"
+              },
+              "eventSha256": "d10544f6d4bb61a73afd05ce970a62c1e799922f616281da557f89db559fa974",
+              "eventType": "dsh.message",
+              "kind": "event",
+              "sequence": 1
+            },
+            {
+              "chunkCount": 1,
+              "chunkIndex": 0,
+              "dataBase64": "YWJj",
+              "eventSha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+              "eventType": "dsh.large-event",
+              "kind": "event_chunk",
+              "offsetBytes": 0,
+              "sequence": 2,
+              "totalBytes": 3
+            }
+          ],
+          "runtimeSessionId": "runtime-session-1"
+        }
+      },
+      "name": "session-read-result",
+      "target": {
+        "kind": "methodResult",
+        "name": "session/read"
+      }
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "rpc/cancel",
+        "params": {
+          "requestId": "r:credential-1"
+        }
+      },
+      "name": "cancel-notification",
+      "target": {
+        "kind": "notificationParams",
+        "name": "rpc/cancel"
+      }
+    },
+    {
+      "frame": {
+        "id": "h:extension-1",
+        "jsonrpc": "2.0",
+        "method": "extension/replace",
+        "params": {
+          "components": [
+            {
+              "descriptor": {
+                "description": "Reviews a synthetic fixture",
+                "maxTurns": 4,
+                "modelProfileRef": "model-reviewer",
+                "prompt": "Review the synthetic input.",
+                "skills": [
+                  "skill-review"
+                ],
+                "tools": [
+                  "Read"
+                ]
+              },
+              "enabled": true,
+              "id": "reviewer",
+              "kind": "agent"
+            },
+            {
+              "descriptor": {
+                "argumentHint": "path",
+                "description": "Inspect a synthetic fixture",
+                "resourceId": "command-template:inspect"
+              },
+              "enabled": true,
+              "id": "inspect",
+              "kind": "command"
+            },
+            {
+              "descriptor": {
+                "event": "PreToolUse",
+                "failurePolicy": "deny",
+                "matcher": "Read",
+                "timeoutMs": 5000
+              },
+              "enabled": true,
+              "id": "pre-read-policy",
+              "kind": "hook"
+            },
+            {
+              "descriptor": {
+                "credential": {
+                  "credentialRef": "credential-fixture-mcp",
+                  "credentialRevision": "credential-v1",
+                  "materialSlot": "env"
+                },
+                "launchProfileRef": "launch-fixture-mcp",
+                "transport": "stdio"
+              },
+              "enabled": true,
+              "id": "fixture-mcp",
+              "kind": "mcp"
+            },
+            {
+              "descriptor": {
+                "annotations": {
+                  "readOnlyHint": true
+                },
+                "description": "Looks up synthetic fixture data",
+                "inputSchema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "query": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ],
+                  "type": "object"
+                },
+                "serverId": "fixture",
+                "toolName": "lookup"
+              },
+              "enabled": true,
+              "id": "fixture-lookup",
+              "kind": "host_tool"
+            }
+          ],
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "formatVersion": 1,
+          "resources": [
+            {
+              "content": "Inspect $ARGUMENTS.",
+              "id": "command-template:inspect",
+              "kind": "command_template",
+              "mediaType": "text/markdown",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "revision": "extensions-v1",
+          "skillSourcePolicy": {
+            "revision": "skills-v1",
+            "roots": [
+              {
+                "enabledPaths": [
+                  "review"
+                ],
+                "root": "/fixture/workspace/.agents/skills",
+                "sourceId": "project-skills"
+              }
+            ]
+          }
+        }
+      },
+      "name": "declarative-extension-snapshot",
+      "target": {
+        "kind": "methodParams",
+        "name": "extension/replace"
+      }
+    }
+  ]
+}

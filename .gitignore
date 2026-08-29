@@ -70,6 +70,8 @@ src-tauri/resources/playwright-control
 src-tauri/resources/nodejs/*
 !src-tauri/resources/nodejs/.gitkeep
 src-tauri/resources/nodejs-cache/
+src-tauri/resources/integrated-runtimes/*
+!src-tauri/resources/integrated-runtimes/.gitkeep
 src-tauri/resources/vcruntime140.dll
 src-tauri/resources/vcruntime140_1.dll
 src-tauri/nsis/Git-Installer.exe

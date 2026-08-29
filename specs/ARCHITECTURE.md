@@ -638,6 +638,8 @@ Managed Codex 子 Agent 的原生 child turn lifecycle 只由 `codex.ts` 在既�
 
 详见 `tech_docs/multi_agent_runtime.md`。
 
+MyAgents-dsh 作为 **Integrated Runtime** 接入，而不是 External CLI 或 Managed Provider Runtime。它仍通过同一个 `SessionEngine` facade 和 Rust 所有的 Session↔Sidecar 1:1 生命周期；DSH Runtime 是 Sidecar 的受管子进程，并与 Sidecar 共用产品唯一的 bundled Node。交付物必须先通过外层 handoff digest、嵌套 Runtime inventory、协议/兼容性/平台声明和 committed lock 校验，完整目录才可进入 Tauri resources；代码不得从兄弟 checkout 导入或拼装 Runtime。当前 H0 只建立了可信资源与契约基础，DSH 在 H1–H6 完成前不可选择。完整集成设计与实施台账见 [`tech_docs/myagents_dsh_integrated_runtime.md`](./tech_docs/myagents_dsh_integrated_runtime.md)。
+
 ### 10. 既有 Session 打开与持久历史恢复
 
 | 场景 | 唯一行为 |
@@ -1042,7 +1044,7 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 
 ## 单一运行时与预置二进制
 
-### Node.js v24（唯一 MyAgents 自有 runtime）
+### Node.js v24.14.0（唯一 MyAgents 自有 runtime）
 
 | 用途 |
 |------|
@@ -1054,6 +1056,8 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | AI Bash `node` / `npx` / `npm` |
 
 打包位置：`src-tauri/resources/nodejs/`（构建 staging 目录；按架构缓存见 `tech_docs/bundled_node.md`）。
+
+产品侧 bundled npm 独立固定为 `11.15.0`；它不继承 DSH 构建时 npm `11.8.0`。`src-tauri/resources/integrated-runtimes/dsh/` 保存经过双重验证的完整不可变 handoff，DSH Runtime 只允许由上述 bundled Node `24.14.0` 启动。
 
 ### SDK Native Binary（SDK 团队的实现细节）
 
@@ -1137,6 +1141,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### Multi-Agent Runtime / Agent / IM
 - [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) — CC / Codex / Gemini 协议、会话管理、门控链路
+- [MyAgents-dsh Integrated Runtime](./tech_docs/myagents_dsh_integrated_runtime.md) — DSH 身份、可信交付、Host 协议、SessionEngine 接入与实施台账
 - [Tool Attachment 管道](./tech_docs/tool_attachment_pipeline.md) — 任意 runtime 产图归一化、落盘 helper、SSRF 防护、placeholder 异步落盘
 - [IM 集成技术架构](./tech_docs/im_integration_architecture.md) — Agent / Channel 详细设计、适配器模型
 - [Plugin Bridge 架构](./tech_docs/plugin_bridge_architecture.md) — OpenClaw 插件加载、SDK shim、CJS/ESM 混用插件 runtime 补丁
