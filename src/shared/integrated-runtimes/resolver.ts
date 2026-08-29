@@ -12,25 +12,13 @@ import {
   isRuntimeSelectorAvailable,
   type AgentRuntimeDistributionPolicy,
 } from "./distribution-policy";
+import type { ProviderExecutionConstraint } from "./provider-constraints";
 
-export type ApiFamily =
-  | "deepseek-native"
-  | "anthropic-messages"
-  | "openai-completions"
-  | "openai-responses";
-
-export type ProviderExecutionConstraint =
-  | { kind: "portable"; apiFamily: ApiFamily }
-  | {
-      kind: "requires-integrated-runtime";
-      runtimeId: "claude-agent-sdk";
-      providerId: "anthropic-sub";
-    }
-  | {
-      kind: "requires-managed-runtime";
-      runtimeId: "managed-codex";
-      providerId: "codex-sub";
-    };
+export type {
+  ApiFamily,
+  DshApiFamily,
+  ProviderExecutionConstraint,
+} from "./provider-constraints";
 
 export type RuntimeReadiness =
   | { state: "ready"; implementationVersion?: string }

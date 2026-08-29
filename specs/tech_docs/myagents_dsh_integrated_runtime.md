@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.6
+version: 0.7
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -143,7 +143,7 @@ npm has a different boundary. The installed DSH Runtime never invokes npm; its r
 The revalidation also sharpens two existing rules:
 
 1. MyAgents ingests the immutable handoff through a deterministic build-time verifier and committed lock; it never imports from a sibling MyAgents-dsh checkout or edits files inside the Runtime directory.
-2. `apiFamilies` proves transport-family support, not arbitrary Provider/model support. MyAgents owns an exact allowlisted Provider/model cell table. The native `deepseek-official` route is read from the included candidate profile; the three pi-ai families are read from the compatibility manifest. No other cell becomes visible without joint evidence.
+2. `apiFamilies` proves transport-family support, not arbitrary Provider/model support. MyAgents owns an exact allowlisted Provider/model cell table. The native `deepseek-official` route is frozen by that table against the included candidate profile identity and Runtime validator; the three pi-ai families are read from the compatibility manifest. No other cell becomes visible without joint evidence.
 
 ## 3. Target product identity model
 
@@ -169,7 +169,7 @@ type ProviderExecutionConstraint =
   | {
       kind: "requires-integrated-runtime";
       runtimeId: "claude-agent-sdk";
-      providerId: "anthropic-sub";
+      providerId: "anthropic-sub" | "xai-sub";
     }
   | {
       kind: "requires-managed-runtime";
@@ -279,6 +279,7 @@ For a new Session:
 4. if an explicit allowed External Runtime is selected, choose it and treat Integrated/managed Provider template fields as dormant;
 5. otherwise apply a Runtime-constrained Provider:
    - `anthropic-sub` -> Claude Agent SDK;
+   - `xai-sub` -> Claude Agent SDK and the existing Host-managed OAuth bridge;
    - `codex-sub` -> managed Codex;
 6. otherwise choose the resolved Integrated Runtime;
 7. validate Runtime readiness and exact Provider/model compatibility;
@@ -440,16 +441,29 @@ MyAgents compiles the selected ordinary Provider/model into the DSH `ModelExecut
 - typed compatibility options;
 - pricing where MyAgents has authoritative data.
 
-The compiler consumes both the exact DSH compatibility manifest and the included native DeepSeek candidate profile. It does not infer compatibility merely from an OpenAI-shaped URL, a pi-ai catalog entry, or a Provider name.
+The compiler consumes the exact DSH compatibility manifest and binds the included Batch 1 candidate profile identity. The delivered `batch-1-candidate-profile-v1.json` is a composition/profile manifest, not a model-route payload; the MyAgents-owned cell contract therefore freezes the native `deepseek-official` model profile against that candidate identity and the Runtime's exact validator. It does not infer compatibility merely from an OpenAI-shaped URL, a pi-ai catalog entry, or a Provider name.
 
-The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents still compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. MyAgents treats only manifest-listed Provider/model cells as portable. Its existing Claude-SDK `authType` and Bridge quirks are inputs to that mapping, not proof that the DSH adapter supports the same wire behavior.
+The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents still compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. MyAgents treats only Provider/model cells in its handoff-bound cell contract as portable. Its existing Claude-SDK `authType` and Bridge quirks are inputs to that mapping, not proof that the DSH adapter supports the same wire behavior.
 
 The exact cell table also carries candidate limitations: pi-ai routes do not support Host stop-sequence projection; reasoning content is available but provider reasoning-token counts are not; the bundled pi-ai catalog is advisory; AWS, Vertex, Azure and subscription/OAuth routes are not advertised. The same-release public `dsh-authorization` package is present only because `dsh-llm-pi-ai` requires it as a public peer. MyAgents must not mount its login/OAuth service or expose it as a capability.
+
+H2 implements this boundary in `src/shared/integrated-runtimes/dsh-provider-cells-v1.json` and `src/server/integrated-runtimes/dsh/profile-compiler.ts`. The first compiler-allowlisted matrix is intentionally narrow:
+
+| Product Provider | Models                                                     | DSH route/family                                  |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------- |
+| `deepseek`       | `deepseek-v4-flash`                                        | native `deepseek-official` / `openai-completions` |
+| `anthropic-api`  | `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5` | pi-ai / `anthropic-messages`                      |
+| `zhipu-ai`       | `glm-5.3`, `glm-5-turbo`                                   | pi-ai / `openai-completions`                      |
+
+There is no advertised `openai-responses` product cell yet: the current built-in Responses route is `xai-sub`, whose Host-managed OAuth shape is explicitly unadvertised by the DSH compatibility contract. Other presets, custom Providers, catalog-only models, altered endpoint/auth/capacity/modalities, and Bridge-only overrides return a structured incompatibility before Runtime admission. Pi-ai cells currently accept provider-default reasoning only; the native DeepSeek cell admits the Runtime-proved off/high/max choices. A profile revision hashes the cell contract, Runtime profile digest, cell identity and complete secret-free profile. Credentials use stable POSIX-identifier references such as `MYAGENTS_PROVIDER_ANTHROPIC_API_API_KEY`; secret material is never an input to the compiler.
+
+This table is a compiler/contract allowlist, not a release claim. H3–H6 process, packaged, cross-runtime and native-platform gates still control readiness and selector exposure.
 
 ### 8.2 Subscription providers
 
 - `anthropic-sub` requires the Claude Agent SDK path.
 - `codex-sub` requires managed Codex.
+- `xai-sub` remains on Claude Agent SDK plus the MyAgents Host-managed OAuth bridge; the DSH artifact does not advertise subscription/OAuth admission.
 - Settings/Launcher only save the template.
 - A live incompatible Session uses the existing confirm/new-Tab flow.
 - Explicit External Runtime selection continues to win over dormant subscription fields.
@@ -708,6 +722,8 @@ src/shared/integrated-runtimes/
   resolver.ts
   provider-constraints.ts
   dsh-compatibility.ts
+  dsh-provider-cells.ts
+  dsh-provider-cells-v1.json
   dsh-lock.json
 
 scripts/integrated-runtimes/
@@ -822,7 +838,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-RFC | Current-code and exact-handoff technical review                                        | `complete`    |
 | MA-B3-H0  | Node/npm resource authority, formal `2.0.0` handoff ingest, lock and resource verifier | `complete`    |
 | MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
-| MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `not_started` |
+| MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `complete`    |
 | MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `not_started` |
 | MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `not_started` |
 | MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `not_started` |

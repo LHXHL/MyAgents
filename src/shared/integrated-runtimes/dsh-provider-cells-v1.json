@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "contractId": "myagents-dsh-provider-cells-v1",
+  "runtimeProfileId": "myagents-dsh-batch-1-candidate-v1",
+  "runtimeProfileDigest": "ab30d44941e19ef155218c12e38c8d2dcebfc72954e1f07472add4419de19e06",
+  "compatibilitySha256": "85969a49574b0d97925fcf43b4a55c6b7f3aae33a8298df292d6278c772a81cb",
+  "candidateProfileSha256": "ab30d44941e19ef155218c12e38c8d2dcebfc72954e1f07472add4419de19e06",
+  "commonPiAiLimitations": [
+    "provider-route-cell-required",
+    "stop-sequences-unsupported-on-pi-ai",
+    "catalog-is-advisory",
+    "native-cloud-and-oauth-auth-unadvertised",
+    "pi-ai-reasoning-token-usage-unavailable",
+    "non-deepseek-web-requires-host"
+  ],
+  "cells": [
+    {
+      "cellId": "deepseek:deepseek-v4-flash:native-v1",
+      "providerId": "deepseek",
+      "modelId": "deepseek-v4-flash",
+      "product": {
+        "type": "api",
+        "authType": "auth_token",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://api.deepseek.com/anthropic",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 384000,
+        "inputModalities": ["text"]
+      },
+      "profile": {
+        "source": "native-candidate",
+        "providerRouteId": "deepseek-official",
+        "api": "openai-completions",
+        "provider": "deepseek",
+        "baseUrl": "https://api.deepseek.com",
+        "contextWindow": 1000000,
+        "maxTokens": 32768,
+        "reasoningEfforts": ["high", "max"]
+      }
+    },
+    {
+      "cellId": "anthropic-api:claude-sonnet-4-6:messages-v1",
+      "providerId": "anthropic-api",
+      "modelId": "claude-sonnet-4-6",
+      "product": {
+        "type": "api",
+        "authType": "both",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxOutputTokens": 64000,
+        "inputModalities": ["text", "image"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-anthropic-api-anthropic-messages",
+        "api": "anthropic-messages",
+        "provider": "anthropic-api",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxTokens": 64000,
+        "inputModalities": ["text", "image"],
+        "compatibility": {
+          "version": 1,
+          "family": "anthropic-messages",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "anthropic-api:claude-opus-4-6:messages-v1",
+      "providerId": "anthropic-api",
+      "modelId": "claude-opus-4-6",
+      "product": {
+        "type": "api",
+        "authType": "both",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxOutputTokens": 128000,
+        "inputModalities": ["text", "image"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-anthropic-api-anthropic-messages",
+        "api": "anthropic-messages",
+        "provider": "anthropic-api",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxTokens": 128000,
+        "inputModalities": ["text", "image"],
+        "compatibility": {
+          "version": 1,
+          "family": "anthropic-messages",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "anthropic-api:claude-haiku-4-5:messages-v1",
+      "providerId": "anthropic-api",
+      "modelId": "claude-haiku-4-5",
+      "product": {
+        "type": "api",
+        "authType": "both",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxOutputTokens": 64000,
+        "inputModalities": ["text", "image"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-anthropic-api-anthropic-messages",
+        "api": "anthropic-messages",
+        "provider": "anthropic-api",
+        "baseUrl": "https://api.anthropic.com",
+        "contextWindow": 200000,
+        "maxTokens": 64000,
+        "inputModalities": ["text", "image"],
+        "compatibility": {
+          "version": 1,
+          "family": "anthropic-messages",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "zhipu-ai:glm-5-3:chat-v1",
+      "providerId": "zhipu-ai",
+      "modelId": "glm-5.3",
+      "product": {
+        "type": "api",
+        "authType": "api_key",
+        "apiProtocol": "openai",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 131072,
+        "inputModalities": ["text"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-zhipu-ai-openai-completions",
+        "api": "openai-completions",
+        "provider": "zhipu-ai",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "inputModalities": ["text"],
+        "compatibility": {
+          "version": 1,
+          "family": "openai-completions",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "zhipu-ai:glm-5-turbo:chat-v1",
+      "providerId": "zhipu-ai",
+      "modelId": "glm-5-turbo",
+      "product": {
+        "type": "api",
+        "authType": "api_key",
+        "apiProtocol": "openai",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "contextWindow": 202752,
+        "maxOutputTokens": 131072,
+        "inputModalities": ["text"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-zhipu-ai-openai-completions",
+        "api": "openai-completions",
+        "provider": "zhipu-ai",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "contextWindow": 202752,
+        "maxTokens": 131072,
+        "inputModalities": ["text"],
+        "compatibility": {
+          "version": 1,
+          "family": "openai-completions",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    }
+  ]
+}

@@ -855,7 +855,7 @@ distribution-policy.json + config.multiAgentRuntime
   → Rust reads authoritative binding before legacy runtime/source projection
 ```
 
-H1 已落地上述 identity/policy/resolver/migration 与 Rust 读取优先级；H3/H5 才会替换 `factory.ts` / binary SessionEngine selector 和 Renderer 的剩余扁平路径。因此当前产品仍不展示 DSH，旧 `MYAGENTS_RUNTIME` 链只承担已实现 Runtime 的兼容执行。
+H1 已落地上述 identity/policy/resolver/migration 与 Rust 读取优先级。H2 的 `provider-constraints.ts` 只从显式 Provider protocol 字段和已声明 subscription owner 产生 execution constraint；`dsh-provider-cells-v1.json` 再独立决定具体 Provider/model 是否具有 DSH profile。兼容 manifest 的三个 API family 不是通配符；目前只 allowlist native DeepSeek Flash、三项 `anthropic-api` 模型和两项 `zhipu-ai` 模型，OAuth/subscription、custom/catalog-only 与任何 endpoint/auth/capacity/modality 漂移都在 profile 编译前 fail closed。`profile-compiler.ts` 只输出稳定 revision、opaque POSIX credential reference 与精确 wire facts，不读取或复制 API key。H3/H5 才会替换 `factory.ts` / binary SessionEngine selector 和 Renderer 的剩余扁平路径。因此当前产品仍不展示 DSH，旧 `MYAGENTS_RUNTIME` 链只承担已实现 Runtime 的兼容执行。
 
 ## 跨 Runtime Session 保护
 
