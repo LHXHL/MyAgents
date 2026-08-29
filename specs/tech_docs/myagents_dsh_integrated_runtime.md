@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.7
+version: 0.8
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -366,6 +366,14 @@ Process readiness requires:
 
 No user turn is admitted before all applicable steps succeed.
 
+H3 implements the protocol-ready portion of this admission in `src/server/integrated-runtimes/dsh/`. `installation.ts` resolves only canonical paths below the Tauri resource root, verifies exact Node `24.14.0`, invokes the outer handoff's public `verify.mjs` with the committed digest, and runs the Runtime entrypoint's public `--self-check` before the RPC process is spawned. The two reports rebind the complete outer/nested inventories, compatibility, source, patched DSH, protocol method/notification sets, profile and native target to `dsh-lock.json`; accepted reports are deduplicated only within the current Sidecar process. `generated-client.ts` then resolves `@myagents-dsh/protocol` and `@myagents-dsh/protocol/generated/host-client` through the verified artifact's public package exports. It does not import a package-private `src/*` path or repair the copied generated TypeScript file. Generated protocol/schema/capability constants and the complete 40/7/4 surface must match the committed contracts before construction.
+
+`process-host.ts` owns the `idle -> starting -> protocol-ready -> stopping -> stopped` lifecycle, with `failed` as a terminal admission result. Its exact order is Node check, outer handoff verification, artifact self-check, public protocol load, process spawn, `initialize`, identity/capability validation, negotiated-limit application, atomic registration of all seven reverse methods and two Runtime notification handlers, `initialized`, and quiescent `runtime/status`. Startup cancellation cannot race through to a late spawn. Shutdown first requests `runtime/shutdown`, flushes the peer, waits for exit and only then uses bounded termination. The Runtime entrypoint supplies and reports `artifact-process-generation`; MyAgents fences every reverse call and Runtime event against that returned value plus the Product Session identity, while the enclosing Sidecar generation remains an additional H5 lifecycle fence.
+
+The child environment is constructed from an allowlist and never spreads `process.env`. `PATH` contains only the verified Node directory and explicit composition-selected command directories; Provider/MCP/API-key, proxy, `NODE_OPTIONS`, `NODE_PATH`, home and unrelated variables are absent. Stderr is discarded unless the caller supplies both a redactor and sink. The exact candidate currently requires a platform bash on the sealed startup path, while ripgrep is resolved from its artifact-pinned package. Runtime home, workspace and attachment paths passed to native admission must be canonical real paths; macOS `/var` aliases, symlinks and permission drift fail closed.
+
+The explicit `MYAGENTS_DSH_NATIVE_SMOKE=1` integration gate starts the staged artifact with the bundled Node, completes the formal handshake/status sequence without a Session or network credential, and performs graceful shutdown. H3 passed this gate on the artifact-bound `darwin-arm64` implementation; that is development evidence, not the H6 packaged/native support claim.
+
 ### 6.3 Generation fencing and shutdown
 
 Every pending request, reverse call, event and terminal is scoped by Product Session, Sidecar generation, Runtime generation and operation identity.
@@ -502,6 +510,8 @@ The current managed-Codex Host dispatcher is useful implementation evidence, but
 For non-DeepSeek model routes, MyAgents also supplies the approved Host-backed executor for the canonical `WebSearch`/`WebFetch` definitions when the DSH compatibility manifest requires it. DSH performs catalog registration, schema validation, visibility, permission, Hook, origin and terminal handling; MyAgents executes the governed web capability through `host/tool/execute`. A Session is not advertised with the complete 20-tool profile unless this backend is ready and has passed the joint contract campaign.
 
 Reverse calls are bounded, cancellable and generation-fenced. Host disconnect or timeout returns one protocol-defined failure and cannot leave a turn appearing idle.
+
+H3 provides the runtime-neutral handler contract and exact registration/fencing layer. Each request must carry the active Product Session and Runtime generation plus a protocol-bounded deadline; stale authority is rejected before a product callback, peer cancellation is propagated as an `AbortSignal`, and a deadline settles as one retryable protocol failure. H4/H4P connect these callbacks to the existing credential, interaction, tool, Hook and attachment domain owners; an unwired callback can never make a Runtime selectable.
 
 ### 9.1 Permission and Plan ownership
 
@@ -732,9 +742,13 @@ scripts/integrated-runtimes/
 
 src/server/integrated-runtimes/dsh/
   adapter.ts
-  process-host.ts
+  child-environment.ts
   generated-client.ts
   host-ports.ts
+  initialize.ts
+  installation.ts
+  process-host.ts
+  protocol-types.ts
   event-projector.ts
   profile-compiler.ts
   extension-compiler.ts
@@ -839,7 +853,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H0  | Node/npm resource authority, formal `2.0.0` handoff ingest, lock and resource verifier | `complete`    |
 | MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
 | MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `complete`    |
-| MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `not_started` |
+| MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `complete`    |
 | MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `not_started` |
 | MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `not_started` |
 | MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `not_started` |
