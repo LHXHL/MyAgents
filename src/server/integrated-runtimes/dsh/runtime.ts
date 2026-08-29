@@ -34,6 +34,7 @@ import type {
   UnifiedEventCallback,
 } from '../../runtimes/types';
 import { recoverPendingDshMutation } from '../../session-engine/dsh-mutation-recovery';
+import { reconcileDshTurnsAtStartup } from '../../session-engine/dsh-turn-reconciliation';
 import { DshAttachmentRegistry } from './attachments';
 import { DshRuntimeEventProjector } from './event-projector';
 import { compileDshExtensionSnapshot } from './extension-compiler';
@@ -625,11 +626,12 @@ export class DshRuntime implements AgentRuntime {
         bindingParams,
       );
       const runtimeSessionId = string(binding.runtimeSessionId, 'DSH Runtime Session id');
+      const mutationController = new DshMutationController(host, runtimeSessionId);
       const recovery = await recoverPendingDshMutation({
         productSessionId: options.sessionId,
         runtimeSessionId,
         binding,
-        controller: new DshMutationController(host, runtimeSessionId),
+        controller: mutationController,
       });
       if (recovery.productDeleted) {
         throw new Error('The DSH Product Session was deleted during recovery');
@@ -647,6 +649,13 @@ export class DshRuntime implements AgentRuntime {
       if (binding.runtimeSessionId !== runtimeSessionId) {
         throw new Error('DSH recovery changed the Runtime Session identity');
       }
+      const turnReconciliation = options.resumeSessionId
+        ? await reconcileDshTurnsAtStartup({
+            productSessionId: options.sessionId,
+            runtimeSessionId,
+            controller: mutationController,
+          })
+        : { transcriptChanged: false, reconciledOperations: 0 };
       const toolCatalog = object(binding.toolCatalog, 'DSH tool catalog');
       const boundExtensionCatalog = object(binding.extensionCatalog, 'DSH bound extension catalog');
       if (boundExtensionCatalog.digest !== extensionDigest) {
@@ -666,7 +675,7 @@ export class DshRuntime implements AgentRuntime {
         runtimeSessionId,
         extensionDigest,
         tools,
-        recovery.recovered,
+        recovery.recovered || turnReconciliation.transcriptChanged,
       );
       await this.applyConfiguration(processValue, configuration);
       await this.applyPlanMode(

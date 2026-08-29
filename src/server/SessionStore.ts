@@ -18,7 +18,7 @@ import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSyn
 import { homedir } from 'os';
 import { join } from 'path';
 
-import type { PendingConversationMutation, PendingDshMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { DshProjectionCursor, MessageUsage, PendingConversationMutation, PendingDshMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
@@ -1270,6 +1270,139 @@ function exactPendingDshMutation(
 function sessionUsesDsh(metadata: SessionMetadata): boolean {
     return metadata.runtimeBinding !== undefined
         && runtimeTypeForBinding(metadata.runtimeBinding) === 'dsh';
+}
+
+/**
+ * Reconcile Runtime-owned terminal turns into the Product-owned transcript
+ * projection. The native cursor and every inserted assistant row are committed
+ * under the same Product locks; exact replay is a no-op.
+ */
+export async function reconcileDshTurnProjections(input: {
+    sessionId: string;
+    runtimeSessionId: string;
+    cursor: DshProjectionCursor;
+    assistantMessages: readonly SessionMessage[];
+    runtimeUsageTotals?: MessageUsage;
+}): Promise<DshMutationStoreResult<{ transcriptChanged: boolean; cursor: DshProjectionCursor }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, async () => {
+            const messages = readSessionMessagesForMutation(input.sessionId);
+            return withSessionsLock(async () => {
+                const all = readSessionsIndexForWrite();
+                const index = all.findIndex(session => session.id === input.sessionId);
+                const current = index >= 0 ? all[index] : undefined;
+                if (
+                    !current
+                    || !sessionUsesDsh(current)
+                    || current.runtimeSessionId !== input.runtimeSessionId
+                    || input.cursor.schemaVersion !== 1
+                    || input.cursor.runtimeSessionId !== input.runtimeSessionId
+                    || !Number.isSafeInteger(input.cursor.durableSequence)
+                    || input.cursor.durableSequence < 0
+                    || !/^[a-f0-9]{64}$/u.test(input.cursor.transcriptPostcondition)
+                    || current.pendingDshMutation
+                ) {
+                    return dshMutationFailure('precondition_failed', 'The DSH projection authority changed');
+                }
+
+                const projectedIds = new Set<string>();
+                const projectedTurns = new Set<string>();
+                const projectedRoots = new Set<string>();
+                const target = [...messages];
+                let transcriptChanged = false;
+                for (const assistant of input.assistantMessages) {
+                    const anchor = assistant.runtimeTurnAnchor;
+                    if (
+                        assistant.role !== 'assistant'
+                        || !assistant.id
+                        || !anchor?.turnId
+                        || !anchor.rootUserMessageId
+                        || projectedIds.has(assistant.id)
+                        || projectedTurns.has(anchor.turnId)
+                        || projectedRoots.has(anchor.rootUserMessageId)
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH assistant projection is ambiguous');
+                    }
+                    projectedIds.add(assistant.id);
+                    projectedTurns.add(anchor.turnId);
+                    projectedRoots.add(anchor.rootUserMessageId);
+
+                    const userIndexes = target.flatMap((message, messageIndex) => (
+                        message.role === 'user' && message.id === anchor.rootUserMessageId
+                            ? [messageIndex]
+                            : []
+                    ));
+                    if (userIndexes.length !== 1) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH root user projection is missing or duplicated');
+                    }
+                    const matchingAssistants = target.flatMap((message, messageIndex) => {
+                        if (message.role !== 'assistant' || !message.runtimeTurnAnchor) return [];
+                        const candidate = message.runtimeTurnAnchor;
+                        return candidate.turnId === anchor.turnId || candidate.rootUserMessageId === anchor.rootUserMessageId
+                            ? [{ message, messageIndex }]
+                            : [];
+                    });
+                    if (matchingAssistants.length > 1) {
+                        return dshMutationFailure('storage_consistency_error', 'The Product transcript duplicates a DSH terminal turn');
+                    }
+                    const existing = matchingAssistants[0];
+                    if (existing) {
+                        if (
+                            existing.message.runtimeTurnAnchor?.turnId !== anchor.turnId
+                            || existing.message.runtimeTurnAnchor.rootUserMessageId !== anchor.rootUserMessageId
+                            || existing.messageIndex !== userIndexes[0]! + 1
+                        ) {
+                            return dshMutationFailure('storage_consistency_error', 'The Product transcript changed a DSH terminal anchor');
+                        }
+                        continue;
+                    }
+                    if (target.some(message => message.id === assistant.id)) {
+                        return dshMutationFailure('storage_consistency_error', 'The deterministic DSH assistant id is already owned');
+                    }
+                    const insertionIndex = userIndexes[0]! + 1;
+                    const next = target[insertionIndex];
+                    if (next?.role === 'assistant') {
+                        return dshMutationFailure('storage_consistency_error', 'An unowned Product assistant occupies the DSH turn projection');
+                    }
+                    target.splice(insertionIndex, 0, structuredClone(assistant));
+                    transcriptChanged = true;
+                }
+                if (target.some(message => (
+                    message.role === 'assistant'
+                    && message.runtimeTurnAnchor !== undefined
+                    && (
+                        !projectedTurns.has(message.runtimeTurnAnchor.turnId)
+                        || !projectedRoots.has(message.runtimeTurnAnchor.rootUserMessageId)
+                    )
+                ))) {
+                    return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
+                }
+
+                if (transcriptChanged) atomicRewriteSessionMessages(input.sessionId, target);
+                const { preview } = resolveLastVisibleTurnPreview(target);
+                all[index] = {
+                    ...current,
+                    stats: calculateSessionStats(target),
+                    lastMessagePreview: preview,
+                    dshProjectionCursor: structuredClone(input.cursor),
+                    runtimeUsageTotals: input.runtimeUsageTotals
+                        ? structuredClone(input.runtimeUsageTotals)
+                        : undefined,
+                };
+                atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+                return {
+                    success: true,
+                    value: { transcriptChanged, cursor: structuredClone(input.cursor) },
+                };
+            });
+        });
+    } catch (error) {
+        return dshMutationFailure(
+            error instanceof MalformedSessionTranscriptError ? 'storage_consistency_error' : 'write_error',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
 }
 
 /** Persist a DSH delete intent while Product metadata and transcript still exist. */

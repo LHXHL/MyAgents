@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.11
+version: 0.12
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -565,6 +565,8 @@ If an event cannot be represented without losing user-visible semantics, extend 
 
 H4 implements this projection in `src/server/integrated-runtimes/dsh/event-projector.ts`. One serialized inbox fences Product Session, Runtime generation and Runtime Session, accepts only exact duplicate replay, rejects conflicting replay or a sequence gap, and projects assistant/thinking/tool/usage/context/queue/plan/work/compaction/warning/terminal events into existing `UnifiedEvent` shapes. Runtime terminal produces the Product terminal, but idle publication remains downstream of Product transcript persistence so a fast status transition cannot discard the final projected chunks.
 
+H4 also reconciles the ordinary terminal/persistence crash window before a resumed Runtime becomes usable. `session/read` first verifies the complete native cursor chain and event digests; independent `turn/get` results must then match every durable admission and terminal exactly. A succeeded terminal's `assistantEventId` must resolve to the claimed final native `assistant/message`, from which text, reasoning, settled tool calls/results and terminal usage are deterministically projected. `SessionStore` inserts a missing assistant beside its exact Product user row under the transcript/index locks and commits a versioned `dshProjectionCursor`; exact replay is a no-op, while conflicting anchors, an unowned assistant, malformed history or divergent terminal truth fail closed. Non-success terminals never manufacture assistant rows. Takeover of an admitted operation that remains non-terminal after `session/resume` is still blocked pending its dedicated persisted-operation handoff, so H4 remains in progress.
+
 ### 10.3 Dual authorities without dual transcript
 
 DSH native history is the durable model-conversation authority for DSH resume. MyAgents `SessionStore` is the Product transcript authority for product UI, search and cross-feature linkage.
@@ -595,7 +597,7 @@ MyAgents projects canonical compaction events and context metrics into its exist
 
 The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
 
-H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Crash reconciliation through `turn/get` and durable `session/read` is still required before H4 completion.
+H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is now reconciled through matching `turn/get` and verified `session/read` truth. Persisted ownership and live takeover of an operation that is still non-terminal after resume remain required before H4 completion.
 
 ## 12. Configuration and extension updates
 

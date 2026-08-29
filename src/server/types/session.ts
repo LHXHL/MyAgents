@@ -88,6 +88,8 @@ export interface SessionMetadata {
     pendingConversationMutation?: PendingConversationMutation;
     /** Crash-recoverable coordination journal for a DSH native mutation. */
     pendingDshMutation?: PendingDshMutation;
+    /** Last verified DSH durable head reconciled into the Product transcript projection. */
+    dshProjectionCursor?: DshProjectionCursor;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */
     runtimeUsageTotals?: MessageUsage;
     /**
@@ -245,6 +247,13 @@ export interface SessionMessage {
 export interface RuntimeTurnAnchor {
     turnId: string;
     rootUserMessageId: string;
+}
+
+export interface DshProjectionCursor {
+    schemaVersion: 1;
+    runtimeSessionId: string;
+    durableSequence: number;
+    transcriptPostcondition: string;
 }
 
 export type PendingConversationMutation =

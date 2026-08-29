@@ -3374,6 +3374,11 @@ async function _doStartExternalSession(options: {
         recoveredTranscript.messages,
         recoveredTranscript.cursor,
       );
+      setLastPersistedRuntimeUsageTotals(restoreRuntimeUsageTotals(
+        runtimeType,
+        recoveredTranscript.messages,
+        getSessionMetadata(options.sessionId)?.runtimeUsageTotals,
+      ));
     }
     startedProcess = process;
     setExternalActiveProcess(process, enabledOfficialToolIds, externalSkillAdmission.revision);

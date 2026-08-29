@@ -97,6 +97,37 @@ function historyPages(): DshRpcObject[] {
 }
 
 describe('DSH native mutation controller', () => {
+  it('validates the independent durable turn lookup identity', async () => {
+    const request = vi.fn(async () => ({
+      clientOperationId: 'operation-1',
+      admission: {
+        clientOperationId: 'operation-1',
+        turnId: 'product-turn-1',
+        admittedAt: '2026-08-30T00:00:00.000Z',
+      },
+      terminal: { kind: 'aborted', reason: 'user' },
+    }));
+    const controller = new DshMutationController(
+      { request } as DshMutationTransport,
+      'runtime-session-1',
+    );
+
+    await expect(controller.getTurn('operation-1')).resolves.toEqual({
+      clientOperationId: 'operation-1',
+      admission: {
+        clientOperationId: 'operation-1',
+        turnId: 'product-turn-1',
+        admittedAt: '2026-08-30T00:00:00.000Z',
+      },
+      terminal: { kind: 'aborted', reason: 'user' },
+    });
+    expect(request).toHaveBeenCalledWith(
+      'turn/get',
+      { clientOperationId: 'operation-1' },
+      undefined,
+    );
+  });
+
   it('verifies paginated durable history and prepares a fork at the terminal DSH turn', async () => {
     const pages = historyPages();
     const request = vi.fn(async (method: string, params: DshRpcObject) => {

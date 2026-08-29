@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,11 +11,13 @@ import { snapshotForForkedSession } from '../utils/session-snapshot';
 
 type SessionStoreModule = typeof import('../SessionStore');
 type DshMutationRecoveryModule = typeof import('../session-engine/dsh-mutation-recovery');
+type DshTurnReconciliationModule = typeof import('../session-engine/dsh-turn-reconciliation');
 
 let home: string;
 let originalHome: string | undefined;
 let store: SessionStoreModule;
 let recovery: DshMutationRecoveryModule;
+let turnReconciliation: DshTurnReconciliationModule;
 
 function messages(): SessionMessage[] {
   return [
@@ -57,6 +60,7 @@ beforeAll(async () => {
   vi.resetModules();
   store = await import('../SessionStore');
   recovery = await import('../session-engine/dsh-mutation-recovery');
+  turnReconciliation = await import('../session-engine/dsh-turn-reconciliation');
 });
 
 afterAll(() => {
@@ -65,6 +69,204 @@ afterAll(() => {
 });
 
 describe('DSH Product mutation journal', () => {
+  it('recovers a Runtime-terminal turn lost before Product assistant persistence', async () => {
+    const sessionId = 'dsh-turn-crash-window';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    const metadata = createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    });
+    await store.saveSessionMetadata(metadata);
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [{
+      id: 'user-crash-window',
+      role: 'user',
+      content: 'persist me after restart',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    }])).resolves.toMatchObject({ ok: true });
+
+    const sessionHash = createHash('sha256').update(runtimeSessionId).digest('hex').slice(0, 24);
+    const terminal = {
+      kind: 'succeeded',
+      assistantEventId: `dsh-event-${sessionHash}-3`,
+      usage: {
+        inputTokens: 4,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 6,
+        costUsd: null,
+        turnId: 'product-turn-crash-window',
+        normalizedAs: 'turn_total',
+        contextOccupiedTokens: null,
+        runtimeContextWindow: 131_072,
+        modelProfileRevision: 'model-profile-v1',
+      },
+    };
+    const events = [
+      {
+        sequence: 0,
+        eventType: 'myagents/operation/accepted',
+        eventSha256: 'd'.repeat(64),
+        data: {
+          clientOperationId: 'operation-crash-window',
+          clientUserMessageId: 'user-crash-window',
+          productTurnId: 'product-turn-crash-window',
+          acceptedAt: 1_777_507_200_000,
+        },
+      },
+      { sequence: 1, eventType: 'turn/start', eventSha256: 'd'.repeat(64), data: { turn: 1 } },
+      {
+        sequence: 2,
+        eventType: 'myagents/operation/claimed',
+        eventSha256: 'd'.repeat(64),
+        data: { clientOperationId: 'operation-crash-window', messageId: 'native-user', dshTurn: 1 },
+      },
+      {
+        sequence: 3,
+        eventType: 'assistant/message',
+        eventSha256: 'd'.repeat(64),
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'native-assistant',
+            role: 'assistant',
+            source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+            content: [{ type: 'text', text: 'durable recovered answer' }],
+          },
+          usage: { inputTokens: 4, outputTokens: 2 },
+        },
+      },
+      {
+        sequence: 4,
+        eventType: 'turn/end',
+        eventSha256: 'd'.repeat(64),
+        data: { turn: 1, reason: { kind: 'completed' } },
+      },
+      {
+        sequence: 5,
+        eventType: 'myagents/operation/terminal',
+        eventSha256: 'd'.repeat(64),
+        data: {
+          clientOperationId: 'operation-crash-window',
+          productTurnId: 'product-turn-crash-window',
+          terminal,
+          finalDshTurn: 1,
+          terminalAt: 1_777_507_201_000,
+        },
+      },
+    ];
+    const readHistory = vi.fn(async () => ({
+      runtimeSessionId,
+      durableSequence: events.length,
+      events,
+      mutationBoundaries: [],
+      transcriptPostcondition: 'e'.repeat(64),
+    }));
+    const getTurn = vi.fn(async () => ({
+      clientOperationId: 'operation-crash-window',
+      admission: {
+        clientOperationId: 'operation-crash-window',
+        turnId: 'product-turn-crash-window',
+        admittedAt: new Date(1_777_507_200_000).toISOString(),
+      },
+      terminal,
+    }));
+
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId,
+      runtimeSessionId,
+      controller: { readHistory, getTurn } as never,
+    })).resolves.toEqual({ transcriptChanged: true, reconciledOperations: 1 });
+    expect(readHistory).toHaveBeenCalledTimes(1);
+    expect(getTurn).toHaveBeenCalledWith('operation-crash-window', undefined);
+    expect(store.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ id: 'user-crash-window' }),
+      expect.objectContaining({
+        role: 'assistant',
+        runtimeTurnAnchor: {
+          turnId: 'product-turn-crash-window',
+          rootUserMessageId: 'user-crash-window',
+        },
+      }),
+    ]);
+  });
+
+  it('publishes a missing terminal assistant exactly once with its verified native cursor', async () => {
+    const sessionId = 'dsh-turn-reconciliation';
+    const metadata = createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId: `runtime-${sessionId}`,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    });
+    await store.saveSessionMetadata(metadata);
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [{
+      id: 'user-recovered',
+      role: 'user',
+      content: 'recover this turn',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    }])).resolves.toMatchObject({ ok: true });
+    const cursor = {
+      schemaVersion: 1 as const,
+      runtimeSessionId: `runtime-${sessionId}`,
+      durableSequence: 12,
+      transcriptPostcondition: 'c'.repeat(64),
+    };
+    const assistant: SessionMessage = {
+      id: 'assistant-dsh-stable',
+      role: 'assistant',
+      content: JSON.stringify([{ type: 'text', text: 'recovered answer' }]),
+      timestamp: '2026-08-30T00:00:01.000Z',
+      usage: { inputTokens: 8, outputTokens: 2 },
+      runtimeTurnAnchor: {
+        turnId: 'product-turn-recovered',
+        rootUserMessageId: 'user-recovered',
+      },
+    };
+
+    await expect(store.reconcileDshTurnProjections({
+      sessionId,
+      runtimeSessionId: `runtime-${sessionId}`,
+      cursor,
+      assistantMessages: [assistant],
+      runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
+    })).resolves.toEqual({
+      success: true,
+      value: { transcriptChanged: true, cursor },
+    });
+    await expect(store.reconcileDshTurnProjections({
+      sessionId,
+      runtimeSessionId: `runtime-${sessionId}`,
+      cursor,
+      assistantMessages: [assistant],
+      runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
+    })).resolves.toEqual({
+      success: true,
+      value: { transcriptChanged: false, cursor },
+    });
+
+    expect(store.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ id: 'user-recovered' }),
+      expect.objectContaining({
+        id: 'assistant-dsh-stable',
+        runtimeTurnAnchor: {
+          turnId: 'product-turn-recovered',
+          rootUserMessageId: 'user-recovered',
+        },
+      }),
+    ]);
+    expect(store.getSessionMetadata(sessionId)).toMatchObject({
+      dshProjectionCursor: cursor,
+      runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
+      stats: { messageCount: 1, totalInputTokens: 8, totalOutputTokens: 2 },
+    });
+  });
+
   it('keeps a fork hidden until Runtime and Product commit identities match', async () => {
     const sourceId = 'dsh-fork-source';
     const targetId = 'dsh-fork-target';

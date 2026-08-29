@@ -4,7 +4,7 @@ import type { DshHostMethodName, DshRpcObject } from './protocol-types';
 
 type MutationMethod = Extract<
   DshHostMethodName,
-  `session/${'delete' | 'fork' | 'rewind'}/${string}` | 'session/read'
+  `session/${'delete' | 'fork' | 'rewind'}/${string}` | 'session/read' | 'turn/get'
 >;
 
 export interface DshMutationTransport {
@@ -49,6 +49,16 @@ export type DshNativeHistory = Readonly<{
   events: readonly DshVerifiedHistoryEvent[];
   mutationBoundaries: readonly DshStableMutationBoundary[];
   transcriptPostcondition: string;
+}>;
+
+export type DshTurnLookup = Readonly<{
+  clientOperationId: string;
+  admission?: Readonly<{
+    clientOperationId: string;
+    turnId: string;
+    admittedAt: string;
+  }>;
+  terminal?: Readonly<DshRpcObject>;
 }>;
 
 const MUTATION_STATES = new Set<DshMutationState>([
@@ -386,6 +396,42 @@ export class DshMutationController {
       throw new Error('DSH durable history belongs to a different Runtime Session');
     }
     return history;
+  }
+
+  async getTurn(clientOperationId: string, signal?: AbortSignal): Promise<DshTurnLookup> {
+    const expectedId = string(clientOperationId, 'DSH client operation id');
+    const value = await this.transport.request(
+      'turn/get',
+      { clientOperationId: expectedId },
+      signal ? { signal } : undefined,
+    );
+    if (string(value.clientOperationId, 'DSH turn lookup operation id') !== expectedId) {
+      throw new Error('DSH turn lookup changed its client operation identity');
+    }
+    let admission: DshTurnLookup['admission'];
+    if (value.admission !== undefined) {
+      const row = object(value.admission, 'DSH turn admission');
+      if (string(row.clientOperationId, 'DSH turn admission operation id') !== expectedId) {
+        throw new Error('DSH turn admission changed its client operation identity');
+      }
+      const admittedAt = string(row.admittedAt, 'DSH turn admission timestamp');
+      if (!Number.isFinite(Date.parse(admittedAt))) {
+        throw new Error('DSH turn admission timestamp is invalid');
+      }
+      admission = Object.freeze({
+        clientOperationId: expectedId,
+        turnId: string(row.turnId, 'DSH admitted turn id'),
+        admittedAt,
+      });
+    }
+    const terminal = value.terminal === undefined
+      ? undefined
+      : Object.freeze(structuredClone(object(value.terminal, 'DSH turn terminal')));
+    return Object.freeze({
+      clientOperationId: expectedId,
+      ...(admission ? { admission } : {}),
+      ...(terminal ? { terminal } : {}),
+    });
   }
 
   async prepareFork(input: Readonly<{
