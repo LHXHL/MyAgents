@@ -54,6 +54,8 @@ export type OwnedSessionSnapshot = Pick<
   SessionMetadata,
   | 'runtime'
   | 'runtimeSource'
+  | 'runtimeBinding'
+  | 'runtimeBindingCompatibility'
   | 'model'
   | 'reasoningEffort'
   | 'permissionMode'
@@ -72,9 +74,19 @@ export function snapshotForForkedSession(
   legacyFallback?: OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'>,
 ): OwnedSessionSnapshot & Pick<SessionMetadata, 'configSnapshotAt'> {
   const fallback = source.configSnapshotAt ? undefined : legacyFallback;
+  const runtimeIdentity = source.runtimeBinding
+    ? { runtimeBinding: source.runtimeBinding }
+    : source.runtimeBindingCompatibility
+      ? { runtimeBindingCompatibility: source.runtimeBindingCompatibility }
+      : fallback?.runtimeBinding
+        ? { runtimeBinding: fallback.runtimeBinding }
+        : fallback?.runtimeBindingCompatibility
+          ? { runtimeBindingCompatibility: fallback.runtimeBindingCompatibility }
+          : {};
   return {
     runtime: source.runtime ?? fallback?.runtime ?? 'builtin',
     runtimeSource: source.runtimeSource ?? fallback?.runtimeSource,
+    ...runtimeIdentity,
     model: source.model ?? fallback?.model,
     reasoningEffort: source.reasoningEffort ?? fallback?.reasoningEffort,
     permissionMode: source.permissionMode ?? fallback?.permissionMode,

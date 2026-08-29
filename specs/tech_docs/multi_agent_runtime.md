@@ -4,7 +4,9 @@
 
 Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话。除内置 Claude Agent SDK（builtin）外，支持 Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 作为外部 Runtime。
 
-**功能门控**：设置 → 关于 → 实验室 → 「更多 Agent Runtime」开关（`config.multiAgentRuntime`），默认关闭。
+**功能门控**：设置 → 关于 → 实验室 → 「更多 Agent Runtime」开关（`config.multiAgentRuntime`），默认关闭。该值现在只控制 Runtime 选择器是否可用；关闭时新 ordinary-provider Session 使用 distribution policy 的 Default Integrated Runtime，已保存 preference 不被删除，已有 frozen Session 仍按自己的 binding 执行或明确报不可用。
+
+H1 起产品身份不再扩展扁平 `RuntimeType`：Agent/Channel 保存 `AgentRuntimePreference`，Provider 保存 execution constraint，Session 保存 authoritative `EffectiveRuntimeBinding`。`runtime` / `runtimeSource` 继续作为旧路径投影，直到 H3–H5 的 SessionEngine 与所有入口迁移完成。DSH 属于 Integrated Runtime；Managed Codex 属于 Managed Provider Runtime；二者都不是 External CLI。
 
 ## 架构总览
 
@@ -151,7 +153,7 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 
 `managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时，仅将 Agent 当前的 `runtime:'builtin' + providerId:'codex-sub'`（以及可读兼容的旧 `runtime:'codex' + source:'managed-provider'`）投影成 `runtime='codex'`、`source='managed-provider'`；显式 system Codex / Claude Code / Gemini Runtime 胜过遗留的 `codex-sub` 字段。
 
-每次 Rust Sidecar ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`；同一次 attempt 的既有进程复用校验与新进程 spawn 必须消费这个同一快照，不能在两者之间重读 Session/Agent 配置。Task 首次 materialize metadata 时，Node 以 live `SessionEngine.getRuntimeIdentity()` 和同一时刻的 live config snapshot 绑定实际进程身份，避免 Rust payload 与 Node 进程发生 TOCTOU 漂移。
+每次 Rust Sidecar ensure attempt 只解析一次 owner-aware identity；若 Session 有 `runtimeBinding` 或 `runtimeBindingCompatibility`，它们优先于 legacy 字段并原样穿过 owner resolution。复用校验与新进程 spawn 消费同一快照，不在两者之间重读 Session/Agent 配置；不兼容绑定在进程创建前失败。Task 首次 materialize metadata 时，Node 以 live `SessionEngine.getRuntimeIdentity()` 和同一时刻的 live config snapshot 绑定实际进程身份，避免 Rust payload 与 Node 进程发生 TOCTOU 漂移。
 
 持久化边界：
 
@@ -843,22 +845,17 @@ myagents diagnose runtime codex --workspace=<path>   # 别名糖
 ## 功能门控链路
 
 ```
-config.multiAgentRuntime (磁盘/React state)
-  │
-  ├── Rust sidecar/runtime_identity.rs: resolve_agent_runtime_from_config()
-  │     → 仅当 multiAgentRuntime=true 时读取 agent.runtime
-  │     → sidecar/session_lifecycle.rs 或 sidecar/instances.rs 在 spawn 时注入 MYAGENTS_RUNTIME
-  │
-  ├── Node factory.ts: getCurrentRuntimeType()
-  │     → 读取 process.env.MYAGENTS_RUNTIME
-  │     → 未设置 → 'builtin'
-  │     → 识别 'claude-code' | 'codex' | 'gemini'
-  │
-  └── React Chat.tsx:
-        const currentRuntime = multiAgentRuntimeEnabled
-          ? (currentAgent?.runtime || 'builtin')
-          : 'builtin';  // ← 源头门控，下游自动安全
+distribution-policy.json + config.multiAgentRuntime
+  → selector available / Default Integrated Runtime
+  → Agent/Channel runtimePreference
+  → Provider execution constraint
+  → readiness catalog
+  → central resolver returns EffectiveRuntimeBinding or structured failure
+  → SessionStore atomically freezes runtimeBinding before admission
+  → Rust reads authoritative binding before legacy runtime/source projection
 ```
+
+H1 已落地上述 identity/policy/resolver/migration 与 Rust 读取优先级；H3/H5 才会替换 `factory.ts` / binary SessionEngine selector 和 Renderer 的剩余扁平路径。因此当前产品仍不展示 DSH，旧 `MYAGENTS_RUNTIME` 链只承担已实现 Runtime 的兼容执行。
 
 ## 跨 Runtime Session 保护
 

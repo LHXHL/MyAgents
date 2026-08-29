@@ -548,7 +548,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 ### 9. Multi-Agent Runtime
 
-除内置 Claude Agent SDK（builtin）外，支持 Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 作为外部 Runtime。功能门控：`config.multiAgentRuntime`（默认关闭，设置 → 关于 → 实验室）。
+产品 Runtime taxonomy 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI（Claude Code、Codex、Gemini）。`config.multiAgentRuntime`（默认关闭，设置 → 关于 → 实验室）是选择器可用性开关，不再是 existing Session 的 Runtime kill switch；分发 policy 决定允许项与 Default Integrated Runtime。
 
 **抽象层**：
 
@@ -630,7 +630,7 @@ Managed Codex 子 Agent 的原生 child turn lifecycle 只由 `codex.ts` 在既�
 
 全局 Skill 的 Runtime authority 是 Node `global-skill-inventory.ts` 在每个 admission / Settings 业务边界构造的 immutable、ephemeral 完整根快照；不持久化注册表、cache 或 watcher 状态。同一边界的 project capability resolver 与 `.claude/skills` 兼容投影必须消费同一个快照：强证据损坏项既不进入 builtin allowlist / Managed Codex compiler，也不进入新建 workspace 链接，但任何单个 Skill 的缺失、损坏或投影失败都只淘汰该候选并记录日志，不能阻断 Runtime 或 Session。Project Skill（包括项目目录 symlink）按 canonical name 覆盖 global；MyAgents 只维护指向 `~/.myagents/skills` 的兼容 junction/symlink，不覆盖项目条目。Builtin/Managed 可在投影失败时从本次 admission 精确排除受影响 canonical；Managed 的临时 Skill/Agent materialization 与原生 read-back 同样逐候选降级，依赖 Required Skill 的 operation 只按当前 process 的 native read-back 决定是否执行。System Codex、Claude Code 等兼容 Runtime 直接扫描共享磁盘，若 OS 拒绝删除既有链接则只记录物理歧义并继续，不为这个极端状态新增进程协议或阻断 Session。Rust Launcher 只镜像同一份分类契约并跳过这种 project 投影，跨语言 JSON fixtures 负责锁定口径，而不是新增 RPC。已有 active turn 不 retroactive 改写；effective revision 继续表达 Runtime winner 内容，integrity revision 表达诊断与 desired-link set。纯诊断变化不换代；external lifecycle 随 active process 保存启动时采用的 effective capability/projection revision，后续 admission 发现 revision 变化才复用既有 deferred process/Query replacement，不能以“当前 Sidecar 是否实际写了链接”代替进程配置 identity。
 
-**门控链路：** Rust `sidecar/runtime_identity.rs` 读取 `config.multiAgentRuntime` + `agent.runtime`，`sidecar/session_lifecycle.rs` / `sidecar/instances.rs` 在 spawn Sidecar 时注入 `MYAGENTS_RUNTIME` 环境变量 → Node.js `factory.ts` 读取 → `session-engine/selector.ts` 通过 `shouldUseExternalRuntime()` 选择 builtin/external `SessionEngine`。前端 `Chat.tsx` 用同样门控决定 `currentRuntime`。
+**身份链路：** Agent/Channel 持久化 `runtimePreference`（用户意图），distribution policy + Provider constraint + readiness 由 `shared/integrated-runtimes/resolver.ts` 解析为完整 `EffectiveRuntimeBinding`。已有 Session 的 `runtimeBinding` 永远优先于 Agent 模板；Rust `sidecar/runtime_identity.rs` 在 legacy projection 前读取并验证该绑定，不兼容状态在 spawn 前 fail closed。`runtime` / `runtimeSource` 和 `MYAGENTS_RUNTIME` 仍是 H3/H5 迁移期间的兼容投影，不能覆盖 authoritative binding。
 
 新增“config 同步 / 注入 user 消息 / 等待 turn 完成 / session read / session operation”的 Sidecar endpoint 时，MUST 走 `SessionEngine` facade；不要在 route handler 里直接手写 builtin/external 分流。Phase5 已迁移的代表路径包括 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/chat/rewind`、`/sessions/fork`、proof-bearing `/api/session/surface-migration`、`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/session/config`。IM `/new` 只在 Rust owner/binding authority 内轮换，不调用 Node reset endpoint。`/chat/external-retry` 等只适用于 external Runtime 的操作由 `selector.ts` 的显式 helper 校验后调用原生实现，不进入公共 `SessionEngine` 接口，也不允许 route 直接 import `external-session.ts`。
 
@@ -638,7 +638,7 @@ Managed Codex 子 Agent 的原生 child turn lifecycle 只由 `codex.ts` 在既�
 
 详见 `tech_docs/multi_agent_runtime.md`。
 
-MyAgents-dsh 作为 **Integrated Runtime** 接入，而不是 External CLI 或 Managed Provider Runtime。它仍通过同一个 `SessionEngine` facade 和 Rust 所有的 Session↔Sidecar 1:1 生命周期；DSH Runtime 是 Sidecar 的受管子进程，并与 Sidecar 共用产品唯一的 bundled Node。交付物必须先通过外层 handoff digest、嵌套 Runtime inventory、协议/兼容性/平台声明和 committed lock 校验，完整目录才可进入 Tauri resources；代码不得从兄弟 checkout 导入或拼装 Runtime。当前 H0 只建立了可信资源与契约基础，DSH 在 H1–H6 完成前不可选择。完整集成设计与实施台账见 [`tech_docs/myagents_dsh_integrated_runtime.md`](./tech_docs/myagents_dsh_integrated_runtime.md)。
+MyAgents-dsh 作为 **Integrated Runtime** 接入，而不是 External CLI 或 Managed Provider Runtime。它仍通过同一个 `SessionEngine` facade 和 Rust 所有的 Session↔Sidecar 1:1 生命周期；DSH Runtime 是 Sidecar 的受管子进程，并与 Sidecar 共用产品唯一的 bundled Node。交付物必须先通过外层 handoff digest、嵌套 Runtime inventory、协议/兼容性/平台声明和 committed lock 校验，完整目录才可进入 Tauri resources；代码不得从兄弟 checkout 导入或拼装 Runtime。H0 已建立可信资源与契约基础；H1 已建立 discriminated identity、distribution policy、central resolver、Agent/Channel 与 Session 的 restart-safe migration，以及 Rust 侧 authoritative-binding fail-closed。DSH 在 H2–H6 完成前仍不可选择。完整集成设计与实施台账见 [`tech_docs/myagents_dsh_integrated_runtime.md`](./tech_docs/myagents_dsh_integrated_runtime.md)。
 
 ### 10. 既有 Session 打开与持久历史恢复
 
@@ -667,7 +667,7 @@ MyAgents-dsh 作为 **Integrated Runtime** 接入，而不是 External CLI 或 M
 
 读侧通过 `resolveSessionConfig(sessionMeta, ownerKind)` 统一消费。详见 `tech_docs/pit_of_success.md` 的「Snapshot Helpers」节。
 
-Runtime identity 必须按 `runtime` + `runtimeSource` 比较：`codex/system-cli`（用户外部 Codex CLI）与 `codex/managed-provider`（内置 Codex 订阅 Provider）不是同一种会话身份。IM / Agent Channel 的 session drift、Sidecar 唤醒、`/model` 命令和 heartbeat 都必须携带 source；只覆盖 `runtime:'codex'` 而不覆盖 `runtimeSource` 会被解释为 system CLI。
+Runtime identity 的权威值是完整 `EffectiveRuntimeBinding`：Integrated 还冻结 implementation/artifact/protocol/platform，Managed Provider 冻结 Provider 与实现版本，External 可冻结发现到的 CLI 版本。`runtime` + `runtimeSource` 仅是旧消费者投影；其中 `codex/system-cli` 与 `codex/managed-provider` 仍不得互换。IM / Agent Channel 的 session drift、Sidecar 唤醒、`/model` 命令和 heartbeat 在完成 H5 迁移前必须至少携带完整 legacy source，最终统一比较 binding compatibility。
 
 跨 Runtime Session 保护见模块 9 的「跨 Runtime Session 保护」节，详见 `tech_docs/multi_agent_runtime.md`。
 

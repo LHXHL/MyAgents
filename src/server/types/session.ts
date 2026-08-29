@@ -6,6 +6,14 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { SystemMaintenanceSessionKind } from '../../shared/managedScheduledJob';
+import type {
+    EffectiveRuntimeBinding,
+    RuntimeBindingCompatibility,
+} from '../../shared/integrated-runtimes/identity';
+import {
+    legacyProjectionForBinding,
+    resolvePersistedRuntimeBinding,
+} from '../../shared/integrated-runtimes/identity';
 
 /**
  * Session statistics for tracking usage
@@ -69,6 +77,10 @@ export interface SessionMetadata {
     runtime?: RuntimeType;
     /** Runtime source. Missing external Codex history is treated as 'system-cli'. */
     runtimeSource?: RuntimeSource;
+    /** Authoritative, frozen Product Runtime identity. Legacy runtime fields are projections only. */
+    runtimeBinding?: EffectiveRuntimeBinding;
+    /** Read-only quarantine state for invalid persisted Runtime identities. */
+    runtimeBindingCompatibility?: RuntimeBindingCompatibility;
     /** Runtime's own session/thread ID (Codex: threadId, CC: session_id from hook).
      *  Different from our session `id` — used for resume across Sidecar restarts. */
     runtimeSessionId?: string;
@@ -290,7 +302,7 @@ export function createSessionMetadata(
     snapshot: Partial<SessionMetadata> = {},
 ): SessionMetadata {
     const now = new Date().toISOString();
-    return {
+    const metadata: SessionMetadata = {
         id: randomUUID(),
         agentDir,
         title: 'New Chat',
@@ -300,4 +312,20 @@ export function createSessionMetadata(
         runtime: 'builtin',
         ...snapshot,
     };
+    const resolution = resolvePersistedRuntimeBinding(metadata);
+    if (resolution.status === 'resolved') {
+        metadata.runtimeBinding = resolution.binding;
+        const projection = legacyProjectionForBinding(resolution.binding);
+        metadata.runtime = projection.runtime;
+        if (projection.runtimeSource) {
+            metadata.runtimeSource = projection.runtimeSource;
+        } else {
+            delete metadata.runtimeSource;
+        }
+        delete metadata.runtimeBindingCompatibility;
+    } else {
+        delete metadata.runtimeBinding;
+        metadata.runtimeBindingCompatibility = resolution.compatibility;
+    }
+    return metadata;
 }

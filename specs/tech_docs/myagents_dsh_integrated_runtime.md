@@ -821,7 +821,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | --------- | -------------------------------------------------------------------------------------- | ------------- |
 | MA-B3-RFC | Current-code and exact-handoff technical review                                        | `complete`    |
 | MA-B3-H0  | Node/npm resource authority, formal `2.0.0` handoff ingest, lock and resource verifier | `complete`    |
-| MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `not_started` |
+| MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
 | MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `not_started` |
 | MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `not_started` |
 | MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `not_started` |

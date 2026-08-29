@@ -15,7 +15,7 @@ function session(overrides: Partial<SessionMetadata>): SessionMetadata {
 }
 
 describe('normalizeSessionRuntimeIdentity', () => {
-  it('repairs historical builtin/managed-provider metadata as managed Codex', () => {
+  it('quarantines historical builtin/managed-provider metadata without Codex proof', () => {
     const normalized = normalizeSessionRuntimeIdentity(session({
       runtime: 'builtin',
       runtimeSource: 'managed-provider',
@@ -29,18 +29,33 @@ describe('normalizeSessionRuntimeIdentity', () => {
       providerEnvJson: '{"providerId":"anthropic-sub"}',
     }));
 
-    expect(normalized.runtime).toBe('codex');
+    expect(normalized.runtime).toBe('builtin');
     expect(normalized.runtimeSource).toBe('managed-provider');
-    expect(normalized.providerId).toBe('codex-sub');
-    expect(normalized.providerRoute).toBeUndefined();
-    expect(normalized.providerEnvJson).toBeUndefined();
+    expect(normalized.providerId).toBe('anthropic-sub');
+    expect(normalized.runtimeBinding).toBeUndefined();
+    expect(normalized.runtimeBindingCompatibility).toMatchObject({
+      state: 'incompatible',
+      code: 'legacy-managed-provider-without-codex-proof',
+    });
   });
 
-  it('leaves valid builtin and managed Codex identities unchanged', () => {
+  it('migrates valid builtin and managed Codex identities idempotently', () => {
     const builtin = session({ runtime: 'builtin', providerId: 'anthropic-sub' });
     const managed = session({ runtime: 'codex', runtimeSource: 'managed-provider' });
 
-    expect(normalizeSessionRuntimeIdentity(builtin)).toBe(builtin);
-    expect(normalizeSessionRuntimeIdentity(managed)).toBe(managed);
+    const normalizedBuiltin = normalizeSessionRuntimeIdentity(builtin);
+    expect(normalizedBuiltin.runtimeBinding).toMatchObject({
+      family: 'integrated',
+      id: 'claude-agent-sdk',
+    });
+    expect(normalizeSessionRuntimeIdentity(normalizedBuiltin)).toEqual(normalizedBuiltin);
+
+    const normalizedManaged = normalizeSessionRuntimeIdentity(managed);
+    expect(normalizedManaged.runtimeBinding).toMatchObject({
+      family: 'managed-provider',
+      id: 'managed-codex',
+    });
+    expect(normalizedManaged.providerId).toBe('codex-sub');
+    expect(normalizeSessionRuntimeIdentity(normalizedManaged)).toEqual(normalizedManaged);
   });
 });

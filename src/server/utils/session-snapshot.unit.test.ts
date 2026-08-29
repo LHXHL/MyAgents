@@ -258,6 +258,35 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
 });
 
 describe('snapshotForForkedSession', () => {
+  it('copies one authoritative Runtime identity without mixing fallback state', () => {
+    const source = {
+      runtime: 'builtin',
+      runtimeBindingCompatibility: {
+        state: 'incompatible',
+        code: 'invalid-runtime-binding',
+        message: 'invalid',
+      },
+    } as const satisfies Partial<SessionMetadata>;
+    const fallback = {
+      runtime: 'builtin',
+      runtimeBinding: {
+        family: 'integrated',
+        id: 'claude-agent-sdk',
+        implementationVersion: '0.3.233',
+      },
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    } as const;
+
+    const snapshot = snapshotForForkedSession(
+      source as SessionMetadata,
+      fallback,
+    );
+    expect(snapshot.runtimeBindingCompatibility).toEqual(
+      source.runtimeBindingCompatibility,
+    );
+    expect(snapshot.runtimeBinding).toBeUndefined();
+  });
+
   it('does not propagate legacy Managed Codex protocol or Host catalog gates', () => {
     const source = {
       runtime: 'codex',

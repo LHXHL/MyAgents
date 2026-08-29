@@ -20,6 +20,9 @@ interface SessionMetadata {
     stats?: SessionStats;
     cronTaskId?: string;
     runtime?: RuntimeType;      // 'builtin' | 'claude-code' | 'codex' | 'gemini'
+    runtimeSource?: RuntimeSource; // legacy compatibility projection
+    runtimeBinding?: EffectiveRuntimeBinding; // authoritative frozen Product Runtime
+    runtimeBindingCompatibility?: RuntimeBindingCompatibility; // read-only quarantine
     runtimeSessionId?: string;  // external runtime thread/session id（Codex threadId 等）
     // 分层 config snapshot 字段（owned session 冻结）
     model?: string;
@@ -51,6 +54,8 @@ interface SessionStats {
     totalCacheCreationTokens?: number;
 }
 ```
+
+`runtimeBinding` 是已有 Session 的执行权威，Agent/Channel 的 `runtimePreference` 只影响未来 Session。新 Session birth 必须写一个合法 discriminated binding，并同时写供旧消费者使用的 `runtime` / `runtimeSource` 投影；读取时 binding 优先。启动迁移在 sessions index lock 内原子补齐所有合法 legacy 行，非法/未知组合保留原始证据并写 `runtimeBindingCompatibility`，只允许读取 transcript，不允许 fallback 到 Claude SDK。Fork/snapshot 复制 binding 或 compatibility 二者之一，不能从 fallback 拼成互相冲突的状态。
 
 `id` 与 `sdkSessionId` 不能相互代写。Product owner 决定 A 的创建、持久化、Tab/Sidecar 绑定和释放；builtin lifecycle 只决定 SDK candidate S 的 create/resume。启动时先 probe `sdkSessionId ?? (unifiedSession ? id : undefined)`：有 SDK transcript 才 resume；空结果用同一 candidate fresh create；probe error 拒绝启动。禁止把 candidate 字段当作“必然可 resume”，也禁止 probe 失败后回退到 Product id 或随机 S3。
 

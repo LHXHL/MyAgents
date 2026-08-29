@@ -801,6 +801,43 @@ export async function saveSessionMetadata(session: SessionMetadata): Promise<voi
     });
 }
 
+export async function migrateSessionRuntimeBindings(): Promise<{
+    migratedSessions: number;
+    incompatibleSessions: number;
+}> {
+    ensureStorageDir();
+    let migratedSessions = 0;
+    let incompatibleSessions = 0;
+    await withSessionsLock(async () => {
+        let raw: unknown = [];
+        if (existsSync(SESSIONS_FILE)) {
+            try {
+                raw = JSON.parse(stripBom(readFileSync(SESSIONS_FILE, 'utf-8'))) as unknown;
+            } catch {
+                // readSessionsIndexForWrite owns corrupt-index recovery below.
+            }
+        }
+        const rawRows = Array.isArray(raw) ? raw : [];
+        const sessions = readSessionsIndexForWrite();
+        for (let index = 0; index < sessions.length; index += 1) {
+            const before = rawRows[index] as { runtimeBinding?: unknown; runtimeBindingCompatibility?: unknown } | undefined;
+            const after = sessions[index];
+            if (after.runtimeBindingCompatibility) incompatibleSessions += 1;
+            if (
+                before?.runtimeBinding === undefined
+                && before?.runtimeBindingCompatibility === undefined
+                && (after.runtimeBinding !== undefined || after.runtimeBindingCompatibility !== undefined)
+            ) {
+                migratedSessions += 1;
+            }
+        }
+        if (JSON.stringify(rawRows) !== JSON.stringify(sessions)) {
+            atomicWriteSessionsFile(JSON.stringify(sessions, null, 2));
+        }
+    });
+    return { migratedSessions, incompatibleSessions };
+}
+
 export type SessionDeleteIntent =
     | { kind: 'user-delete' }
     | { kind: 'prepared-materialization-rollback'; sourceSessionId: string };
@@ -1844,6 +1881,8 @@ export async function updateSessionMetadata(
         | 'forkFrom'
         | 'runtime'
         | 'runtimeSource'
+        | 'runtimeBinding'
+        | 'runtimeBindingCompatibility'
         | 'runtimeSessionId'
         | 'runtimeUsageTotals'
         | 'lastContextUsage'

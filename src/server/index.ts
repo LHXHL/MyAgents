@@ -8868,6 +8868,17 @@ description: >
             } catch (err) {
               console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
             }
+            // Loading the policy is a startup validation gate. Invalid product
+            // policy or a failed identity migration must keep readiness closed;
+            // neither is a best-effort cleanup task.
+            await import('../shared/integrated-runtimes/distribution-policy');
+            const { migrateAgentRuntimePreferences } = await import('./migrations/migrate-runtime-bindings');
+            const { migrateSessionRuntimeBindings } = await import('./SessionStore');
+            const agentResult = await migrateAgentRuntimePreferences();
+            const sessionResult = await migrateSessionRuntimeBindings();
+            console.log(
+              `[migration] Runtime bindings: agents=${agentResult.migratedAgents} channels=${agentResult.migratedChannels} incompatibleAgents=${agentResult.incompatibleAgentIds.length} incompatibleChannels=${agentResult.incompatibleChannelIds.length} sessions=${sessionResult.migratedSessions} incompatibleSessions=${sessionResult.incompatibleSessions}`,
+            );
             emitDeferredPhaseDone('cleanup');
           },
         },

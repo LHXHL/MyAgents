@@ -316,6 +316,9 @@ pub(super) fn normalize_runtime_source_name(
     if runtime == "builtin" {
         return "builtin";
     }
+    if runtime == "dsh" {
+        return "integrated";
+    }
     match runtime_source {
         Some("managed-provider") => "managed-provider",
         _ => "system-cli",
@@ -380,7 +383,8 @@ pub(super) fn owner_prefers_live_agent_runtime(owner: &SidecarOwner) -> bool {
     )
 }
 
-pub(super) fn resolve_runtime_for_owner(
+#[cfg(test)]
+fn resolve_runtime_for_owner(
     runtime_override: Option<String>,
     owner: &SidecarOwner,
     session_runtime: Option<String>,
@@ -977,6 +981,8 @@ mod lifecycle_contract_tests {
             Some(RuntimeIdentity {
                 runtime: "codex".to_string(),
                 runtime_source: Some("system-cli".to_string()),
+                runtime_binding_json: None,
+                compatibility_error: None,
             })
         );
         assert_eq!(
@@ -984,13 +990,20 @@ mod lifecycle_contract_tests {
             Some(RuntimeIdentity {
                 runtime: "codex".to_string(),
                 runtime_source: Some("managed-provider".to_string()),
+                runtime_binding_json: None,
+                compatibility_error: None,
             })
         );
         assert_eq!(
             resolve_session_runtime_identity_full_from_json("malformed-managed-runtime", &content),
             Some(RuntimeIdentity {
-                runtime: "codex".to_string(),
-                runtime_source: Some("managed-provider".to_string()),
+                runtime: "incompatible".to_string(),
+                runtime_source: None,
+                runtime_binding_json: None,
+                compatibility_error: Some(
+                    "legacy builtin/managed-provider Session has no managed Codex proof"
+                        .to_string(),
+                ),
             })
         );
         assert_eq!(

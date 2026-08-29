@@ -23,6 +23,7 @@ import {
 } from '../providerExecution';
 import type { OfficialToolId } from '../official-tools';
 import type { ProjectCapabilitySelectionV1 } from '../projectCapabilities';
+import type { AgentRuntimePreference } from '../integrated-runtimes/identity';
 
 /**
  * Channel type — reuses ImPlatform, not redefined
@@ -57,6 +58,8 @@ export interface ChannelOverrides {
   model?: string;
   runtime?: RuntimeType;
   runtimeConfig?: RuntimeConfig;
+  /** Authoritative Runtime family preference. Legacy runtime fields remain a compatibility projection. */
+  runtimePreference?: AgentRuntimePreference;
   permissionMode?: string;
   toolsDeny?: string[];
 }
@@ -156,6 +159,8 @@ export interface AgentConfig {
   // Agent Runtime (v0.1.59)
   runtime?: RuntimeType;           // 'builtin' | 'claude-code' | 'codex', defaults to 'builtin'
   runtimeConfig?: RuntimeConfig;   // Runtime-specific model/permission/args
+  /** Authoritative Runtime family preference for new Sessions. */
+  runtimePreference?: AgentRuntimePreference;
 
   // Runtime
   setupCompleted?: boolean;

@@ -125,8 +125,7 @@ pub(crate) use stdio::{classify_sidecar_stderr, SidecarStderrLevel};
 pub use types::SidecarInfo;
 use types::{
     decide_runtime_identity_drift_result, normalize_runtime_name, normalize_runtime_source_name,
-    owner_prefers_live_agent_runtime, resolve_runtime_for_owner, sidecar_removal_event_policy,
-    ExistingSidecarReuse,
+    owner_prefers_live_agent_runtime, sidecar_removal_event_policy, ExistingSidecarReuse,
 };
 
 /// Probe the next process-wide Sidecar port without retaining lifecycle state.
