@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.9
+version: 0.10
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,13 +14,13 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.0.0-ingested
-  reviewed_repository_head: 79381f98dbdba80e052ec10238ec35e1c550c956
-  source_commit: 79381f98dbdba80e052ec10238ec35e1c550c956
+  status: protocol-2.0.0-mutation-recovery-refresh-ingested
+  reviewed_repository_head: 7c77ad900f85b36117d813b622adfc7efb11597e
+  source_commit: 7c77ad900f85b36117d813b622adfc7efb11597e
   protocol: 2.0.0
-  manifest_sha256: 5be9cb8eeb52c09cfdaf25bcc19033927751e4f4a47acca5826bd5b3d1359973
-  runtime_manifest_sha256: a9be36e7ed81a3818e5ab9a1749bcf472445ca67f913b4d5dbe4782abb0d3200
-  compatibility_sha256: 85969a49574b0d97925fcf43b4a55c6b7f3aae33a8298df292d6278c772a81cb
+  manifest_sha256: 69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b
+  runtime_manifest_sha256: bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca
+  compatibility_sha256: b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf
   protocol_schema_sha256: 5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
   generated_client_sha256: a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
 ---
@@ -123,16 +123,16 @@ Batch 3 generalizes the compatibility inputs to these flows. It does not redesig
 
 The formal repository-external handoff validates successfully without a sibling source checkout and freezes:
 
-- handoff manifest `5be9cb8eeb52c09cfdaf25bcc19033927751e4f4a47acca5826bd5b3d1359973`;
-- Runtime manifest `a9be36e7ed81a3818e5ab9a1749bcf472445ca67f913b4d5dbe4782abb0d3200`, built from clean MyAgents-dsh source commit `79381f98dbdba80e052ec10238ec35e1c550c956`;
-- compatibility manifest `85969a49574b0d97925fcf43b4a55c6b7f3aae33a8298df292d6278c772a81cb`;
+- handoff manifest `69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b`;
+- Runtime manifest `bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca`, built from clean MyAgents-dsh source commit `7c77ad900f85b36117d813b622adfc7efb11597e`;
+- compatibility manifest `b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf`;
 - formal protocol `2.0.0`, schema `5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60`, and generated Host client `a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626`;
 - DSH artifact `9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
 - macOS arm64, Linux x64 and Windows x64 all labeled `implementation-complete_pending-native-validation` for these bytes.
 
 Formal `2.0.0` is wire-identical to draft.3 and contains 40 Host requests, seven reverse requests and four notifications, including `plan/apply`, `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke`. H0 must ingest and verify this complete immutable handoff; all draft handoffs remain historical evidence and are a hard compatibility failure for the first implementation lock. No pending-native-validation platform claim may be surfaced as verified product support.
 
-The accepted Runtime was built from clean MyAgents-dsh commit `79381f98dbdba80e052ec10238ec35e1c550c956`, which is also the reviewed repository HEAD. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
+The accepted Runtime was built from clean MyAgents-dsh commit `7c77ad900f85b36117d813b622adfc7efb11597e`, which is also the reviewed repository HEAD. It supersedes the `79381f98…` handoff because Host mutation integration proved a prepare-token crash gap: while resume is `recovery_required`, the refreshed Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
 
 The implementation branch is deliberately based on the fetched MyAgents `main` at `c7dc5d79b2752a713e53ec9eee4f1db2324fa7fd` (`0.4.11`). The later MyAgents commits recorded by the original RFC audit were not present in the fetched origin on 2026-08-30, so integration decisions are rechecked against this actual baseline and no unavailable commit is treated as executable authority.
 
@@ -406,11 +406,11 @@ MyAgents consumes only a pinned DSH handoff containing:
 The following block is the exact formal `2.0.0` seed for the first implementation lock:
 
 ```text
-sourceCommit                 79381f98dbdba80e052ec10238ec35e1c550c956
+sourceCommit                 7c77ad900f85b36117d813b622adfc7efb11597e
 protocolVersion              2.0.0
-handoffManifestSha256        5be9cb8eeb52c09cfdaf25bcc19033927751e4f4a47acca5826bd5b3d1359973
-runtimeManifestSha256        a9be36e7ed81a3818e5ab9a1749bcf472445ca67f913b4d5dbe4782abb0d3200
-compatibilitySha256          85969a49574b0d97925fcf43b4a55c6b7f3aae33a8298df292d6278c772a81cb
+handoffManifestSha256        69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b
+runtimeManifestSha256        bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca
+compatibilitySha256          b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf
 protocolSchemaSha256         5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
 generatedClientSha256        a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
 dshArtifactManifestSha256    9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c

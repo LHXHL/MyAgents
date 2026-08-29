@@ -67,9 +67,9 @@ describe("Integrated Runtime identity", () => {
       protocolSchemaSha256:
         "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
       runtimeArtifactSha256:
-        "a9be36e7ed81a3818e5ab9a1749bcf472445ca67f913b4d5dbe4782abb0d3200",
+        "bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca",
       compatibilityManifestSha256:
-        "85969a49574b0d97925fcf43b4a55c6b7f3aae33a8298df292d6278c772a81cb",
+        "b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf",
       sessionFormat: "dsh-session-events-v1",
       platformTarget: "darwin-arm64",
     });
