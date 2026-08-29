@@ -4,12 +4,14 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeType } from '../../shared/types/runtime';
+import { createDshBinding } from '../../shared/integrated-runtimes/identity';
 import {
   REQUIRED_SYSTEM_SKILLS,
   TASK_ALIGNMENT_SKILL_REQUIREMENT,
 } from '../../shared/systemSkills';
 import type { DesktopMessageRequest, InjectedTurnRequest } from '../session-engine/types';
 import type { MirrorPayload } from '../utils/im-mirror';
+import { createSessionMetadata } from '../types/session';
 import type {
   AgentRuntime,
   RuntimeProcess,
@@ -58,7 +60,7 @@ class FakeRuntimeProcess implements RuntimeProcess {
 }
 
 class FakeRuntime implements AgentRuntime {
-  readonly type: RuntimeType = 'codex';
+  readonly type: RuntimeType;
   readonly sentMessages: string[] = [];
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
@@ -87,8 +89,13 @@ class FakeRuntime implements AgentRuntime {
   private nextTurnNumber = 1;
   private nextThreadNumber = 1;
   private readonly omittedLoadedSkillNames: ReadonlySet<string>;
+  private activeRootOperation: Readonly<{
+    clientOperationId: string;
+    clientUserMessageId: string;
+  }> | null;
 
   constructor(private readonly scripts: TurnScript[], options: {
+    runtimeType?: RuntimeType;
     realtimeSteering?: boolean;
     rejectSteer?: boolean;
     deferStart?: boolean;
@@ -102,7 +109,18 @@ class FakeRuntime implements AgentRuntime {
     deferStopBeforeResult?: boolean;
     conversationBranching?: boolean;
     omittedLoadedSkillNames?: readonly string[];
+    recoveredActiveRoot?: Readonly<{
+      clientOperationId: string;
+      clientUserMessageId: string;
+    }>;
   } = {}) {
+    this.type = options.runtimeType ?? 'codex';
+    this.activeRootOperation = options.recoveredActiveRoot
+      ? {
+          clientOperationId: options.recoveredActiveRoot.clientOperationId,
+          clientUserMessageId: options.recoveredActiveRoot.clientUserMessageId,
+        }
+      : null;
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
     this.rejectConfig = options.rejectConfig === true;
@@ -214,6 +232,14 @@ class FakeRuntime implements AgentRuntime {
     this.defer(() => {
       const threadId = options.resumeSessionId ?? `fake-thread-${this.nextThreadNumber++}`;
       this.emit({ kind: 'session_init', sessionId: threadId, model: options.model ?? 'fake-model', tools: ['FakeTool'] });
+      if (this.activeRootOperation && !options.initialTurn) {
+        this.emit({
+          kind: 'root_turn_admitted',
+          runtimeTurnId: `fake-turn-${this.nextTurnNumber++}`,
+          clientUserMessageId: this.activeRootOperation.clientUserMessageId,
+        });
+        this.playTurn('__recovered_active_turn__');
+      }
       if (options.initialTurn) {
         this.emitRootTurnAdmission(options.initialTurn.clientUserMessageId);
         this.playTurn(options.initialTurn.message);
@@ -239,6 +265,13 @@ class FakeRuntime implements AgentRuntime {
 
   async compactContext(): Promise<void> {
     this.compactCalls += 1;
+  }
+
+  getActiveRootOperation(): Readonly<{
+    clientOperationId: string;
+    clientUserMessageId: string;
+  }> | null {
+    return this.activeRootOperation;
   }
 
   async setModel(): Promise<void> {
@@ -335,7 +368,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   private emitRootTurnAdmission(clientUserMessageId?: string): void {
-    if (!this.branchConversation || !clientUserMessageId) return;
+    if ((!this.branchConversation && this.type !== 'dsh') || !clientUserMessageId) return;
     this.emit({
       kind: 'root_turn_admitted',
       runtimeTurnId: `fake-turn-${this.nextTurnNumber++}`,
@@ -371,6 +404,7 @@ class FakeRuntime implements AgentRuntime {
 
   private emit(event: Parameters<UnifiedEventCallback>[0]): void {
     if (!this.callback) throw new Error('fake runtime callback not installed');
+    if (event.kind === 'turn_complete') this.activeRootOperation = null;
     this.callback(event);
   }
 
@@ -403,6 +437,7 @@ let previousRuntime: string | undefined;
 async function createHarness(
   scripts: TurnScript[],
   options: {
+    runtimeType?: RuntimeType;
     realtimeSteering?: boolean;
     rejectSteer?: boolean;
     deferStart?: boolean;
@@ -419,9 +454,13 @@ async function createHarness(
     deferMessagePersist?: boolean;
     deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
-    runtimeSource?: 'system-cli' | 'managed-provider';
+    runtimeSource?: 'integrated' | 'system-cli' | 'managed-provider';
     withManagedHostDispatcher?: boolean;
     omittedLoadedSkillNames?: readonly string[];
+    recoveredActiveRoot?: Readonly<{
+      clientOperationId: string;
+      clientUserMessageId: string;
+    }>;
     unavailableProjectedSkillNames?: readonly string[];
     config?: Record<string, unknown>;
   } = {},
@@ -445,7 +484,7 @@ async function createHarness(
   previousRuntime = process.env.MYAGENTS_RUNTIME;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
-  process.env.MYAGENTS_RUNTIME = 'codex';
+  process.env.MYAGENTS_RUNTIME = options.runtimeType ?? 'codex';
 
   let messagePersistStarted = false;
   let messagePersistCount = 0;
@@ -477,6 +516,7 @@ async function createHarness(
   }
 
   const runtime = new FakeRuntime(scripts, {
+    runtimeType: options.runtimeType,
     realtimeSteering: options.realtimeSteering,
     rejectSteer: options.rejectSteer,
     deferStart: options.deferStart,
@@ -490,6 +530,7 @@ async function createHarness(
     deferStopBeforeResult: options.deferStopBeforeResult,
     conversationBranching: options.conversationBranching,
     omittedLoadedSkillNames: options.omittedLoadedSkillNames,
+    recoveredActiveRoot: options.recoveredActiveRoot,
   });
   if (options.unconfirmedDispatchStop || options.unconfirmedStop) {
     vi.doMock('./utils/kill-with-escalation', () => ({
@@ -514,8 +555,9 @@ async function createHarness(
     };
   });
   vi.doMock('./factory', () => ({
-    getCurrentRuntimeSource: () => options.runtimeSource ?? 'system-cli',
-    getCurrentRuntimeType: () => 'codex',
+    getCurrentRuntimeSource: () => options.runtimeSource
+      ?? (options.runtimeType === 'dsh' ? 'integrated' : 'system-cli'),
+    getCurrentRuntimeType: () => options.runtimeType ?? 'codex',
     getExternalRuntime: () => runtime,
     isDshRuntime: (type: RuntimeType | undefined) => type === 'dsh',
     isExternalRuntime: (type: RuntimeType | undefined) => Boolean(type && type !== 'builtin'),
@@ -665,6 +707,73 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('queues a new Product turn behind the exact active DSH operation recovered on resume', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'recovered turn finished', completeDelayMs: 20 },
+      { kind: 'success', text: 'new turn finished' },
+    ], {
+      runtimeType: 'dsh',
+      recoveredActiveRoot: {
+        clientOperationId: 'operation-before-restart',
+        clientUserMessageId: 'user-before-restart',
+      },
+    });
+    const sessionId = 'session-dsh-active-takeover';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await harness.sessionStore.saveSessionMetadata(createSessionMetadata(workspacePath, {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId: 'runtime-dsh-active-takeover',
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    }));
+    const transcript = await harness.sessionStore.loadSessionTranscript(sessionId);
+    await expect(harness.sessionStore.appendSessionMessages(sessionId, transcript.cursor, [{
+      id: 'user-before-restart',
+      role: 'user',
+      content: 'work that survived the Host restart',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    }])).resolves.toMatchObject({ ok: true });
+
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId,
+      workspacePath,
+      { type: 'desktop' },
+    )).resolves.toEqual({ success: true });
+    await expect(runInjectedTurn(harness, {
+      prompt: 'run only after recovered work',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionResumeIds).toEqual(['runtime-dsh-active-takeover']);
+    expect(harness.runtime.startSessionInitialMessages).toEqual([undefined]);
+    expect(harness.runtime.sentMessages).toEqual([
+      '__recovered_active_turn__',
+      'run only after recovered work',
+    ]);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ id: 'user-before-restart', role: 'user' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('recovered turn finished'),
+        runtimeTurnAnchor: {
+          turnId: 'fake-turn-1',
+          rootUserMessageId: 'user-before-restart',
+        },
+      }),
+      expect.objectContaining({ role: 'user', content: 'run only after recovered work' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('new turn finished'),
+      }),
+    ]);
+  });
+
   it('resumes a healthy 0.146 Product Session with the current Host dispatcher', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'historical session continued' },

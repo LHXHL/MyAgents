@@ -345,6 +345,33 @@ describe('external operation queue owner', () => {
     await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: true });
   });
 
+  it('requeues the same admission owner behind a recovered active Runtime turn', async () => {
+    const queue = await loadFreshQueueOwner();
+    const operation = queue.createExternalMessageOperation({
+      text: 'new turn waits for recovered work',
+      context: context(),
+      runtimeConfig: snapshot(),
+      userMessage: userMessage('new turn waits for recovered work'),
+    });
+    queue.markExternalUserMessageSurfaced(operation);
+    const accepted = vi.fn();
+    operation.deferredDispatchAccepted = accepted;
+
+    const queued = queue.enqueueExistingExternalMessageOperation(operation);
+    expect(queued).toMatchObject({ queued: true, queueId: operation.queueId });
+    expect(queue.shiftExternalOperation()).toMatchObject({
+      kind: 'message',
+      queueId: operation.queueId,
+      userProjection: {
+        surfaced: true,
+        inTranscript: false,
+        persisted: false,
+        retracted: false,
+      },
+      deferredDispatchAccepted: accepted,
+    });
+  });
+
   it('settles queued dispatch acceptance as rejected when the queue item is cancelled', async () => {
     const queue = await loadFreshQueueOwner();
     const queued = enqueueMessage(queue, {

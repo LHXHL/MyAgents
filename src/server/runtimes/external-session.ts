@@ -45,6 +45,7 @@ import {
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
 import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
+import { runtimeTypeForBinding } from '../../shared/integrated-runtimes/identity';
 import { createLiveUserMessageReplay } from '../../shared/chatMessageReplay';
 import {
   withSessionCompletionTerminal,
@@ -214,6 +215,7 @@ import {
   consumeLeadingExternalConfigOps,
   createExternalMessageOperation,
   enqueueExternalConfigOperation,
+  enqueueExistingExternalMessageOperation,
   enqueueExternalMessageOperation,
   getExternalOperationGeneration,
   getExternalOperationQueueLength,
@@ -2002,11 +2004,15 @@ export async function restoreExternalSessionState(
 
   // Cross-runtime guard: session created by a different runtime (e.g., Codex session in CC Sidecar).
   // The other runtime's session ID / threadId is meaningless here — must start fresh.
-  const isCrossRuntime = meta?.runtime && meta.runtime !== currentRuntimeType;
+  const persistedRuntimeType = meta?.runtimeBinding
+    ? runtimeTypeForBinding(meta.runtimeBinding)
+    : meta?.runtime;
+  const isCrossRuntime = persistedRuntimeType !== undefined
+    && persistedRuntimeType !== currentRuntimeType;
 
   if (isCrossRuntime) {
     clearExternalRuntimeSessionId(); // Different runtime — cannot resume
-    console.log(`[external-session] Cross-runtime session: meta.runtime=${meta!.runtime}, current=${currentRuntimeType}, will start fresh`);
+    console.log(`[external-session] Cross-runtime session: persisted=${persistedRuntimeType}, current=${currentRuntimeType}, will start fresh`);
   } else if (meta?.runtimeSessionId) {
     setExternalRuntimeSessionId(meta.runtimeSessionId);
   } else if (meta?.runtime === 'claude-code' && hasExistingMessages) {
@@ -3292,12 +3298,12 @@ async function _doStartExternalSession(options: {
       && options.dispatchPromotion
       && options.requiredSystemSkill,
     );
-    const deferDshMutationRecoveryAdmission = Boolean(
+    const deferDshStartupRecoveryAdmission = Boolean(
       options.initialMessage
       && runtimeType === 'dsh'
-      && existingMetadataAtStart?.pendingDshMutation,
+      && (options.resumeSessionId || existingMetadataAtStart?.pendingDshMutation),
     );
-    const deferInitialAdmission = deferRequiredAdmission || deferDshMutationRecoveryAdmission;
+    const deferInitialAdmission = deferRequiredAdmission || deferDshStartupRecoveryAdmission;
     if (options.initialMessage && !deferInitialAdmission) {
       const clientUserMessageId = await admitInitialMessage();
       if (!options.dispatchPromotion) {
@@ -3395,10 +3401,45 @@ async function _doStartExternalSession(options: {
     if (options.requiredSystemSkill) {
       await requireCurrentExternalSkill(options.requiredSystemSkill, externalSkillAdmission);
     }
+    let deferredInitialDispatched = false;
     if (deferInitialAdmission) {
-      await admitInitialMessage();
+      await waitExternalTurnFinalization(60_000);
+      const recoveredActiveRoot = runtime.getActiveRootOperation?.(process) ?? null;
+      if (recoveredActiveRoot) {
+        if (!options.messageOperation) {
+          throw new Error('Deferred DSH input is missing its Product operation owner');
+        }
+        if (options.dispatchPromotion) finishExternalTurnPromotion(options.dispatchPromotion);
+        const queued = enqueueExistingExternalMessageOperation({
+          ...options.messageOperation,
+          context: {
+            ...options.messageOperation.context,
+            beforeDispatch: undefined,
+          },
+          deferredDispatchAccepted: options.onDispatchAccepted,
+        });
+        if (!queued.queued) throw new Error(queued.error);
+        setExternalSessionState('running');
+        deferredInitialDispatched = true;
+      } else {
+        const clientUserMessageId = await admitInitialMessage();
+        if (!clientUserMessageId) {
+          throw new Error('Deferred DSH input is missing its Product user identity');
+        }
+        if (options.dispatchPromotion) {
+          assertExternalTurnPromotionCurrent(options.dispatchPromotion);
+          finishExternalTurnPromotion(options.dispatchPromotion, { status: 'dispatched' });
+        }
+        await runtime.sendMessage(
+          process,
+          options.initialRuntimeMessage ?? options.initialMessage!,
+          options.initialImages,
+          { clientUserMessageId },
+        );
+        deferredInitialDispatched = true;
+      }
     }
-    if (options.dispatchPromotion && options.initialMessage) {
+    if (options.dispatchPromotion && options.initialMessage && !deferredInitialDispatched) {
       assertExternalTurnPromotionCurrent(options.dispatchPromotion);
       if (process.exited || getExternalActiveProcess() !== process) return;
       finishExternalTurnPromotion(options.dispatchPromotion, { status: 'dispatched' });
@@ -4722,6 +4763,8 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
         item.context,
         item,
         () => {
+          item.deferredDispatchAccepted?.();
+          item.deferredDispatchAccepted = undefined;
           setExternalSessionState('running');
           setExternalOperationDrainInFlight(false);
           broadcast('queue:started', {

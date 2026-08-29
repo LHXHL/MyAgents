@@ -202,6 +202,28 @@ export function enqueueExternalMessageOperation(input: {
   return { queued: true, queueId, dispatchAcceptance };
 }
 
+export function enqueueExistingExternalMessageOperation(
+  operation: ExternalMessageOperation,
+): {
+  queued: true;
+  queueId: string;
+  dispatchAcceptance: Promise<ExternalSendResult>;
+} | { queued: false; error: string } {
+  if (queuedExternalMessageCount() >= EXTERNAL_MAX_QUEUE_SIZE) {
+    return { queued: false, error: '排队消息已达上限，请稍后再发' };
+  }
+  let settleDispatchAcceptance!: (result: ExternalSendResult) => void;
+  const dispatchAcceptance = new Promise<ExternalSendResult>((resolve) => {
+    settleDispatchAcceptance = resolve;
+  });
+  externalOperationQueue.push({
+    ...operation,
+    dispatchAcceptance,
+    settleDispatchAcceptance,
+  });
+  return { queued: true, queueId: operation.queueId, dispatchAcceptance };
+}
+
 export function enqueueExternalConfigOperation(
   patch: ExternalRuntimeConfigPatch,
   source: ExternalConfigSource,

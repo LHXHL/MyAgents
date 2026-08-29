@@ -135,6 +135,8 @@ export interface ExternalMessageOperation {
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
   userProjection: ExternalUserMessageProjectionState;
+  /** In-memory callback retained when startup recovery requeues this exact operation. */
+  deferredDispatchAccepted?: () => void;
 }
 
 export interface ExternalQueuedMessageOperation extends ExternalMessageOperation {

@@ -1282,6 +1282,7 @@ export async function reconcileDshTurnProjections(input: {
     runtimeSessionId: string;
     cursor: DshProjectionCursor;
     assistantMessages: readonly SessionMessage[];
+    unsettledTurn?: { productTurnId: string; clientUserMessageId: string };
     runtimeUsageTotals?: MessageUsage;
 }): Promise<DshMutationStoreResult<{ transcriptChanged: boolean; cursor: DshProjectionCursor }>> {
     ensureStorageDir();
@@ -1377,6 +1378,23 @@ export async function reconcileDshTurnProjections(input: {
                     )
                 ))) {
                     return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
+                }
+                if (input.unsettledTurn) {
+                    const matchingUsers = target.filter(message => (
+                        message.role === 'user'
+                        && message.id === input.unsettledTurn?.clientUserMessageId
+                    ));
+                    const conflictingAssistant = target.some(message => (
+                        message.role === 'assistant'
+                        && message.runtimeTurnAnchor !== undefined
+                        && (
+                            message.runtimeTurnAnchor.turnId === input.unsettledTurn?.productTurnId
+                            || message.runtimeTurnAnchor.rootUserMessageId === input.unsettledTurn?.clientUserMessageId
+                        )
+                    ));
+                    if (matchingUsers.length !== 1 || conflictingAssistant) {
+                        return dshMutationFailure('storage_consistency_error', 'The active DSH turn lacks one exact Product user owner');
+                    }
                 }
 
                 if (transcriptChanged) atomicRewriteSessionMessages(input.sessionId, target);

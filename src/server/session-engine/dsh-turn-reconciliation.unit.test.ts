@@ -9,7 +9,6 @@ import type {
 } from '../integrated-runtimes/dsh/mutations';
 import {
   buildDshTurnProjectionSnapshot,
-  reconcileDshTurnsAtStartup,
 } from './dsh-turn-reconciliation';
 
 const runtimeSessionId = 'runtime-session-ordinary-recovery';
@@ -219,7 +218,7 @@ describe('DSH ordinary turn reconciliation', () => {
     )).toThrow(/turn\/get terminal differs/u);
   });
 
-  it('does not publish readiness while a resumed admitted turn remains non-terminal', async () => {
+  it('preserves the exact owner of a resumed admitted turn that remains non-terminal', () => {
     const fixture = succeededHistory();
     const history = {
       ...fixture.history,
@@ -237,13 +236,5 @@ describe('DSH ordinary turn reconciliation', () => {
       productTurnId: 'product-turn-1',
     }]);
 
-    await expect(reconcileDshTurnsAtStartup({
-      productSessionId: 'product-session-1',
-      runtimeSessionId,
-      controller: {
-        readHistory: async () => history,
-        getTurn: async () => ({ clientOperationId: 'operation-1', admission }),
-      } as never,
-    })).rejects.toThrow(/non-terminal admitted turn/u);
   });
 });

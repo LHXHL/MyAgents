@@ -31,10 +31,14 @@ import type {
   RuntimeConfigCapabilities,
   RuntimeProcess,
   SessionStartOptions,
+  UnifiedEvent,
   UnifiedEventCallback,
 } from '../../runtimes/types';
 import { recoverPendingDshMutation } from '../../session-engine/dsh-mutation-recovery';
-import { reconcileDshTurnsAtStartup } from '../../session-engine/dsh-turn-reconciliation';
+import {
+  reconcileDshTurnsAtStartup,
+  type DshUnsettledTurn,
+} from '../../session-engine/dsh-turn-reconciliation';
 import { DshAttachmentRegistry } from './attachments';
 import { DshRuntimeEventProjector } from './event-projector';
 import { compileDshExtensionSnapshot } from './extension-compiler';
@@ -332,7 +336,7 @@ class DshProcess implements RuntimeProcess {
   planMode: 'normal' | 'plan' | undefined;
   configuration: DshConfiguration;
   readonly operationUserMessages = new Map<string, string>();
-  readonly pendingInteractions = new Map<string, PendingInteraction>();
+  readonly pendingInteractions: Map<string, PendingInteraction>;
 
   constructor(
     readonly host: DshRuntimeProcessHost,
@@ -346,9 +350,16 @@ class DshProcess implements RuntimeProcess {
     readonly extensionDigest: string,
     readonly tools: readonly string[],
     readonly productTranscriptChangedAtStartup: boolean,
+    activeTurn?: DshUnsettledTurn,
+    pendingInteractions?: Map<string, PendingInteraction>,
   ) {
     this.configuration = configuration;
     this.runtimeGeneration = string(host.identity?.runtimeGeneration, 'DSH Runtime generation');
+    this.pendingInteractions = pendingInteractions ?? new Map();
+    if (activeTurn) {
+      this.activeOperationId = activeTurn.clientOperationId;
+      this.operationUserMessages.set(activeTurn.clientOperationId, activeTurn.clientUserMessageId);
+    }
   }
 
   get pid(): number {
@@ -481,6 +492,17 @@ export class DshRuntime implements AgentRuntime {
     const extension = compileDshExtensionSnapshot();
     let processValue: DshProcess | undefined;
     let projector: DshRuntimeEventProjector | undefined;
+    const pendingInteractions = new Map<string, PendingInteraction>();
+    const deferredProductActions: Array<() => void> = [];
+    let productEventDeliveryReady = false;
+    const emitProductEvent = (event: UnifiedEvent): void => {
+      if (productEventDeliveryReady) onEvent(event);
+      else deferredProductActions.push(() => onEvent(event));
+    };
+    const deferProductAction = (action: () => void): void => {
+      if (productEventDeliveryReady) action();
+      else deferredProductActions.push(action);
+    };
 
     const hostHandlers: DshHostRequestHandlers = Object.freeze({
       'host/credential/resolve': (params) => {
@@ -519,15 +541,13 @@ export class DshRuntime implements AgentRuntime {
         };
       },
       'host/interaction/request': (params) => {
-        const active = processValue;
-        if (!active) throw new Error('DSH interaction arrived before Session binding');
         const interactionId = string(params.interactionId, 'DSH interaction id');
         const kind = string(params.kind, 'DSH interaction kind') as PendingInteraction['kind'];
         if (kind !== 'permission' && kind !== 'ask_user' && kind !== 'plan_approval') {
           throw new Error('DSH interaction kind is unsupported');
         }
         const schema = object(params.schema, 'DSH interaction schema');
-        active.pendingInteractions.set(interactionId, {
+        pendingInteractions.set(interactionId, {
           kind,
           desiredPolicyRevision: string(params.desiredPolicyRevision, 'DSH interaction revision'),
           schema,
@@ -536,14 +556,14 @@ export class DshRuntime implements AgentRuntime {
         const toolName = kind === 'permission'
           ? (typeof schema.tool === 'string' ? schema.tool : 'DSHTool')
           : 'AskUserQuestion';
-        onEvent({
+        emitProductEvent({
           kind: 'permission_request',
           requestId: interactionId,
           toolName,
           toolUseId: typeof authority.callId === 'string' ? authority.callId : interactionId,
           input: schema,
         });
-        onEvent({ kind: 'status_change', state: 'waiting_permission' });
+        emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });
         return { registered: true };
       },
       'host/tool/execute': () => ({
@@ -563,8 +583,8 @@ export class DshRuntime implements AgentRuntime {
       },
       'host/interaction/cancel': params => {
         const interactionId = string(params.interactionId, 'DSH cancelled interaction id');
-        processValue?.pendingInteractions.delete(interactionId);
-        onEvent({ kind: 'interactive_request_resolved', requestId: interactionId });
+        pendingInteractions.delete(interactionId);
+        emitProductEvent({ kind: 'interactive_request_resolved', requestId: interactionId });
       },
     });
     const host = new DshRuntimeProcessHost({
@@ -575,11 +595,11 @@ export class DshRuntime implements AgentRuntime {
       commandDirectories: process.platform === 'win32'
         ? [dirname(installation.nodeExecutablePath)]
         : ['/bin', '/usr/bin'],
-      onStderrLine: line => onEvent({ kind: 'log', level: 'warn', message: line }),
+      onStderrLine: line => emitProductEvent({ kind: 'log', level: 'warn', message: line }),
       redactStderrLine: redactDshDiagnosticLine,
       onFailure: error => {
-        onEvent({ kind: 'log', level: 'error', message: redactDshDiagnosticLine(error.message) });
-        onEvent({ kind: 'status_change', state: 'error' });
+        emitProductEvent({ kind: 'log', level: 'error', message: redactDshDiagnosticLine(error.message) });
+        emitProductEvent({ kind: 'status_change', state: 'error' });
       },
     });
 
@@ -588,12 +608,14 @@ export class DshRuntime implements AgentRuntime {
       projector = new DshRuntimeEventProjector({
         productSessionId: options.sessionId,
         runtimeGeneration: identity.runtimeGeneration,
-        onEvent,
+        onEvent: emitProductEvent,
         clientUserMessageIdForOperation: operationId => processValue?.operationUserMessages.get(operationId),
         onTurnTerminal: terminal => {
-          if (processValue?.activeOperationId === terminal.clientOperationId) {
-            processValue.activeOperationId = undefined;
-          }
+          deferProductAction(() => {
+            if (processValue?.activeOperationId === terminal.clientOperationId) {
+              processValue.activeOperationId = undefined;
+            }
+          });
         },
       });
       const extensionResult = await host.request(
@@ -676,7 +698,21 @@ export class DshRuntime implements AgentRuntime {
         extensionDigest,
         tools,
         recovery.recovered || turnReconciliation.transcriptChanged,
+        turnReconciliation.activeTurn,
+        pendingInteractions,
       );
+      await projector.whenIdle();
+      if (turnReconciliation.activeTurn) {
+        onEvent({
+          kind: 'root_turn_admitted',
+          runtimeTurnId: turnReconciliation.activeTurn.productTurnId,
+          clientUserMessageId: turnReconciliation.activeTurn.clientUserMessageId,
+        });
+      } else if (options.resumeSessionId) {
+        deferredProductActions.length = 0;
+      }
+      productEventDeliveryReady = true;
+      for (const action of deferredProductActions.splice(0)) action();
       await this.applyConfiguration(processValue, configuration);
       await this.applyPlanMode(
         processValue,
@@ -689,7 +725,14 @@ export class DshRuntime implements AgentRuntime {
         tools: [...tools],
       });
       onEvent({ kind: 'runtime_tool_catalog', tools: [...tools] });
-      onEvent({ kind: 'status_change', state: 'idle' });
+      onEvent({
+        kind: 'status_change',
+        state: pendingInteractions.size > 0
+          ? 'waiting_permission'
+          : processValue.activeOperationId
+            ? 'running'
+            : 'idle',
+      });
       if (options.initialTurn) {
         await this.startTurn(
           processValue,
@@ -766,6 +809,20 @@ export class DshRuntime implements AgentRuntime {
       images,
       options?.clientUserMessageId ?? `user-${randomUUID()}`,
     );
+  }
+
+  getActiveRootOperation(runtimeProcess: RuntimeProcess): Readonly<{
+    clientOperationId: string;
+    clientUserMessageId: string;
+  }> | null {
+    const process = dshProcess(runtimeProcess);
+    const clientOperationId = process.activeOperationId;
+    if (!clientOperationId) return null;
+    const clientUserMessageId = process.operationUserMessages.get(clientOperationId);
+    if (!clientUserMessageId) {
+      throw new Error('DSH active root operation lost its Product user owner');
+    }
+    return Object.freeze({ clientOperationId, clientUserMessageId });
   }
 
   async steerMessage(

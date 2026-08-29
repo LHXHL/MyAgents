@@ -73,6 +73,7 @@ export type DshTurnProjectionSnapshot = Readonly<{
 export type DshTurnReconciliationResult = Readonly<{
   transcriptChanged: boolean;
   reconciledOperations: number;
+  activeTurn?: DshUnsettledTurn;
 }>;
 
 class DshHistoryAdvancedError extends Error {}
@@ -485,6 +486,9 @@ export function buildDshTurnProjectionSnapshot(
       throw new Error('DSH terminal operation lacks an accepted owner');
     }
   }
+  if (unsettledTurns.length > 1) {
+    throw new Error('DSH resume exposes more than one non-terminal root operation');
+  }
   return Object.freeze({
     cursor: Object.freeze({
       schemaVersion: 1,
@@ -533,19 +537,24 @@ export async function reconcileDshTurnsAtStartup(input: {
   if (snapshot.cursor.runtimeSessionId !== input.runtimeSessionId) {
     throw new Error('DSH turn reconciliation changed Runtime Session identity');
   }
-  if (snapshot.unsettledTurns.length > 0) {
-    throw new Error('DSH resume still owns a non-terminal admitted turn');
-  }
+  const activeTurn = snapshot.unsettledTurns[0];
   const result = await reconcileDshTurnProjections({
     sessionId: input.productSessionId,
     runtimeSessionId: input.runtimeSessionId,
     cursor: snapshot.cursor,
     assistantMessages: snapshot.assistantTurns.map(turn => turn.assistantMessage),
+    ...(activeTurn ? {
+      unsettledTurn: {
+        productTurnId: activeTurn.productTurnId,
+        clientUserMessageId: activeTurn.clientUserMessageId,
+      },
+    } : {}),
     runtimeUsageTotals: snapshot.runtimeUsageTotals,
   });
   if (!result.success) throw new Error(`DSH Product turn reconciliation failed: ${result.error}`);
   return Object.freeze({
     transcriptChanged: result.value.transcriptChanged,
     reconciledOperations: snapshot.assistantTurns.length,
+    ...(activeTurn ? { activeTurn } : {}),
   });
 }

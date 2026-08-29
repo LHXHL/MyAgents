@@ -195,6 +195,91 @@ describe('DSH Product mutation journal', () => {
     ]);
   });
 
+  it('preserves the exact Product owner while a resumed DSH turn remains active', async () => {
+    const sessionId = 'dsh-active-turn-takeover';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    const metadata = createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    });
+    await store.saveSessionMetadata(metadata);
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [{
+      id: 'user-active-owner',
+      role: 'user',
+      content: 'continue this turn after restart',
+      timestamp: '2026-08-30T00:00:00.000Z',
+    }])).resolves.toMatchObject({ ok: true });
+
+    const events = [
+      {
+        sequence: 0,
+        eventType: 'myagents/operation/accepted',
+        eventSha256: 'a'.repeat(64),
+        data: {
+          clientOperationId: 'operation-active-owner',
+          clientUserMessageId: 'user-active-owner',
+          productTurnId: 'product-turn-active-owner',
+          acceptedAt: 1_777_507_200_000,
+        },
+      },
+      { sequence: 1, eventType: 'turn/start', eventSha256: 'b'.repeat(64), data: { turn: 1 } },
+      {
+        sequence: 2,
+        eventType: 'myagents/operation/claimed',
+        eventSha256: 'c'.repeat(64),
+        data: {
+          clientOperationId: 'operation-active-owner',
+          messageId: 'native-user-active-owner',
+          dshTurn: 1,
+        },
+      },
+    ];
+    const readHistory = vi.fn(async () => ({
+      runtimeSessionId,
+      durableSequence: events.length,
+      events,
+      mutationBoundaries: [],
+      transcriptPostcondition: 'f'.repeat(64),
+    }));
+    const getTurn = vi.fn(async () => ({
+      clientOperationId: 'operation-active-owner',
+      admission: {
+        clientOperationId: 'operation-active-owner',
+        turnId: 'product-turn-active-owner',
+        admittedAt: new Date(1_777_507_200_000).toISOString(),
+      },
+    }));
+
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId,
+      runtimeSessionId,
+      controller: { readHistory, getTurn } as never,
+    })).resolves.toEqual({
+      transcriptChanged: false,
+      reconciledOperations: 0,
+      activeTurn: {
+        clientOperationId: 'operation-active-owner',
+        clientUserMessageId: 'user-active-owner',
+        productTurnId: 'product-turn-active-owner',
+      },
+    });
+    expect(getTurn).toHaveBeenCalledWith('operation-active-owner', undefined);
+    expect(store.getSessionData(sessionId)?.messages).toEqual([
+      expect.objectContaining({ id: 'user-active-owner', role: 'user' }),
+    ]);
+    expect(store.getSessionMetadata(sessionId)).toMatchObject({
+      dshProjectionCursor: {
+        schemaVersion: 1,
+        runtimeSessionId,
+        durableSequence: 3,
+        transcriptPostcondition: 'f'.repeat(64),
+      },
+    });
+  });
+
   it('publishes a missing terminal assistant exactly once with its verified native cursor', async () => {
     const sessionId = 'dsh-turn-reconciliation';
     const metadata = createSessionMetadata('/tmp/dsh-workspace', {

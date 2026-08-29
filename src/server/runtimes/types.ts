@@ -420,6 +420,12 @@ export interface AgentRuntime {
     options?: { clientUserMessageId?: string },
   ): Promise<void>;
 
+  /** Exact root operation currently owned by a resumed Runtime, when any. */
+  getActiveRootOperation?(process: RuntimeProcess): Readonly<{
+    clientOperationId: string;
+    clientUserMessageId: string;
+  }> | null;
+
   /**
    * Compact the active conversation through the runtime's native control
    * plane. This is intentionally separate from sendMessage(): compaction is a
