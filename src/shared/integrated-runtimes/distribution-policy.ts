@@ -6,6 +6,8 @@ import {
   type IntegratedRuntimeId,
 } from "./identity";
 
+export type DistributionRuntimeType = "builtin" | "dsh" | ExternalRuntimeId;
+
 export type RuntimeSelectorAvailability = "always" | "labs" | "hidden";
 
 export interface AgentRuntimeDistributionPolicy {
@@ -86,4 +88,31 @@ export function isRuntimeSelectorAvailable(
     policy.selectorAvailability === "always" ||
     (policy.selectorAvailability === "labs" && labsEnabled)
   );
+}
+
+export function integratedRuntimeType(id: IntegratedRuntimeId): "builtin" | "dsh" {
+  return id === "claude-agent-sdk" ? "builtin" : "dsh";
+}
+
+export function defaultIntegratedRuntimeType(
+  policy: AgentRuntimeDistributionPolicy,
+): "builtin" | "dsh" {
+  return integratedRuntimeType(policy.defaultIntegratedRuntime);
+}
+
+export function isRuntimeAllowedByDistribution(
+  policy: AgentRuntimeDistributionPolicy,
+  runtime: DistributionRuntimeType,
+  runtimeSource?: "integrated" | "system-cli" | "managed-provider" | null,
+): boolean {
+  if (runtime === "builtin") {
+    return policy.allowedIntegratedRuntimes.includes("claude-agent-sdk");
+  }
+  if (runtime === "dsh") {
+    return policy.allowedIntegratedRuntimes.includes("dsh");
+  }
+  if (runtime === "codex" && runtimeSource === "managed-provider") {
+    return policy.allowedIntegratedRuntimes.includes("claude-agent-sdk");
+  }
+  return policy.allowedExternalRuntimes.includes(runtime);
 }

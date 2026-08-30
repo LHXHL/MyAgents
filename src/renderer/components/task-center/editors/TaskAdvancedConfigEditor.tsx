@@ -29,12 +29,17 @@ import {
   VALID_RUNTIMES,
   getRuntimePermissionModes,
   buildRuntimeChangePatch,
+  isAgentRuntimeSelectorAvailable,
   RUNTIME_CONFIG_PER_RUNTIME_FIELDS,
   type RuntimeModelInfo,
   type RuntimeSource,
   type RuntimeType,
 } from '@/../shared/types/runtime';
 import { isPermissionModeForRuntimeIdentity } from '@/../shared/providerExecution';
+import {
+  AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  isRuntimeAllowedByDistribution,
+} from '@/../shared/integrated-runtimes/distribution-policy';
 import type { McpServerDefinition } from '@/config/types';
 import type { RuntimeConfig } from '@/../shared/types/runtime';
 import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
@@ -152,6 +157,9 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // even when Labs is off; otherwise editing a valid managed-provider task
   // would collapse it into a builtin/provider shape.
   const multiAgentRuntimeEnabled = !!config?.multiAgentRuntime;
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
+    multiAgentRuntimeEnabled,
+  );
 
   // Effective runtime that this task will run under (in this UI's view):
   //   user override `runtime` (if set) > Agent's runtime > 'builtin' default
@@ -419,7 +427,9 @@ export function TaskAdvancedConfigEditor(props: Props) {
         // possible RuntimeType.
         label: t('advanced.followAgentWorkspaceCurrent', { value: agentRuntimeLabel }),
       },
-      ...VALID_RUNTIMES.map((r) => ({
+      ...VALID_RUNTIMES.filter(runtime =>
+        isRuntimeAllowedByDistribution(AGENT_RUNTIME_DISTRIBUTION_POLICY, runtime),
+      ).map((r) => ({
         value: r,
         label: RUNTIME_DISPLAY_NAMES[r],
       })),
@@ -505,7 +515,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
               runtime is forced to 'builtin' upstream so model/permission/MCP
               fields show their builtin variant. Mirrors WorkspaceBasicsSection's
               gate treatment so the two surfaces feel consistent. */}
-          {multiAgentRuntimeEnabled && (
+          {runtimeSelectorAvailable && (
             <FieldRow
               label="Runtime"
               hint={

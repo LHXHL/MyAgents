@@ -204,7 +204,7 @@ function fallbackRuntimeForOpen(
   fallbackRuntime: RuntimeType,
   multiAgentRuntime: boolean | undefined,
 ): RuntimeType {
-  return multiAgentRuntime ? fallbackRuntime : 'builtin';
+  return resolveEffectiveRuntime(fallbackRuntime, !!multiAgentRuntime);
 }
 
 function normalizeRuntimeSourceForOpen(

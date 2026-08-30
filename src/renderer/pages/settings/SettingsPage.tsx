@@ -107,6 +107,7 @@ import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
 import type { ChannelType } from '../../../shared/types/agent';
+import { AGENT_RUNTIME_DISTRIBUTION_POLICY } from '../../../shared/integrated-runtimes/distribution-policy';
 import { reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 import { getBotWorkspaceCandidates } from '@/components/ImSettings/botWorkspaceSelection';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
@@ -4991,24 +4992,26 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                     </button>
                                 </div>
 
-                                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
-                                    <div className="flex-1 pr-4">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.runtimeTitle')}</p>
-                                        <p className="text-xs text-[var(--ink-muted)]">
-                                            {tSettings('about.runtimeDescription')}
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={() => updateConfig({ multiAgentRuntime: !config.multiAgentRuntime })}
-                                        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${config.multiAgentRuntime ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                                            }`}
-                                    >
-                                        <span
-                                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.multiAgentRuntime ? 'translate-x-5' : 'translate-x-0'
+                                {AGENT_RUNTIME_DISTRIBUTION_POLICY.selectorAvailability === 'labs' && (
+                                    <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
+                                        <div className="flex-1 pr-4">
+                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.runtimeTitle')}</p>
+                                            <p className="text-xs text-[var(--ink-muted)]">
+                                                {tSettings('about.runtimeDescription')}
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => updateConfig({ multiAgentRuntime: !config.multiAgentRuntime })}
+                                            className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${config.multiAgentRuntime ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
                                                 }`}
-                                        />
-                                    </button>
-                                </div>
+                                        >
+                                            <span
+                                                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.multiAgentRuntime ? 'translate-x-5' : 'translate-x-0'
+                                                    }`}
+                                            />
+                                        </button>
+                                    </div>
+                                )}
 
                                 <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                                     <div className="flex-1 pr-4">

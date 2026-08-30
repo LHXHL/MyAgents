@@ -59,4 +59,27 @@ describe('RuntimeSelector i18n', () => {
     await user.click(screen.getByRole('button', { name: /MyAgents \(DSH\)/ }));
     expect(onChange).toHaveBeenCalledWith('dsh');
   });
+
+  it('does not expose Runtimes excluded by a custom distribution', async () => {
+    const user = userEvent.setup();
+    render(
+      <RuntimeSelector
+        value="dsh"
+        detections={detections}
+        onChange={vi.fn()}
+        distributionPolicy={{
+          schemaVersion: 1,
+          allowedIntegratedRuntimes: ['dsh'],
+          allowedExternalRuntimes: [],
+          defaultIntegratedRuntime: 'dsh',
+          selectorAvailability: 'always',
+        }}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Runtime: MyAgents (DSH)'));
+    expect(screen.getAllByRole('button', { name: /MyAgents \(DSH\)/ })).toHaveLength(2);
+    expect(screen.queryByText('MyAgents (Claude Agent SDK)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Codex CLI')).not.toBeInTheDocument();
+  });
 });

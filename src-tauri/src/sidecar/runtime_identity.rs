@@ -8,6 +8,7 @@ use crate::utils::bom::strip_bom;
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
 const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
+const XAI_SUBSCRIPTION_PROVIDER_ID: &str = "xai-sub";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeIdentity {
@@ -69,6 +70,38 @@ impl RuntimeIdentity {
 
     pub fn runtime_source_label(&self) -> &str {
         normalize_runtime_source_name(&self.runtime, self.runtime_source.as_deref())
+    }
+}
+
+pub(super) fn distribution_default_runtime_identity() -> RuntimeIdentity {
+    distribution_default_runtime_identity_for(crate::runtime_distribution_policy::policy())
+}
+
+fn distribution_default_runtime_identity_for(
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    RuntimeIdentity::new(Some(policy.default_runtime()), None)
+}
+
+pub(super) fn admit_runtime_identity(identity: RuntimeIdentity) -> RuntimeIdentity {
+    admit_runtime_identity_for(identity, crate::runtime_distribution_policy::policy())
+}
+
+fn admit_runtime_identity_for(
+    identity: RuntimeIdentity,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    if identity.compatibility_error.is_some() {
+        return identity;
+    }
+    if policy.allows_runtime(&identity.runtime, identity.runtime_source.as_deref()) {
+        identity
+    } else {
+        RuntimeIdentity::incompatible(format!(
+            "Runtime {}/{} is not included in this distribution",
+            identity.runtime,
+            identity.runtime_source_label(),
+        ))
     }
 }
 
@@ -233,6 +266,18 @@ fn resolve_agent_runtime_identity_by_id_from_value(
     cfg: &serde_json::Value,
     agent_id: &str,
 ) -> Option<RuntimeIdentity> {
+    resolve_agent_runtime_identity_by_id_with_policy(
+        cfg,
+        agent_id,
+        crate::runtime_distribution_policy::policy(),
+    )
+}
+
+fn resolve_agent_runtime_identity_by_id_with_policy(
+    cfg: &serde_json::Value,
+    agent_id: &str,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> Option<RuntimeIdentity> {
     let agent = cfg
         .get("agents")?
         .as_array()?
@@ -247,17 +292,18 @@ fn resolve_agent_runtime_identity_by_id_from_value(
         .and_then(|value| value.as_object())
         .and_then(|config| config.get("source"))
         .and_then(|value| value.as_str());
-    let selection_available = cfg
+    let labs_enabled = cfg
         .get("multiAgentRuntime")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let selection_available = policy.selector_available(labs_enabled);
     let preference = if selection_available {
         match agent.get("runtimePreference") {
             Some(preference) => runtime_identity_from_preference(preference).map(Some),
             None => runtime_identity_from_legacy_agent(agent).map(Some),
         }
     } else {
-        Ok(None)
+        Ok(Some(distribution_default_runtime_identity_for(policy)))
     };
     let preference = match preference {
         Ok(preference) => preference,
@@ -272,48 +318,46 @@ fn resolve_agent_runtime_identity_by_id_from_value(
             "claude-code" | "codex" | "gemini"
         )
     }) {
-        return Some(preference.clone());
+        return Some(admit_runtime_identity_for(preference.clone(), policy));
     }
 
     let provider_id = agent.get("providerId").and_then(|value| value.as_str());
-    let managed_codex_selected = provider_id == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
-        && (preference.is_some()
-            || !selection_available
-            || runtime == "builtin"
-            || (runtime == "codex" && runtime_source == Some("managed-provider")));
-    if managed_codex_selected {
+    if provider_id == Some(CODEX_SUBSCRIPTION_PROVIDER_ID) {
         return Some(if managed_codex_provider_ready(cfg) {
-            RuntimeIdentity::new(Some("codex"), Some("managed-provider"))
+            admit_runtime_identity_for(
+                RuntimeIdentity::new(Some("codex"), Some("managed-provider")),
+                policy,
+            )
         } else {
             RuntimeIdentity::incompatible("codex-sub requires a ready managed Codex Runtime")
         });
     }
-    if provider_id == Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) {
-        return Some(RuntimeIdentity::new(Some("builtin"), None));
-    }
-    // Gate: multi-agent runtime feature must be explicitly enabled
-    // for user-managed external runtimes. Managed Codex provider
-    // is gated above by its own provider readiness flags instead.
-    if !selection_available {
-        return Some(RuntimeIdentity::new(Some("builtin"), None));
+    if matches!(
+        provider_id,
+        Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID | XAI_SUBSCRIPTION_PROVIDER_ID)
+    ) {
+        return Some(admit_runtime_identity_for(
+            RuntimeIdentity::new(Some("builtin"), None),
+            policy,
+        ));
     }
     if let Some(preference) = preference {
-        return Some(preference);
+        return Some(admit_runtime_identity_for(preference, policy));
     }
     if runtime != "builtin" {
         // Only the readable legacy Managed Codex shape may retain this source.
         // Other explicit runtimes win over dormant provider/source fields,
         // matching the renderer/server Agent-template projection.
         let explicit_runtime_source = runtime_source.filter(|source| *source != "managed-provider");
-        return Some(RuntimeIdentity::new(Some(runtime), explicit_runtime_source));
+        return Some(admit_runtime_identity_for(
+            RuntimeIdentity::new(Some(runtime), explicit_runtime_source),
+            policy,
+        ));
     }
-    Some(RuntimeIdentity::new(Some("builtin"), None))
-}
-
-pub(super) fn resolve_agent_runtime_from_config(
-    workspace_path: &std::path::Path,
-) -> Option<String> {
-    resolve_agent_runtime_identity_from_config(workspace_path).map(|identity| identity.runtime)
+    Some(admit_runtime_identity_for(
+        distribution_default_runtime_identity_for(policy),
+        policy,
+    ))
 }
 
 fn managed_codex_provider_ready(cfg: &serde_json::Value) -> bool {
@@ -355,7 +399,7 @@ fn workspace_paths_match(agent_path: &str, workspace_path: &std::path::Path) -> 
 ///
 /// This is the authoritative source for EXISTING sessions — the session's own metadata
 /// records which runtime created it, regardless of the current agent config.
-/// Agent config (resolve_agent_runtime_from_config) decides the default for NEW sessions
+/// Agent config (resolve_agent_runtime_identity_from_config) decides the default for NEW sessions
 /// and is gated by `multiAgentRuntime`; session metadata is stable once created and is
 /// read regardless of that gate so an existing runtime-A history is never reopened as
 /// runtime B under the same MyAgents session_id.
@@ -500,7 +544,7 @@ pub(super) fn resolve_session_runtime_identity_full_from_json(
         if session.get("id").and_then(|v| v.as_str()) == Some(session_id) {
             if let Some(binding) = session.get("runtimeBinding") {
                 return Some(match runtime_identity_from_binding(binding) {
-                    Ok(identity) => identity,
+                    Ok(identity) => admit_runtime_identity(identity),
                     Err(error) => RuntimeIdentity::incompatible(error),
                 });
             }
@@ -514,7 +558,7 @@ pub(super) fn resolve_session_runtime_identity_full_from_json(
                 )));
             }
             return Some(match runtime_identity_from_legacy_session(session) {
-                Ok(identity) => identity,
+                Ok(identity) => admit_runtime_identity(identity),
                 Err(error) => RuntimeIdentity::incompatible(error),
             });
         }
@@ -936,6 +980,59 @@ mod tests {
                 .runtime,
             "gemini"
         );
+    }
+
+    #[test]
+    fn dsh_only_policy_drives_real_agent_birth_and_rejects_incompatible_routes() {
+        let policy = crate::runtime_distribution_policy::RuntimeDistributionPolicy::parse(
+            r#"{
+                "schemaVersion": 1,
+                "allowedIntegratedRuntimes": ["dsh"],
+                "allowedExternalRuntimes": [],
+                "defaultIntegratedRuntime": "dsh",
+                "selectorAvailability": "hidden"
+            }"#,
+        )
+        .expect("valid DSH-only policy");
+        let config = serde_json::json!({
+            "multiAgentRuntime": true,
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": { "usable": true },
+            "managedCodexAuth": { "status": "valid", "authMethod": "chatgpt" },
+            "agents": [
+                {
+                    "id": "ordinary",
+                    "runtimePreference": { "family": "external", "id": "codex" }
+                },
+                {
+                    "id": "claude-subscription",
+                    "providerId": ANTHROPIC_SUBSCRIPTION_PROVIDER_ID
+                },
+                {
+                    "id": "managed-codex",
+                    "providerId": CODEX_SUBSCRIPTION_PROVIDER_ID
+                }
+            ]
+        });
+
+        let ordinary =
+            resolve_agent_runtime_identity_by_id_with_policy(&config, "ordinary", &policy)
+                .expect("ordinary Agent identity");
+        assert_eq!(ordinary.runtime, "dsh");
+        assert_eq!(ordinary.runtime_source.as_deref(), Some("integrated"));
+
+        for agent_id in ["claude-subscription", "managed-codex"] {
+            let identity =
+                resolve_agent_runtime_identity_by_id_with_policy(&config, agent_id, &policy)
+                    .expect("incompatible Provider identity");
+            assert_eq!(identity.runtime, "incompatible");
+            assert!(identity.compatibility_error.is_some());
+        }
+
+        let frozen_claude =
+            admit_runtime_identity_for(RuntimeIdentity::new(Some("builtin"), None), &policy);
+        assert_eq!(frozen_claude.runtime, "incompatible");
+        assert!(frozen_claude.compatibility_error.is_some());
     }
 
     #[test]

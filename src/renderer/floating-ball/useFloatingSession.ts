@@ -39,6 +39,12 @@ import { buildFloatingBallContextReminder, stripLeadingSystemReminder } from '..
 import type { AskUserQuestionRequest } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
+import {
+    isAgentRuntimeSelectorAvailable,
+    normalizeRuntime,
+    resolveEffectiveRuntime,
+    type RuntimeType,
+} from '../../shared/types/runtime';
 import type { FbPendingKind } from './petStateMapper';
 import { resolveBoundWorkspace, type FbProject } from './workspaceBinding';
 import { SESSION_MIGRATED_EVENT, type FloatingBallSessionMigratedPayload } from './sessionBinding';
@@ -533,15 +539,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const rotateToRef = useRef<(today: string, ws: { path: string; name?: string }) => Promise<void>>(
         async () => undefined,
     );
-    // Gate-aware runtime for analytics: with multiAgentRuntime off (default)
-    // every session is builtin by construction; with the gate on the actual
-    // runtime depends on Mino's agent config which the companion deliberately
-    // does not resolve (dev-notes cut #2) → honest 'unknown' bucket.
-    const analyticsRuntimeRef = useRef<'builtin' | 'unknown'>('builtin');
+    // Before the first frozen Session snapshot arrives, a hidden selector has
+    // one exact distribution default. When selection is available, the Agent
+    // preference is intentionally unresolved here and remains `unknown`.
+    const analyticsRuntimeRef = useRef<RuntimeType | 'unknown'>('builtin');
 
     const applySessionSnapshot = useCallback((meta: { runtime?: string; providerId?: string; model?: string } | null | undefined) => {
         if (!meta) return;
-        setRuntime(meta.runtime ?? 'builtin');
+        const snapshotRuntime = normalizeRuntime(meta.runtime);
+        analyticsRuntimeRef.current = snapshotRuntime;
+        setRuntime(snapshotRuntime);
         setProviderId(meta.providerId ?? null);
         setModel(meta.model ?? null);
     }, []);
@@ -1298,7 +1305,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 console.info(
                     `[fb-session] boot config loaded projects=${projects.length} hasSession=${Boolean(cfg.floatingBallSessionId)} date=${cfg.floatingBallSessionDate ?? 'none'} workspace=${cfg.floatingBallSessionWorkspace ?? 'none'} elapsed=${elapsedMs(bootStartedAt)}`,
                 );
-                analyticsRuntimeRef.current = cfg.multiAgentRuntime ? 'unknown' : 'builtin';
+                analyticsRuntimeRef.current = isAgentRuntimeSelectorAvailable(
+                    !!cfg.multiAgentRuntime,
+                )
+                    ? 'unknown'
+                    : resolveEffectiveRuntime(undefined, !!cfg.multiAgentRuntime);
                 setSendShortcut(cfg.chatSendShortcut ?? 'enter');
                 // 设置面板（D17）：工作区选择器的候选 + 当前绑定覆盖。
                 setProjects(projects.map((p) => ({ path: p.path, name: p.name })));

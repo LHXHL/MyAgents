@@ -7,6 +7,13 @@ import {
   runtimeTypeForAgentRuntimePreference,
   type AgentRuntimePreference,
 } from '../integrated-runtimes/identity';
+import {
+  AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  defaultIntegratedRuntimeType,
+  isRuntimeAllowedByDistribution,
+  isRuntimeSelectorAvailable,
+  type AgentRuntimeDistributionPolicy,
+} from '../integrated-runtimes/distribution-policy';
 
 /**
  * Available Agent Runtime types
@@ -140,15 +147,16 @@ export function coerceModelForRuntime(
 }
 
 /**
- * Resolve the **agent-config** effective runtime, gated by the `multiAgentRuntime`
- * developer flag: when it is OFF, everything collapses to `builtin` regardless of
- * the agent's configured runtime.
+ * Resolve the **agent-config** effective runtime through the build distribution
+ * and its selector policy. When selection is unavailable, new ordinary-provider
+ * Sessions use the distribution's Default Integrated Runtime while the stored
+ * preference remains untouched.
  *
  * SCOPE — this is the spawn runtime for a NEW session (and the pre-session
  * fallback), NOT the authoritative runtime of an EXISTING session. It mirrors
  * only the **config fallback** leg of the Rust spawn decision in
- * `src-tauri/src/sidecar.rs::resolve_agent_runtime_from_config` (gate check +
- * builtin fallback). The Rust spawn path for an existing Tab/Cron sidecar
+ * `src-tauri/src/sidecar/runtime_identity.rs` (distribution/selector policy,
+ * Provider constraint, and default projection). The Rust spawn path for an existing Tab/Cron sidecar
  * resolves `resolve_session_runtime(session_id)` FIRST (the frozen runtime the
  * session was created with), and only falls back to agent config when there is
  * no session yet. That frozen value — surfaced to the frontend as
@@ -163,8 +171,7 @@ export function coerceModelForRuntime(
  * session creation. Only genuinely config-level callers (`workspace_open` for a
  * brand-new session, `app_launch` adoption snapshot) may use this directly.
  *
- * Keep the gate + builtin-fallback semantics in sync with the Rust function
- * above (and vice-versa).
+ * Keep these projection semantics in sync with the Rust Session-birth owner.
  */
 export function resolveEffectiveRuntime(
   agentRuntime: string | null | undefined,
@@ -172,29 +179,52 @@ export function resolveEffectiveRuntime(
   runtimePreference?: unknown,
   runtimeSource?: RuntimeSource | null,
   providerId?: unknown,
+  policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
 ): RuntimeType {
-  if (!multiAgentRuntimeEnabled) return 'builtin';
-  const preference = resolveAgentRuntimePreference({
-    runtimePreference,
-    runtime: agentRuntime,
-    runtimeSource,
-    providerId,
-  });
-  if (!preference) return 'builtin';
+  const distributionDefault = defaultIntegratedRuntimeType(policy);
+  const selectorAvailable = isRuntimeSelectorAvailable(
+    policy,
+    multiAgentRuntimeEnabled,
+  );
+  const preference = selectorAvailable
+    ? resolveAgentRuntimePreference({
+        runtimePreference,
+        runtime: agentRuntime,
+        runtimeSource,
+        providerId,
+      })
+    : { family: 'integrated' as const, id: policy.defaultIntegratedRuntime };
+  if (!preference) return distributionDefault;
   const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
   // Explicit External CLI intent wins over dormant Product Provider fields.
-  if (preference.family === 'external') return preferredRuntime;
+  if (preference.family === 'external') {
+    return isRuntimeAllowedByDistribution(policy, preferredRuntime, 'system-cli')
+      ? preferredRuntime
+      : distributionDefault;
+  }
   // Product subscription Providers have fixed execution owners and constrain
   // either Integrated preference before Session birth. Managed Codex keeps its
   // historical builtin carrier in renderer-facing configuration.
-  if (
-    providerId === 'anthropic-sub'
-    || providerId === 'xai-sub'
-    || providerId === 'codex-sub'
-  ) {
-    return 'builtin';
+  if (providerId === 'codex-sub') {
+    return isRuntimeAllowedByDistribution(policy, 'codex', 'managed-provider')
+      ? 'builtin'
+      : distributionDefault;
   }
-  return preferredRuntime;
+  if (providerId === 'anthropic-sub' || providerId === 'xai-sub') {
+    return isRuntimeAllowedByDistribution(policy, 'builtin')
+      ? 'builtin'
+      : distributionDefault;
+  }
+  return isRuntimeAllowedByDistribution(policy, preferredRuntime, runtimeSource)
+    ? preferredRuntime
+    : distributionDefault;
+}
+
+export function isAgentRuntimeSelectorAvailable(
+  labsEnabled: boolean,
+  policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
+): boolean {
+  return isRuntimeSelectorAvailable(policy, labsEnabled);
 }
 
 /**

@@ -1225,7 +1225,7 @@ pub struct AgentConfigRust {
     pub runtime_config: Option<serde_json::Value>,
     #[serde(default)]
     pub runtime_preference: Option<RuntimePreferenceRust>,
-    /// Runtime-only projection of the root Labs selector gate.
+    /// Runtime-only projection of the build policy plus root Labs selector gate.
     #[serde(default = "default_true", skip_serializing)]
     pub runtime_selection_available: bool,
 
@@ -1473,12 +1473,13 @@ impl ChannelConfigRust {
         (!config.is_empty()).then_some(serde_json::Value::Object(config))
     }
 
-    fn selected_runtime(
+    fn selected_runtime_with_policy(
         &self,
         agent: &AgentConfigRust,
+        policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
     ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
         if !agent.runtime_selection_available {
-            return Ok((Some("builtin".to_string()), None));
+            return Ok((Some(policy.default_runtime().to_string()), None));
         }
         let overrides = self.overrides.as_ref();
         let runtime_config = overrides
@@ -1510,13 +1511,38 @@ impl ChannelConfigRust {
         provider_id: Option<&str>,
         model: Option<&str>,
     ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
-        let (runtime, runtime_config) = self.selected_runtime(agent)?;
-        Ok(project_runtime_for_provider(
+        self.effective_runtime_projection_with_policy(
+            agent,
             provider_id,
             model,
-            runtime,
-            runtime_config,
-        ))
+            crate::runtime_distribution_policy::policy(),
+        )
+    }
+
+    fn effective_runtime_projection_with_policy(
+        &self,
+        agent: &AgentConfigRust,
+        provider_id: Option<&str>,
+        model: Option<&str>,
+        policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+    ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
+        let (runtime, runtime_config) = self.selected_runtime_with_policy(agent, policy)?;
+        let projected = project_runtime_for_provider(provider_id, model, runtime, runtime_config);
+        let projected_runtime = projected.0.as_deref().unwrap_or("builtin");
+        let projected_source = projected
+            .1
+            .as_ref()
+            .and_then(|value| value.get("source"))
+            .and_then(serde_json::Value::as_str);
+        if policy.allows_runtime(projected_runtime, projected_source) {
+            Ok(projected)
+        } else {
+            Err(format!(
+                "Runtime {}/{} is not included in this distribution",
+                projected_runtime,
+                projected_source.unwrap_or("builtin"),
+            ))
+        }
     }
 
     pub(crate) fn effective_permission_mode(&self, agent: &AgentConfigRust) -> String {
@@ -1864,6 +1890,41 @@ mod tests {
                 .map(|value| value.id.as_str()),
             Some("dsh")
         );
+    }
+
+    #[test]
+    fn dsh_only_policy_drives_im_birth_and_rejects_incompatible_provider() {
+        let policy = crate::runtime_distribution_policy::RuntimeDistributionPolicy::parse(
+            r#"{
+                "schemaVersion": 1,
+                "allowedIntegratedRuntimes": ["dsh"],
+                "allowedExternalRuntimes": [],
+                "defaultIntegratedRuntime": "dsh",
+                "selectorAvailability": "hidden"
+            }"#,
+        )
+        .expect("valid DSH-only policy");
+        let mut agent = base_agent();
+        agent.runtime = Some("codex".to_string());
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "external".to_string(),
+            id: "codex".to_string(),
+        });
+        agent.runtime_selection_available = false;
+        let channel = base_channel();
+
+        let ordinary = channel
+            .effective_runtime_projection_with_policy(&agent, None, None, &policy)
+            .expect("DSH-only ordinary IM projection");
+        assert_eq!(ordinary.0.as_deref(), Some("dsh"));
+
+        let incompatible = channel.effective_runtime_projection_with_policy(
+            &agent,
+            Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID),
+            None,
+            &policy,
+        );
+        assert!(incompatible.is_err());
     }
 
     #[test]

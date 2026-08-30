@@ -85,7 +85,7 @@ pub(crate) use runtime_identity::resolve_agent_runtime_identity_by_id_from_confi
 use runtime_identity::resolve_session_runtime_identity_from_json;
 #[allow(unused_imports)]
 use runtime_identity::{
-    resolve_agent_runtime_from_config, resolve_agent_runtime_identity_from_config,
+    distribution_default_runtime_identity, resolve_agent_runtime_identity_from_config,
     resolve_session_runtime_identity_full_from_json, validate_sidecar_runtime_invariant,
     RuntimeIdentity,
 };

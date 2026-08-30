@@ -22,7 +22,7 @@ import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
 import { Popover } from '../ui/Popover';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
-import { buildRuntimeChangePatch, resolveEffectiveRuntime } from '../../../shared/types/runtime';
+import { buildRuntimeChangePatch, isAgentRuntimeSelectorAvailable, resolveEffectiveRuntime } from '../../../shared/types/runtime';
 import { agentDefaultsForRuntimeBackedProvider, agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '@/components/Toast';
@@ -88,6 +88,9 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     agent?.runtimePreference,
     agent?.runtimeConfig?.source,
     agent?.providerId,
+  );
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
+    !!config.multiAgentRuntime,
   );
   const usesManagedCodexProvider = currentRuntime === 'builtin'
     && agentUsesManagedCodexProvider(agent);
@@ -422,7 +425,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       </div>
 
       {/* Runtime (v0.1.59) — only visible when multi-agent runtime is enabled in developer settings */}
-      {config.multiAgentRuntime && (
+      {runtimeSelectorAvailable && (
         <>
           <div className="flex items-center gap-3">
             <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.runtime')}</label>

@@ -3190,32 +3190,69 @@ fn finish_runtime_detection(
 }
 
 fn run_runtime_detection(resource_dir: Option<&Path>) -> HashMap<String, RuntimeDetectionResult> {
+    let distribution = crate::runtime_distribution_policy::policy();
+    run_runtime_detection_with_policy(resource_dir, distribution)
+}
+
+fn run_runtime_detection_with_policy(
+    resource_dir: Option<&Path>,
+    distribution: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> HashMap<String, RuntimeDetectionResult> {
     let mut results = HashMap::new();
 
-    // Builtin is always available
+    // Detection is a distribution projection, not only a filesystem probe.
+    // A binary present on the machine cannot re-enable a Runtime excluded by
+    // the build-owned policy.
     results.insert(
         "builtin".to_string(),
-        RuntimeDetectionResult {
-            installed: true,
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            path: None,
-            readiness: Some("ready".to_string()),
-            reason: None,
+        if distribution.allows_integrated("claude-agent-sdk") {
+            RuntimeDetectionResult {
+                installed: true,
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                path: None,
+                readiness: Some("ready".to_string()),
+                reason: None,
+            }
+        } else {
+            runtime_not_distributed()
         },
     );
 
-    results.insert("dsh".to_string(), detect_dsh_runtime(resource_dir));
+    results.insert(
+        "dsh".to_string(),
+        if distribution.allows_integrated("dsh") {
+            detect_dsh_runtime(resource_dir)
+        } else {
+            runtime_not_distributed()
+        },
+    );
 
-    // Claude Code CLI
-    results.insert("claude-code".to_string(), detect_cli("claude"));
-
-    // Codex CLI
-    results.insert("codex".to_string(), detect_cli("codex"));
-
-    // Gemini CLI (v0.1.66)
-    results.insert("gemini".to_string(), detect_cli("gemini"));
+    for (runtime, binary) in [
+        ("claude-code", "claude"),
+        ("codex", "codex"),
+        ("gemini", "gemini"),
+    ] {
+        results.insert(
+            runtime.to_string(),
+            if distribution.allows_external(runtime) {
+                detect_cli(binary)
+            } else {
+                runtime_not_distributed()
+            },
+        );
+    }
 
     results
+}
+
+fn runtime_not_distributed() -> RuntimeDetectionResult {
+    RuntimeDetectionResult {
+        installed: false,
+        version: None,
+        path: None,
+        readiness: Some("unavailable".to_string()),
+        reason: Some("not-distributed".to_string()),
+    }
 }
 
 /// Detect whether external Agent Runtime CLIs are installed.
@@ -3514,6 +3551,34 @@ mod runtime_detection_cache_tests {
             cached_at,
             Duration::from_secs(30),
         ));
+    }
+
+    #[test]
+    fn dsh_only_detection_cannot_be_reenabled_by_installed_runtimes() {
+        let policy = crate::runtime_distribution_policy::RuntimeDistributionPolicy::parse(
+            r#"{
+                "schemaVersion": 1,
+                "allowedIntegratedRuntimes": ["dsh"],
+                "allowedExternalRuntimes": [],
+                "defaultIntegratedRuntime": "dsh",
+                "selectorAvailability": "hidden"
+            }"#,
+        )
+        .expect("valid DSH-only policy");
+        let results = run_runtime_detection_with_policy(None, &policy);
+
+        for runtime in ["builtin", "claude-code", "codex", "gemini"] {
+            let detection = results.get(runtime).expect("detection row");
+            assert!(!detection.installed);
+            assert_eq!(detection.readiness.as_deref(), Some("unavailable"));
+            assert_eq!(detection.reason.as_deref(), Some("not-distributed"));
+        }
+        assert_ne!(
+            results
+                .get("dsh")
+                .and_then(|detection| detection.reason.as_deref()),
+            Some("not-distributed"),
+        );
     }
 
     #[test]

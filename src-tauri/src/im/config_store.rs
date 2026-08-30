@@ -260,7 +260,7 @@ fn agent_channel_has_start_credentials(
     channel_cfg: &types::ChannelConfigRust,
 ) -> bool {
     let im_config = channel_cfg.to_im_config(agent_cfg);
-    im_config_has_start_credentials(&im_config)
+    im_config.enabled && im_config_has_start_credentials(&im_config)
 }
 
 static GENERAL_PROXY_RECONNECT_GENERATION: std::sync::atomic::AtomicU64 =
@@ -340,7 +340,7 @@ pub(super) fn current_agent_channel_start_config(
         enabled: false,
         ..types::HeartbeatConfig::default()
     });
-    im_config_has_start_credentials(&config).then_some((agent, channel, config))
+    (config.enabled && im_config_has_start_credentials(&config)).then_some((agent, channel, config))
 }
 
 fn current_agent_channel_config(agent_id: &str, channel_id: &str) -> Option<ImConfig> {
@@ -586,7 +586,7 @@ fn find_missing_startable_agent_channels(
                 continue;
             }
             let im_config = channel_cfg.to_im_config(agent_cfg);
-            if im_config_has_start_credentials(&im_config) {
+            if im_config.enabled && im_config_has_start_credentials(&im_config) {
                 missing.push(key);
             }
         }
@@ -1584,6 +1584,29 @@ mod agent_monitor_tests {
     }
 
     #[test]
+    fn monitor_and_status_skip_runtime_incompatible_channels() {
+        let mut agents = agent_config_with_weixin_channel(true);
+        agents[0].runtime_selection_available = true;
+        agents[0].runtime_preference = Some(types::RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "future-runtime".to_string(),
+        });
+        let channel = &agents[0].channels[0];
+
+        assert!(!channel.to_im_config(&agents[0]).enabled);
+        assert!(!should_report_missing_configured_channel(
+            &agents[0], channel,
+        ));
+        assert!(find_missing_startable_agent_channels(
+            &agents,
+            &std::collections::HashSet::new(),
+            &[],
+            &ArchivedAgentWorkspaces::default(),
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn missing_configured_channel_reports_connecting_when_enabled_and_startable() {
         let status = missing_configured_channel_status(&types::ImStatus::Stopped);
 
@@ -2460,10 +2483,12 @@ fn salvage_agents_from_value(
     value: &serde_json::Value,
     api_keys: &std::collections::HashMap<String, String>,
 ) -> Option<Vec<AgentConfigRust>> {
-    let runtime_selection_available = value
+    let labs_enabled = value
         .get("multiAgentRuntime")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let runtime_selection_available =
+        crate::runtime_distribution_policy::policy().selector_available(labs_enabled);
     match value.get("agents") {
         // Absent → no agents configured; nothing to recover.
         None => Some(Vec::new()),

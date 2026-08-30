@@ -113,6 +113,16 @@ enum InstanceStop {
     Waiter(DispatchDrain),
 }
 
+fn generic_sidecar_runtime_identity(
+    configured: Option<RuntimeIdentity>,
+) -> Result<RuntimeIdentity, String> {
+    let identity = configured.unwrap_or_else(distribution_default_runtime_identity);
+    match identity.compatibility_error {
+        Some(error) => Err(error),
+        None => Ok(identity),
+    }
+}
+
 /// Spawn one candidate after lifecycle admission and role validation. Public
 /// start requests establish standing Global demand before entering here;
 /// monitor retries reuse this candidate path without re-establishing demand
@@ -126,6 +136,15 @@ fn start_tab_sidecar_admitted<R: Runtime>(
     expected_replacement: Option<GlobalCandidateIdentity>,
 ) -> Result<(u16, u64), String> {
     let is_global = process_role == SidecarProcessRole::Global;
+    let runtime_identity = if is_global {
+        None
+    } else {
+        Some(generic_sidecar_runtime_identity(
+            agent_dir
+                .as_deref()
+                .and_then(resolve_agent_runtime_identity_from_config),
+        )?)
+    };
 
     // Every Sidecar birth is an admission boundary for app-owned runtimes.
     // Reconcile here as well as at app startup so a transient filesystem
@@ -384,16 +403,19 @@ fn start_tab_sidecar_admitted<R: Runtime>(
         sidecar_generation.to_string(),
     );
 
-    // Inject runtime type for Agent Runtime selection (v0.1.59)
-    // This path is used by start_sidecar (generic, IM/Agent channels).
-    // Session sidecars created via ensure_session_sidecar use resolve_session_runtime()
-    // for authoritative per-session runtime. This fallback uses agent config for cases
-    // without a session_id (global sidecar, IM initial start).
-    if !is_global {
-        if let Some(ref dir) = agent_dir {
-            if let Some(runtime) = resolve_agent_runtime_from_config(dir) {
-                cmd.env("MYAGENTS_RUNTIME", &runtime);
-            }
+    // The generic legacy/Tab path has no Session binding yet. It still consumes
+    // the same admitted Agent/distribution identity as the canonical Session
+    // lifecycle, including source, and never lets Node invent a builtin default
+    // for a DSH-only distribution.
+    if let Some(identity) = &runtime_identity {
+        if let Some(runtime) = identity.runtime_for_env() {
+            cmd.env("MYAGENTS_RUNTIME", runtime);
+        }
+        if let Some(runtime_source) = identity.runtime_source_for_env() {
+            cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
+        }
+        if let Some(runtime_binding_json) = &identity.runtime_binding_json {
+            cmd.env("MYAGENTS_RUNTIME_BINDING", runtime_binding_json);
         }
     }
 
@@ -1595,8 +1617,8 @@ mod global_restart_decision_tests {
 
 #[cfg(test)]
 mod sidecar_process_role_invariant_tests {
-    use super::resolve_sidecar_process_role;
-    use crate::sidecar::{SidecarProcessRole, GLOBAL_SIDECAR_ID};
+    use super::{generic_sidecar_runtime_identity, resolve_sidecar_process_role};
+    use crate::sidecar::{RuntimeIdentity, SidecarProcessRole, GLOBAL_SIDECAR_ID};
 
     #[test]
     fn accepts_only_the_two_canonical_identity_directory_pairs() {
@@ -1614,6 +1636,29 @@ mod sidecar_process_role_invariant_tests {
     fn rejects_both_role_identity_mismatches() {
         assert!(resolve_sidecar_process_role(GLOBAL_SIDECAR_ID, true).is_err());
         assert!(resolve_sidecar_process_role("session-123", false).is_err());
+    }
+
+    #[test]
+    fn generic_birth_uses_the_distribution_default_and_rejects_incompatibility() {
+        let default = generic_sidecar_runtime_identity(None).expect("distribution default");
+        assert_eq!(
+            default.runtime,
+            crate::runtime_distribution_policy::policy().default_runtime(),
+        );
+
+        let dsh = generic_sidecar_runtime_identity(Some(RuntimeIdentity::new(
+            Some("dsh"),
+            Some("integrated"),
+        )))
+        .expect("admitted DSH identity");
+        assert_eq!(dsh.runtime_source.as_deref(), Some("integrated"));
+
+        assert!(
+            generic_sidecar_runtime_identity(Some(RuntimeIdentity::incompatible(
+                "not distributed",
+            )))
+            .is_err()
+        );
     }
 }
 

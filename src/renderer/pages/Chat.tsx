@@ -141,6 +141,7 @@ import {
   DSH_PERMISSION_MODES,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
+  isAgentRuntimeSelectorAvailable,
   projectPermissionModeForRuntime,
   resolveEffectiveRuntime,
   runtimeSourceForRuntimeType,
@@ -1399,10 +1400,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     'codex': { installed: false },
     'gemini': { installed: false },
   });
-  // Gate: when multiAgentRuntime is off, treat everything as builtin regardless of agent config.
-  // This gate is applied at the definition of currentRuntime itself so ALL downstream
-  // derivations (runtimePermissionModes, runtimeModels, etc.) are automatically safe.
+  // Resolve the Agent template through the build policy. Labs controls selector
+  // availability in the standard distribution; hidden custom distributions use
+  // their own exact default without rewriting the stored Agent preference.
   const multiAgentRuntimeEnabled = !!config.multiAgentRuntime;
+  const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
+    multiAgentRuntimeEnabled,
+  );
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
@@ -1459,7 +1463,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     currentRuntime,
     managedProviderRuntimeActive,
   });
-  const showLegacyRuntimeSelector = multiAgentRuntimeEnabled;
+  const showLegacyRuntimeSelector = runtimeSelectorAvailable;
   const showBuiltinSdkSlashCommands = shouldShowBuiltinSdkSlashCommands(currentRuntime);
   const visibleSdkSlashCommands = useMemo(
     () => showBuiltinSdkSlashCommands ? sdkSlashCommands : [],
@@ -1541,7 +1545,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   const [codexModels, setCodexModels] = useState<typeof CC_MODELS>([]);
   const [geminiModels, setGeminiModels] = useState<typeof CC_MODELS>([]);
   useEffect(() => {
-    if (!multiAgentRuntimeEnabled || managedProviderRuntimeActive || currentRuntime !== 'codex') return;
+    if (managedProviderRuntimeActive || currentRuntime !== 'codex') return;
     let cancelled = false;
     // AbortController so a tab-close (effect cleanup) silences the
     // proxyFetch "Sidecar gone" warning that would otherwise fire when
@@ -1555,9 +1559,9 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       if (!cancelled && data?.models?.length) setCodexModels(data.models);
     }).catch(() => {});
     return () => { cancelled = true; controller.abort(); };
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, apiGet]);
+  }, [managedProviderRuntimeActive, currentRuntime, apiGet]);
   useEffect(() => {
-    if (!multiAgentRuntimeEnabled || currentRuntime !== 'gemini') return;
+    if (currentRuntime !== 'gemini') return;
     let cancelled = false;
     const controller = new AbortController();
     apiGet(runtimeModelCatalogPath('gemini'), { signal: controller.signal }).then((res: unknown) => {
@@ -1565,7 +1569,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       if (!cancelled && data?.models?.length) setGeminiModels(data.models);
     }).catch(() => {});
     return () => { cancelled = true; controller.abort(); };
-  }, [multiAgentRuntimeEnabled, currentRuntime, apiGet]);
+  }, [currentRuntime, apiGet]);
 
   // ─── External runtime pre-warm (v0.1.68) ───
   //
@@ -1585,7 +1589,6 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // serializes the two calls.
   const prewarmedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!multiAgentRuntimeEnabled && !managedProviderRuntimeActive) return;
     if (currentRuntime !== 'gemini' && currentRuntime !== 'codex') return;
     if (!isActive || !isConnected || !sessionId) return;
     // Only a 'push' tab prewarms the sidecar with ITS config (model/permission).
@@ -1650,7 +1653,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     // the new settings. Re-firing pre-warm on every keystroke-driven option
     // change would thrash the subprocess.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multiAgentRuntimeEnabled, managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
+  }, [managedProviderRuntimeActive, currentRuntime, isActive, isConnected, sessionId, sessionRuntime, apiPost, configPending]);
 
   const runtimeModels = currentRuntime === 'claude-code' ? CC_MODELS
     : currentRuntime === 'codex' ? (managedProviderRuntimeActive ? [] : codexModels)

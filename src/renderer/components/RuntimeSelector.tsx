@@ -8,6 +8,11 @@ import { useTranslation } from 'react-i18next';
 import { Popover } from '@/components/ui/Popover';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { RuntimeType, RuntimeDetections } from '../../shared/types/runtime';
+import {
+  AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  isRuntimeAllowedByDistribution,
+  type AgentRuntimeDistributionPolicy,
+} from '../../shared/integrated-runtimes/distribution-policy';
 
 // Runtime types that have backend implementations (not just type definitions)
 const IMPLEMENTED_RUNTIMES = new Set<RuntimeType>(['builtin', 'dsh', 'claude-code', 'codex', 'gemini']);
@@ -63,6 +68,7 @@ interface RuntimeSelectorProps {
   disabled?: boolean;
   disabledReason?: string;
   onDisabledClick?: () => void;
+  distributionPolicy?: AgentRuntimeDistributionPolicy;
 }
 
 export default memo(function RuntimeSelector({
@@ -74,6 +80,7 @@ export default memo(function RuntimeSelector({
   disabled = false,
   disabledReason,
   onDisabledClick,
+  distributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
 }: RuntimeSelectorProps) {
   const { t } = useTranslation('chat');
   const [open, setOpen] = useState(false);
@@ -105,7 +112,11 @@ export default memo(function RuntimeSelector({
     onChange(type);
   }, [value, detections, onChange, disabled]);
 
-  const currentOption = RUNTIME_OPTIONS.find(o => o.type === value) ?? RUNTIME_OPTIONS[0];
+  const availableOptions = RUNTIME_OPTIONS.filter(option =>
+    isRuntimeAllowedByDistribution(distributionPolicy, option.type),
+  );
+  const currentOption = availableOptions.find(o => o.type === value) ?? availableOptions[0];
+  if (!currentOption) return null;
 
   if (variant === 'panel') {
     return (
@@ -139,7 +150,7 @@ export default memo(function RuntimeSelector({
           placement="top-start"
           className="w-72 py-1"
         >
-          {RUNTIME_OPTIONS.map((opt) => {
+          {availableOptions.map((opt) => {
             const detection = detections[opt.type];
             const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
             return (
@@ -228,7 +239,7 @@ export default memo(function RuntimeSelector({
             </button>
           )}
         </div>
-        {RUNTIME_OPTIONS.map((opt) => {
+        {availableOptions.map((opt) => {
           const detection = detections[opt.type];
           const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
           return (

@@ -17,6 +17,15 @@ import {
   type RuntimeType,
 } from './runtime';
 import { coerceReasoningEffortForRuntime } from '../reasoningEffort';
+import type { AgentRuntimeDistributionPolicy } from '../integrated-runtimes/distribution-policy';
+
+const DSH_ONLY_POLICY: AgentRuntimeDistributionPolicy = {
+  schemaVersion: 1,
+  allowedIntegratedRuntimes: ['dsh'],
+  allowedExternalRuntimes: [],
+  defaultIntegratedRuntime: 'dsh',
+  selectorAvailability: 'hidden',
+};
 
 describe('normalizeRuntime', () => {
   test('passes through valid runtimes', () => {
@@ -36,10 +45,10 @@ describe('normalizeRuntime', () => {
 });
 
 describe('resolveEffectiveRuntime', () => {
-  // Mirrors the Rust spawn-time gate in
-  // src-tauri/src/sidecar.rs::resolve_agent_runtime_from_config — keep in sync.
+  // Mirrors the Rust spawn-time policy in
+  // src-tauri/src/sidecar/runtime_identity.rs — keep in sync.
 
-  test('gate OFF collapses every runtime to builtin (matches sidecar spawn)', () => {
+  test('Labs OFF uses the distribution default (builtin in the product profile)', () => {
     // This is the Gap-3 case: an agent configured for codex but the
     // multiAgentRuntime feature flag is off → the sidecar actually runs
     // builtin, so analytics must report builtin, not the configured intent.
@@ -108,6 +117,27 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime(undefined, true)).toBe('builtin');
     expect(resolveEffectiveRuntime(null, true)).toBe('builtin');
     expect(resolveEffectiveRuntime('nonsense', true)).toBe('builtin');
+  });
+
+  test('a DSH-only build uses DSH regardless of Labs or stored incompatible intent', () => {
+    expect(resolveEffectiveRuntime('builtin', false, undefined, undefined, undefined, DSH_ONLY_POLICY)).toBe('dsh');
+    expect(resolveEffectiveRuntime('builtin', true, undefined, undefined, undefined, DSH_ONLY_POLICY)).toBe('dsh');
+    expect(resolveEffectiveRuntime(
+      'codex',
+      true,
+      { family: 'external', id: 'codex' },
+      'system-cli',
+      undefined,
+      DSH_ONLY_POLICY,
+    )).toBe('dsh');
+    expect(resolveEffectiveRuntime(
+      'builtin',
+      true,
+      { family: 'integrated', id: 'dsh' },
+      undefined,
+      'codex-sub',
+      DSH_ONLY_POLICY,
+    )).toBe('dsh');
   });
 
   test('SCOPE: resolves only the agent-CONFIG dimension, NOT the session-frozen runtime', () => {

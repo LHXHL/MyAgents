@@ -1,4 +1,5 @@
 use super::manager::{RuntimeDriftTransition, SessionOwnerRelease};
+use super::runtime_identity::{admit_runtime_identity, distribution_default_runtime_identity};
 use super::*;
 
 pub(crate) type SessionLifecycleGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
@@ -321,14 +322,17 @@ fn resolve_runtime_identity_for_owner(
     agent_runtime_identity: Option<RuntimeIdentity>,
 ) -> RuntimeIdentity {
     if let Some(runtime) = runtime_override {
-        return RuntimeIdentity::new(Some(runtime), runtime_source_override);
+        return admit_runtime_identity(RuntimeIdentity::new(
+            Some(runtime),
+            runtime_source_override,
+        ));
     }
     if owner_prefers_live_agent_runtime(owner) {
-        return agent_runtime_identity.unwrap_or_else(|| RuntimeIdentity::new(None, None));
+        return agent_runtime_identity.unwrap_or_else(distribution_default_runtime_identity);
     }
     session_runtime_identity
         .or(agent_runtime_identity)
-        .unwrap_or_else(|| RuntimeIdentity::new(None, None))
+        .unwrap_or_else(distribution_default_runtime_identity)
 }
 
 fn resolve_expected_runtime_identity(

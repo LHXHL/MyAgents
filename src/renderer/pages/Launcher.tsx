@@ -39,7 +39,7 @@ import { patchAgentConfig, patchAgentProjectConfig, getAgentById } from '@/confi
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections } from '../../shared/types/runtime';
-import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, DSH_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch, resolveEffectiveRuntime } from '../../shared/types/runtime';
+import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, DSH_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch, isAgentRuntimeSelectorAvailable, resolveEffectiveRuntime } from '../../shared/types/runtime';
 import {
     agentUsesManagedCodexProvider,
     isRuntimeBackedProvider,
@@ -178,6 +178,9 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
 
     // Runtime state — adapts model/permission selectors when workspace uses external runtime
     const multiAgentRuntimeEnabled = !!config.multiAgentRuntime;
+    const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
+        multiAgentRuntimeEnabled,
+    );
 
     // PRD 0.2.7 D6 / Phase F: Launcher exposes Runtime selector in the row
     // below the input. We detect once on mount, mirroring Chat.tsx's pattern.
@@ -189,7 +192,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         gemini: { installed: false },
     });
     useEffect(() => {
-        if (!multiAgentRuntimeEnabled) return;
         let cancelled = false;
         import('@tauri-apps/api/core').then(({ invoke }) => {
             invoke<Record<string, { installed: boolean; version?: string; path?: string }>>('cmd_detect_runtimes')
@@ -197,7 +199,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 .catch(() => { /* non-fatal */ });
         });
         return () => { cancelled = true; };
-    }, [multiAgentRuntimeEnabled]);
+    }, []);
 
     // MCP state
     const [launcherMcpServers, setLauncherMcpServers] = useState<McpServerDefinition[]>([]);
@@ -249,21 +251,21 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const [codexModels, setCodexModels] = useState<RuntimeModelInfo[]>([]);
     const [geminiModels, setGeminiModels] = useState<RuntimeModelInfo[]>([]);
     useEffect(() => {
-        if (!multiAgentRuntimeEnabled || launcherRuntime !== 'codex') { setCodexModels([]); return; }
+        if (launcherRuntime !== 'codex') { setCodexModels([]); return; }
         let cancelled = false;
         apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('codex', 'system-cli'))
             .then(res => { if (!cancelled && res?.models?.length) setCodexModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
-    }, [multiAgentRuntimeEnabled, launcherRuntime]);
+    }, [launcherRuntime]);
     useEffect(() => {
-        if (!multiAgentRuntimeEnabled || launcherRuntime !== 'gemini') { setGeminiModels([]); return; }
+        if (launcherRuntime !== 'gemini') { setGeminiModels([]); return; }
         let cancelled = false;
         apiGetJson<{ models?: RuntimeModelInfo[] }>(runtimeModelCatalogPath('gemini'))
             .then(res => { if (!cancelled && res?.models?.length) setGeminiModels(res.models); })
             .catch(() => {});
         return () => { cancelled = true; };
-    }, [multiAgentRuntimeEnabled, launcherRuntime]);
+    }, [launcherRuntime]);
 
     const launcherRuntimeModels: RuntimeModelInfo[] | undefined = launcherRuntime === 'claude-code' ? CC_MODELS
         : launcherRuntime === 'codex' ? codexModels
@@ -926,7 +928,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         runtimePermissionModes={launcherRuntime !== 'builtin' ? launcherRuntimePermissionModes : undefined}
                         /* PRD 0.2.7 Phase F: runtime selector lives below the input
                          * (LauncherInputContextRow) when the experimental gate is on. */
-                        multiAgentRuntimeEnabled={multiAgentRuntimeEnabled}
+                        multiAgentRuntimeEnabled={runtimeSelectorAvailable}
                         runtimeDetections={runtimeDetections}
                         onRuntimeChange={handleLauncherRuntimeChange}
                         activeRuntime={launcherRuntime}

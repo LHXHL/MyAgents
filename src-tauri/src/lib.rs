@@ -43,6 +43,7 @@ pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
 mod proxy_spill;
+mod runtime_distribution_policy;
 pub mod runtime_launch_guard;
 pub mod search;
 pub mod session_goal;
@@ -244,6 +245,10 @@ pub fn run() {
             prev(info);
         }));
     }
+
+    // Distribution composition is build-owned and must fail before any
+    // window, Sidecar, or user state can observe an invalid policy.
+    let _ = runtime_distribution_policy::policy();
 
     // NOTE: cleanup_stale_sidecars() was moved into .setup() callback below.
     // This ensures it only runs for the PRIMARY app instance, not when a second
