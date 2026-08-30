@@ -662,6 +662,7 @@ describe('mcp oauth', () => {
       stopTokenRefreshScheduler();
       startTokenRefreshScheduler();
       await vi.advanceTimersByTimeAsync(0);
+      const timersBeforeRefreshSettlement = vi.getTimerCount();
 
       finishRequest(new Response(JSON.stringify({
         access_token: 'fresh-access',
@@ -670,7 +671,11 @@ describe('mcp oauth', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(vi.getTimerCount()).toBe(1);
+      // Integration tests intentionally share one serial fork. Other owners
+      // may already have timers, so the scheduler contract is the delta: only
+      // the restarted generation may publish one newly tracked timer after
+      // the shared in-flight refresh settles.
+      expect(vi.getTimerCount()).toBe(timersBeforeRefreshSettlement + 1);
     } finally {
       abortTimeoutSpy.mockRestore();
     }
