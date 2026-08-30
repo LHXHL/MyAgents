@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.19
+version: 0.20
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -921,6 +921,8 @@ Each step updates an implementation ledger in this document or a linked dev plan
 H5 is closed on the `dev/intergration_myagents-dsh` worktree against handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 
 The debug Tauri application and its updater `.app.tar.gz` both verify after final bundle copying and after archive extraction. Their DSH Runtime inventories contain zero symbolic links. The explicit native `RuntimeProcessHost` smoke starts the exact staged Runtime, completes the formal handshake/status sequence, and shuts down cleanly. `npm run typecheck`, `npm run lint`, the complete `npm test`, all web/server/bridge/CLI builds exercised by the Tauri build, `cargo fmt --check`, and the 1,169-pass Rust library suite succeed. This is exact local development/package evidence; it does not promote any handoff platform claim beyond `implementation-complete_pending-native-validation`, and it does not complete H6's Provider/J1–J18/native-platform campaign.
+
+The post-H5 direct-call audit also fences DSH stop and interaction responses from historical Builtin fallback, resolves IM snapshot authority through the discriminated Runtime binding, keeps Heartbeat and memory paths on the Integrated Runtime identity, and reads IM history through SessionEngine. The boundary test now rejects reintroduction of direct Builtin Session identity, transcript, or scenario calls in the monolithic route owner.
 
 ## 22. PRD traceability
 

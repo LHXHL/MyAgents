@@ -67,6 +67,10 @@ describe('SessionEngine runtime boundary', () => {
     expect(source).not.toContain('waitForSessionIdle(');
     expect(source).not.toContain('didLastTurnSucceed(');
     expect(source).not.toContain('getAndClearLastAgentError(');
+    expect(source).not.toContain('getAgentState(');
+    expect(source).not.toContain('getMessages(');
+    expect(source).not.toContain('getSessionId(');
+    expect(source).not.toContain('setInteractionScenario(');
   });
 
   it('keeps Phase6 builtin owner modules behind the agent-session facade', () => {

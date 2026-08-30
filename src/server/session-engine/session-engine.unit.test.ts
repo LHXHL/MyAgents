@@ -1185,6 +1185,28 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.interruptCurrentResponse).toHaveBeenCalledTimes(1);
   });
 
+  it('never falls back to builtin stop for an inactive DSH Session', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = false;
+    mocks.getActiveRuntimeType.mockReturnValue('dsh');
+    const previousRuntime = process.env.MYAGENTS_RUNTIME;
+    process.env.MYAGENTS_RUNTIME = 'dsh';
+
+    try {
+      await expect(stopActiveTurn()).resolves.toEqual({ success: true, alreadyStopped: true });
+      await expect(stopOwnedTurn({ kind: 'task', id: 'task-1' })).resolves.toEqual({
+        success: true,
+        alreadyStopped: true,
+      });
+    } finally {
+      if (previousRuntime === undefined) delete process.env.MYAGENTS_RUNTIME;
+      else process.env.MYAGENTS_RUNTIME = previousRuntime;
+    }
+
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+    expect(mocks.cancelQueuedTurnsByOwner).not.toHaveBeenCalled();
+  });
+
   it('reports a failed external process stop instead of clearing it as stopped', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalActive = true;
@@ -2850,5 +2872,21 @@ describe('session-engine selector and adapters', () => {
 
     mocks.state.pendingExternalAsk = true;
     expect(getAskUserQuestionResponseEngine('ask-1').kind).toBe('external');
+  });
+
+  it('keeps DSH interaction responses on the integrated owner after process loss', () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = false;
+    mocks.state.pendingExternalAsk = false;
+    const previousRuntime = process.env.MYAGENTS_RUNTIME;
+    process.env.MYAGENTS_RUNTIME = 'dsh';
+
+    try {
+      expect(getPermissionResponseEngine().kind).toBe('integrated');
+      expect(getAskUserQuestionResponseEngine('stale-ask').kind).toBe('integrated');
+    } finally {
+      if (previousRuntime === undefined) delete process.env.MYAGENTS_RUNTIME;
+      else process.env.MYAGENTS_RUNTIME = previousRuntime;
+    }
   });
 });

@@ -172,10 +172,9 @@ export function getSessionRuntimeType(): ReturnType<typeof getActiveRuntimeType>
 }
 
 /**
- * Historical stop behavior: when the external-runtime flag is on but no
- * external session is active yet, /chat/stop falls back to the builtin
- * interrupt path. Keep that compatibility outside either adapter so the
- * external adapter does not become a mixed owner.
+ * Historical stop behavior: when a legacy external runtime is selected but
+ * no external session is active yet, /chat/stop falls back to the builtin
+ * interrupt path. DSH Sessions never cross that ownership boundary.
  */
 export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   const engine = getSessionEngine();
@@ -213,8 +212,9 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
       : { success: false, error: String(settled.error ?? 'Failed to settle paused Goal turn') };
   }
   if (shouldUseExternalRuntime()) {
+    const dshSelected = isDshRuntime(getCurrentRuntimeType());
     const externalResult = await selectedNonBuiltinEngine().stopTurn();
-    if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
+    if (dshSelected || !externalResult.success || !externalResult.alreadyStopped) return externalResult;
     const stopped = await interruptCurrentResponse();
     return stopped ? { success: true } : { success: true, alreadyStopped: true };
   }
@@ -223,8 +223,9 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
 
 export async function stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   if (shouldUseExternalRuntime()) {
+    const dshSelected = isDshRuntime(getCurrentRuntimeType());
     const externalResult = await selectedNonBuiltinEngine().stopOwnedTurn(owner);
-    if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
+    if (dshSelected || !externalResult.success || !externalResult.alreadyStopped) return externalResult;
   }
   return builtinEngine.stopOwnedTurn(owner);
 }
@@ -277,14 +278,14 @@ export async function stopOwnedTurnByQueueId(
 }
 
 /**
- * Permission prompts historically route to the external runtime only while an
- * external session is active; otherwise they fall back to builtin pending
- * requests. Keep that compatibility at the selector seam.
+ * Legacy External permission prompts route by process liveness. A DSH-bound
+ * Session keeps DSH ownership even after process loss so a stale response
+ * cannot settle an unrelated Builtin request.
  */
 export function getPermissionResponseEngine(): SessionEngine {
-  return shouldUseExternalRuntime() && isExternalSessionActive()
-    ? selectedNonBuiltinEngine()
-    : builtinEngine;
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return isExternalSessionActive() ? externalEngine : builtinEngine;
 }
 
 /**
@@ -294,7 +295,7 @@ export function getPermissionResponseEngine(): SessionEngine {
  * the UI can surface retry/failure instead of silently losing the answer.
  */
 export function getAskUserQuestionResponseEngine(requestId: string): SessionEngine {
-  return shouldUseExternalRuntime() && hasPendingExternalAskUserQuestion(requestId)
-    ? selectedNonBuiltinEngine()
-    : builtinEngine;
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return hasPendingExternalAskUserQuestion(requestId) ? externalEngine : builtinEngine;
 }

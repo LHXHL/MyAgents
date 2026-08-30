@@ -465,14 +465,10 @@ process.on('SIGINT', () => {
 // ============= END CRASH DIAGNOSTICS =============
 
 import {
-  getAgentState,
   getLogLines,
-  getMessages,
-  getSessionId,
   initializeAgent,
   getMcpServers,
   setGroupToolsDeny,
-  setInteractionScenario,
   setSidecarPort,
   hasActiveBridge,
   getSessionModel,
@@ -588,6 +584,7 @@ import {
   projectPermissionModeForRuntime,
   getMaxPermissionForRuntime,
 } from '../shared/types/runtime';
+import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
 import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
 import {
   coerceRuntimeBirthReasoningEffort,
@@ -720,6 +717,10 @@ function getRuntimeConfigPermissionMode(
 ): string | undefined {
   const permissionMode = runtimeConfig?.permissionMode?.trim();
   return permissionMode ? projectPermissionModeForRuntime(permissionMode, runtime) : undefined;
+}
+
+function usesProductProviderConfiguration(runtime: RuntimeType): boolean {
+  return runtime === 'builtin' || runtime === 'dsh';
 }
 
 function runtimeBackedProviderIdentityFromSnapshot(
@@ -1226,7 +1227,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 async function handleGoalExecuteSync(request: Request): Promise<Response> {
   return handleGoalExecuteSyncRoute(request, {
     getEngine: getSessionEngine,
-    getWorkspacePath: () => getAgentState().agentDir,
+    getWorkspacePath: () => getSessionEngine().getCurrentSessionContext().workspacePath ?? '',
   });
 }
 
@@ -2278,7 +2279,7 @@ async function main() {
 
         try {
           const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
-          const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
+          const runtimeLabel = engine.getRuntimeIdentity().runtime;
           console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
@@ -2589,7 +2590,7 @@ async function main() {
       if (pathname === '/cron/execute-sync' && request.method === 'POST') {
         return handleTaskExecuteSyncRoute(request, {
           getEngine: getSessionEngine,
-          getWorkspacePath: () => getAgentState().agentDir,
+          getWorkspacePath: () => getSessionEngine().getCurrentSessionContext().workspacePath ?? currentAgentDir,
         });
       }
 
@@ -7462,13 +7463,14 @@ async function main() {
           // Register in registry up front so /api/im/cancel works even before
           // enqueueUserMessage returns. AbortController is paired here for
           // Pattern D wiring (cancellableFetch hooks below).
+          const engine = getSessionEngine();
+          const productSessionId = engine.getRuntimeIdentity().sessionId;
           const requestEntry = imRequestRegistry.register(
             payload.requestId,
-            getSessionId() || null,
+            productSessionId || null,
             payload.source,
           );
-          const engine = getSessionEngine();
-          const sidForConfigAuthority = getSessionId();
+          const sidForConfigAuthority = productSessionId;
           const snapshotMetaForConfig = sidForConfigAuthority ? getSessionMetadata(sidForConfigAuthority) : null;
           const snapshotOwnsConfig = Boolean(snapshotMetaForConfig?.configSnapshotAt);
           const configHeldByTab = payload.configHeldByTab === true && !snapshotOwnsConfig;
@@ -7481,12 +7483,16 @@ async function main() {
           const snapshotRuntimeConfig = snapshotResolvedConfig
             ? buildSnapshotRuntimeConfig(snapshotResolvedConfig)
             : null;
-          const effectiveRuntime = snapshotOwnsConfig
-            && snapshotMetaForConfig?.runtime
-            && (VALID_RUNTIMES as readonly string[]).includes(snapshotMetaForConfig.runtime)
-            ? snapshotMetaForConfig.runtime as RuntimeType
+          const snapshotRuntime = snapshotMetaForConfig?.runtimeBinding
+            ? runtimeTypeForBinding(snapshotMetaForConfig.runtimeBinding)
+            : snapshotMetaForConfig?.runtime
+              && (VALID_RUNTIMES as readonly string[]).includes(snapshotMetaForConfig.runtime)
+              ? snapshotMetaForConfig.runtime as RuntimeType
+              : undefined;
+          const effectiveRuntime = snapshotOwnsConfig && snapshotRuntime
+            ? snapshotRuntime
             : payloadRuntime;
-          const activeRuntime = getActiveRuntimeType();
+          const activeRuntime = engine.getRuntimeIdentity().runtime;
           const activeRuntimeSource = engine.getRuntimeIdentity().runtimeSource;
           const payloadExternalPermissionMode = typeof payload.permissionMode === 'string'
             ? (activeRuntime === 'codex' && activeRuntimeSource === 'managed-provider'
@@ -7509,15 +7515,17 @@ async function main() {
           // Set IM cron context for the im-cron tool (parity with /api/im/chat)
           let bridgeSurfaceRequiresTurnBoundary = false;
           if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
+            const usesProductProvider = usesProductProviderConfiguration(effectiveRuntime);
             const imCronModel = snapshotResolvedConfig
               ? snapshotResolvedConfig.model
-              : (effectiveRuntime === 'builtin'
-                ? (heldImConfig?.model ?? payload.model ?? getSessionModel())
+              : (usesProductProvider
+                ? (heldImConfig?.model
+                  ?? payload.model
+                  ?? (effectiveRuntime === 'builtin' ? getSessionModel() : undefined))
                 : (heldImConfig?.model ?? getRuntimeConfigModel(payloadRuntimeConfig, effectiveRuntime)));
-            // PRD 0.2.9 — Resolve providerId from the workspace agent so
-            // the IM cron tool can create live-resolve crons. Only meaningful
-            // for builtin runtime (external runtimes manage their own provider).
-            const imAgentForProvider = effectiveRuntime === 'builtin' && !snapshotOwnsConfig
+            // Resolve Product Provider authority for Builtin and Integrated
+            // DSH; legacy External runtimes manage their own Provider.
+            const imAgentForProvider = usesProductProvider && !snapshotOwnsConfig
               ? findProjectAgentByWorkspacePath(agentDir)
               : null;
             const imProviderId = snapshotOwnsConfig
@@ -7531,7 +7539,7 @@ async function main() {
               model: imCronModel,
               permissionMode: snapshotResolvedConfig
                 ? snapshotResolvedConfig.permissionMode
-                : (effectiveRuntime === 'builtin'
+                : (usesProductProvider
                   ? (heldImConfig?.permissionMode ?? payload.permissionMode)
                   : (heldImConfig?.permissionMode
                     ?? payloadExternalPermissionMode
@@ -7539,7 +7547,7 @@ async function main() {
                     ?? getMaxPermissionForRuntime(effectiveRuntime))),
               // Legacy frozen env (kept for back-compat); sidecar prefers
               // `providerId` when both are present.
-              providerEnv: effectiveRuntime === 'builtin'
+              providerEnv: usesProductProvider
                 ? cloneProviderEnvForImContext(
                     (snapshotResolvedConfig?.providerEnv as ProviderEnv | undefined)
                     ?? heldImConfig?.providerEnv
@@ -7548,7 +7556,7 @@ async function main() {
                 : undefined,
               providerId: imProviderId,
               runtime: effectiveRuntime,
-              runtimeConfig: effectiveRuntime === 'builtin'
+              runtimeConfig: usesProductProvider
                 ? undefined
                 : (snapshotRuntimeConfig ?? payloadRuntimeConfig ?? undefined),
             });
@@ -7600,8 +7608,8 @@ async function main() {
             // CLI is the new path, no SDK sync needed for it. `im-bridge-tools`
             // is the only remaining context-injected MCP this re-sync targets.
             //
-            // Position note: called BEFORE setInteractionScenario so the pre-warm's
-            // current scenario (typically 'desktop' until the first IM message) is
+            // Position note: called before the Runtime adapter applies the IM
+            // scenario so the pre-warm's current scenario (typically 'desktop') is
             // preserved in the diff. Removing scenario-bound MCPs mid-session would
             // leave the SDK's frozen systemPrompt referencing tools that no longer
             // exist. This pass is purely additive for the IM-context tools the AI
@@ -7616,7 +7624,7 @@ async function main() {
             }
           }
 
-          // Set IM interaction scenario (after MCP sync, see note above)
+          // Build the IM interaction scenario after any Builtin-only MCP sync.
           const [imPlatform, imSourceType] = payload.source.split('_') as ['telegram' | 'feishu', 'private' | 'group'];
           const hostInteraction = normalizeHostInteractionCapability(payload.hostInteraction);
           const imScenario: Extract<InteractionScenario, { type: 'im' }> = {
@@ -7627,7 +7635,6 @@ async function main() {
             hostInteraction,
           };
           const imTurnOrigin: SessionOrigin = { kind: 'agent-channel', surface: 'channel_message' };
-          await setInteractionScenario(imScenario);
 
           // Build final message with group context (identical to /api/im/chat)
           let finalMessage = payload.message || '';
@@ -7685,7 +7692,9 @@ async function main() {
             finalMessage = `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}\n\n${finalMessage}`;
           }
 
-          setGroupToolsDeny(resolveImGroupToolsDeny(payload.sourceType, payload.groupToolsDeny));
+          if (engine.kind === 'builtin') {
+            setGroupToolsDeny(resolveImGroupToolsDeny(payload.sourceType, payload.groupToolsDeny));
+          }
 
           const metadata = {
             source: payload.source as SessionSource,
@@ -7846,7 +7855,7 @@ async function main() {
           }
           imRequestRegistry.transferCancellationToRuntime(payload.requestId);
 
-          const currentSessionId = getSessionId();
+          const currentSessionId = engine.getRuntimeIdentity().sessionId;
           if (currentSessionId) {
             const sessionMeta = getSessionMetadata(currentSessionId);
             if (sessionMeta && !sessionMeta.source) {
@@ -8269,7 +8278,7 @@ description: >
 
           const engine = getSessionEngine();
           const runtimeConfig = payload.runtimeConfig ?? null;
-          const activeRuntime = getActiveRuntimeType();
+          const activeRuntime = engine.getRuntimeIdentity().runtime;
           const turnResult = await engine.runInjectedTurn({
             prompt: enrichedPrompt,
             sessionId: getRuntimeSessionIdForRequest(),
@@ -8286,7 +8295,9 @@ description: >
               : 'fullAgency',
             model: engine.kind === 'external'
               ? getRuntimeConfigModel(runtimeConfig, activeRuntime)
-              : getSessionModel() ?? undefined,
+              : engine.kind === 'builtin'
+                ? getSessionModel() ?? undefined
+                : undefined,
             providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
             reasoningEffort: engine.kind === 'external'
               ? getRuntimeConfigReasoningEffort(runtimeConfig, activeRuntime)
@@ -8439,7 +8450,7 @@ description: >
           // 60 min timeout — memory update is slow for large sessions (loading 100K+
           // token context, reading log/topic files, writing updates, git commit+push).
           const MEMORY_UPDATE_TIMEOUT_MS = 3600000;
-          const runtimeType = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
+          const runtimeType = engine.getRuntimeIdentity().runtime;
           const runtimeSessionId = getRuntimeSessionIdForRequest();
           const taskDispatchGuard = isAuto
             ? createTaskDispatchGuard(taskId, queueId, managementSessionId)
@@ -8545,15 +8556,22 @@ description: >
         try {
           // Currently returns messages from the active session
           // In the future, could look up by session key
-          const allMessages = getMessages();
+          const allMessages = getSessionEngine().getStreamReplaySnapshot().replayMessages;
           return jsonResponse({
             messages: allMessages.map(m => ({
               id: m.id,
               role: m.role,
-              content: typeof m.content === 'string' ? m.content : m.content
-                .filter((b: { type: string; text?: string }) => b.type === 'text')
-                .map((b: { text?: string }) => b.text ?? '')
-                .join('\n'),
+              content: typeof m.content === 'string'
+                ? m.content
+                : Array.isArray(m.content)
+                  ? m.content
+                      .filter((block): block is { type: string; text?: string } => (
+                        Boolean(block) && typeof block === 'object'
+                        && (block as { type?: unknown }).type === 'text'
+                      ))
+                      .map(block => block.text ?? '')
+                      .join('\n')
+                  : '',
               timestamp: m.timestamp,
               metadata: m.metadata,
             })),
