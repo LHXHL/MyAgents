@@ -1,11 +1,12 @@
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { PRESET_PROVIDERS, type Provider } from "../../../shared/config-types";
-import { compileDshExtensionSnapshot } from "./extension-compiler";
+import { compileDshProductExtensionPlane } from "./extension-compiler";
 import { createDshInitializeParams } from "./initialize";
 import { resolveDshRuntimeInstallation } from "./installation";
 import { compileDshModelExecutionProfile } from "./profile-compiler";
@@ -135,16 +136,69 @@ describe.runIf(nativeSmokeEnabled)(
           sessionFormat: "dsh-session-events-v1",
         });
         expect(host.state).toBe("protocol-ready");
-        const extension = compileDshExtensionSnapshot();
+        const skillPath = join(workspace, "SKILL.md");
+        const skillContent = "---\nname: native-review\ndescription: Review native smoke evidence\n---\n\n# Review\n";
+        await writeFile(skillPath, skillContent, "utf8");
+        const hostTool = {
+          name: "native_fixture",
+          description: "Returns native smoke fixture data",
+          inputSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        };
+        const extensionPlane = compileDshProductExtensionPlane({
+          revision: "native-smoke-product-extensions-v1",
+          skills: [{
+            name: "native-review",
+            description: "Review native smoke evidence",
+            contentSha256: createHash("sha256").update(skillContent).digest("hex"),
+            path: skillPath,
+            scope: "project",
+            sourceId: "native-smoke",
+          }],
+          commands: [{
+            name: "native-verify",
+            description: "Verify native smoke evidence",
+            body: "Verify the exact native smoke evidence.",
+            scope: "project",
+            sourceId: "native-smoke",
+          }],
+          agents: [{
+            name: "native-reviewer",
+            description: "Reviews native smoke evidence",
+            prompt: "Review the exact native smoke evidence.",
+            skills: [{ name: "native-review", path: skillPath }],
+            scope: "project",
+            sourceId: "native-smoke",
+          }],
+          mcpServers: [],
+          dynamicTools: [hostTool],
+          hostToolDispatcher: {
+            descriptors: [hostTool],
+            dispatch: async () => ({ success: true, contentItems: [{ type: "text", text: "native fixture" }] }),
+            dispose: () => undefined,
+          },
+        });
+        const extension = extensionPlane.snapshot;
         const extensionResult = await host.request(
           "extension/replace",
           extension as unknown as Record<string, unknown>,
         );
+        if (extensionResult.state !== "applied") {
+          throw new Error(`Native extension replacement failed: ${JSON.stringify(extensionResult)}; stderr=${stderr.join(" | ")}`);
+        }
         expect(extensionResult).toMatchObject({
           state: "applied",
           effectiveRevision: extension.revision,
         });
         const extensionCatalog = await host.request("extension/catalog", {});
+        expect(extensionCatalog.skills).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "native-review" }),
+        ]));
+        expect(extensionCatalog.agents).toContain("native-reviewer");
+        expect(extensionCatalog.tools).toContain("mcp__myagents_host__native_fixture");
         const provider = PRESET_PROVIDERS.find(({ id }) => id === "deepseek");
         if (!provider) throw new Error("DeepSeek Provider fixture is unavailable");
         const profile = compileDshModelExecutionProfile({

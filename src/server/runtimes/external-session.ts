@@ -197,7 +197,7 @@ import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexExtensionUpdateResult,
 } from './managed-codex/extensions/contracts';
-import { attachManagedCodexHostTools } from './managed-codex/extensions/host-dispatcher';
+import { attachProductHostTools } from './product-extensions/host-dispatcher';
 import {
   getManagedCodexDesiredSnapshot,
   getManagedCodexExtensionStatus,
@@ -3198,6 +3198,9 @@ async function _doStartExternalSession(options: {
     ? getManagedCodexSessionMcpServers()
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
+  const dshMcpServers = runtimeType === 'dsh'
+    ? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
+    : undefined;
   const externalSkillAdmission = options.skillAdmission
     ?? buildCurrentExternalSkillAdmission(options.workspacePath);
   let managedCodexExtensionSnapshot = runtimeType === 'codex' && runtimeSource === 'managed-provider'
@@ -3209,7 +3212,7 @@ async function _doStartExternalSession(options: {
       })
     : undefined;
   if (managedCodexExtensionSnapshot) {
-    managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
+    managedCodexExtensionSnapshot = await attachProductHostTools({
       snapshot: managedCodexExtensionSnapshot,
       sessionId: options.sessionId,
       workspacePath: options.workspacePath,
@@ -3221,6 +3224,18 @@ async function _doStartExternalSession(options: {
     // become visible when a new native thread is created.
     setManagedCodexDesiredSnapshot(managedCodexExtensionSnapshot, 'no-live-process');
   }
+  const dshExtensionSnapshot = runtimeType === 'dsh'
+    ? await attachProductHostTools({
+        snapshot: buildCurrentManagedCodexExtensionSnapshot({
+          workspacePath: options.workspacePath,
+          scenario: options.scenario,
+          mcpServers: dshMcpServers ?? [],
+          skillAdmission: externalSkillAdmission,
+        }),
+        sessionId: options.sessionId,
+        workspacePath: options.workspacePath,
+      })
+    : undefined;
   if (shouldTrackPendingExternalSessionBirth({
     // DSH deliberately starts protocol/session authority before Product root
     // admission, so even an initial-message birth must retain the native id.
@@ -3390,6 +3405,7 @@ async function _doStartExternalSession(options: {
         runtimeSource,
         mcpServers: managedCodexMcpServers,
         managedCodexExtensions: managedCodexExtensionSnapshot,
+        dshExtensions: dshExtensionSnapshot,
       },
       handleUnifiedEvent,
     );
@@ -3454,7 +3470,7 @@ async function _doStartExternalSession(options: {
           };
         }
         if (runtimeType === 'codex' && runtimeSource === 'managed-provider') {
-          managedCodexExtensionSnapshot = await attachManagedCodexHostTools({
+          managedCodexExtensionSnapshot = await attachProductHostTools({
             snapshot: buildCurrentManagedCodexExtensionSnapshot({
               workspacePath: options.workspacePath,
               scenario: options.scenario,

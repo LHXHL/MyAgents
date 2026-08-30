@@ -56,6 +56,7 @@ function boundDiagnosticLogMessage(message: string): string {
 
 export function projectRuntimeExtensionDiagnosticLogEntry(
   extensions: RuntimeExtensionDiagnostics | undefined,
+  runtime: RuntimeDiagnostics['runtime'] = 'codex',
 ): RuntimeDiagnosticLogEntry | null {
   const degradedExtensions = extensions?.components.filter(component => (
     component.state === 'failed' || component.state === 'unsupported'
@@ -73,7 +74,9 @@ export function projectRuntimeExtensionDiagnosticLogEntry(
   return {
     level: extensions?.state === 'failed' ? 'error' : 'warn',
     message: boundDiagnosticLogMessage(
-      `[codex-diag] Managed Codex extension component(s) degraded: ${visible.join('; ')}${remainder}`,
+      runtime === 'dsh'
+        ? `[dsh-diag] DSH extension component(s) degraded: ${visible.join('; ')}${remainder}`
+        : `[codex-diag] Managed Codex extension component(s) degraded: ${visible.join('; ')}${remainder}`,
     ),
   };
 }
@@ -86,23 +89,24 @@ export function projectRuntimeExtensionDiagnosticLogEntry(
 export function projectRuntimeDiagnosticLogEntries(
   diagnostics: RuntimeDiagnostics,
 ): RuntimeDiagnosticLogEntry[] {
+  const prefix = diagnostics.runtime === 'dsh' ? 'dsh-diag' : 'codex-diag';
   const issues = diagnostics.issues ?? [];
   const visibleIssues = issues.slice(0, MAX_VISIBLE_DIAGNOSTIC_ITEMS);
   const entries: RuntimeDiagnosticLogEntry[] = visibleIssues.map(issue => ({
     level: issue.severity === 'error' ? 'error' : 'warn',
-    message: boundDiagnosticLogMessage(`[codex-diag] ${issue.code}: ${issue.message}`),
+    message: boundDiagnosticLogMessage(`[${prefix}] ${issue.code}: ${issue.message}`),
   }));
   if (issues.length > visibleIssues.length) {
     const omitted = issues.slice(visibleIssues.length);
     entries.push({
       level: omitted.some(issue => issue.severity === 'error') ? 'error' : 'warn',
       message: boundDiagnosticLogMessage(
-        `[codex-diag] ${omitted.length} additional diagnostic issue(s) omitted; see the Runtime diagnostics snapshot`,
+        `[${prefix}] ${omitted.length} additional diagnostic issue(s) omitted; see the Runtime diagnostics snapshot`,
       ),
     });
   }
 
-  const extensionEntry = projectRuntimeExtensionDiagnosticLogEntry(diagnostics.extensions);
+  const extensionEntry = projectRuntimeExtensionDiagnosticLogEntry(diagnostics.extensions, diagnostics.runtime);
   if (extensionEntry) entries.push(extensionEntry);
   return entries;
 }

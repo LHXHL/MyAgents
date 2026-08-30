@@ -7,15 +7,15 @@ const mocks = vi.hoisted(() => ({
   getImBridgeToolServer: vi.fn(() => null),
 }));
 
-vi.mock('../../../tools/builtin-mcp-registry', () => ({
+vi.mock('../../tools/builtin-mcp-registry', () => ({
   getBuiltinMcpInstance: mocks.getBuiltinMcpInstance,
 }));
-vi.mock('../../../tools/im-bridge-tools', () => ({
+vi.mock('../../tools/im-bridge-tools', () => ({
   getImBridgeToolServer: mocks.getImBridgeToolServer,
 }));
 
-import type { ManagedCodexExtensionSnapshot } from './contracts';
-import { attachManagedCodexHostTools } from './host-dispatcher';
+import type { ManagedCodexExtensionSnapshot } from '../managed-codex/extensions/contracts';
+import { attachProductHostTools } from './host-dispatcher';
 
 function snapshot(): ManagedCodexExtensionSnapshot {
   return {
@@ -65,7 +65,7 @@ describe('Managed Codex Host tool dispatcher', () => {
       server: { type: 'sdk', name: 'local-tools', instance: server },
     }));
 
-    const first = await attachManagedCodexHostTools({
+    const first = await attachProductHostTools({
       snapshot: snapshot(),
       sessionId: 'session-one',
       workspacePath: '/workspace',
@@ -87,7 +87,7 @@ describe('Managed Codex Host tool dispatcher', () => {
     )).resolves.toMatchObject({ success: false });
 
     first.hostToolDispatcher!.dispose('process generation ended');
-    const second = await attachManagedCodexHostTools({
+    const second = await attachProductHostTools({
       snapshot: snapshot(),
       sessionId: 'session-one',
       workspacePath: '/workspace',
@@ -108,7 +108,7 @@ describe('Managed Codex Host tool dispatcher', () => {
     mocks.getBuiltinMcpInstance.mockReturnValue(Promise.resolve({
       server: { type: 'sdk', name: 'local-tools', instance: server },
     }));
-    const attached = await attachManagedCodexHostTools({
+    const attached = await attachProductHostTools({
       snapshot: snapshot(),
       sessionId: 'session-one',
       workspacePath: '/workspace',
@@ -134,7 +134,7 @@ describe('Managed Codex Host tool dispatcher', () => {
       server: { type: 'sdk', name: 'local-tools', instance: server },
     }));
 
-    const attached = await attachManagedCodexHostTools({
+    const attached = await attachProductHostTools({
       snapshot: snapshot(),
       sessionId: 'session-one',
       workspacePath: '/workspace',

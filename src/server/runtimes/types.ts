@@ -9,6 +9,7 @@ import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
+import type { DshProductExtensionSource } from '../integrated-runtimes/dsh/extension-compiler';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
@@ -110,6 +111,11 @@ export interface SessionStartOptions {
    * adapter. It is generation-scoped and never persisted by the runtime.
    */
   managedCodexExtensions?: ManagedCodexExtensionSnapshot;
+  /**
+   * Product-owned declarative inventory for the Integrated DSH component
+   * compiler. Credential material remains generation-scoped in the Host.
+   */
+  dshExtensions?: DshProductExtensionSource;
 }
 
 /**

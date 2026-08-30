@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.14
+version: 0.15
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -513,7 +513,7 @@ Reverse calls are bounded, cancellable and generation-fenced. Host disconnect or
 
 H3 provides the runtime-neutral handler contract and exact registration/fencing layer. Each request must carry the active Product Session and Runtime generation plus a protocol-bounded deadline; stale authority is rejected before a product callback, peer cancellation is propagated as an `AbortSignal`, and a deadline settles as one retryable protocol failure. H4/H4P connect these callbacks to the existing credential, interaction, tool, Hook and attachment domain owners; an unwired callback can never make a Runtime selectable.
 
-H4 now connects credential resolution, permission/question/Plan interaction settlement and content-addressed attachment leases to those fenced reverse ports. Provider material is resolved only inside `host/credential/resolve` and is neither copied into the declarative execution profile nor persisted in Product metadata. The Host Hook boundary currently returns the explicit continue result, while the canonical Host Web executor remains fail-closed with `host_tool_unavailable`; therefore this implementation does not yet advertise complete 20-tool readiness. Declarative Skill/MCP/agent/Host-tool compilation and the runtime-neutral Web backend remain H4 blockers.
+H4 now connects credential resolution, permission/question/Plan interaction settlement, the runtime-neutral Product Host-tool dispatcher and content-addressed attachment leases to those fenced reverse ports. Provider and remote-MCP credential material is resolved only inside `host/credential/resolve`; it is neither copied into declarative profiles/snapshots nor persisted in Product metadata. Admitted Product Host tools execute through `host/tool/execute`, and image/audio results become content-addressed DSH attachment references. The Host Hook boundary currently returns the explicit continue result, while the canonical Host Web executor remains fail-closed with `host_tool_unavailable`; therefore this implementation does not yet advertise complete 20-tool readiness. The runtime-neutral Web backend remains an H4 blocker.
 
 ### 9.1 Permission and Plan ownership
 
@@ -601,7 +601,7 @@ MyAgents projects canonical compaction events and context metrics into its exist
 
 The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
 
-H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is reconciled through matching `turn/get` and verified `session/read` truth. A Runtime-durable non-terminal operation is taken over under the same exact identity, while newly submitted Product work waits for its terminal boundary. If Product durability wins before native admission, the immutable `pendingDshRootOperation` is replayed with its original Product user and `clientOperationId`; terminal publication clears it only after the required Product persistence settles. Remaining H4 work is declarative extension compilation and canonical Host Web execution; exact permission-rule UI remains H4P work.
+H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is reconciled through matching `turn/get` and verified `session/read` truth. A Runtime-durable non-terminal operation is taken over under the same exact identity, while newly submitted Product work waits for its terminal boundary. If Product durability wins before native admission, the immutable `pendingDshRootOperation` is replayed with its original Product user and `clientOperationId`; terminal publication clears it only after the required Product persistence settles. Remaining H4 work includes live extension revision reconciliation and canonical Host Web execution; exact permission-rule UI remains H4P work.
 
 ## 12. Configuration and extension updates
 
@@ -622,7 +622,9 @@ Apply according to negotiated DSH modes:
 
 Declarative extension snapshots contain only validated descriptors and references. Arbitrary Plugin JavaScript is never sent into DSH; trusted runtime plugins remain build-time DSH composition.
 
-H4 establishes deterministic extension replacement and verifies the Runtime-returned effective catalog digest before Session admission. The present compiler intentionally emits an empty validated snapshot; selector exposure remains blocked until MyAgents Skills/MCP/agents/Host tools are compiled into the declarative contract and their degraded-component behavior is tested.
+H4 now compiles the existing Product capability winners into one deterministic DSH extension snapshot before Session admission. It re-reads and digest-verifies admitted Skill documents, projects Skills/commands/agents, admits HTTP/SSE MCP descriptors, and exposes Product in-process MCP/IM tools through DSH `host_tool` components backed by the runtime-neutral dispatcher in `src/server/runtimes/product-extensions/`. Header material remains only in generation-scoped Host bindings and crosses the MCP credential reverse port for an exact component/digest/revision request. The compiler uses the intersection of protocol `2.0.0` and the exact accepted Runtime compiler constraints; unsupported schema/name inputs degrade only their component and are published through DSH-owned Runtime diagnostics and Logs.
+
+The accepted Runtime composition currently declares no Host-approved stdio MCP launch profile, so Product `command/args` MCP definitions are explicitly `unsupported` rather than translated into arbitrary process execution. `extension/replace`, returned effective revision/digest, Skill read-back and Host-tool catalog presence are verified before Session binding; a real-artifact smoke covers a non-empty Skill/command/agent/Host-tool snapshot. Live desired/effective extension changes after Session birth are not yet reconciled at the idle boundary, so this slice does not complete H4 or make DSH selectable.
 
 ## 13. Mutations and native history
 
@@ -778,6 +780,10 @@ src/server/integrated-runtimes/dsh/
   extension-compiler.ts
   lifecycle.ts
   mutations.ts
+
+src/server/runtimes/product-extensions/
+  contracts.ts
+  host-dispatcher.ts
 
 src/server/session-engine/
   selector.ts

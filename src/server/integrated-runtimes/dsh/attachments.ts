@@ -91,6 +91,22 @@ export class DshAttachmentRegistry {
     return parts;
   }
 
+  async publishDataUrl(dataUrl: string): Promise<DshRpcObject> {
+    const match = /^data:([^;,]{1,256});base64,([A-Za-z0-9+/]*={0,2})$/u.exec(dataUrl);
+    if (!match) throw new Error('DSH Host tool attachment data URL is invalid');
+    const bytes = Buffer.from(match[2]!, 'base64');
+    if (bytes.byteLength < 1 || bytes.byteLength > 20 * 1_024 * 1_024) {
+      throw new Error('DSH Host tool attachment exceeds its byte bound');
+    }
+    const stored = await this.storeBytes(bytes, match[1]!);
+    return {
+      attachmentId: stored.attachmentId,
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      sha256: stored.sha256,
+    };
+  }
+
   async put(params: DshRpcObject): Promise<DshRpcObject> {
     const stagingPath = await realpath(text(params.stagingPath, 'DSH attachment staging path'));
     if (!inside(this.root, stagingPath)) throw new Error('DSH attachment staging path escaped its root');

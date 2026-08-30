@@ -65,6 +65,7 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionInitialMessages: Array<string | undefined> = [];
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
+  readonly startSessionDshExtensionSkills: string[][] = [];
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
   compactCalls = 0;
@@ -217,8 +218,12 @@ class FakeRuntime implements AgentRuntime {
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionHasHostDispatcher.push(Boolean(
-      options.managedCodexExtensions?.hostToolDispatcher,
+      options.managedCodexExtensions?.hostToolDispatcher
+      ?? options.dshExtensions?.hostToolDispatcher,
     ));
+    this.startSessionDshExtensionSkills.push(
+      (options.dshExtensions?.skills ?? []).map(skill => skill.name),
+    );
     const gate = this.startGate;
     if (gate) {
       await gate;
@@ -226,7 +231,11 @@ class FakeRuntime implements AgentRuntime {
     }
     this.callback = onEvent;
     const process = new FakeRuntimeProcess();
-    process.loadedSkillNames = (options.managedCodexExtensions?.skills ?? [])
+    process.loadedSkillNames = (
+      options.managedCodexExtensions?.skills
+      ?? options.dshExtensions?.skills
+      ?? []
+    )
       .map(skill => skill.name)
       .filter(name => !this.omittedLoadedSkillNames.has(name));
     const initialize = () => {
@@ -580,8 +589,8 @@ async function createHarness(
     isRuntimeSupported: () => true,
   }));
   if (options.withManagedHostDispatcher) {
-    vi.doMock('./managed-codex/extensions/host-dispatcher', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('./managed-codex/extensions/host-dispatcher')>();
+    vi.doMock('./product-extensions/host-dispatcher', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./product-extensions/host-dispatcher')>();
       const descriptors = [{
         name: 'myagents__mcp__test__stable_tool',
         description: 'Stable historical Host tool',
@@ -589,7 +598,7 @@ async function createHarness(
       }];
       return {
         ...actual,
-        attachManagedCodexHostTools: vi.fn(async ({ snapshot }) => ({
+        attachProductHostTools: vi.fn(async ({ snapshot }) => ({
           ...snapshot,
           dynamicTools: descriptors,
           hostToolDispatcher: {
@@ -888,6 +897,34 @@ describe('external SessionEngine with fake runtime', () => {
       runtimeBinding: { family: 'integrated', id: 'dsh' },
     });
     expect(metadata).not.toHaveProperty('pendingDshRootOperation');
+  });
+
+  it('passes the shared Product capability winners into DSH extension admission', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'DSH extensions admitted' },
+    ], { runtimeType: 'dsh', withManagedHostDispatcher: true });
+    const sessionId = 'session-dsh-extension-admission';
+    const workspacePath = join(harness.home, 'workspace');
+    const skillRoot = join(workspacePath, '.claude', 'skills', 'review');
+    mkdirSync(skillRoot, { recursive: true });
+    writeFileSync(
+      join(skillRoot, 'SKILL.md'),
+      '---\nname: review\ndescription: Review repository changes\n---\n\n# Review\n',
+    );
+
+    await expect(runInjectedTurn(harness, {
+      prompt: 'use the Product extensions',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionDshExtensionSkills).toHaveLength(1);
+    expect(harness.runtime.startSessionDshExtensionSkills[0]).toContain('review');
+    expect(harness.runtime.startSessionHasHostDispatcher).toEqual([true]);
   });
 
   it('retires the Product DSH journal after an authoritative failed terminal', async () => {
