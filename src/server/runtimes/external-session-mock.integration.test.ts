@@ -29,6 +29,7 @@ type TurnScript =
   | {
     kind: 'success';
     text: string;
+    thinking?: string;
     includeTool?: boolean;
     completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
@@ -465,6 +466,7 @@ class FakeRuntime implements AgentRuntime {
           Boolean(script.includeTool),
           script.completeDelayMs,
           script.usage,
+          script.thinking,
         );
         return;
       }
@@ -511,7 +513,13 @@ class FakeRuntime implements AgentRuntime {
     includeTool: boolean,
     completeDelayMs = 0,
     usage?: { inputTokens: number; outputTokens: number },
+    thinking?: string,
   ): void {
+    if (thinking) {
+      this.emit({ kind: 'thinking_start', index: 0 });
+      this.emit({ kind: 'thinking_delta', text: thinking, index: 0 });
+      this.emit({ kind: 'thinking_stop', index: 0 });
+    }
     this.emit({ kind: 'text_delta', text });
     if (includeTool) {
       this.emit({
@@ -1028,6 +1036,68 @@ describe('external SessionEngine with fake runtime', () => {
       runtimeBinding: { family: 'integrated', id: 'dsh' },
     });
     expect(metadata).not.toHaveProperty('pendingDshRootOperation');
+  });
+
+  it('projects DSH thinking, text, tools, usage, and terminal truth through the Product session', async () => {
+    const harness = await createHarness([
+      {
+        kind: 'success',
+        thinking: 'inspect the exact evidence',
+        text: 'integrated DSH answer',
+        includeTool: true,
+        completeDelayMs: 40,
+        usage: { inputTokens: 120, outputTokens: 24 },
+      },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-product-projection';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'exercise the Product projection'),
+      model: 'deepseek-v4-flash',
+      permissionMode: 'auto',
+    });
+    await waitFor(
+      () => harness.engine.getLiveSessionOverlay(sessionId).liveStreamingMessage?.content
+        .includes('integrated DSH answer') ?? false,
+      'DSH live Product projection',
+    );
+
+    expect(broadcastEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'chat:thinking-start' }),
+      expect.objectContaining({
+        event: 'chat:thinking-chunk',
+        data: { index: 0, delta: 'inspect the exact evidence' },
+      }),
+      expect.objectContaining({
+        event: 'chat:tool-use-start',
+        data: expect.objectContaining({ id: 'tool-1', name: 'FakeTool' }),
+      }),
+    ]));
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.sessionStore.getSessionMetadata(sessionId)).toMatchObject({
+      runtimeBinding: { family: 'integrated', id: 'dsh' },
+    });
+    expect(harness.sessionStore.getSessionMetadata(sessionId))
+      .not.toHaveProperty('pendingDshRootOperation');
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'exercise the Product projection' }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: expect.stringContaining('integrated DSH answer'),
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: expect.stringContaining('FakeTool'),
+        }),
+      ]),
+    );
+    expect(harness.engine.getLatestAssistantResult()).toEqual({
+      sessionId,
+      latestResult: 'integrated DSH answer',
+    });
   });
 
   it('passes the shared Product capability winners into DSH extension admission', async () => {

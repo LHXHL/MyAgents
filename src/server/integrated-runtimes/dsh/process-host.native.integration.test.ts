@@ -20,6 +20,7 @@ import {
 } from "./protocol-types";
 
 const nativeSmokeEnabled = process.env.MYAGENTS_DSH_NATIVE_SMOKE === "1";
+const nativeSmokeResourceRoot = process.env.MYAGENTS_DSH_NATIVE_SMOKE_RESOURCE_ROOT;
 
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
@@ -36,7 +37,9 @@ describe.runIf(nativeSmokeEnabled)(
         mkdir(runtimeHome),
         mkdir(attachments),
       ]);
-      const resourceRoot = resolve("src-tauri/resources");
+      const resourceRoot = resolve(
+        nativeSmokeResourceRoot ?? "src-tauri/resources",
+      );
       const installation = await resolveDshRuntimeInstallation({
         resourceRoot,
         nodeExecutablePath: join(resourceRoot, "nodejs/bin/node"),

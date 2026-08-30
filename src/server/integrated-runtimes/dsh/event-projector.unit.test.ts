@@ -164,4 +164,66 @@ describe('DshRuntimeEventProjector', () => {
       },
     ]);
   });
+
+  it('projects DSH thinking, Plan, and context metrics into existing Product events', async () => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1',
+      runtimeGeneration: 'runtime-generation-1',
+      onEvent: event => events.push(event),
+    });
+    await projector.accept(envelope(1, {
+      kind: 'thinking_delta',
+      delta: 'inspect the exact runtime state',
+    }, { turnId: 'turn-1', itemId: 'thinking-1' }));
+    await projector.accept(envelope(2, {
+      kind: 'plan',
+      revision: 'plan-revision-1',
+      detail: {
+        todos: [
+          { id: 'inspect', content: 'Inspect evidence', status: 'completed' },
+          { id: 'verify', title: 'Verify package', status: 'in_progress' },
+        ],
+      },
+    }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(3, {
+      kind: 'context',
+      contextOccupiedTokens: 12_345,
+      runtimeContextWindow: 200_000,
+      modelProfileRevision: 'profile-revision-1',
+    }, { turnId: 'turn-1' }));
+
+    expect(events).toEqual([
+      {
+        kind: 'thinking_delta',
+        text: 'inspect the exact runtime state',
+        index: 0,
+      },
+      {
+        kind: 'agent_plan_update',
+        todos: [
+          {
+            key: 'inspect',
+            content: 'Inspect evidence',
+            activeForm: 'Inspect evidence',
+            status: 'completed',
+          },
+          {
+            key: 'verify',
+            content: 'Verify package',
+            activeForm: 'Verify package',
+            status: 'in_progress',
+          },
+        ],
+      },
+      {
+        kind: 'usage',
+        inputTokens: 0,
+        outputTokens: 0,
+        semantics: 'delta',
+        contextOccupiedTokens: 12_345,
+        runtimeContextWindow: 200_000,
+      },
+    ]);
+  });
 });
