@@ -963,12 +963,17 @@ export class DshRuntime implements AgentRuntime {
         );
       }
 
-      const bindingConfigRevision = `myagents-dsh-binding-v1:${hash(
-        configuration.profile.revision,
-        OFFICIAL_INITIAL_PERMISSION_MODE,
-        OFFICIAL_INTERACTION_REVISION,
-        options.systemPromptAppend ?? '',
-      )}`;
+      const bindingPermissionMode = options.resumeSessionId
+        ? configuration.dshPermissionMode
+        : OFFICIAL_INITIAL_PERMISSION_MODE;
+      const bindingConfigRevision = options.resumeSessionId
+        ? configuration.revision
+        : `myagents-dsh-binding-v1:${hash(
+            configuration.profile.revision,
+            bindingPermissionMode,
+            OFFICIAL_INTERACTION_REVISION,
+            options.systemPromptAppend ?? '',
+          )}`;
       const bindingParams: DshRpcObject = {
         clientOperationId: `session-bind-${randomUUID()}`,
         persistenceRef: `product-session-${hash(options.sessionId)}`,
@@ -976,7 +981,7 @@ export class DshRuntime implements AgentRuntime {
         configRevision: bindingConfigRevision,
         extensionDigest,
         systemPrompt: options.systemPromptAppend ?? '',
-        permissionMode: OFFICIAL_INITIAL_PERMISSION_MODE,
+        permissionMode: bindingPermissionMode,
         interactionScenario: OFFICIAL_INTERACTION_REVISION,
         ...(options.resumeSessionId ? { runtimeSessionId: options.resumeSessionId } : {}),
       };

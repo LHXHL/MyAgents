@@ -607,6 +607,8 @@ External transcript owner 与 builtin 共用 SessionStore cursor 契约，但不
 
 Force-execute 是一个完整的 turn-boundary transfer，不是单纯把 queue item 移到队首：facade 在 interrupt 前记录目标 queue identity，把预期 abort 归类为 stopped，先持久化已有 partial assistant，再等待精确 Runtime operation settlement，最后只 admission 一次目标消息；任一 barrier 失败都显式取消受影响 queue。DSH retry 还必须读取 Product user 的 `runtimeOperationAnchor` 并查询 native admission：never-admitted tail 才能只做 Product truncate，已 admission 的 turn 必须完成 DSH rewind（第一轮使用协议 `2.1.0` genesis boundary）后再提交 Product branch。相关 agent error 携带精确 user message id；结构性 retraction 是 critical SSE，Renderer 不猜“最后一条 user”也不在 Server commit 前乐观清屏。
 
+DSH resume 的第一次 `session/resume` 必须携带当前 Product Session 已解析出的实际 permission mode 与 configuration revision，不能再次使用仅供新 Session 出生的 bootstrap `default`。Runtime 会在折叠持久化 permission history 之前，以该请求恢复 replacement generation 的有效配置；这个 restore 不写新事件。`recovery_required` 也不是 mutation 的同义词：只有 Runtime 的 `unsettledMutations` 与 Product `pendingDshMutation` 精确对应时才进入 fork/rewind/delete 恢复，`persisted_history_invalid`、`persisted_product_state_invalid` 等原因必须保留本身的诊断身份。
+
 每个 direct/queued message operation 保存自己的用户消息，并记录该消息是否已经展示、写入内存 transcript、持久化或撤回。Desktop、IM、Inbox、Background、Injected 与 realtime fallback 复用既有 direct-send tail 和 queue generation，facade 不保存进程级的第二份“首条消息”状态。`external-session.ts` 只保留 watchdog、trace、待创建 Session 等确实属于编排过程的状态。
 
 ### 测试护栏

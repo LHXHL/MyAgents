@@ -69,6 +69,38 @@ afterAll(() => {
 });
 
 describe('DSH Product mutation journal', () => {
+  it('reports non-mutation Runtime recovery without inventing a Product journal mismatch', async () => {
+    const sessionId = 'dsh-product-state-recovery';
+    await createDshSession(sessionId);
+    await expect(recovery.recoverPendingDshMutation({
+      productSessionId: sessionId,
+      runtimeSessionId: `runtime-${sessionId}`,
+      binding: {
+        state: 'recovery_required',
+        reason: 'persisted_product_state_invalid',
+        retryable: false,
+        unsettledMutations: [],
+      },
+      controller: {} as never,
+    })).rejects.toThrow('DSH Session recovery required: persisted_product_state_invalid');
+  });
+
+  it('requires a matching Product journal only for an unsettled Runtime mutation', async () => {
+    const sessionId = 'dsh-unmatched-runtime-rewind';
+    await createDshSession(sessionId);
+    await expect(recovery.recoverPendingDshMutation({
+      productSessionId: sessionId,
+      runtimeSessionId: `runtime-${sessionId}`,
+      binding: {
+        state: 'recovery_required',
+        reason: 'persisted_mutation_unsettled',
+        retryable: true,
+        unsettledMutations: ['rewind'],
+      },
+      controller: {} as never,
+    })).rejects.toThrow('DSH has unsettled rewind recovery but Product has no matching mutation journal');
+  });
+
   it('recovers a Runtime-terminal turn lost before Product assistant persistence', async () => {
     const sessionId = 'dsh-turn-crash-window';
     const runtimeSessionId = `runtime-${sessionId}`;

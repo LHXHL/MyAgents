@@ -23,8 +23,27 @@ import { snapshotForForkedSession } from '../utils/session-snapshot';
 
 export type DshRecoveryBinding = Readonly<{
   state?: unknown;
+  reason?: unknown;
+  retryable?: unknown;
   unsettledMutations?: unknown;
 }>;
+
+function recoveryError(binding: DshRecoveryBinding): Error {
+  const reason = typeof binding.reason === 'string' && binding.reason.length > 0
+    ? binding.reason
+    : 'unknown';
+  const unsettled = Array.isArray(binding.unsettledMutations)
+    ? binding.unsettledMutations.filter(value => typeof value === 'string')
+    : [];
+  if (unsettled.length > 0) {
+    return new Error(
+      `DSH has unsettled ${unsettled.join(', ')} recovery but Product has no matching mutation journal`,
+    );
+  }
+  return new Error(
+    `DSH Session recovery required: ${reason}${binding.retryable === true ? ' (retryable)' : ''}`,
+  );
+}
 
 function mutationKind(intent: PendingDshMutation): 'fork' | 'rewind' | 'delete' {
   if (intent.kind === 'dsh-fork') return 'fork';
@@ -247,7 +266,7 @@ export async function recoverPendingDshMutation(input: {
   const intent = metadata?.pendingDshMutation;
   if (!intent) {
     if (input.binding.state === 'recovery_required') {
-      throw new Error('DSH requires recovery but Product has no matching mutation journal');
+      throw recoveryError(input.binding);
     }
     return Object.freeze({ recovered: false, productDeleted: false });
   }
