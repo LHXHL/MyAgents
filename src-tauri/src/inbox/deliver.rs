@@ -51,6 +51,20 @@ pub enum DeliverOutcome {
     Rejected { reason: String },
 }
 
+fn drain_outcome(message_id: &str, response: Result<DrainResponse, String>) -> DeliverOutcome {
+    match response {
+        Ok(response) if response.accepted => DeliverOutcome::Delivered {
+            message_id: message_id.to_string(),
+        },
+        Ok(response) => DeliverOutcome::Rejected {
+            reason: response.reason.unwrap_or_else(|| "unknown".to_string()),
+        },
+        Err(error) => DeliverOutcome::DeliveryFailed {
+            reason: format!("invalid drain acknowledgement: {error}"),
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreshSessionStartRequest {
@@ -114,21 +128,33 @@ async fn http_post_drain(port: u16, message: &PendingInboxMessage) -> DeliverOut
         Ok(resp) => {
             let status = resp.status();
             if status.is_success() {
-                match resp.json::<DrainResponse>().await {
-                    Ok(drain_resp) if !drain_resp.accepted => {
-                        let reason = drain_resp.reason.unwrap_or_else(|| "unknown".to_string());
+                let outcome = drain_outcome(
+                    &message_id,
+                    resp.json::<DrainResponse>()
+                        .await
+                        .map_err(|error| error.to_string()),
+                );
+                match &outcome {
+                    DeliverOutcome::Delivered { .. } => {
+                        ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port);
+                    }
+                    DeliverOutcome::Rejected { reason } => {
                         ulog_warn!(
                             "[inbox] target accepted HTTP but rejected message {}: {}",
                             message_id,
                             reason
                         );
-                        DeliverOutcome::Rejected { reason }
                     }
-                    _ => {
-                        ulog_info!("[inbox] delivered msg_id={} (port {})", message_id, port);
-                        DeliverOutcome::Delivered { message_id }
+                    DeliverOutcome::DeliveryFailed { reason } => {
+                        ulog_warn!(
+                            "[inbox] target returned an invalid acknowledgement for {}: {}",
+                            message_id,
+                            reason
+                        );
                     }
+                    DeliverOutcome::SessionNotFound => unreachable!(),
                 }
+                outcome
             } else {
                 let reason = format!("HTTP {}", status.as_u16());
                 ulog_warn!(
@@ -597,5 +623,25 @@ mod tests {
             }
         ));
         assert!(!birth_probe_called.get());
+    }
+
+    #[test]
+    fn drain_ack_requires_an_explicit_boolean_accepted_field() {
+        assert!(matches!(
+            drain_outcome(
+                "message-1",
+                serde_json::from_value::<DrainResponse>(serde_json::json!({ "accepted": true }))
+                    .map_err(|error| error.to_string()),
+            ),
+            DeliverOutcome::Delivered { .. }
+        ));
+        assert!(matches!(
+            drain_outcome(
+                "message-1",
+                serde_json::from_value::<DrainResponse>(serde_json::json!({ "success": true }))
+                    .map_err(|error| error.to_string()),
+            ),
+            DeliverOutcome::DeliveryFailed { .. }
+        ));
     }
 }

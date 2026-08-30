@@ -131,7 +131,7 @@ fn runtime_source_from_runtime_config(
 ) -> Option<String> {
     let source = runtime_config?.as_object()?.get("source")?.as_str()?;
     match source {
-        "system-cli" | "managed-provider" => Some(source.to_string()),
+        "integrated" | "system-cli" | "managed-provider" => Some(source.to_string()),
         _ => None,
     }
 }
@@ -482,6 +482,16 @@ mod tests {
         assert!(payload.runtime.is_none());
         assert!(payload.runtime_config.is_none());
         assert!(payload.mcp_enabled_servers.is_none());
+    }
+
+    #[test]
+    fn task_sidecar_preserves_integrated_dsh_runtime_source() {
+        assert_eq!(
+            runtime_source_from_runtime_config(Some(&serde_json::json!({
+                "source": "integrated"
+            }))),
+            Some("integrated".to_string())
+        );
     }
 
     #[test]

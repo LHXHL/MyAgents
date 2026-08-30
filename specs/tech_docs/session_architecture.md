@@ -127,6 +127,26 @@ message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume
 
 ### Agent / Session 协作与事件协议（list / start / send / watch）
 
+所有会产生 Session turn 的产品入口必须先归一到 `SessionEngine`，不能根据历史上的
+`external` 名称绕过 `integrated` adapter。当前入口矩阵如下：
+
+| 产品动作 | Host 入口 | SessionEngine 语义 |
+|---|---|---|
+| Desktop query、忙碌时排队、强制发送 | `/chat/send` + Goal orchestrator | `sendDesktopMessage`；DSH 强制发送先 interrupt 并持久化 partial terminal，再提升目标 queue item |
+| 打开/恢复已有 Session | Rust Sidecar owner ensure + startup restore | 从 frozen `runtimeBinding` 恢复同一 Runtime；DSH 在 native resume 校验前恢复 effective config |
+| rewind / retry / fork | `/chat/rewind`、`/chat/external-retry`、`/sessions/fork` | adapter-owned native mutation；DSH/Codex 遇到回包丢失时从 Product authority 对账，fork 由调用方预分配目标 Product Session ID |
+| Goal 用户轮与 loop continuation | Goal orchestrator | `sendDesktopMessage` 或 `prepareScheduledTurn` + `runInjectedTurn`，保留 exact Goal owner/queue |
+| Task 首轮、续跑与 run-now | Rust Task owner → Node Task orchestrator | `prepareScheduledTurn` + `runInjectedTurn`；`dsh/integrated` 必须穿过 Rust/Node 两层且不得降级为 `system-cli` |
+| `session start/send/watch` | Admin API → Rust Management API → Inbox | `enqueueInboxMessage`；watch terminal 回推仍走同一 Inbox admission |
+| Task Comment | TaskApplication → Inbox | existing-only resume；已删除 Session 不得被评论复活 |
+| Space IssueDelivery | Space owner → Inbox | registered-agent scenario + exact origin；允许按协议 materialize 目标 Session |
+| Bot / Agent Channel 与 Heartbeat | Rust Router → `/api/im/*` | `enqueueImMessage` / `runInjectedTurn`；所有非 builtin engine（包括 integrated DSH）读取 frozen/live Runtime config |
+| Memory / maintenance injection | Task/Memory owner | `runInjectedTurn`，继续使用 Session 的真实 Runtime |
+
+跨 Sidecar 投送只有在目标 `/api/inbox/drain` 返回可解析的
+`{ accepted: true }` 时才算成功。HTTP 2xx 但响应缺字段或格式错误属于
+`delivery_failed`，必须保留 watch/outbox 等上层重试权并写日志；不得把协议错误误报为已投送。
+
 `myagents session list --agent` 只读取 history-visible Session metadata，不读取
 transcript、不探测 live state，也不唤醒 Sidecar。`myagents session start --agent`
 由 source 只解析目标 Agent/workspace，Rust 在 per-Session lifecycle fence 内生成新 ID、

@@ -1019,6 +1019,7 @@
       "retryFailedWithError": "重试失败：{{error}}",
       "retryFailed": "重试失败",
       "forkOpenFailed": "创建分支失败：无法打开新会话",
+      "forkReconciled": "连接曾中断，但已找回并打开新分支",
       "forkFailedWithError": "创建分支失败：{{error}}",
       "forkFailed": "创建分支失败",
       "taskDeleted": "任务已删除",

@@ -4525,14 +4525,15 @@ describe('external SessionEngine with fake runtime', () => {
     }
     const sourceBefore = harness.sessionStore.getSessionData(sessionId)!;
     const firstAssistant = sourceBefore.messages.find(message => message.role === 'assistant')!;
+    const targetSessionId = '6d57334a-44d8-4fe1-a4f2-cd57fc8beb85';
 
-    const result = await harness.engine.forkAtAssistantMessage(firstAssistant.id);
-    expect(result).toMatchObject({ success: true, agentDir: workspacePath });
+    const result = await harness.engine.forkAtAssistantMessage(firstAssistant.id, { targetSessionId });
+    expect(result).toMatchObject({ success: true, newSessionId: targetSessionId, agentDir: workspacePath });
     expect(harness.runtime.conversationBranches).toEqual([
       { kind: 'through-turn', runtimeTurnId: 'fake-turn-1' },
     ]);
     expect(harness.sessionStore.getSessionData(sessionId)).toEqual(sourceBefore);
-    const forked = harness.sessionStore.getSessionData(result.newSessionId!);
+    const forked = harness.sessionStore.getSessionData(targetSessionId);
     expect(forked).toMatchObject({
       runtime: 'codex',
       runtimeSource: 'system-cli',
@@ -4545,5 +4546,9 @@ describe('external SessionEngine with fake runtime', () => {
     expect(forked?.messages.map(message => message.role)).toEqual(['user', 'assistant']);
     expect(forked?.messages[0]?.content).toBe('first question');
     expect(forked?.messages[1]?.content).toContain('first answer');
+    await expect(
+      harness.engine.forkAtAssistantMessage(firstAssistant.id, { targetSessionId }),
+    ).resolves.toMatchObject({ success: false, status: 409 });
+    expect(harness.runtime.conversationBranches).toHaveLength(1);
   });
 });

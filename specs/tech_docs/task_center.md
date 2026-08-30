@@ -103,6 +103,7 @@ Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `Sess
 - 执行期间使用 `SidecarOwner::Task(taskId)`；terminal/stop/delete 对称释放。
 - Task turn 的 completion descriptor 保留 `{ kind: 'task', id: taskId }` owner；Rust 通用 Session completion policy 据此抑制 generic toast，Task outcome/notification 仍由 Task domain lifecycle 唯一负责，attached/headless 都不因 Tab 是否存在而改变归属。
 - Rust 每次 ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`，复用校验与 spawn 必须消费同一快照；Node 创建 Task metadata 时再从 live `SessionEngine.getRuntimeIdentity()` 取一次实际进程身份，并与同一 live config snapshot 绑定，禁止用 payload 中可能漂移的 runtime 反写。
+- DSH Task 的 canonical identity 是 `runtime='dsh' + RuntimeSource:'integrated'`；显式 `runtimeConfig.source` 只能是 `integrated`，省略时也必须由 `runtime='dsh'` 确定性推导为同一 identity。TaskStore 校验、Cron payload、Rust Sidecar ensure 和 Node scheduled-turn preparation 都不得把它改写成 `system-cli`。
 
 Task ↔ Session relation 只在 Runtime adapter 已接纳首轮 query 后，由 `onDispatched(queueId, sessionId)` 回调经 `/api/task/turn/admitted` 幂等提交。metadata 存在、Sidecar 已启动或 HTTP 请求已发出都不是 admission 证据。pending Comment 必须在该 relation 持久化后才按创建顺序进入同一 Session 的既有队列。
 

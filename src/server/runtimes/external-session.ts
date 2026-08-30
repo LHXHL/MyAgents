@@ -6019,6 +6019,7 @@ function dshStoreFailureResult(
 
 async function forkDshConversation(
   assistantMessageId: string,
+  requestedTargetSessionId?: string,
 ): Promise<ExternalConversationOperationResult> {
   return withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
@@ -6044,7 +6045,11 @@ async function forkDshConversation(
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The active DSH Runtime owns a different Session' };
     }
 
+    if (requestedTargetSessionId && getSessionMetadata(requestedTargetSessionId)) {
+      return { success: false, status: 409, errorCode: 'persistence_failed', error: 'The requested fork Session already exists' };
+    }
     const forked = createSessionMetadata(source.agentDir, snapshotForForkedSession(source));
+    if (requestedTargetSessionId) forked.id = requestedTargetSessionId;
     forked.runtimeSessionId = `dsh-${crypto.randomUUID()}`;
     forked.title = `🌿 ${source.title || 'Chat'}`;
     forked.titleSource = 'auto';
@@ -6397,9 +6402,10 @@ export async function rewindExternalConversation(
 
 export async function forkExternalConversation(
   assistantMessageId: string,
+  requestedTargetSessionId?: string,
 ): Promise<ExternalConversationOperationResult> {
   if (getCurrentRuntimeType() === 'dsh') {
-    return forkDshConversation(assistantMessageId);
+    return forkDshConversation(assistantMessageId, requestedTargetSessionId);
   }
   if (getCurrentRuntimeType() !== 'codex') {
     return { success: false, status: 400, errorCode: 'unsupported_runtime', error: 'Conversation fork is only supported by Codex' };
@@ -6409,6 +6415,9 @@ export async function forkExternalConversation(
     const source = sessionId ? getSessionData(sessionId) : null;
     if (!source?.runtimeSessionId) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex conversation binding is unavailable' };
+    }
+    if (requestedTargetSessionId && getSessionMetadata(requestedTargetSessionId)) {
+      return { success: false, status: 409, errorCode: 'persistence_failed', error: 'The requested fork Session already exists' };
     }
     const targetIndex = source.messages.findIndex(message => message.id === assistantMessageId && message.role === 'assistant');
     const target = targetIndex >= 0 ? source.messages[targetIndex] : undefined;
@@ -6453,6 +6462,7 @@ export async function forkExternalConversation(
       source.agentDir,
       snapshotForForkedSession(source, legacyFallback),
     );
+    if (requestedTargetSessionId) forked.id = requestedTargetSessionId;
     forked.runtimeSessionId = branch.runtimeSessionId;
     forked.title = `🌿 ${source.title || 'Chat'}`;
     forked.titleSource = 'auto';

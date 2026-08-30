@@ -243,6 +243,8 @@ IM / Agent Channel 属于 live-follow owner，但 peer session 仍必须绑定�
 
 配置热更新也必须在同一个 owner / scope 比较 identity：旧值取每个运行中 `ImBotInstance` 的有效 runtime，新的值由完整的落盘后 `AgentConfig + ChannelOverrides` 重新投影；只轮转有效 identity 真正变化的 Channel。`AgentConfig.runtime/runtimeConfig` 是 provider-facing 的原始默认值（managed Codex 可合法保存为 `builtin`），不能和 Channel 的投影结果直接比较，也不能在 `AgentInstance` 上缓存成“有效 runtime”。同一 managed Provider 内仅切换模型不轮转 session。
 
+Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` 区分 Claude Agent SDK 特有逻辑；其它 engine 一律走 SessionEngine 的非 builtin 配置路径。特别是 DSH 的 kind 是 `integrated`，不能再用历史判断 `engine.kind === 'external'`，否则会丢失模型、权限、reasoning 配置，甚至误入 builtin enqueue。
+
 ### 2.5 Telegram Adapter
 
 ```rust

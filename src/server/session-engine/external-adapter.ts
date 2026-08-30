@@ -983,8 +983,8 @@ export function createExternalSessionEngine(): SessionEngine {
       return rewindExternalConversation(userMessageId);
     },
 
-    forkAtAssistantMessage(messageId) {
-      return forkExternalConversation(messageId);
+    forkAtAssistantMessage(messageId, options) {
+      return forkExternalConversation(messageId, options?.targetSessionId);
     },
 
     async updateProviderEnv() {

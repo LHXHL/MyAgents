@@ -1019,6 +1019,7 @@
       "retryFailedWithError": "Retry failed: {{error}}",
       "retryFailed": "Retry failed",
       "forkOpenFailed": "Failed to create branch: cannot open a new chat.",
+      "forkReconciled": "The connection was interrupted, but the new branch was recovered and opened.",
       "forkFailedWithError": "Failed to create branch: {{error}}",
       "forkFailed": "Failed to create branch.",
       "taskDeleted": "Task deleted.",

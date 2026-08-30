@@ -4817,6 +4817,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     };
     const rewindSessionId = sessionIdRef.current;
     const isCodexRewind = currentRuntime === 'codex';
+    const hasRecoverableNativeRewind = isCodexRewind || currentRuntime === 'dsh';
 
     // 1. 乐观更新 UI（瞬时反馈）
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
@@ -4892,9 +4893,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         });
 
         // A structured HTTP rejection proves the server did not commit. A
-        // transport failure is ambiguous, so Codex reloads SessionStore
-        // authority instead of restoring a possibly stale pre-rewind tail.
-        const reconciliation = isCodexRewind
+        // transport failure is ambiguous for a native conversation mutation,
+        // so reload SessionStore authority instead of restoring a possibly
+        // stale pre-rewind tail.
+        const reconciliation = hasRecoverableNativeRewind
           && typeof structured?.status !== 'number'
           ? await retryCurrentSessionRestore(messageId)
           : null;
@@ -4939,9 +4941,32 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     const attachments = userMsg.attachments;
     const userMessageId = userMsg.id;
     const retryEndpoint = isExternalRuntime ? '/chat/external-retry' : '/chat/rewind';
+    const hasRecoverableNativeRewind = currentRuntime === 'codex' || currentRuntime === 'dsh';
 
     // Commit the authoritative rewind before mutating the visible transcript.
     let resendFired = false;
+    const resendOriginal = () => {
+      pauseAutoScroll(500);
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === userMessageId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+      track('message_retry', {});
+      resendFired = true;
+      const imageAttachments = attachments?.filter(a =>
+        a.isImage || a.mimeType?.startsWith('image/')
+      ).map(a => ({
+        id: a.id,
+        file: new File([], a.name, { type: a.mimeType }),
+        preview: a.previewUrl || '',
+        source: a.relativePath || a.savedPath ? 'attachment_ref' as const : undefined,
+        name: a.name,
+        mimeType: a.mimeType,
+        sizeBytes: a.size,
+        relativePath: a.relativePath || a.savedPath,
+      }));
+      handleSendMessageRef.current(content, imageAttachments?.length ? imageAttachments : undefined);
+    };
     setIsLoading(true);
     setRewindStatus('rewinding');
     apiPost(retryEndpoint, { userMessageId })
@@ -4952,30 +4977,21 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           return;
         }
         warnRewindFileOutcome(r);
-        pauseAutoScroll(500);
-        setMessages(prev => {
-          const idx = prev.findIndex(m => m.id === userMessageId);
-          return idx >= 0 ? prev.slice(0, idx) : prev;
-        });
-        // Rewind succeeded → auto-resend the original message
-        track('message_retry', {});
-        resendFired = true;
-        const imageAttachments = attachments?.filter(a =>
-          a.isImage || a.mimeType?.startsWith('image/')
-        ).map(a => ({
-          id: a.id,
-          file: new File([], a.name, { type: a.mimeType }),
-          preview: a.previewUrl || '',
-          source: a.relativePath || a.savedPath ? 'attachment_ref' as const : undefined,
-          name: a.name,
-          mimeType: a.mimeType,
-          sizeBytes: a.size,
-          relativePath: a.relativePath || a.savedPath,
-        }));
-        handleSendMessageRef.current(content, imageAttachments?.length ? imageAttachments : undefined);
+        resendOriginal();
       })
-      .catch(err => {
+      .catch(async err => {
         console.error('[Chat] Retry failed:', err);
+        const structured = err && typeof err === 'object'
+          ? err as { status?: unknown }
+          : null;
+        if (hasRecoverableNativeRewind && typeof structured?.status !== 'number') {
+          const reconciliation = await retryCurrentSessionRestore(userMessageId);
+          if (classifyCodexRewindTransportOutcome(reconciliation) === 'committed') {
+            toastRef.current.warning(t('shell.toasts.codexRewindReconciled'));
+            resendOriginal();
+            return;
+          }
+        }
         toastRef.current.error(t('shell.toasts.retryFailed'));
       })
       .finally(() => {
@@ -4985,7 +5001,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           setIsLoading(false);
         }
       });
-  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, t, warnRewindFileOutcome]); // all stable — refs handle the rest
+  }, [apiPost, setMessages, setIsLoading, pauseAutoScroll, isExternalRuntime, currentRuntime, retryCurrentSessionRestore, t, warnRewindFileOutcome]);
 
   // Uses refs for messagesRef/toastRef/handleSendMessageRef — deps are all stable → reference stable
   const handleRetry = useCallback((assistantMessageId: string) => {
@@ -5029,10 +5045,37 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     if (!forkTarget || forkPending || conversationOperationPendingRef.current) return;
     conversationOperationPendingRef.current = true;
     const messageId = forkTarget;
+    const recoverableTargetSessionId = currentRuntime === 'codex' || currentRuntime === 'dsh'
+      ? crypto.randomUUID()
+      : undefined;
     setForkTarget(null);
     setForkPending(true);
 
-    apiPost('/sessions/fork', { messageId })
+    const openCommittedFork = async (forkSessionId: string, forkAgentDir: string, title: string) => {
+      const discardUnopenedFork = async () => {
+        const removed = await deleteUnopenedForkSession(forkSessionId);
+        if (removed && (currentRuntime === 'codex' || currentRuntime === 'dsh')) {
+          console.error(
+            `[chat] Native conversation branch orphan sessionId=${forkSessionId}`
+              + ` runtime=${currentRuntime}`
+              + ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}`
+              + ' reason=fork_tab_open_failed orphan=true',
+          );
+        }
+      };
+      if (!onForkSession) {
+        await discardUnopenedFork();
+        toastRef.current.error(t('shell.toasts.forkOpenFailed'));
+        return;
+      }
+      const opened = await onForkSession(forkSessionId, forkAgentDir, title || 'Fork');
+      if (!opened) {
+        await discardUnopenedFork();
+        toastRef.current.error(t('shell.toasts.forkOpenFailed'));
+      }
+    };
+
+    apiPost('/sessions/fork', { messageId, targetSessionId: recoverableTargetSessionId })
       .then(async res => {
         const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string } | undefined;
         track('session_fork', {
@@ -5041,27 +5084,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
         });
         if (r?.success && r.newSessionId && r.agentDir) {
-          const forkSessionId = r.newSessionId;
-          const discardUnopenedFork = async () => {
-            const removed = await deleteUnopenedForkSession(forkSessionId);
-            if (removed && currentRuntime === 'codex') {
-              console.error(
-                `[chat] Codex conversation branch orphan sessionId=${forkSessionId}`
-                  + ` runtimeSource=${currentRuntimeSource ?? 'system-cli'}`
-                  + ' reason=fork_tab_open_failed orphan=true',
-              );
-            }
-          };
-          if (!onForkSession) {
-            await discardUnopenedFork();
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-            return;
-          }
-          const opened = await onForkSession(forkSessionId, r.agentDir, r.title || 'Fork');
-          if (!opened) {
-            await discardUnopenedFork();
-            toastRef.current.error(t('shell.toasts.forkOpenFailed'));
-          }
+          await openCommittedFork(r.newSessionId, r.agentDir, r.title || 'Fork');
         } else {
           const error = r?.errorCode
             ? t(`shell.toasts.conversationError.${r.errorCode}`)
@@ -5069,17 +5092,42 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           toastRef.current.error(t('shell.toasts.forkFailedWithError', { error }));
         }
       })
-      .catch(err => {
+      .catch(async err => {
         console.error('[Chat] Fork failed:', err);
         const errorCode = err && typeof err === 'object' && 'errorCode' in err
           && typeof err.errorCode === 'string'
           ? err.errorCode
           : undefined;
+        const hasStructuredStatus = err && typeof err === 'object' && 'status' in err
+          && typeof err.status === 'number';
         track('session_fork', {
           runtime: currentRuntime,
           runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
           result: errorCode ?? 'transport_error',
         });
+        if (recoverableTargetSessionId && !hasStructuredStatus) {
+          try {
+            const recovered = await apiGet<{
+              success?: boolean;
+              session?: { id?: string; agentDir?: string; title?: string };
+            }>(`/sessions/${encodeURIComponent(recoverableTargetSessionId)}?limit=1`);
+            if (
+              recovered.success === true
+              && recovered.session?.id === recoverableTargetSessionId
+              && recovered.session.agentDir
+            ) {
+              toastRef.current.warning(t('shell.toasts.forkReconciled'));
+              await openCommittedFork(
+                recoverableTargetSessionId,
+                recovered.session.agentDir,
+                recovered.session.title || 'Fork',
+              );
+              return;
+            }
+          } catch (recoveryError) {
+            console.error('[Chat] Fork transport reconciliation failed:', recoveryError);
+          }
+        }
         if (errorCode) {
           toastRef.current.error(t('shell.toasts.forkFailedWithError', {
             error: t(`shell.toasts.conversationError.${errorCode}`),
@@ -5092,7 +5140,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         conversationOperationPendingRef.current = false;
         setForkPending(false);
       });
-  }, [forkTarget, forkPending, apiPost, onForkSession, deleteUnopenedForkSession, t, currentRuntime, currentRuntimeSource]);
+  }, [forkTarget, forkPending, apiPost, apiGet, onForkSession, deleteUnopenedForkSession, t, currentRuntime, currentRuntimeSource]);
 
   const handleSelectSession = useCallback((
     id: string,

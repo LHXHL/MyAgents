@@ -375,6 +375,11 @@ export type CapabilityOperationResult = {
   rewindScope?: 'conversation-only';
 };
 
+export type ForkConversationOptions = {
+  /** Product Session identity allocated by the caller for transport-loss reconciliation. */
+  targetSessionId?: string;
+};
+
 export type ConversationOperationErrorCode =
   | 'unsupported_runtime'
   | 'codex_update_required'
@@ -461,7 +466,10 @@ export interface SessionEngine {
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
-  forkAtAssistantMessage(messageId: string): Promise<CapabilityOperationResult>;
+  forkAtAssistantMessage(
+    messageId: string,
+    options?: ForkConversationOptions,
+  ): Promise<CapabilityOperationResult>;
   updateProviderEnv(providerEnv: ProviderEnv | undefined): Promise<{ success: boolean; skipped?: string; error?: string }>;
   updateMcpServers(servers: McpServerDefinition[]): Promise<{ success: boolean; servers?: string[]; skipped?: string; error?: string }>;
   updateAgents(agents: Record<string, unknown>): Promise<{ success: boolean; skipped?: string; error?: string }>;

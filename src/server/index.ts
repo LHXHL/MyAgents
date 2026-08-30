@@ -2409,7 +2409,7 @@ async function main() {
         if (!type) return jsonResponse({ error: 'Missing type parameter' }, 400);
         const sourceParam = url.searchParams.get('source');
         const runtimeSource: RuntimeSource | undefined =
-          sourceParam === 'managed-provider' || sourceParam === 'system-cli'
+          sourceParam === 'integrated' || sourceParam === 'managed-provider' || sourceParam === 'system-cli'
             ? sourceParam
             : undefined;
         try {
@@ -2690,9 +2690,23 @@ async function main() {
           ? (payload.runtime as import('../shared/types/runtime').RuntimeType)
           : undefined;
         const runtimeSourceValue: RuntimeSource | undefined =
-          payload.runtimeSource === 'managed-provider' || payload.runtimeSource === 'system-cli'
+          payload.runtimeSource === 'integrated'
+            || payload.runtimeSource === 'managed-provider'
+            || payload.runtimeSource === 'system-cli'
             ? payload.runtimeSource
             : undefined;
+        if (runtimeSourceValue === 'integrated' && runtimeValue !== 'dsh') {
+          return jsonResponse({
+            success: false,
+            error: 'runtimeSource=integrated requires runtime=dsh.',
+          }, 400);
+        }
+        if (runtimeValue === 'dsh' && runtimeSourceValue && runtimeSourceValue !== 'integrated') {
+          return jsonResponse({
+            success: false,
+            error: 'runtime=dsh requires runtimeSource=integrated.',
+          }, 400);
+        }
         const payloadOrigin = payload.origin === undefined
           ? undefined
           : normalizeSessionOrigin(payload.origin);
@@ -7117,9 +7131,16 @@ async function main() {
             patch.runtime = snapshot.runtime as FreezePatch['runtime'];
           }
           if (
-            (snapshot.runtimeSource === 'managed-provider' || snapshot.runtimeSource === 'system-cli')
-            && patch.runtime
-            && patch.runtime !== 'builtin'
+            patch.runtime
+            && (
+              (snapshot.runtimeSource === 'integrated' && patch.runtime === 'dsh')
+              || (snapshot.runtimeSource === 'managed-provider' && patch.runtime === 'codex')
+              || (
+                snapshot.runtimeSource === 'system-cli'
+                && patch.runtime !== 'builtin'
+                && patch.runtime !== 'dsh'
+              )
+            )
           ) {
             patch.runtimeSource = snapshot.runtimeSource;
           }
@@ -7709,7 +7730,7 @@ async function main() {
 
           // Dispatch to runtime through SessionEngine. The route keeps IM
           // payload shaping; the engine owns builtin/external admission.
-          if (engine.kind === 'external') {
+          if (engine.kind !== 'builtin') {
             const runtimeConfig = snapshotRuntimeConfig ?? payloadRuntimeConfig;
             if (payloadRuntime !== activeRuntime) {
               console.error(
@@ -8290,16 +8311,16 @@ description: >
               hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
             },
             metadataBirthPending: payload.metadataBirthPending === true,
-            permissionMode: engine.kind === 'external'
+            permissionMode: engine.kind !== 'builtin'
               ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)
               : 'fullAgency',
-            model: engine.kind === 'external'
+            model: engine.kind !== 'builtin'
               ? getRuntimeConfigModel(runtimeConfig, activeRuntime)
               : engine.kind === 'builtin'
                 ? getSessionModel() ?? undefined
                 : undefined,
             providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
-            reasoningEffort: engine.kind === 'external'
+            reasoningEffort: engine.kind !== 'builtin'
               ? getRuntimeConfigReasoningEffort(runtimeConfig, activeRuntime)
               : undefined,
             runtimeConfig,
@@ -8460,7 +8481,7 @@ description: >
             sessionId: runtimeSessionId,
             workspacePath: currentAgentDir,
             scenario: { type: 'desktop' },
-            permissionMode: engine.kind === 'external'
+            permissionMode: engine.kind !== 'builtin'
               ? getMaxPermissionForRuntime(runtimeType)
               : 'fullAgency',
             model: engine.kind === 'builtin' ? getSessionModel() ?? undefined : undefined,

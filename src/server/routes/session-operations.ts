@@ -67,10 +67,14 @@ export async function handleSessionOperationRoute(
   if (pathname === '/sessions/fork' && request.method === 'POST') {
     const body = await parseJsonObject(request);
     const messageId = typeof body.messageId === 'string' ? body.messageId : '';
+    const targetSessionId = typeof body.targetSessionId === 'string' ? body.targetSessionId : undefined;
     if (!messageId) {
       return jsonResponse({ success: false, error: 'Missing messageId' }, 400);
     }
-    const result = await getSessionEngine().forkAtAssistantMessage(messageId);
+    if (targetSessionId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetSessionId)) {
+      return jsonResponse({ success: false, error: 'Invalid targetSessionId' }, 400);
+    }
+    const result = await getSessionEngine().forkAtAssistantMessage(messageId, { targetSessionId });
     return operationResponse(result);
   }
 

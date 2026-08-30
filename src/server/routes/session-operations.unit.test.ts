@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
     rewindToUserMessage: vi.fn<(userMessageId: string) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, content: 'removed' }),
     ),
-    forkAtAssistantMessage: vi.fn<(messageId: string) => Promise<Record<string, unknown>>>(
+    forkAtAssistantMessage: vi.fn<(messageId: string, options?: { targetSessionId?: string }) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, newSessionId: 'forked' }),
     ),
     migrateBoundSurfaceSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }) => ({
@@ -82,6 +82,7 @@ describe('handleSessionOperationRoute', () => {
   });
 
   it('routes rewind, external retry, and fork to active engine operations', async () => {
+    const targetSessionId = '6d57334a-44d8-4fe1-a4f2-cd57fc8beb85';
     mocks.engine.rewindToUserMessage.mockResolvedValueOnce({
       success: true,
       content: 'removed',
@@ -108,7 +109,7 @@ describe('handleSessionOperationRoute', () => {
       '/sessions/fork',
       new Request('http://local/sessions/fork', {
         method: 'POST',
-        body: JSON.stringify({ messageId: 'assistant-1' }),
+        body: JSON.stringify({ messageId: 'assistant-1', targetSessionId }),
       }),
       { workspacePath: '/workspace' },
     );
@@ -123,7 +124,21 @@ describe('handleSessionOperationRoute', () => {
     expect(await readJson(fork as Response)).toEqual({ success: true, newSessionId: 'forked' });
     expect(mocks.engine.rewindToUserMessage).toHaveBeenCalledWith('user-1');
     expect(mocks.retryLastExternalUserMessageAtSelector).toHaveBeenCalledWith('user-2');
-    expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('assistant-1');
+    expect(mocks.engine.forkAtAssistantMessage).toHaveBeenCalledWith('assistant-1', { targetSessionId });
+  });
+
+  it('rejects a malformed caller-owned fork Session identity', async () => {
+    const response = await handleSessionOperationRoute(
+      '/sessions/fork',
+      new Request('http://local/sessions/fork', {
+        method: 'POST',
+        body: JSON.stringify({ messageId: 'assistant-1', targetSessionId: '../bad' }),
+      }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(400);
+    expect(mocks.engine.forkAtAssistantMessage).not.toHaveBeenCalled();
   });
 
   it('preserves legacy HTTP 200 for domain operation failures without explicit status', async () => {

@@ -4404,13 +4404,22 @@ fn validate_task_execution_routing(
     let source = source_value
         .as_str()
         .ok_or_else(|| "runtimeConfig.source must be a string".to_string())?;
-    if !matches!(source, "system-cli" | "managed-provider") {
+    if !matches!(source, "integrated" | "system-cli" | "managed-provider") {
         return Err(format!(
-            "invalid runtimeConfig.source '{source}'; valid values: system-cli, managed-provider"
+            "invalid runtimeConfig.source '{source}'; valid values: integrated, system-cli, managed-provider"
         ));
+    }
+    if source == "integrated" && runtime.as_deref() != Some("dsh") {
+        return Err("runtimeConfig.source=integrated requires runtime=dsh".to_string());
     }
     if source == "managed-provider" && runtime.as_deref() != Some("codex") {
         return Err("runtimeConfig.source=managed-provider requires runtime=codex".to_string());
+    }
+    if runtime.as_deref() == Some("dsh") && source != "integrated" {
+        return Err(
+            "runtime=dsh requires runtimeConfig.source=integrated when source is explicit"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -7657,6 +7666,19 @@ mod tests {
 
     #[test]
     fn validate_task_execution_routing_enforces_runtime_config_source() {
+        let integrated = Some(serde_json::json!({
+            "source": "integrated",
+            "model": "glm-4.7",
+        }));
+        assert!(
+            validate_task_execution_routing(&None, &None, &Some("dsh".into()), &integrated,)
+                .is_ok()
+        );
+        assert!(
+            validate_task_execution_routing(&None, &None, &Some("codex".into()), &integrated,)
+                .unwrap_err()
+                .contains("requires runtime=dsh")
+        );
         let managed = Some(serde_json::json!({
             "source": "managed-provider",
             "model": "gpt-5.6-sol",
@@ -7677,6 +7699,14 @@ mod tests {
         )
         .unwrap_err()
         .contains("invalid runtimeConfig.source"));
+        assert!(validate_task_execution_routing(
+            &None,
+            &None,
+            &Some("dsh".into()),
+            &Some(serde_json::json!({ "source": "system-cli" })),
+        )
+        .unwrap_err()
+        .contains("requires runtimeConfig.source=integrated"));
     }
 
     #[tokio::test]
