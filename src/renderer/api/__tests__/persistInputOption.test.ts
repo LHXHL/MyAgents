@@ -343,6 +343,40 @@ describe('persistInputOptionChange — disk write fanout', () => {
     });
   });
 
+  it('preserves DSH as the base Integrated Runtime when leaving Managed Codex', async () => {
+    const m = makeMocks();
+
+    await persistInputOptionChange({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      isExternalRuntime: true,
+      currentProviderId: 'codex-sub',
+      currentRuntimePreference: { family: 'integrated', id: 'dsh' },
+      currentRuntimeConfig: {
+        source: 'managed-provider',
+        model: 'gpt-5.5-codex',
+        envPolicy: { proxy: 'terminal' },
+      },
+      fields: {
+        builtinSelection: { providerId: 'zhipu', model: 'glm-5.3' },
+      },
+      patchProject: m.patchProject,
+      patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
+      patchSnapshot: m.patchSnapshot,
+    });
+
+    expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
+      providerId: 'zhipu',
+      model: 'glm-5.3',
+      runtime: 'dsh',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      runtimeConfig: {
+        envPolicy: { proxy: 'terminal' },
+      },
+    });
+  });
+
   it('writes ordinary provider fields as builtin defaults even when the current session is managed Codex', async () => {
     const m = makeMocks();
 

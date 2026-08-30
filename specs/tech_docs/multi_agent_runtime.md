@@ -335,6 +335,10 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 
 `SessionEngine` 的 MCP、Agent、interaction scenario 与 enabled-plugin 配置入口统一触发 `external-session/extensions.ts`。Renderer 对 MCP 只提交 ID 选择意图，Sidecar 必须从 `resolveWorkspaceConfig()` 重新取得 executable definition；不得信任 Renderer 传来的 command/env/url。owner 从当前权威来源编译 immutable snapshot，以 `desiredRevision/effectiveRevision` 协调本次进程 generation：无进程为 `pending_next_start`，running turn 为 `deferred_until_idle`，idle 可安全 replacement；连续更新合并到最终 revision，旧 generation 的迟到事件不能回写新状态。新进程启动且 MCP startup barrier 完成 terminal/timeout 观察后更新 effective；单个 Skill/MCP/Agent/Plugin 的失败只进入对应组件结果与 Logs，不能否定整个 Runtime generation。`RuntimeDiagnostics.extensions` 同时携带顶层应用状态与逐组件结果，禁止 external-runtime 伪成功；`pending_next_start` 是下次 send/pre-warm 会自然消费的正常状态，不额外提示，`deferred_until_idle` 只在用户操作入口显示一次等待提示。Chat banner 只展示 Runtime 本身无法启动等顶层失败；逐组件 `failed` / `unsupported` 是可选能力降级，进入结构化诊断与 Logs panel。生产方的 `requiresUserAction` 仅供用户主动修改扩展配置后的单次 toast 使用，不能作为被动 Chat banner 的 severity。
 
+Sidecar 连接建立到 Product Session workspace owner 绑定之间允许存在一个短暂 staging window。该窗口内 Renderer 的 mount-time Agent/MCP 同步返回 `pending_next_start / awaiting_product_session_owner`；初始 Runtime generation 由 Session birth 从已持久化的 authoritative config 编译。owner 建立后的用户修改才执行 live reconcile。真实组件失败仍写入结构化诊断和 Logs，不能被这个 staging 结果吞掉。
+
+Managed Codex 也始终保留在 Integrated DSH 的 Product Provider picker 中，但它不是 DSH Provider cell。选择 `codex-sub` 会通过既有跨 Provider history boundary 创建独立 Managed Codex Session；Agent 的 `runtimePreference` 继续保存进入前的 DSH/Claude Integrated Runtime，切回普通 Provider 时据此创建对应 Integrated Session，而不是硬编码回 Claude Agent SDK。
+
 | MyAgents 组件 | Managed Codex 投影 | 关键边界 |
 |---|---|---|
 | Workspace/全局/Plugin Skills | 临时精确目录 → `skills/extraRoots/set` + read-back | project > user > plugin；只投影合并后 enabled 的 canonical、非 symlink、限深限大 `SKILL.md`；正文 digest 进入 revision |

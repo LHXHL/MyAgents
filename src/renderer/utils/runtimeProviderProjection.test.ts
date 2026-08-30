@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Provider } from '@/config/types';
+import { MANAGED_CODEX_PROVIDER, type Provider } from '@/config/types';
 import {
   isProviderModelCompatibleWithRuntime,
   projectProvidersForRuntime,
@@ -41,5 +41,20 @@ describe('runtime Provider projection', () => {
     expect(isProviderModelCompatibleWithRuntime('dsh', 'openrouter', 'claude')).toBe(false);
     expect(isProviderModelCompatibleWithRuntime('dsh', 'deepseek', 'deepseek-v4-flash')).toBe(true);
     expect(isProviderModelCompatibleWithRuntime('builtin', 'openrouter', 'claude')).toBe(true);
+  });
+
+  it('keeps Managed Codex as a runtime-backed choice without admitting it as a DSH cell', () => {
+    const managedCodex = {
+      ...MANAGED_CODEX_PROVIDER,
+      primaryModel: 'gpt-5.4-codex',
+      models: [{
+        model: 'gpt-5.4-codex',
+        modelName: 'GPT-5.4 Codex',
+        modelSeries: 'codex',
+      }],
+    };
+
+    expect(projectProvidersForRuntime([managedCodex], 'dsh')).toEqual([managedCodex]);
+    expect(isProviderModelCompatibleWithRuntime('dsh', 'codex-sub', 'gpt-5.4-codex')).toBe(true);
   });
 });

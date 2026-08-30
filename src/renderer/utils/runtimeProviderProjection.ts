@@ -1,5 +1,6 @@
 import type { Provider } from '@/config/types';
 import { isDshProviderModelCompatible } from '../../shared/integrated-runtimes/dsh-provider-cells';
+import { isRuntimeBackedProvider, isRuntimeBackedProviderId } from '../../shared/providerExecution';
 import type { RuntimeType } from '../../shared/types/runtime';
 
 /** Project Product Provider choices through the selected Runtime's exact contract. */
@@ -9,6 +10,12 @@ export function projectProvidersForRuntime(
 ): Provider[] {
   if (runtime !== 'dsh') return [...providers];
   return providers.flatMap((provider) => {
+    // Managed Provider Runtimes remain first-class choices in the Product
+    // picker. Selecting one crosses a Session boundary and never asks DSH to
+    // execute the provider/model pair itself.
+    if (isRuntimeBackedProvider(provider)) {
+      return [provider];
+    }
     const models = (provider.models ?? []).filter((model) => (
       isDshProviderModelCompatible(provider.id, model.model)
     ));
@@ -26,5 +33,6 @@ export function isProviderModelCompatibleWithRuntime(
   model: string | undefined,
 ): boolean {
   if (runtime !== 'dsh') return true;
+  if (isRuntimeBackedProviderId(providerId)) return !!model;
   return !!providerId && !!model && isDshProviderModelCompatible(providerId, model);
 }

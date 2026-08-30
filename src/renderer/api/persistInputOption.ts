@@ -24,6 +24,10 @@
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type Project, type McpServerDefinition } from '@/config/types';
 import type { AgentConfig } from '@/../shared/types/agent';
 import { buildRuntimeChangePatch, type RuntimeConfig } from '@/../shared/types/runtime';
+import {
+  runtimeTypeForAgentRuntimePreference,
+  type AgentRuntimePreference,
+} from '@/../shared/integrated-runtimes/identity';
 import { createConcreteProviderRoute, type ProviderRoute } from '@/../shared/providerRoute';
 import {
   agentDefaultsForRuntimeBackedProvider,
@@ -92,6 +96,9 @@ export interface PersistInputOptionParams {
   /** Existing runtimeConfig to merge into when writing
    *  `runtimeConfig.permissionMode` / `.model`. Avoids stomping unrelated keys. */
   currentRuntimeConfig?: RuntimeConfig;
+  /** Base Integrated Runtime preference to restore after leaving a managed
+   * Provider Runtime. Managed Codex must not silently reset DSH to Claude. */
+  currentRuntimePreference?: AgentRuntimePreference;
   /** Current Agent/Project provider. Used only to clean old managed-provider runtime projection. */
   currentProviderId?: string | null;
 
@@ -464,7 +471,12 @@ function buildAgentPatch(
     params.currentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID
     || currentRuntimeConfig?.source === 'managed-provider';
   const managedCodexCleanupPatch = currentLooksLikeManagedCodexProvider
-    ? buildRuntimeChangePatch(currentRuntimeConfig, 'builtin')
+    ? buildRuntimeChangePatch(
+      currentRuntimeConfig,
+      params.currentRuntimePreference?.family === 'integrated'
+        ? runtimeTypeForAgentRuntimePreference(params.currentRuntimePreference)
+        : 'builtin',
+    )
     : undefined;
   const runtimeConfigBase = managedCodexCleanupPatch
     ? managedCodexCleanupPatch.runtimeConfig

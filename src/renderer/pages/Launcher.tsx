@@ -224,9 +224,11 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     // Ref for runtimeConfig — avoids stale closure in rapid write-back handlers
     const runtimeConfigRef = useRef(selectedAgent?.runtimeConfig);
     runtimeConfigRef.current = selectedAgent?.runtimeConfig;
+    const runtimePreferenceRef = useRef(selectedAgent?.runtimePreference);
+    runtimePreferenceRef.current = selectedAgent?.runtimePreference;
 
     // Runtime-aware model/permission lists — adapts input bar for external runtimes
-    const launcherRuntime: RuntimeType = resolveEffectiveRuntime(
+    const resolvedLauncherRuntime: RuntimeType = resolveEffectiveRuntime(
         selectedAgent?.runtime,
         multiAgentRuntimeEnabled,
         selectedAgent?.runtimePreference,
@@ -235,8 +237,21 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         undefined,
         config.defaultIntegratedRuntime,
     );
-    const selectedAgentUsesManagedCodexProvider = launcherRuntime === 'builtin'
-        && agentUsesManagedCodexProvider(selectedAgent);
+    const selectedAgentUsesManagedCodexProvider = agentUsesManagedCodexProvider(selectedAgent);
+    // Managed Codex is a model-list execution choice, not a rewrite of the
+    // Agent's base Integrated Runtime selector. Preserve DSH/Claude preference
+    // while the Session birth hint routes Codex to its independent runtime.
+    const launcherRuntime: RuntimeType = selectedAgentUsesManagedCodexProvider
+        ? resolveEffectiveRuntime(
+            selectedAgent?.runtime,
+            multiAgentRuntimeEnabled,
+            selectedAgent?.runtimePreference,
+            selectedAgent?.runtimeConfig?.source,
+            undefined,
+            undefined,
+            config.defaultIntegratedRuntime,
+        )
+        : resolvedLauncherRuntime;
     // DSH uses the shared AgentRuntime process path, but its Provider, model,
     // permission and extension selections remain Product-owned. Keep that
     // separate from user-managed CLI configuration.
@@ -362,6 +377,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     agentId: selectedWorkspace.agentId ?? null,
                     isExternalRuntime,
                     currentRuntimeConfig: runtimeConfigRef.current,
+                    currentRuntimePreference: runtimePreferenceRef.current,
                     currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                     fields: { enabledOfficialToolIds: newEnabled },
                     patchProject,
@@ -394,6 +410,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     agentId: selectedWorkspace.agentId ?? null,
                     isExternalRuntime,
                     currentRuntimeConfig: runtimeConfigRef.current,
+                    currentRuntimePreference: runtimePreferenceRef.current,
                     currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                     fields: { mcpEnabledServers: newEnabled },
                     patchProject,
@@ -490,6 +507,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
+                currentRuntimePreference: runtimePreferenceRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                 fields: intent?.kind === 'runtime-backed-provider'
                     ? { runtimeBackedProviderSelection: intent, permissionMode: mode }
@@ -513,6 +531,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
+                currentRuntimePreference: runtimePreferenceRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                 fields: isExternalRuntime
                     ? { runtimeModel: model ?? null }
@@ -538,6 +557,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
+                currentRuntimePreference: runtimePreferenceRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                 fields: { reasoningEffort: effort },
                 patchProject,
@@ -587,6 +607,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 agentId: selectedWorkspace.agentId ?? null,
                 isExternalRuntime,
                 currentRuntimeConfig: runtimeConfigRef.current,
+                currentRuntimePreference: runtimePreferenceRef.current,
                 currentProviderId: selectedAgent?.providerId ?? selectedWorkspace.providerId,
                 fields: {
                     ...(providerExecutionIntent?.kind === 'runtime-backed-provider'

@@ -1,3 +1,8 @@
+import type { Provider } from '../../shared/config-types';
+import {
+  resolveAgentRuntimePreference,
+} from '../../shared/integrated-runtimes/identity';
+import { getProviderExecutionConstraint } from '../../shared/integrated-runtimes/provider-constraints';
 import type { ProviderExecutionIntent } from '../../shared/providerExecution';
 import { runtimeBackedProviderPermissionMode } from '../../shared/providerExecution';
 import {
@@ -24,6 +29,38 @@ export type ProviderSwitchSessionBirth = {
   };
 };
 
+/**
+ * Resolve the Integrated Runtime to return to when the current Session is a
+ * runtime-backed Provider. A live Integrated Session wins; otherwise the
+ * Agent's authoritative preference preserves the base Runtime selected before
+ * entering Managed Codex. Runtime-constrained subscription Providers still
+ * route to their declared Integrated owner.
+ */
+export function resolveProviderSwitchIntegratedRuntime(args: {
+  targetProvider: Provider;
+  currentSessionRuntime: RuntimeType;
+  agentRuntimePreference?: unknown;
+  legacyAgentRuntime?: RuntimeType;
+  legacyAgentRuntimeSource?: RuntimeSource;
+  legacyAgentProviderId?: string;
+}): 'builtin' | 'dsh' {
+  const constraint = getProviderExecutionConstraint(args.targetProvider);
+  if (constraint.kind === 'requires-integrated-runtime') return 'builtin';
+
+  if (args.currentSessionRuntime === 'builtin' || args.currentSessionRuntime === 'dsh') {
+    return args.currentSessionRuntime;
+  }
+
+  const preference = resolveAgentRuntimePreference({
+    runtimePreference: args.agentRuntimePreference,
+    runtime: args.legacyAgentRuntime,
+    runtimeSource: args.legacyAgentRuntimeSource,
+    providerId: args.legacyAgentProviderId,
+  });
+  if (preference?.family !== 'integrated') return 'builtin';
+  return preference.id === 'dsh' ? 'dsh' : 'builtin';
+}
+
 export function buildProviderSwitchSessionBirth(args: {
   targetIntent: ProviderExecutionIntent;
   providerId: string;
@@ -33,6 +70,7 @@ export function buildProviderSwitchSessionBirth(args: {
   mcpEnabledServers: string[];
   enabledPluginIds: string[];
   enabledOfficialToolIds?: OfficialToolId[];
+  targetIntegratedRuntime: 'builtin' | 'dsh';
 }): ProviderSwitchSessionBirth {
   const common = {
     permissionMode: args.permissionMode,
@@ -62,7 +100,7 @@ export function buildProviderSwitchSessionBirth(args: {
   }
 
   return {
-    runtime: 'builtin',
+    runtime: args.targetIntegratedRuntime,
     opts: {
       ...common,
       providerId: args.providerId,

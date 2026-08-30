@@ -871,6 +871,33 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('queues DSH Agent and MCP sync until the Product Session owner is bound', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+
+    await expect(harness.externalSession.handleExternalAgentsChange()).resolves.toMatchObject({
+      success: true,
+      extensionStatus: {
+        state: 'pending_next_start',
+        components: [{
+          component: 'agents',
+          code: 'awaiting_product_session_owner',
+        }],
+      },
+    });
+    await expect(harness.externalSession.handleExternalMcpServersChange([])).resolves.toMatchObject({
+      success: true,
+      servers: [],
+      extensionStatus: {
+        state: 'pending_next_start',
+        components: [{
+          component: 'mcp',
+          code: 'awaiting_product_session_owner',
+        }],
+      },
+    });
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(0);
+  });
+
   it('queues a new Product turn behind the exact active DSH operation recovered on resume', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'recovered turn finished', completeDelayMs: 20 },

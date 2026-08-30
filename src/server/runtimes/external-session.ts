@@ -2611,7 +2611,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
 }): ManagedCodexExtensionSnapshot {
   const workspacePath = input?.workspacePath ?? getExternalLifecycleWorkspacePath();
   if (!workspacePath) {
-    throw new Error('Managed Codex extension configuration has no workspace owner');
+    throw new Error('Product extension configuration has no workspace owner');
   }
   const sessionId = getExternalLifecycleSessionId();
   const metadata = sessionId ? getSessionMetadata(sessionId) : null;
@@ -2660,6 +2660,27 @@ type ProductExtensionUpdateResult = Readonly<{
   extensionStatus: RuntimeExtensionDiagnostics;
   error?: string;
 }>;
+
+function pendingProductExtensionOwnerResult(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+): ProductExtensionUpdateResult {
+  console.log(
+    `[external-session] Product extension ${componentName} sync queued until the Session owner is bound`,
+  );
+  return {
+    success: true,
+    extensionStatus: {
+      desiredRevision: '',
+      effectiveRevision: null,
+      state: 'pending_next_start',
+      components: [{
+        component: componentName,
+        state: 'pending_next_start',
+        code: 'awaiting_product_session_owner',
+      }],
+    },
+  };
+}
 
 async function reconcileManagedCodexExtensionSnapshot(
   componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
@@ -2836,11 +2857,22 @@ async function reconcileDshExtensionSnapshot(
   }
 }
 
-function reconcileProductExtensionSnapshot(
+async function reconcileProductExtensionSnapshot(
   componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
   build: () => ManagedCodexExtensionSnapshot = buildCurrentManagedCodexExtensionSnapshot,
   preservePromotion?: ExternalTurnPromotionToken | null,
 ): Promise<ProductExtensionUpdateResult> {
+  await awaitExternalLifecycleStarting();
+  if (
+    (isDshProductRuntime() || isManagedCodexProductRuntime())
+    && !getExternalLifecycleWorkspacePath()
+  ) {
+    // The renderer may publish its durable Agent/MCP intent immediately after
+    // Sidecar connection, before the first Product Session has bound the
+    // workspace owner. Session birth compiles those authoritative sources; the
+    // live projection is therefore queued, not a configuration failure.
+    return pendingProductExtensionOwnerResult(componentName);
+  }
   return isDshProductRuntime()
     ? reconcileDshExtensionSnapshot(componentName, build)
     : reconcileManagedCodexExtensionSnapshot(componentName, build, preservePromotion);
@@ -2854,10 +2886,16 @@ export async function handleExternalMcpServersChange(
     return { ...result, servers: servers.map(server => server.id) };
   }
   const requestedIds = [...new Set(servers.map(server => server.id))];
+  await awaitExternalLifecycleStarting();
   const workspacePath = getExternalLifecycleWorkspacePath();
   const sessionId = getExternalLifecycleSessionId();
+  if (!workspacePath) {
+    return {
+      ...pendingProductExtensionOwnerResult('mcp'),
+      servers: requestedIds,
+    };
+  }
   try {
-    if (!workspacePath) throw new Error('Product extension MCP configuration has no workspace owner');
     const metadata = sessionId ? getSessionMetadata(sessionId) : null;
     const authoritative = resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
     const resolvedServers = resolveProductExtensionMcpSelection(requestedIds, authoritative);

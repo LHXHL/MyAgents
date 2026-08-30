@@ -160,7 +160,10 @@ import {
   shouldResetModelOnProviderChange,
   shouldSkipSnapshotWrite,
 } from '@/utils/optionResolve';
-import { buildProviderSwitchSessionBirth } from '@/utils/providerSwitchSessionBirth';
+import {
+  buildProviderSwitchSessionBirth,
+  resolveProviderSwitchIntegratedRuntime,
+} from '@/utils/providerSwitchSessionBirth';
 import {
   projectInputChromeRuntime,
   projectRuntimeExtensionUpdateNotice,
@@ -2767,6 +2770,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       isExternalRuntime,
       usesProductConfiguration: currentRuntime === 'dsh',
       currentRuntimeConfig: currentAgent?.runtimeConfig,
+      currentRuntimePreference: currentAgent?.runtimePreference,
       currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
       fields: {
         builtinSelection: patch.builtinSelection,
@@ -3112,6 +3116,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         agentId: currentProject.agentId ?? null,
         isExternalRuntime: false,
         currentRuntimeConfig: currentAgent?.runtimeConfig,
+        currentRuntimePreference: currentAgent?.runtimePreference,
         currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
         fields: { builtinModel: fallback },
         snapshotWriteMode: 'disabled',
@@ -4284,6 +4289,14 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           mcpEnabledServers: workspaceMcpEnabled,
           enabledPluginIds: workspaceEnabledPlugins,
           enabledOfficialToolIds: workspaceOfficialToolEnabled,
+          targetIntegratedRuntime: resolveProviderSwitchIntegratedRuntime({
+            targetProvider: newProvider,
+            currentSessionRuntime: currentRuntime,
+            agentRuntimePreference: currentAgent?.runtimePreference,
+            legacyAgentRuntime: currentAgent?.runtime,
+            legacyAgentRuntimeSource: currentAgent?.runtimeConfig?.source,
+            legacyAgentProviderId: currentAgent?.providerId,
+          }),
         });
         const { createSession } = await import('@/api/sessionClient');
         const session = await createSession(
@@ -4305,6 +4318,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           agentId: currentProject.agentId,
           isExternalRuntime: false,
           currentRuntimeConfig: currentAgent?.runtimeConfig as RuntimeConfig | undefined,
+          currentRuntimePreference: currentAgent?.runtimePreference,
           currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
           fields: {
             ...(targetIntent.kind === 'runtime-backed-provider'
@@ -4338,7 +4352,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           : t('shell.toasts.createNewSessionFailed'),
       );
     }
-  }, [pendingProviderSwitch, agentDir, onForkSession, onLaunchRuntimeBackedProviderSession, providers, transferBindingToForkedSession, deleteUnopenedForkSession, inputChromePermissionMode, reasoningEffort, workspaceMcpEnabled, workspaceEnabledPlugins, workspaceOfficialToolEnabled, currentProject, currentAgent, patchProject, refreshConfig, guardCronConfigMutation, t]);
+  }, [pendingProviderSwitch, agentDir, onForkSession, onLaunchRuntimeBackedProviderSession, providers, transferBindingToForkedSession, deleteUnopenedForkSession, inputChromePermissionMode, reasoningEffort, workspaceMcpEnabled, workspaceEnabledPlugins, workspaceOfficialToolEnabled, currentProject, currentAgent, currentRuntime, patchProject, refreshConfig, guardCronConfigMutation, t]);
 
   // Cross-runtime confirm: create new session in new tab and send the pending message
   const confirmCrossRuntimeSend = useCallback(async () => {
