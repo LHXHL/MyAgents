@@ -194,6 +194,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onWorkspaceMcpToggle,
   onRefreshProviders,
   onOpenAgentSettings,
+  onManagePermissionRules,
   onWorkspaceRefresh,
   cronModeEnabled = false,
   cronConfig,
@@ -1026,10 +1027,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     // Show warning toast for dangerous modes (runtime-agnostic string check)
     const dangerousModes = new Set(['fullAgency', 'bypassPermissions', 'no-restrictions']);
     if (dangerousModes.has(nextMode)) {
-      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+      toastRef.current.warning(t(runtime === 'dsh' ? 'input.dshAutonomyWarning' : 'input.autonomyWarning'), 5000);
     }
     onPermissionModeChange?.(nextMode);
-  }, [permissionMode, onPermissionModeChange, runtimePermissionModes, showConfigLockedReason, t]);
+  }, [permissionMode, onPermissionModeChange, runtime, runtimePermissionModes, showConfigLockedReason, t]);
 
   // Global Shift+Tab handler with capture phase to prevent default Tab behavior.
   // Gated by `active` so pressing Shift+Tab doesn't cycle permission-mode on every
@@ -1942,9 +1943,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       onOpenAgentSettings();
                     },
                   } : undefined}
+                  footerAction={onManagePermissionRules ? {
+                    label: t('input.permissionRules.manage'),
+                    onClick: () => {
+                      setShowModeMenu(false);
+                      onManagePermissionRules();
+                    },
+                  } : undefined}
                   onSelect={(value) => {
                     if (value === 'fullAgency' || value === 'bypassPermissions') {
-                      toastRef.current.warning(t('input.autonomyWarning'), 5000);
+                      toastRef.current.warning(t(runtime === 'dsh' ? 'input.dshAutonomyWarning' : 'input.autonomyWarning'), 5000);
                     }
                     onPermissionModeChange?.(value as PermissionMode);
                     setShowModeMenu(false);

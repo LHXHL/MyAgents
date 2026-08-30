@@ -16,6 +16,8 @@ import {
   type RuntimeExtensionComponentStatus,
   type RuntimeExtensionDiagnostics,
   type RuntimeModelInfo,
+  type RuntimePermissionRuleMutationResult,
+  type RuntimePermissionRulesSnapshot,
   type RuntimePermissionMode,
   type RuntimeType,
 } from '../../../shared/types/runtime';
@@ -58,6 +60,13 @@ import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation } from './installation';
 import { DshMutationController } from './mutations';
+import {
+  parseDshPermissionRuleMutation,
+  parseDshPermissionRulesSnapshot,
+  projectDshPermissionDiagnostics,
+  validateDshPermissionIdentifier,
+  validateDshPermissionTarget,
+} from './permission-rules';
 import {
   compileDshModelExecutionProfile,
   type DshModelExecutionProfile,
@@ -150,6 +159,8 @@ function extensionDiagnostics(
   workspacePath: string,
   catalog: DshRpcObject,
   extensions: RuntimeExtensionDiagnostics,
+  configuration?: DshConfiguration,
+  permissionRules?: RuntimePermissionRulesSnapshot,
 ): RuntimeDiagnostics {
   const mcpServers = Array.isArray(catalog.mcpServers)
     ? catalog.mcpServers.map((entry) => {
@@ -173,6 +184,13 @@ function extensionDiagnostics(
       apps: 'unsupported',
     },
     extensions,
+    ...(configuration && permissionRules ? {
+      permissions: projectDshPermissionDiagnostics(
+        configuration.productPermissionMode,
+        configuration.dshPermissionMode,
+        permissionRules,
+      ),
+    } : {}),
     timestamp: new Date().toISOString(),
   };
 }
@@ -477,6 +495,7 @@ class DshProcess implements RuntimeProcess {
   extensionPlane: DshCompiledExtensionPlane;
   extensionCatalog: DshRpcObject;
   extensionDiagnostics: RuntimeExtensionDiagnostics;
+  permissionRules: RuntimePermissionRulesSnapshot | undefined;
   desiredExtensionPlane: DshCompiledExtensionPlane | undefined;
   private resourcesClosed = false;
   private extensionSerial: Promise<void> = Promise.resolve();
@@ -989,6 +1008,8 @@ export class DshRuntime implements AgentRuntime {
           workspacePath,
           extensionCatalog,
           admittedExtensionStatus,
+          processValue.configuration,
+          processValue.permissionRules,
         ),
       });
       onEvent({
@@ -1094,8 +1115,88 @@ export class DshRuntime implements AgentRuntime {
         process.executionEnvironment.workspace.canonicalRoot,
         process.extensionCatalog,
         process.extensionDiagnostics,
+        process.configuration,
+        process.permissionRules,
       ),
     });
+  }
+
+  private async refreshPermissionRules(
+    process: DshProcess,
+    emitDiagnostics = true,
+  ): Promise<RuntimePermissionRulesSnapshot> {
+    const snapshot = parseDshPermissionRulesSnapshot(
+      await process.host.request('permission/rules/list', {}),
+    );
+    process.permissionRules = snapshot;
+    if (emitDiagnostics) this.emitExtensionDiagnostics(process);
+    return snapshot;
+  }
+
+  async listPermissionRules(
+    runtimeProcess: RuntimeProcess,
+  ): Promise<RuntimePermissionRulesSnapshot> {
+    return this.refreshPermissionRules(dshProcess(runtimeProcess));
+  }
+
+  async addPermissionRule(
+    runtimeProcess: RuntimeProcess,
+    input: Readonly<{
+      expectedRevision: string;
+      tool: string;
+      permissionClass: string;
+      target: string;
+    }>,
+  ): Promise<RuntimePermissionRuleMutationResult> {
+    const process = dshProcess(runtimeProcess);
+    if (process.activeOperationId) {
+      throw new Error('DSH permission rules can change only while the root turn is idle');
+    }
+    const result = parseDshPermissionRuleMutation(await process.host.request(
+      'permission/rules/add',
+      {
+        expectedRevision: validateDshPermissionIdentifier(
+          input.expectedRevision,
+          'DSH expected permission revision',
+        ),
+        tool: validateDshPermissionIdentifier(input.tool, 'DSH permission rule tool'),
+        permissionClass: validateDshPermissionIdentifier(
+          input.permissionClass,
+          'DSH permission rule class',
+        ),
+        target: validateDshPermissionTarget(input.target),
+      },
+    ));
+    const snapshot = await this.refreshPermissionRules(process);
+    if (snapshot.revision !== result.revision) {
+      throw new Error('DSH permission mutation read-back revision differs from the result');
+    }
+    return result;
+  }
+
+  async revokePermissionRule(
+    runtimeProcess: RuntimeProcess,
+    input: Readonly<{ expectedRevision: string; ruleId: string }>,
+  ): Promise<RuntimePermissionRuleMutationResult> {
+    const process = dshProcess(runtimeProcess);
+    if (process.activeOperationId) {
+      throw new Error('DSH permission rules can change only while the root turn is idle');
+    }
+    const result = parseDshPermissionRuleMutation(await process.host.request(
+      'permission/rules/revoke',
+      {
+        expectedRevision: validateDshPermissionIdentifier(
+          input.expectedRevision,
+          'DSH expected permission revision',
+        ),
+        ruleId: validateDshPermissionIdentifier(input.ruleId, 'DSH permission rule id'),
+      },
+    ));
+    const snapshot = await this.refreshPermissionRules(process);
+    if (snapshot.revision !== result.revision) {
+      throw new Error('DSH permission mutation read-back revision differs from the result');
+    }
+    return result;
   }
 
   private async commitEffectiveExtension(
@@ -1280,6 +1381,24 @@ export class DshRuntime implements AgentRuntime {
     if (result.state === 'rejected') {
       throw new Error(`DSH interaction response was rejected: ${String(result.code)}`);
     }
+    if (result.state === 'expired') {
+      throw new Error('DSH interaction expired before the response was applied');
+    }
+    if (result.state !== 'applied' && result.state !== 'already_settled') {
+      throw new Error('DSH interaction response returned an invalid state');
+    }
+    if (!question && decision === 'always_allow') {
+      const snapshot = await this.refreshPermissionRules(process);
+      if (
+        result.state === 'applied'
+        && snapshot.revision !== string(
+          result.effectivePolicyRevision,
+          'DSH applied permission policy revision',
+        )
+      ) {
+        throw new Error('DSH always-allow read-back revision differs from the response');
+      }
+    }
     process.pendingInteractions.delete(requestId);
     process.onEvent({ kind: 'interactive_request_resolved', requestId });
     process.onEvent({ kind: 'status_change', state: 'running' });
@@ -1329,6 +1448,10 @@ export class DshRuntime implements AgentRuntime {
       throw new Error('DSH configuration did not become effective');
     }
     process.configuration = configuration;
+    const permissionRules = await this.refreshPermissionRules(process, false);
+    if (permissionRules.permissionMode !== configuration.dshPermissionMode) {
+      throw new Error('DSH effective permission mode differs from Product configuration');
+    }
   }
 
   private async applyPlanMode(process: DshProcess, desired: 'normal' | 'plan'): Promise<void> {
@@ -1388,6 +1511,7 @@ export class DshRuntime implements AgentRuntime {
       process,
       configuration.productPermissionMode === 'plan' ? 'plan' : 'normal',
     );
+    this.emitExtensionDiagnostics(process);
   }
 
   async setReasoningEffort(runtimeProcess: RuntimeProcess, effort: string | undefined): Promise<void> {

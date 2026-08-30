@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { RuntimeType } from '../../shared/types/runtime';
+import type {
+  RuntimePermissionRule,
+  RuntimePermissionRulesSnapshot,
+  RuntimeType,
+} from '../../shared/types/runtime';
 import { createDshBinding } from '../../shared/integrated-runtimes/identity';
 import {
   REQUIRED_SYSTEM_SKILLS,
@@ -72,6 +76,9 @@ class FakeRuntime implements AgentRuntime {
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
   compactCalls = 0;
   readonly permissionResponses: Array<{ requestId: string; decision: string; reason?: string }> = [];
+  readonly permissionRuleMutations: Array<{ kind: 'add' | 'revoke'; value: string }> = [];
+  private permissionRevisionNumber = 1;
+  private permissionRules: RuntimePermissionRule[] = [];
   steerMessage?: AgentRuntime['steerMessage'];
   branchConversation?: AgentRuntime['branchConversation'];
   private callback: UnifiedEventCallback | null = null;
@@ -337,6 +344,59 @@ class FakeRuntime implements AgentRuntime {
     this.compactCalls += 1;
   }
 
+  async listPermissionRules(): Promise<RuntimePermissionRulesSnapshot> {
+    return {
+      permissionMode: 'acceptEdits',
+      autoAllowTools: ['Read'],
+      revision: `permission-revision-${this.permissionRevisionNumber}`,
+      rules: [...this.permissionRules],
+    };
+  }
+
+  async addPermissionRule(
+    _process: RuntimeProcess,
+    input: Readonly<{
+      expectedRevision: string;
+      tool: string;
+      permissionClass: string;
+      target: string;
+    }>,
+  ) {
+    if (input.expectedRevision !== `permission-revision-${this.permissionRevisionNumber}`) {
+      throw new Error('permission_revision_stale');
+    }
+    this.permissionRevisionNumber += 1;
+    const rule: RuntimePermissionRule = {
+      ruleId: `rule-${this.permissionRevisionNumber}`,
+      revision: `permission-revision-${this.permissionRevisionNumber}`,
+      tool: input.tool,
+      permissionClass: input.permissionClass,
+      target: input.target,
+      origin: 'root',
+      createdAt: 1_000,
+      expiresAt: 2_000,
+    };
+    this.permissionRules = [rule];
+    this.permissionRuleMutations.push({ kind: 'add', value: input.target });
+    return { state: 'applied' as const, revision: rule.revision, rule };
+  }
+
+  async revokePermissionRule(
+    _process: RuntimeProcess,
+    input: Readonly<{ expectedRevision: string; ruleId: string }>,
+  ) {
+    if (input.expectedRevision !== `permission-revision-${this.permissionRevisionNumber}`) {
+      throw new Error('permission_revision_stale');
+    }
+    this.permissionRevisionNumber += 1;
+    this.permissionRules = this.permissionRules.filter(rule => rule.ruleId !== input.ruleId);
+    this.permissionRuleMutations.push({ kind: 'revoke', value: input.ruleId });
+    return {
+      state: 'applied' as const,
+      revision: `permission-revision-${this.permissionRevisionNumber}`,
+    };
+  }
+
   getActiveRootOperation(): Readonly<{
     clientOperationId: string;
     clientUserMessageId: string;
@@ -481,6 +541,27 @@ class FakeRuntime implements AgentRuntime {
       : event;
     if (event.kind === 'turn_complete') this.activeRootOperation = null;
     this.callback(projected);
+  }
+
+  emitPermissionDiagnostics(): void {
+    this.emit({
+      kind: 'runtime_diagnostics',
+      diagnostics: {
+        runtime: 'dsh',
+        runtimeSource: 'integrated',
+        effectiveEnv: { cwd: '/workspace' },
+        status: { mcpServers: 'ok' },
+        permissions: {
+          desiredProductMode: 'auto',
+          desiredRuntimeMode: 'acceptEdits',
+          effectiveRuntimeMode: 'acceptEdits',
+          policyRevision: `permission-revision-${this.permissionRevisionNumber}`,
+          ruleCount: this.permissionRules.length,
+          state: 'applied',
+        },
+        timestamp: '2026-08-30T00:00:00.000Z',
+      },
+    });
   }
 
   private defer(fn: () => void, delayMs = 0): void {
@@ -1015,6 +1096,64 @@ describe('external SessionEngine with fake runtime', () => {
       agentNames: expect.any(Array),
       extensionStatus: { state: 'applied' },
     });
+  });
+
+  it('routes authoritative DSH permission rule list, add, and revoke through SessionEngine', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'DSH rule owner ready' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-permission-rules';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    await expect(runInjectedTurn(harness, {
+      prompt: 'start the integrated process',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const initial = await harness.engine.listPermissionRules?.();
+    expect(initial).toMatchObject({
+      permissionMode: 'acceptEdits',
+      revision: 'permission-revision-1',
+      rules: [],
+    });
+    const added = await harness.engine.addPermissionRule?.({
+      expectedRevision: initial!.revision,
+      tool: 'Bash',
+      permissionClass: 'process.execute',
+      target: 'npm test',
+    });
+    expect(added).toMatchObject({
+      state: 'applied',
+      revision: 'permission-revision-2',
+      rule: { target: 'npm test', origin: 'root' },
+    });
+    const revoked = await harness.engine.revokePermissionRule?.({
+      expectedRevision: added!.revision,
+      ruleId: added!.state === 'already_absent' ? 'missing' : added!.rule!.ruleId,
+    });
+    expect(revoked).toEqual({ state: 'applied', revision: 'permission-revision-3' });
+    await expect(harness.engine.listPermissionRules?.()).resolves.toMatchObject({ rules: [] });
+    harness.runtime.emitPermissionDiagnostics();
+    expect(harness.engine.getSessionConfigSnapshot()).toMatchObject({
+      permissionStatus: {
+        desiredProductMode: 'auto',
+        desiredRuntimeMode: 'acceptEdits',
+        effectiveRuntimeMode: 'acceptEdits',
+        policyRevision: 'permission-revision-3',
+        ruleCount: 0,
+        state: 'applied',
+      },
+    });
+    expect(harness.runtime.permissionRuleMutations).toEqual([
+      { kind: 'add', value: 'npm test' },
+      { kind: 'revoke', value: 'rule-2' },
+    ]);
   });
 
   it('promotes a queued DSH Product extension generation at the terminal boundary', async () => {

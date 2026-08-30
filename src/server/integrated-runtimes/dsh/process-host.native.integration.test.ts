@@ -249,6 +249,32 @@ describe.runIf(nativeSmokeEnabled)(
         expect(plan).toMatchObject({ state: "already_effective", mode: "normal" });
         const rules = await host.request("permission/rules/list", {});
         expect(rules).toMatchObject({ permissionMode: "acceptEdits", rules: [] });
+        const granted = await host.request("permission/rules/add", {
+          expectedRevision: rules.revision,
+          tool: "Bash",
+          permissionClass: "process.execute",
+          target: "echo native-smoke",
+        });
+        expect(granted).toMatchObject({ state: "applied" });
+        expect(granted.rule).toMatchObject({
+          tool: "Bash",
+          permissionClass: "process.execute",
+          target: "echo native-smoke",
+          origin: "root",
+        });
+        const grantedRule = granted.rule as { ruleId: string };
+        const grantedRules = await host.request("permission/rules/list", {});
+        expect(grantedRules).toMatchObject({
+          revision: granted.revision,
+          rules: [{ ruleId: grantedRule.ruleId, target: "echo native-smoke" }],
+        });
+        const revoked = await host.request("permission/rules/revoke", {
+          expectedRevision: grantedRules.revision,
+          ruleId: grantedRule.ruleId,
+        });
+        expect(revoked).toMatchObject({ state: "applied" });
+        const revokedRules = await host.request("permission/rules/list", {});
+        expect(revokedRules).toMatchObject({ revision: revoked.revision, rules: [] });
         const liveReplacement = compileDshProductExtensionPlane({
           revision: "native-smoke-product-extensions-v2",
           skills: [],

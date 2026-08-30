@@ -46,7 +46,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimePermissionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
   runtimeSourceForBinding,
@@ -550,6 +550,7 @@ let pendingExternalCapabilityRestart = false;
 let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
 let dshDesiredExtensionSnapshot: ManagedCodexExtensionSnapshot | null = null;
 let dshExtensionStatus: RuntimeExtensionDiagnostics | null = null;
+let dshPermissionStatus: RuntimePermissionDiagnostics | null = null;
 let dshDesiredInteractionScenario: InteractionScenario | null = null;
 function clearPendingExternalProcessConfigRestarts(): void {
   pendingExternalProxyRestart = false;
@@ -1110,6 +1111,7 @@ function resetModuleState(): void {
   resetManagedCodexExtensionState();
   dshDesiredExtensionSnapshot = null;
   dshExtensionStatus = null;
+  dshPermissionStatus = null;
   dshDesiredInteractionScenario = null;
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
@@ -2936,6 +2938,7 @@ export function getProductExtensionConfigSnapshot(): {
   agentNames: string[] | null;
   enabledPluginIds: string[] | null;
   extensionStatus?: RuntimeExtensionDiagnostics;
+  permissionStatus?: RuntimePermissionDiagnostics;
 } {
   if (isDshProductRuntime()) {
     const snapshot = dshDesiredExtensionSnapshot;
@@ -2948,6 +2951,7 @@ export function getProductExtensionConfigSnapshot(): {
         ?? getProductExtensionSessionEnabledPluginIds()
         ?? [],
       ...(dshExtensionStatus ? { extensionStatus: dshExtensionStatus } : {}),
+      ...(dshPermissionStatus ? { permissionStatus: dshPermissionStatus } : {}),
     };
   }
   if (!isManagedCodexProductRuntime()) {
@@ -5253,6 +5257,49 @@ export async function respondExternalPermission(
   deleteExternalInteractiveRequest(requestId);
   broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
   return true;
+}
+
+function getExternalPermissionRulePair() {
+  const active = getExternalActivePair();
+  if (!active || active.process.exited) {
+    throw new Error('No live Runtime process owns permission rules');
+  }
+  if (getActiveRuntimeType() !== 'dsh' || getActiveRuntimeSource() !== 'integrated') {
+    throw new Error('The active Runtime does not expose authoritative permission rules');
+  }
+  return active;
+}
+
+export async function listExternalPermissionRules() {
+  const active = getExternalPermissionRulePair();
+  if (!active.runtime.listPermissionRules) {
+    throw new Error('The active Runtime does not support permission rule inspection');
+  }
+  return active.runtime.listPermissionRules(active.process);
+}
+
+export async function addExternalPermissionRule(input: Readonly<{
+  expectedRevision: string;
+  tool: string;
+  permissionClass: string;
+  target: string;
+}>) {
+  const active = getExternalPermissionRulePair();
+  if (!active.runtime.addPermissionRule) {
+    throw new Error('The active Runtime does not support permission rule grants');
+  }
+  return active.runtime.addPermissionRule(active.process, input);
+}
+
+export async function revokeExternalPermissionRule(input: Readonly<{
+  expectedRevision: string;
+  ruleId: string;
+}>) {
+  const active = getExternalPermissionRulePair();
+  if (!active.runtime.revokePermissionRule) {
+    throw new Error('The active Runtime does not support permission rule revocation');
+  }
+  return active.runtime.revokePermissionRule(active.process, input);
 }
 
 /**
@@ -7596,6 +7643,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         : event.diagnostics;
       if (isDshProductRuntime() && diagnostics.extensions) {
         dshExtensionStatus = diagnostics.extensions;
+      }
+      if (isDshProductRuntime() && diagnostics.permissions) {
+        dshPermissionStatus = diagnostics.permissions;
       }
       if (isManagedCodexProductRuntime()) setManagedCodexRuntimeDiagnostics(diagnostics);
       console.log(`[external-session] runtime_diagnostics: runtime=${diagnostics.runtime} features=${diagnostics.features?.length ?? 0} mcp=${diagnostics.mcpServers?.length ?? 0} apps=${diagnostics.apps?.length ?? 0} auth=${diagnostics.auth?.authMethod ?? 'none'}`);

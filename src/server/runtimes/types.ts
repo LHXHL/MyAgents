@@ -1,7 +1,7 @@
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
-import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeExtensionDiagnostics, RuntimeSource } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeExtensionDiagnostics, RuntimePermissionRuleMutationResult, RuntimePermissionRulesSnapshot, RuntimeSource } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
@@ -442,6 +442,26 @@ export interface AgentRuntime {
   reconcileDshExtensions?(
     process: RuntimeProcess,
   ): Promise<RuntimeExtensionDiagnostics | null>;
+
+  /** Inspect the authoritative Runtime permission policy for this Session. */
+  listPermissionRules?(process: RuntimeProcess): Promise<RuntimePermissionRulesSnapshot>;
+
+  /** Pre-authorize one exact Runtime-owned permission tuple. */
+  addPermissionRule?(
+    process: RuntimeProcess,
+    input: Readonly<{
+      expectedRevision: string;
+      tool: string;
+      permissionClass: string;
+      target: string;
+    }>,
+  ): Promise<RuntimePermissionRuleMutationResult>;
+
+  /** Revoke one exact Runtime-owned permission rule. */
+  revokePermissionRule?(
+    process: RuntimeProcess,
+    input: Readonly<{ expectedRevision: string; ruleId: string }>,
+  ): Promise<RuntimePermissionRuleMutationResult>;
 
   /** Send a follow-up user message to an active session */
   sendMessage(

@@ -55,12 +55,14 @@ export function PermissionModeMenuContent({
   onSelect,
   header,
   headerAction,
+  footerAction,
 }: {
   items: readonly PermissionModeMenuItem[];
   selectedValue: string | undefined;
   onSelect: (value: string) => void;
   header: string;
   headerAction?: { label: string; onClick: () => void };
+  footerAction?: { label: string; onClick: () => void };
 }) {
   return (
     <>
@@ -108,6 +110,20 @@ export function PermissionModeMenuContent({
           </button>
         );
       })}
+      {footerAction && (
+        <div className="border-t border-[var(--line)] px-2 py-1.5">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              footerAction.onClick();
+            }}
+            className="w-full rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent-warm-hover)]"
+          >
+            {footerAction.label}
+          </button>
+        </div>
+      )}
     </>
   );
 }

@@ -1,6 +1,13 @@
 import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
-import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
-import type { RuntimeType } from '../../shared/types/runtime';
+import type {
+  RuntimeConfig,
+  RuntimeExtensionDiagnostics,
+  RuntimePermissionRuleMutationResult,
+  RuntimePermissionRulesSnapshot,
+  RuntimePermissionDiagnostics,
+  RuntimeSource,
+  RuntimeType,
+} from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
@@ -24,7 +31,6 @@ import type {
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
 import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
-import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
 export type SessionEngineKind = 'builtin' | 'integrated' | 'external';
@@ -294,6 +300,8 @@ export type SessionEngineConfigSnapshot = {
   agentNames: string[] | null;
   enabledPluginIds?: string[] | null;
   extensionStatus?: RuntimeExtensionDiagnostics;
+  /** Non-sensitive desired/effective Runtime permission reconciliation. */
+  permissionStatus?: RuntimePermissionDiagnostics;
   enabledOfficialToolIds: OfficialToolId[] | null;
   permissionMode: string | null;
   providerId: string | null;
@@ -415,6 +423,18 @@ export interface SessionEngine {
   waitIdle(timeoutMs: number, pollMs?: number): Promise<boolean>;
   updateModel(model: string, opts?: { imConfigSync?: boolean }): Promise<{ success: boolean; error?: string }>;
   updatePermissionMode(mode: string): Promise<{ success: boolean; error?: string }>;
+  /** Optional because only Runtimes with an authoritative exact-rule API expose it. */
+  listPermissionRules?(): Promise<RuntimePermissionRulesSnapshot>;
+  addPermissionRule?(input: Readonly<{
+    expectedRevision: string;
+    tool: string;
+    permissionClass: string;
+    target: string;
+  }>): Promise<RuntimePermissionRuleMutationResult>;
+  revokePermissionRule?(input: Readonly<{
+    expectedRevision: string;
+    ruleId: string;
+  }>): Promise<RuntimePermissionRuleMutationResult>;
   updateReasoningEffort(effort: string): Promise<{ success: boolean; error?: string }>;
   updateOfficialToolIds(ids: OfficialToolId[] | null): Promise<{ success: boolean; error?: string; skipped?: string }>;
   updateProxyConfig(proxySettings: ProxySettings | null): Promise<{ success: boolean; error?: string; skipped?: string }>;

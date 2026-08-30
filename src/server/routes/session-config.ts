@@ -31,6 +31,46 @@ function parseDesktopInteractionScenario(value: unknown): Extract<InteractionSce
   return null;
 }
 
+function permissionIdentifier(value: unknown): string | null {
+  const hasControlCharacter = typeof value === 'string'
+    && [...value].some(character => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || code === 127;
+    });
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 256
+    && !hasControlCharacter
+    ? value
+    : null;
+}
+
+function permissionTarget(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8_192
+    ? value
+    : null;
+}
+
+function permissionRuleCapabilityError(): Response {
+  return jsonResponse({
+    success: false,
+    error: 'The active Session Runtime does not expose authoritative permission rules.',
+  }, 409);
+}
+
+function permissionMutationErrorStatus(error: unknown): number {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : '';
+  const message = error instanceof Error ? error.message : '';
+  return code === 'permission_revision_stale'
+    || code === 'permission_mutation_busy'
+    || message.includes('permission_revision_stale')
+    || message.includes('only while the root turn is idle')
+    ? 409
+    : 500;
+}
+
 export async function handleSessionConfigRoute(
   pathname: string,
   request: Request,
@@ -149,6 +189,90 @@ export async function handleSessionConfigRoute(
     } catch (error) {
       console.error('[api/session/permission-mode] Error:', error);
       return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to set permission mode' }, 500);
+    }
+  }
+
+  if (pathname === '/api/session/permission-rules' && request.method === 'GET') {
+    const engine = getSessionEngine();
+    const identity = engine.getRuntimeIdentity();
+    if (
+      identity.runtime !== 'dsh'
+      || identity.runtimeSource !== 'integrated'
+      || !engine.listPermissionRules
+    ) {
+      return permissionRuleCapabilityError();
+    }
+    try {
+      return jsonResponse({ success: true, ...(await engine.listPermissionRules()) });
+    } catch (error) {
+      console.error('[api/session/permission-rules] Error:', error);
+      return jsonResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to inspect permission rules',
+      }, 500);
+    }
+  }
+
+  if (pathname === '/api/session/permission-rules' && request.method === 'POST') {
+    const engine = getSessionEngine();
+    const identity = engine.getRuntimeIdentity();
+    if (
+      identity.runtime !== 'dsh'
+      || identity.runtimeSource !== 'integrated'
+      || !engine.addPermissionRule
+    ) {
+      return permissionRuleCapabilityError();
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      const expectedRevision = permissionIdentifier(payload.expectedRevision);
+      const tool = permissionIdentifier(payload.tool);
+      const permissionClass = permissionIdentifier(payload.permissionClass);
+      const target = permissionTarget(payload.target);
+      if (!expectedRevision || !tool || !permissionClass || !target) {
+        return jsonResponse({ success: false, error: 'Invalid exact permission rule.' }, 400);
+      }
+      const mutation = await engine.addPermissionRule({
+        expectedRevision,
+        tool,
+        permissionClass,
+        target,
+      });
+      return jsonResponse({ success: true, mutation });
+    } catch (error) {
+      console.error('[api/session/permission-rules] Add error:', error);
+      return jsonResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add permission rule',
+      }, permissionMutationErrorStatus(error));
+    }
+  }
+
+  if (pathname === '/api/session/permission-rules' && request.method === 'DELETE') {
+    const engine = getSessionEngine();
+    const identity = engine.getRuntimeIdentity();
+    if (
+      identity.runtime !== 'dsh'
+      || identity.runtimeSource !== 'integrated'
+      || !engine.revokePermissionRule
+    ) {
+      return permissionRuleCapabilityError();
+    }
+    try {
+      const url = new URL(request.url);
+      const expectedRevision = permissionIdentifier(url.searchParams.get('expectedRevision'));
+      const ruleId = permissionIdentifier(url.searchParams.get('ruleId'));
+      if (!expectedRevision || !ruleId) {
+        return jsonResponse({ success: false, error: 'Invalid permission rule revocation.' }, 400);
+      }
+      const mutation = await engine.revokePermissionRule({ expectedRevision, ruleId });
+      return jsonResponse({ success: true, mutation });
+    } catch (error) {
+      console.error('[api/session/permission-rules] Revoke error:', error);
+      return jsonResponse({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to revoke permission rule',
+      }, permissionMutationErrorStatus(error));
     }
   }
 

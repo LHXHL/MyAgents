@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
+  addExternalPermissionRule,
   cancelExternalQueueItem,
   cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
@@ -43,8 +44,10 @@ import {
   tryAcquireExternalSessionMutationLease,
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
+  listExternalPermissionRules,
   respondExternalAskUserQuestion,
   respondExternalPermission,
+  revokeExternalPermissionRule,
   restoreExternalSessionState,
   rewindExternalConversation,
   forkExternalConversation,
@@ -328,6 +331,7 @@ export function createExternalSessionEngine(): SessionEngine {
         agentNames: extensions.agentNames,
         enabledPluginIds: extensions.enabledPluginIds,
         ...(extensions.extensionStatus ? { extensionStatus: extensions.extensionStatus } : {}),
+        ...(extensions.permissionStatus ? { permissionStatus: extensions.permissionStatus } : {}),
         enabledOfficialToolIds: workspacePath
           ? getEffectiveOfficialToolIdsForSession(workspacePath, session)
           : [],
@@ -865,6 +869,18 @@ export function createExternalSessionEngine(): SessionEngine {
 
     updatePermissionMode(mode) {
       return setExternalPermissionMode(mode);
+    },
+
+    listPermissionRules() {
+      return listExternalPermissionRules();
+    },
+
+    addPermissionRule(input) {
+      return addExternalPermissionRule(input);
+    },
+
+    revokePermissionRule(input) {
+      return revokeExternalPermissionRule(input);
     },
 
     updateReasoningEffort(effort) {

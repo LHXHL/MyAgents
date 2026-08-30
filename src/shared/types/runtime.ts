@@ -732,6 +732,44 @@ export interface RuntimeExtensionDiagnostics {
   components: RuntimeExtensionComponentStatus[];
 }
 
+/** One exact, root-origin permission grant owned and persisted by the Runtime. */
+export interface RuntimePermissionRule {
+  ruleId: string;
+  revision: string;
+  tool: string;
+  permissionClass: string;
+  target: string;
+  origin: 'root';
+  createdAt: number;
+  expiresAt: number;
+}
+
+/** Authoritative Runtime permission policy snapshot. */
+export interface RuntimePermissionRulesSnapshot {
+  readonly permissionMode: string;
+  readonly autoAllowTools: readonly string[];
+  readonly revision: string;
+  readonly rules: readonly RuntimePermissionRule[];
+}
+
+export type RuntimePermissionRuleMutationResult =
+  | { state: 'applied'; revision: string; rule?: RuntimePermissionRule }
+  | { state: 'already_effective'; revision: string; rule: RuntimePermissionRule }
+  | { state: 'already_absent'; revision: string };
+
+/**
+ * Non-sensitive permission reconciliation summary. Exact targets stay behind
+ * the explicit rule-list API and never enter generic diagnostics or logs.
+ */
+export interface RuntimePermissionDiagnostics {
+  desiredProductMode: string;
+  desiredRuntimeMode: string;
+  effectiveRuntimeMode: string;
+  policyRevision: string;
+  ruleCount: number;
+  state: 'applied' | 'drift';
+}
+
 /**
  * Effective env snapshot for the runtime subprocess. Sanitised for display:
  *  - `proxy.http/https/all` are URLs without embedded credentials.
@@ -788,6 +826,8 @@ export interface RuntimeDiagnostics {
   issues?: RuntimeDiagnosticIssue[];
   /** MyAgents product-extension projection consumed by this Runtime process. */
   extensions?: RuntimeExtensionDiagnostics;
+  /** Runtime-owned permission state, excluding rule targets and identities. */
+  permissions?: RuntimePermissionDiagnostics;
   /** ISO-8601 UTC string. */
   timestamp: string;
 }
