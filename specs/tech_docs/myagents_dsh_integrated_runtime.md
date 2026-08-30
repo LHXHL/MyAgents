@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.21
+version: 0.22
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -680,6 +680,8 @@ Each item uses the readiness result from the resolver/artifact verifier: ready, 
 
 H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code, Codex and Gemini remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact is intentionally labelled `experimental` / `unverified-dev-runtime`; missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier and Runtime self-check, which rebind the complete nested inventories before spawn. The Renderer does not infer readiness from a directory or executable alone.
 
+Developer Settings also exposes `config.defaultIntegratedRuntime`, with options derived only from the build policy's allowed Integrated Runtimes. The override is used for new ordinary-provider Session birth when the selector is unavailable; an absent, malformed or no-longer-allowed value falls back to the build default. Changing it never rewrites an existing frozen Session. A one-runtime distribution keeps the control disabled at its sole admitted value.
+
 ### 14.2 Change behavior
 
 - Settings/Launcher: save Agent template; toast that a new Tab uses it.
@@ -707,7 +709,7 @@ Generalize the current full runtime identity comparison to `EffectiveRuntimeBind
 - old owner is released only through current lifecycle authority;
 - message-time and Heartbeat checks remain fallback repair.
 
-H5 applies the same resolution order in the Rust IM owner: root Labs/distribution gate, authoritative Channel/Agent preference, Provider execution constraint, readiness and then legacy compatibility projection. Explicit External CLI preference wins over a dormant subscription field; managed-Codex projection occurs only when the selected Integrated Runtime remains builtin. DSH is always projected as `runtime='dsh'` plus `source='integrated'`, and its message snapshot retains the Product Provider route, model, environment, permission and extension configuration. An invalid authoritative preference disables the Channel instead of silently starting another Runtime. Runtime-change, message-time and Heartbeat paths compare this complete canonical identity.
+H5 applies the same resolution order in the Rust IM owner: frozen binding when present; otherwise root selector/distribution gate plus allowlisted Default Integrated Runtime, authoritative Channel/Agent preference, Provider execution constraint, readiness and then legacy compatibility projection. Explicit External CLI preference wins over a dormant subscription field while the selector is available; managed-Codex projection occurs only when the selected Integrated Runtime remains builtin. DSH is always projected as `runtime='dsh'` plus `source='integrated'`, and its message snapshot retains the Product Provider route, model, environment, permission and extension configuration. An invalid authoritative preference disables the Channel instead of silently starting another Runtime. Runtime-change, message-time and Heartbeat paths compare this complete canonical identity.
 
 ### 15.2 Tasks, Cron, Goal and injected work
 
@@ -722,6 +724,7 @@ Task/Cron birth resolves the same authoritative preference and freezes the resul
 Implementation introduces versioned schema migration for:
 
 - distribution policy/default;
+- root Developer Default Integrated Runtime override;
 - Agent runtime preference;
 - Session effective binding;
 - Provider execution constraint/identity;
@@ -918,11 +921,13 @@ Each step updates an implementation ledger in this document or a linked dev plan
 
 ### 21.2 Current implementation evidence
 
-H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with H6 deterministic/package evidence extended at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4`. They consume handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. They consume handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0` plus npm `11.15.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 
 The release-profile Tauri build produced `MyAgents.app`, `MyAgents_0.4.11_aarch64.dmg`, and the updater `.app.tar.gz`. It completed the Web/Server/Bridge/CLI and Rust release build but intentionally did not cross the signing gate because no `TAURI_SIGNING_PRIVATE_KEY` was available. The updater archive SHA-256 is `d421daf3a84cc84d809a8a3fd3250b8677ebdd0313fa5bc829565d9edb9c227c`; the unsigned DMG SHA-256 is `88247838e9458e1d7696b7e4d37fa066de42df2ca1a174cf227532ed81aca88e`. Both the final App resources and an independently extracted updater copy verify the outer handoff digest, contain exact Node `24.14.0`, and contain zero DSH symbolic links. The explicit native `RuntimeProcessHost` smoke starts, configures, and shuts down the Runtime from each of those two packaged resource roots; it no longer proves only the source staging directory.
 
-`npm run typecheck`, `npm run lint`, the complete `npm test`, all Web/Server/Bridge/CLI builds exercised by the Tauri build, `cargo fmt --check`, and the 1,169-pass Rust library suite succeed. The H6 additions also pass the 91-test stateful fake-Runtime integration suite and directly prove DSH thinking, text, tool, usage, terminal, live SSE and Product persistence projection. This remains exact local development/package evidence: an unsigned package is not a release artifact, and none of it promotes a handoff platform claim beyond `implementation-complete_pending-native-validation` or substitutes for Provider/native-platform acceptance.
+`npm run typecheck`, `npm run lint`, the complete `npm test`, `npm run test:integration` (476 passed, one skipped), all Web/Server/Bridge/CLI builds exercised by the Tauri build, direct Rust formatting, and the Rust library suite (1,181 passed, one ignored) succeed at `b9bc80374442fd5904153f1c75da7156460f87b6`. The stateful fake-Runtime integration directly proves DSH thinking, text, tool, usage, terminal, live SSE and Product persistence projection. This remains exact local development/package evidence: an unsigned package is not a release artifact, and none of it promotes a handoff platform claim beyond `implementation-complete_pending-native-validation` or substitutes for Provider/native-platform acceptance.
+
+J16 now has current-source local macOS evidence. From clean `b9bc80374442fd5904153f1c75da7156460f87b6`, the build policy was temporarily set to allowed Integrated `[dsh]`, no External Runtime, default `dsh`, selector `hidden`; the release build embedded that exact policy into both Server JavaScript and the Rust executable, then produced `MyAgents.app` and the updater archive. The build stopped only at the expected updater-signing gate because `TAURI_SIGNING_PRIVATE_KEY` was absent. The packaged resource verifier accepted the exact handoff/Runtime/compatibility digests and Node/npm versions above, the app contained zero symlinks, and the packaged `RuntimeProcessHost` native smoke passed 1/1 in 4.249 seconds. Exact local output facts are Server bundle `2d6fa72134badbc674d2b4aca1cf6681fac2757deae2adbc22cdcb076a117e36` (12,312,263 bytes), app executable `66b3e5124dcd6cebee14fc9cd2371ccd9eb685ed25bea3d9dfec362414cd5454` (85,311,344 bytes), and updater archive `ed1be2aa0e7791440d19e2f9c2bc9772d064c86e48e3d6de6d326490178b643e` (166,594,155 bytes). The source policy was restored after the campaign; these hashes describe the immutable local build outputs, not the standard-profile checkout or a signed release.
 
 The post-H5 direct-call audit also fences DSH stop and interaction responses from historical Builtin fallback, resolves IM snapshot authority through the discriminated Runtime binding, keeps Heartbeat and memory paths on the Integrated Runtime identity, and reads IM history through SessionEngine. The boundary test now rejects reintroduction of direct Builtin Session identity, transcript, or scenario calls in the monolithic route owner.
 
@@ -932,7 +937,7 @@ The table separates the credential-free deterministic layer from the still-requi
 
 | Journey | Credential-free evidence now present | Remaining exact-package gate |
 | ------- | ------------------------------------ | ---------------------------- |
-| J1 | Distribution policy, central resolver, frozen binding and Labs-off UI policy tests | Packaged selector-off/frozen-Session walkthrough |
+| J1 | Distribution policy, allowlisted Developer default, central resolver, frozen binding and selector-off UI policy tests | Packaged selector-off/frozen-Session walkthrough |
 | J2 | DSH preference persistence, readiness admission and selector tests | Packaged selector choice plus next-Session birth |
 | J3 | Runtime incompatibility, frozen binding and new-Session ownership logic | DSH-to-Claude confirmation/new-Tab UI walkthrough |
 | J4 | Managed-Codex Provider constraint and preserved Integrated preference tests | Packaged managed-provider switch |
@@ -947,7 +952,7 @@ The table separates the credential-free deterministic layer from the still-requi
 | J13 | Binding migration, resume, replay and recovered-root tests | Packaged App restart with a real DSH Session |
 | J14 | Readiness, digest, inventory, platform and missing-artifact fail-closed tests | Packaged removal/tamper walkthrough with readable transcript |
 | J15 | Fork/rewind/delete transaction journals and injected crash recovery tests | Exact-Runtime mutation campaign through product UI |
-| J16 | Valid DSH-only hidden-selector policy and fail-closed Provider projection tests | Build and smoke the DSH-only distribution profile |
+| J16 | Valid DSH-only hidden-selector policy, fail-closed Provider projection tests, current-source unsigned macOS build/resource verification and native smoke | Signed macOS acceptance plus native Windows/Linux builds and smoke |
 | J17 | Rust/Node identity, IM snapshot, rotation and all-entrypoint resolver tests | Packaged Desktop plus real Bot/Channel rotation campaign |
 | J18 | Sealed child environment, credential canaries, stderr redaction and bounded diagnostics tests | Packaged support-bundle review with live credential canaries |
 
