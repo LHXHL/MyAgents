@@ -68,6 +68,10 @@ export type DshCompiledExtensionPlane = Readonly<{
   diagnostics: readonly RuntimeExtensionComponentStatus[];
 }>;
 
+export function dshExtensionGenerationId(plane: DshCompiledExtensionPlane): string {
+  return `${plane.snapshot.revision}:${plane.snapshot.digest}`;
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {

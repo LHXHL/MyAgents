@@ -1,4 +1,5 @@
 import {
+  dshExtensionGenerationId,
   findDshHostToolBinding,
   findDshMcpCredentialBinding,
   type DshCompiledExtensionPlane,
@@ -38,6 +39,7 @@ export function resolveDshMcpCredential(input: {
   if (
     !exact
     || authority?.componentId !== exact.componentId
+    || authority.componentGenerationId !== dshExtensionGenerationId(input.plane)
     || input.params.extensionDigest !== input.extensionDigest
   ) {
     return {
@@ -90,6 +92,7 @@ export async function executeDshProductHostTool(input: {
   if (
     !authority
     || authority.componentId !== binding.publicToolName
+    || authority.componentGenerationId !== dshExtensionGenerationId(input.plane)
     || typeof authority.runtimeGeneration !== 'string'
     || typeof authority.runtimeSessionId !== 'string'
     || typeof authority.turnId !== 'string'

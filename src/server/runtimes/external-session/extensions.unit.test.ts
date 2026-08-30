@@ -6,7 +6,7 @@ import {
   getManagedCodexDesiredSnapshot,
   markManagedCodexExtensionEffective,
   releaseManagedCodexExtensionGeneration,
-  resolveManagedCodexMcpSelection,
+  resolveProductExtensionMcpSelection,
   resetManagedCodexExtensionState,
   setManagedCodexDesiredSnapshot,
 } from './extensions';
@@ -50,9 +50,9 @@ describe('Managed Codex extension generation state', () => {
       isBuiltin: false,
     }];
 
-    expect(resolveManagedCodexMcpSelection(['safe'], authoritative)).toEqual(authoritative);
-    expect(() => resolveManagedCodexMcpSelection(['injected'], authoritative)).toThrow(
-      'Unknown Managed Codex MCP selection: injected',
+    expect(resolveProductExtensionMcpSelection(['safe'], authoritative)).toEqual(authoritative);
+    expect(() => resolveProductExtensionMcpSelection(['injected'], authoritative)).toThrow(
+      'Unknown Product extension MCP selection: injected',
     );
   });
 

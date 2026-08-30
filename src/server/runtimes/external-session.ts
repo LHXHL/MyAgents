@@ -46,7 +46,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
   runtimeSourceForBinding,
@@ -201,19 +201,19 @@ import { attachProductHostTools } from './product-extensions/host-dispatcher';
 import {
   getManagedCodexDesiredSnapshot,
   getManagedCodexExtensionStatus,
-  getManagedCodexSessionEnabledPluginIds,
-  getManagedCodexSessionMcpServers,
+  getProductExtensionSessionEnabledPluginIds,
+  getProductExtensionSessionMcpServers,
   getManagedCodexRuntimeDiagnostics,
   isManagedCodexExtensionRestartPending,
   markManagedCodexExtensionEffective,
   markManagedCodexExtensionFailed,
   releaseManagedCodexExtensionGeneration,
-  resolveManagedCodexMcpSelection,
+  resolveProductExtensionMcpSelection,
   resetManagedCodexExtensionState,
   setManagedCodexDesiredSnapshot,
   setManagedCodexExtensionRestartPending,
-  setManagedCodexSessionEnabledPluginIds,
-  setManagedCodexSessionMcpServers,
+  setProductExtensionSessionEnabledPluginIds,
+  setProductExtensionSessionMcpServers,
   setManagedCodexRuntimeDiagnostics,
 } from './external-session/extensions';
 import {
@@ -548,6 +548,9 @@ let pendingExternalProxyRestartOriginalKey: string | null = null;
 let pendingExternalOfficialToolsRestart = false;
 let pendingExternalCapabilityRestart = false;
 let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
+let dshDesiredExtensionSnapshot: ManagedCodexExtensionSnapshot | null = null;
+let dshExtensionStatus: RuntimeExtensionDiagnostics | null = null;
+let dshDesiredInteractionScenario: InteractionScenario | null = null;
 function clearPendingExternalProcessConfigRestarts(): void {
   pendingExternalProxyRestart = false;
   pendingExternalProxyRestartOriginalKey = null;
@@ -667,14 +670,46 @@ function scheduleManagedCodexAdmissionReplacementPrewarm(): void {
   timer.unref?.();
 }
 
+async function reconcileDshExtensionsAtTurnBoundary(): Promise<void> {
+  const active = getExternalActivePair();
+  if (
+    !isDshProductRuntime()
+    || !active
+    || active.process.exited
+    || !active.runtime.reconcileDshExtensions
+  ) return;
+  const status = await active.runtime.reconcileDshExtensions(active.process);
+  if (
+    status
+    && (status.state === 'applied' || status.state === 'unchanged')
+    && dshDesiredInteractionScenario
+  ) {
+    setExternalLifecycleScenario(dshDesiredInteractionScenario);
+    dshDesiredInteractionScenario = null;
+  }
+}
+
 function scheduleExternalQueueDrainAfterTurnBoundary(): void {
-  if (pendingExternalProcessConfigRestartReasons().length === 0) {
+  const dshReconciliation = isDshProductRuntime()
+    ? reconcileDshExtensionsAtTurnBoundary()
+    : null;
+  if (!dshReconciliation && pendingExternalProcessConfigRestartReasons().length === 0) {
     setTimeout(() => drainExternalQueueAfterTurn(), 0);
     clearExternalTurnTrace();
     return;
   }
 
-  const finalization = applyPendingExternalProcessConfigInvalidation()
+  const finalization = Promise.resolve(dshReconciliation)
+    .catch((error) => {
+      console.warn(
+        '[external-session] DSH extension boundary reconciliation failed:',
+        summarizeExternalRuntimeMessageForLog(error),
+      );
+      return null;
+    })
+    .then(() => pendingExternalProcessConfigRestartReasons().length > 0
+      ? applyPendingExternalProcessConfigInvalidation()
+      : undefined)
     .then(() => {
       scheduleManagedCodexAdmissionReplacementPrewarm();
       setTimeout(() => drainExternalQueueAfterTurn(), 0);
@@ -1073,6 +1108,9 @@ function resetModuleState(): void {
   activeExternalEnvPolicy = undefined;
   clearPendingExternalProcessConfigRestarts();
   resetManagedCodexExtensionState();
+  dshDesiredExtensionSnapshot = null;
+  dshExtensionStatus = null;
+  dshDesiredInteractionScenario = null;
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
@@ -2528,6 +2566,11 @@ function isManagedCodexProductRuntime(): boolean {
     && getCurrentRuntimeSource() === 'managed-provider';
 }
 
+function isDshProductRuntime(): boolean {
+  return getCurrentRuntimeType() === 'dsh'
+    && getCurrentRuntimeSource() === 'integrated';
+}
+
 type ExternalSkillAdmission = {
   globalSkillInventory: GlobalSkillInventorySnapshot;
   capabilitySnapshot: EffectiveProjectCapabilitySnapshot;
@@ -2547,7 +2590,7 @@ function buildCurrentExternalSkillAdmission(workspacePath: string): ExternalSkil
     projection.unavailableSkillNames,
   ]);
   const activeRevision = getExternalActiveCapabilityRevision();
-  if (activeRevision !== null && activeRevision !== revision) {
+  if (activeRevision !== null && activeRevision !== revision && !isDshProductRuntime()) {
     pendingExternalCapabilityRestart = true;
   }
   return {
@@ -2572,15 +2615,17 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
   const metadata = sessionId ? getSessionMetadata(sessionId) : null;
   const sessionMcpServers = input?.mcpServers
     ? [...input.mcpServers]
-    : getManagedCodexSessionMcpServers();
+    : getProductExtensionSessionMcpServers();
   const mcpServers = sessionMcpServers
     ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
   const skillAdmission = input?.skillAdmission
     ?? buildCurrentExternalSkillAdmission(workspacePath);
   return compileManagedCodexExtensionSnapshot({
     workspacePath,
-    scenario: input?.scenario ?? getExternalLifecycleScenario(),
-    enabledPluginIds: getManagedCodexSessionEnabledPluginIds()
+    scenario: input?.scenario
+      ?? (isDshProductRuntime() ? dshDesiredInteractionScenario : null)
+      ?? getExternalLifecycleScenario(),
+    enabledPluginIds: getProductExtensionSessionEnabledPluginIds()
       ?? metadata?.enabledPluginIds
       ?? null,
     mcpServers,
@@ -2590,7 +2635,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
   });
 }
 
-function notApplicableManagedCodexExtensionResult(
+function notApplicableProductExtensionResult(
   componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
 ): ManagedCodexExtensionUpdateResult {
   return {
@@ -2602,11 +2647,17 @@ function notApplicableManagedCodexExtensionResult(
       components: [{
         component: componentName,
         state: 'not_applicable',
-        code: 'not_managed_codex',
+        code: 'not_product_extension_runtime',
       }],
     },
   };
 }
+
+type ProductExtensionUpdateResult = Readonly<{
+  success: boolean;
+  extensionStatus: RuntimeExtensionDiagnostics;
+  error?: string;
+}>;
 
 async function reconcileManagedCodexExtensionSnapshot(
   componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
@@ -2615,7 +2666,7 @@ async function reconcileManagedCodexExtensionSnapshot(
 ): Promise<ManagedCodexExtensionUpdateResult> {
   await awaitExternalLifecycleStarting();
   if (!isManagedCodexProductRuntime()) {
-    return notApplicableManagedCodexExtensionResult(componentName);
+    return notApplicableProductExtensionResult(componentName);
   }
 
   let snapshot: ManagedCodexExtensionSnapshot;
@@ -2680,28 +2731,147 @@ async function reconcileManagedCodexExtensionSnapshot(
   }
 }
 
+function pendingDshExtensionStatus(
+  snapshot: ManagedCodexExtensionSnapshot,
+): RuntimeExtensionDiagnostics {
+  return {
+    desiredRevision: `myagents-dsh-v2:${snapshot.revision}`,
+    effectiveRevision: null,
+    state: 'pending_next_start',
+    components: snapshot.components.map(component => component.state === 'applied'
+      ? { ...component, state: 'pending_next_start' as const }
+      : { ...component }),
+  };
+}
+
+function failedDshExtensionResult(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+  message: string,
+  snapshot?: ManagedCodexExtensionSnapshot,
+): ProductExtensionUpdateResult {
+  const extensionStatus: RuntimeExtensionDiagnostics = {
+    desiredRevision: snapshot ? `myagents-dsh-v2:${snapshot.revision}` : '',
+    effectiveRevision: dshExtensionStatus?.effectiveRevision ?? null,
+    state: 'failed',
+    components: [
+      ...(snapshot?.components ?? []),
+      {
+        component: componentName,
+        state: 'failed',
+        code: 'dsh_extension_reconcile_failed',
+        message,
+      },
+    ],
+  };
+  dshExtensionStatus = extensionStatus;
+  return {
+    success: false,
+    error: message,
+    extensionStatus,
+  };
+}
+
+async function reconcileDshExtensionSnapshot(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+  build: () => ManagedCodexExtensionSnapshot = buildCurrentManagedCodexExtensionSnapshot,
+): Promise<ProductExtensionUpdateResult> {
+  await awaitExternalLifecycleStarting();
+  if (!isDshProductRuntime()) return notApplicableProductExtensionResult(componentName);
+
+  let snapshot: ManagedCodexExtensionSnapshot;
+  try {
+    snapshot = build();
+    dshDesiredExtensionSnapshot = snapshot;
+  } catch (error) {
+    return failedDshExtensionResult(
+      componentName,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const pair = getExternalActivePair();
+  if (!pair || pair.process.exited) {
+    const extensionStatus = pendingDshExtensionStatus(snapshot);
+    dshExtensionStatus = extensionStatus;
+    return { success: true, extensionStatus };
+  }
+  if (!pair.runtime.replaceDshExtensions) {
+    return failedDshExtensionResult(
+      componentName,
+      'Integrated DSH adapter does not expose live Product extension replacement',
+      snapshot,
+    );
+  }
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  if (!sessionId || !workspacePath) {
+    return failedDshExtensionResult(
+      componentName,
+      'Integrated DSH extension replacement has no Product Session owner',
+      snapshot,
+    );
+  }
+  try {
+    const attached = await attachProductHostTools({ snapshot, sessionId, workspacePath });
+    const extensionStatus = await pair.runtime.replaceDshExtensions(pair.process, attached);
+    dshDesiredExtensionSnapshot = attached;
+    dshExtensionStatus = extensionStatus;
+    return {
+      success: extensionStatus.state !== 'failed',
+      ...(extensionStatus.state === 'failed'
+        ? { error: 'DSH rejected the desired Product extension generation' }
+        : {}),
+      extensionStatus,
+    };
+  } catch (error) {
+    // Once handed to the adapter, an ambiguously delivered candidate remains
+    // adapter-owned so generation-fenced reverse calls cannot lose their Host
+    // dispatcher while DSH reconciles or terminates.
+    return failedDshExtensionResult(
+      componentName,
+      error instanceof Error ? error.message : String(error),
+      snapshot,
+    );
+  }
+}
+
+function reconcileProductExtensionSnapshot(
+  componentName: import('./managed-codex/extensions/contracts').ManagedCodexExtensionComponentKind,
+  build: () => ManagedCodexExtensionSnapshot = buildCurrentManagedCodexExtensionSnapshot,
+  preservePromotion?: ExternalTurnPromotionToken | null,
+): Promise<ProductExtensionUpdateResult> {
+  return isDshProductRuntime()
+    ? reconcileDshExtensionSnapshot(componentName, build)
+    : reconcileManagedCodexExtensionSnapshot(componentName, build, preservePromotion);
+}
+
 export async function handleExternalMcpServersChange(
   servers: readonly import('../../shared/config-types').McpServerDefinition[],
-): Promise<ManagedCodexExtensionUpdateResult & { servers?: string[] }> {
-  if (!isManagedCodexProductRuntime()) {
-    const result = notApplicableManagedCodexExtensionResult('mcp');
+): Promise<ProductExtensionUpdateResult & { servers?: string[] }> {
+  if (!isManagedCodexProductRuntime() && !isDshProductRuntime()) {
+    const result = notApplicableProductExtensionResult('mcp');
     return { ...result, servers: servers.map(server => server.id) };
   }
   const requestedIds = [...new Set(servers.map(server => server.id))];
   const workspacePath = getExternalLifecycleWorkspacePath();
   const sessionId = getExternalLifecycleSessionId();
   try {
-    if (!workspacePath) throw new Error('Managed Codex MCP configuration has no workspace owner');
+    if (!workspacePath) throw new Error('Product extension MCP configuration has no workspace owner');
     const metadata = sessionId ? getSessionMetadata(sessionId) : null;
     const authoritative = resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
-    const resolvedServers = resolveManagedCodexMcpSelection(requestedIds, authoritative);
-    setManagedCodexSessionMcpServers(resolvedServers);
-    const result = await reconcileManagedCodexExtensionSnapshot('mcp', () => (
+    const resolvedServers = resolveProductExtensionMcpSelection(requestedIds, authoritative);
+    setProductExtensionSessionMcpServers(resolvedServers);
+    const result = await reconcileProductExtensionSnapshot('mcp', () => (
       buildCurrentManagedCodexExtensionSnapshot({ mcpServers: resolvedServers })
     ));
     return { ...result, servers: requestedIds };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isDshProductRuntime()) {
+      return {
+        ...failedDshExtensionResult('mcp', message),
+        servers: requestedIds,
+      };
+    }
     const current = getManagedCodexExtensionStatus();
     const extensionStatus = {
       ...current,
@@ -2719,40 +2889,67 @@ export async function handleExternalMcpServersChange(
   }
 }
 
-export async function handleExternalAgentsChange(): Promise<ManagedCodexExtensionUpdateResult> {
-  return reconcileManagedCodexExtensionSnapshot('agents');
+export async function handleExternalAgentsChange(): Promise<ProductExtensionUpdateResult> {
+  return reconcileProductExtensionSnapshot('agents');
 }
 
 export async function handleExternalDesktopInteractionScenarioChange(
   scenario: Extract<InteractionScenario, { type: 'desktop' }>,
-): Promise<ManagedCodexExtensionUpdateResult> {
-  if (!isManagedCodexProductRuntime()) {
-    return notApplicableManagedCodexExtensionResult('scenario');
+): Promise<ProductExtensionUpdateResult> {
+  if (!isManagedCodexProductRuntime() && !isDshProductRuntime()) {
+    return notApplicableProductExtensionResult('scenario');
   }
   const wasBusy = isExternalTurnBusy();
-  const result = await reconcileManagedCodexExtensionSnapshot('scenario', () => (
+  const result = await reconcileProductExtensionSnapshot('scenario', () => (
     buildCurrentManagedCodexExtensionSnapshot({ scenario })
   ));
-  if (result.success && !wasBusy) setExternalLifecycleScenario(scenario);
+  if (result.success) {
+    if (isDshProductRuntime() && wasBusy) {
+      dshDesiredInteractionScenario = scenario;
+      if (
+        (result.extensionStatus.state === 'applied' || result.extensionStatus.state === 'unchanged')
+        && !isExternalTurnBusy()
+      ) {
+        setExternalLifecycleScenario(scenario);
+        dshDesiredInteractionScenario = null;
+      }
+    } else if (!wasBusy) {
+      setExternalLifecycleScenario(scenario);
+      dshDesiredInteractionScenario = null;
+    }
+  }
   return result;
 }
 
 export async function handleExternalSessionEnabledPluginsChange(
   enabledIds: readonly string[] | null,
-): Promise<ManagedCodexExtensionUpdateResult> {
-  if (!isManagedCodexProductRuntime()) {
-    return notApplicableManagedCodexExtensionResult('plugins');
+): Promise<ProductExtensionUpdateResult> {
+  if (!isManagedCodexProductRuntime() && !isDshProductRuntime()) {
+    return notApplicableProductExtensionResult('plugins');
   }
-  setManagedCodexSessionEnabledPluginIds(enabledIds);
-  return reconcileManagedCodexExtensionSnapshot('plugins');
+  setProductExtensionSessionEnabledPluginIds(enabledIds);
+  return reconcileProductExtensionSnapshot('plugins');
 }
 
-export function getManagedCodexExtensionConfigSnapshot(): {
+export function getProductExtensionConfigSnapshot(): {
   mcpServerIds: string[] | null;
   agentNames: string[] | null;
   enabledPluginIds: string[] | null;
-  extensionStatus?: ReturnType<typeof getManagedCodexExtensionStatus>;
+  extensionStatus?: RuntimeExtensionDiagnostics;
 } {
+  if (isDshProductRuntime()) {
+    const snapshot = dshDesiredExtensionSnapshot;
+    return {
+      mcpServerIds: snapshot?.mcpServers.map(server => server.id)
+        ?? getProductExtensionSessionMcpServers()?.map(server => server.id)
+        ?? [],
+      agentNames: snapshot?.agents.map(agent => agent.name) ?? [],
+      enabledPluginIds: snapshot?.enabledPluginIds
+        ?? getProductExtensionSessionEnabledPluginIds()
+        ?? [],
+      ...(dshExtensionStatus ? { extensionStatus: dshExtensionStatus } : {}),
+    };
+  }
   if (!isManagedCodexProductRuntime()) {
     return {
       mcpServerIds: null,
@@ -2765,7 +2962,7 @@ export function getManagedCodexExtensionConfigSnapshot(): {
     mcpServerIds: snapshot?.mcpServers.map(server => server.id) ?? [],
     agentNames: snapshot?.agents.map(agent => agent.name) ?? [],
     enabledPluginIds: snapshot?.enabledPluginIds
-      ?? getManagedCodexSessionEnabledPluginIds()
+      ?? getProductExtensionSessionEnabledPluginIds()
       ?? [],
     extensionStatus: getManagedCodexExtensionStatus(),
   };
@@ -3195,11 +3392,12 @@ async function _doStartExternalSession(options: {
     : startPermissionMode;
 
   const managedCodexMcpServers = runtimeType === 'codex' && runtimeSource === 'managed-provider'
-    ? getManagedCodexSessionMcpServers()
+    ? getProductExtensionSessionMcpServers()
       ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
   const dshMcpServers = runtimeType === 'dsh'
-    ? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
+    ? getProductExtensionSessionMcpServers()
+      ?? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
     : undefined;
   const externalSkillAdmission = options.skillAdmission
     ?? buildCurrentExternalSkillAdmission(options.workspacePath);
@@ -3236,6 +3434,7 @@ async function _doStartExternalSession(options: {
         workspacePath: options.workspacePath,
       })
     : undefined;
+  if (dshExtensionSnapshot) dshDesiredExtensionSnapshot = dshExtensionSnapshot;
   if (shouldTrackPendingExternalSessionBirth({
     // DSH deliberately starts protocol/session authority before Product root
     // admission, so even an initial-message birth must retain the native id.
@@ -6726,6 +6925,14 @@ async function persistTurnResult(
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(finalizedTurnSucceeded ? 'completed' : 'failed');
+    try {
+      await reconcileDshExtensionsAtTurnBoundary();
+    } catch (error) {
+      console.warn(
+        '[external-session] DSH extension boundary reconciliation failed:',
+        summarizeExternalRuntimeMessageForLog(error),
+      );
+    }
     await applyPendingExternalProcessConfigInvalidation();
     // Mid-turn queue drain: a turn just ended (completed OR interrupted via force) → surface +
     // send the next queued desktop message. Deferred to the next macrotask so queue:started
@@ -7387,6 +7594,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       const diagnostics = isManagedCodexProductRuntime()
         ? { ...event.diagnostics, extensions: getManagedCodexExtensionStatus() }
         : event.diagnostics;
+      if (isDshProductRuntime() && diagnostics.extensions) {
+        dshExtensionStatus = diagnostics.extensions;
+      }
       if (isManagedCodexProductRuntime()) setManagedCodexRuntimeDiagnostics(diagnostics);
       console.log(`[external-session] runtime_diagnostics: runtime=${diagnostics.runtime} features=${diagnostics.features?.length ?? 0} mcp=${diagnostics.mcpServers?.length ?? 0} apps=${diagnostics.apps?.length ?? 0} auth=${diagnostics.auth?.authMethod ?? 'none'}`);
       broadcast('chat:runtime-diagnostics', diagnostics);

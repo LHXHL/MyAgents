@@ -260,7 +260,7 @@ const mocks = vi.hoisted(() => {
       success: true,
       extensionStatus: { desiredRevision: 'desired', effectiveRevision: 'desired', state: 'applied', components: [] },
     })),
-    getManagedCodexExtensionConfigSnapshot: vi.fn(() => ({
+    getProductExtensionConfigSnapshot: vi.fn(() => ({
       mcpServerIds: null,
       agentNames: null,
       enabledPluginIds: null,
@@ -430,7 +430,7 @@ vi.mock('../runtimes/external-session', () => ({
   handleExternalDesktopInteractionScenarioChange: mocks.handleExternalDesktopInteractionScenarioChange,
   handleExternalMcpServersChange: mocks.handleExternalMcpServersChange,
   handleExternalSessionEnabledPluginsChange: mocks.handleExternalSessionEnabledPluginsChange,
-  getManagedCodexExtensionConfigSnapshot: mocks.getManagedCodexExtensionConfigSnapshot,
+  getProductExtensionConfigSnapshot: mocks.getProductExtensionConfigSnapshot,
   hasExternalRuntimeProcess: mocks.hasExternalRuntimeProcess,
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,

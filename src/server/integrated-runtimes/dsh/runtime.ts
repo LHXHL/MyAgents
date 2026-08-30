@@ -12,6 +12,9 @@ import {
   DSH_PERMISSION_MODES,
   type RuntimeDiagnostics,
   type RuntimeDetection,
+  type RuntimeExtensionApplyState,
+  type RuntimeExtensionComponentStatus,
+  type RuntimeExtensionDiagnostics,
   type RuntimeModelInfo,
   type RuntimePermissionMode,
   type RuntimeType,
@@ -47,7 +50,9 @@ import { DshRuntimeEventProjector } from './event-projector';
 import {
   compileDshExtensionSnapshot,
   compileDshProductExtensionPlane,
+  dshExtensionGenerationId,
   type DshCompiledExtensionPlane,
+  type DshProductExtensionSource,
 } from './extension-compiler';
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
@@ -92,10 +97,59 @@ type DshConfiguration = Readonly<{
   revision: string;
 }>;
 
+function extensionApplyState(value: unknown): RuntimeExtensionApplyState {
+  if (value === 'applied') return 'applied';
+  if (value === 'queued') return 'deferred_until_idle';
+  if (value === 'restart_when_idle') return 'pending_next_start';
+  return 'failed';
+}
+
+function extensionStatus(
+  plane: DshCompiledExtensionPlane,
+  result: DshRpcObject,
+  unchanged = false,
+): RuntimeExtensionDiagnostics {
+  const desiredRevision = string(result.desiredRevision, 'DSH desired extension revision');
+  const effectiveWireRevision = string(result.effectiveRevision, 'DSH effective extension revision');
+  const state = extensionApplyState(result.state);
+  const components = plane.diagnostics.map((component): RuntimeExtensionComponentStatus => {
+    if (state === 'deferred_until_idle' && component.state === 'applied') {
+      return {
+        ...component,
+        state,
+        code: 'dsh_extension_generation_queued',
+      };
+    }
+    return { ...component };
+  });
+  if (Array.isArray(result.components)) {
+    for (const raw of result.components) {
+      const component = object(raw, 'DSH extension component status');
+      if (component.state !== 'failed' && component.state !== 'unsupported') continue;
+      const key = string(component.key, 'DSH extension component key');
+      const separator = key.indexOf(':');
+      components.push({
+        component: separator < 0 ? 'runtime' : key.slice(0, separator),
+        ...(separator < 0 ? {} : { id: key.slice(separator + 1) }),
+        state: 'failed',
+        code: typeof component.reason === 'string'
+          ? component.reason
+          : `dsh_extension_component_${String(component.state)}`,
+      });
+    }
+  }
+  return {
+    desiredRevision,
+    effectiveRevision: effectiveWireRevision === 'none' ? null : effectiveWireRevision,
+    state: unchanged && state === 'applied' ? 'unchanged' : state,
+    components,
+  };
+}
+
 function extensionDiagnostics(
   workspacePath: string,
-  plane: DshCompiledExtensionPlane,
   catalog: DshRpcObject,
+  extensions: RuntimeExtensionDiagnostics,
 ): RuntimeDiagnostics {
   const mcpServers = Array.isArray(catalog.mcpServers)
     ? catalog.mcpServers.map((entry) => {
@@ -118,14 +172,51 @@ function extensionDiagnostics(
       mcpServers: 'ok',
       apps: 'unsupported',
     },
-    extensions: {
-      desiredRevision: plane.snapshot.revision,
-      effectiveRevision: string(catalog.revision, 'DSH extension catalog revision'),
-      state: 'applied',
-      components: plane.diagnostics.map(component => ({ ...component })),
-    },
+    extensions,
     timestamp: new Date().toISOString(),
   };
+}
+
+type DshExtensionCatalogFacts = Readonly<{
+  digest: string;
+  loadedSkillNames: readonly string[];
+  tools: readonly string[];
+}>;
+
+function extensionCatalogFacts(
+  plane: DshCompiledExtensionPlane,
+  catalog: DshRpcObject,
+): DshExtensionCatalogFacts {
+  const digest = string(catalog.digest, 'DSH extension catalog digest');
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error('DSH effective extension catalog digest is invalid');
+  }
+  if (catalog.revision !== plane.snapshot.revision) {
+    throw new Error('DSH effective extension catalog differs from Product extension intent');
+  }
+  const loadedSkillNames = Array.isArray(catalog.skills)
+    ? catalog.skills.map((entry) => string(
+        object(entry, 'DSH extension Skill').name,
+        'DSH extension Skill name',
+      ))
+    : [];
+  if (
+    new Set(loadedSkillNames).size !== loadedSkillNames.length
+    || plane.expectedSkillNames.some(name => !loadedSkillNames.includes(name))
+  ) {
+    throw new Error('DSH effective Skill catalog differs from Product extension intent');
+  }
+  const tools = Array.isArray(catalog.tools)
+    ? catalog.tools.filter((tool): tool is string => typeof tool === 'string')
+    : [];
+  if (plane.hostToolBindings.some(binding => !tools.includes(binding.publicToolName))) {
+    throw new Error('DSH effective Host tool catalog differs from Product extension intent');
+  }
+  return Object.freeze({
+    digest,
+    loadedSkillNames: Object.freeze(loadedSkillNames),
+    tools: Object.freeze(tools),
+  });
 }
 
 function hash(...parts: readonly string[]): string {
@@ -374,14 +465,22 @@ function answerValue(schema: DshRpcObject, updatedInput: Record<string, unknown>
 
 class DshProcess implements RuntimeProcess {
   readonly runtimeGeneration: string;
-  readonly loadedSkillNames: readonly string[];
+  loadedSkillNames: readonly string[];
   activeOperationId: string | undefined;
   planRevision: string | undefined;
   planMode: 'normal' | 'plan' | undefined;
   configuration: DshConfiguration;
   readonly operationUserMessages = new Map<string, string>();
   readonly pendingInteractions: Map<string, PendingInteraction>;
+  extensionDigest: string;
+  tools: readonly string[];
+  extensionPlane: DshCompiledExtensionPlane;
+  extensionCatalog: DshRpcObject;
+  extensionDiagnostics: RuntimeExtensionDiagnostics;
+  desiredExtensionPlane: DshCompiledExtensionPlane | undefined;
   private resourcesClosed = false;
+  private extensionSerial: Promise<void> = Promise.resolve();
+  private readonly extensionPlanes = new Map<string, DshCompiledExtensionPlane>();
 
   constructor(
     readonly host: DshRuntimeProcessHost,
@@ -392,16 +491,24 @@ class DshProcess implements RuntimeProcess {
     readonly executionEnvironment: DshExecutionEnvironment,
     configuration: DshConfiguration,
     readonly runtimeSessionId: string,
-    readonly extensionDigest: string,
-    readonly tools: readonly string[],
+    extensionDigest: string,
+    tools: readonly string[],
     readonly productTranscriptChangedAtStartup: boolean,
     loadedSkillNames: readonly string[],
-    readonly extensionPlane: DshCompiledExtensionPlane,
+    extensionPlane: DshCompiledExtensionPlane,
+    extensionCatalog: DshRpcObject,
+    extensionDiagnostics: RuntimeExtensionDiagnostics,
     activeTurn?: DshUnsettledTurn,
     pendingInteractions?: Map<string, PendingInteraction>,
   ) {
     this.configuration = configuration;
+    this.extensionDigest = extensionDigest;
+    this.tools = Object.freeze([...tools]);
+    this.extensionPlane = extensionPlane;
+    this.extensionCatalog = extensionCatalog;
+    this.extensionDiagnostics = extensionDiagnostics;
     this.loadedSkillNames = Object.freeze([...loadedSkillNames]);
+    this.extensionPlanes.set(dshExtensionGenerationId(extensionPlane), extensionPlane);
     this.runtimeGeneration = string(host.identity?.runtimeGeneration, 'DSH Runtime generation');
     this.pendingInteractions = pendingInteractions ?? new Map();
     if (activeTurn) {
@@ -437,7 +544,45 @@ class DshProcess implements RuntimeProcess {
     if (this.resourcesClosed) return;
     this.resourcesClosed = true;
     this.attachments.close();
-    this.extensionPlane.hostToolDispatcher?.dispose(reason);
+    const dispatchers = new Set(
+      [...this.extensionPlanes.values()]
+        .map(plane => plane.hostToolDispatcher)
+        .filter((dispatcher): dispatcher is NonNullable<typeof dispatcher> => Boolean(dispatcher)),
+    );
+    this.extensionPlanes.clear();
+    this.desiredExtensionPlane = undefined;
+    for (const dispatcher of dispatchers) dispatcher.dispose(reason);
+  }
+
+  planeForGeneration(generationId: string | undefined): DshCompiledExtensionPlane | undefined {
+    return generationId ? this.extensionPlanes.get(generationId) : undefined;
+  }
+
+  registerExtensionPlane(plane: DshCompiledExtensionPlane): boolean {
+    if (this.resourcesClosed) throw new Error('DSH extension owner is closed');
+    const generationId = dshExtensionGenerationId(plane);
+    if (this.extensionPlanes.has(generationId)) return false;
+    this.extensionPlanes.set(generationId, plane);
+    return true;
+  }
+
+  releaseExtensionPlane(plane: DshCompiledExtensionPlane, reason: string): void {
+    const generationId = dshExtensionGenerationId(plane);
+    if (this.extensionPlanes.get(generationId) !== plane) return;
+    this.extensionPlanes.delete(generationId);
+    const dispatcher = plane.hostToolDispatcher;
+    if (
+      dispatcher
+      && ![...this.extensionPlanes.values()].some(candidate => candidate.hostToolDispatcher === dispatcher)
+    ) {
+      dispatcher.dispose(reason);
+    }
+  }
+
+  serializeExtensionUpdate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.extensionSerial.then(operation);
+    this.extensionSerial = result.then(() => undefined, () => undefined);
+    return result;
   }
 }
 
@@ -556,6 +701,7 @@ export class DshRuntime implements AgentRuntime {
           diagnostics: Object.freeze([]),
         } satisfies DshCompiledExtensionPlane);
     const extension = extensionPlane.snapshot;
+    const initialExtensionGenerationId = dshExtensionGenerationId(extensionPlane);
     let processValue: DshProcess | undefined;
     let projector: DshRuntimeEventProjector | undefined;
     const pendingInteractions = new Map<string, PendingInteraction>();
@@ -573,13 +719,35 @@ export class DshRuntime implements AgentRuntime {
       activeConfiguration: () => processValue?.configuration ?? configuration,
       runtimeSessionId: () => processValue?.runtimeSessionId,
     });
+    const extensionPlaneForHostRequest = (params: DshRpcObject): DshCompiledExtensionPlane | undefined => {
+      const authority = params.authority && typeof params.authority === 'object'
+        && !Array.isArray(params.authority)
+        ? params.authority as DshRpcObject
+        : undefined;
+      const generationId = typeof authority?.componentGenerationId === 'string'
+        ? authority.componentGenerationId
+        : undefined;
+      if (processValue) return processValue.planeForGeneration(generationId);
+      return generationId === initialExtensionGenerationId ? extensionPlane : undefined;
+    };
 
     const hostHandlers: DshHostRequestHandlers = Object.freeze({
       'host/credential/resolve': (params) => {
         if (params.subject === 'mcp') {
+          const plane = extensionPlaneForHostRequest(params);
+          if (!plane) {
+            return {
+              kind: 'availability',
+              available: false,
+              authoritativeCredentialRevision: typeof params.credentialRevision === 'string'
+                ? params.credentialRevision
+                : 'invalid-credential-revision',
+              reasonCode: 'mcp_credential_authority_mismatch',
+            };
+          }
           return resolveDshMcpCredential({
-            plane: extensionPlane,
-            extensionDigest: extension.digest,
+            plane,
+            extensionDigest: plane.snapshot.digest,
             params,
           });
         }
@@ -645,13 +813,18 @@ export class DshRuntime implements AgentRuntime {
       },
       'host/tool/execute': (params, context) => canonicalWeb.handles(params)
         ? canonicalWeb.execute(params, context)
-        : executeDshProductHostTool({
-            plane: extensionPlane,
-            attachments,
-            runtimeSessionId: processValue?.runtimeSessionId,
-            params,
-            context,
-          }),
+        : (() => {
+            const plane = extensionPlaneForHostRequest(params);
+            return plane
+              ? executeDshProductHostTool({
+                  plane,
+                  attachments,
+                  runtimeSessionId: processValue?.runtimeSessionId,
+                  params,
+                  context,
+                })
+              : Promise.resolve({ state: 'failed', code: 'host_tool_authority_mismatch' });
+          })(),
       'host/hook/execute': () => ({ state: 'continue' }),
       'host/attachment/put': params => attachments.put(params),
       'host/attachment/acquire': params => attachments.acquire(params),
@@ -708,31 +881,10 @@ export class DshRuntime implements AgentRuntime {
         throw new Error('DSH extension snapshot did not become effective before Session binding');
       }
       const extensionCatalog = await host.request('extension/catalog', {});
-      const extensionDigest = string(extensionCatalog.digest, 'DSH extension catalog digest');
-      if (!/^[a-f0-9]{64}$/.test(extensionDigest)) {
-        throw new Error('DSH effective extension catalog digest is invalid');
-      }
-      if (extensionCatalog.revision !== extension.revision) {
-        throw new Error('DSH effective extension catalog revision differs from Product intent');
-      }
-      const loadedSkillNames = Array.isArray(extensionCatalog.skills)
-        ? extensionCatalog.skills.map((entry) => string(
-            object(entry, 'DSH extension Skill').name,
-            'DSH extension Skill name',
-          ))
-        : [];
-      if (
-        new Set(loadedSkillNames).size !== loadedSkillNames.length
-        || extensionPlane.expectedSkillNames.some(name => !loadedSkillNames.includes(name))
-      ) {
-        throw new Error('DSH effective Skill catalog differs from Product extension intent');
-      }
-      const extensionTools = Array.isArray(extensionCatalog.tools)
-        ? extensionCatalog.tools.filter((tool): tool is string => typeof tool === 'string')
-        : [];
-      if (extensionPlane.hostToolBindings.some(binding => !extensionTools.includes(binding.publicToolName))) {
-        throw new Error('DSH effective Host tool catalog differs from Product extension intent');
-      }
+      const extensionFacts = extensionCatalogFacts(extensionPlane, extensionCatalog);
+      const extensionDigest = extensionFacts.digest;
+      const loadedSkillNames = extensionFacts.loadedSkillNames;
+      const admittedExtensionStatus = extensionStatus(extensionPlane, extensionResult);
 
       const bindingParams: DshRpcObject = {
         clientOperationId: `session-bind-${randomUUID()}`,
@@ -802,6 +954,8 @@ export class DshRuntime implements AgentRuntime {
         recovery.recovered || turnReconciliation.transcriptChanged,
         loadedSkillNames,
         extensionPlane,
+        extensionCatalog,
+        admittedExtensionStatus,
         turnReconciliation.activeTurn,
         pendingInteractions,
       );
@@ -831,7 +985,11 @@ export class DshRuntime implements AgentRuntime {
       onEvent({ kind: 'runtime_tool_catalog', tools: [...tools] });
       onEvent({
         kind: 'runtime_diagnostics',
-        diagnostics: extensionDiagnostics(workspacePath, extensionPlane, extensionCatalog),
+        diagnostics: extensionDiagnostics(
+          workspacePath,
+          extensionCatalog,
+          admittedExtensionStatus,
+        ),
       });
       onEvent({
         kind: 'status_change',
@@ -882,6 +1040,12 @@ export class DshRuntime implements AgentRuntime {
     requestedClientOperationId?: string,
   ): Promise<void> {
     if (process.activeOperationId) throw new Error('DSH already owns an active root turn');
+    if (process.desiredExtensionPlane) {
+      const reconciled = await this.reconcileDshExtensions(process);
+      if (reconciled?.state !== 'applied' && reconciled?.state !== 'unchanged') {
+        throw new Error('DSH extension generation is not effective at the root-turn boundary');
+      }
+    }
     const clientOperationId = requestedClientOperationId ?? `turn-${randomUUID()}`;
     process.activeOperationId = clientOperationId;
     process.operationUserMessages.set(clientOperationId, clientUserMessageId);
@@ -921,6 +1085,135 @@ export class DshRuntime implements AgentRuntime {
       options?.clientUserMessageId ?? `user-${randomUUID()}`,
       options?.clientOperationId,
     );
+  }
+
+  private emitExtensionDiagnostics(process: DshProcess): void {
+    process.onEvent({
+      kind: 'runtime_diagnostics',
+      diagnostics: extensionDiagnostics(
+        process.executionEnvironment.workspace.canonicalRoot,
+        process.extensionCatalog,
+        process.extensionDiagnostics,
+      ),
+    });
+  }
+
+  private async commitEffectiveExtension(
+    process: DshProcess,
+    plane: DshCompiledExtensionPlane,
+    status: RuntimeExtensionDiagnostics,
+  ): Promise<RuntimeExtensionDiagnostics> {
+    const catalog = await process.host.request('extension/catalog', {});
+    const facts = extensionCatalogFacts(plane, catalog);
+    process.extensionPlane = plane;
+    process.extensionCatalog = catalog;
+    process.extensionDigest = facts.digest;
+    process.loadedSkillNames = facts.loadedSkillNames;
+    process.tools = facts.tools;
+    process.extensionDiagnostics = status;
+    process.desiredExtensionPlane = undefined;
+    // DSH may retain an old component generation for background children
+    // after the root operation reaches the replacement boundary. Protocol
+    // 2.0.0 carries that generation on reverse requests but exposes no Host
+    // retirement acknowledgement, so every once-effective Host plane remains
+    // routable until this process generation closes.
+    process.onEvent({ kind: 'runtime_tool_catalog', tools: [...facts.tools] });
+    this.emitExtensionDiagnostics(process);
+    return status;
+  }
+
+  private async settleExtensionApply(
+    process: DshProcess,
+    plane: DshCompiledExtensionPlane,
+    result: DshRpcObject,
+    unchanged = false,
+  ): Promise<RuntimeExtensionDiagnostics> {
+    if (result.desiredRevision !== plane.snapshot.revision) {
+      throw new Error('DSH desired extension revision differs from Product intent');
+    }
+    const status = extensionStatus(plane, result, unchanged);
+    if (status.state === 'applied' || status.state === 'unchanged') {
+      if (result.effectiveRevision !== plane.snapshot.revision) {
+        throw new Error('DSH applied a different extension revision');
+      }
+      return this.commitEffectiveExtension(process, plane, status);
+    }
+    process.extensionDiagnostics = status;
+    if (status.state === 'failed') {
+      process.desiredExtensionPlane = undefined;
+      if (plane !== process.extensionPlane) {
+        process.releaseExtensionPlane(plane, 'dsh_extension_generation_failed');
+      }
+    } else {
+      process.desiredExtensionPlane = plane;
+    }
+    this.emitExtensionDiagnostics(process);
+    return status;
+  }
+
+  async replaceDshExtensions(
+    runtimeProcess: RuntimeProcess,
+    source: DshProductExtensionSource,
+  ): Promise<RuntimeExtensionDiagnostics> {
+    const process = dshProcess(runtimeProcess);
+    return process.serializeExtensionUpdate(async () => {
+      let plane: DshCompiledExtensionPlane;
+      try {
+        plane = compileDshProductExtensionPlane(source);
+      } catch (error) {
+        source.hostToolDispatcher?.dispose('dsh_extension_compilation_failed');
+        throw error;
+      }
+      const existing = process.planeForGeneration(dshExtensionGenerationId(plane));
+      if (existing === process.desiredExtensionPlane) {
+        plane.hostToolDispatcher?.dispose('dsh_extension_generation_unchanged');
+        return process.extensionDiagnostics;
+      }
+      if (existing === process.extensionPlane && !process.desiredExtensionPlane) {
+        plane.hostToolDispatcher?.dispose('dsh_extension_generation_unchanged');
+        const unchanged = {
+          ...process.extensionDiagnostics,
+          desiredRevision: process.extensionPlane.snapshot.revision,
+          effectiveRevision: process.extensionPlane.snapshot.revision,
+          state: 'unchanged' as const,
+        };
+        process.extensionDiagnostics = unchanged;
+        this.emitExtensionDiagnostics(process);
+        return unchanged;
+      }
+      if (existing) {
+        plane.hostToolDispatcher?.dispose('dsh_extension_generation_reused');
+        plane = existing;
+      } else {
+        process.registerExtensionPlane(plane);
+      }
+      const previousDesired = process.desiredExtensionPlane;
+      process.desiredExtensionPlane = plane;
+      // On an ambiguous transport failure the Runtime may already own this
+      // candidate and can still issue generation-fenced credential requests;
+      // therefore the registered plane remains owned until reconciliation or
+      // process teardown.
+      const result = await process.host.request(
+        'extension/replace',
+        plane.snapshot as unknown as DshRpcObject,
+      );
+      if (previousDesired && previousDesired !== plane && previousDesired !== process.extensionPlane) {
+        process.releaseExtensionPlane(previousDesired, 'dsh_extension_candidate_replaced');
+      }
+      return this.settleExtensionApply(process, plane, result);
+    });
+  }
+
+  async reconcileDshExtensions(
+    runtimeProcess: RuntimeProcess,
+  ): Promise<RuntimeExtensionDiagnostics | null> {
+    const process = dshProcess(runtimeProcess);
+    return process.serializeExtensionUpdate(async () => {
+      const plane = process.desiredExtensionPlane;
+      if (!plane) return null;
+      const result = await process.host.request('extension/status', {});
+      return this.settleExtensionApply(process, plane, result);
+    });
   }
 
   getActiveRootOperation(runtimeProcess: RuntimeProcess): Readonly<{

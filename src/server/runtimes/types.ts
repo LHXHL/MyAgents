@@ -1,7 +1,7 @@
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
-import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeExtensionDiagnostics, RuntimeSource } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
@@ -426,6 +426,22 @@ export interface AgentRuntime {
     options: SessionStartOptions,
     onEvent: UnifiedEventCallback,
   ): Promise<RuntimeProcess>;
+
+  /**
+   * Replace the declarative Product extension generation owned by an
+   * Integrated DSH process. The adapter preserves desired/effective state
+   * when DSH has prepared a candidate that is waiting for an operation
+   * boundary.
+   */
+  replaceDshExtensions?(
+    process: RuntimeProcess,
+    extensions: DshProductExtensionSource,
+  ): Promise<RuntimeExtensionDiagnostics>;
+
+  /** Retry a prepared DSH extension generation at a quiescent boundary. */
+  reconcileDshExtensions?(
+    process: RuntimeProcess,
+  ): Promise<RuntimeExtensionDiagnostics | null>;
 
   /** Send a follow-up user message to an active session */
   sendMessage(

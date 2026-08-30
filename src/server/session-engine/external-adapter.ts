@@ -28,7 +28,7 @@ import {
   getExternalSystemInitPayload,
   getExternalMcpEffectiveSnapshot,
   getExternalCurrentTurnIdentity,
-  getManagedCodexExtensionConfigSnapshot,
+  getProductExtensionConfigSnapshot,
   getLastExternalAssistantText,
   handleExternalOfficialToolIdsChange,
   handleExternalProxyConfigChange,
@@ -211,7 +211,7 @@ function buildExternalFreezeSnapshotPatch(): ExternalFreezeSnapshotPatch {
   if (model) patch.model = model;
   if (permissionMode) patch.permissionMode = permissionMode;
   if (reasoningEffort) patch.reasoningEffort = reasoningEffort;
-  const extensions = getManagedCodexExtensionConfigSnapshot();
+  const extensions = getProductExtensionConfigSnapshot();
   if (extensions.enabledPluginIds) patch.enabledPluginIds = extensions.enabledPluginIds;
   if (extensions.mcpServerIds) patch.mcpEnabledServers = extensions.mcpServerIds;
   if (runtime === 'codex' && runtimeSource === 'managed-provider' && model) {
@@ -318,7 +318,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const runtimeSessionId = getRuntimeSessionId();
       const session = runtimeSessionId ? getSessionData(runtimeSessionId) : null;
       const workspacePath = getRuntimeWorkspacePath();
-      const extensions = getManagedCodexExtensionConfigSnapshot();
+      const extensions = getProductExtensionConfigSnapshot();
       return {
         success: true,
         runtime: getActiveRuntimeType(),

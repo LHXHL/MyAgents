@@ -66,6 +66,8 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
   readonly startSessionDshExtensionSkills: string[][] = [];
+  readonly replacedDshExtensionSkills: string[][] = [];
+  dshExtensionReconcileCalls = 0;
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
   compactCalls = 0;
@@ -94,6 +96,7 @@ class FakeRuntime implements AgentRuntime {
     clientOperationId: string;
     clientUserMessageId: string;
   }> | null;
+  private pendingDshExtensions: NonNullable<SessionStartOptions['dshExtensions']> | null = null;
 
   constructor(private readonly scripts: TurnScript[], options: {
     runtimeType?: RuntimeType;
@@ -281,6 +284,53 @@ class FakeRuntime implements AgentRuntime {
     }
     this.emitRootTurnAdmission(options?.clientUserMessageId);
     this.playTurn(message);
+  }
+
+  async replaceDshExtensions(
+    process: RuntimeProcess,
+    extensions: NonNullable<SessionStartOptions['dshExtensions']>,
+  ) {
+    const revision = `myagents-dsh-v2:${extensions.revision}`;
+    this.replacedDshExtensionSkills.push(extensions.skills.map(skill => skill.name));
+    if (this.activeRootOperation) {
+      this.pendingDshExtensions = extensions;
+      return {
+        desiredRevision: revision,
+        effectiveRevision: null,
+        state: 'deferred_until_idle' as const,
+        components: [...(extensions.components ?? [])],
+      };
+    }
+    process.loadedSkillNames = extensions.skills.map(skill => skill.name);
+    return {
+      desiredRevision: revision,
+      effectiveRevision: revision,
+      state: 'applied' as const,
+      components: [...(extensions.components ?? [])],
+    };
+  }
+
+  async reconcileDshExtensions(process: RuntimeProcess) {
+    this.dshExtensionReconcileCalls += 1;
+    const extensions = this.pendingDshExtensions;
+    if (!extensions) return null;
+    if (this.activeRootOperation) {
+      return {
+        desiredRevision: `myagents-dsh-v2:${extensions.revision}`,
+        effectiveRevision: null,
+        state: 'deferred_until_idle' as const,
+        components: [...(extensions.components ?? [])],
+      };
+    }
+    this.pendingDshExtensions = null;
+    process.loadedSkillNames = extensions.skills.map(skill => skill.name);
+    const revision = `myagents-dsh-v2:${extensions.revision}`;
+    return {
+      desiredRevision: revision,
+      effectiveRevision: revision,
+      state: 'applied' as const,
+      components: [...(extensions.components ?? [])],
+    };
   }
 
   async compactContext(): Promise<void> {
@@ -925,6 +975,96 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.startSessionDshExtensionSkills).toHaveLength(1);
     expect(harness.runtime.startSessionDshExtensionSkills[0]).toContain('review');
     expect(harness.runtime.startSessionHasHostDispatcher).toEqual([true]);
+  });
+
+  it('replaces an idle DSH Product extension generation without restarting the process', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'initial generation' },
+    ], { runtimeType: 'dsh', withManagedHostDispatcher: true });
+    const sessionId = 'session-dsh-live-extension-idle';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    await expect(runInjectedTurn(harness, {
+      prompt: 'start the integrated process',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    })).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const skillRoot = join(workspacePath, '.claude', 'skills', 'live-review');
+    mkdirSync(skillRoot, { recursive: true });
+    writeFileSync(
+      join(skillRoot, 'SKILL.md'),
+      '---\nname: live-review\ndescription: Review the live generation\n---\n\n# Live review\n',
+    );
+    const update = await harness.externalSession.handleExternalAgentsChange();
+
+    expect(update).toMatchObject({
+      success: true,
+      extensionStatus: { state: 'applied' },
+    });
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+    expect(harness.runtime.replacedDshExtensionSkills.at(-1)).toContain('live-review');
+    expect(harness.engine.getSessionConfigSnapshot()).toMatchObject({
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      agentNames: expect.any(Array),
+      extensionStatus: { state: 'applied' },
+    });
+  });
+
+  it('promotes a queued DSH Product extension generation at the terminal boundary', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'initial generation' },
+      { kind: 'success', text: 'long turn', completeDelayMs: 120 },
+    ], { runtimeType: 'dsh', withManagedHostDispatcher: true });
+    const sessionId = 'session-dsh-live-extension-busy';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, {
+      prompt: 'start the integrated process',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    await harness.engine.waitIdle(2_000, 10);
+
+    const activeTurn = runInjectedTurn(harness, {
+      prompt: 'hold the current generation',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    await waitFor(
+      () => harness.runtime.sentMessages.includes('hold the current generation'),
+      'DSH busy turn admission',
+    );
+    const skillRoot = join(workspacePath, '.claude', 'skills', 'boundary-review');
+    mkdirSync(skillRoot, { recursive: true });
+    writeFileSync(
+      join(skillRoot, 'SKILL.md'),
+      '---\nname: boundary-review\ndescription: Review after the turn boundary\n---\n\n# Boundary review\n',
+    );
+    const reconciliationsBefore = harness.runtime.dshExtensionReconcileCalls;
+    const update = await harness.externalSession.handleExternalAgentsChange();
+    expect(update.extensionStatus.state).toBe('deferred_until_idle');
+
+    await expect(activeTurn).resolves.toMatchObject({ success: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(
+      () => harness.runtime.dshExtensionReconcileCalls > reconciliationsBefore,
+      'DSH terminal extension reconciliation',
+    );
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+    expect(harness.runtime.replacedDshExtensionSkills.at(-1)).toContain('boundary-review');
   });
 
   it('retires the Product DSH journal after an authoritative failed terminal', async () => {

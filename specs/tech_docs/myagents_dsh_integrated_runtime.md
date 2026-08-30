@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.16
+version: 0.17
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -519,7 +519,7 @@ H4 now connects credential resolution, permission/question/Plan interaction sett
 
 The Host executor uses a composition-owned HTTP client with public-address DNS validation and connection pinning, IPv4-in-IPv6 rejection, per-hop redirect revalidation, bounded concurrency/queue/deadline, cancellation and compressed/decompressed byte limits. `WebFetch` converts bounded HTML to Markdown, extracts bounded PDF/text content, and makes one isolated tool-free utility call against the operation-frozen non-DeepSeek Provider. `WebSearch` uses Anthropic's server-side web-search tool, including bounded `pause_turn` continuation, or Zhipu's native Web Search API; it never falls back to HTML scraping. Provider credentials remain in Host memory and enter only the outbound request header. Provider, content and reverse-port failures return only contract error codes, not upstream payloads or secret-bearing diagnostics.
 
-Credential-free tests cover DNS pinning, redirect-to-private rejection, IPv4-in-IPv6 rejection, decompression and cancellation; exact reverse authority; Anthropic/Zhipu search projection; tool-free utility metering; HTML/PDF conversion; and an isolated production-style PDF bundle. The explicit native smoke additionally creates an Anthropic API Runtime Session against the staged artifact and proves `WebFetch`/`WebSearch` are present in the effective catalog when the versioned Host capability is advertised. This closes the canonical Host Web implementation blocker; complete 20-tool product readiness still depends on the remaining live-extension, permission-control and H6 joint campaign gates.
+Credential-free tests cover DNS pinning, redirect-to-private rejection, IPv4-in-IPv6 rejection, decompression and cancellation; exact reverse authority; Anthropic/Zhipu search projection; tool-free utility metering; HTML/PDF conversion; and an isolated production-style PDF bundle. The explicit native smoke additionally creates an Anthropic API Runtime Session against the staged artifact and proves `WebFetch`/`WebSearch` are present in the effective catalog when the versioned Host capability is advertised. This closes the canonical Host Web implementation blocker; complete 20-tool product readiness still depends on permission control and the H6 joint campaign gates.
 
 ### 9.1 Permission and Plan ownership
 
@@ -607,7 +607,7 @@ MyAgents projects canonical compaction events and context metrics into its exist
 
 The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
 
-H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is reconciled through matching `turn/get` and verified `session/read` truth. A Runtime-durable non-terminal operation is taken over under the same exact identity, while newly submitted Product work waits for its terminal boundary. If Product durability wins before native admission, the immutable `pendingDshRootOperation` is replayed with its original Product user and `clientOperationId`; terminal publication clears it only after the required Product persistence settles. Remaining H4 work includes live extension revision reconciliation; exact permission-rule UI remains H4P work.
+H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is reconciled through matching `turn/get` and verified `session/read` truth. A Runtime-durable non-terminal operation is taken over under the same exact identity, while newly submitted Product work waits for its terminal boundary. If Product durability wins before native admission, the immutable `pendingDshRootOperation` is replayed with its original Product user and `clientOperationId`; terminal publication clears it only after the required Product persistence settles. Live Product extension changes now use the same terminal boundary owner rather than scheduling a compatibility-Runtime restart; exact permission-rule UI remains H4P work.
 
 ## 12. Configuration and extension updates
 
@@ -630,7 +630,11 @@ Declarative extension snapshots contain only validated descriptors and reference
 
 H4 now compiles the existing Product capability winners into one deterministic DSH extension snapshot before Session admission. It re-reads and digest-verifies admitted Skill documents, projects Skills/commands/agents, admits HTTP/SSE MCP descriptors, and exposes Product in-process MCP/IM tools through DSH `host_tool` components backed by the runtime-neutral dispatcher in `src/server/runtimes/product-extensions/`. Header material remains only in generation-scoped Host bindings and crosses the MCP credential reverse port for an exact component/digest/revision request. The compiler uses the intersection of protocol `2.0.0` and the exact accepted Runtime compiler constraints; unsupported schema/name inputs degrade only their component and are published through DSH-owned Runtime diagnostics and Logs.
 
-The accepted Runtime composition currently declares no Host-approved stdio MCP launch profile, so Product `command/args` MCP definitions are explicitly `unsupported` rather than translated into arbitrary process execution. `extension/replace`, returned effective revision/digest, Skill read-back and Host-tool catalog presence are verified before Session binding; a real-artifact smoke covers a non-empty Skill/command/agent/Host-tool snapshot. Live desired/effective extension changes after Session birth are not yet reconciled at the idle boundary, so this slice does not complete H4 or make DSH selectable.
+The accepted Runtime composition currently declares no Host-approved stdio MCP launch profile, so Product `command/args` MCP definitions are explicitly `unsupported` rather than translated into arbitrary process execution. `extension/replace`, returned effective revision/digest, Skill read-back and Host-tool catalog presence are verified before Session binding; a real-artifact smoke covers a non-empty Skill/command/agent/Host-tool snapshot.
+
+Live MCP/Skill/agent/command/Plugin/Host-tool changes compile a fresh immutable plane, attach a fresh Host dispatcher, register it by the protocol identity `componentGenerationId = revision:digest`, and call `extension/replace` without restarting the Sidecar or DSH process. `queued` remains desired/effective drift and is retried from both the successful and failed Product turn-finalization paths before queue drain; the DSH adapter also reconciles before admitting a later root turn. `applied` is accepted only after `extension/catalog` proves the exact revision, digest, Skill read-back and Host-tool catalog, then publishes the new Runtime tool catalog and diagnostics. `failed` releases only the rejected candidate and leaves the old effective plane usable.
+
+Reverse MCP credential and Host-tool calls select their Host plane by the exact generation carried in request authority; a stale or unknown generation fails before credential material or a Product dispatcher is reached. A once-effective old plane remains registered until the DSH process generation closes because protocol `2.0.0` permits background work to drain the previous component generation but exposes no Host retirement acknowledgement. Candidate generations that DSH explicitly rejects or replaces are released immediately. This bounded process-generation ownership prevents both cross-generation dispatch and premature cleanup. Live capability changes no longer set the compatibility Runtime restart latch. These semantics complete the live-extension implementation slice but do not make DSH selectable before the remaining H4P/H5/H6 gates.
 
 ## 13. Mutations and native history
 
@@ -828,6 +832,7 @@ Likely shared refactors:
 - event ordering, reconnect replay and cross-generation dedupe;
 - queue/follow-up/steer/stop races;
 - configuration desired/effective transitions;
+- live extension idle apply, active-turn queue/promotion, generation-fenced reverse routing, failed-candidate rollback and process-generation cleanup;
 - all four DSH base permission modes, accepted `auto/plan/fullAgency` mappings, Plan enter/exit/retry/stale revision, exact rule add/list/revoke/restart, interaction settlement and timeout;
 - `fullAgency` still obeys hard policy, origin/workspace/revision constraints and Host Hook deny;
 - automatic model-aware compaction, explicit `session/compact`, repeated-compaction/restart continuity, provider-overflow recovery, and rejection of any Host-owned summary or pressure policy;
@@ -890,7 +895,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
 | MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `complete`    |
 | MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `complete`    |
-| MA-B3-H4  | SessionEngine adapter, projection, queue/config/interaction/mutation/recovery          | `in_progress` |
+| MA-B3-H4  | SessionEngine adapter, projection, queue/config/extensions/interaction/mutation/recovery | `in_progress` |
 | MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `in_progress` |
 | MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `not_started` |
 | MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `not_started` |

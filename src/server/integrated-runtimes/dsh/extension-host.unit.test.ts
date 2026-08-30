@@ -34,7 +34,10 @@ function plane(dispatcher?: ProductHostToolDispatcher): DshCompiledExtensionPlan
 
 function mcpParams(overrides: Record<string, unknown> = {}) {
   return {
-    authority: { componentId: 'remote-tools' },
+    authority: {
+      componentId: 'remote-tools',
+      componentGenerationId: `extensions-v1:${'a'.repeat(64)}`,
+    },
     serverId: 'remote-tools',
     credentialRef: 'remote-tools-credential',
     credentialRevision: 'credential-v1',
@@ -76,6 +79,21 @@ describe('DSH extension Host reverse ports', () => {
       authoritativeCredentialRevision: 'credential-v1',
       reasonCode: 'mcp_credential_authority_mismatch',
     });
+    expect(resolveDshMcpCredential({
+      plane: extensionPlane,
+      extensionDigest: extensionPlane.snapshot.digest,
+      params: mcpParams({
+        authority: {
+          componentId: 'remote-tools',
+          componentGenerationId: `extensions-v2:${'b'.repeat(64)}`,
+        },
+      }),
+    })).toEqual({
+      kind: 'availability',
+      available: false,
+      authoritativeCredentialRevision: 'credential-v1',
+      reasonCode: 'mcp_credential_authority_mismatch',
+    });
   });
 
   it('dispatches a fenced Host tool and publishes non-text results as attachment refs', async () => {
@@ -102,6 +120,7 @@ describe('DSH extension Host reverse ports', () => {
       params: {
         authority: {
           componentId: 'mcp__myagents_host__lookup',
+          componentGenerationId: `extensions-v1:${'a'.repeat(64)}`,
           runtimeGeneration: 'generation-one',
           runtimeSessionId: 'runtime-session',
           turnId: 'turn-one',
@@ -148,8 +167,9 @@ describe('DSH extension Host reverse ports', () => {
       params: {
         authority: {
           componentId: 'mcp__myagents_host__lookup',
+          componentGenerationId: `extensions-v2:${'b'.repeat(64)}`,
           runtimeGeneration: 'generation-one',
-          runtimeSessionId: 'other-session',
+          runtimeSessionId: 'runtime-session',
           turnId: 'turn-one',
           callId: 'call-one',
         },

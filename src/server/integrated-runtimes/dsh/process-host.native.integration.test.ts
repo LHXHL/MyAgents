@@ -249,6 +249,33 @@ describe.runIf(nativeSmokeEnabled)(
         expect(plan).toMatchObject({ state: "already_effective", mode: "normal" });
         const rules = await host.request("permission/rules/list", {});
         expect(rules).toMatchObject({ permissionMode: "acceptEdits", rules: [] });
+        const liveReplacement = compileDshProductExtensionPlane({
+          revision: "native-smoke-product-extensions-v2",
+          skills: [],
+          commands: [],
+          agents: [],
+          mcpServers: [],
+          dynamicTools: [],
+          components: [],
+        });
+        const replacementResult = await host.request(
+          "extension/replace",
+          liveReplacement.snapshot as unknown as Record<string, unknown>,
+        );
+        expect(replacementResult).toMatchObject({
+          state: "applied",
+          desiredRevision: liveReplacement.snapshot.revision,
+          effectiveRevision: liveReplacement.snapshot.revision,
+        });
+        const replacementCatalog = await host.request("extension/catalog", {});
+        expect(replacementCatalog).toMatchObject({
+          revision: liveReplacement.snapshot.revision,
+        });
+        expect(replacementCatalog.digest).not.toBe(extensionCatalog.digest);
+        expect(replacementCatalog.skills).not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "native-review" }),
+        ]));
+        expect(replacementCatalog.tools).not.toContain("mcp__myagents_host__native_fixture");
         await host.request("session/close", {
           clientOperationId: "native-smoke-session-close",
         });
