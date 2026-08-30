@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.20
+version: 0.21
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -918,11 +918,40 @@ Each step updates an implementation ledger in this document or a linked dev plan
 
 ### 21.2 Current implementation evidence
 
-H5 is closed on the `dev/intergration_myagents-dsh` worktree against handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with H6 deterministic/package evidence extended at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4`. They consume handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 
-The debug Tauri application and its updater `.app.tar.gz` both verify after final bundle copying and after archive extraction. Their DSH Runtime inventories contain zero symbolic links. The explicit native `RuntimeProcessHost` smoke starts the exact staged Runtime, completes the formal handshake/status sequence, and shuts down cleanly. `npm run typecheck`, `npm run lint`, the complete `npm test`, all web/server/bridge/CLI builds exercised by the Tauri build, `cargo fmt --check`, and the 1,169-pass Rust library suite succeed. This is exact local development/package evidence; it does not promote any handoff platform claim beyond `implementation-complete_pending-native-validation`, and it does not complete H6's Provider/J1–J18/native-platform campaign.
+The release-profile Tauri build produced `MyAgents.app`, `MyAgents_0.4.11_aarch64.dmg`, and the updater `.app.tar.gz`. It completed the Web/Server/Bridge/CLI and Rust release build but intentionally did not cross the signing gate because no `TAURI_SIGNING_PRIVATE_KEY` was available. The updater archive SHA-256 is `d421daf3a84cc84d809a8a3fd3250b8677ebdd0313fa5bc829565d9edb9c227c`; the unsigned DMG SHA-256 is `88247838e9458e1d7696b7e4d37fa066de42df2ca1a174cf227532ed81aca88e`. Both the final App resources and an independently extracted updater copy verify the outer handoff digest, contain exact Node `24.14.0`, and contain zero DSH symbolic links. The explicit native `RuntimeProcessHost` smoke starts, configures, and shuts down the Runtime from each of those two packaged resource roots; it no longer proves only the source staging directory.
+
+`npm run typecheck`, `npm run lint`, the complete `npm test`, all Web/Server/Bridge/CLI builds exercised by the Tauri build, `cargo fmt --check`, and the 1,169-pass Rust library suite succeed. The H6 additions also pass the 91-test stateful fake-Runtime integration suite and directly prove DSH thinking, text, tool, usage, terminal, live SSE and Product persistence projection. This remains exact local development/package evidence: an unsigned package is not a release artifact, and none of it promotes a handoff platform claim beyond `implementation-complete_pending-native-validation` or substitutes for Provider/native-platform acceptance.
 
 The post-H5 direct-call audit also fences DSH stop and interaction responses from historical Builtin fallback, resolves IM snapshot authority through the discriminated Runtime binding, keeps Heartbeat and memory paths on the Integrated Runtime identity, and reads IM history through SessionEngine. The boundary test now rejects reintroduction of direct Builtin Session identity, transcript, or scenario calls in the monolithic route owner.
+
+### 21.3 H6 acceptance audit
+
+The table separates the credential-free deterministic layer from the still-required exact-package campaign. A deterministic pass does not mark the corresponding J journey complete until its right-hand gate is accepted.
+
+| Journey | Credential-free evidence now present | Remaining exact-package gate |
+| ------- | ------------------------------------ | ---------------------------- |
+| J1 | Distribution policy, central resolver, frozen binding and Labs-off UI policy tests | Packaged selector-off/frozen-Session walkthrough |
+| J2 | DSH preference persistence, readiness admission and selector tests | Packaged selector choice plus next-Session birth |
+| J3 | Runtime incompatibility, frozen binding and new-Session ownership logic | DSH-to-Claude confirmation/new-Tab UI walkthrough |
+| J4 | Managed-Codex Provider constraint and preserved Integrated preference tests | Packaged managed-provider switch |
+| J5 | Central resolver returns from managed Provider to saved Integrated preference | Packaged return journey |
+| J6 | Explicit External preference precedence and established External adapter suite | Packaged External CLI transition |
+| J7 | `anthropic-sub` required-runtime resolver and builtin Session-birth projection | Active DSH confirmation/new-Tab walkthrough |
+| J8 | DSH durable event projection plus stateful Product SSE/transcript test for thinking, text, tools, usage and terminal truth | Approved live Provider turn in the packaged App |
+| J9 | Permission/Plan mapping, interaction fencing, exact rule list/add/revoke, stale-revision and native packaged control-plane smoke | Live permission, AskUser and Plan settlement through the packaged UI |
+| J10 | Queue/follow-up/steer races and DSH recovered-operation serialization | Live active-turn queue/steer campaign |
+| J11 | Exact operation stop/cancel tests and DSH-to-Builtin fallback fence | Live packaged stop reconciliation |
+| J12 | Process loss, durable active-turn takeover and terminal reconciliation tests | Injected packaged sidecar crash during a live turn |
+| J13 | Binding migration, resume, replay and recovered-root tests | Packaged App restart with a real DSH Session |
+| J14 | Readiness, digest, inventory, platform and missing-artifact fail-closed tests | Packaged removal/tamper walkthrough with readable transcript |
+| J15 | Fork/rewind/delete transaction journals and injected crash recovery tests | Exact-Runtime mutation campaign through product UI |
+| J16 | Valid DSH-only hidden-selector policy and fail-closed Provider projection tests | Build and smoke the DSH-only distribution profile |
+| J17 | Rust/Node identity, IM snapshot, rotation and all-entrypoint resolver tests | Packaged Desktop plus real Bot/Channel rotation campaign |
+| J18 | Sealed child environment, credential canaries, stderr redaction and bounded diagnostics tests | Packaged support-bundle review with live credential canaries |
+
+The current machine has no approved DeepSeek, Anthropic or Zhipu Provider credential, no Tauri signing private key, and no native Windows x64 or Linux x64 host/evidence. The official DSH dynamic CLI would therefore seal `unavailable`, not `passed`, and is not run as a false-green substitute. Fresh-context Tester-Agent review, bounded soak, signed-package acceptance, the native Windows/Linux campaigns, and explicit rollout acceptance remain open H6 gates.
 
 ## 22. PRD traceability
 
