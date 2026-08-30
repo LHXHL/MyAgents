@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractId": "myagents-dsh-provider-cells-v1",
   "runtimeProfileId": "myagents-dsh-batch-1-candidate-v1",
-  "runtimeProfileDigest": "8f5ce63f538ec4cea7d819d9f0041132b4b0121eb90ce0791d94d96b400f7143",
-  "compatibilitySha256": "545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8",
-  "candidateProfileSha256": "8f5ce63f538ec4cea7d819d9f0041132b4b0121eb90ce0791d94d96b400f7143",
+  "runtimeProfileDigest": "b3f9fc563c1181d164543c4bd3de0ee73937e0dca9edc71a40447d712b52733b",
+  "compatibilitySha256": "7a172f0335b2df90f3c5bf8f89fae154ed4d1d13a83b07bf40497e438f189062",
+  "candidateProfileSha256": "b3f9fc563c1181d164543c4bd3de0ee73937e0dca9edc71a40447d712b52733b",
   "commonPiAiLimitations": [
     "provider-route-cell-required",
     "stop-sequences-unsupported-on-pi-ai",
@@ -122,6 +122,66 @@
         "contextWindow": 200000,
         "maxTokens": 64000,
         "inputModalities": ["text", "image"],
+        "compatibility": {
+          "version": 1,
+          "family": "anthropic-messages",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "zhipu:glm-5-3:messages-v1",
+      "providerId": "zhipu",
+      "modelId": "glm-5.3",
+      "product": {
+        "type": "api",
+        "authType": "auth_token",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 131072,
+        "inputModalities": ["text"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-zhipu-anthropic-messages",
+        "api": "anthropic-messages",
+        "provider": "zhipu",
+        "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "inputModalities": ["text"],
+        "compatibility": {
+          "version": 1,
+          "family": "anthropic-messages",
+          "credentialMode": "pi-ai-api-key"
+        }
+      }
+    },
+    {
+      "cellId": "zhipu:glm-5-turbo:messages-v1",
+      "providerId": "zhipu",
+      "modelId": "glm-5-turbo",
+      "product": {
+        "type": "api",
+        "authType": "auth_token",
+        "apiProtocol": "anthropic",
+        "upstreamFormat": "chat_completions",
+        "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+        "contextWindow": 202752,
+        "maxOutputTokens": 131072,
+        "inputModalities": ["text"]
+      },
+      "profile": {
+        "source": "pi-ai-cell",
+        "providerRouteId": "myagents-zhipu-anthropic-messages",
+        "api": "anthropic-messages",
+        "provider": "zhipu",
+        "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+        "contextWindow": 202752,
+        "maxTokens": 131072,
+        "inputModalities": ["text"],
         "compatibility": {
           "version": 1,
           "family": "anthropic-messages",

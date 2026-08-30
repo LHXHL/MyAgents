@@ -1439,8 +1439,9 @@ export const PRESET_PROVIDERS: Provider[] = [
     // Open BigModel API (OpenAI-protocol chat-completions path). Shares the
     // "Zhipu" vendor + model catalog with the Coding Plan provider above;
     // the distinction is protocol: Coding Plan uses the `/api/anthropic`
-    // path (Anthropic-native), this one uses `/api/paas/v4/chat/completions`
-    // via the Bridge's OpenAI translator (see src/server/openai-bridge).
+    // path (Anthropic-native), this one uses `/api/paas/v4/chat/completions`.
+    // Claude Agent SDK execution reaches it through the legacy Bridge; DSH
+    // preserves this declared OpenAI Chat protocol and calls it through pi-ai.
     id: 'zhipu-ai',
     name: '智谱 AI',
     vendor: 'Zhipu',

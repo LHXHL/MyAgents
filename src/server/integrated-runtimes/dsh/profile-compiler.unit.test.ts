@@ -36,7 +36,7 @@ describe("DSH ModelExecutionProfile compiler", () => {
     expect(Object.isFrozen(profile)).toBe(true);
   });
 
-  it("compiles exact Anthropic Messages and OpenAI Chat cells", () => {
+  it("preserves the configured Anthropic Messages and OpenAI Chat protocols", () => {
     const anthropic = compileDshModelExecutionProfile({
       provider: preset("anthropic-api"),
       modelId: "claude-sonnet-4-6",
@@ -48,6 +48,25 @@ describe("DSH ModelExecutionProfile compiler", () => {
       contextWindow: 200_000,
       maxTokens: 64_000,
       inputModalities: ["text", "image"],
+      compatibility: {
+        version: 1,
+        family: "anthropic-messages",
+        credentialMode: "pi-ai-api-key",
+      },
+    });
+
+    const zhipuCodingPlan = compileDshModelExecutionProfile({
+      provider: preset("zhipu"),
+      modelId: "glm-5.3",
+    });
+    expect(zhipuCodingPlan).toMatchObject({
+      api: "anthropic-messages",
+      providerRouteId: "myagents-zhipu-anthropic-messages",
+      provider: "zhipu",
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      contextWindow: 1_000_000,
+      maxTokens: 131_072,
+      inputModalities: ["text"],
       compatibility: {
         version: 1,
         family: "anthropic-messages",

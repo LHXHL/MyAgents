@@ -44,6 +44,10 @@ describe("Provider execution constraints", () => {
       kind: "portable",
       apiFamily: "anthropic-messages",
     });
+    expect(getProviderExecutionConstraint(preset("zhipu"))).toEqual({
+      kind: "portable",
+      apiFamily: "anthropic-messages",
+    });
     expect(getProviderExecutionConstraint(preset("zhipu-ai"))).toEqual({
       kind: "portable",
       apiFamily: "openai-completions",

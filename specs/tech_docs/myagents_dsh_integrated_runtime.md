@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.24
+version: 0.25
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,15 +14,15 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.0.0-unified-toolchain-refresh-ingested
-  reviewed_repository_head: 1a8779220ba620fbc3630546f49191963e56095b
-  source_commit: 1a8779220ba620fbc3630546f49191963e56095b
+  status: protocol-2.0.0-portable-task-metadata-ingested
+  reviewed_repository_head: 37515ea28312dccddb854e773adb174672fc254b
+  source_commit: 37515ea28312dccddb854e773adb174672fc254b
   protocol: 2.0.0
-  manifest_sha256: ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155
-  runtime_manifest_sha256: c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1
-  compatibility_sha256: 545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8
-  protocol_schema_sha256: 5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
-  generated_client_sha256: a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
+  manifest_sha256: ae72806cae7b7b47ceba96ae38d16f95071c92b44bfe9fc96bb114670f4053c1
+  runtime_manifest_sha256: 8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9
+  compatibility_sha256: 7a172f0335b2df90f3c5bf8f89fae154ed4d1d13a83b07bf40497e438f189062
+  protocol_schema_sha256: 1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44
+  generated_client_sha256: fce73629088852077b09cb0b3b43b7d470b4f3a5fb936f828102aafaf8b0fe7e
 ---
 
 # Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
@@ -123,16 +123,16 @@ Batch 3 generalizes the compatibility inputs to these flows. It does not redesig
 
 The formal repository-external handoff validates successfully without a sibling source checkout and freezes:
 
-- handoff manifest `ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155`;
-- Runtime manifest `c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1`, built from clean MyAgents-dsh source commit `1a8779220ba620fbc3630546f49191963e56095b`;
-- compatibility manifest `545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8`;
-- formal protocol `2.0.0`, schema `5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60`, and generated Host client `a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626`;
+- handoff manifest `ae72806cae7b7b47ceba96ae38d16f95071c92b44bfe9fc96bb114670f4053c1`;
+- Runtime manifest `8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9`, built from clean MyAgents-dsh source commit `37515ea28312dccddb854e773adb174672fc254b`;
+- compatibility manifest `7a172f0335b2df90f3c5bf8f89fae154ed4d1d13a83b07bf40497e438f189062`;
+- formal protocol `2.0.0`, schema `1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44`, and generated Host client `fce73629088852077b09cb0b3b43b7d470b4f3a5fb936f828102aafaf8b0fe7e`;
 - DSH artifact `ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
 - macOS arm64, Linux x64 and Windows x64 all labeled `implementation-complete_pending-native-validation` for these bytes.
 
 Formal `2.0.0` is wire-identical to draft.3 and contains 40 Host requests, seven reverse requests and four notifications, including `plan/apply`, `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke`. H0 must ingest and verify this complete immutable handoff; all draft handoffs remain historical evidence and are a hard compatibility failure for the first implementation lock. No pending-native-validation platform claim may be surfaced as verified product support.
 
-The accepted Runtime was built from clean MyAgents-dsh commit `1a8779220ba620fbc3630546f49191963e56095b`, which is also the reviewed artifact source HEAD. It preserves the prepare-token recovery fix from the earlier `7c77ad90…` candidate: while resume is `recovery_required`, the Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. Real Tauri packaging then proved that npm-created Runtime file links could be dereferenced after the nested manifest was sealed. The replacement builder materializes contained file aliases before sealing; Runtime `c66d4775…` has no symbolic links in either its manifest or filesystem inventory. This refresh rebuilds the same wire behavior and upstream DSH patch series with Node `24.14.0` and npm `11.15.0` as exact build provenance. MyAgents therefore copies and verifies the immutable link-free tree directly and contains no post-copy link-repair authority. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
+The accepted Runtime was built from clean MyAgents-dsh commit `37515ea28312dccddb854e773adb174672fc254b`, which is also the reviewed artifact source HEAD. It preserves the prepare-token recovery and link-free packaging corrections from the earlier candidates. Its intentional semantic change is confined to the Product Task contract: Task metadata is a bounded flat scalar record with no nested object, array or recursive schema reference, identical across all three Provider families. Runtime `8fccea44…` has no symbolic links in either its manifest or filesystem inventory and keeps Node `24.14.0` / npm `11.15.0` build provenance. MyAgents therefore copies and verifies the immutable link-free tree directly and contains no post-copy link-repair or Provider-specific schema rewrite authority. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
 
 The implementation branch is deliberately based on the fetched MyAgents `main` at `c7dc5d79b2752a713e53ec9eee4f1db2324fa7fd` (`0.4.11`). The later MyAgents commits recorded by the original RFC audit were not present in the fetched origin on 2026-08-30, so integration decisions are rechecked against this actual baseline and no unavailable commit is treated as executable authority.
 
@@ -406,13 +406,13 @@ MyAgents consumes only a pinned DSH handoff containing:
 The following block is the exact formal `2.0.0` seed for the first implementation lock:
 
 ```text
-sourceCommit                 1a8779220ba620fbc3630546f49191963e56095b
+sourceCommit                 37515ea28312dccddb854e773adb174672fc254b
 protocolVersion              2.0.0
-handoffManifestSha256        ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155
-runtimeManifestSha256        c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1
-compatibilitySha256          545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8
-protocolSchemaSha256         5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
-generatedClientSha256        a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
+handoffManifestSha256        ae72806cae7b7b47ceba96ae38d16f95071c92b44bfe9fc96bb114670f4053c1
+runtimeManifestSha256        8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9
+compatibilitySha256          7a172f0335b2df90f3c5bf8f89fae154ed4d1d13a83b07bf40497e438f189062
+protocolSchemaSha256         1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44
+generatedClientSha256        fce73629088852077b09cb0b3b43b7d470b4f3a5fb936f828102aafaf8b0fe7e
 dshArtifactManifestSha256    ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2
 requiredNodeVersion          24.14.0
 ```
@@ -451,7 +451,9 @@ MyAgents compiles the selected ordinary Provider/model into the DSH `ModelExecut
 
 The compiler consumes the exact DSH compatibility manifest and binds the included Batch 1 candidate profile identity. The delivered `batch-1-candidate-profile-v1.json` is a composition/profile manifest, not a model-route payload; the MyAgents-owned cell contract therefore freezes the native `deepseek-official` model profile against that candidate identity and the Runtime's exact validator. It does not infer compatibility merely from an OpenAI-shaped URL, a pi-ai catalog entry, or a Provider name.
 
-The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents still compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. MyAgents treats only Provider/model cells in its handoff-bound cell contract as portable. Its existing Claude-SDK `authType` and Bridge quirks are inputs to that mapping, not proof that the DSH adapter supports the same wire behavior.
+The selected MyAgents-dsh design reuses the official DSH `dsh-llm-pi-ai` adapter for ordinary Anthropic Messages, OpenAI Chat Completions and OpenAI Responses routes, while retaining the native DSH DeepSeek adapter for `deepseek-official`. This does not weaken Host authority: MyAgents still compiles the frozen profile and owns credentials; the Runtime's thin control layer translates that profile into the official adapter's public settings seam and activates the Host credential port for each model request. MyAgents treats only Provider/model cells in its handoff-bound cell contract as portable.
+
+For an ordinary API Provider, the Product Provider record is the protocol source of truth. Anthropic configuration compiles to `anthropic-messages`; OpenAI plus `chat_completions` compiles to `openai-completions`; OpenAI plus `responses` compiles to `openai-responses`. The exact allowlisted cell must agree with that derived family and with endpoint, authentication kind, model capacity and modalities. The DSH path sends that declared family directly through pi-ai and never routes it through `openai-bridge`. The legacy OpenAI-to-Anthropic Bridge remains an implementation detail of the Claude Agent SDK execution path only.
 
 The exact cell table also carries candidate limitations: pi-ai routes do not support Host stop-sequence projection; reasoning content is available but provider reasoning-token counts are not; the bundled pi-ai catalog is advisory; AWS, Vertex, Azure and subscription/OAuth routes are not advertised. The same-release public `dsh-authorization` package is present only because `dsh-llm-pi-ai` requires it as a public peer. MyAgents must not mount its login/OAuth service or expose it as a capability.
 
@@ -461,6 +463,7 @@ H2 implements this boundary in `src/shared/integrated-runtimes/dsh-provider-cell
 | ---------------- | ---------------------------------------------------------- | ------------------------------------------------- |
 | `deepseek`       | `deepseek-v4-flash`                                        | native `deepseek-official` / `openai-completions` |
 | `anthropic-api`  | `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5` | pi-ai / `anthropic-messages`                      |
+| `zhipu`          | `glm-5.3`, `glm-5-turbo`                                   | pi-ai / `anthropic-messages`                      |
 | `zhipu-ai`       | `glm-5.3`, `glm-5-turbo`                                   | pi-ai / `openai-completions`                      |
 
 There is no advertised `openai-responses` product cell yet: the current built-in Responses route is `xai-sub`, whose Host-managed OAuth shape is explicitly unadvertised by the DSH compatibility contract. Other presets, custom Providers, catalog-only models, altered endpoint/auth/capacity/modalities, and Bridge-only overrides return a structured incompatibility before Runtime admission. Pi-ai cells currently accept provider-default reasoning only; the native DeepSeek cell admits the Runtime-proved off/high/max choices. A profile revision hashes the cell contract, Runtime profile digest, cell identity and complete secret-free profile. Credentials use stable POSIX-identifier references such as `MYAGENTS_PROVIDER_ANTHROPIC_API_API_KEY`; secret material is never an input to the compiler.
@@ -921,7 +924,9 @@ Each step updates an implementation ledger in this document or a linked dev plan
 
 ### 21.2 Current implementation evidence
 
-H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes handoff `ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155`, Runtime `c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1`, compatibility `545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes handoff `ae72806cae7b7b47ceba96ae38d16f95071c92b44bfe9fc96bb114670f4053c1`, Runtime `8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9`, compatibility `7a172f0335b2df90f3c5bf8f89fae154ed4d1d13a83b07bf40497e438f189062`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+
+The 2026-08-30 Provider portability refresh adds exact `zhipu` Coding Plan cells for `glm-5.3` and `glm-5-turbo` as direct `anthropic-messages`, while retaining `zhipu-ai` as direct `openai-completions`. Provider `apiProtocol/upstreamFormat` remains the source of truth, and the DSH path uses no Claude SDK Bridge. The refreshed Runtime also removes recursive Task metadata from all model-visible tool schemas. Its pre-artifact report is `e03caaf4865c275e123897a055a3ac27a4b73871363d07c3c760ac64d28d2853`; the outer handoff and an independent transfer copy both verify. A user-authorized local Zhipu Coding Plan credential then passed the official `approved-route` `coding-workspace` campaign against exact Runtime `8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9`; sealed evidence `dbcbf4e8486e9824a74628de76a4054586fc6ce1118dc2ff1a5934155996ab62` proves exact artifact/generated-client identity, one successful terminal, the scenario postcondition and zero retained Runtime resources. The credential remained request-scoped and is not part of repository or evidence bytes. H6 stays `in_progress` because signed distribution, Windows/Linux native validation and the remaining J1–J18 product campaign are not promoted by this focused Runtime campaign.
 
 The unified-toolchain refresh is committed at `0c779d113f2244446d46ffde37998a61098b1680`. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, complete JavaScript/TypeScript tests, Web/Server/Bridge/CLI builds, Rust formatting and the Rust library suite pass; integration reports 476 passed with two opt-in native tests skipped by default, while Rust reports 1,181 passed and one external-archive test ignored. `tauri build --bundles app` compiles the release executable and assembles `MyAgents.app` plus the updater archive, then stops at the expected missing `TAURI_SIGNING_PRIVATE_KEY` boundary. The unsigned app executable is 85,311,344 bytes with SHA-256 `2fc054c6df68f0d4650429fc951bd604a834c94ce8998cb182e9415e27dc58c2`; the unsigned updater archive is 166,587,375 bytes with SHA-256 `bda6afcefd2b3a3c92f4c41ce5ca400c428b26b9dd156786c175dc7266a5e640`. The packaged public verifier accepts the exact handoff/Runtime/compatibility identities, packaged Node/npm report `24.14.0` / `11.15.0`, and the DSH resource inventory contains zero symbolic links. Packaged native smoke passes in 4.320 seconds; the 12-generation soak passes in 5.031 seconds with all unique Runtime PIDs released, descriptors stable at 14, and Host RSS growth of 770,048 bytes. This is local unsigned macOS evidence and does not promote any handoff platform claim.
 
@@ -960,7 +965,7 @@ The table separates the credential-free deterministic layer from the still-requi
 | J17 | Rust/Node identity, IM snapshot, rotation and all-entrypoint resolver tests | Packaged Desktop plus real Bot/Channel rotation campaign |
 | J18 | Sealed child environment, credential canaries, stderr redaction and bounded diagnostics tests | Packaged support-bundle review with live credential canaries |
 
-The current machine has no approved DeepSeek, Anthropic or Zhipu Provider credential, no Tauri signing private key, and no native Windows x64 or Linux x64 host/evidence. The official DSH dynamic CLI would therefore seal `unavailable`, not `passed`, and is not run as a false-green substitute. Fresh-context Tester-Agent review, signed-package acceptance, the native Windows/Linux campaigns, live Product/Provider journeys, and explicit rollout acceptance remain open H6 gates.
+The current machine has a user-authorized local Zhipu Coding Plan credential and has passed the focused exact-Runtime `approved-route` campaign recorded above. That credential is development-only evidence, not an approved release credential or a signed-package acceptance result. The machine still has no usable Tauri signing private key and no native Windows x64 or Linux x64 host/evidence. Fresh-context Tester-Agent review, signed-package acceptance, the native Windows/Linux campaigns, the remaining live Product/Provider journeys, and explicit rollout acceptance remain open H6 gates.
 
 ## 22. PRD traceability
 

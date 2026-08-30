@@ -120,12 +120,12 @@ function initializeResult(
   return {
     protocolVersion: "2.0.0",
     schemaSha256:
-      "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
+      "1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44",
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
     sessionFormat: "dsh-session-events-v1",
     profileDigest:
-      "8f5ce63f538ec4cea7d819d9f0041132b4b0121eb90ce0791d94d96b400f7143",
+      "b3f9fc563c1181d164543c4bd3de0ee73937e0dca9edc71a40447d712b52733b",
     limits: {
       maxFrameBytes: 1_048_576,
       maxPendingRequests: 128,

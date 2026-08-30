@@ -23,6 +23,11 @@ describe("DSH Provider/model cell contract", () => {
       source: "pi-ai-cell",
       api: "anthropic-messages",
     });
+    expect(findDshProviderCell("zhipu", "glm-5.3")?.profile).toMatchObject({
+      source: "pi-ai-cell",
+      providerRouteId: "myagents-zhipu-anthropic-messages",
+      api: "anthropic-messages",
+    });
     expect(findDshProviderCell("zhipu-ai", "glm-5.3")?.profile).toMatchObject({
       source: "pi-ai-cell",
       api: "openai-completions",
@@ -81,7 +86,11 @@ describe("DSH Provider/model cell contract", () => {
     );
 
     const modalityDrift = structuredClone(cellsJson);
-    modalityDrift.cells[4].profile.inputModalities = ["text", "image"];
+    const zhipuChat = modalityDrift.cells.find(
+      (cell) => cell.cellId === "zhipu-ai:glm-5-3:chat-v1",
+    );
+    if (!zhipuChat) throw new Error("Missing Zhipu Chat cell fixture");
+    zhipuChat.profile.inputModalities = ["text", "image"];
     expect(() => parseDshProviderCellContract(modalityDrift)).toThrow(
       /unsupported input modalities/,
     );

@@ -3044,48 +3044,21 @@
             "maxProperties": 128,
             "patternProperties": {
               "^.*$": {
-                "$defs": {
-                  "MetadataJsonValue": {
-                    "$id": "MetadataJsonValue",
-                    "anyOf": [
-                      {
-                        "type": "null"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "maxLength": 65536,
-                        "type": "string"
-                      },
-                      {
-                        "items": {
-                          "$ref": "MetadataJsonValue"
-                        },
-                        "maxItems": 128,
-                        "type": "array"
-                      },
-                      {
-                        "maxProperties": 128,
-                        "patternProperties": {
-                          "^.*$": {
-                            "$ref": "MetadataJsonValue"
-                          }
-                        },
-                        "propertyNames": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "type": "object"
-                      }
-                    ]
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "maxLength": 65536,
+                    "type": "string"
                   }
-                },
-                "$ref": "MetadataJsonValue"
+                ]
               }
             },
             "propertyNames": {
@@ -3123,48 +3096,21 @@
             "maxProperties": 128,
             "patternProperties": {
               "^.*$": {
-                "$defs": {
-                  "MetadataJsonValue": {
-                    "$id": "MetadataJsonValue",
-                    "anyOf": [
-                      {
-                        "type": "null"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "maxLength": 65536,
-                        "type": "string"
-                      },
-                      {
-                        "items": {
-                          "$ref": "MetadataJsonValue"
-                        },
-                        "maxItems": 128,
-                        "type": "array"
-                      },
-                      {
-                        "maxProperties": 128,
-                        "patternProperties": {
-                          "^.*$": {
-                            "$ref": "MetadataJsonValue"
-                          }
-                        },
-                        "propertyNames": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "type": "object"
-                      }
-                    ]
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "maxLength": 65536,
+                    "type": "string"
                   }
-                },
-                "$ref": "MetadataJsonValue"
+                ]
               }
             },
             "propertyNames": {
@@ -3247,48 +3193,21 @@
                 "maxProperties": 128,
                 "patternProperties": {
                   "^.*$": {
-                    "$defs": {
-                      "MetadataJsonValue": {
-                        "$id": "MetadataJsonValue",
-                        "anyOf": [
-                          {
-                            "type": "null"
-                          },
-                          {
-                            "type": "boolean"
-                          },
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "maxLength": 65536,
-                            "type": "string"
-                          },
-                          {
-                            "items": {
-                              "$ref": "MetadataJsonValue"
-                            },
-                            "maxItems": 128,
-                            "type": "array"
-                          },
-                          {
-                            "maxProperties": 128,
-                            "patternProperties": {
-                              "^.*$": {
-                                "$ref": "MetadataJsonValue"
-                              }
-                            },
-                            "propertyNames": {
-                              "maxLength": 128,
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "type": "object"
-                          }
-                        ]
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
                       }
-                    },
-                    "$ref": "MetadataJsonValue"
+                    ]
                   }
                 },
                 "propertyNames": {
@@ -3371,7 +3290,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Gets one task and its current dependency, owner, metadata, and revision snapshot from the Session-local TaskGraph.",
+      "description": "Gets one task and its current dependency, owner, flat scalar metadata, and revision snapshot from the Session-local TaskGraph.",
       "errorCodes": [
         {
           "code": "task_not_found",
@@ -3475,48 +3394,21 @@
                 "maxProperties": 128,
                 "patternProperties": {
                   "^.*$": {
-                    "$defs": {
-                      "MetadataJsonValue": {
-                        "$id": "MetadataJsonValue",
-                        "anyOf": [
-                          {
-                            "type": "null"
-                          },
-                          {
-                            "type": "boolean"
-                          },
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "maxLength": 65536,
-                            "type": "string"
-                          },
-                          {
-                            "items": {
-                              "$ref": "MetadataJsonValue"
-                            },
-                            "maxItems": 128,
-                            "type": "array"
-                          },
-                          {
-                            "maxProperties": 128,
-                            "patternProperties": {
-                              "^.*$": {
-                                "$ref": "MetadataJsonValue"
-                              }
-                            },
-                            "propertyNames": {
-                              "maxLength": 128,
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "type": "object"
-                          }
-                        ]
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
                       }
-                    },
-                    "$ref": "MetadataJsonValue"
+                    ]
                   }
                 },
                 "propertyNames": {
@@ -3684,48 +3576,21 @@
                   "maxProperties": 128,
                   "patternProperties": {
                     "^.*$": {
-                      "$defs": {
-                        "MetadataJsonValue": {
-                          "$id": "MetadataJsonValue",
-                          "anyOf": [
-                            {
-                              "type": "null"
-                            },
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "number"
-                            },
-                            {
-                              "maxLength": 65536,
-                              "type": "string"
-                            },
-                            {
-                              "items": {
-                                "$ref": "MetadataJsonValue"
-                              },
-                              "maxItems": 128,
-                              "type": "array"
-                            },
-                            {
-                              "maxProperties": 128,
-                              "patternProperties": {
-                                "^.*$": {
-                                  "$ref": "MetadataJsonValue"
-                                }
-                              },
-                              "propertyNames": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "type": "string"
-                              },
-                              "type": "object"
-                            }
-                          ]
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "maxLength": 65536,
+                          "type": "string"
                         }
-                      },
-                      "$ref": "MetadataJsonValue"
+                      ]
                     }
                   },
                   "propertyNames": {
@@ -3815,7 +3680,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "session_serial",
-      "description": "Atomically updates one Session-local task, including status, ownership, dependencies, text, and bounded metadata. Set owner to root in the same update (or earlier) before status can become in_progress. Dependencies must remain acyclic.",
+      "description": "Atomically updates one Session-local task, including status, ownership, dependencies, text, and bounded flat scalar metadata. Set owner to root in the same update (or earlier) before status can become in_progress. Dependencies must remain acyclic.",
       "errorCodes": [
         {
           "code": "task_not_found",
@@ -3876,48 +3741,21 @@
             "maxProperties": 128,
             "patternProperties": {
               "^.*$": {
-                "$defs": {
-                  "MetadataJsonValue": {
-                    "$id": "MetadataJsonValue",
-                    "anyOf": [
-                      {
-                        "type": "null"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "maxLength": 65536,
-                        "type": "string"
-                      },
-                      {
-                        "items": {
-                          "$ref": "MetadataJsonValue"
-                        },
-                        "maxItems": 128,
-                        "type": "array"
-                      },
-                      {
-                        "maxProperties": 128,
-                        "patternProperties": {
-                          "^.*$": {
-                            "$ref": "MetadataJsonValue"
-                          }
-                        },
-                        "propertyNames": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "type": "object"
-                      }
-                    ]
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "maxLength": 65536,
+                    "type": "string"
                   }
-                },
-                "$ref": "MetadataJsonValue"
+                ]
               }
             },
             "propertyNames": {
@@ -4008,48 +3846,21 @@
             "maxProperties": 128,
             "patternProperties": {
               "^.*$": {
-                "$defs": {
-                  "MetadataJsonValue": {
-                    "$id": "MetadataJsonValue",
-                    "anyOf": [
-                      {
-                        "type": "null"
-                      },
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "maxLength": 65536,
-                        "type": "string"
-                      },
-                      {
-                        "items": {
-                          "$ref": "MetadataJsonValue"
-                        },
-                        "maxItems": 128,
-                        "type": "array"
-                      },
-                      {
-                        "maxProperties": 128,
-                        "patternProperties": {
-                          "^.*$": {
-                            "$ref": "MetadataJsonValue"
-                          }
-                        },
-                        "propertyNames": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "type": "object"
-                      }
-                    ]
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "maxLength": 65536,
+                    "type": "string"
                   }
-                },
-                "$ref": "MetadataJsonValue"
+                ]
               }
             },
             "propertyNames": {
@@ -4205,48 +4016,21 @@
                 "maxProperties": 128,
                 "patternProperties": {
                   "^.*$": {
-                    "$defs": {
-                      "MetadataJsonValue": {
-                        "$id": "MetadataJsonValue",
-                        "anyOf": [
-                          {
-                            "type": "null"
-                          },
-                          {
-                            "type": "boolean"
-                          },
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "maxLength": 65536,
-                            "type": "string"
-                          },
-                          {
-                            "items": {
-                              "$ref": "MetadataJsonValue"
-                            },
-                            "maxItems": 128,
-                            "type": "array"
-                          },
-                          {
-                            "maxProperties": 128,
-                            "patternProperties": {
-                              "^.*$": {
-                                "$ref": "MetadataJsonValue"
-                              }
-                            },
-                            "propertyNames": {
-                              "maxLength": 128,
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "type": "object"
-                          }
-                        ]
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "type": "string"
                       }
-                    },
-                    "$ref": "MetadataJsonValue"
+                    ]
                   }
                 },
                 "propertyNames": {
