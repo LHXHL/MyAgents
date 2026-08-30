@@ -15,12 +15,12 @@ audit_baseline:
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
   status: protocol-2.1.0-interaction-reliability-ingested
-  reviewed_repository_head: a0a15b90e865d34f17f79f5be7fc47d01e57f0d5
-  source_commit: a0a15b90e865d34f17f79f5be7fc47d01e57f0d5
+  reviewed_repository_head: 4b3f2bdad1fd4860fca212c49b3ac3f527a51a30
+  source_commit: 4b3f2bdad1fd4860fca212c49b3ac3f527a51a30
   protocol: 2.1.0
-  manifest_sha256: 5ee7a6f07557b03a2e1353533fb5b3744148d20894d6f01699d8a0c61255e705
-  runtime_manifest_sha256: 097e982e308633048f7957d17dc165603d613397375f35fa3bc6a68a4472eea7
-  compatibility_sha256: c57a633993ecca5ae5e10e1d4d333bd60a6e1a69467252f4aac4b8e112d6403f
+  manifest_sha256: ae03ee3086571513b6c50c385b4783808fbfc2737a0814822a7c2f08091a6f6b
+  runtime_manifest_sha256: bb6678a258c9769ed8179461beeafc7e792e1f291913765c014941a18b3e3851
+  compatibility_sha256: 8ba59b37c7e04397e7c75daaef6ba1267169a8d39597c045a20b41b8164fea0a
   protocol_schema_sha256: 63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc
   generated_client_sha256: 7f7d250c42cf86a19142ddfaec9042539b08074a8e397cfbbaa1b9b3e3c188ce
 ---
@@ -948,6 +948,8 @@ The component-isolation refresh consumes handoff `09f020404c91f1d40d92841cd8342a
 The runtime-backed Provider and owner-staging follow-up keeps Managed Codex visible beside exact DSH Provider cells without admitting it through DSH, preserves the Agent's base Integrated Runtime across Managed Codex entry/exit, and acknowledges pre-owner Agent/MCP hydration as `pending_next_start` instead of a false 500. Actual compiler/component failures remain observable. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, all four Web/Server/Bridge/CLI builds and the complete test suite pass; integration reports 477 passed with two opt-in native tests skipped by default.
 
 The interaction-reliability refresh records force-transfer intent before interrupt, persists failed/stopped partial output before queue drain, settles the exact DSH Product operation before later admission, and makes banner retry native-admission-aware. First-turn rewind consumes protocol `2.1.0` genesis truth. Permission settlement is single-flight per exact Runtime tuple and the Host expires a synchronously resolved interaction once. Structural transcript retraction is a critical SSE event. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, focused stateful tests, the complete 479-test integration project (two opt-in native tests skipped), and Web/Server/Bridge/CLI builds pass. The official `2.1.0` handoff ingestion and staged-resource verifier pass against handoff `5ee7a6f07557b03a2e1353533fb5b3744148d20894d6f01699d8a0c61255e705`; an explicit native `RuntimeProcessHost` smoke then handshakes with and shuts down that exact staged Runtime. Signed-package and Windows/Linux native acceptance remain open H6 gates.
+
+The restart-safe permission refresh consumes handoff `ae03ee3086571513b6c50c385b4783808fbfc2737a0814822a7c2f08091a6f6b`, Runtime `bb6678a258c9769ed8179461beeafc7e792e1f291913765c014941a18b3e3851`, and compatibility `8ba59b37c7e04397e7c75daaef6ba1267169a8d39597c045a20b41b8164fea0a` from source `4b3f2bdad1fd4860fca212c49b3ac3f527a51a30`. Existing Sessions now bind `session/resume` with the Product's effective permission/config revision before persisted-state validation, while fresh Sessions retain the default bootstrap followed by `config/apply`. Recovery without a Product mutation journal preserves the Runtime's non-mutation reason instead of inventing a journal mismatch. The exact staged Runtime native smoke now creates a Session, applies `acceptEdits`, stops the Runtime process, resumes the same native Session from durable storage, and verifies the restored effective permission mode.
 
 The unified-toolchain refresh is committed at `0c779d113f2244446d46ffde37998a61098b1680`. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, complete JavaScript/TypeScript tests, Web/Server/Bridge/CLI builds, Rust formatting and the Rust library suite pass; integration reports 476 passed with two opt-in native tests skipped by default, while Rust reports 1,181 passed and one external-archive test ignored. `tauri build --bundles app` compiles the release executable and assembles `MyAgents.app` plus the updater archive, then stops at the expected missing `TAURI_SIGNING_PRIVATE_KEY` boundary. The unsigned app executable is 85,311,344 bytes with SHA-256 `2fc054c6df68f0d4650429fc951bd604a834c94ce8998cb182e9415e27dc58c2`; the unsigned updater archive is 166,587,375 bytes with SHA-256 `bda6afcefd2b3a3c92f4c41ce5ca400c428b26b9dd156786c175dc7266a5e640`. The packaged public verifier accepts the exact handoff/Runtime/compatibility identities, packaged Node/npm report `24.14.0` / `11.15.0`, and the DSH resource inventory contains zero symbolic links. Packaged native smoke passes in 4.320 seconds; the 12-generation soak passes in 5.031 seconds with all unique Runtime PIDs released, descriptors stable at 14, and Host RSS growth of 770,048 bytes. This is local unsigned macOS evidence and does not promote any handoff platform claim.
 

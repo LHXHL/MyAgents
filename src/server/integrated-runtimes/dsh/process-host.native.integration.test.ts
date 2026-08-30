@@ -135,29 +135,32 @@ async function createNativeHostFixture(label: string) {
     "host/interaction/cancel": async () => undefined,
   };
   const stderr: string[] = [];
-  const host = new DshRuntimeProcessHost({
-    installation,
-    initialize: createDshInitializeParams({
-      productSessionId: `native-${label}-product-session`,
-      productVersion: "0.4.11",
-      runtimeHome,
-      workspace: {
-        path: workspace,
-        identity: `native-${label}-workspace`,
-      },
-      executionEnvironment,
-      interaction: "deterministic-headless",
-      webSearchAdapters: [DSH_CANONICAL_WEB_ADAPTER_ID],
-    }),
-    hostHandlers,
-    notificationHandlers,
-    commandDirectories: ["/bin"],
-    handshakeTimeoutMs: 60_000,
-    shutdownGraceMs: 10_000,
-    onStderrLine: (line) => stderr.push(line),
-    redactStderrLine: redactDshDiagnosticLine,
-  });
+  const createHost = () =>
+    new DshRuntimeProcessHost({
+      installation,
+      initialize: createDshInitializeParams({
+        productSessionId: `native-${label}-product-session`,
+        productVersion: "0.4.11",
+        runtimeHome,
+        workspace: {
+          path: workspace,
+          identity: `native-${label}-workspace`,
+        },
+        executionEnvironment,
+        interaction: "deterministic-headless",
+        webSearchAdapters: [DSH_CANONICAL_WEB_ADAPTER_ID],
+      }),
+      hostHandlers,
+      notificationHandlers,
+      commandDirectories: ["/bin"],
+      handshakeTimeoutMs: 60_000,
+      shutdownGraceMs: 10_000,
+      onStderrLine: (line) => stderr.push(line),
+      redactStderrLine: redactDshDiagnosticLine,
+    });
+  const host = createHost();
   return {
+    createHost,
     executionEnvironment,
     host,
     runtimeHome,
@@ -402,6 +405,101 @@ describe.runIf(nativeSmokeEnabled)(
         await rm(temporaryRoot, { recursive: true, force: true });
       }
       expect(host.state).toBe("stopped");
+    }, 120_000);
+
+    it("resumes a configured Session after a Runtime process restart", async () => {
+      const fixture = await createNativeHostFixture("resume");
+      const provider = PRESET_PROVIDERS.find(
+        ({ id }) => id === "anthropic-api",
+      );
+      if (!provider)
+        throw new Error("Anthropic API Provider fixture is unavailable");
+      const profile = compileDshModelExecutionProfile({
+        provider: structuredClone(provider) as Provider,
+        modelId: "claude-sonnet-4-6",
+      });
+      const extension = compileDshProductExtensionPlane({
+        revision: "native-resume-extensions-v1",
+        skills: [],
+        commands: [],
+        agents: [],
+        mcpServers: [],
+        dynamicTools: [],
+        components: [],
+      }).snapshot;
+      let resumedHost: DshRuntimeProcessHost | undefined;
+      try {
+        await fixture.host.start();
+        const extensionResult = await fixture.host.request(
+          "extension/replace",
+          extension as unknown as Record<string, unknown>,
+        );
+        expect(extensionResult).toMatchObject({
+          state: "applied",
+          effectiveRevision: extension.revision,
+        });
+        const catalog = await fixture.host.request("extension/catalog", {});
+        const created = await fixture.host.request("session/create", {
+          clientOperationId: "native-resume-create",
+          persistenceRef: "native-resume-persistence",
+          provider: profile as unknown as Record<string, unknown>,
+          configRevision: "native-resume-config-v1",
+          extensionDigest: String(catalog.digest),
+          systemPrompt: "",
+          permissionMode: "default",
+          interactionScenario: "host-interaction-v1",
+        });
+        expect(created).toMatchObject({ state: "ready" });
+        const runtimeSessionId = String(created.runtimeSessionId);
+        await fixture.host.request("config/apply", {
+          revision: "native-resume-config-v2",
+          provider: profile as unknown as Record<string, unknown>,
+          permissionMode: "acceptEdits",
+          interactionScenario: "host-interaction-v1",
+          systemPrompt: "",
+          executionEnvironmentRevision: fixture.executionEnvironment.revision,
+          executionEnvironmentDigest: createDshInitializeParams({
+            productSessionId: "native-resume-product-session",
+            productVersion: "0.4.11",
+            runtimeHome: fixture.runtimeHome,
+            workspace: {
+              path: fixture.workspace,
+              identity: "native-resume-workspace",
+            },
+            executionEnvironment: fixture.executionEnvironment,
+            interaction: "deterministic-headless",
+          }).executionEnvironment.digest,
+        });
+        await fixture.host.stop();
+
+        resumedHost = fixture.createHost();
+        await resumedHost.start();
+        await resumedHost.request(
+          "extension/replace",
+          extension as unknown as Record<string, unknown>,
+        );
+        const resumed = await resumedHost.request("session/resume", {
+          clientOperationId: "native-resume-bind",
+          runtimeSessionId,
+          persistenceRef: "native-resume-persistence",
+          provider: profile as unknown as Record<string, unknown>,
+          configRevision: "native-resume-config-v2",
+          extensionDigest: String(catalog.digest),
+          systemPrompt: "",
+          permissionMode: "acceptEdits",
+          interactionScenario: "host-interaction-v1",
+        });
+        expect(resumed).toMatchObject({ state: "ready", runtimeSessionId });
+        expect(
+          await resumedHost.request("permission/rules/list", {}),
+        ).toMatchObject({
+          permissionMode: "acceptEdits",
+        });
+      } finally {
+        await fixture.host.stop();
+        await resumedHost?.stop();
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
     }, 120_000);
   },
 );
