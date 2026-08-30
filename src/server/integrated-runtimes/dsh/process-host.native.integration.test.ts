@@ -10,6 +10,7 @@ import { compileDshProductExtensionPlane } from "./extension-compiler";
 import { createDshInitializeParams } from "./initialize";
 import { resolveDshRuntimeInstallation } from "./installation";
 import { compileDshModelExecutionProfile } from "./profile-compiler";
+import { DSH_CANONICAL_WEB_ADAPTER_ID } from "./canonical-web-provider";
 import { DshRuntimeProcessHost, redactDshDiagnosticLine } from "./process-host";
 import {
   DSH_REVERSE_METHOD_NAMES,
@@ -114,6 +115,7 @@ describe.runIf(nativeSmokeEnabled)(
           },
           executionEnvironment,
           interaction: "deterministic-headless",
+          webSearchAdapters: [DSH_CANONICAL_WEB_ADAPTER_ID],
         }),
         hostHandlers,
         notificationHandlers,
@@ -199,11 +201,11 @@ describe.runIf(nativeSmokeEnabled)(
         ]));
         expect(extensionCatalog.agents).toContain("native-reviewer");
         expect(extensionCatalog.tools).toContain("mcp__myagents_host__native_fixture");
-        const provider = PRESET_PROVIDERS.find(({ id }) => id === "deepseek");
-        if (!provider) throw new Error("DeepSeek Provider fixture is unavailable");
+        const provider = PRESET_PROVIDERS.find(({ id }) => id === "anthropic-api");
+        if (!provider) throw new Error("Anthropic API Provider fixture is unavailable");
         const profile = compileDshModelExecutionProfile({
           provider: structuredClone(provider) as Provider,
-          modelId: "deepseek-v4-flash",
+          modelId: "claude-sonnet-4-6",
         });
         const binding = await host.request("session/create", {
           clientOperationId: "native-smoke-session-create",
@@ -216,6 +218,9 @@ describe.runIf(nativeSmokeEnabled)(
           interactionScenario: "host-interaction-v1",
         });
         expect(binding).toMatchObject({ state: "ready" });
+        expect(binding.toolCatalog).toMatchObject({
+          effectiveTools: expect.arrayContaining(["WebFetch", "WebSearch"]),
+        });
         const applied = await host.request("config/apply", {
           revision: "native-smoke-config-v2",
           provider: profile as unknown as Record<string, unknown>,

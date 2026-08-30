@@ -41,6 +41,8 @@ import {
   type DshUnsettledTurn,
 } from '../../session-engine/dsh-turn-reconciliation';
 import { DshAttachmentRegistry } from './attachments';
+import { DshCanonicalWebHost } from './canonical-web';
+import { DSH_CANONICAL_WEB_ADAPTER_ID } from './canonical-web-provider';
 import { DshRuntimeEventProjector } from './event-projector';
 import {
   compileDshExtensionSnapshot,
@@ -534,6 +536,7 @@ export class DshRuntime implements AgentRuntime {
       workspaceIdentity,
       roots.attachmentRoot,
     );
+    const configuration = compileConfiguration(options);
     const initialize = createDshInitializeParams({
       productSessionId: options.sessionId,
       productVersion: packageJson.version,
@@ -541,8 +544,8 @@ export class DshRuntime implements AgentRuntime {
       workspace: { path: workspacePath, identity: workspaceIdentity },
       executionEnvironment: environmentWithoutDigest,
       interaction: scenarioCapability(options),
+      webSearchAdapters: [DSH_CANONICAL_WEB_ADAPTER_ID],
     });
-    const configuration = compileConfiguration(options);
     const extensionPlane: DshCompiledExtensionPlane = options.dshExtensions
       ? compileDshProductExtensionPlane(options.dshExtensions)
       : Object.freeze({
@@ -566,6 +569,10 @@ export class DshRuntime implements AgentRuntime {
       if (productEventDeliveryReady) action();
       else deferredProductActions.push(action);
     };
+    const canonicalWeb = new DshCanonicalWebHost({
+      activeConfiguration: () => processValue?.configuration ?? configuration,
+      runtimeSessionId: () => processValue?.runtimeSessionId,
+    });
 
     const hostHandlers: DshHostRequestHandlers = Object.freeze({
       'host/credential/resolve': (params) => {
@@ -636,13 +643,15 @@ export class DshRuntime implements AgentRuntime {
         emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });
         return { registered: true };
       },
-      'host/tool/execute': (params, context) => executeDshProductHostTool({
-        plane: extensionPlane,
-        attachments,
-        runtimeSessionId: processValue?.runtimeSessionId,
-        params,
-        context,
-      }),
+      'host/tool/execute': (params, context) => canonicalWeb.handles(params)
+        ? canonicalWeb.execute(params, context)
+        : executeDshProductHostTool({
+            plane: extensionPlane,
+            attachments,
+            runtimeSessionId: processValue?.runtimeSessionId,
+            params,
+            context,
+          }),
       'host/hook/execute': () => ({ state: 'continue' }),
       'host/attachment/put': params => attachments.put(params),
       'host/attachment/acquire': params => attachments.acquire(params),
