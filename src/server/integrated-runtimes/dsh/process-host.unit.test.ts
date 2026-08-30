@@ -125,7 +125,7 @@ function initializeResult(
     runtimeGeneration: "artifact-process-generation",
     sessionFormat: "dsh-session-events-v1",
     profileDigest:
-      "ab30d44941e19ef155218c12e38c8d2dcebfc72954e1f07472add4419de19e06",
+      "8f5ce63f538ec4cea7d819d9f0041132b4b0121eb90ce0791d94d96b400f7143",
     limits: {
       maxFrameBytes: 1_048_576,
       maxPendingRequests: 128,

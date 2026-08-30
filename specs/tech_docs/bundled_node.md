@@ -15,7 +15,7 @@ Node.js v24 官方二进制通过 `scripts/download_nodejs.sh` / `.ps1` 从 node
 ```
 
 - **版本变量**：`NODE_VERSION=24.14.0` 与产品侧 `NPM_VERSION=11.15.0` 在 `scripts/download_nodejs.sh` 顶部定义；Windows setup/release 入口使用相同精确值
-- **npm 边界**：资源下载使用 `npm-11.15.0.tgz`，不解析 `npm/latest`；开发包管理器 `npm@11.13.0` 与 DSH 构建 provenance `npm@11.8.0` 是另外两个独立权威
+- **npm 边界**：资源下载使用 `npm-11.15.0.tgz`，不解析 `npm/latest`；开发包管理器、产品 bundled npm 与 DSH 构建 provenance 仍是三个独立权威，但当前统一固定为 `npm@11.15.0`
 - **打包位置**：`src-tauri/resources/nodejs/`（Tauri staging 目录，已加入 `.gitignore`）
 - **缓存位置**：`src-tauri/resources/nodejs-cache/<platform>-<arch>-v<version>/`（按平台 / 架构 / 版本隔离，已加入 `.gitignore`）
 - **ABI 保护**：脚本先检查对应架构缓存；`resources/nodejs/` 只在构建某个 target 前从缓存同步。`build_dev.sh` 启动时用 `file(1)` 验证 binary 架构匹配 host，避免 macOS 双架构 release 构建后留下 x64 staging 影响 arm64 dev 构建

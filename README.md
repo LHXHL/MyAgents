@@ -150,8 +150,8 @@ MyAgents 是一个桌面端 AI Agent 产品，不是单纯的前端项目。改�
 
 开发者：
 
-- Node.js `>=22.0.0`，推荐 Node.js 24。
-- npm，仓库当前声明 `npm@11.13.0`。
+- Node.js `24.14.0`（精确版本，见 `.nvmrc`）。
+- npm `11.15.0`（精确版本）。
 - Rust 通过 [rustup](https://rustup.rs) 安装，实际 toolchain 由 [rust-toolchain.toml](rust-toolchain.toml) 固定。
 - macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ 或 Debian 12+。
 
@@ -425,8 +425,8 @@ End users:
 
 Developers:
 
-- Node.js `>=22.0.0`, Node.js 24 recommended.
-- npm. The repository currently declares `npm@11.13.0`.
+- Node.js `24.14.0` exactly (see `.nvmrc`).
+- npm `11.15.0` exactly.
 - Rust installed through [rustup](https://rustup.rs). The actual toolchain is pinned by [rust-toolchain.toml](rust-toolchain.toml).
 - macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ or Debian 12+.
 

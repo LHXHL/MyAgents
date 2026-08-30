@@ -4,9 +4,22 @@
   "type": "module",
   "version": "0.4.11",
   "license": "AGPL-3.0-only",
-  "packageManager": "npm@11.13.0",
+  "packageManager": "npm@11.15.0",
   "engines": {
-    "node": ">=22.0.0"
+    "node": "24.14.0",
+    "npm": "11.15.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.14.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "11.15.0",
+      "onFail": "error"
+    }
   },
   "author": "MyAgents Team <myagents.io@gmail.com>",
   "homepage": "https://myagents.io",

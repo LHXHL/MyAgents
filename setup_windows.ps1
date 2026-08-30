@@ -456,6 +456,13 @@ try {
         exit 1
     }
 
+    $ActualNodeVersion = (& node --version).Trim()
+    $ActualNpmVersion = (& npm --version).Trim()
+    if ($ActualNodeVersion -ne "v24.14.0" -or $ActualNpmVersion -ne "11.15.0") {
+        Write-Host "`n开发工具链版本不匹配：需要 Node v24.14.0 / npm 11.15.0，当前为 Node $ActualNodeVersion / npm $ActualNpmVersion" -ForegroundColor Red
+        exit 1
+    }
+
     Write-Host "`nStep 1.5/9: 准备 Rust toolchain / components / Windows target" -ForegroundColor Blue
     & "$ProjectDir\scripts\ensure_rust_toolchain.ps1" -Targets @("x86_64-pc-windows-msvc")
     if ($LASTEXITCODE -ne 0) {

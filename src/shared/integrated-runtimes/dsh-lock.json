@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "artifactId": "myagents-dsh",
   "handoff": {
-    "manifestSha256": "eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184",
-    "sourceCommit": "7b9530a64678610b0e89e3b271940453a47be9f3",
-    "runtimeManifestSha256": "5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5",
-    "compatibilitySha256": "4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44",
+    "manifestSha256": "ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155",
+    "sourceCommit": "1a8779220ba620fbc3630546f49191963e56095b",
+    "runtimeManifestSha256": "c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1",
+    "compatibilitySha256": "545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8",
     "generatedClientSha256": "a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626",
     "noticesSha256": "9e20b532bbe2de2571a5a4ee10a3ed29d70c51bd4f509dd10d85bafe40be1709"
   },
@@ -24,12 +24,12 @@
   },
   "profile": {
     "id": "myagents-dsh-batch-1-candidate-v1",
-    "digest": "ab30d44941e19ef155218c12e38c8d2dcebfc72954e1f07472add4419de19e06"
+    "digest": "8f5ce63f538ec4cea7d819d9f0041132b4b0121eb90ce0791d94d96b400f7143"
   },
   "dsh": {
     "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
     "sourceCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-    "artifactManifestSha256": "9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c",
+    "artifactManifestSha256": "ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2",
     "patchSeriesSha256": "8ac244cc6367662c99c5fe4a6a7dad554344c3a3e6b846188ea651ce7fce1322"
   },
   "platforms": [
@@ -37,21 +37,21 @@
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "cc49c043e18bfad09148e645cdd778a089899b45dea2238ff78c96f9201ea6e4"
+        "fe69bdc24776b793086b513dc3624f4b42e14910ab9ea71de5304baeca3efbfa"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "2e1f24ccab0e0ad331f4beba7413a6a4dd5433c168d25675a0f4749a472b63db"
+        "f5309cbbdecb9a1cc0ae99fbde9048091b290365baa36d39b2b6a3590bc51e77"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "c5e9f98de29fadcb9aa968ad593341dc2491f61fb2568b978b674e0ed22ed990"
+        "1529ca181dc72b205ecd2998739dfbec09e412c18a14c8ddc8b4c0a6fb769ab3"
       ]
     }
   ],

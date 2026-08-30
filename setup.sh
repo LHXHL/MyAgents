@@ -41,8 +41,8 @@ check_install() {
 echo -e "${BLUE}[1/7] 检查依赖${NC}"
 MISSING=0
 
-check_install "Node.js" "node --version" "https://nodejs.org (≥ v20)" || MISSING=1
-check_install "npm" "npm --version" "随 Node.js 安装" || MISSING=1
+check_install "Node.js 24.14.0" "[[ \"\$(node --version 2>/dev/null)\" == \"v24.14.0\" ]]" "精确 Node.js 24.14.0（见 .nvmrc）" || MISSING=1
+check_install "npm 11.15.0" "[[ \"\$(npm --version 2>/dev/null)\" == \"11.15.0\" ]]" "精确 npm 11.15.0" || MISSING=1
 check_install "Rust" "rustc --version" "https://rustup.rs" || MISSING=1
 check_install "Cargo" "cargo --version" "随 Rust 安装" || MISSING=1
 check_install "rustup" "rustup --version" "https://rustup.rs" || MISSING=1

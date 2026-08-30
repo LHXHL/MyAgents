@@ -265,6 +265,12 @@ try {
         throw "请先安装缺失的依赖"
     }
 
+    $ActualNodeVersion = (& node --version).Trim()
+    $ActualNpmVersion = (& npm --version).Trim()
+    if ($ActualNodeVersion -ne "v24.14.0" -or $ActualNpmVersion -ne "11.15.0") {
+        throw "构建工具链版本不匹配：需要 Node v24.14.0 / npm 11.15.0，当前为 Node $ActualNodeVersion / npm $ActualNpmVersion"
+    }
+
     # 每次构建都拉取最新 cuse release — 从 Cloudflare R2 拉取（公网公开），
     # 不再依赖 gh CLI / 私有仓库访问权限。cuse 维护者负责在 GH Release 之后跑
     # MyAgents-Cuse/publish_r2.sh 镜像产物到 R2（`download.myagents.io/cuse/...`）。

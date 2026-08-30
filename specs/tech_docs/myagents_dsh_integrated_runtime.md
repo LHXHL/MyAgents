@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.23
+version: 0.24
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,13 +14,13 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.0.0-portable-refresh-ingested
-  reviewed_repository_head: 7b9530a64678610b0e89e3b271940453a47be9f3
-  source_commit: 7b9530a64678610b0e89e3b271940453a47be9f3
+  status: protocol-2.0.0-unified-toolchain-refresh-ingested
+  reviewed_repository_head: 1a8779220ba620fbc3630546f49191963e56095b
+  source_commit: 1a8779220ba620fbc3630546f49191963e56095b
   protocol: 2.0.0
-  manifest_sha256: eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184
-  runtime_manifest_sha256: 5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5
-  compatibility_sha256: 4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44
+  manifest_sha256: ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155
+  runtime_manifest_sha256: c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1
+  compatibility_sha256: 545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8
   protocol_schema_sha256: 5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
   generated_client_sha256: a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
 ---
@@ -123,22 +123,22 @@ Batch 3 generalizes the compatibility inputs to these flows. It does not redesig
 
 The formal repository-external handoff validates successfully without a sibling source checkout and freezes:
 
-- handoff manifest `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`;
-- Runtime manifest `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, built from clean MyAgents-dsh source commit `7b9530a64678610b0e89e3b271940453a47be9f3`;
-- compatibility manifest `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`;
+- handoff manifest `ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155`;
+- Runtime manifest `c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1`, built from clean MyAgents-dsh source commit `1a8779220ba620fbc3630546f49191963e56095b`;
+- compatibility manifest `545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8`;
 - formal protocol `2.0.0`, schema `5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60`, and generated Host client `a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626`;
-- DSH artifact `9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
+- DSH artifact `ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
 - macOS arm64, Linux x64 and Windows x64 all labeled `implementation-complete_pending-native-validation` for these bytes.
 
 Formal `2.0.0` is wire-identical to draft.3 and contains 40 Host requests, seven reverse requests and four notifications, including `plan/apply`, `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke`. H0 must ingest and verify this complete immutable handoff; all draft handoffs remain historical evidence and are a hard compatibility failure for the first implementation lock. No pending-native-validation platform claim may be surfaced as verified product support.
 
-The accepted Runtime was built from clean MyAgents-dsh commit `7b9530a64678610b0e89e3b271940453a47be9f3`, which is also the reviewed artifact source HEAD. It preserves the prepare-token recovery fix from the earlier `7c77ad90…` candidate: while resume is `recovery_required`, the Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. Real Tauri packaging then proved that npm-created Runtime file links could be dereferenced after the nested manifest was sealed. The replacement builder materializes contained file aliases before sealing; Runtime `5d87edae…` has no symbolic links in either its manifest or filesystem inventory. MyAgents therefore copies and verifies the immutable link-free tree directly and contains no post-copy link-repair authority. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
+The accepted Runtime was built from clean MyAgents-dsh commit `1a8779220ba620fbc3630546f49191963e56095b`, which is also the reviewed artifact source HEAD. It preserves the prepare-token recovery fix from the earlier `7c77ad90…` candidate: while resume is `recovery_required`, the Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. Real Tauri packaging then proved that npm-created Runtime file links could be dereferenced after the nested manifest was sealed. The replacement builder materializes contained file aliases before sealing; Runtime `c66d4775…` has no symbolic links in either its manifest or filesystem inventory. This refresh rebuilds the same wire behavior and upstream DSH patch series with Node `24.14.0` and npm `11.15.0` as exact build provenance. MyAgents therefore copies and verifies the immutable link-free tree directly and contains no post-copy link-repair authority. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
 
 The implementation branch is deliberately based on the fetched MyAgents `main` at `c7dc5d79b2752a713e53ec9eee4f1db2324fa7fd` (`0.4.11`). The later MyAgents commits recorded by the original RFC audit were not present in the fetched origin on 2026-08-30, so integration decisions are rechecked against this actual baseline and no unavailable commit is treated as executable authority.
 
 The Node integration blocker found by version 0.1 is now resolved at the artifact source: the accepted Runtime requires exact Node `24.14.0`, which matches MyAgents' bundled Runtime Node. MyAgents must still cross-check every Node version authority, including `scripts/download_nodejs.sh`, `setup_windows.ps1`, and the fallback in `build_windows.ps1`, plus resource/version assertions and executable architecture examples. A user-installed Node or a semver assumption must fail readiness before process spawn. A later Node upgrade requires a newly accepted Runtime artifact and native evidence rather than a Host-side bypass.
 
-npm has a different boundary. The installed DSH Runtime never invokes npm; its recorded npm `11.8.0` is build provenance, not a Host compatibility requirement. MyAgents declares development package manager `npm@11.13.0` and now pins product-owned bundled npm `11.15.0` beside its bundled Node. Resource setup uses the exact versioned tarball and records/verifies its own metadata; it no longer resolves `npm/latest`. The development npm and bundled npm remain distinct authorities with explicit roles; neither is copied from or constrained by the DSH handoff.
+npm has a different boundary. The installed DSH Runtime never invokes npm; its recorded npm version is build provenance, not a Host compatibility requirement. MyAgents now declares exact development package manager `npm@11.15.0` and independently pins product-owned bundled npm `11.15.0` beside its bundled Node. Resource setup uses the exact versioned tarball and records/verifies its own metadata; it no longer resolves `npm/latest`. The development npm, bundled npm and DSH build provenance remain distinct authorities with explicit roles even while their current values are aligned; none is copied from another authority.
 
 The revalidation also sharpens two existing rules:
 
@@ -406,14 +406,14 @@ MyAgents consumes only a pinned DSH handoff containing:
 The following block is the exact formal `2.0.0` seed for the first implementation lock:
 
 ```text
-sourceCommit                 7b9530a64678610b0e89e3b271940453a47be9f3
+sourceCommit                 1a8779220ba620fbc3630546f49191963e56095b
 protocolVersion              2.0.0
-handoffManifestSha256        eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184
-runtimeManifestSha256        5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5
-compatibilitySha256          4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44
+handoffManifestSha256        ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155
+runtimeManifestSha256        c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1
+compatibilitySha256          545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8
 protocolSchemaSha256         5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
 generatedClientSha256        a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
-dshArtifactManifestSha256    9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c
+dshArtifactManifestSha256    ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2
 requiredNodeVersion          24.14.0
 ```
 
@@ -921,7 +921,7 @@ Each step updates an implementation ledger in this document or a linked dev plan
 
 ### 21.2 Current implementation evidence
 
-H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. They consume handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0` plus npm `11.15.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes handoff `ce9965ad496ff3fb528eb26cffcd98c7ca01e716f6826bf9532b42bdf296a155`, Runtime `c66d477558cf8abac7ae603affc0a5fe89afdb2480eb8ded8433b99e251efdd1`, compatibility `545e4ce6b65b01061b452b1441ae26bae9fbd8dddf995a8b97c7c1aa67b71af8`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 
 The release-profile Tauri build produced `MyAgents.app`, `MyAgents_0.4.11_aarch64.dmg`, and the updater `.app.tar.gz`. It completed the Web/Server/Bridge/CLI and Rust release build but intentionally did not cross the signing gate because no `TAURI_SIGNING_PRIVATE_KEY` was available. The updater archive SHA-256 is `d421daf3a84cc84d809a8a3fd3250b8677ebdd0313fa5bc829565d9edb9c227c`; the unsigned DMG SHA-256 is `88247838e9458e1d7696b7e4d37fa066de42df2ca1a174cf227532ed81aca88e`. Both the final App resources and an independently extracted updater copy verify the outer handoff digest, contain exact Node `24.14.0`, and contain zero DSH symbolic links. The explicit native `RuntimeProcessHost` smoke starts, configures, and shuts down the Runtime from each of those two packaged resource roots; it no longer proves only the source staging directory.
 
