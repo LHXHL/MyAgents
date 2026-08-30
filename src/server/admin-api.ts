@@ -116,7 +116,9 @@ import {
   getDefaultRuntimePermissionMode,
   isRuntimePermissionMode,
   projectPermissionModeForRuntime,
+  resolveEffectiveRuntime,
   buildRuntimeChangePatch,
+  runtimeSourceForRuntimeType,
   type RuntimeType,
   type RecoveryHint,
   type RuntimePermissionMode,
@@ -127,6 +129,7 @@ import {
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
+import { isDshProviderModelCompatible } from '../shared/integrated-runtimes/dsh-provider-cells';
 import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
@@ -1715,8 +1718,17 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         );
         return {
           ok: true,
-          agent: { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig },
-          livePatch: { runtime: patch.runtime, runtimeConfig: patch.runtimeConfig ?? null },
+          agent: {
+            ...agent,
+            runtime: patch.runtime,
+            runtimeConfig: patch.runtimeConfig,
+            runtimePreference: patch.runtimePreference,
+          },
+          livePatch: {
+            runtime: patch.runtime,
+            runtimeConfig: patch.runtimeConfig ?? null,
+            runtimePreference: patch.runtimePreference,
+          },
         };
       },
       'set',
@@ -5280,7 +5292,7 @@ CREATE OPTIONS (myagents cron add ...)
                                   or explicit UTC.
   --workspace <path>              Workspace the task runs in. Defaults to the
                                   current session workspace.
-  --runtime <builtin|claude-code|codex|gemini>
+  --runtime <builtin|dsh|claude-code|codex|gemini>
   --runtime-config <json-object>  Optional runtime identity/config override.
   --provider-id / --model / --permission-mode
                                   Optional Task execution overrides. Omit all
@@ -6332,12 +6344,22 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
   const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
-  const usesManagedCodex = agentUsesManagedCodexProvider({
+  const rawUsesManagedCodex = agentUsesManagedCodexProvider({
     providerId: agent.providerId,
     runtime: storedRuntime,
     runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
   });
-  const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
+  const preferredRuntime = resolveEffectiveRuntime(
+    storedRuntime,
+    !!loadConfig().multiAgentRuntime,
+    agent.runtimePreference,
+    (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
+    agent.providerId,
+  );
+  const usesManagedCodex = preferredRuntime === 'builtin' && rawUsesManagedCodex;
+  const runtime: RuntimeType = usesManagedCodex
+    ? 'codex'
+    : preferredRuntime;
   const agentPermissionMode = (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig = (agent.runtimeConfig as Record<string, unknown> | undefined) ?? undefined;
 
@@ -6352,9 +6374,13 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
   // enum. Reporting `agent.permissionMode = 'fullAgency'` as the effective
   // value for a Codex agent would be actively misleading — the dispatch
   // path never consults that field.
-  const isExternal = runtime !== 'builtin';
-  const rcModel = isExternal ? (runtimeConfig?.model as string | undefined) : undefined;
-  const rcPermissionMode = isExternal
+  const usesExternalCliConfiguration = runtime === 'claude-code'
+    || (runtime === 'codex' && !usesManagedCodex)
+    || runtime === 'gemini';
+  const rcModel = usesExternalCliConfiguration
+    ? (runtimeConfig?.model as string | undefined)
+    : undefined;
+  const rcPermissionMode = usesExternalCliConfiguration
     ? (runtimeConfig?.permissionMode as string | undefined)
     : undefined;
   const effectiveModel = usesManagedCodex
@@ -6362,7 +6388,7 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
     : (rcModel ?? (agent.model as string | undefined));
   const effectivePermissionMode = usesManagedCodex
     ? (managedCodexProviderPermissionToRuntimePermission(agentPermissionMode) ?? 'auto-edit')
-    : (isExternal
+    : (usesExternalCliConfiguration
       ? (projectPermissionModeForRuntime(rcPermissionMode, runtime)
         ?? getDefaultRuntimePermissionMode(runtime))
       : agentPermissionMode);
@@ -6382,7 +6408,10 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
       effectiveDefaults: {
         runtime,
         ...(runtime !== 'builtin'
-          ? { runtimeSource: usesManagedCodex ? 'managed-provider' : 'system-cli' }
+          ? { runtimeSource: runtimeSourceForRuntimeType(
+              runtime,
+              usesManagedCodex ? 'managed-provider' : undefined,
+            ) }
           : {}),
         model: effectiveModel || null,
         permissionMode: effectivePermissionMode || null,
@@ -6448,9 +6477,10 @@ export async function handleSessionList(payload: {
       lastActiveAt: session.lastActiveAt,
       lastMessagePreview: session.lastMessagePreview ?? null,
       runtime: session.runtime ?? 'builtin',
-      runtimeSource: session.runtime && session.runtime !== 'builtin'
-        ? session.runtimeSource ?? 'system-cli'
-        : null,
+      runtimeSource: runtimeSourceForRuntimeType(
+        (session.runtime as RuntimeType | undefined) ?? 'builtin',
+        session.runtimeSource,
+      ) ?? null,
       model: session.model ?? null,
       origin: session.origin ?? null,
     }));
@@ -6602,12 +6632,13 @@ async function validateTaskOverrides(
   }
   if (
     rawRuntimeSource !== undefined
+    && rawRuntimeSource !== 'integrated'
     && rawRuntimeSource !== 'system-cli'
     && rawRuntimeSource !== 'managed-provider'
   ) {
     return {
       success: false,
-      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: system-cli, managed-provider.`,
+      error: `Invalid runtimeConfig.source: '${String(rawRuntimeSource)}'. Valid: integrated, system-cli, managed-provider.`,
     };
   }
   const runtimeConfigSource = rawRuntimeSource as RuntimeSource | undefined;
@@ -6627,8 +6658,8 @@ async function validateTaskOverrides(
     const runtime = payload.runtime;
     effectiveRuntimeIdentity = {
       runtime,
-      ...(runtime === 'codex'
-        ? { runtimeSource: runtimeConfigSource ?? 'system-cli' }
+      ...(runtime !== 'builtin'
+        ? { runtimeSource: runtimeSourceForRuntimeType(runtime, runtimeConfigSource) }
         : {}),
     };
   } else if (payload.providerId !== undefined && payload.providerId !== null && payload.providerId !== '') {
@@ -6661,6 +6692,18 @@ async function validateTaskOverrides(
     return null;
   }
   const { runtime: effectiveRuntime, runtimeSource: effectiveRuntimeSource } = effectiveRuntimeIdentity;
+  if (runtimeConfigSource === 'integrated' && effectiveRuntime !== 'dsh') {
+    return {
+      success: false,
+      error: 'runtimeConfig.source=integrated requires runtime=dsh.',
+    };
+  }
+  if (effectiveRuntime === 'dsh' && runtimeConfigSource && runtimeConfigSource !== 'integrated') {
+    return {
+      success: false,
+      error: 'runtime=dsh requires runtimeConfig.source=integrated when a source is provided.',
+    };
+  }
   if (runtimeConfigSource === 'managed-provider' && effectiveRuntime !== 'codex') {
     return {
       success: false,
@@ -6749,6 +6792,21 @@ async function validateTaskOverrides(
     ? payload.model
     : runtimeConfigModel;
   if (
+    effectiveRuntime === 'dsh'
+    && hasProviderOverride
+    && typeof modelOverride === 'string'
+    && !isDshProviderModelCompatible(payload.providerId as string, modelOverride)
+  ) {
+    return {
+      success: false,
+      error: `Provider/model '${String(payload.providerId)}/${modelOverride}' is not in the accepted DSH compatibility cells.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents runtime describe dsh',
+        message: 'Choose an exact DSH-compatible Provider/model pair.',
+      },
+    };
+  }
+  if (
     modelOverride !== undefined
     && modelOverride !== null
     && modelOverride !== ''
@@ -6831,17 +6889,25 @@ function resolveAgentRuntimeIdentityFromWorkspace(
   if (!agent) return undefined;
 
   const raw = agent.runtime as unknown;
-  const runtime = typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
-  if (agentUsesManagedCodexProvider({
+  const legacyRuntime = typeof raw === 'string' && isValidRuntimeType(raw) ? raw : 'builtin';
+  const preferredRuntime = resolveEffectiveRuntime(
+    legacyRuntime,
+    !!config.multiAgentRuntime,
+    agent.runtimePreference,
+    (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
+    agent.providerId,
+  );
+  if (preferredRuntime === 'builtin' && agentUsesManagedCodexProvider({
     providerId: agent.providerId,
-    runtime,
+    runtime: legacyRuntime,
     runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
   })) {
     return { runtime: 'codex', runtimeSource: 'managed-provider' };
   }
-  return runtime === 'codex'
-    ? { runtime, runtimeSource: 'system-cli' }
-    : { runtime };
+  const runtime = preferredRuntime;
+  return runtime === 'builtin'
+    ? { runtime }
+    : { runtime, runtimeSource: runtimeSourceForRuntimeType(runtime) };
 }
 
 function taskRuntimeConfigField(runtimeConfig: unknown, field: string): unknown {

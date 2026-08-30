@@ -36,4 +36,27 @@ describe('RuntimeSelector i18n', () => {
     expect(screen.getByRole('button', { name: /Settings/ })).toBeInTheDocument();
     expect(screen.getByText('Not installed')).toBeInTheDocument();
   });
+
+  it('groups DSH as Integrated and exposes its unverified development state', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <RuntimeSelector
+        value="builtin"
+        detections={{
+          ...detections,
+          dsh: { installed: true, version: '0.0.0', readiness: 'unverified-dev-runtime' },
+        }}
+        onChange={onChange}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Runtime: MyAgents (Claude Agent SDK)'));
+    expect(screen.getByText('Integrated')).toBeInTheDocument();
+    expect(screen.getByText('External CLI')).toBeInTheDocument();
+    expect(screen.getByText('Experimental')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /MyAgents \(DSH\)/ }));
+    expect(onChange).toHaveBeenCalledWith('dsh');
+  });
 });

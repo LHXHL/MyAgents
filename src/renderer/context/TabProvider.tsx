@@ -26,7 +26,7 @@ import { useConfigData } from '@/config/useConfigData';
 import { getProjectAgent } from '@/config/services/agentConfigService';
 import { notifyConfigChanged } from '@/config/services/appConfigService';
 import { normalizeRuntime, resolveEffectiveRuntime } from '@/utils/sessionOpenPlan';
-import type { RuntimeDiagnostics, RuntimeSource, RuntimeType } from '@/../shared/types/runtime';
+import { runtimeSourceForRuntimeType, type RuntimeDiagnostics, type RuntimeSource, type RuntimeType } from '@/../shared/types/runtime';
 import { updateSession } from '@/api/sessionClient';
 import type { SessionMetadata } from '@/api/sessionClient';
 import { originAnalyticsFields, originFromDesktopSurface } from '../../shared/session-origin';
@@ -147,8 +147,7 @@ function analyticsRuntimeSource(
     runtime: RuntimeType,
     runtimeSource: RuntimeSource | null | undefined,
 ): RuntimeSource | null {
-    if (runtime === 'builtin') return null;
-    return runtimeSource ?? 'system-cli';
+    return runtimeSourceForRuntimeType(runtime, runtimeSource) ?? null;
 }
 
 function imageAttachmentName(img: ImageAttachment): string {
@@ -861,7 +860,13 @@ export default function TabProvider({
         const agent = agentDir ? getProjectAgent(appConfig, configProjects, agentDir) : undefined;
         const runtime: RuntimeType = sessionRuntime
             ? normalizeRuntime(sessionRuntime)
-            : resolveEffectiveRuntime(agent?.runtime, !!appConfig.multiAgentRuntime);
+            : resolveEffectiveRuntime(
+                agent?.runtime,
+                !!appConfig.multiAgentRuntime,
+                agent?.runtimePreference,
+                agent?.runtimeConfig?.source,
+                agent?.providerId,
+            );
         const runtimeSource = sessionRuntime
             ? analyticsRuntimeSource(runtime, sessionRuntimeSource)
             : analyticsRuntimeSource(runtime, agent?.runtimeConfig?.source);
@@ -3124,9 +3129,9 @@ export default function TabProvider({
                     if (payload.runtime) {
                         const runtime = normalizeRuntime(payload.runtime);
                         setSessionRuntime(runtime);
-                        setSessionRuntimeSource(runtime === 'builtin'
-                            ? null
-                            : (payload.runtimeSource ?? 'system-cli'));
+                        setSessionRuntimeSource(
+                            runtimeSourceForRuntimeType(runtime, payload.runtimeSource) ?? null,
+                        );
                         if (runtime !== 'builtin') {
                             setSdkSlashCommands([]);
                         }
@@ -4769,9 +4774,10 @@ export default function TabProvider({
 
             const loadedRuntime = response.session.runtime || 'builtin';
             setSessionRuntime(loadedRuntime);
-            setSessionRuntimeSource(loadedRuntime === 'builtin'
-                ? null
-                : (response.session.runtimeSource ?? 'system-cli'));
+            setSessionRuntimeSource(runtimeSourceForRuntimeType(
+                normalizeRuntime(loadedRuntime),
+                response.session.runtimeSource,
+            ) ?? null);
 
             const { messages: _metaMessages, ...metaOnly } = response.session as SessionMetadata & { messages?: unknown };
             void _metaMessages;

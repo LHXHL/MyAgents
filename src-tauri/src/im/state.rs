@@ -163,6 +163,7 @@ use types::{GroupActivation, GroupPermission, ImConfig, ImPlatform};
 
 pub(super) fn normalize_runtime_type(runtime: Option<&str>) -> String {
     match runtime {
+        Some("dsh") => "dsh".to_string(),
         Some("claude-code") => "claude-code".to_string(),
         Some("codex") => "codex".to_string(),
         Some("gemini") => "gemini".to_string(),
@@ -174,8 +175,31 @@ pub(super) fn is_external_runtime_type(runtime: &str) -> bool {
     matches!(runtime, "claude-code" | "codex" | "gemini")
 }
 
+pub(super) fn runtime_source_for_runtime(
+    runtime: &str,
+    runtime_config: Option<&serde_json::Value>,
+) -> Option<String> {
+    let runtime = normalize_runtime_type(Some(runtime));
+    if runtime == "builtin" {
+        return None;
+    }
+    if runtime == "dsh" {
+        return Some("integrated".to_string());
+    }
+    if runtime == "codex"
+        && runtime_config
+            .and_then(|value| value.get("source"))
+            .and_then(serde_json::Value::as_str)
+            == Some("managed-provider")
+    {
+        return Some("managed-provider".to_string());
+    }
+    Some("system-cli".to_string())
+}
+
 pub(super) fn runtime_display_name(runtime: &str) -> &'static str {
     match runtime {
+        "dsh" => "DSH",
         "codex" => "Codex",
         "claude-code" => "Claude Code CLI",
         "gemini" => "Gemini CLI",
@@ -1199,7 +1223,7 @@ pub fn create_agent_state() -> ManagedAgents {
 
 #[cfg(test)]
 mod tests {
-    use super::runtime_models_url;
+    use super::{runtime_models_url, runtime_source_for_runtime};
 
     #[test]
     fn runtime_model_url_preserves_codex_catalog_owner() {
@@ -1215,6 +1239,27 @@ mod tests {
             runtime_models_url(9527, "gemini", Some("managed-provider")),
             "http://127.0.0.1:9527/api/runtime/models?type=gemini",
         );
+    }
+
+    #[test]
+    fn runtime_source_projection_keeps_dsh_integrated_and_external_cli_explicit() {
+        assert_eq!(
+            runtime_source_for_runtime("dsh", None).as_deref(),
+            Some("integrated"),
+        );
+        assert_eq!(
+            runtime_source_for_runtime(
+                "codex",
+                Some(&serde_json::json!({ "source": "managed-provider" })),
+            )
+            .as_deref(),
+            Some("managed-provider"),
+        );
+        assert_eq!(
+            runtime_source_for_runtime("gemini", None).as_deref(),
+            Some("system-cli"),
+        );
+        assert_eq!(runtime_source_for_runtime("builtin", None), None);
     }
 }
 

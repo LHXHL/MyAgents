@@ -1,3 +1,5 @@
+import { findDshProviderCell } from './integrated-runtimes/dsh-provider-cells';
+
 // Reasoning effort (推理强度) — shared vocabulary between renderer and sidecar.
 //
 // Issue #324: expose per-session control over the provider's reasoning-depth
@@ -94,6 +96,17 @@ export function reasoningEffortChoices(
       return SDK_EFFORT_LEVELS;
     case 'codex':
       return CODEX_EFFORT_LEVELS;
+    case 'dsh': {
+      if (!providerId || !model) return null;
+      const cell = findDshProviderCell(providerId, model);
+      if (!cell) return null;
+      if (cell.profile.source === 'native-candidate') {
+        return cell.profile.reasoningEfforts;
+      }
+      const effortMap = cell.profile.reasoningEffortMap;
+      if (!effortMap) return null;
+      return Object.keys(effortMap).filter((effort) => effort !== 'off');
+    }
     default:
       // Gemini (no ACP effort surface) and unknown runtimes → hidden.
       return null;

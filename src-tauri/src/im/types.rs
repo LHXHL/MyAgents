@@ -5,9 +5,11 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use super::normalize_runtime_type;
+use super::{is_external_runtime_type, normalize_runtime_type, runtime_source_for_runtime};
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
+const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID: &str = "anthropic-sub";
+const XAI_SUBSCRIPTION_PROVIDER_ID: &str = "xai-sub";
 
 /// Partial update patch for IM Bot config.
 /// Each `None` field means "no change"; `Some("")` means "clear the field".
@@ -427,18 +429,7 @@ pub(crate) struct ImRuntimeIdentity {
 impl ImRuntimeIdentity {
     pub fn from_runtime_config(runtime: &str, runtime_config: Option<&serde_json::Value>) -> Self {
         let runtime = normalize_runtime_type(Some(runtime));
-        let runtime_source = if runtime == "builtin" {
-            None
-        } else {
-            Some(
-                runtime_config
-                    .and_then(|value| value.get("source"))
-                    .and_then(|value| value.as_str())
-                    .filter(|source| *source == "managed-provider")
-                    .unwrap_or("system-cli")
-                    .to_string(),
-            )
-        };
+        let runtime_source = runtime_source_for_runtime(&runtime, runtime_config);
         Self {
             runtime,
             runtime_source,
@@ -1060,6 +1051,13 @@ impl std::error::Error for TelegramError {}
 // ===== Agent Architecture types (v0.1.41) =====
 
 /// Channel-level config overrides (None = inherit from Agent)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePreferenceRust {
+    pub family: String,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelOverrides {
@@ -1068,6 +1066,7 @@ pub struct ChannelOverrides {
     pub model: Option<String>,
     pub runtime: Option<String>,
     pub runtime_config: Option<serde_json::Value>,
+    pub runtime_preference: Option<RuntimePreferenceRust>,
     pub permission_mode: Option<String>,
     pub tools_deny: Option<Vec<String>>,
 }
@@ -1219,11 +1218,16 @@ pub struct AgentConfigRust {
     #[serde(default)]
     pub last_active_private_target: Option<LastActivePrivateTarget>,
 
-    // Agent Runtime (v0.1.59 / v0.1.66) — 'builtin' | 'claude-code' | 'codex' | 'gemini'
+    // Agent Runtime compatibility projection. runtimePreference is authoritative.
     #[serde(default)]
     pub runtime: Option<String>,
     #[serde(default)]
     pub runtime_config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub runtime_preference: Option<RuntimePreferenceRust>,
+    /// Runtime-only projection of the root Labs selector gate.
+    #[serde(default = "default_true", skip_serializing)]
+    pub runtime_selection_available: bool,
 
     #[serde(default)]
     pub setup_completed: Option<bool>,
@@ -1243,6 +1247,23 @@ fn default_permission_mode() -> String {
     "plan".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn runtime_from_preference(
+    preference: &RuntimePreferenceRust,
+) -> Result<(String, Option<String>), String> {
+    match (preference.family.as_str(), preference.id.as_str()) {
+        ("integrated", "claude-agent-sdk") => Ok(("builtin".to_string(), None)),
+        ("integrated", "dsh") => Ok(("dsh".to_string(), Some("integrated".to_string()))),
+        ("external", runtime @ ("claude-code" | "codex" | "gemini")) => {
+            Ok((runtime.to_string(), Some("system-cli".to_string())))
+        }
+        (family, id) => Err(format!("unsupported runtimePreference {family}/{id}")),
+    }
+}
+
 pub(crate) fn project_runtime_for_provider(
     provider_id: Option<&str>,
     model: Option<&str>,
@@ -1254,8 +1275,21 @@ pub(crate) fn project_runtime_for_provider(
         .as_ref()
         .and_then(|value| value.get("source"))
         .and_then(|value| value.as_str());
+    // An explicit External CLI preference wins over dormant Product provider
+    // defaults. Integrated preferences remain subject to Provider constraints.
+    if is_external_runtime_type(&normalized_runtime)
+        && configured_source != Some("managed-provider")
+    {
+        return (runtime, runtime_config);
+    }
+    if provider_id == Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
+        || provider_id == Some(XAI_SUBSCRIPTION_PROVIDER_ID)
+    {
+        return (Some("builtin".to_string()), None);
+    }
     let uses_managed_codex = provider_id == Some(CODEX_SUBSCRIPTION_PROVIDER_ID)
         && (normalized_runtime == "builtin"
+            || normalized_runtime == "dsh"
             || (normalized_runtime == "codex" && configured_source == Some("managed-provider")));
 
     if !uses_managed_codex {
@@ -1376,6 +1410,15 @@ where
     Option::<serde_json::Value>::deserialize(deserializer).map(Some)
 }
 
+fn deserialize_nullable_runtime_preference<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<RuntimePreferenceRust>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<RuntimePreferenceRust>::deserialize(deserializer).map(Some)
+}
+
 fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1413,6 +1456,69 @@ pub struct ChannelStatus {
 }
 
 impl ChannelConfigRust {
+    fn runtime_config_for_preference(
+        runtime_config: Option<serde_json::Value>,
+        source: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        if source != Some("system-cli") {
+            return runtime_config;
+        }
+        let mut config = runtime_config
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        // An authoritative External preference cannot inherit a stale managed
+        // Provider source. Other runtime-specific values remain valid inputs
+        // for the chosen CLI and are scrubbed by ordinary Runtime writers.
+        config.remove("source");
+        (!config.is_empty()).then_some(serde_json::Value::Object(config))
+    }
+
+    fn selected_runtime(
+        &self,
+        agent: &AgentConfigRust,
+    ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
+        if !agent.runtime_selection_available {
+            return Ok((Some("builtin".to_string()), None));
+        }
+        let overrides = self.overrides.as_ref();
+        let runtime_config = overrides
+            .and_then(|value| value.runtime_config.clone())
+            .or_else(|| agent.runtime_config.clone());
+        if let Some(preference) = overrides.and_then(|value| value.runtime_preference.as_ref()) {
+            let (runtime, source) = runtime_from_preference(preference)?;
+            return Ok((
+                Some(runtime),
+                Self::runtime_config_for_preference(runtime_config, source.as_deref()),
+            ));
+        }
+        if let Some(runtime) = overrides.and_then(|value| value.runtime.clone()) {
+            return Ok((Some(runtime), runtime_config));
+        }
+        if let Some(preference) = agent.runtime_preference.as_ref() {
+            let (runtime, source) = runtime_from_preference(preference)?;
+            return Ok((
+                Some(runtime),
+                Self::runtime_config_for_preference(runtime_config, source.as_deref()),
+            ));
+        }
+        Ok((agent.runtime.clone(), runtime_config))
+    }
+
+    fn effective_runtime_projection(
+        &self,
+        agent: &AgentConfigRust,
+        provider_id: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
+        let (runtime, runtime_config) = self.selected_runtime(agent)?;
+        Ok(project_runtime_for_provider(
+            provider_id,
+            model,
+            runtime,
+            runtime_config,
+        ))
+    }
+
     pub(crate) fn effective_permission_mode(&self, agent: &AgentConfigRust) -> String {
         let overrides = self.overrides.as_ref();
         let provider_id = overrides
@@ -1423,18 +1529,9 @@ impl ChannelConfigRust {
             .and_then(|o| o.model.clone())
             .or_else(|| self.model.clone())
             .or_else(|| agent.model.clone());
-        let runtime = overrides
-            .and_then(|o| o.runtime.clone())
-            .or_else(|| agent.runtime.clone());
-        let runtime_config = overrides
-            .and_then(|o| o.runtime_config.clone())
-            .or_else(|| agent.runtime_config.clone());
-        let (runtime, projected_runtime_config) = project_runtime_for_provider(
-            provider_id.as_deref(),
-            model.as_deref(),
-            runtime,
-            runtime_config,
-        );
+        let (runtime, projected_runtime_config) = self
+            .effective_runtime_projection(agent, provider_id.as_deref(), model.as_deref())
+            .unwrap_or_else(|_| (Some("builtin".to_string()), None));
         let permission_override = overrides.and_then(|o| o.permission_mode.clone());
         let permission_provider_id = if projected_runtime_config
             .as_ref()
@@ -1473,18 +1570,11 @@ impl ChannelConfigRust {
             .and_then(|o| o.model.clone())
             .or_else(|| self.model.clone())
             .or_else(|| agent.model.clone());
-        let runtime = overrides
-            .and_then(|o| o.runtime.clone())
-            .or_else(|| agent.runtime.clone());
-        let runtime_config = overrides
-            .and_then(|o| o.runtime_config.clone())
-            .or_else(|| agent.runtime_config.clone());
-        let (runtime, runtime_config) = project_runtime_for_provider(
-            provider_id.as_deref(),
-            model.as_deref(),
-            runtime,
-            runtime_config,
-        );
+        let runtime_projection =
+            self.effective_runtime_projection(agent, provider_id.as_deref(), model.as_deref());
+        let runtime_compatible = runtime_projection.is_ok();
+        let (runtime, runtime_config) =
+            runtime_projection.unwrap_or_else(|_| (Some("builtin".to_string()), None));
         let permission_mode = self.effective_permission_mode(agent);
 
         ImConfig {
@@ -1502,7 +1592,7 @@ impl ChannelConfigRust {
             default_workspace_path: Some(agent.resolved_workspace_path.clone()),
             // Channel availability is owned by ChannelConfig. Proactive Agent
             // mode gates heartbeat/memory only and must not stop chat ingress.
-            enabled: self.enabled,
+            enabled: self.enabled && runtime_compatible,
             feishu_app_id: self.feishu_app_id.clone(),
             feishu_app_secret: self.feishu_app_secret.clone(),
             dingtalk_client_id: self.dingtalk_client_id.clone(),
@@ -1557,6 +1647,8 @@ pub struct AgentConfigPatch {
     pub mcp_enabled_servers: Option<Vec<String>>,
     pub mcp_servers_json: Option<String>,
     pub runtime: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable_runtime_preference")]
+    pub runtime_preference: Option<Option<RuntimePreferenceRust>>,
     /// Tri-state patch field: missing = do not change, null = clear,
     /// object = replace. Tauri JSON command patches need this distinction;
     /// `Option<Value>` would deserialize both missing and null to `None`.
@@ -1636,6 +1728,8 @@ mod tests {
             last_active_private_target: None,
             runtime: Some("builtin".to_string()),
             runtime_config: None,
+            runtime_preference: None,
+            runtime_selection_available: true,
             setup_completed: Some(true),
         }
     }
@@ -1726,6 +1820,131 @@ mod tests {
         let config = channel.to_im_config(&agent);
 
         assert_eq!(config.permission_mode, "no-restrictions");
+    }
+
+    #[test]
+    fn integrated_dsh_preference_projects_complete_im_runtime_identity() {
+        let mut agent = base_agent();
+        agent.runtime = Some("dsh".to_string());
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "dsh".to_string(),
+        });
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("dsh"));
+        assert_eq!(
+            config.runtime_identity(),
+            ImRuntimeIdentity {
+                runtime: "dsh".to_string(),
+                runtime_source: Some("integrated".to_string()),
+            }
+        );
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn labs_off_defaults_new_im_sessions_to_builtin_without_erasing_preference() {
+        let mut agent = base_agent();
+        agent.runtime = Some("dsh".to_string());
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "dsh".to_string(),
+        });
+        agent.runtime_selection_available = false;
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("builtin"));
+        assert_eq!(
+            agent
+                .runtime_preference
+                .as_ref()
+                .map(|value| value.id.as_str()),
+            Some("dsh")
+        );
+    }
+
+    #[test]
+    fn subscription_provider_constraint_overrides_integrated_dsh_preference() {
+        let mut agent = base_agent();
+        agent.provider_id = Some(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID.to_string());
+        agent.runtime = Some("dsh".to_string());
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "dsh".to_string(),
+        });
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("builtin"));
+        assert_eq!(config.runtime_identity().runtime_source, None);
+    }
+
+    #[test]
+    fn invalid_authoritative_im_runtime_preference_fails_closed() {
+        let mut agent = base_agent();
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "future-runtime".to_string(),
+        });
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert!(!config.enabled);
+        assert_eq!(config.runtime.as_deref(), Some("builtin"));
+    }
+
+    #[test]
+    fn channel_legacy_runtime_override_wins_over_agent_preference() {
+        let mut agent = base_agent();
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "integrated".to_string(),
+            id: "dsh".to_string(),
+        });
+        let mut channel = base_channel();
+        channel.overrides = Some(ChannelOverrides {
+            runtime: Some("gemini".to_string()),
+            ..ChannelOverrides::default()
+        });
+
+        let config = channel.to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("gemini"));
+        assert_eq!(
+            config.runtime_identity().runtime_source.as_deref(),
+            Some("system-cli"),
+        );
+    }
+
+    #[test]
+    fn explicit_external_preference_drops_stale_managed_source() {
+        let mut agent = base_agent();
+        agent.provider_id = Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string());
+        agent.runtime_config = Some(serde_json::json!({
+            "source": "managed-provider",
+            "envPolicy": { "proxy": "terminal" }
+        }));
+        agent.runtime_preference = Some(RuntimePreferenceRust {
+            family: "external".to_string(),
+            id: "codex".to_string(),
+        });
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("codex"));
+        assert_eq!(
+            config.runtime_identity().runtime_source.as_deref(),
+            Some("system-cli"),
+        );
+        assert_eq!(
+            config
+                .runtime_config
+                .as_ref()
+                .and_then(|value| value.get("envPolicy")),
+            Some(&serde_json::json!({ "proxy": "terminal" })),
+        );
     }
 
     #[test]

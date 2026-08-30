@@ -2460,6 +2460,10 @@ fn salvage_agents_from_value(
     value: &serde_json::Value,
     api_keys: &std::collections::HashMap<String, String>,
 ) -> Option<Vec<AgentConfigRust>> {
+    let runtime_selection_available = value
+        .get("multiAgentRuntime")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     match value.get("agents") {
         // Absent → no agents configured; nothing to recover.
         None => Some(Vec::new()),
@@ -2471,6 +2475,7 @@ fn salvage_agents_from_value(
             for (ai, a) in arr.iter().enumerate() {
                 match serde_json::from_value::<AgentConfigRust>(a.clone()) {
                     Ok(mut agent) => {
+                        agent.runtime_selection_available = runtime_selection_available;
                         // Rebuild providerEnvJson for agents/channels that have a
                         // providerId but no providerEnvJson (same as
                         // parse_bot_entries does for legacy bots).
@@ -2904,6 +2909,21 @@ pub(super) fn persist_agent_config_patch(
         apply_field!(mcp_enabled_servers, "mcpEnabledServers");
         apply_field!(runtime, "runtime");
         apply_field!(setup_completed, "setupCompleted");
+
+        if let Some(ref runtime_preference) = patch.runtime_preference {
+            match runtime_preference {
+                Some(value) => {
+                    agent["runtimePreference"] = serde_json::to_value(value).map_err(|e| {
+                        format!("[agent] Failed to serialize Runtime preference: {}", e)
+                    })?;
+                }
+                None => {
+                    if let Some(obj) = agent.as_object_mut() {
+                        obj.remove("runtimePreference");
+                    }
+                }
+            }
+        }
 
         if let Some(ref runtime_config) = patch.runtime_config {
             match runtime_config {

@@ -118,7 +118,6 @@ import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import {
-  agentUsesManagedCodexProvider,
   isRuntimeBackedProvider,
   managedCodexRuntimePermissionToProviderPermission,
   projectManagedCodexPermissionToRuntime,
@@ -130,14 +129,21 @@ import {
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 import {
+  resolveAgentRuntimePreference,
+  runtimeTypeForAgentRuntimePreference,
+} from '../../shared/integrated-runtimes/identity';
+import {
   buildRuntimeChangePatch,
   CC_MODELS,
   CC_PERMISSION_MODES,
   CODEX_PERMISSION_MODES,
   coerceModelForRuntime,
+  DSH_PERMISSION_MODES,
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
   projectPermissionModeForRuntime,
+  resolveEffectiveRuntime,
+  runtimeSourceForRuntimeType,
 } from '../../shared/types/runtime';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics, RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, LaunchSessionBirthHint, SidecarConfigDisposition } from '@/types/tab';
@@ -160,6 +166,10 @@ import {
   shouldShowBuiltinSdkSlashCommands,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
+import {
+  isProviderModelCompatibleWithRuntime,
+  projectProvidersForRuntime,
+} from '@/utils/runtimeProviderProjection';
 import {
   DEFAULT_WORKSPACE_LAYOUT_METRICS,
   nextSplitViewAfterBrowserClose,
@@ -254,6 +264,7 @@ const LazyIntroductionOverlay = lazy(() => import('@/components/IntroductionOver
 /** Human-readable label for a runtime type (used in confirm dialogs, toasts, etc.) */
 function getRuntimeDisplayLabel(runtime: RuntimeType | undefined): string {
   switch (runtime) {
+    case 'dsh': return 'MyAgents (DSH)';
     case 'claude-code': return 'Claude Code';
     case 'codex': return 'Codex';
     case 'gemini': return 'Gemini CLI';
@@ -571,6 +582,18 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   const currentProject = projects.find((p) => workspacePathsEqual(p.path, agentDir));
   // AgentConfig is source of truth for AI settings, Project is fallback for non-agent workspaces
   const currentAgent = currentProject?.agentId ? getAgentById(config, currentProject.agentId) : undefined;
+  const providerUiRuntime: RuntimeType = (sessionRuntime as RuntimeType | null)
+    ?? resolveEffectiveRuntime(
+      currentAgent?.runtime,
+      !!config.multiAgentRuntime,
+      currentAgent?.runtimePreference,
+      currentAgent?.runtimeConfig?.source,
+      currentAgent?.providerId,
+    );
+  const providerUiProviders = useMemo(
+    () => projectProvidersForRuntime(providers, providerUiRuntime),
+    [providers, providerUiRuntime],
+  );
   // Local provider state: snapshot from AgentConfig (priority) or Project at creation.
   // Prevents cross-tab pollution when another tab patches the shared project.
   const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(
@@ -614,14 +637,14 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         : isProviderAvailable(selectedProviderExact, apiKeys, providerVerifyStatus)
     )
     : false;
-  const availableProviderIdsForInput = useMemo(() => providers
+  const availableProviderIdsForInput = useMemo(() => providerUiProviders
     .filter(provider => isRuntimeBackedProvider(provider)
       ? isProviderAvailable(provider, apiKeys, providerVerifyStatus)
       : provider.type === 'subscription'
         ? provider.enabled !== false && hasProviderRouteCredential(provider, { apiKeys, verifyStatus: providerVerifyStatus })
         : isProviderAvailable(provider, apiKeys, providerVerifyStatus))
-    .map(provider => provider.id), [providers, apiKeys, providerVerifyStatus]);
-  const fallbackProvider = resolveProvider(effectiveSelectedProviderId, providers, apiKeys, providerVerifyStatus);
+    .map(provider => provider.id), [providerUiProviders, apiKeys, providerVerifyStatus]);
+  const fallbackProvider = resolveProvider(effectiveSelectedProviderId, providerUiProviders, apiKeys, providerVerifyStatus);
   const currentProvider = resolveCurrentProviderForSession({
     sessionSnapshotOwnsConfig,
     selectedProviderId: effectiveSelectedProviderId,
@@ -1383,12 +1406,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Agent's currently-configured runtime — used as the default for NEW sessions.
   // Managed Codex is a provider default, not the legacy user-managed Codex CLI
   // runtime, so stale `agent.runtime=codex` must not leak into Chat chrome.
-  const agentUsesManagedProvider = agentUsesManagedCodexProvider(currentAgent);
-  const agentRuntime: RuntimeType = agentUsesManagedProvider
-    ? 'builtin'
-    : multiAgentRuntimeEnabled
-    ? ((currentAgent?.runtime as RuntimeType) || 'builtin')
-    : 'builtin';
+  const agentRuntime: RuntimeType = resolveEffectiveRuntime(
+    currentAgent?.runtime,
+    multiAgentRuntimeEnabled,
+    currentAgent?.runtimePreference,
+    currentAgent?.runtimeConfig?.source,
+    currentAgent?.providerId,
+  );
   // v0.1.69: session is self-contained — its frozen runtime is authoritative for
   // both display and message routing within this tab. Falls back to agentRuntime
   // only before the session has loaded (sessionRuntime===null) or for newly-created
@@ -1481,7 +1505,9 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   useEffect(() => {
     if (!isExternalRuntime) return;
     const cfg = currentAgent?.runtimeConfig as { permissionMode?: string; model?: string } | undefined;
-    const saved = managedProviderRuntimeActive
+    const saved = currentRuntime === 'dsh'
+      ? currentAgent?.permissionMode
+      : managedProviderRuntimeActive
       ? currentAgent?.permissionMode
       : cfg?.permissionMode;
     const effective = managedProviderRuntimeActive
@@ -1489,16 +1515,24 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       : (coerceExternalRuntimePermissionForUi(saved, currentRuntime)
         ?? (getDefaultRuntimePermissionMode(currentRuntime) || 'default'));
     setRuntimePermissionMode(effective);
-    setRuntimeModel(coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
+    setRuntimeModel(currentRuntime === 'dsh'
+      ? undefined
+      : coerceExternalRuntimeModelForUi(cfg?.model, currentRuntime));
     // #324 — re-seed effort on runtime transition. RUNTIME_CONFIG_PER_RUNTIME_FIELDS
     // scrubs reasoningEffort on agent runtime change, so a leftover value from a
     // different runtime can't be read here; absent = 'default'.
-    setReasoningEffort(coerceReasoningEffortForUi((cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort, currentRuntime) ?? 'default');
+    setReasoningEffort(currentRuntime === 'dsh'
+      ? (currentAgent?.reasoningEffort ?? 'default')
+      : (coerceReasoningEffortForUi(
+        (cfg as { reasoningEffort?: string } | undefined)?.reasoningEffort,
+        currentRuntime,
+      ) ?? 'default'));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only re-sync on runtime transitions, not on every currentAgent.runtimeConfig edit
   }, [currentRuntime, isExternalRuntime, managedProviderRuntimeActive]);
 
   // Runtime-specific models and permission modes
-  const runtimePermissionModes = currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
+  const runtimePermissionModes = currentRuntime === 'dsh' ? DSH_PERMISSION_MODES
+    : currentRuntime === 'claude-code' ? CC_PERMISSION_MODES
     : currentRuntime === 'codex' ? CODEX_PERMISSION_MODES
     : currentRuntime === 'gemini' ? GEMINI_PERMISSION_MODES
     : undefined;
@@ -1626,12 +1660,20 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Effective model/permission based on runtime.
   // For external runtimes: if user hasn't explicitly selected a model (runtimeModel=undefined),
   // use the default model from the runtime's model list — this matches what the UI displays.
-  const effectiveRuntimeModel = isExternalRuntime
+  const effectiveRuntimeModel = inputUsesExternalRuntimeControls
     ? coerceExternalRuntimeModelForUi(runtimeModel, currentRuntime)
     : undefined;
-  const effectiveModel = isExternalRuntime
+  const effectiveModel = inputUsesExternalRuntimeControls
     ? (effectiveRuntimeModel ?? runtimeModels?.find(m => m.isDefault)?.value)
     : selectedModel;
+  const runtimeProviderSelectionIncomplete = !isProviderModelCompatibleWithRuntime(
+    currentRuntime,
+    currentProvider?.id,
+    effectiveModel,
+  );
+  const runtimeExecutionUnavailable = currentRuntime === 'dsh'
+    && runtimeDetections.dsh.readiness !== 'ready'
+    && runtimeDetections.dsh.readiness !== 'unverified-dev-runtime';
   const effectiveRuntimePermissionMode = isExternalRuntime
     ? (coerceExternalRuntimePermissionForUi(runtimePermissionMode, currentRuntime)
       ?? getDefaultRuntimePermissionMode(currentRuntime)
@@ -1662,7 +1704,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       });
 
   const buildCronRuntimeConfig = useCallback((): RuntimeConfig | undefined => {
-    if (!isExternalRuntime) return undefined;
+    if (!inputUsesExternalRuntimeControls) return undefined;
     const base = { ...((currentAgent?.runtimeConfig as RuntimeConfig | undefined) ?? {}) };
     if (currentProviderExecutionIntent?.kind === 'runtime-backed-provider') {
       base.source = currentProviderExecutionIntent.runtimeSource;
@@ -1689,7 +1731,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       base.permissionMode = selectedPermission;
     }
     return Object.keys(base).length > 0 ? base : undefined;
-  }, [isExternalRuntime, currentAgent?.runtimeConfig, currentProviderExecutionIntent, runtimeModel, effectiveRuntimePermissionMode, currentRuntime]);
+  }, [inputUsesExternalRuntimeControls, currentAgent?.runtimeConfig, currentProviderExecutionIntent, runtimeModel, effectiveRuntimePermissionMode, currentRuntime]);
 
   const buildCronExecutionOverrides = useCallback((args: {
     providerId?: string;
@@ -1778,7 +1820,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           projectPermissionMode: currentProject?.permissionMode,
           defaultPermissionMode: config.defaultPermissionMode,
         }))) as PermissionMode;
-    const effectiveModel = isExternalRuntime
+    const effectiveModel = inputUsesExternalRuntimeControls
       ? (coerceExternalRuntimeModelForUi(launchMessage.runtimeModel, currentRuntime)
         ?? effectiveRuntimeModel
         ?? runtimeModels?.find(m => m.isDefault)?.value)
@@ -1856,7 +1898,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             projectSyncedRef.current = true;
           }
         }
-        if (isExternalRuntime) {
+        if (inputUsesExternalRuntimeControls) {
           if (launchMessage.runtimeModel) {
             setRuntimeModel(coerceExternalRuntimeModelForUi(launchMessage.runtimeModel, currentRuntime));
           }
@@ -1871,7 +1913,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         // Set BEFORE the sends below so the builtin send payload carries it;
         // for external runtimes push it explicitly (no payload channel).
         if (launchMessage.reasoningEffort) {
-          const launchReasoningEffort = isExternalRuntime
+          const launchReasoningEffort = inputUsesExternalRuntimeControls
             ? (coerceReasoningEffortForUi(launchMessage.reasoningEffort, currentRuntime) ?? 'default')
             : launchMessage.reasoningEffort;
           setReasoningEffort(launchReasoningEffort);
@@ -1892,7 +1934,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         //     user had typed in the chat input and clicked send with cron enabled.
         if (launchMessage.cron) {
           const cronExecution = buildCronExecutionOverrides({
-            providerId: !isExternalRuntime && provider ? provider.id : undefined,
+            providerId: !inputUsesExternalRuntimeControls && provider ? provider.id : undefined,
             model: effectiveModel,
           });
           const cronPermissionMode = coerceRuntimeBirthPermissionMode(
@@ -1931,10 +1973,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
               launchMessage.images,
               effectivePermission,
               effectiveModel,
-              isExternalRuntime || providerRoute ? undefined : providerEnv,
+              inputUsesExternalRuntimeControls || providerRoute ? undefined : providerEnv,
               undefined,
-              isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
-              isExternalRuntime ? undefined : providerRoute,
+              inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
+              inputUsesExternalRuntimeControls ? undefined : providerRoute,
             );
           }
         } else {
@@ -1944,13 +1986,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             launchMessage.images,
             effectivePermission,
             effectiveModel,
-            isExternalRuntime || providerRoute ? undefined : providerEnv,
+            inputUsesExternalRuntimeControls || providerRoute ? undefined : providerEnv,
             undefined,
             // launch value directly — the setReasoningEffort above isn't
             // visible in this closure (same-render state), and the first
             // message must already carry the launcher's choice.
-            isExternalRuntime ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
-            isExternalRuntime ? undefined : providerRoute,
+            inputUsesExternalRuntimeControls ? undefined : (launchMessage.reasoningEffort ?? reasoningEffort),
+            inputUsesExternalRuntimeControls ? undefined : providerRoute,
             launchMessage.requiredSystemSkill,
           );
         }
@@ -1981,7 +2023,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           }
           if (launchMessage.cron) {
             const cronExecution = buildCronExecutionOverrides({
-              providerId: !isExternalRuntime && provider ? provider.id : undefined,
+              providerId: !inputUsesExternalRuntimeControls && provider ? provider.id : undefined,
               model: effectiveModel,
             });
             const cronPermissionMode = coerceRuntimeBirthPermissionMode(
@@ -2627,7 +2669,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // silently routes an owned session onto — and bills — the wrong provider.
   const pinnedProviderUnavailable = isPinnedProviderUnavailable({
     isOwnedSession,
-    isExternalRuntime,
+    isExternalRuntime: inputUsesExternalRuntimeControls,
     selectedProviderId: effectiveSelectedProviderId,
     resolvedProviderId: currentProvider?.id,
     providersLoaded: providers.length > 0,
@@ -2716,6 +2758,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       workspaceId: currentProject.id,
       agentId: currentProject.agentId ?? null,
       isExternalRuntime,
+      usesProductConfiguration: currentRuntime === 'dsh',
       currentRuntimeConfig: currentAgent?.runtimeConfig,
       currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
       fields: {
@@ -2916,7 +2959,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     }
     // #324 — same gating as model: builtin effort seeds from the agent default.
     // (External runtime seeding lives in the runtime-transition effect above.)
-    if (!isExternalRuntime && configDispositionRef.current === 'push') {
+    if (!inputUsesExternalRuntimeControls && configDispositionRef.current === 'push') {
       setReasoningEffort(currentAgent?.reasoningEffort ?? 'default');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time sync when project first loads
@@ -2947,21 +2990,22 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       session: sessionMeta,
       runtime: snapshotRuntime,
     });
+    const snapshotUsesExternalRuntimeControls = !snapshotUsesProviderPicker;
     const snapshotOwnsConfig = Boolean(sessionMeta.configSnapshotAt);
-    const fallbackModel = snapshotIsExternal && !snapshotIsManagedProvider
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.model
-      : currentAgent?.model;
+    const fallbackModel = snapshotUsesProviderPicker
+      ? currentAgent?.model
+      : (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.model;
     const rawModel = snapshotOwnsConfig ? sessionMeta.model : (sessionMeta.model ?? fallbackModel);
-    const runtimeModelValue = snapshotIsExternal
+    const runtimeModelValue = snapshotUsesExternalRuntimeControls
       ? coerceExternalRuntimeModelForUi(rawModel, snapshotRuntime)
       : rawModel;
     const providerModelValue = snapshotIsManagedProvider
       ? managedProviderSnapshotModel(sessionMeta, rawModel)
       : rawModel;
     const fallbackMode = currentAgent?.permissionMode as string | undefined;
-    const rawMode = snapshotIsExternal
-      ? sessionMeta.permissionMode
-      : (snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode));
+    const rawMode = snapshotUsesProviderPicker
+      ? (snapshotOwnsConfig ? sessionMeta.permissionMode : (sessionMeta.permissionMode ?? fallbackMode))
+      : sessionMeta.permissionMode;
     const runtimePermissionValue = snapshotIsManagedProvider
       ? (projectManagedCodexPermissionToRuntime(rawMode) ?? 'auto-edit')
       : snapshotIsExternal
@@ -3001,21 +3045,21 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     // undefined has a defined meaning (= default), so a session without the
     // field must reset the picker — keeping the previous session's value here
     // is a cross-session leak (cross-review Critical).
-    const fallbackEffort = snapshotIsExternal
-      ? (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.reasoningEffort
-      : currentAgent?.reasoningEffort;
+    const fallbackEffort = snapshotUsesProviderPicker
+      ? currentAgent?.reasoningEffort
+      : (currentAgent?.runtimeConfig as RuntimeConfig | undefined)?.reasoningEffort;
     const snapEffort = snapshotOwnsConfig ? sessionMeta.reasoningEffort : (sessionMeta.reasoningEffort ?? fallbackEffort);
     if (snapshotOwnsConfig) {
       projectSyncedRef.current = true;
     }
-    if (snapshotIsExternal) {
+    if (snapshotUsesExternalRuntimeControls) {
       setRuntimeModel(runtimeModelValue);
     }
     if (snapshotUsesProviderPicker && (snapshotOwnsConfig || providerModelValue)) {
       setSelectedModel(providerModelValue);
     }
     setReasoningEffort(
-      (snapshotIsExternal
+      (snapshotUsesExternalRuntimeControls
         ? coerceReasoningEffortForUi(snapEffort, snapshotRuntime)
         : snapEffort)
       ?? 'default',
@@ -3028,7 +3072,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     }
     if (snapshotUsesProviderPicker && providerId) {
       setSelectedProviderId(providerId);
-    } else if (!snapshotIsExternal && snapshotOwnsConfig && providers.length > 0) {
+    } else if (snapshotUsesProviderPicker && snapshotOwnsConfig && providers.length > 0) {
       setSelectedProviderId(undefined);
     }
     if (mcp) setWorkspaceMcpEnabled(mcp);
@@ -3140,9 +3184,9 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     // owned sidecar config (#396).
     if (isSessionLoading) return;
 
-    const modelToPush = isExternalRuntime ? runtimeModel : selectedModel;
+    const modelToPush = inputUsesExternalRuntimeControls ? runtimeModel : selectedModel;
     if (sessionSnapshotOwnsConfig) {
-      const snapshotModel = isExternalRuntime
+      const snapshotModel = inputUsesExternalRuntimeControls
         ? coerceExternalRuntimeModelForUi(sessionMeta?.model, currentRuntime)
         : sessionMeta?.model;
       if (modelToPush !== snapshotModel) return;
@@ -3158,7 +3202,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       console.error('[Chat] sync model failed:', err);
       lastPushedModelKeyRef.current = null; // allow retry
     });
-  }, [isConnected, sessionRuntime, currentAgent, isExternalRuntime,
+  }, [isConnected, sessionRuntime, currentAgent, inputUsesExternalRuntimeControls,
       runtimeModel, selectedModel, sessionId, apiPost, configPending, isSessionLoading,
       sessionSnapshotOwnsConfig, sessionMeta?.model, currentRuntime]);
 
@@ -3206,23 +3250,27 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           // backward-compat hedge for older sidecars that pre-date the field.
           // Keep the fallback so a stale-binary sidecar doesn't crash adoption.
           const sidecarRuntime = config.runtime ?? currentRuntime;
-          const sidecarIsExternal = sidecarRuntime !== 'builtin';
+          const sidecarUsesExternalRuntimeControls = sidecarRuntime !== 'builtin'
+            && sidecarRuntime !== 'dsh';
 
           if (config.model) {
-            if (sidecarIsExternal) {
+            if (sidecarUsesExternalRuntimeControls) {
               setRuntimeModel(config.model);
             } else {
               setSelectedModel(config.model);
             }
           }
           if (config.permissionMode) {
-            if (sidecarIsExternal) {
+            if (sidecarUsesExternalRuntimeControls) {
               setRuntimePermissionMode(config.permissionMode);
             } else {
               setPermissionMode(config.permissionMode as PermissionMode);
             }
           }
-          const adoptedProviderId = resolveAdoptedBuiltinProviderId(sidecarIsExternal, config.providerId);
+          const adoptedProviderId = resolveAdoptedBuiltinProviderId(
+            sidecarUsesExternalRuntimeControls,
+            config.providerId,
+          );
           if (adoptedProviderId !== undefined) {
             setSelectedProviderId(adoptedProviderId);
           }
@@ -3670,20 +3718,21 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // the SDK default 'high' (the query-time isSdkEffortLevel gate). Reset to
   // 'default' (persisted + pushed via the handler) so UI and wire agree.
   useEffect(() => {
-    if (isExternalRuntime || !currentProvider) return;
+    if (inputUsesExternalRuntimeControls || !currentProvider) return;
     if (configDispositionRef.current !== 'push') return;
     if (reasoningEffort === 'default') return;
     const choices = reasoningEffortChoices(
-      'builtin',
+      currentRuntime === 'dsh' ? 'dsh' : 'builtin',
       currentProvider.apiProtocol,
       currentProvider.id,
       selectedModel,
     );
-    if (choices && !choices.includes(reasoningEffort)) {
+    if ((choices && !choices.includes(reasoningEffort))
+      || (currentRuntime === 'dsh' && choices === null)) {
       void handleReasoningEffortChange('default');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed to protocol-relevant provider fields
-  }, [isExternalRuntime, currentProvider?.id, currentProvider?.apiProtocol, selectedModel, reasoningEffort, handleReasoningEffortChange]);
+  }, [inputUsesExternalRuntimeControls, currentProvider?.id, currentProvider?.apiProtocol, selectedModel, reasoningEffort, handleReasoningEffortChange]);
 
   // Handle permission mode change — same dual-write policy as handleModelChange.
   const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
@@ -3733,18 +3782,8 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     ? permissionMode
     : effectivePermissionMode;
 
-  // Cross-runtime SDK protection: only fires when the multiAgentRuntime feature
-  // gate is OFF but the session was created by an external runtime (Codex/CC/
-  // Gemini). In that case the backend would try to run the built-in SDK against
-  // an external-runtime session → "No conversation found" crash, so we MUST block
-  // sending and route the user through fork-to-new-session instead.
-  //
-  // Normal agent-runtime drift does NOT trigger this (per v0.1.69 self-contained
-  // principle): when the feature gate is on, existing sessions keep their frozen
-  // runtime and the backend routes by sessionId to the correct Sidecar — no fork
-  // needed. The previous formula `sessionRuntime !== currentRuntime` was wrong
-  // because it compared session-actual against agent-preference, which forced an
-  // unnecessary fork every time the user changed agent.runtime in another tab.
+  // Labs controls creation/selection only. Existing sessions keep their frozen
+  // Runtime binding and remain executable after the gate is disabled.
   const isCrossRuntimeSession = shouldBlockSendForLabsDisabledExternalRuntime({
     sessionRuntime,
     sessionRuntimeSource: currentRuntimeSource,
@@ -3780,11 +3819,19 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       showPinnedProviderUnavailableToast();
       return false;
     }
+    if (runtimeExecutionUnavailable) {
+      toastRef.current.warning(t('shell.toasts.runtimeUnavailable'));
+      return false;
+    }
+    if (runtimeProviderSelectionIncomplete) {
+      toastRef.current.warning(t('shell.toasts.reselectModelFirst'));
+      return false;
+    }
     if (builtinSnapshotProviderSelectionIncomplete) {
       showSnapshotProviderIncompleteToast();
       return false;
     }
-    if (!isExternalRuntime && isRuntimeBackedProvider(currentProviderRef.current)) {
+    if (!inputUsesExternalRuntimeControls && isRuntimeBackedProvider(currentProviderRef.current)) {
       toastRef.current.warning(t('shell.toasts.codexSubscriptionNeedsSession'));
       return false;
     }
@@ -3886,10 +3933,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
       // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
       // Use effective model/permission (runtime-aware) — not the builtin values
-      await sendMessage(text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
-        // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
-        isExternalRuntime ? undefined : reasoningEffort,
-        isExternalRuntime ? undefined : providerRoute);
+      await sendMessage(text, images, effectivePermissionMode, effectiveModel, inputUsesExternalRuntimeControls ? undefined : providerEnv, undefined,
+        // Product-configured runtimes carry provider effort through the Host path.
+        inputUsesExternalRuntimeControls ? undefined : reasoningEffort,
+        inputUsesExternalRuntimeControls ? undefined : providerRoute);
     } catch (error) {
       const errorMessage = {
         id: `error-${crypto.randomUUID()}`,
@@ -3905,7 +3952,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
-  }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, isExternalRuntime, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
+  }, [sessionState, isSessionLoading, isLoading, queuedMessages.length, startScheduledTask, sendMessage, effectivePermissionMode, effectiveModel, reasoningEffort, inputUsesExternalRuntimeControls, isCrossRuntimeSession, scrollToBottom, pinnedProviderUnavailable, runtimeExecutionUnavailable, runtimeProviderSelectionIncomplete, builtinSnapshotProviderSelectionIncomplete, showPinnedProviderUnavailableToast, showSnapshotProviderIncompleteToast, t]);
 
   // Ref-stabilize handleSendMessage for handleRetry (avoids frequent re-creation)
   const handleSendMessageRef = useRef(handleSendMessage);
@@ -4056,6 +4103,15 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     const runtime = pendingRuntimeChange;
     setPendingRuntimeChange(null);
     if (!runtime || !currentAgent) return;
+    const previousPreference = resolveAgentRuntimePreference({
+      runtimePreference: currentAgent.runtimePreference,
+      runtime: currentAgent.runtime,
+      runtimeSource: currentAgent.runtimeConfig?.source,
+      providerId: currentAgent.providerId,
+    });
+    const previousAgentRuntime = previousPreference
+      ? runtimeTypeForAgentRuntimePreference(previousPreference)
+      : 'builtin';
     // Unified Tab-UI dual-write policy (matches handleModelChange /
     // handlePermissionModeChange / etc., PRD v0.1.69 §4.3 rule 2 extended to
     // runtime): fork a new Tab pinned to the chosen runtime AND update the
@@ -4121,10 +4177,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       await deleteUnopenedForkSession(session.id);
       if (agentTemplateUpdated) {
         try {
-          await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
-            runtimeConfig: currentAgent.runtimeConfig,
-          });
+          await patchAgentConfig(
+            currentAgent.id,
+            buildRuntimeChangePatch(
+              currentAgent.runtimeConfig,
+              previousAgentRuntime,
+            ),
+          );
         } catch (rollbackErr) {
           console.warn('[chat] Runtime rollback after fork tab open failure also failed:', rollbackErr);
         }
@@ -4138,10 +4197,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       } catch (err) {
         console.error('[chat] Runtime fork channel binding transfer failed:', err);
         try {
-          await patchAgentConfig(currentAgent.id, {
-            runtime: currentAgent.runtime ?? 'builtin',
-            runtimeConfig: currentAgent.runtimeConfig,
-          });
+          await patchAgentConfig(
+            currentAgent.id,
+            buildRuntimeChangePatch(
+              currentAgent.runtimeConfig,
+              previousAgentRuntime,
+            ),
+          );
         } catch (rollbackErr) {
           console.warn('[chat] Runtime rollback after failed channel transfer also failed:', rollbackErr);
         }
@@ -4331,17 +4393,19 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   }, []);
 
   const managedCodexCompactSupported = currentRuntime === 'codex' && managedProviderRuntimeActive;
-  const manualContextCompactSupported = currentRuntime === 'builtin' || managedCodexCompactSupported;
+  const nativeRuntimeCompactSupported = managedCodexCompactSupported || currentRuntime === 'dsh';
+  const manualContextCompactSupported = currentRuntime === 'builtin' || nativeRuntimeCompactSupported;
   const runtimeClientActionSlashCommands = useMemo(
-    () => managedCodexCompactSupported ? [MANAGED_CODEX_COMPACT_SLASH_COMMAND] : [],
-    [managedCodexCompactSupported],
+    () => nativeRuntimeCompactSupported ? [MANAGED_CODEX_COMPACT_SLASH_COMMAND] : [],
+    [nativeRuntimeCompactSupported],
   );
 
   // Both the context card and `/compact` dispatch this action. Builtin keeps
   // the Claude SDK command path; Managed Codex uses its native SessionEngine
-  // control operation so no synthetic user message enters the transcript.
+  // control operation; DSH uses the same SessionEngine capability. Neither
+  // path inserts a synthetic user message into the transcript.
   const handleCompactContext = useCallback(() => {
-    if (managedCodexCompactSupported) {
+    if (nativeRuntimeCompactSupported) {
       void apiPost<{ success: boolean; error?: string }>('/api/session/compact')
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -4377,7 +4441,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     currentRuntime,
     effectiveModel,
     effectivePermissionMode,
-    managedCodexCompactSupported,
+    nativeRuntimeCompactSupported,
     pinnedProviderUnavailable,
     reasoningEffort,
     sendMessage,
@@ -4397,8 +4461,8 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       setStoppedCronRecovery(null);
       if (!cronStateRef.current.task) disableCronMode();
       const goalExecution = buildCronExecutionOverrides({
-        providerId: !isExternalRuntime && currentProvider ? currentProvider.id : undefined,
-        model: isExternalRuntime ? undefined : selectedModel,
+        providerId: !inputUsesExternalRuntimeControls && currentProvider ? currentProvider.id : undefined,
+        model: inputUsesExternalRuntimeControls ? undefined : selectedModel,
       });
       setGoalDraftConfig(createDefaultSessionGoalDraftConfig({
         permissionMode: isExternalRuntime ? effectiveRuntimePermissionMode : permissionMode,
@@ -4414,6 +4478,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     disableCronMode,
     effectiveRuntimePermissionMode,
     handleCompactContext,
+    inputUsesExternalRuntimeControls,
     isExternalRuntime,
     permissionMode,
     selectedModel,
@@ -4588,7 +4653,9 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // 稳定，SimpleChatInput 的 React.memo 不再被打穿，输入框在 AI 流式输出时不会
   // 每 token 重渲染。AgentStatusPanel 内部仍随 commit 重渲染，其 DOM 仅在
   // 派生 todos/subagents 变化时才改，成本由 React 协调器吸收。
-  const supportsAgentStatusPanel = currentRuntime === 'builtin' || currentRuntime === 'codex';
+  const supportsAgentStatusPanel = currentRuntime === 'builtin'
+    || currentRuntime === 'codex'
+    || currentRuntime === 'dsh';
   const agentStatusSlot = useMemo(
     () => !supportsAgentStatusPanel
       ? undefined
@@ -4765,7 +4832,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         const r = res as RewindResponse | undefined;
         track('session_rewind', {
           runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
           result: r?.errorCode ?? (r?.success === false ? 'failed' : 'success'),
         });
         if (r && !r.success) {
@@ -4798,7 +4865,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         const errorCode = typeof structured?.errorCode === 'string' ? structured.errorCode : undefined;
         track('session_rewind', {
           runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
           result: errorCode ?? (typeof structured?.status === 'number' ? 'failed' : 'transport_error'),
         });
 
@@ -4953,7 +5020,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         const r = res as { success?: boolean; newSessionId?: string; agentDir?: string; title?: string; error?: string; errorCode?: string } | undefined;
         track('session_fork', {
           runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
           result: r?.errorCode ?? (r?.success ? 'success' : 'failed'),
         });
         if (r?.success && r.newSessionId && r.agentDir) {
@@ -4993,7 +5060,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
           : undefined;
         track('session_fork', {
           runtime: currentRuntime,
-          runtime_source: currentRuntime === 'builtin' ? null : (currentRuntimeSource ?? 'system-cli'),
+          runtime_source: runtimeSourceForRuntimeType(currentRuntime, currentRuntimeSource) ?? null,
           result: errorCode ?? 'transport_error',
         });
         if (errorCode) {
@@ -5525,12 +5592,16 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             workspaceSlashCommands={workspaceCapabilitySlashCommands}
             sdkSlashCommands={visibleSdkSlashCommands}
             provider={currentProvider}
-            providers={providers}
-            providerAvailable={currentProviderAvailableForInput}
+            providers={providerUiProviders}
+            providerAvailable={currentProviderAvailableForInput
+              && !runtimeExecutionUnavailable
+              && !runtimeProviderSelectionIncomplete}
             availableProviderIds={availableProviderIdsForInput}
-            providerUnavailableMessage={builtinSnapshotProviderSelectionIncomplete
-              ? t('shell.toasts.reselectModelFirst')
-              : undefined}
+            providerUnavailableMessage={runtimeExecutionUnavailable
+              ? t('shell.toasts.runtimeUnavailable')
+              : builtinSnapshotProviderSelectionIncomplete
+                ? t('shell.toasts.reselectModelFirst')
+                : undefined}
             onProviderChange={handleProviderChange}
             selectedModel={inputUsesExternalRuntimeControls ? runtimeModel : selectedModel}
             onBuiltinModelSelect={inputUsesExternalRuntimeControls ? undefined : handleBuiltinModelSelect}
@@ -5591,10 +5662,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             onGoalDismiss={handleGoalDismiss}
             onSlashAction={handleSlashAction}
             runtime={inputChromeRuntime}
+            usesExternalRuntimeControls={inputUsesExternalRuntimeControls}
             runtimeDetections={showLegacyRuntimeSelector ? runtimeDetections : undefined}
             onRuntimeChange={showLegacyRuntimeSelector ? handleRuntimeChange : undefined}
             runtimeModels={inputUsesExternalRuntimeControls ? runtimeModels : undefined}
-            runtimePermissionModes={inputUsesExternalRuntimeControls ? runtimePermissionModes : undefined}
+            runtimePermissionModes={currentRuntime === 'dsh' || inputUsesExternalRuntimeControls
+              ? runtimePermissionModes
+              : undefined}
             queuedMessages={queuedMessages}
             onCancelQueued={handleCancelQueuedVoid}
             onForceExecuteQueued={handleForceExecuteQueuedVoid}
@@ -5642,7 +5716,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
               projectIcon={currentProject?.icon}
               projectDisplayName={currentProject?.displayName}
               provider={currentProvider}
-              providers={providers}
+              providers={providerUiProviders}
               onProviderChange={handleProviderChange}
               onCollapse={handleCollapseWorkspace}
               onOpenConfig={handleOpenAgentSettings}
@@ -6149,8 +6223,8 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             return;
           }
           const cronExecution = buildCronExecutionOverrides({
-            providerId: !isExternalRuntime && currentProvider ? currentProvider.id : undefined,
-            model: isExternalRuntime ? undefined : selectedModel,
+            providerId: !inputUsesExternalRuntimeControls && currentProvider ? currentProvider.id : undefined,
+            model: inputUsesExternalRuntimeControls ? undefined : selectedModel,
           });
           const enrichedConfig = {
             ...config,

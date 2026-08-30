@@ -36,6 +36,7 @@ import {
 } from '../../../../shared/types/agent';
 import { getRuntimePermissionModes, type RuntimeConfig } from '../../../../shared/types/runtime';
 import { runtimeConfigForRuntimeBackedProviderDefault, toProviderExecutionIntent } from '../../../../shared/providerExecution';
+import { projectProvidersForRuntime } from '@/utils/runtimeProviderProjection';
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
 import FeishuCredentialInput from '../../ImSettings/components/FeishuCredentialInput';
 import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredentialInput';
@@ -506,10 +507,18 @@ export default function ChannelDetailView({
         () => channel ? resolveEffectiveConfig(agent, channel) : null,
         [agent, channel],
     );
+    const channelRuntime = useMemo(
+        () => channel ? resolveAgentChannelRuntime(agent, channel) : 'builtin',
+        [agent, channel],
+    );
+    const channelProviders = useMemo(
+        () => projectProvidersForRuntime(providers, channelRuntime),
+        [providers, channelRuntime],
+    );
 
     const providerOptions = useMemo(() => {
         const options = [{ value: '', label: t('agentSettings.channelDetail.defaultInheritAgent') }];
-        for (const p of providers) {
+        for (const p of channelProviders) {
             if (!isProviderEnabled(p)) continue;
             if (p.type === 'subscription'
                 && p.id !== CODEX_SUBSCRIPTION_PROVIDER_ID
@@ -519,14 +528,14 @@ export default function ChannelDetailView({
             }
         }
         return options;
-    }, [providers, apiKeys, providerVerifyStatus, t]);
+    }, [channelProviders, apiKeys, providerVerifyStatus, t]);
 
     const overrideProviderId = channel?.overrides?.providerId ?? '';
     const effectiveProviderId = effective?.providerId || 'anthropic-sub';
 
     const selectedProvider = useMemo(
-        () => providers.find(p => p.id === effectiveProviderId),
-        [providers, effectiveProviderId],
+        () => channelProviders.find(p => p.id === effectiveProviderId),
+        [channelProviders, effectiveProviderId],
     );
 
     const modelOptions = useMemo(() => {
@@ -1331,11 +1340,12 @@ export default function ChannelDetailView({
                                         model: undefined,
                                         runtime: undefined,
                                         runtimeConfig: undefined,
+                                        runtimePreference: undefined,
                                         permissionMode: undefined,
                                     });
                                     return;
                                 }
-                                const provider = providers.find(p => p.id === providerId);
+                                const provider = channelProviders.find(p => p.id === providerId);
                                 const newModel = provider ? provider.primaryModel : undefined;
                                 if (provider && newModel) {
                                     const intent = toProviderExecutionIntent(provider, newModel);
@@ -1344,10 +1354,11 @@ export default function ChannelDetailView({
                                             providerId,
                                             providerEnvJson: undefined,
                                             model: newModel,
-                                            runtime: 'builtin',
+                                            runtime: undefined,
                                             runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
                                                 channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
                                             ),
+                                            runtimePreference: undefined,
                                             permissionMode: legalProductPermissionOverride,
                                         });
                                         return;
@@ -1372,14 +1383,15 @@ export default function ChannelDetailView({
                                     providerId,
                                     providerEnvJson,
                                     model: newModel,
-                                    runtime: 'builtin',
+                                    runtime: undefined,
                                     runtimeConfig: undefined,
+                                    runtimePreference: undefined,
                                     permissionMode: legalProductPermissionOverride,
                                 });
                             }}
                             onModelChange={async (model) => {
                                 const provider = channel?.overrides?.providerId
-                                    ? providers.find(p => p.id === channel.overrides?.providerId)
+                                    ? channelProviders.find(p => p.id === channel.overrides?.providerId)
                                     : undefined;
                                 if (provider) {
                                     const fallbackModel = model || provider.primaryModel;
@@ -1389,10 +1401,11 @@ export default function ChannelDetailView({
                                     if (intent?.kind === 'runtime-backed-provider') {
                                         await patchOverrides({
                                             model: model || undefined,
-                                            runtime: 'builtin',
+                                            runtime: undefined,
                                             runtimeConfig: runtimeConfigForRuntimeBackedProviderDefault(
                                                 channel?.overrides?.runtimeConfig as RuntimeConfig | undefined,
                                             ),
+                                            runtimePreference: undefined,
                                         });
                                         return;
                                     }

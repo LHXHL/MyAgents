@@ -1044,6 +1044,10 @@ async function syncAgentRuntime(
     runtimePatch.runtime = patch.runtime ?? null;
     hasRuntimeChanges = true;
   }
+  if ('runtimePreference' in patch) {
+    runtimePatch.runtimePreference = patch.runtimePreference ?? null;
+    hasRuntimeChanges = true;
+  }
   if ('runtimeConfig' in patch) {
     runtimePatch.runtimeConfig = patch.runtimeConfig ?? null;
     hasRuntimeChanges = true;

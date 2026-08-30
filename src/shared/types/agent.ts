@@ -12,15 +12,20 @@ import type {
 import {
   getDefaultRuntimePermissionMode,
   getMaxPermissionForRuntime,
-  normalizeRuntime,
   projectPermissionModeForRuntime,
   type RuntimeType,
   type RuntimeConfig,
 } from './runtime';
+import { managedCodexRuntimePermissionToProviderPermission } from '../providerExecution';
 import {
-  agentUsesManagedCodexProvider,
-  managedCodexRuntimePermissionToProviderPermission,
-} from '../providerExecution';
+  resolveAgentRuntimePreference,
+  runtimeTypeForAgentRuntimePreference,
+} from '../integrated-runtimes/identity';
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+} from '../config-types';
 import type { OfficialToolId } from '../official-tools';
 import type { ProjectCapabilitySelectionV1 } from '../projectCapabilities';
 import type { AgentRuntimePreference } from '../integrated-runtimes/identity';
@@ -170,15 +175,32 @@ function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfi
   return channel.overrides?.providerId ?? agent.providerId;
 }
 
+function resolveAgentChannelPreference(agent: AgentConfig, channel: ChannelConfig) {
+  const overrides = channel.overrides;
+  if (overrides?.runtimePreference !== undefined || overrides?.runtime !== undefined) {
+    return resolveAgentRuntimePreference({
+      runtimePreference: overrides.runtimePreference,
+      runtime: overrides.runtime,
+      runtimeSource: overrides.runtimeConfig?.source,
+      providerId: resolveAgentChannelProviderId(agent, channel),
+    });
+  }
+  return resolveAgentRuntimePreference({
+    runtimePreference: agent.runtimePreference,
+    runtime: agent.runtime,
+    runtimeSource: agent.runtimeConfig?.source,
+    providerId: resolveAgentChannelProviderId(agent, channel),
+  });
+}
+
 export function agentChannelUsesManagedCodexProvider(
   agent: AgentConfig,
   channel: ChannelConfig,
 ): boolean {
-  return agentUsesManagedCodexProvider({
-    providerId: resolveAgentChannelProviderId(agent, channel),
-    runtime: channel.overrides?.runtime ?? agent.runtime,
-    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
-  });
+  if (resolveAgentChannelProviderId(agent, channel) !== CODEX_SUBSCRIPTION_PROVIDER_ID) {
+    return false;
+  }
+  return resolveAgentChannelPreference(agent, channel)?.family === 'integrated';
 }
 
 /**
@@ -188,10 +210,16 @@ export function agentChannelUsesManagedCodexProvider(
  * `ChannelConfigRust::to_im_config`.
  */
 export function resolveAgentChannelRuntime(agent: AgentConfig, channel: ChannelConfig): RuntimeType {
-  const runtime = normalizeRuntime(channel.overrides?.runtime ?? agent.runtime ?? 'builtin');
-  return agentChannelUsesManagedCodexProvider(agent, channel)
-    ? 'codex'
-    : runtime;
+  const preference = resolveAgentChannelPreference(agent, channel);
+  if (!preference) return 'builtin';
+  const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
+  if (preference.family === 'external') return preferredRuntime;
+  const providerId = resolveAgentChannelProviderId(agent, channel);
+  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) return 'codex';
+  if (providerId === SUBSCRIPTION_PROVIDER_ID || providerId === XAI_SUBSCRIPTION_PROVIDER_ID) {
+    return 'builtin';
+  }
+  return preferredRuntime;
 }
 
 export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {

@@ -147,6 +147,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   );
   assert.match(packageJson.scripts["tauri:build"], /verify:dsh-runtime/);
   assert.match(packageJson.scripts["tauri:dev"], /verify:dsh-runtime/);
+  assert.equal(tauriConfig.build.beforeBundleCommand, undefined);
 
   for (const script of resourceScripts) {
     assert.match(script, /24\.14\.0/);
@@ -166,10 +167,23 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   const schema = readFileSync(
     resolve(repoRoot, "contracts/myagents-dsh/protocol.schema.json"),
   );
+  const runtimeManifest = JSON.parse(
+    readFileSync(
+      resolve(
+        repoRoot,
+        "src-tauri/resources/integrated-runtimes/dsh/runtime-artifact/runtime-artifact-v1.json",
+      ),
+      "utf8",
+    ),
+  );
   assert.equal(
     sha256ForTest(generatedClient),
     lock.handoff.generatedClientSha256,
   );
   assert.equal(sha256ForTest(compatibility), lock.handoff.compatibilitySha256);
   assert.equal(sha256ForTest(schema), lock.protocol.schemaSha256);
+  assert.equal(
+    runtimeManifest.files.some((entry) => entry.kind === "symlink"),
+    false,
+  );
 });

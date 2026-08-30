@@ -72,4 +72,18 @@ describe('resolveRuntimeModelCatalogIdentity', () => {
       runtime: 'builtin',
     })).toEqual({ runtime: 'codex', source: 'managed-provider' });
   });
+
+  it('uses authoritative DSH preference only while new Runtime selection is available', () => {
+    const agent = {
+      runtime: 'builtin' as const,
+      runtimePreference: { family: 'integrated' as const, id: 'dsh' as const },
+    };
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, true)).toEqual({
+      runtime: 'dsh',
+      source: 'integrated',
+    });
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, false)).toEqual({
+      runtime: 'builtin',
+    });
+  });
 });

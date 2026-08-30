@@ -19,7 +19,9 @@ export function shouldSessionSnapshotUseProviderPicker(args: {
   session: ProviderProjectedSessionSnapshot | null | undefined;
   runtime: RuntimeType;
 }): boolean {
-  return args.runtime === 'builtin' || isManagedProviderSessionSnapshot(args.session);
+  return args.runtime === 'builtin'
+    || args.runtime === 'dsh'
+    || isManagedProviderSessionSnapshot(args.session);
 }
 
 export function managedProviderSnapshotProviderId(

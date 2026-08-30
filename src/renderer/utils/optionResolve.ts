@@ -294,20 +294,14 @@ export function isPinnedProviderUnavailable(args: {
   return args.resolvedProviderId !== args.selectedProviderId;
 }
 
-/**
- * Labs `multiAgentRuntime` only gates user-managed CLI runtimes. Managed Codex
- * Provider sessions are provider-owned and carry `runtimeSource=managed-provider`;
- * they must remain sendable when Labs is off.
- */
+/** Labs is a creation/selection gate, never a kill switch for a frozen Session. */
 export function shouldBlockSendForLabsDisabledExternalRuntime(args: {
   sessionRuntime: string | null;
   sessionRuntimeSource: string | undefined;
   multiAgentRuntimeEnabled: boolean;
 }): boolean {
-  return args.sessionRuntime !== null
-    && args.sessionRuntime !== 'builtin'
-    && args.sessionRuntimeSource !== 'managed-provider'
-    && !args.multiAgentRuntimeEnabled;
+  void args;
+  return false;
 }
 
 /**

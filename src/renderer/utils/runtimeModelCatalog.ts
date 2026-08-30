@@ -1,10 +1,18 @@
-import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import {
+  resolveEffectiveRuntime,
+  runtimeSourceForRuntimeType,
+  type RuntimeConfig,
+  type RuntimeSource,
+  type RuntimeType,
+} from '../../shared/types/runtime';
+import type { AgentRuntimePreference } from '../../shared/integrated-runtimes/identity';
 import { agentUsesManagedCodexProvider } from '../../shared/providerExecution';
 
 type AgentRuntimeDefaults = {
   providerId?: string | null;
   runtime?: RuntimeType | null;
   runtimeConfig?: RuntimeConfig | null;
+  runtimePreference?: AgentRuntimePreference | null;
 };
 
 export type RuntimeModelCatalogIdentity = {
@@ -38,14 +46,20 @@ export function resolveRuntimeModelCatalogIdentity(
 
 export function resolveAgentRuntimeModelCatalogIdentity(
   agent: AgentRuntimeDefaults | null | undefined,
+  runtimeSelectionAvailable = true,
 ): RuntimeModelCatalogIdentity {
-  if (agentUsesManagedCodexProvider(agent)) {
+  const runtime = resolveEffectiveRuntime(
+    agent?.runtime,
+    runtimeSelectionAvailable,
+    agent?.runtimePreference,
+    agent?.runtimeConfig?.source,
+    agent?.providerId,
+  );
+  if (runtime === 'builtin' && agentUsesManagedCodexProvider(agent)) {
     return { runtime: 'codex', source: 'managed-provider' };
   }
-  const runtime = agent?.runtime ?? 'builtin';
-  return runtime === 'codex'
-    ? { runtime, source: agent?.runtimeConfig?.source ?? 'system-cli' }
-    : { runtime };
+  const source = runtimeSourceForRuntimeType(runtime, agent?.runtimeConfig?.source);
+  return source ? { runtime, source } : { runtime };
 }
 
 export function clearRuntimeModelOverride(

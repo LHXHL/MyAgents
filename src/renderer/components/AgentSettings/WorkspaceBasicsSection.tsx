@@ -22,12 +22,16 @@ import RuntimeSelector from '../RuntimeSelector';
 import { PermissionModeIcon, PermissionModeMenuContent, type PermissionModeMenuItem } from '../PermissionModeMenu';
 import { Popover } from '../ui/Popover';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../../shared/types/runtime';
-import { buildRuntimeChangePatch } from '../../../shared/types/runtime';
+import { buildRuntimeChangePatch, resolveEffectiveRuntime } from '../../../shared/types/runtime';
 import { agentDefaultsForRuntimeBackedProvider, agentUsesManagedCodexProvider, toProviderExecutionIntent } from '../../../shared/providerExecution';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '@/components/Toast';
 import { useBrowserResourceReady } from '@/hooks/useBrowserResourceReady';
 import { MANAGED_BROWSER_MCP_ID } from '@/../shared/browserTools';
+import {
+  isProviderModelCompatibleWithRuntime,
+  projectProvidersForRuntime,
+} from '@/utils/runtimeProviderProjection';
 
 interface WorkspaceBasicsSectionProps {
   project: Project | undefined;
@@ -53,7 +57,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // Only credentialed providers — the picker must not expose a provider
   // the user can't actually use, and must match the Chat model switcher's
   // "available" set (see useAvailableProviders for rationale).
-  const availableProviders = useAvailableProviders();
+  const credentialedProviders = useAvailableProviders();
   const toast = useToast();
   const managedBrowserReady = useBrowserResourceReady();
   // Derive canonical name from project — use as initializer key to reset input
@@ -78,12 +82,21 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   });
   // When multiAgentRuntime is off, treat as builtin regardless of agent config (方案 C)
   const agentRuntimeConfig = agent?.runtimeConfig as RuntimeConfig | undefined;
-  const usesManagedCodexProvider = agentUsesManagedCodexProvider(agent);
-  const currentRuntime: RuntimeType = usesManagedCodexProvider
-    ? 'builtin'
-    : config.multiAgentRuntime
-    ? ((agent?.runtime as RuntimeType) || 'builtin')
-    : 'builtin';
+  const currentRuntime: RuntimeType = resolveEffectiveRuntime(
+    agent?.runtime,
+    !!config.multiAgentRuntime,
+    agent?.runtimePreference,
+    agent?.runtimeConfig?.source,
+    agent?.providerId,
+  );
+  const usesManagedCodexProvider = currentRuntime === 'builtin'
+    && agentUsesManagedCodexProvider(agent);
+  const usesExternalCliConfiguration = currentRuntime !== 'builtin' && currentRuntime !== 'dsh';
+  const usesProductConfiguration = !usesExternalCliConfiguration;
+  const availableProviders = useMemo(
+    () => projectProvidersForRuntime(credentialedProviders, currentRuntime),
+    [credentialedProviders, currentRuntime],
+  );
 
   // Sync name when canonical name changes externally
   useEffect(() => {
@@ -119,6 +132,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       await patchAgentConfig(agent.id, buildRuntimeChangePatch(agent.runtimeConfig, runtime));
       refreshConfig();
       const label = runtime === 'claude-code' ? 'Claude Code'
+        : runtime === 'dsh' ? 'DSH'
         : runtime === 'codex' ? 'Codex'
         : runtime === 'gemini' ? 'Gemini CLI'
         : 'MyAgents';
@@ -225,8 +239,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     setOpenPopup(null);
   }, [agent?.model, agent?.providerId, agentRuntimeConfig, availableProviders, providers, saveAgentConfig, usesManagedCodexProvider]);
 
-  // #324 — agent-level 推理强度 default ('default' | level). Builtin only here
-  // (external runtimes configure it via the chat toolbar → runtimeConfig).
+  // #324 — Product-configured runtimes persist effort on AgentConfig.
   const handleEffortSelect = useCallback((effort: string) => {
     void saveAgentConfig({ reasoningEffort: effort });
     setOpenPopup(null);
@@ -289,6 +302,11 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   const selectedProvider = providers.find(p => p.id === effectiveProviderId);
   const isSelectedProviderAvailable = selectedProvider
     ? isProviderAvailable(selectedProvider, apiKeys, providerVerifyStatus)
+      && isProviderModelCompatibleWithRuntime(
+        currentRuntime,
+        selectedProvider.id,
+        effectiveModel ?? selectedProvider.primaryModel,
+      )
     : true;
   const modelName = effectiveModel
     ? (selectedProvider?.models?.find(m => m.model === effectiveModel)?.modelName || effectiveModel)
@@ -309,11 +327,14 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // agent is the only storage for this field).
   const effectiveReasoningEffort = agent?.reasoningEffort ?? 'default';
   const effectiveReasoningEffortChoices = reasoningEffortChoices(
-    'builtin',
+    currentRuntime,
     selectedProvider?.apiProtocol,
     selectedProvider?.id,
     effectiveModel ?? undefined,
   );
+  const visibleReasoningEffortChoices = currentRuntime === 'dsh'
+    ? (effectiveReasoningEffortChoices ?? [])
+    : effectiveReasoningEffortChoices;
 
   const effectiveMcpServers = agent?.mcpEnabledServers ?? project?.mcpEnabledServers;
   const enabledMcpNames = availableMcpServers
@@ -415,8 +436,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
             </div>
           </div>
 
-          {/* External runtime notice */}
-          {currentRuntime !== 'builtin' && (() => {
+          {/* External CLI runtime notice */}
+          {usesExternalCliConfiguration && (() => {
             const runtimeLabel = currentRuntime === 'claude-code' ? 'Claude Code'
               : currentRuntime === 'codex' ? 'Codex'
               : currentRuntime === 'gemini' ? 'Gemini CLI'
@@ -431,7 +452,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           {/* Issue #194 — proxy policy for external runtime subprocess.
               Only relevant when the agent runs an external CLI (Codex / CC /
               Gemini), so hidden for builtin. */}
-          {currentRuntime !== 'builtin' && agent && (() => {
+          {usesExternalCliConfiguration && agent && (() => {
             // Read current policy; default to 'myagents' for backwards compat.
             // runtimeConfig is on AgentConfig as a free-form record — keep the
             // narrow `as` cast so we don't expand its public schema unnecessarily.
@@ -493,8 +514,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
         </>
       )}
 
-      {/* Model — hidden when external runtime (they manage their own models) */}
-      {currentRuntime === 'builtin' && (
+      {/* Product provider/model configuration is shared by Builtin and DSH. */}
+      {usesProductConfiguration && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.model')}</label>
         <button
@@ -560,8 +581,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       </div>
       )}
 
-      {/* Permission — hidden when external runtime */}
-      {currentRuntime === 'builtin' && (
+      {/* Product permission configuration is shared by Builtin and DSH. */}
+      {usesProductConfiguration && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.permission')}</label>
         <button
@@ -597,8 +618,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       </div>
       )}
 
-      {/* #324 推理强度 — hidden when external runtime (configured via chat toolbar there) */}
-      {currentRuntime === 'builtin' && effectiveReasoningEffortChoices !== null && (
+      {/* #324 推理强度 — hidden only for external CLI runtimes. */}
+      {usesProductConfiguration && visibleReasoningEffortChoices !== null && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.reasoningEffort')}</label>
         <button
@@ -613,7 +634,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           <>
             <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
             <div className="absolute left-20 top-0 z-50 w-[280px] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {['default', ...(effectiveReasoningEffortChoices ?? [])].map(level => (
+              {['default', ...(visibleReasoningEffortChoices ?? [])].map(level => (
                 <button
                   key={level}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${
@@ -640,8 +661,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       </div>
       )}
 
-      {/* MCP Tools — hidden when external runtime */}
-      {currentRuntime === 'builtin' && (
+      {/* Product MCP selection is shared by Builtin and DSH. */}
+      {usesProductConfiguration && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.tools')}</label>
         <button
@@ -690,11 +711,11 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       </div>
       )}
 
-      {/* Plugins (PRD 0.2.17) — same shape as MCP row above. Hidden when
-       *  external runtime (CC/Codex/Gemini manage their own plugins).
+      {/* Plugins (PRD 0.2.17) — same shape as MCP row above. Hidden for
+       *  external CLI runtimes (CC/Codex/Gemini manage their own plugins).
        *  Renders nothing when no plugin is globally visible — avoids an
        *  empty "未启用插件" row for users who haven't installed any. */}
-      {currentRuntime === 'builtin' && visiblePlugins.length > 0 && (
+      {usesProductConfiguration && visiblePlugins.length > 0 && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.plugins')}</label>
         <button

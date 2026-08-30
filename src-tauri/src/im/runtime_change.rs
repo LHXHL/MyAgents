@@ -116,17 +116,6 @@ fn provider_route_json(provider_id: Option<&str>, model: Option<&str>) -> Option
     }))
 }
 
-fn runtime_source_from_config(runtime_config: Option<&serde_json::Value>) -> Option<String> {
-    match runtime_config
-        .and_then(|v| v.get("source"))
-        .and_then(|v| v.as_str())
-    {
-        Some("managed-provider") => Some("managed-provider".to_string()),
-        Some("system-cli") => Some("system-cli".to_string()),
-        _ => None,
-    }
-}
-
 fn managed_codex_identity_json(model: Option<&str>) -> Option<Value> {
     let model = model?;
     if model.is_empty() {
@@ -176,13 +165,14 @@ pub async fn build_snapshot_from_channel_state(
     let model_value = current_model.read().await.clone();
     let mcp_servers_json_value = mcp_servers_json.read().await.clone();
     let provider_env_value = current_provider_env.read().await.clone();
-    let is_external = runtime_value != "builtin";
+    let is_external = super::is_external_runtime_type(&runtime_value);
     let live_provider_id = provider_env_value
         .as_ref()
         .and_then(|v| v.get("providerId"))
         .and_then(|v| v.as_str())
         .map(String::from);
-    let runtime_source = runtime_source_from_config(runtime_config_value.as_ref());
+    let runtime_source =
+        super::runtime_source_for_runtime(&runtime_value, runtime_config_value.as_ref());
     let provider_id_for_snapshot = if runtime_source.as_deref() == Some("managed-provider") {
         Some("codex-sub".to_string())
     } else if is_external {
@@ -840,6 +830,48 @@ mod tests {
             enabled_mcp_ids_from_servers_json(Some(&raw)),
             Some(vec!["remote-http".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn dsh_snapshot_preserves_product_provider_route_and_integrated_source() {
+        let runtime = tokio::sync::RwLock::new("dsh".to_string());
+        let model = tokio::sync::RwLock::new(Some("deepseek-v4-flash".to_string()));
+        let permission = tokio::sync::RwLock::new("fullAgency".to_string());
+        let mcp = tokio::sync::RwLock::new(None);
+        let runtime_config = tokio::sync::RwLock::new(None);
+        let provider_env = tokio::sync::RwLock::new(Some(serde_json::json!({
+            "providerId": "deepseek"
+        })));
+
+        let snapshot = build_snapshot_from_channel_state(
+            &runtime,
+            &model,
+            &permission,
+            &mcp,
+            &runtime_config,
+            Some("deepseek".to_string()),
+            &provider_env,
+        )
+        .await
+        .to_json();
+
+        assert_eq!(snapshot.get("runtime").and_then(Value::as_str), Some("dsh"));
+        assert_eq!(
+            snapshot.get("runtimeSource").and_then(Value::as_str),
+            Some("integrated"),
+        );
+        assert_eq!(
+            snapshot.get("providerId").and_then(Value::as_str),
+            Some("deepseek"),
+        );
+        assert_eq!(
+            snapshot
+                .get("providerRoute")
+                .and_then(|route| route.get("model"))
+                .and_then(Value::as_str),
+            Some("deepseek-v4-flash"),
+        );
+        assert!(snapshot.get("providerEnvJson").is_none());
     }
 
     #[test]

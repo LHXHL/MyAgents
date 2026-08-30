@@ -81,6 +81,7 @@ import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
 import { forceFlushLogs, setLogServerReady, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
 import { normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
+import { projectProvidersForRuntime } from '@/utils/runtimeProviderProjection';
 import {
   acknowledgeNotificationBadgeTarget,
   buildSessionNotificationBadgeCounts,
@@ -118,7 +119,7 @@ import type { CapabilityInitialSelect } from '../shared/skillsTypes';
 import { ensureSelfAwarenessWorkspace, resolveBuiltinSelection, pairBuiltinSelection, isProviderAvailable } from '@/config/configService';
 import { getProjectAgent, getAgentById } from '@/config/services/agentConfigService';
 import type { SessionMetadata } from '@/api/sessionClient';
-import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
+import { runtimeSourceForRuntimeType, type RuntimeSource, type RuntimeType } from '../shared/types/runtime';
 import {
   agentUsesManagedCodexProvider,
   createRuntimeBackedProviderIdentity,
@@ -210,16 +211,14 @@ function normalizeRuntimeSourceForOpen(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | undefined,
 ): RuntimeSource | undefined {
-  if (runtime === 'builtin') return undefined;
-  return runtimeSource ?? 'system-cli';
+  return runtimeSourceForRuntimeType(runtime, runtimeSource);
 }
 
 function analyticsRuntimeSource(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | undefined,
 ): RuntimeSource | null {
-  if (runtime === 'builtin') return null;
-  return runtimeSource ?? 'system-cli';
+  return runtimeSourceForRuntimeType(runtime, runtimeSource) ?? null;
 }
 
 async function resolveSessionRuntimeIdentityForOpen(
@@ -1049,7 +1048,13 @@ export default function App() {
       // runtimes that turn-level events (ai_turn_complete) can't see.
       const runtimesActive = Array.from(new Set(
         (cfg.agents ?? [])
-          .map((a) => resolveEffectiveRuntime(a.runtime, !!cfg.multiAgentRuntime))
+          .map((a) => resolveEffectiveRuntime(
+            a.runtime,
+            !!cfg.multiAgentRuntime,
+            a.runtimePreference,
+            a.runtimeConfig?.source,
+            a.providerId,
+          ))
           .filter((r) => r !== 'builtin'),
       )).sort().join(',');
       track('app_launch', { launch_type: 'cold', runtimes_active: runtimesActive });
@@ -1763,7 +1768,13 @@ export default function App() {
       return {
         surface: pendingSurfaceForLaunch.surface,
         agent_hash: hashAgentNameSync(agent?.name ?? null),
-        runtime: resolveEffectiveRuntime(agent?.runtime, !!cfg.multiAgentRuntime),
+        runtime: resolveEffectiveRuntime(
+          agent?.runtime,
+          !!cfg.multiAgentRuntime,
+          agent?.runtimePreference,
+          agent?.runtimeConfig?.source,
+          agent?.providerId,
+        ),
         entry_intent: pendingSurfaceForLaunch.entryIntent,
         has_initial_message: !!initialMessage,
         session_id: null,
@@ -3128,17 +3139,25 @@ export default function App() {
         const workspaceRuntime = resolveEffectiveRuntime(
           workspaceAgent?.runtime,
           Boolean(configRef.current?.multiAgentRuntime),
+          workspaceAgent?.runtimePreference,
+          workspaceAgent?.runtimeConfig?.source,
+          workspaceAgent?.providerId,
         );
-        const sel = workspaceRuntime === 'builtin'
+        const workspaceUsesProductProvider = workspaceRuntime === 'builtin' || workspaceRuntime === 'dsh';
+        const workspaceProviders = projectProvidersForRuntime(
+          appProvidersRef.current,
+          workspaceRuntime,
+        );
+        const sel = workspaceUsesProductProvider
           ? resolveBuiltinSelection(
               { agent: workspaceAgent, workspace },
               configRef.current!,
-              appProvidersRef.current,
+              workspaceProviders,
               appApiKeysRef.current,
               appProviderVerifyStatusRef.current,
             )
           : undefined;
-        if (workspaceRuntime === 'builtin' && !sel) {
+        if (workspaceUsesProductProvider && !sel) {
           toastRef.current?.error(t('appChrome.noModelProviderForDiscussion'));
           return false;
         }
@@ -3411,10 +3430,22 @@ export default function App() {
         const helperAgent = project.agentId && configRef.current
           ? getAgentById(configRef.current, project.agentId)
           : undefined;
+        const helperRuntime = resolveEffectiveRuntime(
+          helperAgent?.runtime,
+          Boolean(configRef.current?.multiAgentRuntime),
+          helperAgent?.runtimePreference,
+          helperAgent?.runtimeConfig?.source,
+          helperAgent?.providerId,
+        );
+        const helperUsesProductProvider = helperRuntime === 'builtin' || helperRuntime === 'dsh';
+        const helperProviders = projectProvidersForRuntime(
+          appProvidersRef.current,
+          helperRuntime,
+        );
         let builtinSelection: { providerId: string; model: string } | undefined;
         let providerExecutionIdentity: RuntimeBackedProviderIdentity | undefined;
-        if (providerId) {
-          const provider = appProvidersRef.current.find(p => p.id === providerId);
+        if (providerId && helperUsesProductProvider) {
+          const provider = helperProviders.find(p => p.id === providerId);
           if (provider && isProviderAvailable(
             provider,
             appApiKeysRef.current,
@@ -3431,11 +3462,11 @@ export default function App() {
             }
           }
         }
-        if (!builtinSelection && !providerExecutionIdentity) {
+        if (helperUsesProductProvider && !builtinSelection && !providerExecutionIdentity) {
           const sel = resolveBuiltinSelection(
             { agent: helperAgent, workspace: project },
             configRef.current!,
-            appProvidersRef.current,
+            helperProviders,
             appApiKeysRef.current,
             appProviderVerifyStatusRef.current,
           );

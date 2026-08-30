@@ -1768,9 +1768,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                         if is_external_runtime_type(&current_runtime) {
                             let current_runtime_config = runtime_config_for_loop.read().await.clone();
-                            let current_runtime_source = runtime_config_string(
+                            let current_runtime_source = runtime_source_for_runtime(
+                                &current_runtime,
                                 current_runtime_config.as_ref(),
-                                "source",
                             );
                             let managed_codex_runtime = current_runtime == "codex"
                                 && current_runtime_source.as_deref() == Some("managed-provider");
@@ -2757,8 +2757,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         task_adapter.ack_processing(&chat_id, &message_id).await;
                         task_adapter.send_typing(&chat_id).await;
 
-                        let task_runtime_source =
-                            runtime_config_string(task_runtime_config.as_ref(), "source");
+                        let task_runtime_source = runtime_source_for_runtime(
+                            &task_runtime,
+                            task_runtime_config.as_ref(),
+                        );
 
                         // 3b. Runtime drift check (v0.1.66): if the agent's runtime has
                         // been changed in Settings since the current Sidecar was spawned,

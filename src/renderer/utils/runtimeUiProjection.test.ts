@@ -30,8 +30,20 @@ describe('runtime UI projection', () => {
     })).toBe(true);
   });
 
+  it('keeps Integrated DSH on Product provider and extension controls', () => {
+    expect(projectInputChromeRuntime({
+      currentRuntime: 'dsh',
+      managedProviderRuntimeActive: false,
+    })).toBe('dsh');
+    expect(shouldUseExternalRuntimeInputControls({
+      currentRuntime: 'dsh',
+      managedProviderRuntimeActive: false,
+    })).toBe(false);
+  });
+
   it('only exposes Claude Agent SDK system slash commands to builtin Sessions', () => {
     expect(shouldShowBuiltinSdkSlashCommands('builtin')).toBe(true);
+    expect(shouldShowBuiltinSdkSlashCommands('dsh')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('codex')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('claude-code')).toBe(false);
     expect(shouldShowBuiltinSdkSlashCommands('gemini')).toBe(false);

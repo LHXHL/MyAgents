@@ -1796,6 +1796,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
     patch: AgentConfigPatch,
 ) -> Result<(), String> {
     let updates_channel_runtime = patch.runtime.is_some()
+        || patch.runtime_preference.is_some()
         || patch.runtime_config.is_some()
         || patch.provider_id.is_some()
         || patch.model.is_some()
@@ -1849,6 +1850,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             .find(|candidate| candidate.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found in persisted config", agent_id))?;
         let runtime_identity_patch_present = patch.runtime.is_some()
+            || patch.runtime_preference.is_some()
             || patch.runtime_config.is_some()
             || patch.provider_id.is_some()
             || patch.model.is_some()
@@ -1857,6 +1859,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
             || patch.provider_id.is_some()
             || patch.model.is_some()
             || patch.runtime.is_some()
+            || patch.runtime_preference.is_some()
             || patch.runtime_config.is_some()
             || patch.channels.is_some();
         let should_refresh_effective_channel = runtime_identity_patch_present
@@ -2197,6 +2200,7 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
                     && (patch.runtime_config.is_some()
                         || patch.provider_id.is_some()
                         || patch.runtime.is_some()
+                        || patch.runtime_preference.is_some()
                         || patch.channels.is_some()
                         || (patch.model.is_some()
                             && runtime_config_string(runtime_config.as_ref(), "source")

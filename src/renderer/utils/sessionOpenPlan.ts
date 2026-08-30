@@ -1,5 +1,10 @@
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
-import { normalizeRuntime, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import {
+  normalizeRuntime,
+  runtimeSourceForRuntimeType,
+  type RuntimeSource,
+  type RuntimeType,
+} from '../../shared/types/runtime';
 
 // Runtime normalization remains re-exported for renderer callers. Session
 // navigation itself no longer compares runtimes because existing Sessions never
@@ -35,8 +40,7 @@ function normalizeRuntimeSourceForIdentity(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | null | undefined,
 ): RuntimeSource | undefined {
-  if (runtime === 'builtin') return undefined;
-  return runtimeSource ?? 'system-cli';
+  return runtimeSourceForRuntimeType(runtime, runtimeSource);
 }
 
 export function sessionRuntimeIdentityFromMetadataForOpen(

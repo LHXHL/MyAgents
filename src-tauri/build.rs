@@ -18,7 +18,65 @@ fn main() {
     expose_managed_codex_runtime_lock();
     expose_managed_browser_runtime_lock();
     expose_space_build_env();
+    prepare_incremental_tauri_resource_output();
     tauri_build::build()
+}
+
+/// Tauri copies bundle resources beside the binary without removing files that
+/// disappeared from a prior inventory. It also preserves the sealed handoff's
+/// read-only permissions. Reset only the generated integrated-runtime copy so
+/// every build starts from the exact current inventory. Never mutate the
+/// accepted handoff itself.
+fn prepare_incremental_tauri_resource_output() {
+    let Some(out_dir) = env::var_os("OUT_DIR") else {
+        return;
+    };
+    // tauri-build copies bundle resources beside the debug/release binary,
+    // three levels above Cargo's package-specific OUT_DIR.
+    let out_dir = PathBuf::from(out_dir);
+    let Some(target_dir) = out_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return;
+    };
+    let generated_runtime_root = target_dir.join("integrated-runtimes");
+    if !generated_runtime_root.exists() {
+        return;
+    }
+    make_generated_tree_owner_writable(&generated_runtime_root).unwrap_or_else(|error| {
+        panic!(
+            "Failed to prepare generated integrated-runtime resources {}: {error}",
+            generated_runtime_root.display()
+        )
+    });
+    fs::remove_dir_all(&generated_runtime_root).unwrap_or_else(|error| {
+        panic!(
+            "Failed to reset generated integrated-runtime resources {}: {error}",
+            generated_runtime_root.display()
+        )
+    });
+}
+
+fn make_generated_tree_owner_writable(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            make_generated_tree_owner_writable(&entry?.path())?;
+        }
+    }
+
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let required = if metadata.is_dir() { 0o700 } else { 0o200 };
+        permissions.set_mode(permissions.mode() | required);
+    }
+    #[cfg(windows)]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
 }
 
 fn expose_managed_browser_runtime_lock() {

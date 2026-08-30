@@ -83,9 +83,12 @@ export interface PersistInputOptionParams {
   /** Agent id; null when the workspace has no Basic Agent yet. */
   agentId?: string | null;
 
-  /** Whether the active runtime is non-builtin (Codex/CC/Gemini). Used to
-   *  branch where permission mode and runtime model live on disk. */
+  /** Whether the active runtime uses the shared non-builtin process adapter.
+   *  `usesProductConfiguration` separates Integrated DSH from External CLIs. */
   isExternalRuntime: boolean;
+  /** Integrated runtimes such as DSH use the shared process adapter while
+   * Product Agent/Project fields continue to own Provider/model/permission. */
+  usesProductConfiguration?: boolean;
   /** Existing runtimeConfig to merge into when writing
    *  `runtimeConfig.permissionMode` / `.model`. Avoids stomping unrelated keys. */
   currentRuntimeConfig?: RuntimeConfig;
@@ -285,6 +288,10 @@ export async function persistInputOptionChange(
     params.pushRuntimeConfigToSidecar &&
     (
       params.fields.runtimeModel !== undefined
+      || (params.usesProductConfiguration && (
+        params.fields.builtinSelection !== undefined
+        || params.fields.builtinModel !== undefined
+      ))
       || params.fields.permissionMode !== undefined
       || params.fields.runtimeBackedProviderSelection !== undefined
     )
@@ -293,6 +300,12 @@ export async function persistInputOptionChange(
       const runtimeConfig: Pick<RuntimeConfig, 'model' | 'permissionMode'> = {};
       if (params.fields.runtimeBackedProviderSelection) {
         runtimeConfig.model = params.fields.runtimeBackedProviderSelection.model;
+      } else if (params.usesProductConfiguration) {
+        if (params.fields.builtinSelection !== undefined) {
+          runtimeConfig.model = params.fields.builtinSelection.model;
+        } else if (params.fields.builtinModel !== undefined) {
+          runtimeConfig.model = params.fields.builtinModel ?? undefined;
+        }
       } else if (params.fields.runtimeModel !== undefined) {
         runtimeConfig.model = params.fields.runtimeModel ?? undefined;
       }
@@ -319,12 +332,14 @@ function buildProjectPatch(
   params: PersistInputOptionParams,
 ): Partial<Omit<Project, 'id'>> {
   const patch: Partial<Omit<Project, 'id'>> = {};
-  const { fields, isExternalRuntime } = params;
+  const { fields } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime
+    && !params.usesProductConfiguration;
 
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.providerId = fields.runtimeBackedProviderSelection.providerId;
     patch.model = fields.runtimeBackedProviderSelection.model;
-  } else if (!isExternalRuntime && fields.builtinSelection !== undefined) {
+  } else if (!runtimeOwnsConfiguration && fields.builtinSelection !== undefined) {
     patch.providerId = fields.builtinSelection.providerId;
     patch.model = fields.builtinSelection.model;
   } else if (fields.providerId !== undefined) {
@@ -334,10 +349,10 @@ function buildProjectPatch(
   // model" used by future sessions. runtimeModel does NOT go to the project
   // because the project doesn't track a per-runtime model; that field lives
   // on the agent.runtimeConfig.
-  if (!isExternalRuntime && fields.builtinSelection === undefined && fields.builtinModel !== undefined) {
+  if (!runtimeOwnsConfiguration && fields.builtinSelection === undefined && fields.builtinModel !== undefined) {
     patch.model = fields.builtinModel ?? null;
   }
-  if (fields.permissionMode !== undefined && !isExternalRuntime) {
+  if (fields.permissionMode !== undefined && !runtimeOwnsConfiguration) {
     patch.permissionMode = fields.permissionMode as PermissionMode;
   }
   if (fields.mcpEnabledServers !== undefined) {
@@ -354,7 +369,9 @@ function buildProjectPatch(
 
 function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPatch {
   const patch: SessionSnapshotPatch = {};
-  const { fields, isExternalRuntime } = params;
+  const { fields } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime
+    && !params.usesProductConfiguration;
 
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.providerId = fields.runtimeBackedProviderSelection.providerId;
@@ -362,7 +379,7 @@ function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPa
     patch.providerExecutionIdentity = fields.runtimeBackedProviderSelection;
     patch.model = fields.runtimeBackedProviderSelection.model;
     patch.providerEnvJson = null;
-  } else if (!isExternalRuntime && fields.builtinSelection !== undefined) {
+  } else if (!runtimeOwnsConfiguration && fields.builtinSelection !== undefined) {
     patch.providerId = fields.builtinSelection.providerId;
     patch.providerRoute = routeFromBuiltinSelection(fields.builtinSelection);
     patch.providerExecutionIdentity = null;
@@ -390,7 +407,7 @@ function buildSnapshotPatch(params: PersistInputOptionParams): SessionSnapshotPa
   // builtin values.
   if (fields.runtimeBackedProviderSelection !== undefined) {
     patch.model = fields.runtimeBackedProviderSelection.model;
-  } else if (isExternalRuntime) {
+  } else if (runtimeOwnsConfiguration) {
     if (fields.runtimeModel !== undefined) patch.model = fields.runtimeModel;
   } else if (fields.builtinSelection !== undefined) {
     patch.model = fields.builtinSelection.model;
@@ -425,7 +442,9 @@ function buildAgentPatch(
   params: PersistInputOptionParams,
 ): Partial<Omit<AgentConfig, 'id'>> {
   const patch: Partial<Omit<AgentConfig, 'id'>> = {};
-  const { fields, isExternalRuntime, currentRuntimeConfig } = params;
+  const { fields, currentRuntimeConfig } = params;
+  const runtimeOwnsConfiguration = params.isExternalRuntime
+    && !params.usesProductConfiguration;
 
   if (fields.runtimeBackedProviderSelection !== undefined) {
     Object.assign(patch, agentDefaultsForRuntimeBackedProvider(
@@ -477,7 +496,7 @@ function buildAgentPatch(
   // the correct branch — this helper is the unified version.
   if (fields.runtimeBackedProviderSelection !== undefined) {
     // Runtime-backed providers already wrote their runtime-owned fields above.
-  } else if (isExternalRuntime && !writesOrdinaryProviderDefault) {
+  } else if (runtimeOwnsConfiguration && !writesOrdinaryProviderDefault) {
     const next: Partial<RuntimeConfig> = { ...(runtimeConfigBase ?? {}) };
     let runtimeConfigDirty = false;
     if (fields.permissionMode !== undefined) {

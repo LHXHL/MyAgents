@@ -1,6 +1,7 @@
 // Tauri IPC commands for sidecar management and app operations
 // Supports both legacy single-instance and new multi-instance APIs
 
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3070,6 +3071,10 @@ pub struct RuntimeDetectionResult {
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone)]
@@ -3164,7 +3169,7 @@ fn wait_for_runtime_detection_result(
         .cache
         .as_ref()
         .map(clone_runtime_detection_cache_results)
-        .unwrap_or_else(run_runtime_detection)
+        .unwrap_or_default()
 }
 
 fn finish_runtime_detection(
@@ -3184,7 +3189,7 @@ fn finish_runtime_detection(
     gate.done.notify_all();
 }
 
-fn run_runtime_detection() -> HashMap<String, RuntimeDetectionResult> {
+fn run_runtime_detection(resource_dir: Option<&Path>) -> HashMap<String, RuntimeDetectionResult> {
     let mut results = HashMap::new();
 
     // Builtin is always available
@@ -3194,8 +3199,12 @@ fn run_runtime_detection() -> HashMap<String, RuntimeDetectionResult> {
             installed: true,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             path: None,
+            readiness: Some("ready".to_string()),
+            reason: None,
         },
     );
+
+    results.insert("dsh".to_string(), detect_dsh_runtime(resource_dir));
 
     // Claude Code CLI
     results.insert("claude-code".to_string(), detect_cli("claude"));
@@ -3220,15 +3229,20 @@ fn run_runtime_detection() -> HashMap<String, RuntimeDetectionResult> {
 /// CLAUDE.md red-line "同步 Tauri 命令阻塞 → 冻结 WKWebView". The cache /
 /// in-flight-join gate is preserved inside the blocking helper.
 #[tauri::command]
-pub async fn cmd_detect_runtimes() -> HashMap<String, RuntimeDetectionResult> {
-    tauri::async_runtime::spawn_blocking(detect_runtimes_blocking)
+pub async fn cmd_detect_runtimes<R: Runtime>(
+    app_handle: AppHandle<R>,
+) -> HashMap<String, RuntimeDetectionResult> {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || detect_runtimes_blocking(resource_dir))
         .await
         // spawn_blocking only errors if the task panics — fall back to empty
         // detections (renderer's default is all-not-installed) rather than crash.
         .unwrap_or_else(|_| HashMap::new())
 }
 
-fn detect_runtimes_blocking() -> HashMap<String, RuntimeDetectionResult> {
+fn detect_runtimes_blocking(
+    resource_dir: Option<PathBuf>,
+) -> HashMap<String, RuntimeDetectionResult> {
     let now = Instant::now();
     let gate = runtime_detection_gate();
     match runtime_detection_gate_decision(gate, now, RUNTIME_DETECTION_CACHE_TTL) {
@@ -3258,7 +3272,7 @@ fn detect_runtimes_blocking() -> HashMap<String, RuntimeDetectionResult> {
     let start = trace_start();
     emit_perf_trace(PerfTrace::new(PerfTraceName::Runtime, "detect_start"));
 
-    let results = run_runtime_detection();
+    let results = run_runtime_detection(resource_dir.as_deref());
 
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::Runtime, "detect_done")
@@ -3280,12 +3294,163 @@ fn detect_cli(binary_name: &str) -> RuntimeDetectionResult {
                 installed: true,
                 version,
                 path: Some(path.to_string_lossy().to_string()),
+                readiness: Some("ready".to_string()),
+                reason: None,
             }
         }
         None => RuntimeDetectionResult {
             installed: false,
             version: None,
             path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-missing".to_string()),
+        },
+    }
+}
+
+fn dsh_platform_target() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        _ => None,
+    }
+}
+
+fn json_string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))?
+        .as_str()
+}
+
+fn sha256_file_matches(path: &Path, expected: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    format!("{:x}", Sha256::digest(bytes)).eq_ignore_ascii_case(expected)
+}
+
+fn dsh_resource_identity_matches(root: &Path, lock: &serde_json::Value, target: &str) -> bool {
+    let handoff_path = root.join("batch-3-integration-handoff-v1.json");
+    let runtime_manifest_path = root
+        .join("runtime-artifact")
+        .join("runtime-artifact-v1.json");
+    let compatibility_path = root
+        .join("contracts")
+        .join("myagents-dsh-compatibility-v1.json");
+    let Ok(handoff_content) = fs::read_to_string(&handoff_path) else {
+        return false;
+    };
+    let Ok(handoff) = serde_json::from_str::<serde_json::Value>(&handoff_content) else {
+        return false;
+    };
+    let platform_claim_matches = handoff
+        .get("platforms")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|platforms| {
+            platforms.iter().any(|platform| {
+                platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
+                    && platform.get("claim").and_then(serde_json::Value::as_str)
+                        == Some("implementation-complete_pending-native-validation")
+            })
+        });
+    platform_claim_matches
+        && json_string_at(&handoff, &["kind"]) == Some("myagents-dsh-batch-3-integration-handoff")
+        && json_string_at(&handoff, &["runtime", "manifestSha256"])
+            == json_string_at(lock, &["handoff", "runtimeManifestSha256"])
+        && json_string_at(&handoff, &["compatibility", "sha256"])
+            == json_string_at(lock, &["handoff", "compatibilitySha256"])
+        && sha256_file_matches(
+            &handoff_path,
+            json_string_at(lock, &["handoff", "manifestSha256"]),
+        )
+        && sha256_file_matches(
+            &runtime_manifest_path,
+            json_string_at(lock, &["handoff", "runtimeManifestSha256"]),
+        )
+        && sha256_file_matches(
+            &compatibility_path,
+            json_string_at(lock, &["handoff", "compatibilitySha256"]),
+        )
+}
+
+fn detect_dsh_runtime(resource_dir: Option<&Path>) -> RuntimeDetectionResult {
+    let lock = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../src/shared/integrated-runtimes/dsh-lock.json"
+    ));
+    let Ok(lock) = lock else {
+        return RuntimeDetectionResult {
+            installed: false,
+            version: None,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-invalid".to_string()),
+        };
+    };
+    let version = json_string_at(&lock, &["runtime", "version"]).map(str::to_string);
+    let Some(target) = dsh_platform_target() else {
+        return RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("platform-unverified".to_string()),
+        };
+    };
+
+    let mut candidates = Vec::new();
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join("integrated-runtimes").join("dsh"));
+    }
+    if cfg!(debug_assertions) {
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("integrated-runtimes")
+                .join("dsh"),
+        );
+    }
+    let root = candidates.into_iter().find(|root| {
+        root.join("verify.mjs").is_file()
+            && root.join("batch-3-integration-handoff-v1.json").is_file()
+            && root
+                .join("runtime-artifact")
+                .join("runtime-artifact-v1.json")
+                .is_file()
+            && root
+                .join("runtime-artifact")
+                .join("runtime-server-process.artifact.mjs")
+                .is_file()
+    });
+    match root {
+        Some(root) if dsh_resource_identity_matches(&root, &lock, target) => {
+            RuntimeDetectionResult {
+                installed: true,
+                version,
+                path: Some(root.to_string_lossy().to_string()),
+                // The accepted handoff records implementation-complete platform
+                // claims, not MyAgents packaged/native release validation. Labs
+                // may admit these bytes; release promotion remains an H6 gate.
+                readiness: Some("unverified-dev-runtime".to_string()),
+                reason: None,
+            }
+        }
+        Some(_) => RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-invalid".to_string()),
+        },
+        None => RuntimeDetectionResult {
+            installed: false,
+            version,
+            path: None,
+            readiness: Some("unavailable".to_string()),
+            reason: Some("artifact-missing".to_string()),
         },
     }
 }
@@ -3352,6 +3517,22 @@ mod runtime_detection_cache_tests {
     }
 
     #[test]
+    fn bundled_dsh_detection_matches_the_committed_lock_on_supported_targets() {
+        if dsh_platform_target().is_none() {
+            return;
+        }
+        let resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let result = detect_dsh_runtime(Some(&resource_dir));
+        assert!(
+            result.installed,
+            "unexpected DSH detection: {:?}",
+            result.reason
+        );
+        assert_eq!(result.readiness.as_deref(), Some("unverified-dev-runtime"));
+        assert_eq!(result.version.as_deref(), Some("0.0.0"));
+    }
+
+    #[test]
     fn runtime_detection_cache_returns_clone_not_shared_map() {
         let mut results = HashMap::new();
         results.insert(
@@ -3360,6 +3541,8 @@ mod runtime_detection_cache_tests {
                 installed: true,
                 version: Some("1".to_string()),
                 path: Some("/bin/codex".to_string()),
+                readiness: Some("ready".to_string()),
+                reason: None,
             },
         );
         let cache = RuntimeDetectionCache {
@@ -3374,6 +3557,8 @@ mod runtime_detection_cache_tests {
                 installed: false,
                 version: None,
                 path: None,
+                readiness: Some("unavailable".to_string()),
+                reason: Some("artifact-missing".to_string()),
             },
         );
 
@@ -3396,6 +3581,8 @@ mod runtime_detection_cache_tests {
             installed: true,
             version: Some("1.0.0".to_string()),
             path: Some("/bin/codex".to_string()),
+            readiness: Some("ready".to_string()),
+            reason: None,
         }
     }
 

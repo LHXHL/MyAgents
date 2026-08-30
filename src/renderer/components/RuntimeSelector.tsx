@@ -31,12 +31,13 @@ const RUNTIME_ICON_MAP: Record<RuntimeType, string> = {
 const RUNTIME_OPTIONS: {
   type: RuntimeType;
   name: string;
+  group: 'integrated' | 'external';
 }[] = [
-    { type: 'builtin', name: 'MyAgents (Claude Agent SDK)' },
-    { type: 'dsh', name: 'MyAgents (DSH)' },
-    { type: 'claude-code', name: 'Claude Code CLI' },
-    { type: 'codex', name: 'Codex CLI' },
-    { type: 'gemini', name: 'Gemini CLI' },
+    { type: 'builtin', name: 'MyAgents (Claude Agent SDK)', group: 'integrated' },
+    { type: 'dsh', name: 'MyAgents (DSH)', group: 'integrated' },
+    { type: 'claude-code', name: 'Claude Code CLI', group: 'external' },
+    { type: 'codex', name: 'Codex CLI', group: 'external' },
+    { type: 'gemini', name: 'Gemini CLI', group: 'external' },
   ];
 
 function RuntimeIcon({ type, size = 14 }: { type: RuntimeType; size?: number }) {
@@ -142,8 +143,13 @@ export default memo(function RuntimeSelector({
             const detection = detections[opt.type];
             const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
             return (
+              <div key={opt.type}>
+              {(opt.type === 'builtin' || opt.type === 'claude-code') && (
+                <div className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+                  {t(opt.group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli')}
+                </div>
+              )}
               <button
-                key={opt.type}
                 type="button"
                 onClick={() => installed && handleSelect(opt.type)}
                 disabled={!installed}
@@ -165,7 +171,13 @@ export default memo(function RuntimeSelector({
                       : t('runtime.notInstalled')}
                   </span>
                 )}
+                {installed && detection?.readiness === 'unverified-dev-runtime' && (
+                  <span className="ml-auto text-xs text-[var(--accent)]">
+                    {t('runtime.experimental')}
+                  </span>
+                )}
               </button>
+              </div>
             );
           })}
         </Popover>
@@ -220,8 +232,13 @@ export default memo(function RuntimeSelector({
           const detection = detections[opt.type];
           const installed = opt.type === 'builtin' || (detection?.installed && IMPLEMENTED_RUNTIMES.has(opt.type));
           return (
+            <div key={opt.type}>
+            {(opt.type === 'builtin' || opt.type === 'claude-code') && (
+              <div className="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+                {t(opt.group === 'integrated' ? 'runtime.integrated' : 'runtime.externalCli')}
+              </div>
+            )}
             <button
-              key={opt.type}
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
@@ -242,7 +259,13 @@ export default memo(function RuntimeSelector({
               {!installed && (
                 <span className="ml-auto text-[var(--ink-subtle)] text-xs">{t('runtime.notInstalled')}</span>
               )}
+              {installed && detection?.readiness === 'unverified-dev-runtime' && (
+                <span className="ml-auto text-xs text-[var(--accent)]">
+                  {t('runtime.experimental')}
+                </span>
+              )}
             </button>
+            </div>
           );
         })}
       </Popover>

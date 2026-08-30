@@ -336,6 +336,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       providerId: 'openrouter',
       model: 'anthropic/claude-sonnet-4.6',
       runtime: 'builtin',
+      runtimePreference: { family: 'integrated', id: 'claude-agent-sdk' },
       runtimeConfig: {
         envPolicy: { proxy: 'terminal' },
       },
@@ -370,6 +371,7 @@ describe('persistInputOptionChange — disk write fanout', () => {
       model: 'anthropic/claude-sonnet-4.6',
       permissionMode: 'full-auto',
       runtime: 'builtin',
+      runtimePreference: { family: 'integrated', id: 'claude-agent-sdk' },
       runtimeConfig: undefined,
     });
   });
@@ -655,6 +657,42 @@ describe('persistInputOptionChange — disk write fanout', () => {
     expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
       model: 'gpt-5.2-codex',
       permissionMode: 'no-restrictions',
+    });
+  });
+
+  it('keeps DSH Provider fields product-owned while pushing the live runtime config', async () => {
+    const m = makeMocks();
+    await persistInputOptionChange({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      isExternalRuntime: true,
+      usesProductConfiguration: true,
+      fields: {
+        builtinSelection: { providerId: 'deepseek', model: 'deepseek-v4-flash' },
+        permissionMode: 'fullAgency',
+        reasoningEffort: 'high',
+      },
+      patchProject: m.patchProject,
+      patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
+      patchSnapshot: m.patchSnapshot,
+      pushRuntimeConfigToSidecar: m.pushRuntimeConfigToSidecar,
+    });
+
+    expect(m.patchProject).toHaveBeenCalledWith('ws-1', {
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
+    });
+    expect(m.patchAgentConfig).toHaveBeenCalledWith('agent-1', {
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
+      reasoningEffort: 'high',
+    });
+    expect(m.pushRuntimeConfigToSidecar).toHaveBeenCalledWith({
+      model: 'deepseek-v4-flash',
+      permissionMode: 'fullAgency',
     });
   });
 

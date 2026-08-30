@@ -60,12 +60,12 @@ describe('resolveCurrentProviderForSession (#401)', () => {
 });
 
 describe('shouldBlockSendForLabsDisabledExternalRuntime', () => {
-  it('blocks user-managed external CLI sessions when Labs runtime mode is off', () => {
+  it('keeps frozen external CLI sessions executable when Labs runtime mode is off', () => {
     expect(shouldBlockSendForLabsDisabledExternalRuntime({
       sessionRuntime: 'codex',
       sessionRuntimeSource: 'system-cli',
       multiAgentRuntimeEnabled: false,
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('does not block Managed Codex Provider sessions when Labs runtime mode is off', () => {
@@ -86,6 +86,14 @@ describe('shouldBlockSendForLabsDisabledExternalRuntime', () => {
       sessionRuntime: 'codex',
       sessionRuntimeSource: 'system-cli',
       multiAgentRuntimeEnabled: true,
+    })).toBe(false);
+  });
+
+  it('keeps frozen integrated DSH sessions executable when Labs runtime mode is off', () => {
+    expect(shouldBlockSendForLabsDisabledExternalRuntime({
+      sessionRuntime: 'dsh',
+      sessionRuntimeSource: 'integrated',
+      multiAgentRuntimeEnabled: false,
     })).toBe(false);
   });
 });

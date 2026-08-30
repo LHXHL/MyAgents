@@ -88,7 +88,7 @@ use state::{
     ensure_sidecar_port_for_command, fallback_runtime_models, is_external_runtime_type,
     normalize_runtime_type, query_runtime_models_from_sidecar, runtime_config_string,
     runtime_config_with_string, runtime_display_name, runtime_permission_choices,
-    sync_runtime_config_to_sidecars,
+    runtime_source_for_runtime, sync_runtime_config_to_sidecars,
 };
 pub(crate) use state::{
     AgentChannelLink, AnyAdapter, ChannelModelWorkGate, ImConsumerHandle, ImConsumers, PeerLocks,

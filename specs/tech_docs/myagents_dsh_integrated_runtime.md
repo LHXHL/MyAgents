@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.18
+version: 0.19
 updated: 2026-08-30
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,13 +14,13 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.0.0-mutation-recovery-refresh-ingested
-  reviewed_repository_head: 7c77ad900f85b36117d813b622adfc7efb11597e
-  source_commit: 7c77ad900f85b36117d813b622adfc7efb11597e
+  status: protocol-2.0.0-portable-refresh-ingested
+  reviewed_repository_head: 7b9530a64678610b0e89e3b271940453a47be9f3
+  source_commit: 7b9530a64678610b0e89e3b271940453a47be9f3
   protocol: 2.0.0
-  manifest_sha256: 69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b
-  runtime_manifest_sha256: bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca
-  compatibility_sha256: b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf
+  manifest_sha256: eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184
+  runtime_manifest_sha256: 5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5
+  compatibility_sha256: 4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44
   protocol_schema_sha256: 5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
   generated_client_sha256: a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
 ---
@@ -123,16 +123,16 @@ Batch 3 generalizes the compatibility inputs to these flows. It does not redesig
 
 The formal repository-external handoff validates successfully without a sibling source checkout and freezes:
 
-- handoff manifest `69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b`;
-- Runtime manifest `bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca`, built from clean MyAgents-dsh source commit `7c77ad900f85b36117d813b622adfc7efb11597e`;
-- compatibility manifest `b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf`;
+- handoff manifest `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`;
+- Runtime manifest `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, built from clean MyAgents-dsh source commit `7b9530a64678610b0e89e3b271940453a47be9f3`;
+- compatibility manifest `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`;
 - formal protocol `2.0.0`, schema `5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60`, and generated Host client `a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626`;
 - DSH artifact `9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c` at upstream commit `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`;
 - macOS arm64, Linux x64 and Windows x64 all labeled `implementation-complete_pending-native-validation` for these bytes.
 
 Formal `2.0.0` is wire-identical to draft.3 and contains 40 Host requests, seven reverse requests and four notifications, including `plan/apply`, `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke`. H0 must ingest and verify this complete immutable handoff; all draft handoffs remain historical evidence and are a hard compatibility failure for the first implementation lock. No pending-native-validation platform claim may be surfaced as verified product support.
 
-The accepted Runtime was built from clean MyAgents-dsh commit `7c77ad900f85b36117d813b622adfc7efb11597e`, which is also the reviewed repository HEAD. It supersedes the `79381f98…` handoff because Host mutation integration proved a prepare-token crash gap: while resume is `recovery_required`, the refreshed Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
+The accepted Runtime was built from clean MyAgents-dsh commit `7b9530a64678610b0e89e3b271940453a47be9f3`, which is also the reviewed artifact source HEAD. It preserves the prepare-token recovery fix from the earlier `7c77ad90…` candidate: while resume is `recovery_required`, the Runtime accepts only an exact replay of the mutation kind reported as unsettled, allowing the existing persistence fingerprint to return the durable random token without admitting a new mutation. Real Tauri packaging then proved that npm-created Runtime file links could be dereferenced after the nested manifest was sealed. The replacement builder materializes contained file aliases before sealing; Runtime `5d87edae…` has no symbolic links in either its manifest or filesystem inventory. MyAgents therefore copies and verifies the immutable link-free tree directly and contains no post-copy link-repair authority. The integration identity is the content-addressed handoff above, never the mutable checkout path. Its public verifier succeeds against the trusted outer digest and reports the same Runtime and compatibility manifests.
 
 The implementation branch is deliberately based on the fetched MyAgents `main` at `c7dc5d79b2752a713e53ec9eee4f1db2324fa7fd` (`0.4.11`). The later MyAgents commits recorded by the original RFC audit were not present in the fetched origin on 2026-08-30, so integration decisions are rechecked against this actual baseline and no unavailable commit is treated as executable authority.
 
@@ -406,18 +406,18 @@ MyAgents consumes only a pinned DSH handoff containing:
 The following block is the exact formal `2.0.0` seed for the first implementation lock:
 
 ```text
-sourceCommit                 7c77ad900f85b36117d813b622adfc7efb11597e
+sourceCommit                 7b9530a64678610b0e89e3b271940453a47be9f3
 protocolVersion              2.0.0
-handoffManifestSha256        69213101d524e33da9be51ff9ee0afc33e932aef4b6a9abc7e100dd455fd572b
-runtimeManifestSha256        bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca
-compatibilitySha256          b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf
+handoffManifestSha256        eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184
+runtimeManifestSha256        5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5
+compatibilitySha256          4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44
 protocolSchemaSha256         5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60
 generatedClientSha256        a571c919d1daa4ee410e53823eb64dc61dc0580b827ba87036c954955a5e6626
 dshArtifactManifestSha256    9c5ed754341bae0f82bbb118188c5c45a97f640133cc3e91d22b9a2bee1b3f7c
 requiredNodeVersion          24.14.0
 ```
 
-An ingestion script accepts one explicit external `--handoff <absolute-directory>` input, first executes that directory's public `verify.mjs` entrypoint with the expected handoff digest, validates the compatibility/platform facts, copies the complete Runtime directory byte-for-byte into build resources, and copies the generated client/contracts through a generated-diff gate. MyAgents code may wrap the generated client but may not hand-edit it or import verifier/package-private `src/*` paths. Installed application startup verifies the committed lock again before marking DSH ready.
+An ingestion script accepts one explicit external `--handoff <absolute-directory>` input, first executes that directory's public `verify.mjs` entrypoint with the expected handoff digest, validates the compatibility/platform facts, copies the complete Runtime directory byte-for-byte into build resources, and copies the generated client/contracts through a generated-diff gate. MyAgents code may wrap the generated client but may not hand-edit it or import verifier/package-private `src/*` paths. The accepted Runtime inventory is link-free, so ordinary Tauri/installer resource copying preserves its exact identity without a Host-side normalization hook. `build.rs` clears only Cargo's generated resource staging directory before re-emitting the authoritative source inventory, preventing incremental builds from retaining files from an older immutable handoff; it never edits the source handoff or accepted package output. Installed application startup verifies the committed lock again before marking DSH ready.
 
 The first implementation lock must be populated from these exact handoff values after running the package's public `verify.mjs` against the trusted outer digest. Its generated client contains 40 Host methods and all four permission/Plan control-plane methods; any draft or independently reconstructed client is a hard compatibility failure.
 
@@ -638,7 +638,7 @@ The accepted Runtime composition currently declares no Host-approved stdio MCP l
 
 Live MCP/Skill/agent/command/Plugin/Host-tool changes compile a fresh immutable plane, attach a fresh Host dispatcher, register it by the protocol identity `componentGenerationId = revision:digest`, and call `extension/replace` without restarting the Sidecar or DSH process. `queued` remains desired/effective drift and is retried from both the successful and failed Product turn-finalization paths before queue drain; the DSH adapter also reconciles before admitting a later root turn. `applied` is accepted only after `extension/catalog` proves the exact revision, digest, Skill read-back and Host-tool catalog, then publishes the new Runtime tool catalog and diagnostics. `failed` releases only the rejected candidate and leaves the old effective plane usable.
 
-Reverse MCP credential and Host-tool calls select their Host plane by the exact generation carried in request authority; a stale or unknown generation fails before credential material or a Product dispatcher is reached. A once-effective old plane remains registered until the DSH process generation closes because protocol `2.0.0` permits background work to drain the previous component generation but exposes no Host retirement acknowledgement. Candidate generations that DSH explicitly rejects or replaces are released immediately. This bounded process-generation ownership prevents both cross-generation dispatch and premature cleanup. Live capability changes no longer set the compatibility Runtime restart latch. These semantics complete the live-extension implementation slice but do not make DSH selectable before the remaining H5/H6 gates.
+Reverse MCP credential and Host-tool calls select their Host plane by the exact generation carried in request authority; a stale or unknown generation fails before credential material or a Product dispatcher is reached. A once-effective old plane remains registered until the DSH process generation closes because protocol `2.0.0` permits background work to drain the previous component generation but exposes no Host retirement acknowledgement. Candidate generations that DSH explicitly rejects or replaces are released immediately. This bounded process-generation ownership prevents both cross-generation dispatch and premature cleanup. Live capability changes no longer set the compatibility Runtime restart latch. These semantics complete the live-extension implementation slice; H5 subsequently admits DSH only through development Labs/readiness policy, while H6 still gates promotion.
 
 ## 13. Mutations and native history
 
@@ -678,6 +678,8 @@ Managed Codex is not listed. Pi is not listed until integrated.
 
 Each item uses the readiness result from the resolver/artifact verifier: ready, setup required, update required, unavailable, incompatible or experimental.
 
+H5 keeps this taxonomy intact in the shared `RuntimeSelector`: DSH appears in the Integrated group, while Claude Code, Codex and Gemini remain External CLI. The Rust detection owner resolves the installed application resource directory, reads the committed DSH lock and verifies the supported target, sealed outer handoff digest, nested Runtime manifest digest, compatibility digest, required entrypoints and platform claim before returning an installed result. The accepted Batch 3 artifact is intentionally labelled `experimental` / `unverified-dev-runtime`; missing, malformed, digest-mismatched or platform-invalid resources are unavailable and cannot admit a Chat or Launcher send. Session admission then runs the public outer verifier and Runtime self-check, which rebind the complete nested inventories before spawn. The Renderer does not infer readiness from a directory or executable alone.
+
 ### 14.2 Change behavior
 
 - Settings/Launcher: save Agent template; toast that a new Tab uses it.
@@ -685,6 +687,8 @@ Each item uses the readiness result from the resolver/artifact verifier: ready, 
 - Live incompatible Provider/Runtime change: existing confirm dialog, preserve current Session, create a new Session and open its Tab.
 - Cancel: no template/session mutation.
 - Failed new birth: keep old Tab intact and show actionable error.
+
+Agent, Channel, Settings and Launcher changes atomically persist the authoritative `AgentRuntimePreference` with their legacy `runtime`/`runtimeConfig` compatibility projection. The preference wins whenever both exist; malformed authoritative preference fails closed instead of falling back to a possibly stale legacy Runtime. Product configuration remains Product configuration for DSH: Provider/model, exact permission mode, reasoning effort, MCP, Plugins and related capabilities are not moved into the External CLI configuration object. Provider/model choices are filtered by the handoff-bound DSH cell contract, and an incompatible or incomplete pair is rejected before Session birth.
 
 ### 14.3 Conversation
 
@@ -703,11 +707,15 @@ Generalize the current full runtime identity comparison to `EffectiveRuntimeBind
 - old owner is released only through current lifecycle authority;
 - message-time and Heartbeat checks remain fallback repair.
 
+H5 applies the same resolution order in the Rust IM owner: root Labs/distribution gate, authoritative Channel/Agent preference, Provider execution constraint, readiness and then legacy compatibility projection. Explicit External CLI preference wins over a dormant subscription field; managed-Codex projection occurs only when the selected Integrated Runtime remains builtin. DSH is always projected as `runtime='dsh'` plus `source='integrated'`, and its message snapshot retains the Product Provider route, model, environment, permission and extension configuration. An invalid authoritative preference disables the Channel instead of silently starting another Runtime. Runtime-change, message-time and Heartbeat paths compare this complete canonical identity.
+
 ### 15.2 Tasks, Cron, Goal and injected work
 
 Birth snapshots freeze the exact effective binding selected by the central resolver. Runtime changes do not rewrite already-running operations.
 
 All queues, cancellation, terminal reporting and owner release continue through SessionEngine. A DSH adapter cannot require the Renderer to be mounted.
+
+Task/Cron birth resolves the same authoritative preference and freezes the resulting binding; an already materialized DSH Task remains executable when Labs is later hidden, while a new inherited Task follows the current gate. The Task editor and admin API enforce the exact DSH Provider/model cells and canonical `integrated` source. Goal and injected work stay bound to their existing `SessionEngine`; Inbox reads the target Sidecar's live Runtime identity at materialization, so its new Product Session freezes DSH/integrated rather than reconstructing identity from Renderer state.
 
 ## 16. Persistence and migration
 
@@ -869,10 +877,14 @@ At promotion:
 npm run typecheck
 npm run lint
 npm test
-npm run build
+npm run build:web
+npm run build:server
+npm run build:bridge
+npm run build:cli
+npm run verify:dsh-runtime
 ```
 
-Also run MyAgents packaging/resource verification, Rust tests, DSH/MyAgents cross-contract conformance, generated-diff checks and native platform smoke required by the release candidate.
+Also run Rust tests, DSH/MyAgents cross-contract conformance, generated-diff checks and the applicable platform's production build script plus native packaged smoke required by the release candidate. The exact script surface is owned by `package.json`; this repository does not define a generic `npm run build` command.
 
 ## 21. Implementation sequence
 
@@ -886,7 +898,7 @@ Also run MyAgents packaging/resource verification, Rust tests, DSH/MyAgents cros
 8. Connect mutation and recovery protocols.
 9. Migrate every non-Desktop entry point through the same resolver/adapter.
 10. Expose grouped selector/readiness and existing new-Tab behavior.
-11. Run deterministic, packaged and cross-repository J1–J18 acceptance; only then allow controlled rollout.
+11. Run deterministic, packaged and cross-repository J1–J18 acceptance; only then promote beyond the development-only Labs/readiness path.
 
 Each step updates an implementation ledger in this document or a linked dev plan. Partial code does not make DSH selectable.
 
@@ -899,10 +911,16 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H1  | Runtime identity, policy, resolver and persistence migration                           | `complete`    |
 | MA-B3-H2  | Provider constraints and exact DSH profile compiler                                    | `complete`    |
 | MA-B3-H3  | RuntimeProcessHost, 40-method formal `2.0.0` generated client and seven reverse ports  | `complete`    |
-| MA-B3-H4  | SessionEngine adapter, projection, queue/config/extensions/interaction/mutation/recovery | `in_progress` |
+| MA-B3-H4  | SessionEngine adapter, projection, queue/config/extensions/interaction/mutation/recovery | `complete`    |
 | MA-B3-H4P | `auto/plan/fullAgency` translation, Host Plan and exact permission-rule adapter        | `complete`    |
-| MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `not_started` |
-| MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `not_started` |
+| MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `complete`    |
+| MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `in_progress` |
+
+### 21.2 Current implementation evidence
+
+H5 is closed on the `dev/intergration_myagents-dsh` worktree against handoff `eb9876ede68ec8f5229346116a360164eae7eb7ca280c745a13372f3c36d2184`, Runtime `5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5`, compatibility `4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44`, and exact bundled Node `24.14.0`. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+
+The debug Tauri application and its updater `.app.tar.gz` both verify after final bundle copying and after archive extraction. Their DSH Runtime inventories contain zero symbolic links. The explicit native `RuntimeProcessHost` smoke starts the exact staged Runtime, completes the formal handshake/status sequence, and shuts down cleanly. `npm run typecheck`, `npm run lint`, the complete `npm test`, all web/server/bridge/CLI builds exercised by the Tauri build, `cargo fmt --check`, and the 1,169-pass Rust library suite succeed. This is exact local development/package evidence; it does not promote any handoff platform claim beyond `implementation-complete_pending-native-validation`, and it does not complete H6's Provider/J1–J18/native-platform campaign.
 
 ## 22. PRD traceability
 

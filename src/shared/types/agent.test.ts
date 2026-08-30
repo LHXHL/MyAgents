@@ -95,6 +95,32 @@ describe('Agent Channel effective config', () => {
     expect(resolveAgentChannelPermissionMode(a, channel())).toBe('yolo');
   });
 
+  it('uses authoritative Integrated DSH preference ahead of a stale legacy projection', () => {
+    const a = agent({
+      runtime: 'codex',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'deepseek',
+    });
+
+    expect(resolveAgentChannelRuntime(a, channel())).toBe('dsh');
+    expect(resolveAgentChannelPermissionMode(a, channel())).toBe('fullAgency');
+  });
+
+  it('applies subscription constraints after Integrated preference but preserves explicit External preference', () => {
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'anthropic-sub',
+    }), channel())).toBe('builtin');
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+      providerId: 'codex-sub',
+    }), channel())).toBe('codex');
+    expect(resolveAgentChannelRuntime(agent({
+      runtimePreference: { family: 'external', id: 'gemini' },
+      providerId: 'codex-sub',
+    }), channel())).toBe('gemini');
+  });
+
   it('projects invalid system Runtime history to the interactive default without changing missing-override max agency', () => {
     const a = agent({ runtime: 'claude-code' });
 

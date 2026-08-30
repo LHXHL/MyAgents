@@ -141,6 +141,8 @@ export interface SimpleChatInputProps {
   toolbarPrefix?: React.ReactNode;
   contextIndicator?: React.ReactNode;
   runtime?: RuntimeType;
+  /** True only for user-managed CLI controls; Integrated DSH keeps Product provider/tool controls. */
+  usesExternalRuntimeControls?: boolean;
   runtimeDetections?: RuntimeDetections;
   onRuntimeChange?: (runtime: RuntimeType) => void;
   runtimeModels?: RuntimeModelInfo[];

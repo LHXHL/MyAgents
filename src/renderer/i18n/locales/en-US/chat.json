@@ -405,7 +405,10 @@
     "header": "Runtime",
     "settings": "Settings",
     "notInstalled": "Not installed",
-    "comingSoon": "Coming soon"
+    "comingSoon": "Coming soon",
+    "integrated": "Integrated",
+    "externalCli": "External CLI",
+    "experimental": "Experimental"
   },
   "shell": {
     "common": {
@@ -992,6 +995,7 @@
       "channelRebindFailedNewCancelled": "Channel rebind failed. The new conversation was cancelled.",
       "channelRebindFailedDeleteCancelled": "Channel rebind failed. Delete was cancelled.",
       "reselectModelFirst": "Select the model again in the model picker first.",
+      "runtimeUnavailable": "This Runtime artifact is unavailable or failed integrity checks. Reinstall or repair MyAgents before sending.",
       "submitFailedRetry": "Submit failed. Please try again.",
       "unknownError": "Unknown error",
       "rewindFailedWithError": "Time rewind failed: {{error}}",

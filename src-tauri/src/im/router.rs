@@ -192,6 +192,7 @@ pub fn create_sidecar_stream_client() -> Client {
 
 fn normalize_runtime_for_peer_drift(runtime: Option<&str>) -> &str {
     match runtime {
+        Some("dsh") => "dsh",
         Some("claude-code") => "claude-code",
         Some("codex") => "codex",
         Some("gemini") => "gemini",
@@ -206,6 +207,9 @@ fn normalize_runtime_source_for_peer_drift(
     let runtime = normalize_runtime_for_peer_drift(runtime);
     if runtime == "builtin" {
         return "builtin";
+    }
+    if runtime == "dsh" {
+        return "integrated";
     }
     match source {
         Some("managed-provider") => "managed-provider",
@@ -693,7 +697,7 @@ impl SessionRouter {
     ///
     /// `desired_runtime` is the agent's CURRENT runtime as resolved from
     /// config (typically via `normalize_runtime_type(agent_config.runtime)`).
-    /// Valid values: `"builtin"`, `"claude-code"`, `"codex"`, `"gemini"`.
+    /// Valid values: `"builtin"`, `"dsh"`, `"claude-code"`, `"codex"`, `"gemini"`.
     pub async fn check_and_reset_on_runtime_drift(
         router: &Arc<Mutex<Self>>,
         session_key: &str,
@@ -2031,6 +2035,22 @@ mod tests {
             Some("managed-provider"),
             "codex",
             Some("managed-provider"),
+        ));
+    }
+
+    #[test]
+    fn persisted_dsh_runtime_uses_integrated_source_for_drift_comparison() {
+        assert!(!persisted_session_runtime_identity_differs(
+            Some("dsh"),
+            Some("integrated"),
+            "dsh",
+            None,
+        ));
+        assert!(persisted_session_runtime_identity_differs(
+            Some("builtin"),
+            None,
+            "dsh",
+            Some("integrated"),
         ));
     }
 

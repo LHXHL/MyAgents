@@ -1,6 +1,13 @@
 // Multi-Agent Runtime types (v0.1.59)
 // Defines runtime types and metadata for external CLI agent integration
 
+import {
+  agentRuntimePreferenceForRuntime,
+  resolveAgentRuntimePreference,
+  runtimeTypeForAgentRuntimePreference,
+  type AgentRuntimePreference,
+} from '../integrated-runtimes/identity';
+
 /**
  * Available Agent Runtime types
  * - builtin: Built-in Claude Agent SDK (current default)
@@ -15,6 +22,19 @@ export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex' | 'gemini'
  * providers. Missing source is treated as `system-cli` for existing sessions.
  */
 export type RuntimeSource = 'integrated' | 'system-cli' | 'managed-provider';
+
+/** Canonical source projection for legacy RuntimeType consumers and analytics. */
+export function runtimeSourceForRuntimeType(
+  runtime: RuntimeType,
+  runtimeSource?: RuntimeSource | null,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  if (runtime === 'dsh') return 'integrated';
+  if (runtime === 'codex' && runtimeSource === 'managed-provider') {
+    return 'managed-provider';
+  }
+  return 'system-cli';
+}
 
 /**
  * Canonical runtime type list — single source of truth.
@@ -149,9 +169,32 @@ export function coerceModelForRuntime(
 export function resolveEffectiveRuntime(
   agentRuntime: string | null | undefined,
   multiAgentRuntimeEnabled: boolean,
+  runtimePreference?: unknown,
+  runtimeSource?: RuntimeSource | null,
+  providerId?: unknown,
 ): RuntimeType {
   if (!multiAgentRuntimeEnabled) return 'builtin';
-  return normalizeRuntime(agentRuntime);
+  const preference = resolveAgentRuntimePreference({
+    runtimePreference,
+    runtime: agentRuntime,
+    runtimeSource,
+    providerId,
+  });
+  if (!preference) return 'builtin';
+  const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
+  // Explicit External CLI intent wins over dormant Product Provider fields.
+  if (preference.family === 'external') return preferredRuntime;
+  // Product subscription Providers have fixed execution owners and constrain
+  // either Integrated preference before Session birth. Managed Codex keeps its
+  // historical builtin carrier in renderer-facing configuration.
+  if (
+    providerId === 'anthropic-sub'
+    || providerId === 'xai-sub'
+    || providerId === 'codex-sub'
+  ) {
+    return 'builtin';
+  }
+  return preferredRuntime;
 }
 
 /**
@@ -180,6 +223,9 @@ export interface RuntimeDetection {
   installed: boolean;
   version?: string;
   path?: string;
+  /** Resolver-facing readiness; DSH remains experimental until native release evidence is accepted. */
+  readiness?: 'ready' | 'unverified-dev-runtime' | 'unavailable';
+  reason?: 'not-distributed' | 'artifact-missing' | 'artifact-invalid' | 'platform-unverified' | 'protocol-mismatch';
 }
 
 /**
@@ -308,16 +354,25 @@ export const RUNTIME_CONFIG_PER_RUNTIME_FIELDS = [
 export function buildRuntimeChangePatch(
   currentRuntimeConfig: RuntimeConfig | undefined,
   newRuntime: RuntimeType,
-): { runtime: RuntimeType; runtimeConfig: RuntimeConfig | undefined } {
+): {
+  runtime: RuntimeType;
+  runtimeConfig: RuntimeConfig | undefined;
+  runtimePreference: AgentRuntimePreference;
+} {
+  const runtimePreference = agentRuntimePreferenceForRuntime(newRuntime);
   if (!currentRuntimeConfig) {
-    return { runtime: newRuntime, runtimeConfig: undefined };
+    return { runtime: newRuntime, runtimeConfig: undefined, runtimePreference };
   }
   const next: RuntimeConfig = { ...currentRuntimeConfig };
   for (const k of RUNTIME_CONFIG_PER_RUNTIME_FIELDS) {
     delete next[k];
   }
   const hasFields = Object.keys(next).length > 0;
-  return { runtime: newRuntime, runtimeConfig: hasFields ? next : undefined };
+  return {
+    runtime: newRuntime,
+    runtimeConfig: hasFields ? next : undefined,
+    runtimePreference,
+  };
 }
 
 /**

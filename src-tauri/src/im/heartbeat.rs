@@ -469,11 +469,8 @@ impl HeartbeatRunner {
 
         let current_runtime = self.runtime.read().await.clone();
         let current_runtime_config = self.runtime_config.read().await.clone();
-        let current_runtime_source = current_runtime_config
-            .as_ref()
-            .and_then(|v| v.get("source"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let current_runtime_source =
+            super::runtime_source_for_runtime(&current_runtime, current_runtime_config.as_ref());
 
         {
             let drift_result = match SessionRouter::check_and_reset_on_runtime_identity_drift(

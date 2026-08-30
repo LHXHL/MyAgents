@@ -405,7 +405,10 @@
     "header": "运行环境",
     "settings": "设置",
     "notInstalled": "未安装",
-    "comingSoon": "即将支持"
+    "comingSoon": "即将支持",
+    "integrated": "集成运行时",
+    "externalCli": "外部 CLI",
+    "experimental": "实验性"
   },
   "shell": {
     "common": {
@@ -992,6 +995,7 @@
       "channelRebindFailedNewCancelled": "Channel 重绑失败，已取消新对话",
       "channelRebindFailedDeleteCancelled": "Channel 重绑失败，已取消删除",
       "reselectModelFirst": "请先在模型选择器里重新选择一次模型",
+      "runtimeUnavailable": "此 Runtime 产物不可用或未通过完整性校验，请修复或重新安装 MyAgents 后再发送。",
       "submitFailedRetry": "提交失败，请重试",
       "unknownError": "未知错误",
       "rewindFailedWithError": "时间回溯失败：{{error}}",

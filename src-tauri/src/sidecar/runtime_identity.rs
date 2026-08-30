@@ -163,6 +163,9 @@ fn runtime_identity_from_legacy_agent(
         runtime @ ("claude-code" | "codex" | "gemini") => {
             Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
         }
+        "dsh" if runtime_source.is_none() || runtime_source == Some("integrated") => {
+            Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated")))
+        }
         _ => Err(format!("unsupported legacy Agent Runtime shape: {runtime}")),
     }
 }
@@ -461,11 +464,17 @@ fn runtime_identity_from_legacy_session(
         (runtime @ ("claude-code" | "codex" | "gemini"), None | Some("system-cli")) => {
             Ok(RuntimeIdentity::new(Some(runtime), Some("system-cli")))
         }
+        ("dsh", None | Some("integrated")) => {
+            Ok(RuntimeIdentity::new(Some("dsh"), Some("integrated")))
+        }
         ("builtin", Some(source)) => Err(format!(
             "legacy builtin Session cannot use runtimeSource {source}"
         )),
         (runtime @ ("claude-code" | "codex" | "gemini"), Some(source)) => Err(format!(
             "legacy {runtime} Session cannot use runtimeSource {source}"
+        )),
+        ("dsh", Some(source)) => Err(format!(
+            "legacy dsh Session cannot use runtimeSource {source}"
         )),
         (runtime, _) => Err(format!("unknown legacy Session Runtime {runtime}")),
     }

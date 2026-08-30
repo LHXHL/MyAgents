@@ -230,6 +230,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // listeners (Shift+Tab permission-mode cycle below) so background tabs don't also fire.
   active = true,
   runtime = 'builtin',
+  usesExternalRuntimeControls = runtime !== 'builtin' && runtime !== 'dsh',
   runtimeDetections,
   onRuntimeChange,
   runtimeModels,
@@ -249,12 +250,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // derived constant so a later tweak (e.g. bump to 4) propagates everywhere
   // without the three-site scan the prior duplicated ternary required.
   const effectiveMinLines = isLauncherMode ? LAUNCHER_MIN_LINES : 2;
-  const isExternalRuntime = runtime !== 'builtin';
+  const isExternalRuntime = usesExternalRuntimeControls;
   const overlayRootRef = useRef<HTMLDivElement>(null);
   const attachmentSessionId = sessionId;
 
   // Compute display modes and model name based on runtime
-  const displayPermissionModes = isExternalRuntime && runtimePermissionModes
+  const displayPermissionModes = runtimePermissionModes
     ? runtimePermissionModes.map(m => ({
       value: m.value as PermissionMode,
       label: t(`input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
@@ -451,7 +452,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
   const effortChoices = onReasoningEffortChange
     ? reasoningEffortChoices(
-        isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
+        runtime === 'dsh' ? 'dsh' : isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
         provider?.apiProtocol,
         provider?.id,
         selectedModel ?? provider?.primaryModel,

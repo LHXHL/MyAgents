@@ -39,7 +39,7 @@ import { patchAgentConfig, patchAgentProjectConfig, getAgentById } from '@/confi
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections } from '../../shared/types/runtime';
-import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch } from '../../shared/types/runtime';
+import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, DSH_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch, resolveEffectiveRuntime } from '../../shared/types/runtime';
 import {
     agentUsesManagedCodexProvider,
     isRuntimeBackedProvider,
@@ -55,6 +55,10 @@ import { apiGetJson } from '@/api/apiFetch';
 import { runtimeModelCatalogPath } from '@/utils/runtimeModelCatalog';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveLauncherProvider } from '@/utils/optionResolve';
+import {
+    isProviderModelCompatibleWithRuntime,
+    projectProvidersForRuntime,
+} from '@/utils/runtimeProviderProjection';
 import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
 
 interface LauncherProps {
@@ -220,12 +224,26 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     runtimeConfigRef.current = selectedAgent?.runtimeConfig;
 
     // Runtime-aware model/permission lists — adapts input bar for external runtimes
-    const selectedAgentUsesManagedCodexProvider = agentUsesManagedCodexProvider(selectedAgent);
-    const launcherRuntime: RuntimeType = selectedAgentUsesManagedCodexProvider
-        ? 'builtin'
-        : multiAgentRuntimeEnabled
-        ? ((selectedAgent?.runtime as RuntimeType) || 'builtin') : 'builtin';
-    const isExternalRuntime = launcherRuntime !== 'builtin';
+    const launcherRuntime: RuntimeType = resolveEffectiveRuntime(
+        selectedAgent?.runtime,
+        multiAgentRuntimeEnabled,
+        selectedAgent?.runtimePreference,
+        selectedAgent?.runtimeConfig?.source,
+        selectedAgent?.providerId,
+    );
+    const selectedAgentUsesManagedCodexProvider = launcherRuntime === 'builtin'
+        && agentUsesManagedCodexProvider(selectedAgent);
+    // DSH uses the shared AgentRuntime process path, but its Provider, model,
+    // permission and extension selections remain Product-owned. Keep that
+    // separate from user-managed CLI configuration.
+    const isExternalRuntime = launcherRuntime !== 'builtin' && launcherRuntime !== 'dsh';
+    const runtimeExecutionUnavailable = launcherRuntime === 'dsh'
+        && runtimeDetections.dsh.readiness !== 'ready'
+        && runtimeDetections.dsh.readiness !== 'unverified-dev-runtime';
+    const launcherProviders = useMemo(
+        () => projectProvidersForRuntime(providers, launcherRuntime),
+        [providers, launcherRuntime],
+    );
 
     // Codex + Gemini models are dynamic (fetched from the CLI); CC models are static
     const [codexModels, setCodexModels] = useState<RuntimeModelInfo[]>([]);
@@ -250,7 +268,9 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const launcherRuntimeModels: RuntimeModelInfo[] | undefined = launcherRuntime === 'claude-code' ? CC_MODELS
         : launcherRuntime === 'codex' ? codexModels
         : launcherRuntime === 'gemini' ? geminiModels : undefined;
-    const launcherRuntimePermissionModes: RuntimePermissionMode[] | undefined = launcherRuntime === 'claude-code'
+    const launcherRuntimePermissionModes: RuntimePermissionMode[] | undefined = launcherRuntime === 'dsh'
+        ? DSH_PERMISSION_MODES
+        : launcherRuntime === 'claude-code'
         ? CC_PERMISSION_MODES
         : launcherRuntime === 'codex' ? CODEX_PERMISSION_MODES
         : launcherRuntime === 'gemini' ? GEMINI_PERMISSION_MODES : undefined;
@@ -258,8 +278,14 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     // Derive provider for launcher — only select providers with valid credentials
     const launcherProvider = useMemo(() => {
         const id = launcherProviderId ?? selectedAgent?.providerId ?? selectedWorkspace?.providerId ?? config.defaultProviderId;
-        return resolveProvider(id, providers, apiKeys, providerVerifyStatus);
-    }, [launcherProviderId, selectedAgent, selectedWorkspace, config.defaultProviderId, providers, apiKeys, providerVerifyStatus]);
+        return resolveProvider(id, launcherProviders, apiKeys, providerVerifyStatus);
+    }, [launcherProviderId, selectedAgent, selectedWorkspace, config.defaultProviderId, launcherProviders, apiKeys, providerVerifyStatus]);
+    const launcherProviderModelIncomplete = launcherRuntime === 'dsh'
+        && !isProviderModelCompatibleWithRuntime(
+            launcherRuntime,
+            launcherProvider?.id,
+            launcherSelectedModel ?? launcherProvider?.primaryModel,
+        );
     const imageUnderstandingConfiguredForInput = useMemo(() => {
         return isImageUnderstandingSelectionAvailable(
             providers,
@@ -444,7 +470,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         setLauncherWorkspaceMcpEnabled(selectedAgent?.mcpEnabledServers ?? selectedWorkspace.mcpEnabledServers ?? []);
         setLauncherOfficialToolEnabled(normalizeOfficialToolIds(selectedAgent?.enabledOfficialToolIds ?? selectedWorkspace.enabledOfficialToolIds ?? []));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- depend on specific agent/project fields, not object ref
-    }, [isLoading, selectedWorkspace?.id, selectedAgent?.permissionMode, selectedAgent?.model, selectedAgent?.providerId, selectedAgent?.mcpEnabledServers, selectedAgent?.enabledOfficialToolIds, selectedAgent?.runtime, selectedAgent?.reasoningEffort, agentRuntimeModel, agentRuntimePermMode, agentRuntimeReasoningEffort, selectedWorkspace?.permissionMode, selectedWorkspace?.model, selectedWorkspace?.providerId, selectedWorkspace?.mcpEnabledServers, selectedWorkspace?.enabledOfficialToolIds, config.defaultPermissionMode, multiAgentRuntimeEnabled, isExternalRuntime]);
+    }, [isLoading, selectedWorkspace?.id, selectedAgent?.permissionMode, selectedAgent?.model, selectedAgent?.providerId, selectedAgent?.mcpEnabledServers, selectedAgent?.enabledOfficialToolIds, selectedAgent?.runtime, selectedAgent?.runtimePreference, selectedAgent?.reasoningEffort, agentRuntimeModel, agentRuntimePermMode, agentRuntimeReasoningEffort, selectedWorkspace?.permissionMode, selectedWorkspace?.model, selectedWorkspace?.providerId, selectedWorkspace?.mcpEnabledServers, selectedWorkspace?.enabledOfficialToolIds, config.defaultPermissionMode, multiAgentRuntimeEnabled, isExternalRuntime]);
 
     // Write-back handlers: persist Launcher setting changes to the selected project
 
@@ -608,6 +634,14 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             toastRef.current.error(t('toasts.selectWorkspaceFirst'));
             return;
         }
+        if (runtimeExecutionUnavailable) {
+            toastRef.current.warning(t('toasts.runtimeUnavailable'));
+            return;
+        }
+        if (launcherProviderModelIncomplete) {
+            toastRef.current.warning(t('toasts.selectCompatibleProviderModel'));
+            return;
+        }
 
         // PRD 0.2.3 + cross-review: split provider/model by runtime dimension. For builtin,
         // pairBuiltinSelection enforces model ∈ provider.models — closing the
@@ -760,7 +794,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         launcherSelectedModel, launcherReasoningEffort, launcherWorkspaceMcpEnabled, launcherGlobalMcpEnabled,
         launcherEnabledPlugins, launcherOfficialToolEnabled, launcherGlobalOfficialToolEnabled,
         imageUnderstandingConfiguredForInput, config.plugins, config.enabledPlugins,
-        isExternalRuntime, launcherRuntime, providers, t,
+        isExternalRuntime, launcherRuntime, runtimeExecutionUnavailable, launcherProviderModelIncomplete, providers, t,
         touchProject, onLaunchProject, updateConfig]);
 
     // Path input dialog state (for browser dev mode)
@@ -856,7 +890,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         attachmentSessionId={attachmentSessionId}
                         isStarting={launchingProjectId === selectedWorkspace?.id && isStarting}
                         provider={launcherProvider}
-                        providers={providers}
+                        providers={launcherProviders}
                         selectedModel={launcherSelectedModel}
                         onProviderChange={handleLauncherProviderChange}
                         onModelChange={handleLauncherModelChange}
@@ -886,9 +920,10 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         onWorkspacePluginToggle={handleLauncherPluginToggle}
                         onRefreshProviders={refreshProviderData}
                         onGoToSettings={handleGoToSettings}
-                        runtime={isExternalRuntime ? launcherRuntime : undefined}
+                        runtime={launcherRuntime !== 'builtin' ? launcherRuntime : undefined}
+                        usesExternalRuntimeControls={isExternalRuntime}
                         runtimeModels={isExternalRuntime ? launcherRuntimeModels : undefined}
-                        runtimePermissionModes={isExternalRuntime ? launcherRuntimePermissionModes : undefined}
+                        runtimePermissionModes={launcherRuntime !== 'builtin' ? launcherRuntimePermissionModes : undefined}
                         /* PRD 0.2.7 Phase F: runtime selector lives below the input
                          * (LauncherInputContextRow) when the experimental gate is on. */
                         multiAgentRuntimeEnabled={multiAgentRuntimeEnabled}

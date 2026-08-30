@@ -93,6 +93,7 @@ interface BrandSectionProps {
     onGoToSettings?: () => void;
     // Runtime (external runtimes adapt model/permission selectors)
     runtime?: RuntimeType;
+    usesExternalRuntimeControls?: boolean;
     runtimeModels?: RuntimeModelInfo[];
     runtimePermissionModes?: RuntimePermissionMode[];
     // PRD 0.2.7 Phase F: runtime selector lives in the row below the input
@@ -146,6 +147,7 @@ export default memo(function BrandSection({
     onRefreshProviders,
     onGoToSettings,
     runtime,
+    usesExternalRuntimeControls,
     runtimeModels,
     runtimePermissionModes,
     multiAgentRuntimeEnabled,
@@ -664,6 +666,7 @@ export default memo(function BrandSection({
                                 onWorkspacePluginToggle={onWorkspacePluginToggle}
                                 onRefreshProviders={onRefreshProviders}
                                 runtime={runtime}
+                                usesExternalRuntimeControls={usesExternalRuntimeControls}
                                 runtimeModels={runtimeModels}
                                 runtimePermissionModes={runtimePermissionModes}
                                 /* PRD 0.2.7 Phase F: workspace + runtime selectors moved out of

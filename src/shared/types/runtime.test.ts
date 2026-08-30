@@ -12,6 +12,7 @@ import {
   resolveCronPermissionMode,
   resolveScheduledTurnPermissionMode,
   resolveEffectiveRuntime,
+  runtimeSourceForRuntimeType,
   VALID_RUNTIMES,
   type RuntimeType,
 } from './runtime';
@@ -20,6 +21,7 @@ import { coerceReasoningEffortForRuntime } from '../reasoningEffort';
 describe('normalizeRuntime', () => {
   test('passes through valid runtimes', () => {
     expect(normalizeRuntime('builtin')).toBe('builtin');
+    expect(normalizeRuntime('dsh')).toBe('dsh');
     expect(normalizeRuntime('claude-code')).toBe('claude-code');
     expect(normalizeRuntime('codex')).toBe('codex');
     expect(normalizeRuntime('gemini')).toBe('gemini');
@@ -42,6 +44,7 @@ describe('resolveEffectiveRuntime', () => {
     // multiAgentRuntime feature flag is off → the sidecar actually runs
     // builtin, so analytics must report builtin, not the configured intent.
     expect(resolveEffectiveRuntime('codex', false)).toBe('builtin');
+    expect(resolveEffectiveRuntime('dsh', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('claude-code', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('gemini', false)).toBe('builtin');
     expect(resolveEffectiveRuntime('builtin', false)).toBe('builtin');
@@ -50,9 +53,55 @@ describe('resolveEffectiveRuntime', () => {
 
   test('gate ON honors the configured (normalized) runtime', () => {
     expect(resolveEffectiveRuntime('codex', true)).toBe('codex');
+    expect(resolveEffectiveRuntime('dsh', true)).toBe('dsh');
     expect(resolveEffectiveRuntime('claude-code', true)).toBe('claude-code');
     expect(resolveEffectiveRuntime('gemini', true)).toBe('gemini');
     expect(resolveEffectiveRuntime('builtin', true)).toBe('builtin');
+  });
+
+  test('gate ON gives authoritative runtimePreference precedence over the legacy projection', () => {
+    expect(resolveEffectiveRuntime(
+      'codex',
+      true,
+      { family: 'integrated', id: 'dsh' },
+      'system-cli',
+    )).toBe('dsh');
+    expect(resolveEffectiveRuntime(
+      'dsh',
+      true,
+      { family: 'external', id: 'gemini' },
+      'integrated',
+    )).toBe('gemini');
+    expect(resolveEffectiveRuntime(
+      'dsh',
+      true,
+      { family: 'integrated', id: 'future-runtime' },
+      'integrated',
+    )).toBe('builtin');
+  });
+
+  test('applies Product Provider constraints after explicit External preference precedence', () => {
+    expect(resolveEffectiveRuntime(
+      'dsh',
+      true,
+      { family: 'integrated', id: 'dsh' },
+      'integrated',
+      'anthropic-sub',
+    )).toBe('builtin');
+    expect(resolveEffectiveRuntime(
+      'dsh',
+      true,
+      { family: 'integrated', id: 'dsh' },
+      'integrated',
+      'codex-sub',
+    )).toBe('builtin');
+    expect(resolveEffectiveRuntime(
+      'builtin',
+      true,
+      { family: 'external', id: 'codex' },
+      undefined,
+      'codex-sub',
+    )).toBe('codex');
   });
 
   test('gate ON with no/unknown agent runtime is builtin', () => {
@@ -73,6 +122,18 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime(currentAgentConfig, true)).toBe('gemini'); // config view
     // The authoritative value for an existing session would be the frozen
     // 'codex' — which lives in session metadata, not derivable from this fn.
+  });
+});
+
+describe('runtimeSourceForRuntimeType', () => {
+  test('projects only legal source families for each Runtime type', () => {
+    expect(runtimeSourceForRuntimeType('builtin', 'system-cli')).toBeUndefined();
+    expect(runtimeSourceForRuntimeType('dsh')).toBe('integrated');
+    expect(runtimeSourceForRuntimeType('dsh', 'system-cli')).toBe('integrated');
+    expect(runtimeSourceForRuntimeType('claude-code', 'managed-provider')).toBe('system-cli');
+    expect(runtimeSourceForRuntimeType('gemini', 'integrated')).toBe('system-cli');
+    expect(runtimeSourceForRuntimeType('codex', 'managed-provider')).toBe('managed-provider');
+    expect(runtimeSourceForRuntimeType('codex')).toBe('system-cli');
   });
 });
 

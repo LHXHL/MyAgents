@@ -146,6 +146,11 @@ export function preferenceFromLegacyAgentFacts(
       ? { family: "integrated", id: "claude-agent-sdk" }
       : undefined;
   }
+  if (runtime === "dsh") {
+    return source === undefined || source === "integrated"
+      ? { family: "integrated", id: "dsh" }
+      : undefined;
+  }
   if (!isExternalRuntimeId(runtime)) return undefined;
   if (
     runtime === "codex" &&
@@ -167,6 +172,31 @@ export function resolveAgentRuntimePreference(facts: {
     return parseAgentRuntimePreference(facts.runtimePreference);
   }
   return preferenceFromLegacyAgentFacts(facts);
+}
+
+/**
+ * Build the authoritative Agent preference together with the legacy Runtime
+ * projection used by older readers. Runtime selection writers must persist
+ * both values atomically so a migrated Agent cannot display one Runtime while
+ * a Sidecar resolves another.
+ */
+export function agentRuntimePreferenceForRuntime(
+  runtime: RuntimeType,
+): AgentRuntimePreference {
+  if (runtime === "builtin") {
+    return { family: "integrated", id: "claude-agent-sdk" };
+  }
+  if (runtime === "dsh") {
+    return { family: "integrated", id: "dsh" };
+  }
+  return { family: "external", id: runtime };
+}
+
+export function runtimeTypeForAgentRuntimePreference(
+  preference: AgentRuntimePreference,
+): RuntimeType {
+  if (preference.family === "external") return preference.id;
+  return preference.id === "dsh" ? "dsh" : "builtin";
 }
 
 export function createClaudeSdkBinding(): EffectiveRuntimeBinding {

@@ -44,6 +44,13 @@ describe('sessionSnapshotProviderProjection', () => {
     expect(managedProviderSnapshotModel(session, 'runtime-model')).toBe('runtime-model');
   });
 
+  it('projects Integrated DSH snapshots through the Product Provider picker', () => {
+    expect(shouldSessionSnapshotUseProviderPicker({
+      session: { runtimeSource: 'integrated', providerId: 'deepseek-api' },
+      runtime: 'dsh',
+    })).toBe(true);
+  });
+
   it('repairs older Managed Codex snapshots without providerExecutionIdentity', () => {
     const session = {
       runtimeSource: 'managed-provider' as const,

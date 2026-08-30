@@ -11,7 +11,9 @@ export function shouldUseExternalRuntimeInputControls(args: {
   currentRuntime: RuntimeType;
   managedProviderRuntimeActive: boolean;
 }): boolean {
-  return args.currentRuntime !== 'builtin' && !args.managedProviderRuntimeActive;
+  return args.currentRuntime !== 'builtin'
+    && args.currentRuntime !== 'dsh'
+    && !args.managedProviderRuntimeActive;
 }
 
 /**

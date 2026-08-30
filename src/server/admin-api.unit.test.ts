@@ -1656,6 +1656,22 @@ describe('admin-api task runtime model identity', () => {
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
+  it('rejects Task Provider/model pairs outside the accepted DSH cells', async () => {
+    const { handleTaskCreateDirect } = await import('./admin-api');
+
+    const result = await handleTaskCreateDirect({
+      name: 'invalid-dsh-cell',
+      runtime: 'dsh',
+      runtimeConfig: { source: 'integrated' },
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('accepted DSH compatibility cells');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
   it('validates a Task update against the persisted complete runtime identity', async () => {
     managementApiMocks.managementApi
       .mockResolvedValueOnce({
@@ -1973,6 +1989,45 @@ describe('admin-api agent set configuration intent', () => {
       '/api/agent/reload-config',
       'POST',
       { agentId: 'agent-managed-codex', patch: { permissionMode: 'fullAgency' } },
+    );
+  });
+
+  it('writes DSH runtimePreference atomically with the legacy Runtime projection', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-runtime-dsh',
+        name: 'DSH Intent',
+        workspacePath: '/tmp/myagents-agent-runtime-dsh',
+        runtime: 'codex',
+        runtimePreference: { family: 'external', id: 'codex' },
+        runtimeConfig: { model: 'gpt-5.6-sol', permissionMode: 'full-auto' },
+      }],
+    });
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-runtime-dsh',
+      key: 'runtime',
+      value: 'dsh',
+    });
+
+    expect(result.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      runtime: 'dsh',
+      runtimePreference: { family: 'integrated', id: 'dsh' },
+    });
+    expect((readConfig().agents as Record<string, unknown>[])[0]).not.toHaveProperty('runtimeConfig');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      {
+        agentId: 'agent-runtime-dsh',
+        patch: {
+          runtime: 'dsh',
+          runtimeConfig: null,
+          runtimePreference: { family: 'integrated', id: 'dsh' },
+        },
+      },
     );
   });
 
@@ -3792,6 +3847,61 @@ describe('admin-api Agent / Session discovery', () => {
         lastMessagePreview: 'existing preview',
       }),
     ]);
+  });
+
+  it('reports DSH Agent defaults and Session history as Integrated Product identity', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      multiAgentRuntime: true,
+      agents: [{
+        id: 'agent-dsh',
+        name: 'DSH Workspace',
+        enabled: true,
+        workspacePath: '/tmp/dsh-workspace',
+        runtime: 'dsh',
+        runtimePreference: { family: 'integrated', id: 'dsh' },
+        providerId: 'deepseek',
+        model: 'deepseek-v4-flash',
+        permissionMode: 'fullAgency',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-dsh',
+      name: 'DSH Workspace',
+      path: '/tmp/dsh-workspace',
+      agentId: 'agent-dsh',
+    }]);
+    writeJson(join(scratch, '.myagents', 'sessions.json'), [{
+      id: 'session-dsh',
+      agentDir: '/tmp/dsh-workspace',
+      title: 'DSH Session',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      lastActiveAt: '2026-08-01T00:00:00.000Z',
+      runtime: 'dsh',
+      model: 'deepseek-v4-flash',
+    }]);
+    const { handleAgentShow, handleSessionList } = await import('./admin-api');
+
+    expect(await handleAgentShow({ id: 'agent-dsh' })).toMatchObject({
+      success: true,
+      data: {
+        effectiveDefaults: {
+          runtime: 'dsh',
+          runtimeSource: 'integrated',
+          providerId: 'deepseek',
+          model: 'deepseek-v4-flash',
+          permissionMode: 'fullAgency',
+        },
+      },
+    });
+    expect(await handleSessionList({ agentId: 'agent-dsh' })).toMatchObject({
+      success: true,
+      data: [{
+        sessionId: 'session-dsh',
+        runtime: 'dsh',
+        runtimeSource: 'integrated',
+      }],
+    });
   });
 });
 

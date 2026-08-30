@@ -62,6 +62,14 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
     expect(reasoningEffortChoices('codex')).toEqual(CODEX_EFFORT_LEVELS);
     expect(CODEX_EFFORT_LEVELS).not.toContain('max');
   });
+  it('DSH projects the exact selected Provider-cell effort vocabulary', () => {
+    expect(reasoningEffortChoices('dsh', 'openai', 'deepseek', 'deepseek-v4-flash'))
+      .toEqual(['high', 'max']);
+    expect(reasoningEffortChoices('dsh', 'anthropic', 'anthropic-api', 'claude-sonnet-4-6'))
+      .toBeNull();
+    expect(reasoningEffortChoices('dsh', 'openai', 'openrouter', 'unsupported'))
+      .toBeNull();
+  });
   it('gemini / unknown → null (UI hides the row entirely)', () => {
     expect(reasoningEffortChoices('gemini')).toBeNull();
     expect(reasoningEffortChoices('some-future-runtime')).toBeNull();

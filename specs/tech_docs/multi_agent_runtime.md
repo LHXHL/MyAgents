@@ -2,7 +2,7 @@
 
 ## 概述
 
-Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话。除内置 Claude Agent SDK（builtin）外，支持 Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 作为外部 Runtime。
+Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话。Integrated Runtime 包括内置 Claude Agent SDK（builtin）与受控 Labs 下的 DSH；Claude Code CLI、OpenAI Codex CLI、Google Gemini CLI 仍是 External CLI。
 
 **功能门控**：设置 → 关于 → 实验室 → 「更多 Agent Runtime」开关（`config.multiAgentRuntime`），默认关闭。该值现在只控制 Runtime 选择器是否可用；关闭时新 ordinary-provider Session 使用 distribution policy 的 Default Integrated Runtime，已保存 preference 不被删除，已有 frozen Session 仍按自己的 binding 执行或明确报不可用。
 
@@ -139,15 +139,16 @@ Runtime 内部协议差异通过 `UnifiedEvent` 联合类型统一，`external-s
 ### RuntimeType (`src/shared/types/runtime.ts`)
 
 ```typescript
-type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
+type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex' | 'gemini';
 ```
 
 ### Runtime Source
 
-外部 runtime 还带有 `RuntimeConfig.source` / `MYAGENTS_RUNTIME_SOURCE`，用于区分同一个 runtime 协议由谁管理：
+Runtime 还带有 `RuntimeConfig.source` / `MYAGENTS_RUNTIME_SOURCE`，用于区分同一个 runtime 协议由谁管理：
 
 | Source | 含义 | 典型入口 |
 |---|---|---|
+| `integrated` | MyAgents 直接承载的 Integrated Runtime | 受控 Labs 中的 DSH；builtin 继续省略 source 以兼容历史数据 |
 | `system-cli` | 用户自行安装并登录的本机 CLI | 实验室「更多 Agent Runtime」里选择 Codex / Claude Code / Gemini |
 | `managed-provider` | MyAgents 管理 runtime 二进制、安装状态与登录状态 | Provider 列表里的 `codex-sub`（Codex 订阅） |
 
@@ -855,7 +856,7 @@ distribution-policy.json + config.multiAgentRuntime
   → Rust reads authoritative binding before legacy runtime/source projection
 ```
 
-H1 已落地上述 identity/policy/resolver/migration 与 Rust 读取优先级。H2 的 `provider-constraints.ts` 只从显式 Provider protocol 字段和已声明 subscription owner 产生 execution constraint；`dsh-provider-cells-v1.json` 再独立决定具体 Provider/model 是否具有 DSH profile。兼容 manifest 的三个 API family 不是通配符；目前只 allowlist native DeepSeek Flash、三项 `anthropic-api` 模型和两项 `zhipu-ai` 模型，OAuth/subscription、custom/catalog-only 与任何 endpoint/auth/capacity/modality 漂移都在 profile 编译前 fail closed。`profile-compiler.ts` 只输出稳定 revision、opaque POSIX credential reference 与精确 wire facts，不读取或复制 API key。H3 的 `RuntimeProcessHost` 在正式 spawn 前复验 exact Node 与 Runtime self-check，从 artifact 公共 package exports 加载生成 client/validator，以显式无密钥 child env 完成 40-method/7-reverse-port handshake、generation fence 与有界 shutdown；真实 staged artifact 的无 Session native smoke 已通过。H4/H5 才会替换 `factory.ts` / binary SessionEngine selector 和 Renderer 的剩余扁平路径。因此当前产品仍不展示 DSH，旧 `MYAGENTS_RUNTIME` 链只承担已实现 Runtime 的兼容执行。
+H1 已落地上述 identity/policy/resolver/migration 与 Rust 读取优先级。H2 的 `provider-constraints.ts` 只从显式 Provider protocol 字段和已声明 subscription owner 产生 execution constraint；`dsh-provider-cells-v1.json` 再独立决定具体 Provider/model 是否具有 DSH profile。兼容 manifest 的三个 API family 不是通配符；目前只 allowlist native DeepSeek Flash、三项 `anthropic-api` 模型和两项 `zhipu-ai` 模型，OAuth/subscription、custom/catalog-only 与任何 endpoint/auth/capacity/modality 漂移都在 profile 编译前 fail closed。`profile-compiler.ts` 只输出稳定 revision、opaque POSIX credential reference 与精确 wire facts，不读取或复制 API key。H3 的 `RuntimeProcessHost` 在正式 spawn 前复验 exact Node 与 Runtime self-check，从 artifact 公共 package exports 加载生成 client/validator，以显式无密钥 child env 完成 40-method/7-reverse-port handshake、generation fence 与有界 shutdown；真实 staged artifact 的无 Session native smoke 已通过。H4/H4P 已接通 SessionEngine、生命周期、投影、扩展、Host ports、mutation、Plan 与精确权限规则。H5 已把 Desktop、IM、Task/Cron、Goal 和 Inbox 收敛到 authoritative preference/binding：DSH 仅在 Labs 开启、Provider/model cell 可编译且 Rust 复验 committed lock、外层 handoff、Runtime、compatibility 与平台资源后显示为 Integrated/Experimental；不可用状态会在 Session admission 前阻断。既有 frozen Session 不因 Labs 关闭而被改写。H6 packaged/native campaign 仍是发布晋级门，不得把当前 development evidence 表述为平台 verified。
 
 ## 跨 Runtime Session 保护
 

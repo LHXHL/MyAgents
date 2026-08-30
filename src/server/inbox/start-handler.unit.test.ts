@@ -94,6 +94,27 @@ describe('handleFreshSessionStart', () => {
     expect(mocks.deleteSession).not.toHaveBeenCalled();
   });
 
+  it('materializes a DSH Inbox Session with its Integrated frozen identity', async () => {
+    const dshContext = {
+      ...context,
+      runtime: 'dsh' as const,
+      runtimeSource: 'integrated' as const,
+    };
+    const inject = vi.fn<FreshSessionInjector>(async (_text, options) => ({
+      queued: true,
+      dispatchAcceptance: Promise.resolve(await options.beforeDispatch()),
+    }));
+
+    await handleFreshSessionStart(message, dshContext, inject);
+
+    expect(mocks.createMaterializedSessionMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeOverride: 'dsh',
+        runtimeSourceOverride: 'integrated',
+      }),
+    );
+  });
+
   it('rolls back prepared metadata on an explicit Runtime dispatch rejection', async () => {
     mocks.claimPreparedSessionForTurnAdmission.mockResolvedValue({
       status: 'conflict',

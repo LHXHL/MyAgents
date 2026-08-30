@@ -52,6 +52,16 @@ describe("Integrated Runtime identity", () => {
         runtimeSource: "managed-provider",
       }),
     ).toEqual({ family: "external", id: "gemini" });
+    expect(preferenceFromLegacyAgentFacts({ runtime: "dsh" })).toEqual({
+      family: "integrated",
+      id: "dsh",
+    });
+    expect(
+      preferenceFromLegacyAgentFacts({ runtime: "dsh", runtimeSource: "integrated" }),
+    ).toEqual({ family: "integrated", id: "dsh" });
+    expect(
+      preferenceFromLegacyAgentFacts({ runtime: "dsh", runtimeSource: "system-cli" }),
+    ).toBeUndefined();
     expect(
       preferenceFromLegacyAgentFacts({ runtime: "future-runtime" }),
     ).toBeUndefined();
@@ -67,9 +77,9 @@ describe("Integrated Runtime identity", () => {
       protocolSchemaSha256:
         "5610b423694e364c01ade64391893275c8a4a71734b865b8992d0a02247e3a60",
       runtimeArtifactSha256:
-        "bca52ee3a785ba6542a4a26ed2821bf19dade5d76ff12d982cf7ba26b736b1ca",
+        "5d87edaeb11ccf080d2e919d5ca0d468b28510d6598a0d968610187a23e55df5",
       compatibilityManifestSha256:
-        "b6f0a6a647abe4427f10679b9502ed788acad7f534a2c15d387471b29ae025cf",
+        "4b2eb1051254f7be0716863ad161f80db6b4a205a5c1b90ce3ddfdea7b9d2f44",
       sessionFormat: "dsh-session-events-v1",
       platformTarget: "darwin-arm64",
     });
