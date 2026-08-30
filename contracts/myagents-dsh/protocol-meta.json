@@ -24,11 +24,11 @@
     "TaskUpdate"
   ],
   "capabilityProfileDigest": "80d3f130738d75c57caa6ad6d233b6f2cfc57a7ad3a786985d985445c7177d02",
-  "contractSourceSha256": "bd357dd6d97f26a8318723e5540ceffe8acc523459275d825e367ac6903ca126",
+  "contractSourceSha256": "b77ec953d6b0ac32a61afeef642b0d53bacade14dcd51dd803329199b379e983",
   "developmentDshVersion": "0.1.1-rc.2",
   "dshArtifactManifestSha256": "ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2",
   "dshEngineVersion": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-  "fixturesSha256": "6059606505d43a577ec74446cac4f9c9a77c72ea09fdee8b7d54dd7154b55025",
+  "fixturesSha256": "b27be6836719159556fd7a53440ba510a5a7ea72a511ec3a202b22c977d44686",
   "hostMethods": [
     "initialize",
     "runtime/status",
@@ -77,7 +77,7 @@
     "runtime/event",
     "host/interaction/cancel"
   ],
-  "protocolVersion": "2.0.0",
+  "protocolVersion": "2.1.0",
   "reverseMethods": [
     "host/credential/resolve",
     "host/interaction/request",
@@ -88,6 +88,6 @@
     "host/attachment/release"
   ],
   "runtimeVersion": "0.0.0",
-  "schemaSha256": "1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44",
+  "schemaSha256": "63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc",
   "sessionFormat": "dsh-session-events-v1"
 }

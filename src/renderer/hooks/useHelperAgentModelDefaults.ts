@@ -72,7 +72,7 @@ export function useHelperAgentModelDefaults(): HelperAgentModelDefaults {
         }).catch(err => {
             console.warn('[useHelperAgentModelDefaults] persist failed:', err);
         });
-    }, [helperAgent?.runtimeConfig, helperAgent?.runtimePreference, helperAgentId, providers]);
+    }, [helperAgent, helperAgentId, providers]);
 
     return {
         initialProviderId: helperAgent?.providerId,

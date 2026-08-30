@@ -6190,7 +6190,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.0.0",
+            "const": "2.1.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -10993,6 +10993,31 @@
             },
             "required": [
               "sequence"
+            ],
+            "type": "object"
+          },
+          "genesisBoundary": {
+            "additionalProperties": false,
+            "properties": {
+              "sequence": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stableBoundaryId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "transcriptPostcondition": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "stableBoundaryId",
+              "sequence",
+              "transcriptPostcondition"
             ],
             "type": "object"
           },
@@ -17971,6 +17996,6 @@
       }
     }
   },
-  "protocolVersion": "2.0.0",
+  "protocolVersion": "2.1.0",
   "title": "MyAgents DSH native RPC"
 }

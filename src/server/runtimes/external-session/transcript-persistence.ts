@@ -297,6 +297,8 @@ export interface ExternalAssistantTurnPersistInput {
   contextUsage: ContextUsage | null;
   lastActiveAt?: string;
   runtimeTurnAnchor?: RuntimeTurnAnchor;
+  completionState?: 'partial';
+  terminalStatus?: 'stopped' | 'error';
 }
 
 export interface ExternalAssistantTurnPersistResult {
@@ -323,6 +325,8 @@ export async function appendAndPersistExternalAssistantTurn(
       usage: input.usage || undefined,
       toolCount: input.toolCount || undefined,
       runtimeTurnAnchor: input.runtimeTurnAnchor,
+      completionState: input.completionState,
+      terminalStatus: input.terminalStatus,
     });
     appendedAssistant = true;
   }

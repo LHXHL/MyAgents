@@ -32,6 +32,7 @@ import {
 import { setExternalActiveProcess, setExternalActiveRuntime, resetExternalLifecycleState } from './lifecycle';
 import {
   getExternalInteractiveRequest,
+  deleteExternalInteractiveRequest,
   getExternalPermissionSuggestions,
   resetExternalInteractiveState,
   setExternalAskUserQuestion,
@@ -155,5 +156,27 @@ describe('external interactive owner integration', () => {
       reason: 'resolved',
     });
     expect(getExternalInteractiveRequest(requestId)).toBeUndefined();
+  });
+
+  it('does not emit a duplicate expiry when the runtime resolves synchronously', async () => {
+    const requestId = 'perm-runtime-resolved';
+    const respondPermission = vi.fn(async () => {
+      deleteExternalInteractiveRequest(requestId);
+    });
+    setExternalActiveProcess({
+      pid: 123,
+      exited: false,
+      writeLine: vi.fn(async () => undefined),
+      kill: vi.fn(),
+      waitForExit: vi.fn(async () => 0),
+    } satisfies RuntimeProcess, []);
+    setExternalActiveRuntime({ type: 'dsh', respondPermission } as unknown as AgentRuntime);
+    setExternalInteractiveRequest(requestId, {
+      type: 'permission:request',
+      data: { requestId, toolName: 'Bash', toolUseId: 'tool-3', input: '{}' },
+    });
+
+    await expect(respondExternalPermission(requestId, 'always_allow')).resolves.toBe(true);
+    expect(mocks.broadcast).not.toHaveBeenCalledWith('permission:expired', expect.anything());
   });
 });

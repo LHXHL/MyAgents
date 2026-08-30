@@ -140,6 +140,7 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
 function observeExternalDispatch(
   dispatch: Promise<{ queued: boolean; error?: string; terminationUnconfirmed?: boolean }>,
   queueId?: string,
+  userMessageId?: string,
 ): Promise<{ accepted: boolean; error?: string }> {
   return dispatch
     .then((result) => {
@@ -149,7 +150,7 @@ function observeExternalDispatch(
         }
         if (result.error) {
           console.error(`[chat] external send failed: ${result.error}`);
-          broadcast('chat:agent-error', { message: result.error });
+          broadcast('chat:agent-error', { message: result.error, userMessageId });
         }
         return result.terminationUnconfirmed
           ? { accepted: true }
@@ -161,7 +162,7 @@ function observeExternalDispatch(
       if (queueId) clearExternalTurnBinding(queueId);
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[chat] external send threw: ${message}`);
-      broadcast('chat:agent-error', { message });
+      broadcast('chat:agent-error', { message, userMessageId });
       return { accepted: false, error: message };
     });
 }
@@ -433,7 +434,11 @@ export function createExternalSessionEngine(): SessionEngine {
           channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
-      const dispatchAcceptance = observeExternalDispatch(sent.dispatch, request.queueId);
+      const dispatchAcceptance = observeExternalDispatch(
+        sent.dispatch,
+        request.queueId,
+        sent.userMessageId,
+      );
       return {
         success: true,
         queued: sent.queued,
@@ -474,6 +479,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const dispatchAcceptance = observeExternalDispatch(
         sent.dispatch,
         sent.queueId ?? request.queueId,
+        sent.userMessageId,
       );
 
       // A queueId means the existing external turn-boundary queue has taken

@@ -265,6 +265,7 @@ describe('SSE event priority registration', () => {
   it('classifies error / completion / init events as critical', () => {
     expect(SSE_EVENT_PRIORITIES['chat:message-error']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:message-complete']).toBe('critical');
+    expect(SSE_EVENT_PRIORITIES['chat:messages-retracted']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:system-init']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:session-title-changed']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:subagent-status']).toBe('critical');

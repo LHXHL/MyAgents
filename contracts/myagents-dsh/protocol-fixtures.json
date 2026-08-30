@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.0.0",
-          "minVersion": "2.0.0"
+          "maxVersion": "2.1.0",
+          "minVersion": "2.1.0"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.0.0",
-          "minVersion": "2.0.0"
+          "maxVersion": "2.1.0",
+          "minVersion": "2.1.0"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "2.0.0",
+        "protocolVersion": "2.1.0",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -289,7 +289,7 @@
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44",
+        "schemaSha256": "63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc",
         "sessionFormat": "dsh-session-events-v1"
       }
     },
@@ -1072,8 +1072,8 @@
       }
     }
   ],
-  "protocolVersion": "2.0.0",
-  "schemaSha256": "1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44",
+  "protocolVersion": "2.1.0",
+  "schemaSha256": "63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc",
   "valid": [
     {
       "frame": {
@@ -1160,8 +1160,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "2.0.0",
-            "minVersion": "2.0.0"
+            "maxVersion": "2.1.0",
+            "minVersion": "2.1.0"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1189,7 +1189,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "2.0.0",
+          "protocolVersion": "2.1.0",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1268,7 +1268,7 @@
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "1841590ed3c4d9f793c72a1cfda3a93808b71595c239c8fa7c38b0bfae80fd44",
+          "schemaSha256": "63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc",
           "sessionFormat": "dsh-session-events-v1"
         }
       },

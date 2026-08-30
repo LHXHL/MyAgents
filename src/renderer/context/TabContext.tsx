@@ -123,6 +123,7 @@ export interface TabState {
      */
     runtimeDiagnostics: RuntimeDiagnostics | null;
     agentError: string | null;
+    agentErrorUserMessageId: string | null;
     systemStatus: string | null;  // SDK system status (e.g., 'compacting')
     systemNotice: SystemNotice | null;
     /**
@@ -286,6 +287,7 @@ const defaultContextValue: TabContextValue = {
     sdkSlashCommands: [],
     runtimeDiagnostics: null,
     agentError: null,
+    agentErrorUserMessageId: null,
     systemStatus: null,
     systemNotice: null,
     contextUsage: null,

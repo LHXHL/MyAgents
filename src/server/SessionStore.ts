@@ -2125,13 +2125,13 @@ export async function beginDshRewindMutation(input: {
             const priorAssistant = targetUserIndex > 0
                 ? messages.slice(0, targetUserIndex).findLast(message => message.role === 'assistant')
                 : undefined;
-            if (!targetUserMessage || !priorAssistant?.runtimeTurnAnchor) {
+            if (!targetUserMessage || (priorAssistant && !priorAssistant.runtimeTurnAnchor)) {
                 return dshMutationFailure(
                     'precondition_failed',
-                    'This message has no preceding stable DSH turn boundary',
+                    'This message has no exact preceding DSH boundary identity',
                 );
             }
-            const targetRuntimeTurnId = priorAssistant.runtimeTurnAnchor.turnId;
+            const targetRuntimeTurnId = priorAssistant?.runtimeTurnAnchor?.turnId ?? null;
             const targetMessages = messages.slice(0, targetUserIndex);
             return withSessionsLock(async () => {
                 const all = readSessionsIndexForWrite();

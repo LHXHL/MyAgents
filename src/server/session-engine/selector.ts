@@ -5,6 +5,7 @@ import {
   hasPendingExternalAskUserQuestion,
   isExternalSessionActive,
   popLastUserMessageForRetry,
+  retryLastExternalUserMessage,
   prewarmExternalSession,
   restoreExternalSessionState,
   shouldUseExternalRuntime,
@@ -156,7 +157,9 @@ export function retryLastExternalUserMessageAtSelector(
       error: 'external-retry is only for external runtimes; builtin uses /chat/rewind',
     });
   }
-  return popLastUserMessageForRetry(userMessageId);
+  return getCurrentRuntimeType() === 'dsh'
+    ? retryLastExternalUserMessage(userMessageId)
+    : popLastUserMessageForRetry(userMessageId);
 }
 
 export function getSessionEngine(): SessionEngine {

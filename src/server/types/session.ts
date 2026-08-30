@@ -235,6 +235,12 @@ export interface SessionMessage {
     sdkUuid?: string;  // SDK 分配的 UUID，用于 resumeSessionAt / rewindFiles
     /** Exact runtime-native root Turn represented by this terminal assistant row. */
     runtimeTurnAnchor?: RuntimeTurnAnchor;
+    /** Durable Runtime admission identity for a Product user row. */
+    runtimeOperationAnchor?: RuntimeOperationAnchor;
+    /** Non-success assistant output is retained as an explicit partial projection. */
+    completionState?: 'partial';
+    /** Why a partial assistant projection stopped producing output. */
+    terminalStatus?: 'stopped' | 'error';
     attachments?: MessageAttachment[];
     /** Usage info (only for assistant messages) */
     usage?: MessageUsage;
@@ -249,6 +255,12 @@ export interface SessionMessage {
 export interface RuntimeTurnAnchor {
     turnId: string;
     rootUserMessageId: string;
+}
+
+export interface RuntimeOperationAnchor {
+    runtime: 'dsh';
+    clientOperationId: string;
+    runtimeSessionId: string;
 }
 
 export interface DshProjectionCursor {
@@ -316,8 +328,8 @@ export type PendingDshMutation =
     | PendingDshMutationBase & {
         kind: 'dsh-rewind';
         targetUserMessageId: string;
-        /** The retained assistant turn immediately before the removed user turn. */
-        targetRuntimeTurnId: string;
+        /** The retained assistant turn before the removed user; null selects Runtime genesis. */
+        targetRuntimeTurnId: string | null;
         targetMessageCount: number;
         targetStableBoundaryId?: string;
         sourceTranscriptPostcondition?: string;

@@ -107,6 +107,7 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:content-block-stop': 'critical',
   'chat:message-sdk-uuid': 'critical',
   'chat:message-replay': 'critical',
+  'chat:messages-retracted': 'critical',
   'chat:message-stopped': 'critical',
   'chat:message-complete': 'critical',
   'chat:message-error': 'critical',

@@ -208,6 +208,7 @@ const mocks = vi.hoisted(() => {
     isExternalSessionStateRestoredFor: vi.fn(() => true),
     isExternalTurnCurrent: vi.fn((queueId: string) => state.externalCurrentQueueId === queueId),
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
+    retryLastExternalUserMessage: vi.fn(async () => ({ success: true, content: 'dsh-retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
@@ -439,6 +440,7 @@ vi.mock('../runtimes/external-session', () => ({
   isExternalSessionStateRestoredFor: mocks.isExternalSessionStateRestoredFor,
   isExternalTurnCurrent: mocks.isExternalTurnCurrent,
   popLastUserMessageForRetry: mocks.popLastUserMessageForRetry,
+  retryLastExternalUserMessage: mocks.retryLastExternalUserMessage,
   prewarmExternalSession: mocks.prewarmExternalSession,
   respondExternalAskUserQuestion: mocks.respondExternalAskUserQuestion,
   respondExternalPermission: mocks.respondExternalPermission,
@@ -1081,6 +1083,25 @@ describe('session-engine selector and adapters', () => {
       content: 'retry',
     });
     expect(mocks.popLastUserMessageForRetry).toHaveBeenCalledWith('user-1');
+  });
+
+  it('routes DSH retry through the admission-aware mutation owner', async () => {
+    mocks.state.useExternal = true;
+    mocks.getActiveRuntimeType.mockReturnValue('dsh');
+    const previousRuntime = process.env.MYAGENTS_RUNTIME;
+    process.env.MYAGENTS_RUNTIME = 'dsh';
+
+    try {
+      await expect(retryLastExternalUserMessageAtSelector('user-dsh-1')).resolves.toEqual({
+        success: true,
+        content: 'dsh-retry',
+      });
+    } finally {
+      if (previousRuntime === undefined) delete process.env.MYAGENTS_RUNTIME;
+      else process.env.MYAGENTS_RUNTIME = previousRuntime;
+    }
+    expect(mocks.retryLastExternalUserMessage).toHaveBeenCalledWith('user-dsh-1');
+    expect(mocks.popLastUserMessageForRetry).not.toHaveBeenCalled();
   });
 
   it('returns external desktop acceptance before dispatch finishes and broadcasts dispatch failures', async () => {

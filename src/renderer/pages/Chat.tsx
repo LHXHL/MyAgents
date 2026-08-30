@@ -536,6 +536,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     sdkSlashCommands,
     runtimeDiagnostics,
     agentError,
+    agentErrorUserMessageId,
     systemStatus,
     systemNotice,
     lastTerminalReason,
@@ -4931,27 +4932,15 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Shared by per-assistant retry (handleRetry) and banner-level retry
   // (handleRetryLastUserMessage). Uses refs throughout so deps stay stable.
   //
-  // Retry remains a separate operation from Codex historical Rewind. Every
-  // external runtime uses /chat/external-retry here: it removes only the
-  // failed tail user turn from allSessionMessages, persists that truncation,
-  // and lets the auto-resend below become the replacement user turn.
+  // DSH retry is admission-aware: an admitted native operation rewinds both
+  // histories; a never-admitted user tail may be removed Product-side only.
   const performRetryFromUserMessage = useCallback((userMsg: typeof messagesRef.current[number]) => {
     const content = typeof userMsg.content === 'string' ? userMsg.content : '';
     const attachments = userMsg.attachments;
     const userMessageId = userMsg.id;
     const retryEndpoint = isExternalRuntime ? '/chat/external-retry' : '/chat/rewind';
 
-    // 快照：后端失败时回滚（与 handleRewindConfirm 一致）
-    const snapshot = messagesRef.current.slice();
-
-    // 1. Optimistic UI: truncate to before user message
-    pauseAutoScroll(500);
-    setMessages(prev => {
-      const idx = prev.findIndex(m => m.id === userMessageId);
-      return idx >= 0 ? prev.slice(0, idx) : prev;
-    });
-
-    // 2. Rewind + auto-resend
+    // Commit the authoritative rewind before mutating the visible transcript.
     let resendFired = false;
     setIsLoading(true);
     setRewindStatus('rewinding');
@@ -4959,11 +4948,15 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       .then(res => {
         const r = res as RewindResponse | undefined;
         if (r && !r.success) {
-          setMessages(snapshot);
           toastRef.current.error(t('shell.toasts.retryFailedWithError', { error: r.error || t('shell.toasts.unknownError') }));
           return;
         }
         warnRewindFileOutcome(r);
+        pauseAutoScroll(500);
+        setMessages(prev => {
+          const idx = prev.findIndex(m => m.id === userMessageId);
+          return idx >= 0 ? prev.slice(0, idx) : prev;
+        });
         // Rewind succeeded → auto-resend the original message
         track('message_retry', {});
         resendFired = true;
@@ -4983,7 +4976,6 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       })
       .catch(err => {
         console.error('[Chat] Retry failed:', err);
-        setMessages(snapshot);
         toastRef.current.error(t('shell.toasts.retryFailed'));
       })
       .finally(() => {
@@ -5015,14 +5007,18 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Used by the agentError banner's 「重新发送」 button (issue #183).
   const handleRetryLastUserMessage = useCallback(() => {
     const msgs = messagesRef.current;
-    let userMsg: typeof msgs[number] | null = null;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { userMsg = msgs[i]; break; }
+    let userMsg: typeof msgs[number] | null = agentErrorUserMessageId
+      ? msgs.find(message => message.id === agentErrorUserMessageId && message.role === 'user') ?? null
+      : null;
+    if (!agentErrorUserMessageId) {
+      for (let i = msgs.length - 1; !userMsg && i >= 0; i--) {
+        if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { userMsg = msgs[i]; break; }
+      }
     }
     if (!userMsg) return;
     setAgentError(null);
     performRetryFromUserMessage(userMsg);
-  }, [performRetryFromUserMessage, setAgentError]);
+  }, [agentErrorUserMessageId, performRetryFromUserMessage, setAgentError]);
 
   // Fork = create a new independent session branch at a specific assistant message
   const handleFork = useCallback((assistantMessageId: string) => {
@@ -5403,9 +5399,13 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             // Find the last real user message — drives both the oversized-image
             // rewind hint and the banner-level "重新发送" button (issue #183).
             const msgs = messagesRef.current;
-            let lastUserMsg: typeof msgs[number] | null = null;
-            for (let i = msgs.length - 1; i >= 0; i--) {
-              if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { lastUserMsg = msgs[i]; break; }
+            let lastUserMsg: typeof msgs[number] | null = agentErrorUserMessageId
+              ? msgs.find(message => message.id === agentErrorUserMessageId && message.role === 'user') ?? null
+              : null;
+            if (!agentErrorUserMessageId) {
+              for (let i = msgs.length - 1; !lastUserMsg && i >= 0; i--) {
+                if (msgs[i].role === 'user' && !msgs[i].id.startsWith('task-notification-')) { lastUserMsg = msgs[i]; break; }
+              }
             }
             const canRetry = !!lastUserMsg && !isLoading;
             return (

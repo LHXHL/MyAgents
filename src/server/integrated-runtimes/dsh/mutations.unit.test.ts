@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   DshMutationController,
+  rewindBoundaryBeforeRuntimeTurn,
   stableBoundaryForRuntimeTurn,
   type DshMutationTransport,
 } from './mutations';
@@ -42,6 +43,11 @@ function historyPages(): DshRpcObject[] {
       runtimeSessionId: 'runtime-session-1',
       historyFormat: 'dsh-session-events-v1',
       durableHead: { sequence: 4, stableBoundaryId: 'boundary-2' },
+      genesisBoundary: {
+        stableBoundaryId: 'genesis-1',
+        sequence: 0,
+        transcriptPostcondition: 'd'.repeat(64),
+      },
       mutationBoundaries: [{
         stableBoundaryId: 'boundary-2',
         sequence: 4,
@@ -211,6 +217,11 @@ describe('DSH native mutation controller', () => {
       request: vi.fn(async (_method: string, params: DshRpcObject) => params.cursor ? pages[1]! : pages[0]!),
     } as DshMutationTransport, 'runtime-session-1');
     const history = await validController.readHistory();
+    expect(rewindBoundaryBeforeRuntimeTurn(history, null)).toEqual({
+      stableBoundaryId: 'genesis-1',
+      sequence: 0,
+      transcriptPostcondition: 'd'.repeat(64),
+    });
     expect(() => stableBoundaryForRuntimeTurn({
       ...history,
       mutationBoundaries: [...history.mutationBoundaries, history.mutationBoundaries[0]!],

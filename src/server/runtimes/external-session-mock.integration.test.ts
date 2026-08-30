@@ -81,6 +81,7 @@ class FakeRuntime implements AgentRuntime {
   private permissionRevisionNumber = 1;
   private permissionRules: RuntimePermissionRule[] = [];
   steerMessage?: AgentRuntime['steerMessage'];
+  interruptTurn?: AgentRuntime['interruptTurn'];
   branchConversation?: AgentRuntime['branchConversation'];
   private callback: UnifiedEventCallback | null = null;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
@@ -109,6 +110,7 @@ class FakeRuntime implements AgentRuntime {
   constructor(private readonly scripts: TurnScript[], options: {
     runtimeType?: RuntimeType;
     realtimeSteering?: boolean;
+    forceInterrupt?: boolean;
     rejectSteer?: boolean;
     deferStart?: boolean;
     rejectDispatchAck?: boolean;
@@ -157,6 +159,11 @@ class FakeRuntime implements AgentRuntime {
         if (options.rejectSteer) {
           throw new Error('fake steer rejected');
         }
+      };
+    }
+    if (options.forceInterrupt) {
+      this.interruptTurn = async () => {
+        this.emit({ kind: 'turn_complete', status: 'interrupted', result: 'interrupted by force-send' });
       };
     }
     if (options.conversationBranching) {
@@ -603,6 +610,7 @@ async function createHarness(
   options: {
     runtimeType?: RuntimeType;
     realtimeSteering?: boolean;
+    forceInterrupt?: boolean;
     rejectSteer?: boolean;
     deferStart?: boolean;
     unconfirmedDispatchStop?: boolean;
@@ -682,6 +690,7 @@ async function createHarness(
   const runtime = new FakeRuntime(scripts, {
     runtimeType: options.runtimeType,
     realtimeSteering: options.realtimeSteering,
+    forceInterrupt: options.forceInterrupt,
     rejectSteer: options.rejectSteer,
     deferStart: options.deferStart,
     rejectDispatchAck: options.unconfirmedDispatchStop,
@@ -2231,7 +2240,7 @@ describe('external SessionEngine with fake runtime', () => {
       .toEqual({ status: 'completed', startedAt: 100, finishedAt: 300 });
   });
 
-  it('fails a missing child terminal live before discarding a failed root partial assistant', async () => {
+  it('fails a missing child terminal live and durably retains the failed root partial assistant', async () => {
     const harness = await createHarness([
       { kind: 'failure', error: 'root failed', partialText: 'partial', completeDelayMs: 50 },
     ]);
@@ -2259,8 +2268,13 @@ describe('external SessionEngine with fake runtime', () => {
       (event.data as { lifecycle?: { status?: string } }).lifecycle?.status
     ));
     expect(statuses).toEqual(expect.arrayContaining(['running', 'failed']));
-    expect(harness.sessionStore.getSessionData(sessionId)?.messages
-      .some(message => message.role === 'assistant')).toBe(false);
+    const assistant = harness.sessionStore.getSessionData(sessionId)?.messages
+      .findLast(message => message.role === 'assistant');
+    expect(assistant).toMatchObject({
+      completionState: 'partial',
+      terminalStatus: 'error',
+    });
+    expect(String(assistant?.content)).toContain('partial');
   });
 
   it('advances durable activity at external admission and terminal finalization', async () => {
@@ -3633,6 +3647,52 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('second queued answer');
+  });
+
+  it('force-sends a queued DSH turn after durably closing the interrupted partial turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'partial before transfer', completeDelayMs: 500 },
+      { kind: 'success', text: 'forced answer' },
+    ], { runtimeType: 'dsh', forceInterrupt: true });
+    const sessionId = 'session-dsh-force-transfer';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const first = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'first'),
+      permissionMode: 'auto',
+    });
+    if (!first.success) throw new Error(first.error);
+    expect(first).toMatchObject({ success: true, queued: true });
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(
+      () => harness.engine.getLiveSessionOverlay(sessionId).liveStreamingMessage?.content
+        .includes('partial before transfer') ?? false,
+      'first DSH partial output',
+    );
+
+    const second = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'force this'),
+      permissionMode: 'auto',
+    });
+    expect(second).toMatchObject({ queued: true });
+    expect(second.queueId).toBeDefined();
+    await expect(harness.engine.forceQueuedMessage(second.queueId!)).resolves.toBe(true);
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const messages = harness.sessionStore.getSessionData(sessionId)?.messages ?? [];
+    expect(messages.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    expect(messages[1]).toMatchObject({
+      completionState: 'partial',
+      terminalStatus: 'stopped',
+    });
+    expect(harness.runtime.sentMessages).toEqual(['first', 'force this']);
+    expect(broadcastEvents.some(event => event.event === 'chat:agent-error')).toBe(false);
   });
 
   it('admits consecutive IM follow-ups immediately and drains them FIFO at turn boundaries', async () => {

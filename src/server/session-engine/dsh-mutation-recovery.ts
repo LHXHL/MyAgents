@@ -15,7 +15,7 @@ import {
 import { createSessionMetadata, type PendingDshMutation } from '../types/session';
 import { runtimeTypeForBinding } from '../../shared/integrated-runtimes/identity';
 import {
-  stableBoundaryForRuntimeTurn,
+  rewindBoundaryBeforeRuntimeTurn,
   type DshMutationController,
   type DshMutationResult,
 } from '../integrated-runtimes/dsh/mutations';
@@ -145,7 +145,7 @@ async function recoverRewind(
     mutation = await controller.rewindStatus(intent.token);
   } else {
     const history = await controller.readHistory();
-    const boundary = stableBoundaryForRuntimeTurn(history, intent.targetRuntimeTurnId);
+    const boundary = rewindBoundaryBeforeRuntimeTurn(history, intent.targetRuntimeTurnId);
     mutation = await controller.prepareRewind({
       clientMutationId: intent.clientMutationId,
       target: boundary,

@@ -36,6 +36,14 @@ export type DshStableMutationBoundary = Readonly<{
   transcriptPostcondition: string;
 }>;
 
+export type DshGenesisMutationBoundary = Readonly<{
+  stableBoundaryId: string;
+  sequence: number;
+  transcriptPostcondition: string;
+}>;
+
+export type DshMutationBoundaryTarget = DshStableMutationBoundary | DshGenesisMutationBoundary;
+
 export type DshVerifiedHistoryEvent = Readonly<{
   sequence: number;
   eventType: string;
@@ -47,6 +55,7 @@ export type DshNativeHistory = Readonly<{
   runtimeSessionId: string;
   durableSequence: number;
   events: readonly DshVerifiedHistoryEvent[];
+  genesisBoundary?: DshGenesisMutationBoundary;
   mutationBoundaries: readonly DshStableMutationBoundary[];
   transcriptPostcondition: string;
 }>;
@@ -147,6 +156,7 @@ class DshHistoryAssembler {
   private pending: PendingChunk | undefined;
   private complete = false;
   private boundaries: readonly DshStableMutationBoundary[] | undefined;
+  private genesisBoundary: DshGenesisMutationBoundary | undefined;
   private transcriptPostcondition: string | undefined;
   private readonly events: DshVerifiedHistoryEvent[] = [];
 
@@ -191,6 +201,21 @@ class DshHistoryAssembler {
         throw new Error('DSH mutation boundary inventory changed mid-chain');
       }
       this.boundaries = Object.freeze(parsed);
+    }
+    if (pageValue.genesisBoundary !== undefined) {
+      const row = object(pageValue.genesisBoundary, 'DSH genesis mutation boundary');
+      const parsed = Object.freeze({
+        stableBoundaryId: string(row.stableBoundaryId, 'DSH genesis stable boundary id'),
+        sequence: safeInteger(row.sequence, 'DSH genesis boundary sequence'),
+        transcriptPostcondition: sha256(
+          row.transcriptPostcondition,
+          'DSH genesis transcript postcondition',
+        ),
+      });
+      if (this.genesisBoundary && !sameJson(parsed, this.genesisBoundary)) {
+        throw new Error('DSH genesis mutation boundary changed mid-chain');
+      }
+      this.genesisBoundary = parsed;
     }
     if (pageValue.transcriptPostcondition !== undefined) {
       const postcondition = sha256(
@@ -251,6 +276,7 @@ class DshHistoryAssembler {
       runtimeSessionId: this.runtimeSessionId,
       durableSequence: safeInteger(this.durableHead.sequence, 'DSH durable history sequence'),
       events: Object.freeze([...this.events]),
+      ...(this.genesisBoundary === undefined ? {} : { genesisBoundary: this.genesisBoundary }),
       mutationBoundaries: Object.freeze([...boundaries]),
       transcriptPostcondition: this.transcriptPostcondition,
     });
@@ -373,6 +399,17 @@ export function stableBoundaryForRuntimeTurn(
   return boundaries[0]!;
 }
 
+export function rewindBoundaryBeforeRuntimeTurn(
+  history: DshNativeHistory,
+  runtimeTurnId: string | null,
+): DshMutationBoundaryTarget {
+  if (runtimeTurnId !== null) return stableBoundaryForRuntimeTurn(history, runtimeTurnId);
+  if (!history.genesisBoundary) {
+    throw new Error('DSH durable history has no stable genesis mutation boundary');
+  }
+  return history.genesisBoundary;
+}
+
 export class DshMutationController {
   constructor(
     private readonly transport: DshMutationTransport,
@@ -458,7 +495,7 @@ export class DshMutationController {
 
   prepareRewind(input: Readonly<{
     clientMutationId: string;
-    target: DshStableMutationBoundary;
+    target: DshMutationBoundaryTarget;
     sourceTranscriptPostcondition: string;
     signal?: AbortSignal;
   }>): Promise<DshMutationResult> {

@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { ReactNode } from 'react';
+import type { ReactNode, SetStateAction } from 'react';
 
 import {
     track,
@@ -885,7 +885,12 @@ export default function TabProvider({
     // today; Claude Code / Gemini later). Replaces the previously-hardcoded
     // `systemInitInfo.tools: []` signal with a real diagnostic surface.
     const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnostics | null>(null);
-    const [agentError, setAgentError] = useState<string | null>(null);
+    const [agentError, setAgentErrorState] = useState<string | null>(null);
+    const [agentErrorUserMessageId, setAgentErrorUserMessageId] = useState<string | null>(null);
+    const setAgentError = useCallback((value: SetStateAction<string | null>) => {
+        setAgentErrorUserMessageId(null);
+        setAgentErrorState(value);
+    }, []);
     const [systemStatus, setSystemStatus] = useState<string | null>(null);  // e.g., 'compacting'
     const [systemNotice, setSystemNotice] = useState<SystemNotice | null>(null);
     // PRD 0.2.32 — 归一化 context 用量快照（tab-scoped）。Set on chat:context-usage,
@@ -1367,7 +1372,7 @@ export default function TabProvider({
             console.error(`[TabProvider ${tabId}] resetSession error:`, error);
             return false;
         }
-    }, [tabId, postJson, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
+    }, [tabId, postJson, setStreamingMessage, setAgentError, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
 
     /**
      * Local-only session swap for the IM-handover "新对话保留绑定" flow.
@@ -1492,7 +1497,7 @@ export default function TabProvider({
             return false;
         }
         return true;
-    }, [tabId, setStreamingMessage, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
+    }, [tabId, setStreamingMessage, setAgentError, clearInteractiveState, clearSessionActive, resetPaginationState, abortActiveRestoreRequest, publishPersistedRestoreLifecycle]);
 
     const trackSessionNewForBirth = useCallback((
         newSessionId: string,
@@ -3311,10 +3316,11 @@ export default function TabProvider({
             }
 
             case 'chat:agent-error': {
-                const payload = data as { message: string } | null;
+                const payload = data as { message: string; userMessageId?: string } | null;
                 if (payload?.message) {
                     recoverStreamingUi('failed');
                     setAgentError(payload.message);
+                    setAgentErrorUserMessageId(payload.userMessageId ?? null);
                 }
                 break;
             }
@@ -3991,7 +3997,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, recoverStreamingUi, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, recoverStreamingUi, setStreamingMessage, setAgentError, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
 
     const handleSseEvent = useCallback((
         eventName: string,
@@ -5351,6 +5357,7 @@ export default function TabProvider({
         sdkSlashCommands,
         runtimeDiagnostics,
         agentError,
+        agentErrorUserMessageId,
         systemStatus,
         systemNotice,
         contextUsage,
@@ -5392,8 +5399,8 @@ export default function TabProvider({
         forceExecuteQueuedMessage,
     }), [
         tabId, agentDir, currentSessionId, messages, historyMessages, streamingMessage, firstItemIndex, hasMoreBefore, isLoading, isSessionLoading, sessionRestoreError, sessionRestoreMode, sessionState, sessionRuntime, sessionRuntimeSource, sessionMeta,
-        logs, unifiedLogs, systemInitInfo, mcpEffectiveSnapshot, sdkSlashCommands, runtimeDiagnostics, agentError, systemStatus, systemNotice, contextUsage, agentPlanTodos, lastTerminalReason, pendingPermission, pendingAskUserQuestion, pendingExitPlanMode, pendingEnterPlanMode, toolCompleteCount, queuedMessages, isConnected,
-        setMessages, appendLog, appendUnifiedLog, clearUnifiedLogs, sendMessage, stopResponse, retryCurrentSessionRestore, loadOlderMessages, resetSession, adoptMigratedSession,
+        logs, unifiedLogs, systemInitInfo, mcpEffectiveSnapshot, sdkSlashCommands, runtimeDiagnostics, agentError, agentErrorUserMessageId, systemStatus, systemNotice, contextUsage, agentPlanTodos, lastTerminalReason, pendingPermission, pendingAskUserQuestion, pendingExitPlanMode, pendingEnterPlanMode, toolCompleteCount, queuedMessages, isConnected,
+        setMessages, appendLog, appendUnifiedLog, clearUnifiedLogs, setAgentError, sendMessage, stopResponse, retryCurrentSessionRestore, loadOlderMessages, resetSession, adoptMigratedSession,
         apiGetJson, postJson, apiPutJson, apiDeleteJson, respondPermission, respondAskUserQuestion, respondExitPlanMode, cancelQueuedMessage, forceExecuteQueuedMessage
     ]);
 

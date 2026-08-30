@@ -136,6 +136,7 @@ function Probe() {
     mcpEffectiveSnapshot,
     queuedMessages,
     agentError,
+    agentErrorUserMessageId,
     isConnected,
     adoptMigratedSession,
     resetSession,
@@ -169,6 +170,7 @@ function Probe() {
       })))}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <output data-testid="agent-error">{agentError ?? ''}</output>
+      <output data-testid="agent-error-user-message-id">{agentErrorUserMessageId ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
@@ -441,6 +443,7 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
     emit('chat:agent-error', { message: 'Not logged in' });
     expect(screen.getByTestId('agent-error')).toHaveTextContent('Not logged in');
+    expect(screen.getByTestId('agent-error-user-message-id')).toBeEmptyDOMElement();
 
     emit('chat:status', { sessionState: 'starting' });
     expect(readActivity().isLoading).toBe(true);
@@ -450,7 +453,8 @@ describe('TabProvider session activity ownership', () => {
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
     expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
 
-    emit('chat:agent-error', { message: 'New turn auth failure' });
+    emit('chat:agent-error', { message: 'New turn auth failure', userMessageId: 'failed-user-turn' });
+    expect(screen.getByTestId('agent-error-user-message-id')).toHaveTextContent('failed-user-turn');
     emit('chat:message-complete', {
       assistant_message_id: 'failed-turn-completion',
     });
@@ -468,6 +472,7 @@ describe('TabProvider session activity ownership', () => {
       },
     });
     expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
+    expect(screen.getByTestId('agent-error-user-message-id')).toBeEmptyDOMElement();
   });
 
   it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {

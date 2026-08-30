@@ -227,7 +227,6 @@ import {
   createExternalMessageOperation,
   enqueueExternalConfigOperation,
   enqueueExistingExternalMessageOperation,
-  enqueueExternalMessageOperation,
   getExternalOperationGeneration,
   getExternalOperationQueueLength,
   getExternalPendingUserMessageProjections,
@@ -530,6 +529,8 @@ let currentTurnTraceSessionId = '';
 let currentTurnAnalyticsSource: TurnAnalyticsSource | null = null;
 let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let externalSessionMutationInFlight = false;
+/** Queue item whose force-send owns the current intentional turn interruption. */
+let externalForceTransferQueueId: string | null = null;
 
 function hasPendingDshNativeWork(): boolean {
   if (getCurrentRuntimeType() !== 'dsh') return false;
@@ -691,6 +692,19 @@ async function reconcileDshExtensionsAtTurnBoundary(): Promise<void> {
 }
 
 function scheduleExternalQueueDrainAfterTurnBoundary(): void {
+  if (isExternalTurnFinalizationInFlight()) {
+    void waitExternalTurnFinalization(60_000).then((settled) => {
+      if (settled) {
+        scheduleExternalQueueDrainAfterTurnBoundary();
+        return;
+      }
+      const message = 'External turn finalization did not settle before queued admission';
+      console.error(`[external-session] ${message}`);
+      broadcast('chat:agent-error', { message });
+      clearExternalQueueWithCancellation('failed', message);
+    });
+    return;
+  }
   const dshReconciliation = isDshProductRuntime()
     ? reconcileDshExtensionsAtTurnBoundary()
     : null;
@@ -1099,6 +1113,7 @@ function getExternalActiveSteerPair(): SteerCapableActivePair | null {
 function resetModuleState(): void {
   resetExternalLifecycleState();
   resetExternalTurnLifecycleState();
+  externalForceTransferQueueId = null;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   currentWatchdogTimeoutMs = EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS;
   externalWatchdog.setTimeoutMs(EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS);
@@ -1470,6 +1485,11 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       productImageSha256: (params.runtimeImages ?? []).map(image => createHash('sha256')
         .update(Buffer.from(image.data, 'base64'))
         .digest('hex')),
+    };
+    userMsg.runtimeOperationAnchor = {
+      runtime: 'dsh',
+      clientOperationId: dshRootOperation.clientOperationId,
+      runtimeSessionId,
     };
   }
   const metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
@@ -2511,11 +2531,31 @@ export function getExternalLiveAssistantMessage(): SessionMessage | null {
   };
 }
 
-function finalizeExternalLiveAssistantInMemory(): void {
-  const message = getExternalLiveAssistantMessage();
-  if (!message) return;
-  const existing = getExternalSessionMessagesSnapshot().some(candidate => candidate.id === message.id);
-  if (!existing) pushExternalSessionMessage(message);
+function persistExternalPartialAssistantProjection(
+  terminalStatus: 'stopped' | 'error',
+): Promise<void> {
+  const content = buildCurrentAssistantSnapshotContent();
+  if (!content) return Promise.resolve();
+  const turnStartTime = getExternalTurnStartTime();
+  const persistence = appendAndPersistExternalAssistantTurn({
+    sessionId: getExternalLifecycleSessionId(),
+    content,
+    durationMs: turnStartTime ? Math.max(0, Date.now() - turnStartTime) : undefined,
+    usage: null,
+    toolCount: 0,
+    contextUsage: null,
+    runtimeTurnAnchor: (getCurrentRuntimeType() === 'codex' || getCurrentRuntimeType() === 'dsh')
+      ? getExternalRuntimeTurnAnchor() ?? undefined
+      : undefined,
+    completionState: 'partial',
+    terminalStatus,
+  }).then((result) => {
+    if (!result.ok) {
+      throw new Error(result.failureReason || 'Failed to persist partial assistant projection');
+    }
+  });
+  trackExternalTurnFinalization(persistence);
+  return persistence;
 }
 
 export function getExternalLiveSessionSnapshot(targetSessionId: string): {
@@ -4813,6 +4853,7 @@ function enqueueExternalTurnBoundaryOperation(
 ): {
   queued: boolean;
   queueId?: string;
+  userMessageId: string;
   dispatch: Promise<ExternalSendResult>;
 } {
   const runtimeConfig = captureExternalRuntimeConfigSnapshot(model, permissionMode, context);
@@ -4837,7 +4878,7 @@ function enqueueExternalTurnBoundaryOperation(
       },
     },
   );
-  const queued = enqueueExternalMessageOperation({
+  const operation = createExternalMessageOperation({
     text,
     images,
     context: applySnapshotToExternalSendContext({
@@ -4849,8 +4890,13 @@ function enqueueExternalTurnBoundaryOperation(
     surfaceMode: 'queue-started',
     queueId: context.queueId,
   });
+  const queued = enqueueExistingExternalMessageOperation(operation);
   if (!queued.queued) {
-    return { queued: false, dispatch: Promise.resolve({ queued: false, error: queued.error }) };
+    return {
+      queued: false,
+      userMessageId: operation.userProjection.message.id,
+      dispatch: Promise.resolve({ queued: false, error: queued.error }),
+    };
   }
   broadcast('queue:added', {
     queueId: queued.queueId,
@@ -4863,6 +4909,7 @@ function enqueueExternalTurnBoundaryOperation(
   return {
     queued: true,
     queueId: queued.queueId,
+    userMessageId: operation.userProjection.message.id,
     dispatch: queued.dispatchAcceptance,
   };
 }
@@ -4880,6 +4927,7 @@ export function enqueueExternalSendForDesktop(
   deliveryMode?: 'realtime' | 'turn';
   canCancel?: boolean;
   canForceExecute?: boolean;
+  userMessageId: string;
   dispatch: Promise<ExternalSendResult>;
 } {
   const queueResponseMode = context.turnBoundaryOnly
@@ -4915,6 +4963,7 @@ export function enqueueExternalSendForDesktop(
       deliveryMode: 'turn',
       canCancel: true,
       canForceExecute: true,
+      userMessageId: queued.userMessageId,
       dispatch: queued.dispatch,
     };
   }
@@ -4964,6 +5013,7 @@ export function enqueueExternalSendForDesktop(
       deliveryMode: 'realtime',
       canCancel: false,
       canForceExecute: false,
+      userMessageId: operation.userProjection.message.id,
       dispatch,
     };
   }
@@ -5001,7 +5051,7 @@ export function enqueueExternalSendForDesktop(
   if (!context.beforeDispatch) {
     surfaceExternalUserMessageAsReplay(operation, context.sessionId);
   }
-  return { queued: true, dispatch };
+  return { queued: true, userMessageId: operation.userProjection.message.id, dispatch };
 }
 
 /**
@@ -5017,6 +5067,7 @@ export function enqueueExternalSendForIm(
 ): {
   queued: boolean;
   queueId?: string;
+  userMessageId: string;
   dispatch: Promise<ExternalSendResult>;
 } {
   if (
@@ -5067,7 +5118,7 @@ export function enqueueExternalSendForIm(
     if (isExternalQueueGenerationStaleError(error)) return { queued: false };
     throw error;
   }).finally(scheduleExternalQueueDrainAfterDirectAdmission);
-  return { queued: true, dispatch };
+  return { queued: true, userMessageId: operation.userProjection.message.id, dispatch };
 }
 
 /**
@@ -5210,7 +5261,13 @@ export async function forceExecuteExternalQueueItem(queueId: string): Promise<bo
   if (!moveExternalQueuedMessageToFront(queueId)) return false;
   const active = getExternalActivePair();
   if (getExternalLifecycleState() === 'running' && active && active.runtime.interruptTurn) {
-    await active.runtime.interruptTurn(active.process);
+    externalForceTransferQueueId = queueId;
+    try {
+      await active.runtime.interruptTurn(active.process);
+    } catch (error) {
+      externalForceTransferQueueId = null;
+      throw error;
+    }
   } else {
     // Idle → drain now. Running-without-interrupt → no-op; the moved-to-front item runs at the
     // next turn-end drain.
@@ -5291,6 +5348,9 @@ export async function respondExternalPermission(
   const suggestions = getExternalPermissionSuggestions(requestId);
   console.log(`[external-session] Permission response: ${decision} for requestId=${requestId}${suggestions?.length ? `, with ${suggestions.length} suggestion(s)` : ''}`);
   await active.runtime.respondPermission(active.process, requestId, decision, reason, suggestions);
+  // Integrated runtimes may synchronously emit interactive_request_resolved while
+  // the response call is awaiting its authoritative effect. Do not settle twice.
+  if (!getExternalInteractiveRequest(requestId)) return true;
   consumeExternalPermissionSuggestions(requestId);
   deleteExternalInteractiveRequest(requestId);
   broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
@@ -5619,7 +5679,9 @@ export async function stopExternalSession(options?: {
     consumeExternalTurnMetrics(),
     !isConfigRestart,
   );
-  finalizeExternalLiveAssistantInMemory();
+  await persistExternalPartialAssistantProjection('stopped').catch((error) => {
+    console.error('[external-session] failed to persist stopped assistant projection:', error);
+  });
   resetTurnAccumulators();
   releaseManagedCodexExtensionGeneration(active.process.runtimeGeneration);
   clearExternalActiveRuntimeProcess();
@@ -6110,8 +6172,8 @@ async function rewindDshConversation(
     let prepared;
     try {
       const history = await context.controller.readHistory();
-      const { stableBoundaryForRuntimeTurn } = await import('../integrated-runtimes/dsh/mutations');
-      const boundary = stableBoundaryForRuntimeTurn(history, begun.value.intent.targetRuntimeTurnId);
+      const { rewindBoundaryBeforeRuntimeTurn } = await import('../integrated-runtimes/dsh/mutations');
+      const boundary = rewindBoundaryBeforeRuntimeTurn(history, begun.value.intent.targetRuntimeTurnId);
       const mutation = await context.controller.prepareRewind({
         clientMutationId,
         target: boundary,
@@ -6451,6 +6513,48 @@ export async function popLastUserMessageForRetry(userMessageId: string): Promise
     return { success: false, error: 'Cannot retry while a turn is in progress' };
   }
   return truncateExternalTranscriptForRetry(lifecycleSessionId, userMessageId);
+}
+
+export async function retryLastExternalUserMessage(
+  userMessageId: string,
+): Promise<ExternalConversationOperationResult> {
+  const lifecycleSessionId = getExternalLifecycleSessionId();
+  if (!lifecycleSessionId) return { success: false, error: 'No active external session' };
+  if (isExternalSessionActive()) {
+    return { success: false, error: 'Cannot retry while a turn is in progress' };
+  }
+  if (getCurrentRuntimeType() !== 'dsh') {
+    return truncateExternalTranscriptForRetry(lifecycleSessionId, userMessageId);
+  }
+
+  const target = getExternalSessionMessagesSnapshot().find(
+    message => message.id === userMessageId && message.role === 'user',
+  );
+  const anchor = target?.runtimeOperationAnchor;
+  if (!target || anchor?.runtime !== 'dsh') {
+    return { success: false, error: 'The DSH retry target has no durable operation identity' };
+  }
+  const active = await getDshConversationMutationPair();
+  if (!active) return { success: false, error: 'The DSH Runtime is unavailable' };
+  const { getDshConversationMutationContext } = await import('../integrated-runtimes/dsh/runtime');
+  let context;
+  try {
+    context = getDshConversationMutationContext(active.process);
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  if (context.runtimeSessionId !== anchor.runtimeSessionId) {
+    return { success: false, error: 'The DSH retry target belongs to a different Runtime Session' };
+  }
+  try {
+    const lookup = await context.controller.getTurn(anchor.clientOperationId);
+    if (!lookup.admission) {
+      return truncateExternalTranscriptForRetry(lifecycleSessionId, userMessageId);
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  return rewindDshConversation(userMessageId);
 }
 
 /**
@@ -7729,9 +7833,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         getExternalUserRequestedStop() ? 'interrupted' : 'failed',
       );
       const terminalGenerationBefore = getExternalTurnTerminalGeneration();
+      const forceTransferInProgress = externalForceTransferQueueId !== null;
       const turnPlan = markExternalTurnComplete(event, {
         intentionalStopInProgress: getExternalUserRequestedStop(),
+        forceTransferInProgress,
       });
+      if (forceTransferInProgress) externalForceTransferQueueId = null;
       const terminalGeneration = getExternalTurnTerminalGeneration();
 
       if (turnPlan.kind !== 'persist-success') {
@@ -7748,6 +7855,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             : Promise.reject(new Error('DSH non-success terminal lacks its exact operation identity'));
           dshTerminalSettlement = dshTerminalSettlement.catch((error) => {
             console.error('[external-session] failed to settle DSH terminal journal:', error);
+            throw error;
           });
           trackExternalTurnFinalization(dshTerminalSettlement);
         }
@@ -7786,7 +7894,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           },
         });
         if (cleanup !== 'stopped') {
-          broadcast('chat:agent-error', { message });
+          broadcast('chat:agent-error', {
+            message,
+            userMessageId: getExternalRuntimeTurnAnchor()?.rootUserMessageId,
+          });
           broadcast(
             'chat:message-error',
             withSessionCompletionTerminal(message, completionTerminal),
@@ -7805,7 +7916,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           errorCode: 'turn_failed',
           errorMessage: message,
         });
-        finalizeExternalLiveAssistantInMemory();
+        const partialPersistence = persistExternalPartialAssistantProjection(
+          cleanup === 'stopped' ? 'stopped' : 'error',
+        ).catch((error) => {
+          console.error('[external-session] failed to persist partial assistant projection:', error);
+          throw error;
+        });
         resetTurnAccumulators();
         clearExternalPermissionSuggestions();
         drainPendingInteractiveRequestsAsExpired('error');
@@ -7816,11 +7932,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             withSessionCompletionTerminal(null, completionTerminal),
           );
         }
-        if (dshTerminalSettlement) {
-          void dshTerminalSettlement.finally(scheduleExternalQueueDrainAfterTurnBoundary);
-        } else {
-          scheduleExternalQueueDrainAfterTurnBoundary();
-        }
+        const boundary = dshTerminalSettlement
+          ? Promise.all([dshTerminalSettlement, partialPersistence])
+          : partialPersistence;
+        void boundary.then(scheduleExternalQueueDrainAfterTurnBoundary).catch((error) => {
+          const failure = error instanceof Error ? error.message : String(error);
+          console.error('[external-session] non-success turn boundary failed:', failure);
+          broadcast('chat:agent-error', { message: failure });
+          clearExternalQueueWithCancellation('failed', failure);
+        });
         break;
       }
 
@@ -7864,9 +7984,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // in-flight contract.
       let persistInFlight = isExternalTurnFinalizationInFlight();
       const terminalGenerationBefore = getExternalTurnTerminalGeneration();
+      const forceTransferInProgress = externalForceTransferQueueId !== null;
       const sessionPlan = markExternalSessionComplete(event, {
         hasAssistantText: !!getExternalAssistantText().trim(),
-        isUserRequestedStop: getExternalUserRequestedStop,
+        isUserRequestedStop: () => getExternalUserRequestedStop() || forceTransferInProgress,
       });
       const terminalGeneration = getExternalTurnTerminalGeneration();
       if (sessionPlan.kind === 'ignore-prewarm-exit') {
@@ -7920,22 +8041,46 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             status: 'error',
             detail: { source: 'user_stop', error: summarizeExternalRuntimeMessageForLog(errorMessage) },
           });
-          console.log(`[external-session] Suppressing error banner for user-initiated stop (was: ${summarizeExternalRuntimeMessageForLog(errorMessage)})`);
+          console.log(`[external-session] Suppressing error banner for intentional interruption (was: ${summarizeExternalRuntimeMessageForLog(errorMessage)})`);
           deliverExternalWatchError({
             sessionId: getExternalLifecycleSessionId(),
             text: currentExternalTurnTextSnapshot(),
             errorCode: 'session_aborted',
             errorMessage: 'external runtime session was stopped before turn completed',
           });
-          // stopExternalSession owns the stopped terminal snapshot. Keep the
+          if (forceTransferInProgress && !getExternalUserRequestedStop()) {
+            const partialPersistence = persistExternalPartialAssistantProjection('stopped');
+            persistInFlight = true;
+            externalForceTransferQueueId = null;
+            void partialPersistence.then(() => {
+              resetTurnAccumulators();
+              setExternalSessionState('idle');
+              scheduleExternalQueueDrainAfterTurnBoundary();
+            }).catch((error) => {
+              const failure = error instanceof Error ? error.message : String(error);
+              console.error('[external-session] force-transfer partial persistence failed:', failure);
+              resetTurnAccumulators();
+              setExternalSessionState('idle');
+              broadcast('chat:agent-error', { message: failure });
+              clearExternalQueueWithCancellation('failed', failure);
+            });
+          }
+          // stopExternalSession owns ordinary user-stop snapshots. Keep their
           // partial text/usage intact until it consumes them after process exit.
         } else {
           emitExternalTurnTrace('final', {
             status: 'error',
             detail: { source: 'session_complete', error: summarizeExternalRuntimeMessageForLog(errorMessage) },
           });
-          if (!isExternalTurnFinalizationInFlight()) finalizeExternalLiveAssistantInMemory();
-          broadcast('chat:agent-error', { message: errorMessage });
+          if (!isExternalTurnCompleted()) {
+            void persistExternalPartialAssistantProjection('error').catch((error) => {
+              console.error('[external-session] failed to persist partial assistant projection:', error);
+            });
+          }
+          broadcast('chat:agent-error', {
+            message: errorMessage,
+            userMessageId: getExternalRuntimeTurnAnchor()?.rootUserMessageId,
+          });
           broadcast(
             'chat:message-error',
             withSessionCompletionTerminal(errorMessage, completionTerminal),
@@ -7948,7 +8093,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             errorMessage,
           });
           // Same finalization-ownership rule as the suppress branch above.
-          if (!isExternalTurnFinalizationInFlight()) resetTurnAccumulators(); // Prevent stale content leaking into next turn
+          resetTurnAccumulators(); // Partial content was snapshotted before reset.
         }
       }
       clearExternalPermissionSuggestions();

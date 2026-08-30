@@ -559,6 +559,20 @@ describe('DSH Product mutation journal', () => {
     expect(store.getSessionData(sessionId)?.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1']);
   });
 
+  it('records the first Product user rewind against Runtime genesis', async () => {
+    const sessionId = 'dsh-genesis-rewind-source';
+    await createDshSession(sessionId);
+    const begun = await store.beginDshRewindMutation({
+      sessionId,
+      targetUserMessageId: 'user-1',
+      clientMutationId: 'genesis-rewind-mutation-1',
+    });
+    expect(begun).toEqual(expect.objectContaining({ success: true }));
+    if (!begun.success) return;
+    expect(begun.value.intent.targetRuntimeTurnId).toBeNull();
+    expect(begun.value.targetMessages).toEqual([]);
+  });
+
   it('replays exact fork prepare when the Runtime token was lost before Product fsync', async () => {
     const sourceId = 'dsh-fork-recovery-source';
     const targetId = 'dsh-fork-recovery-target';
