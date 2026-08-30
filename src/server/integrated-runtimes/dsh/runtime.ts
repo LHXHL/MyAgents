@@ -113,6 +113,31 @@ function extensionApplyState(value: unknown): RuntimeExtensionApplyState {
   return 'failed';
 }
 
+type DshExtensionComponentReceipt = Readonly<{
+  key: string;
+  state: string;
+  reason?: string;
+}>;
+
+function extensionComponentReceipts(result: DshRpcObject): DshExtensionComponentReceipt[] {
+  if (!Array.isArray(result.components)) return [];
+  return result.components.map((raw) => {
+    const component = object(raw, 'DSH extension component status');
+    return {
+      key: string(component.key, 'DSH extension component key'),
+      state: string(component.state, 'DSH extension component state'),
+      ...(typeof component.reason === 'string' ? { reason: component.reason } : {}),
+    };
+  });
+}
+
+function extensionComponentApplyState(value: string): RuntimeExtensionApplyState {
+  if (value === 'ready') return 'applied';
+  if (value === 'unsupported') return 'unsupported';
+  if (value === 'degraded' || value === 'failed') return 'failed';
+  return 'not_applicable';
+}
+
 function extensionStatus(
   plane: DshCompiledExtensionPlane,
   result: DshRpcObject,
@@ -131,21 +156,16 @@ function extensionStatus(
     }
     return { ...component };
   });
-  if (Array.isArray(result.components)) {
-    for (const raw of result.components) {
-      const component = object(raw, 'DSH extension component status');
-      if (component.state !== 'failed' && component.state !== 'unsupported') continue;
-      const key = string(component.key, 'DSH extension component key');
-      const separator = key.indexOf(':');
-      components.push({
-        component: separator < 0 ? 'runtime' : key.slice(0, separator),
-        ...(separator < 0 ? {} : { id: key.slice(separator + 1) }),
-        state: 'failed',
-        code: typeof component.reason === 'string'
-          ? component.reason
-          : `dsh_extension_component_${String(component.state)}`,
-      });
-    }
+  for (const component of extensionComponentReceipts(result)) {
+    if (component.state === 'ready' || component.state === 'disabled') continue;
+    const key = component.key;
+    const separator = key.indexOf(':');
+    components.push({
+      component: separator < 0 ? 'runtime' : key.slice(0, separator),
+      ...(separator < 0 ? {} : { id: key.slice(separator + 1) }),
+      state: extensionComponentApplyState(component.state),
+      code: component.reason ?? `dsh_extension_component_${component.state}`,
+    });
   }
   return {
     desiredRevision,
@@ -204,6 +224,7 @@ type DshExtensionCatalogFacts = Readonly<{
 function extensionCatalogFacts(
   plane: DshCompiledExtensionPlane,
   catalog: DshRpcObject,
+  result: DshRpcObject,
 ): DshExtensionCatalogFacts {
   const digest = string(catalog.digest, 'DSH extension catalog digest');
   if (!/^[a-f0-9]{64}$/.test(digest)) {
@@ -218,16 +239,28 @@ function extensionCatalogFacts(
         'DSH extension Skill name',
       ))
     : [];
+  const omittedSkillNames = new Set(extensionComponentReceipts(result)
+    .filter(component => component.state !== 'ready' && component.key.startsWith('skill:'))
+    .map(component => component.key.slice('skill:'.length)));
+  const expectedLoadedSkillNames = plane.expectedSkillNames
+    .filter(name => !omittedSkillNames.has(name));
   if (
     new Set(loadedSkillNames).size !== loadedSkillNames.length
-    || plane.expectedSkillNames.some(name => !loadedSkillNames.includes(name))
+    || loadedSkillNames.length !== expectedLoadedSkillNames.length
+    || expectedLoadedSkillNames.some(name => !loadedSkillNames.includes(name))
   ) {
     throw new Error('DSH effective Skill catalog differs from Product extension intent');
   }
   const tools = Array.isArray(catalog.tools)
     ? catalog.tools.filter((tool): tool is string => typeof tool === 'string')
     : [];
-  if (plane.hostToolBindings.some(binding => !tools.includes(binding.publicToolName))) {
+  const omittedHostToolNames = new Set(extensionComponentReceipts(result)
+    .filter(component => component.state !== 'ready' && component.key.startsWith('host_tool:'))
+    .map(component => component.key.slice('host_tool:'.length)));
+  if (plane.hostToolBindings.some(binding => (
+    !omittedHostToolNames.has(binding.publicToolName)
+    && !tools.includes(binding.publicToolName)
+  ))) {
     throw new Error('DSH effective Host tool catalog differs from Product extension intent');
   }
   return Object.freeze({
@@ -895,21 +928,52 @@ export class DshRuntime implements AgentRuntime {
         'extension/replace',
         extension as unknown as DshRpcObject,
       );
+      const componentReceipts = extensionComponentReceipts(extensionResult);
+      const componentIssues = componentReceipts.filter(component => (
+        component.state !== 'ready' && component.state !== 'disabled'
+      ));
+      const extensionReceipt = {
+        state: extensionResult.state,
+        desiredRevision: extensionResult.desiredRevision,
+        effectiveRevision: extensionResult.effectiveRevision,
+        componentCount: componentReceipts.length,
+        issues: componentIssues,
+      };
+      console.info(`[dsh-extension] initial replace receipt=${JSON.stringify(extensionReceipt)}`);
+      for (const issue of componentIssues) {
+        console.warn(
+          `[dsh-extension] component isolated key=${issue.key} state=${issue.state} reason=${issue.reason ?? 'none'}`,
+        );
+      }
       if (extensionResult.state !== 'applied'
         || extensionResult.effectiveRevision !== extension.revision) {
-        throw new Error('DSH extension snapshot did not become effective before Session binding');
+        throw new Error(
+          `DSH extension snapshot did not become effective before Session binding: ${JSON.stringify(extensionReceipt)}`,
+        );
       }
       const extensionCatalog = await host.request('extension/catalog', {});
-      const extensionFacts = extensionCatalogFacts(extensionPlane, extensionCatalog);
+      const extensionFacts = extensionCatalogFacts(extensionPlane, extensionCatalog, extensionResult);
       const extensionDigest = extensionFacts.digest;
       const loadedSkillNames = extensionFacts.loadedSkillNames;
       const admittedExtensionStatus = extensionStatus(extensionPlane, extensionResult);
+      for (const issue of admittedExtensionStatus.components) {
+        if (issue.state !== 'failed' && issue.state !== 'unsupported') continue;
+        console.warn(
+          `[dsh-extension] product diagnostic component=${issue.component} id=${issue.id ?? 'none'} state=${issue.state} code=${issue.code}`,
+        );
+      }
 
+      const bindingConfigRevision = `myagents-dsh-binding-v1:${hash(
+        configuration.profile.revision,
+        OFFICIAL_INITIAL_PERMISSION_MODE,
+        OFFICIAL_INTERACTION_REVISION,
+        options.systemPromptAppend ?? '',
+      )}`;
       const bindingParams: DshRpcObject = {
         clientOperationId: `session-bind-${randomUUID()}`,
         persistenceRef: `product-session-${hash(options.sessionId)}`,
         provider: configuration.profile as unknown as DshRpcObject,
-        configRevision: configuration.revision,
+        configRevision: bindingConfigRevision,
         extensionDigest,
         systemPrompt: options.systemPromptAppend ?? '',
         permissionMode: OFFICIAL_INITIAL_PERMISSION_MODE,
@@ -1203,9 +1267,10 @@ export class DshRuntime implements AgentRuntime {
     process: DshProcess,
     plane: DshCompiledExtensionPlane,
     status: RuntimeExtensionDiagnostics,
+    result: DshRpcObject,
   ): Promise<RuntimeExtensionDiagnostics> {
     const catalog = await process.host.request('extension/catalog', {});
-    const facts = extensionCatalogFacts(plane, catalog);
+    const facts = extensionCatalogFacts(plane, catalog, result);
     process.extensionPlane = plane;
     process.extensionCatalog = catalog;
     process.extensionDigest = facts.digest;
@@ -1233,11 +1298,17 @@ export class DshRuntime implements AgentRuntime {
       throw new Error('DSH desired extension revision differs from Product intent');
     }
     const status = extensionStatus(plane, result, unchanged);
+    for (const issue of extensionComponentReceipts(result)) {
+      if (issue.state === 'ready' || issue.state === 'disabled') continue;
+      console.warn(
+        `[dsh-extension] component isolated key=${issue.key} state=${issue.state} reason=${issue.reason ?? 'none'}`,
+      );
+    }
     if (status.state === 'applied' || status.state === 'unchanged') {
       if (result.effectiveRevision !== plane.snapshot.revision) {
         throw new Error('DSH applied a different extension revision');
       }
-      return this.commitEffectiveExtension(process, plane, status);
+      return this.commitEffectiveExtension(process, plane, status, result);
     }
     process.extensionDiagnostics = status;
     if (status.state === 'failed') {

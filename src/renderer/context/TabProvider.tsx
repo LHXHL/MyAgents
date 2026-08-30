@@ -3313,6 +3313,7 @@ export default function TabProvider({
             case 'chat:agent-error': {
                 const payload = data as { message: string } | null;
                 if (payload?.message) {
+                    recoverStreamingUi('failed');
                     setAgentError(payload.message);
                 }
                 break;
@@ -3990,7 +3991,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, recoverStreamingUi, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent, isPersistedRestoreInFlight, restoredPersistedSessionId, projectAcceptedFirstUserTitle]);
 
     const handleSseEvent = useCallback((
         eventName: string,

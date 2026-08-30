@@ -246,7 +246,7 @@ describe('DSH declarative extension compiler', () => {
         sourceId: 'workspace',
       }],
       commands: [{
-        name: '中文总结',
+        name: 'UPDATE_MEMORY',
         description: 'Valid Product slash command with a DSH-incompatible identity',
         body: 'Summarize.',
         scope: 'project',

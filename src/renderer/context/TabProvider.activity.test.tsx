@@ -442,6 +442,11 @@ describe('TabProvider session activity ownership', () => {
     emit('chat:agent-error', { message: 'Not logged in' });
     expect(screen.getByTestId('agent-error')).toHaveTextContent('Not logged in');
 
+    emit('chat:status', { sessionState: 'starting' });
+    expect(readActivity().isLoading).toBe(true);
+    emit('chat:agent-error', { message: 'Startup failed' });
+    expect(readActivity()).toMatchObject({ isLoading: false, sessionState: 'idle' });
+
     fireEvent.click(screen.getByRole('button', { name: 'send message' }));
     expect(screen.getByTestId('agent-error')).toBeEmptyDOMElement();
 

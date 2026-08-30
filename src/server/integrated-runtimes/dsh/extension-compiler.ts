@@ -16,6 +16,7 @@ import type { DshRpcObject } from './protocol-types';
 
 const MAX_RESOURCE_CHARACTERS = 1_000_000;
 const DECLARATIVE_REFERENCE = /^[A-Za-z][A-Za-z0-9._:-]*$/u;
+const DSH_COMMAND_NAME = /^[a-z][a-z0-9_-]{0,255}$/u;
 // The accepted Runtime compiler is narrower than protocol declarativeReference:
 // server, remote, and rendered public tool identities must all fit this bound.
 const HOST_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -403,7 +404,7 @@ export function compileDshProductExtensionPlane(
   }
 
   for (const command of [...source.commands].sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!isDshDeclarativeReference(command.name)) {
+    if (!DSH_COMMAND_NAME.test(command.name)) {
       diagnostics.push(componentStatus('commands', command.name, 'unsupported', 'dsh_command_name_unsupported'));
       continue;
     }
