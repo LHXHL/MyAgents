@@ -939,7 +939,7 @@ export class DshRuntime implements AgentRuntime {
         componentCount: componentReceipts.length,
         issues: componentIssues,
       };
-      console.info(`[dsh-extension] initial replace receipt=${JSON.stringify(extensionReceipt)}`);
+      console.log(`[dsh-extension] initial replace receipt=${JSON.stringify(extensionReceipt)}`);
       for (const issue of componentIssues) {
         console.warn(
           `[dsh-extension] component isolated key=${issue.key} state=${issue.state} reason=${issue.reason ?? 'none'}`,
