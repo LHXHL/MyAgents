@@ -1641,10 +1641,8 @@ mod sidecar_process_role_invariant_tests {
     #[test]
     fn generic_birth_uses_the_distribution_default_and_rejects_incompatibility() {
         let default = generic_sidecar_runtime_identity(None).expect("distribution default");
-        assert_eq!(
-            default.runtime,
-            crate::runtime_distribution_policy::policy().default_runtime(),
-        );
+        assert!(crate::runtime_distribution_policy::policy()
+            .allows_runtime(&default.runtime, default.runtime_source.as_deref()));
 
         let dsh = generic_sidecar_runtime_identity(Some(RuntimeIdentity::new(
             Some("dsh"),

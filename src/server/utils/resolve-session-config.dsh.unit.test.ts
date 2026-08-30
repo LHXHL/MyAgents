@@ -18,14 +18,15 @@ const agent: AgentConfig = {
 };
 
 describe('resolveSessionConfig DSH ownership', () => {
-  it('reads the authoritative binding instead of its builtin legacy projection', () => {
+  it('reads the authoritative binding instead of trusting its legacy projection alone', () => {
     const metadata = {
       id: 'session-1',
       agentDir: '/workspace',
       title: 'Session',
       createdAt: '2026-08-30T00:00:00.000Z',
       lastActiveAt: '2026-08-30T00:00:00.000Z',
-      runtime: 'builtin',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
       runtimeBinding: createDshBinding('darwin-arm64'),
       providerId: 'anthropic-api',
       providerRoute: {

@@ -60,6 +60,27 @@ describe('resolveEffectiveRuntime', () => {
     expect(resolveEffectiveRuntime(undefined, false)).toBe('builtin');
   });
 
+  test('Labs OFF uses an allowed developer Default Integrated Runtime override', () => {
+    expect(resolveEffectiveRuntime(
+      'codex',
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'dsh',
+    )).toBe('dsh');
+    expect(resolveEffectiveRuntime(
+      'codex',
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'future-runtime',
+    )).toBe('builtin');
+  });
+
   test('gate ON honors the configured (normalized) runtime', () => {
     expect(resolveEffectiveRuntime('codex', true)).toBe('codex');
     expect(resolveEffectiveRuntime('dsh', true)).toBe('dsh');

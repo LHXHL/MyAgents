@@ -794,6 +794,9 @@ export interface AppConfig {
   /** 开发者开关：在 AI 对话页顶栏显示旧的工作区历史入口。默认关闭。 */
   showChatHistoryEntry?: boolean;
   multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）
+  /** 开发者覆盖：选择器不可用时，新 ordinary-provider Session 使用的
+   *  Integrated Runtime。缺省或不在当前 distribution allowlist 时使用构建策略默认值。 */
+  defaultIntegratedRuntime?: 'claude-agent-sdk' | 'dsh';
   experimentalSplitView?: boolean; // 实验性：文件预览在右侧分屏而非弹窗
   /** 实验室：用户注册 CLI 工具注册表（PRD 0.2.36）。默认关。
    *  只控制工具箱里的 CLI 工具注册/管理/AI 自动发现；不影响 myagents CLI

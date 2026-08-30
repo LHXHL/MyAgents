@@ -68,7 +68,17 @@ impl RuntimeDistributionPolicy {
     }
 
     pub(crate) fn default_runtime(&self) -> &'static str {
-        match self.default_integrated_runtime.as_str() {
+        self.default_runtime_for_override(None)
+    }
+
+    pub(crate) fn default_runtime_for_override(
+        &self,
+        configured_default: Option<&str>,
+    ) -> &'static str {
+        let default = configured_default
+            .filter(|id| self.allows_integrated(id))
+            .unwrap_or(&self.default_integrated_runtime);
+        match default {
             "claude-agent-sdk" => "builtin",
             "dsh" => "dsh",
             // Validation makes this unreachable. Keep the match exhaustive at
@@ -152,6 +162,20 @@ mod tests {
         assert!(!policy.allows_runtime("builtin", None));
         assert!(!policy.allows_runtime("codex", Some("system-cli")));
         assert!(!policy.allows_runtime("codex", Some("managed-provider")));
+        assert_eq!(
+            policy.default_runtime_for_override(Some("claude-agent-sdk")),
+            "dsh"
+        );
+    }
+
+    #[test]
+    fn developer_default_override_must_be_allowed_by_the_distribution() {
+        let policy = policy();
+        assert_eq!(policy.default_runtime_for_override(Some("dsh")), "dsh");
+        assert_eq!(
+            policy.default_runtime_for_override(Some("future-runtime")),
+            "builtin"
+        );
     }
 
     #[test]

@@ -74,13 +74,33 @@ impl RuntimeIdentity {
 }
 
 pub(super) fn distribution_default_runtime_identity() -> RuntimeIdentity {
-    distribution_default_runtime_identity_for(crate::runtime_distribution_policy::policy())
+    let policy = crate::runtime_distribution_policy::policy();
+    let configured = dirs::home_dir()
+        .and_then(|home| std::fs::read_to_string(home.join(".myagents/config.json")).ok())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(strip_bom(&content)).ok());
+    configured
+        .as_ref()
+        .map(|cfg| configured_distribution_default_runtime_identity_for(cfg, policy))
+        .unwrap_or_else(|| distribution_default_runtime_identity_for(policy))
 }
 
 fn distribution_default_runtime_identity_for(
     policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
 ) -> RuntimeIdentity {
     RuntimeIdentity::new(Some(policy.default_runtime()), None)
+}
+
+fn configured_distribution_default_runtime_identity_for(
+    cfg: &serde_json::Value,
+    policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
+) -> RuntimeIdentity {
+    let configured_default = cfg
+        .get("defaultIntegratedRuntime")
+        .and_then(serde_json::Value::as_str);
+    RuntimeIdentity::new(
+        Some(policy.default_runtime_for_override(configured_default)),
+        None,
+    )
 }
 
 pub(super) fn admit_runtime_identity(identity: RuntimeIdentity) -> RuntimeIdentity {
@@ -303,7 +323,9 @@ fn resolve_agent_runtime_identity_by_id_with_policy(
             None => runtime_identity_from_legacy_agent(agent).map(Some),
         }
     } else {
-        Ok(Some(distribution_default_runtime_identity_for(policy)))
+        Ok(Some(configured_distribution_default_runtime_identity_for(
+            cfg, policy,
+        )))
     };
     let preference = match preference {
         Ok(preference) => preference,
@@ -355,7 +377,7 @@ fn resolve_agent_runtime_identity_by_id_with_policy(
         ));
     }
     Some(admit_runtime_identity_for(
-        distribution_default_runtime_identity_for(policy),
+        configured_distribution_default_runtime_identity_for(cfg, policy),
         policy,
     ))
 }
@@ -897,6 +919,26 @@ mod tests {
             .expect("managed provider identity");
         assert_eq!(identity.runtime, "codex");
         assert_eq!(identity.runtime_source.as_deref(), Some("managed-provider"));
+    }
+
+    #[test]
+    fn selector_gate_uses_allowed_developer_integrated_default() {
+        let config = serde_json::json!({
+            "multiAgentRuntime": false,
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [
+                {
+                    "id": "ordinary",
+                    "runtimePreference": { "family": "external", "id": "codex" },
+                    "providerId": "anthropic-api"
+                }
+            ]
+        });
+
+        let identity = resolve_agent_runtime_identity_by_id_from_value(&config, "ordinary")
+            .expect("developer default identity");
+        assert_eq!(identity.runtime, "dsh");
+        assert_eq!(identity.runtime_source.as_deref(), Some("integrated"));
     }
 
     #[test]

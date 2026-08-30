@@ -590,6 +590,8 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       currentAgent?.runtimePreference,
       currentAgent?.runtimeConfig?.source,
       currentAgent?.providerId,
+      undefined,
+      config.defaultIntegratedRuntime,
     );
   const providerUiProviders = useMemo(
     () => projectProvidersForRuntime(providers, providerUiRuntime),
@@ -1416,6 +1418,8 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     currentAgent?.runtimePreference,
     currentAgent?.runtimeConfig?.source,
     currentAgent?.providerId,
+    undefined,
+    config.defaultIntegratedRuntime,
   );
   // v0.1.69: session is self-contained — its frozen runtime is authoritative for
   // both display and message routing within this tab. Falls back to agentRuntime

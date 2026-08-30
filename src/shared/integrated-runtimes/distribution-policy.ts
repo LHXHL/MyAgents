@@ -94,10 +94,25 @@ export function integratedRuntimeType(id: IntegratedRuntimeId): "builtin" | "dsh
   return id === "claude-agent-sdk" ? "builtin" : "dsh";
 }
 
+export function resolveDefaultIntegratedRuntime(
+  policy: AgentRuntimeDistributionPolicy,
+  configuredDefault?: unknown,
+): IntegratedRuntimeId {
+  return typeof configuredDefault === "string" &&
+    policy.allowedIntegratedRuntimes.includes(
+      configuredDefault as IntegratedRuntimeId,
+    )
+    ? (configuredDefault as IntegratedRuntimeId)
+    : policy.defaultIntegratedRuntime;
+}
+
 export function defaultIntegratedRuntimeType(
   policy: AgentRuntimeDistributionPolicy,
+  configuredDefault?: unknown,
 ): "builtin" | "dsh" {
-  return integratedRuntimeType(policy.defaultIntegratedRuntime);
+  return integratedRuntimeType(
+    resolveDefaultIntegratedRuntime(policy, configuredDefault),
+  );
 }
 
 export function isRuntimeAllowedByDistribution(

@@ -6349,12 +6349,15 @@ export async function handleAgentShow(payload: { id?: string; agentId?: string }
     runtime: storedRuntime,
     runtimeConfig: agent.runtimeConfig as { source?: string } | undefined,
   });
+  const rootConfig = loadConfig();
   const preferredRuntime = resolveEffectiveRuntime(
     storedRuntime,
-    !!loadConfig().multiAgentRuntime,
+    !!rootConfig.multiAgentRuntime,
     agent.runtimePreference,
     (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
     agent.providerId,
+    undefined,
+    rootConfig.defaultIntegratedRuntime,
   );
   const usesManagedCodex = preferredRuntime === 'builtin' && rawUsesManagedCodex;
   const runtime: RuntimeType = usesManagedCodex
@@ -6896,6 +6899,8 @@ function resolveAgentRuntimeIdentityFromWorkspace(
     agent.runtimePreference,
     (agent.runtimeConfig as RuntimeConfig | undefined)?.source,
     agent.providerId,
+    undefined,
+    config.defaultIntegratedRuntime,
   );
   if (preferredRuntime === 'builtin' && agentUsesManagedCodexProvider({
     providerId: agent.providerId,

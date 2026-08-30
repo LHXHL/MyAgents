@@ -360,7 +360,8 @@ export interface AppLaunchParams {
   launch_type: string;
   /**
    * 逗号分隔的 distinct 有效外部 runtime 列表（如 `"codex"` / `"claude-code,codex"`）。
-   * gate-aware：`multiAgentRuntime` 关闭时为 `''`（所有 agent 实际跑 builtin）。
+   * gate-aware：`multiAgentRuntime` 关闭时只记录发行版/开发者默认
+   * Integrated Runtime；不会把已保存但当前不可选的 Agent preference 计入。
    * 用于"已配置但可能从未使用"的 runtime 采用率分析——turn 级事件看不到这部分。
    * config 尚未加载时该字段缺省（区分 `''`=无外部 与 缺省=未知）。
    */

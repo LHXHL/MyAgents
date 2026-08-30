@@ -1516,6 +1516,29 @@ mod agent_monitor_tests {
         assert!(salvage_agents_from_value(&non_array, &keys).is_none());
     }
 
+    #[test]
+    fn salvage_agents_projects_the_root_runtime_default_without_persisting_it_per_agent() {
+        let keys = std::collections::HashMap::new();
+        let value = serde_json::json!({
+            "multiAgentRuntime": false,
+            "defaultIntegratedRuntime": "dsh",
+            "agents": [{
+                "id": "a",
+                "name": "A",
+                "enabled": true,
+                "workspacePath": "/w"
+            }]
+        });
+
+        let agents = salvage_agents_from_value(&value, &keys).expect("valid Agent");
+        assert!(!agents[0].runtime_selection_available);
+        assert_eq!(agents[0].default_integrated_runtime.as_deref(), Some("dsh"));
+        assert!(serde_json::to_value(&agents[0])
+            .expect("serialized Agent")
+            .get("defaultIntegratedRuntime")
+            .is_none());
+    }
+
     fn agent_config_with_weixin_channel(enabled: bool) -> Vec<types::AgentConfigRust> {
         serde_json::from_value(json!([{
             "id": "agent-1",
@@ -2489,6 +2512,10 @@ fn salvage_agents_from_value(
         .unwrap_or(false);
     let runtime_selection_available =
         crate::runtime_distribution_policy::policy().selector_available(labs_enabled);
+    let default_integrated_runtime = value
+        .get("defaultIntegratedRuntime")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     match value.get("agents") {
         // Absent → no agents configured; nothing to recover.
         None => Some(Vec::new()),
@@ -2501,6 +2528,7 @@ fn salvage_agents_from_value(
                 match serde_json::from_value::<AgentConfigRust>(a.clone()) {
                     Ok(mut agent) => {
                         agent.runtime_selection_available = runtime_selection_available;
+                        agent.default_integrated_runtime = default_integrated_runtime.clone();
                         // Rebuild providerEnvJson for agents/channels that have a
                         // providerId but no providerEnvJson (same as
                         // parse_bot_entries does for legacy bots).

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createDshBinding } from '../../shared/integrated-runtimes/identity';
 import type { SessionMetadata } from '../types/session';
 import { normalizeSessionRuntimeIdentity } from './session-runtime-identity';
 
@@ -57,5 +58,19 @@ describe('normalizeSessionRuntimeIdentity', () => {
     });
     expect(normalizedManaged.providerId).toBe('codex-sub');
     expect(normalizeSessionRuntimeIdentity(normalizedManaged)).toEqual(normalizedManaged);
+  });
+
+  it('preserves the canonical DSH compatibility projection from its authoritative binding', () => {
+    const normalized = normalizeSessionRuntimeIdentity(session({
+      runtime: 'builtin',
+      runtimeBinding: createDshBinding('darwin-arm64'),
+    }));
+
+    expect(normalized).toMatchObject({
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
+      runtimeBinding: { family: 'integrated', id: 'dsh' },
+    });
+    expect(normalizeSessionRuntimeIdentity(normalized)).toEqual(normalized);
   });
 });

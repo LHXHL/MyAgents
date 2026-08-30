@@ -85,5 +85,9 @@ describe('resolveRuntimeModelCatalogIdentity', () => {
     expect(resolveAgentRuntimeModelCatalogIdentity(agent, false)).toEqual({
       runtime: 'builtin',
     });
+    expect(resolveAgentRuntimeModelCatalogIdentity(agent, false, 'dsh')).toEqual({
+      runtime: 'dsh',
+      source: 'integrated',
+    });
   });
 });

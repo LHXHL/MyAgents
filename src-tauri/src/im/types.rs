@@ -1228,6 +1228,9 @@ pub struct AgentConfigRust {
     /// Runtime-only projection of the build policy plus root Labs selector gate.
     #[serde(default = "default_true", skip_serializing)]
     pub runtime_selection_available: bool,
+    /// Root developer override used only when Runtime selection is unavailable.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub default_integrated_runtime: Option<String>,
 
     #[serde(default)]
     pub setup_completed: Option<bool>,
@@ -1479,7 +1482,14 @@ impl ChannelConfigRust {
         policy: &crate::runtime_distribution_policy::RuntimeDistributionPolicy,
     ) -> Result<(Option<String>, Option<serde_json::Value>), String> {
         if !agent.runtime_selection_available {
-            return Ok((Some(policy.default_runtime().to_string()), None));
+            return Ok((
+                Some(
+                    policy
+                        .default_runtime_for_override(agent.default_integrated_runtime.as_deref())
+                        .to_string(),
+                ),
+                None,
+            ));
         }
         let overrides = self.overrides.as_ref();
         let runtime_config = overrides
@@ -1756,6 +1766,7 @@ mod tests {
             runtime_config: None,
             runtime_preference: None,
             runtime_selection_available: true,
+            default_integrated_runtime: None,
             setup_completed: Some(true),
         }
     }
@@ -1889,6 +1900,21 @@ mod tests {
                 .as_ref()
                 .map(|value| value.id.as_str()),
             Some("dsh")
+        );
+    }
+
+    #[test]
+    fn labs_off_uses_the_allowed_developer_integrated_default() {
+        let mut agent = base_agent();
+        agent.runtime_selection_available = false;
+        agent.default_integrated_runtime = Some("dsh".to_string());
+
+        let config = base_channel().to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("dsh"));
+        assert_eq!(
+            config.runtime_identity().runtime_source.as_deref(),
+            Some("integrated")
         );
     }
 

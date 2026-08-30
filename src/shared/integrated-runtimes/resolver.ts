@@ -10,6 +10,7 @@ import {
 } from "./identity";
 import {
   isRuntimeSelectorAvailable,
+  resolveDefaultIntegratedRuntime,
   type AgentRuntimeDistributionPolicy,
 } from "./distribution-policy";
 import type { ProviderExecutionConstraint } from "./provider-constraints";
@@ -69,6 +70,7 @@ export type RuntimeResolutionResult =
 export interface RuntimeResolutionInput {
   policy: AgentRuntimeDistributionPolicy;
   labsEnabled: boolean;
+  configuredDefaultIntegratedRuntime?: unknown;
   agentPreference?: AgentRuntimePreference | unknown;
   legacyAgentRuntime?: string | null;
   legacyAgentRuntimeSource?: string | null;
@@ -220,7 +222,10 @@ export function resolveEffectiveRuntimeBinding(
   } else {
     preference = {
       family: "integrated",
-      id: input.policy.defaultIntegratedRuntime,
+      id: resolveDefaultIntegratedRuntime(
+        input.policy,
+        input.configuredDefaultIntegratedRuntime,
+      ),
     };
   }
 

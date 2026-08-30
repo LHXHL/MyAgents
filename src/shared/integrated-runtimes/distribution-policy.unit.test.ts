@@ -4,6 +4,7 @@ import {
   AGENT_RUNTIME_DISTRIBUTION_POLICY,
   isRuntimeSelectorAvailable,
   parseAgentRuntimeDistributionPolicy,
+  resolveDefaultIntegratedRuntime,
 } from "./distribution-policy";
 
 describe("Agent Runtime distribution policy", () => {
@@ -37,6 +38,33 @@ describe("Agent Runtime distribution policy", () => {
       defaultIntegratedRuntime: "dsh",
       selectorAvailability: "hidden",
     });
+  });
+
+  it("accepts only an allowed developer default override", () => {
+    expect(
+      resolveDefaultIntegratedRuntime(
+        AGENT_RUNTIME_DISTRIBUTION_POLICY,
+        "dsh",
+      ),
+    ).toBe("dsh");
+    expect(
+      resolveDefaultIntegratedRuntime(
+        AGENT_RUNTIME_DISTRIBUTION_POLICY,
+        "future-runtime",
+      ),
+    ).toBe("claude-agent-sdk");
+    expect(
+      resolveDefaultIntegratedRuntime(
+        parseAgentRuntimeDistributionPolicy({
+          schemaVersion: 1,
+          allowedIntegratedRuntimes: ["dsh"],
+          allowedExternalRuntimes: [],
+          defaultIntegratedRuntime: "dsh",
+          selectorAvailability: "hidden",
+        }),
+        "claude-agent-sdk",
+      ),
+    ).toBe("dsh");
   });
 
   it("rejects unknown, duplicate, empty, and inconsistent policy", () => {

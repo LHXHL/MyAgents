@@ -168,6 +168,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
   const agentRuntimeCatalogIdentity = resolveAgentRuntimeModelCatalogIdentity(
     workspaceAgent,
     multiAgentRuntimeEnabled,
+    config?.defaultIntegratedRuntime,
   );
   const agentRuntime = agentRuntimeCatalogIdentity.runtime;
   const runtimeCatalogIdentity = resolveRuntimeModelCatalogIdentity(

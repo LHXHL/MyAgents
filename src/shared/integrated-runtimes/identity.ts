@@ -394,7 +394,9 @@ export function legacyProjectionForBinding(
   if (binding.family === "managed-provider") {
     return { runtime: "codex", runtimeSource: "managed-provider" };
   }
-  return { runtime: "builtin" };
+  return binding.id === "dsh"
+    ? { runtime: "dsh", runtimeSource: "integrated" }
+    : { runtime: "builtin" };
 }
 
 /** Runtime implementation selected by an authoritative binding, independent of its legacy projection. */

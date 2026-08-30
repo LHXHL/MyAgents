@@ -866,6 +866,8 @@ export default function TabProvider({
                 agent?.runtimePreference,
                 agent?.runtimeConfig?.source,
                 agent?.providerId,
+                undefined,
+                appConfig.defaultIntegratedRuntime,
             );
         const runtimeSource = sessionRuntime
             ? analyticsRuntimeSource(runtime, sessionRuntimeSource)

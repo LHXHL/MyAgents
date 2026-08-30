@@ -1031,7 +1031,8 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.runtime.sentMessages).toEqual(['first Product input']);
     const metadata = harness.sessionStore.getSessionMetadata(sessionId);
     expect(metadata).toMatchObject({
-      runtime: 'builtin',
+      runtime: 'dsh',
+      runtimeSource: 'integrated',
       runtimeSessionId: 'fake-thread-1',
       runtimeBinding: { family: 'integrated', id: 'dsh' },
     });

@@ -12,8 +12,8 @@ describe("Session metadata Runtime binding birth", () => {
     const metadata = createSessionMetadata("/workspace", { runtimeBinding });
 
     expect(metadata.runtimeBinding).toEqual(runtimeBinding);
-    expect(metadata.runtime).toBe("builtin");
-    expect(metadata.runtimeSource).toBeUndefined();
+    expect(metadata.runtime).toBe("dsh");
+    expect(metadata.runtimeSource).toBe("integrated");
     expect(metadata.runtimeBindingCompatibility).toBeUndefined();
   });
 

@@ -80,7 +80,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     'codex': { installed: false },
     'gemini': { installed: false },
   });
-  // When multiAgentRuntime is off, treat as builtin regardless of agent config (方案 C)
+  // When selection is unavailable, preserve Agent intent and project the
+  // configured/default Integrated Runtime for new Sessions.
   const agentRuntimeConfig = agent?.runtimeConfig as RuntimeConfig | undefined;
   const currentRuntime: RuntimeType = resolveEffectiveRuntime(
     agent?.runtime,
@@ -88,6 +89,8 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     agent?.runtimePreference,
     agent?.runtimeConfig?.source,
     agent?.providerId,
+    undefined,
+    config.defaultIntegratedRuntime,
   );
   const runtimeSelectorAvailable = isAgentRuntimeSelectorAvailable(
     !!config.multiAgentRuntime,

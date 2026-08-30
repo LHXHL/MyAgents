@@ -1309,7 +1309,15 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     !!cfg.multiAgentRuntime,
                 )
                     ? 'unknown'
-                    : resolveEffectiveRuntime(undefined, !!cfg.multiAgentRuntime);
+                    : resolveEffectiveRuntime(
+                        undefined,
+                        !!cfg.multiAgentRuntime,
+                        undefined,
+                        undefined,
+                        undefined,
+                        undefined,
+                        cfg.defaultIntegratedRuntime,
+                    );
                 setSendShortcut(cfg.chatSendShortcut ?? 'enter');
                 // 设置面板（D17）：工作区选择器的候选 + 当前绑定覆盖。
                 setProjects(projects.map((p) => ({ path: p.path, name: p.name })));

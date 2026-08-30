@@ -81,6 +81,22 @@ describe("central Runtime resolver", () => {
     });
   });
 
+  it("uses an allowed developer default override while selection is unavailable", () => {
+    expect(
+      resolveEffectiveRuntimeBinding(
+        input({
+          labsEnabled: false,
+          configuredDefaultIntegratedRuntime: "dsh",
+          agentPreference: { family: "external", id: "codex" },
+        }),
+      ),
+    ).toMatchObject({
+      status: "resolved",
+      binding: { family: "integrated", id: "dsh" },
+      decision: "distribution-default",
+    });
+  });
+
   it("lets an explicit External preference win over dormant Provider fields", () => {
     expect(
       resolveEffectiveRuntimeBinding(

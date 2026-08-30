@@ -41,8 +41,8 @@ describe('createMaterializedSessionMetadata', () => {
       runtimeSourceOverride: 'integrated',
     });
 
-    expect(meta.runtime).toBe('builtin');
-    expect(meta.runtimeSource).toBeUndefined();
+    expect(meta.runtime).toBe('dsh');
+    expect(meta.runtimeSource).toBe('integrated');
     expect(meta.runtimeBinding).toMatchObject({ family: 'integrated', id: 'dsh' });
     expect(meta.providerRoute).toEqual({
       kind: 'provider',

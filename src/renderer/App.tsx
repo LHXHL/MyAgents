@@ -203,8 +203,17 @@ interface SessionRuntimeOpenIdentity {
 function fallbackRuntimeForOpen(
   fallbackRuntime: RuntimeType,
   multiAgentRuntime: boolean | undefined,
+  defaultIntegratedRuntime?: unknown,
 ): RuntimeType {
-  return resolveEffectiveRuntime(fallbackRuntime, !!multiAgentRuntime);
+  return resolveEffectiveRuntime(
+    fallbackRuntime,
+    !!multiAgentRuntime,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    defaultIntegratedRuntime,
+  );
 }
 
 function normalizeRuntimeSourceForOpen(
@@ -225,8 +234,13 @@ async function resolveSessionRuntimeIdentityForOpen(
   sessionId: string | null | undefined,
   fallbackRuntime: RuntimeType,
   multiAgentRuntime: boolean | undefined,
+  defaultIntegratedRuntime?: unknown,
 ): Promise<SessionRuntimeOpenIdentity> {
-  const fallback = fallbackRuntimeForOpen(fallbackRuntime, multiAgentRuntime);
+  const fallback = fallbackRuntimeForOpen(
+    fallbackRuntime,
+    multiAgentRuntime,
+    defaultIntegratedRuntime,
+  );
   if (!sessionId || isPendingSessionId(sessionId)) {
     return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined) };
   }
@@ -898,6 +912,7 @@ export default function App() {
         sessionId,
         normalizeRuntime(agent?.runtime),
         cfg?.multiAgentRuntime,
+        cfg?.defaultIntegratedRuntime,
       );
       const originFields = await resolveSessionOriginFieldsForAnalytics(sessionId, agentDir);
       track('history_open', {
@@ -1054,6 +1069,8 @@ export default function App() {
             a.runtimePreference,
             a.runtimeConfig?.source,
             a.providerId,
+            undefined,
+            cfg.defaultIntegratedRuntime,
           ))
           .filter((r) => r !== 'builtin'),
       )).sort().join(',');
@@ -1774,6 +1791,8 @@ export default function App() {
           agent?.runtimePreference,
           agent?.runtimeConfig?.source,
           agent?.providerId,
+          undefined,
+          cfg.defaultIntegratedRuntime,
         ),
         entry_intent: pendingSurfaceForLaunch.entryIntent,
         has_initial_message: !!initialMessage,
@@ -3142,6 +3161,8 @@ export default function App() {
           workspaceAgent?.runtimePreference,
           workspaceAgent?.runtimeConfig?.source,
           workspaceAgent?.providerId,
+          undefined,
+          configRef.current?.defaultIntegratedRuntime,
         );
         const workspaceUsesProductProvider = workspaceRuntime === 'builtin' || workspaceRuntime === 'dsh';
         const workspaceProviders = projectProvidersForRuntime(
@@ -3436,6 +3457,8 @@ export default function App() {
           helperAgent?.runtimePreference,
           helperAgent?.runtimeConfig?.source,
           helperAgent?.providerId,
+          undefined,
+          configRef.current?.defaultIntegratedRuntime,
         );
         const helperUsesProductProvider = helperRuntime === 'builtin' || helperRuntime === 'dsh';
         const helperProviders = projectProvidersForRuntime(

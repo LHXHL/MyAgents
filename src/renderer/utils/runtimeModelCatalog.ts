@@ -47,6 +47,7 @@ export function resolveRuntimeModelCatalogIdentity(
 export function resolveAgentRuntimeModelCatalogIdentity(
   agent: AgentRuntimeDefaults | null | undefined,
   runtimeSelectionAvailable = true,
+  configuredDefaultIntegratedRuntime?: unknown,
 ): RuntimeModelCatalogIdentity {
   const runtime = resolveEffectiveRuntime(
     agent?.runtime,
@@ -54,6 +55,8 @@ export function resolveAgentRuntimeModelCatalogIdentity(
     agent?.runtimePreference,
     agent?.runtimeConfig?.source,
     agent?.providerId,
+    undefined,
+    configuredDefaultIntegratedRuntime,
   );
   if (runtime === 'builtin' && agentUsesManagedCodexProvider(agent)) {
     return { runtime: 'codex', source: 'managed-provider' };

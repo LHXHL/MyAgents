@@ -107,7 +107,10 @@ import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
 import type { ChannelType } from '../../../shared/types/agent';
-import { AGENT_RUNTIME_DISTRIBUTION_POLICY } from '../../../shared/integrated-runtimes/distribution-policy';
+import {
+    AGENT_RUNTIME_DISTRIBUTION_POLICY,
+    resolveDefaultIntegratedRuntime,
+} from '../../../shared/integrated-runtimes/distribution-policy';
 import { reconcilePersistedAgentWorkspaceIdentities } from '@/config/services/agentConfigService';
 import { getBotWorkspaceCandidates } from '@/components/ImSettings/botWorkspaceSelection';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
@@ -5012,6 +5015,34 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                         </button>
                                     </div>
                                 )}
+
+                                <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--line)] pt-4">
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-sm font-medium text-[var(--ink)]">
+                                            {tSettings('about.defaultIntegratedRuntimeTitle')}
+                                        </p>
+                                        <p className="text-xs text-[var(--ink-muted)]">
+                                            {tSettings('about.defaultIntegratedRuntimeDescription')}
+                                        </p>
+                                    </div>
+                                    <CustomSelect
+                                        className="w-52 shrink-0"
+                                        value={resolveDefaultIntegratedRuntime(
+                                            AGENT_RUNTIME_DISTRIBUTION_POLICY,
+                                            config.defaultIntegratedRuntime,
+                                        )}
+                                        options={AGENT_RUNTIME_DISTRIBUTION_POLICY.allowedIntegratedRuntimes.map((runtime) => ({
+                                            value: runtime,
+                                            label: runtime === 'dsh'
+                                                ? tSettings('about.defaultIntegratedRuntimeDsh')
+                                                : tSettings('about.defaultIntegratedRuntimeClaudeSdk'),
+                                        }))}
+                                        onChange={(runtime) => void updateConfig({
+                                            defaultIntegratedRuntime: runtime as 'claude-agent-sdk' | 'dsh',
+                                        })}
+                                        disabled={AGENT_RUNTIME_DISTRIBUTION_POLICY.allowedIntegratedRuntimes.length === 1}
+                                    />
+                                </div>
 
                                 <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
                                     <div className="flex-1 pr-4">

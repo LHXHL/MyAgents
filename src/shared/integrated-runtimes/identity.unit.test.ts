@@ -85,7 +85,10 @@ describe("Integrated Runtime identity", () => {
     });
     expect(parseEffectiveRuntimeBinding(binding)).toEqual(binding);
     expect(runtimeBindingKey(binding)).toBe("integrated:dsh:0.0.0");
-    expect(legacyProjectionForBinding(binding)).toEqual({ runtime: "builtin" });
+    expect(legacyProjectionForBinding(binding)).toEqual({
+      runtime: "dsh",
+      runtimeSource: "integrated",
+    });
   });
 
   it("migrates every legal legacy identity without changing semantics", () => {

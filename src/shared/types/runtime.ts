@@ -12,6 +12,7 @@ import {
   defaultIntegratedRuntimeType,
   isRuntimeAllowedByDistribution,
   isRuntimeSelectorAvailable,
+  resolveDefaultIntegratedRuntime,
   type AgentRuntimeDistributionPolicy,
 } from '../integrated-runtimes/distribution-policy';
 
@@ -180,8 +181,16 @@ export function resolveEffectiveRuntime(
   runtimeSource?: RuntimeSource | null,
   providerId?: unknown,
   policy: AgentRuntimeDistributionPolicy = AGENT_RUNTIME_DISTRIBUTION_POLICY,
+  configuredDefaultIntegratedRuntime?: unknown,
 ): RuntimeType {
-  const distributionDefault = defaultIntegratedRuntimeType(policy);
+  const defaultIntegratedRuntime = resolveDefaultIntegratedRuntime(
+    policy,
+    configuredDefaultIntegratedRuntime,
+  );
+  const distributionDefault = defaultIntegratedRuntimeType(
+    policy,
+    configuredDefaultIntegratedRuntime,
+  );
   const selectorAvailable = isRuntimeSelectorAvailable(
     policy,
     multiAgentRuntimeEnabled,
@@ -193,7 +202,7 @@ export function resolveEffectiveRuntime(
         runtimeSource,
         providerId,
       })
-    : { family: 'integrated' as const, id: policy.defaultIntegratedRuntime };
+    : { family: 'integrated' as const, id: defaultIntegratedRuntime };
   if (!preference) return distributionDefault;
   const preferredRuntime = runtimeTypeForAgentRuntimePreference(preference);
   // Explicit External CLI intent wins over dormant Product Provider fields.
