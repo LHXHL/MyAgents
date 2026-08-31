@@ -76,16 +76,16 @@ import {
   DshRuntimeProcessHost,
   redactDshDiagnosticLine,
 } from './process-host';
-import type {
-  DshExecutionEnvironment,
-  DshHostRequestHandlers,
-  DshRpcObject,
-  DshRuntimeNotificationHandlers,
+import {
+  DSH_CANONICAL_WEB_POLICY_REF,
+  type DshExecutionEnvironment,
+  type DshHostRequestHandlers,
+  type DshRpcObject,
+  type DshRuntimeNotificationHandlers,
 } from './protocol-types';
 
 const OFFICIAL_INITIAL_PERMISSION_MODE = 'default';
 const OFFICIAL_INTERACTION_REVISION = 'host-interaction-v1';
-const DSH_NETWORK_POLICY_REF = 'myagents-network-v1';
 const DSH_CHECKPOINT_POLICY_REVISION = 'myagents-root-write-edit-checkpoint-v1';
 
 type ProductPermissionMode = 'auto' | 'plan' | 'fullAgency';
@@ -475,7 +475,7 @@ function executionEnvironment(
       inheritedKeys: [],
       secretValues: 'reverse-port-only',
     },
-    network: { mode: 'host-policy', policyRef: DSH_NETWORK_POLICY_REF },
+    network: { mode: 'host-policy', policyRef: DSH_CANONICAL_WEB_POLICY_REF },
     process: {
       backgroundRetention: 'allow',
       maxChildren: 16,

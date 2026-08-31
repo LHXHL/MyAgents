@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 
-import { DshCanonicalWebError } from './canonical-web-errors';
+import { DshCanonicalWebError, dshCanonicalWebTransportError } from './canonical-web-errors';
 
 export type DshDnsAnswer = Readonly<{ address: string; family: 4 | 6 }>;
 
@@ -313,9 +313,7 @@ class NodePinnedHttpTransport implements DshSafeHttpTransport {
     signal: AbortSignal,
   ): Promise<DshRawHttpResponse> {
     return new Promise((resolve, reject) => {
-      const pinnedLookup: LookupFunction = (_hostname, _options, callback) => {
-        callback(null, address.address, address.family);
-      };
+      const pinnedLookup = createDshPinnedLookup(address);
       const makeRequest = url.protocol === 'https:' ? httpsRequest : httpRequest;
       const client = makeRequest(url, {
         method: request.method,
@@ -359,6 +357,16 @@ class NodePinnedHttpTransport implements DshSafeHttpTransport {
       else client.end();
     });
   }
+}
+
+export function createDshPinnedLookup(address: DshDnsAnswer): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all === true) {
+      callback(null, [address]);
+      return;
+    }
+    callback(null, address.address, address.family);
+  };
 }
 
 function oneHeader(
@@ -473,10 +481,9 @@ export class DshSafeHttpClient {
     } catch (error) {
       if (request.signal.aborted) throw request.signal.reason;
       if (deadline.aborted) {
-        throw new DshCanonicalWebError('network_policy_denied', 'Web request exceeded its deadline');
+        throw new DshCanonicalWebError('web_request_timeout', 'Web request exceeded its deadline');
       }
-      if (error instanceof DshCanonicalWebError) throw error;
-      throw new DshCanonicalWebError('network_policy_denied', 'Web transport failed safely', { cause: error });
+      throw dshCanonicalWebTransportError(error);
     } finally {
       release();
     }

@@ -2,6 +2,8 @@ import candidateProfileJson from "../../../../contracts/myagents-dsh/batch-1-can
 import protocolMetaJson from "../../../../contracts/myagents-dsh/protocol-meta.json";
 import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
 
+export const DSH_CANONICAL_WEB_POLICY_REF = "deepseek-official-web-search-v1" as const;
+
 export const DSH_HOST_METHOD_NAMES = [
   "initialize",
   "runtime/status",

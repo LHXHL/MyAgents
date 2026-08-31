@@ -501,6 +501,83 @@ describe('DSH Product mutation journal', () => {
     });
   });
 
+  it('repairs an anchored historical assistant from authoritative DSH content', async () => {
+    const sessionId = 'dsh-turn-projection-repair';
+    const metadata = createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId: `runtime-${sessionId}`,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    });
+    await store.saveSessionMetadata(metadata);
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [
+      {
+        id: 'user-stale-projection',
+        role: 'user',
+        content: 'inspect then answer',
+        timestamp: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'assistant-live-id',
+        role: 'assistant',
+        content: JSON.stringify([
+          { type: 'tool_use', tool: { id: 'call-1', name: 'Read', input: {}, inputJson: '{}', streamIndex: 0 } },
+          { type: 'text', text: 'Done.' },
+          { type: 'thinking', thinking: 'all reasoning incorrectly merged at the end', thinkingStreamIndex: 2, isComplete: true },
+        ]),
+        timestamp: '2026-08-30T00:00:02.000Z',
+        durationMs: 400_000,
+        runtimeTurnAnchor: {
+          turnId: 'product-turn-repair',
+          rootUserMessageId: 'user-stale-projection',
+        },
+      },
+    ])).resolves.toMatchObject({ ok: true });
+
+    const repairedContent = JSON.stringify([
+      { type: 'thinking', thinking: 'inspect first', thinkingStreamIndex: 0, isComplete: true },
+      { type: 'tool_use', tool: { id: 'call-1', name: 'Read', input: {}, inputJson: '{}', result: 'ok', streamIndex: 1 } },
+      { type: 'text', text: 'Done.' },
+    ]);
+    const cursor = {
+      schemaVersion: 1 as const,
+      runtimeSessionId: `runtime-${sessionId}`,
+      durableSequence: 20,
+      transcriptPostcondition: 'd'.repeat(64),
+    };
+    await expect(store.reconcileDshTurnProjections({
+      sessionId,
+      runtimeSessionId: `runtime-${sessionId}`,
+      cursor,
+      assistantMessages: [{
+        id: 'assistant-dsh-deterministic',
+        role: 'assistant',
+        content: repairedContent,
+        timestamp: '2026-08-30T00:00:03.000Z',
+        durationMs: 3_000,
+        usage: { inputTokens: 10, outputTokens: 4 },
+        toolCount: 1,
+        runtimeTurnAnchor: {
+          turnId: 'product-turn-repair',
+          rootUserMessageId: 'user-stale-projection',
+        },
+      }],
+      nativeRootOperations: [],
+      runtimeUsageTotals: { inputTokens: 10, outputTokens: 4 },
+    })).resolves.toEqual({
+      success: true,
+      value: { transcriptChanged: true, cursor },
+    });
+
+    expect(store.getSessionData(sessionId)?.messages[1]).toEqual(expect.objectContaining({
+      id: 'assistant-live-id',
+      content: repairedContent,
+      durationMs: 3_000,
+      toolCount: 1,
+    }));
+  });
+
   it('keeps a fork hidden until Runtime and Product commit identities match', async () => {
     const sourceId = 'dsh-fork-source';
     const targetId = 'dsh-fork-target';

@@ -71,6 +71,9 @@ describe('DSH declarative extension compiler', () => {
         name: 'reviewer',
         description: 'Reviews a change',
         prompt: 'Review the change carefully.',
+        tools: ['Read', 'Bash'],
+        disallowedTools: ['Bash'],
+        maxTurns: 12,
         skills: [{ name: 'review', path: skillPath }],
         scope: 'project',
         sourceId: 'workspace',
@@ -118,6 +121,15 @@ describe('DSH declarative extension compiler', () => {
       expect.objectContaining({ kind: 'skill_document', content: skillContent }),
       expect.objectContaining({ kind: 'command_template', content: 'Run the relevant checks.' }),
     ]));
+    expect(plane.snapshot.components).toContainEqual(expect.objectContaining({
+      id: 'reviewer',
+      kind: 'agent',
+      descriptor: expect.objectContaining({
+        tools: ['Read', 'Bash'],
+        disallowedTools: ['Bash'],
+        maxTurns: 12,
+      }),
+    }));
     expect(JSON.stringify(plane.snapshot)).not.toContain('private-token');
     expect(plane.credentialBindings).toEqual([
       expect.objectContaining({

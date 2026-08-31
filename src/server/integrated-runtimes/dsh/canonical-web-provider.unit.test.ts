@@ -28,6 +28,18 @@ const zhipuProfile: DshModelExecutionProfile = Object.freeze({
   maxTokens: 131_072,
 });
 
+const zhipuAnthropicProfile: DshModelExecutionProfile = Object.freeze({
+  revision: 'zhipu-anthropic-profile-v1',
+  providerRouteId: 'myagents-zhipu-anthropic-messages',
+  api: 'anthropic-messages',
+  provider: 'zhipu',
+  modelId: 'glm-5.3',
+  baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+  credentialRef: 'MYAGENTS_PROVIDER_ZHIPU_API_KEY',
+  contextWindow: 1_000_000,
+  maxTokens: 131_072,
+});
+
 function json(value: unknown): DshRawHttpResponse {
   return Object.freeze({
     statusCode: 200,
@@ -150,6 +162,33 @@ describe('DshCanonicalWebProvider', () => {
       },
       searchCount: 1,
     });
+  });
+
+  it('uses Zhipu native search for an Anthropic-compatible model route', async () => {
+    const dispatch = vi.fn<DshSafeHttpTransport['dispatch']>(async (url, _address, request) => {
+      expect(url.toString()).toBe('https://open.bigmodel.cn/api/paas/v4/web_search');
+      expect(request.headers?.authorization).toBe('Bearer secret-zhipu');
+      expect(request.headers).not.toHaveProperty('x-api-key');
+      return json({
+        search_result: [
+          { title: 'Zhipu', link: 'https://docs.bigmodel.cn/guide', content: 'Native result' },
+        ],
+      });
+    });
+
+    const result = await providerWith(dispatch).runSearch({
+      profile: zhipuAnthropicProfile,
+      apiKey: 'secret-zhipu',
+      query: 'DSH Host',
+      operationId: 'operation-3',
+      signal: new AbortController().signal,
+    });
+
+    expect(result.results).toEqual([{
+      title: 'Zhipu',
+      url: 'https://docs.bigmodel.cn/guide',
+      snippet: 'Native result',
+    }]);
   });
 
   it('runs WebFetch utility prompts without exposing tools and returns separately metered usage', async () => {

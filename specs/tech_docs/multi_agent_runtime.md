@@ -343,7 +343,7 @@ Managed Codex 也始终保留在 Integrated DSH 的 Product Provider picker 中�
 |---|---|---|
 | Workspace/全局/Plugin Skills | 临时精确目录 → `skills/extraRoots/set` + read-back | project > user > plugin；只投影合并后 enabled 的 canonical、非 symlink、限深限大 `SKILL.md`；正文 digest 进入 revision |
 | Commands | Sidecar admission-time 展开为 runtime prompt | transcript 保留用户原始 `/command args`；`$ARGUMENTS` 只作用于发给 Runtime 的文本 |
-| Agents | 启动时生成临时 native `agents.<role>.config_file` | prompt/model/Skill 可忠实映射；tools/disallowedTools/maxTurns 等字段逐 Agent unsupported，不用 prompt 伪装约束 |
+| Agents | Managed Codex 启动时生成临时 native `agents.<role>.config_file`；Integrated DSH 编译 declarative Agent component | prompt/model/Skill 两端均按各自协议投影；Managed Codex 对 tools/disallowedTools/maxTurns 逐 Agent 标记 unsupported，Integrated DSH 则原样保留这三项，由 Runtime 在父 Agent 可见工具集合内收窄并执行 maxTurns |
 | 外部 MCP | Managed app-server 启动配置 | stdio/streamable HTTP 由服务端权威 MCP definition 逐 server 原子投影；URL/header 的 `{{ENV_NAME}}` 先经共享 MCP 模板解析，再交给 Settings 探活、Builtin SDK 或 Managed Codex 各自的 transport projector。无法安全表达、transport 不支持或 env key 值冲突时只排除该 server，并以 `extensions.components` 的 `failed` / `unsupported` 进入 Logs panel，其他 MCP 与基础 Session 继续；顶层 generation 仍为 `applied`，因此不出现 blocking Chat banner。secret 值只进入进程 apply fingerprint，不进入 revision/diagnostics，也绝不进入 argv |
 | SDK in-process MCP / IM Bridge | `thread/start.dynamicTools` +反向 `item/tool/call` | Dispatcher 复用标准 MCP handler、现有权限 owner、AbortSignal、timeout、附件与 large-value spill；exactly-once 且绑定 process generation |
 | Plugin | 按 `plugin.json` 的 `skills`/`commands`/`agents`/`mcpServers` 路径与默认目录编译 | 命名组件使用 project > user > plugin；MCP 按 server id 独立合并并显式报告冲突。Hooks/LSP/monitors/bin 和不可表示 transport 逐组件 unsupported，不阻断其它可转换组件 |

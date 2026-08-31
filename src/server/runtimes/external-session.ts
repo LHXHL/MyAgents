@@ -2706,6 +2706,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     capabilitySnapshot: skillAdmission.capabilitySnapshot,
     globalSkillInventory: skillAdmission.globalSkillInventory,
     unavailableSkillNames: skillAdmission.unavailableSkillNames,
+    agentRoleTarget: isDshProductRuntime() ? 'dsh' : 'managed-codex',
   });
 }
 

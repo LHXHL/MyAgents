@@ -2459,7 +2459,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type to use the built-in general descriptor. General children have coordination tools but no direct filesystem authority, so include the material to review in the prompt. Background returns a retained work handle; foreground waits for the child terminal.",
+      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type to use the built-in general descriptor, which inherits eligible parent tools. Explore keeps read/search/Web/Bash tools with a read-only role instruction. Custom descriptors may narrow inherited visibility. Background returns a retained work handle; foreground waits for the child terminal.",
       "errorCodes": [
         {
           "code": "agent_unavailable",
@@ -2488,7 +2488,6 @@
           "description": {
             "maxLength": 80,
             "minLength": 1,
-            "pattern": "^(?:\\S+)(?:\\s+\\S+){2,4}$",
             "type": "string"
           },
           "model": {
@@ -2530,7 +2529,6 @@
           "description": {
             "maxLength": 80,
             "minLength": 1,
-            "pattern": "^(?:\\S+)(?:\\s+\\S+){2,4}$",
             "type": "string"
           },
           "model": {

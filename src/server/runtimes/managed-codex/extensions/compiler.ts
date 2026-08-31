@@ -72,6 +72,8 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   globalSkillInventory: GlobalSkillInventorySnapshot;
   /** Canonical Skills isolated after compatibility projection failures. */
   unavailableSkillNames?: readonly string[];
+  /** DSH supports per-role tool narrowing; managed Codex does not project these fields yet. */
+  agentRoleTarget?: 'managed-codex' | 'dsh';
 }
 
 function component(
@@ -678,6 +680,7 @@ function compileAgentDefinitions(
   sourcePrefix: string,
   skills: readonly ManagedCodexSkillSpec[],
   reports: ManagedCodexExtensionComponentResult[],
+  agentRoleTarget: 'managed-codex' | 'dsh',
 ): ManagedCodexAgentRoleSpec[] {
   const bySkill = new Map(skills.map(skill => [skill.name, skill]));
   const roles: ManagedCodexAgentRoleSpec[] = [];
@@ -689,9 +692,9 @@ function compileAgentDefinitions(
       continue;
     }
     const unsupported = [
-      Array.isArray(definition.tools) && definition.tools.length > 0 ? 'tools' : null,
-      Array.isArray(definition.disallowedTools) && definition.disallowedTools.length > 0 ? 'disallowedTools' : null,
-      definition.maxTurns !== undefined ? 'maxTurns' : null,
+      agentRoleTarget === 'managed-codex' && Array.isArray(definition.tools) && definition.tools.length > 0 ? 'tools' : null,
+      agentRoleTarget === 'managed-codex' && Array.isArray(definition.disallowedTools) && definition.disallowedTools.length > 0 ? 'disallowedTools' : null,
+      agentRoleTarget === 'managed-codex' && definition.maxTurns !== undefined ? 'maxTurns' : null,
       typeof definition.model === 'string' && CLAUDE_MODEL_ALIASES.has(definition.model) ? 'model' : null,
       definition.permissionMode !== undefined ? 'permissionMode' : null,
       definition.memory !== undefined ? 'memory' : null,
@@ -704,6 +707,24 @@ function compileAgentDefinitions(
     if (typeof definition.description !== 'string' || !definition.description.trim()
       || typeof definition.prompt !== 'string' || !definition.prompt.trim()) {
       reports.push(component('agents', 'failed', 'agent_invalid_definition', sourceId, 'Agent requires description and prompt.'));
+      continue;
+    }
+    const tools = Array.isArray(definition.tools)
+      ? definition.tools.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map(entry => entry.trim())
+      : undefined;
+    const disallowedTools = Array.isArray(definition.disallowedTools)
+      ? definition.disallowedTools.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map(entry => entry.trim())
+      : undefined;
+    const maxTurns = Number.isSafeInteger(definition.maxTurns) && (definition.maxTurns as number) >= 1
+      && (definition.maxTurns as number) <= 10_000
+      ? definition.maxTurns as number
+      : undefined;
+    if (agentRoleTarget === 'dsh' && (
+      (definition.tools !== undefined && !Array.isArray(definition.tools))
+      || (definition.disallowedTools !== undefined && !Array.isArray(definition.disallowedTools))
+      || (definition.maxTurns !== undefined && maxTurns === undefined)
+    )) {
+      reports.push(component('agents', 'failed', 'agent_invalid_definition', sourceId, 'Agent tool policy is invalid.'));
       continue;
     }
     const requestedSkills = Array.isArray(definition.skills)
@@ -722,6 +743,9 @@ function compileAgentDefinitions(
       description: definition.description.trim(),
       prompt: definition.prompt.trim(),
       ...(model ? { model } : {}),
+      ...(tools === undefined ? {} : { tools }),
+      ...(disallowedTools === undefined ? {} : { disallowedTools }),
+      ...(maxTurns === undefined ? {} : { maxTurns }),
       skills: requestedSkills.map(skill => ({ name: skill, path: bySkill.get(skill)!.path })),
       scope,
       sourceId,
@@ -735,6 +759,7 @@ function scanPluginAgents(
   plugins: readonly TrustedPlugin[],
   skills: readonly ManagedCodexSkillSpec[],
   reports: ManagedCodexExtensionComponentResult[],
+  agentRoleTarget: 'managed-codex' | 'dsh',
 ): ManagedCodexAgentRoleSpec[] {
   const bySkill = new Map(skills.map(skill => [skill.name, skill]));
   const roles: ManagedCodexAgentRoleSpec[] = [];
@@ -758,9 +783,9 @@ function scanPluginAgents(
           continue;
         }
         const unsupported = [
-          parsed.frontmatter.tools ? 'tools' : null,
-          parsed.frontmatter.disallowedTools ? 'disallowedTools' : null,
-          parsed.frontmatter.maxTurns !== undefined ? 'maxTurns' : null,
+          agentRoleTarget === 'managed-codex' && parsed.frontmatter.tools ? 'tools' : null,
+          agentRoleTarget === 'managed-codex' && parsed.frontmatter.disallowedTools ? 'disallowedTools' : null,
+          agentRoleTarget === 'managed-codex' && parsed.frontmatter.maxTurns !== undefined ? 'maxTurns' : null,
           parsed.frontmatter.model && CLAUDE_MODEL_ALIASES.has(parsed.frontmatter.model) ? 'model' : null,
           parsed.frontmatter.permissionMode !== undefined ? 'permissionMode' : null,
           parsed.frontmatter.memory !== undefined ? 'memory' : null,
@@ -783,6 +808,13 @@ function scanPluginAgents(
           ...(parsed.frontmatter.model && parsed.frontmatter.model !== 'inherit'
             ? { model: parsed.frontmatter.model }
             : {}),
+          ...(parsed.frontmatter.tools
+            ? { tools: parsed.frontmatter.tools.split(',').map(tool => tool.trim()).filter(Boolean) }
+            : {}),
+          ...(parsed.frontmatter.disallowedTools
+            ? { disallowedTools: parsed.frontmatter.disallowedTools.split(',').map(tool => tool.trim()).filter(Boolean) }
+            : {}),
+          ...(parsed.frontmatter.maxTurns === undefined ? {} : { maxTurns: parsed.frontmatter.maxTurns }),
           skills: requestedSkills.map(skill => ({ name: skill, path: bySkill.get(skill)!.path })),
           scope: 'plugin',
           sourceId: plugin.id,
@@ -1120,9 +1152,10 @@ export function compileManagedCodexExtensionSnapshot(
     userAgentsRoot,
     reports,
   );
-  const projectAgents = compileAgentDefinitions(enabledAgents.project, 'project', 'workspace', skills, reports);
-  const userAgents = compileAgentDefinitions(enabledAgents.user, 'user', 'global', skills, reports);
-  const pluginAgents = scanPluginAgents(plugins, skills, reports);
+  const agentRoleTarget = input.agentRoleTarget ?? 'managed-codex';
+  const projectAgents = compileAgentDefinitions(enabledAgents.project, 'project', 'workspace', skills, reports, agentRoleTarget);
+  const userAgents = compileAgentDefinitions(enabledAgents.user, 'user', 'global', skills, reports, agentRoleTarget);
+  const pluginAgents = scanPluginAgents(plugins, skills, reports, agentRoleTarget);
   const agents = mergeAgents([
     { rank: 3, agents: projectAgents },
     { rank: 2, agents: userAgents },

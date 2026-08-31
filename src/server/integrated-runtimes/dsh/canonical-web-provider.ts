@@ -8,6 +8,7 @@ import { DshSafeHttpClient, type DshSafeHttpConfig, type DshSafeHttpResponse } f
 export const DSH_CANONICAL_WEB_ADAPTER_ID = 'myagents-host-canonical-web-v1';
 
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1_024 * 1_024;
+const ZHIPU_WEB_SEARCH_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/web_search';
 const MAX_UTILITY_TOKENS = 4_096;
 const MAX_SEARCH_USES = 5;
 const MAX_ANTHROPIC_PAUSES = 3;
@@ -298,9 +299,13 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
 
   async runSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     try {
-      if (input.profile.api === 'anthropic-messages') return await this.runAnthropicSearch(input);
-      if (input.profile.provider === 'zhipu-ai' && input.profile.api === 'openai-completions') {
+      if (input.profile.provider === 'zhipu' || input.profile.provider === 'zhipu-ai') {
         return await this.runZhipuSearch(input);
+      }
+      if (input.profile.provider === 'anthropic-api'
+        && input.profile.api === 'anthropic-messages'
+        && new URL(input.profile.baseUrl ?? '').origin === 'https://api.anthropic.com') {
+        return await this.runAnthropicSearch(input);
       }
       throw new DshCanonicalWebError('web_search_unavailable', 'Frozen Provider has no Host WebSearch adapter');
     } catch (error) {
@@ -492,15 +497,26 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
         .update('\0')
         .update(String(index))
         .digest('hex');
-      const response = await this.post(input.profile, input.apiKey, 'web_search', {
-        search_query: input.query,
-        search_engine: 'search_std',
-        search_intent: true,
-        count: 50,
-        content_size: 'medium',
-        request_id: requestId,
-        ...(domain ? { search_domain_filter: domain } : {}),
-      }, input.signal);
+      const response = await this.client.request(ZHIPU_WEB_SEARCH_ENDPOINT, {
+        method: 'POST',
+        headers: Object.freeze({
+          accept: 'application/json',
+          'accept-encoding': 'identity',
+          authorization: `Bearer ${input.apiKey}`,
+          'content-type': 'application/json',
+          'user-agent': 'MyAgents/DSH-Host-Web-v1',
+        }),
+        body: jsonBytes({
+          search_query: input.query,
+          search_engine: 'search_std',
+          search_intent: true,
+          count: 50,
+          content_size: 'medium',
+          request_id: requestId,
+          ...(domain ? { search_domain_filter: domain } : {}),
+        }),
+        signal: input.signal,
+      });
       return parseJsonResponse(response, 'provider_search_failed');
     }));
     const seen = new Set<string>();

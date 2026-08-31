@@ -1514,6 +1514,11 @@ export async function reconcileDshTurnProjections(input: {
                         ) {
                             return dshMutationFailure('storage_consistency_error', 'The Product transcript changed a DSH terminal anchor');
                         }
+                        const repaired = { ...structuredClone(assistant), id: existing.message.id };
+                        if (JSON.stringify(existing.message) !== JSON.stringify(repaired)) {
+                            target[existing.messageIndex] = repaired;
+                            transcriptChanged = true;
+                        }
                         continue;
                     }
                     if (target.some(message => message.id === assistant.id)) {

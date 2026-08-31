@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DshCanonicalWebError } from './canonical-web-errors';
 import {
   DshSafeHttpClient,
+  createDshPinnedLookup,
   type DshDnsAnswer,
   type DshRawHttpResponse,
   type DshSafeHttpPolicy,
@@ -39,6 +40,35 @@ function publicLookup(address = '93.184.216.34') {
 }
 
 describe('DshSafeHttpClient', () => {
+  it('implements both Node 24 pinned lookup callback shapes', async () => {
+    const answer = Object.freeze({ address: '93.184.216.34', family: 4 as const });
+    const lookup = createDshPinnedLookup(answer);
+    await new Promise<void>((resolve, reject) => {
+      lookup('example.com', { all: true }, (error, addresses, family) => {
+        try {
+          expect(error).toBeNull();
+          expect(addresses).toEqual([answer]);
+          expect(family).toBeUndefined();
+          resolve();
+        } catch (assertion) {
+          reject(assertion);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      lookup('example.com', { all: false }, (error, address, family) => {
+        try {
+          expect(error).toBeNull();
+          expect(address).toBe(answer.address);
+          expect(family).toBe(answer.family);
+          resolve();
+        } catch (assertion) {
+          reject(assertion);
+        }
+      });
+    });
+  });
+
   it('pins the validated address and decodes a bounded compressed response', async () => {
     const compressed = gzipSync(Buffer.from('hello canonical web'));
     const dispatch = vi.fn(async (_url: URL, address: DshDnsAnswer) => {

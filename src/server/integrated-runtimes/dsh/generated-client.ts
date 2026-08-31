@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
 import {
   DSH_CLIENT_METHOD_BY_PROTOCOL,
+  DSH_CANONICAL_WEB_POLICY_REF,
   DSH_GENERATED_CAPABILITY_PROFILE_DIGEST,
   DSH_HOST_METHOD_NAMES,
   type DshGeneratedHostClient,
@@ -132,6 +133,9 @@ export async function loadDshProtocolRuntime(
       DSH_GENERATED_CAPABILITY_PROFILE_DIGEST
   ) {
     throw new Error("DSH generated Host client identity differs from the lock");
+  }
+  if (protocolModule.DEEPSEEK_WEB_SEARCH_POLICY_REF !== DSH_CANONICAL_WEB_POLICY_REF) {
+    throw new Error("DSH canonical Web policy differs from the integrated Host policy");
   }
 
   const JsonRpcPeer = protocolModule.JsonRpcPeer as

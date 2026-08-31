@@ -131,7 +131,12 @@ export class DshCanonicalWebHost {
       context.signal.throwIfAborted();
       return { state: 'succeeded', structured };
     } catch (error) {
-      return failure(error, context.signal);
+      const result = failure(error, context.signal);
+      const authority = record(params.authority);
+      console.warn(
+        `[dsh-web] tool=${tool} code=${String(result.code)} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
+      );
+      return result;
     }
   }
 

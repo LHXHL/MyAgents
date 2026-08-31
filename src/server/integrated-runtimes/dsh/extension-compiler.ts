@@ -459,6 +459,9 @@ export function compileDshProductExtensionPlane(
         descriptor: {
           description: boundedText(agent.description, 8_192, `DSH agent ${agent.name} description`),
           prompt: boundedText(agent.prompt, MAX_RESOURCE_CHARACTERS, `DSH agent ${agent.name} prompt`),
+          ...(agent.tools === undefined ? {} : { tools: agent.tools }),
+          ...(agent.disallowedTools === undefined ? {} : { disallowedTools: agent.disallowedTools }),
+          ...(agent.maxTurns === undefined ? {} : { maxTurns: agent.maxTurns }),
           ...(requiredSkills.length > 0 ? { skills: requiredSkills } : {}),
         },
         metadata: { displayName: boundedText(agent.name, 256, 'DSH agent name') },

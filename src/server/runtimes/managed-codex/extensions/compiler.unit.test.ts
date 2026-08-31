@@ -162,8 +162,10 @@ describe('Managed Codex extension compiler', () => {
     write(join(workspace, '.claude', 'agents', 'limited.md'), [
       '---',
       'name: limited',
-      'description: Unsupported tool-limited role',
-      'tools: Read',
+      'description: Tool-limited role',
+      'tools: Read, Bash',
+      'disallowedTools: Bash',
+      'maxTurns: 12',
       '---',
       'Read only.',
     ].join('\n'));
@@ -212,6 +214,27 @@ describe('Managed Codex extension compiler', () => {
       id: 'workspace:limited',
       state: 'unsupported',
       code: 'agent_unsupported_fields',
+    }));
+
+    const dshSnapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: userRoot,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+      agentRoleTarget: 'dsh',
+    });
+    expect(dshSnapshot.agents).toContainEqual(expect.objectContaining({
+      name: 'limited',
+      tools: ['Read', 'Bash'],
+      disallowedTools: ['Bash'],
+      maxTurns: 12,
+    }));
+    expect(dshSnapshot.components).toContainEqual(expect.objectContaining({
+      component: 'agents',
+      id: 'workspace:limited',
+      state: 'applied',
+      code: 'agent_compiled',
     }));
     expect(snapshot.components).toContainEqual(expect.objectContaining({
       component: 'agents',

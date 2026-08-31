@@ -55,6 +55,11 @@ export interface ManagedCodexAgentRoleSpec {
   description: string;
   prompt: string;
   model?: string;
+  /** Runtime-specific visible tool allowlist. Omitted means inherit the eligible parent catalog. */
+  tools?: string[];
+  /** Tools removed after inheritance/allowlist resolution. */
+  disallowedTools?: string[];
+  maxTurns?: number;
   skills: Array<{ name: string; path: string }>;
   scope: 'project' | 'user' | 'plugin';
   sourceId: string;

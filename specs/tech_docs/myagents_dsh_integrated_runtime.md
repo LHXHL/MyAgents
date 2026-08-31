@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.26
+version: 0.27
 updated: 2026-08-31
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,15 +14,15 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.1.0-interaction-reliability-ingested
-  reviewed_repository_head: 4b3f2bdad1fd4860fca212c49b3ac3f527a51a30
-  source_commit: 4b3f2bdad1fd4860fca212c49b3ac3f527a51a30
+  status: protocol-2.1.0-runtime-capability-closure-ingested
+  reviewed_repository_head: ec2ab38b465995a6844bb71f78780fccea471041
+  source_commit: ec2ab38b465995a6844bb71f78780fccea471041
   protocol: 2.1.0
-  manifest_sha256: ae03ee3086571513b6c50c385b4783808fbfc2737a0814822a7c2f08091a6f6b
-  runtime_manifest_sha256: bb6678a258c9769ed8179461beeafc7e792e1f291913765c014941a18b3e3851
-  compatibility_sha256: 8ba59b37c7e04397e7c75daaef6ba1267169a8d39597c045a20b41b8164fea0a
-  protocol_schema_sha256: 63bc5882ca5050aa126358084974851407214f63346176d28f3a7970940f77fc
-  generated_client_sha256: 7f7d250c42cf86a19142ddfaec9042539b08074a8e397cfbbaa1b9b3e3c188ce
+  manifest_sha256: 441d46bb88cc66d410d2f989e597fb66bf3afa47bb55b7a2afd8a2517c0739bd
+  runtime_manifest_sha256: 2c08c37173e5f84e7296fae5ea41ae9054aff247b1656400a25c9b08db8dc270
+  compatibility_sha256: c579ea3ab37616fa2497453a6015651268f8929217fe3fa3b86f257f0264254e
+  protocol_schema_sha256: 968dd0c0fb90965ad8881fe6599dcb71e1085dadc5809bf0716aaf3289f79eb7
+  generated_client_sha256: 95544d25fb818b43f9cfa2cf1dde69d2c1291b05a1a39ac94d7d65b8fce009ef
 ---
 
 # Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
@@ -954,6 +954,8 @@ The restart-safe permission refresh consumes handoff `ae03ee3086571513b6c50c385b
 The subsequent Session-surface audit treats `integrated` as a first-class non-builtin SessionEngine kind across IM, Heartbeat and Memory, and preserves `RuntimeSource:'integrated'` through Task validation, Cron transport and Sidecar birth. Inbox delivery now requires a parseable positive target acknowledgement. Native DSH/Codex fork targets use a caller-owned Product Session ID so a lost HTTP response can be reconciled without creating an unreachable branch; DSH rewind and retry use the same restore-and-classify rule already required for Codex. These are Host integration semantics and do not add a second DSH conversation owner.
 
 The DSH first-response follow-up moves integrated DSH into the same shared persistent-Runtime prewarm policy as Codex and Gemini, so process startup, native Session resume and extension activation begin when the Chat surface becomes ready rather than after the first query. DSH may emit reasoning as delta-only protocol events; the Host now synthesizes the Product thinking lifecycle before projection, closes it at every content boundary, and coalesces only same-index reasoning chunks through the existing bounded SSE window. Turn telemetry records the first thinking-or-text delta as the actual first model output and also records separate first-thinking and first-text timings. This is a Host projection/performance change; it does not alter DSH conversation authority or the native protocol contract.
+
+The runtime-capability closure consumes source `ec2ab38b465995a6844bb71f78780fccea471041`, Runtime `2c08c37173e5f84e7296fae5ea41ae9054aff247b1656400a25c9b08db8dc270`, compatibility `c579ea3ab37616fa2497453a6015651268f8929217fe3fa3b86f257f0264254e`, and handoff `441d46bb88cc66d410d2f989e597fb66bf3afa47bb55b7a2afd8a2517c0739bd`. The shared Product Agent compiler now targets the selected kernel explicitly: Managed Codex retains its precise unsupported diagnostics, while Integrated DSH preserves per-role `tools`, `disallowedTools`, and `maxTurns` in the declarative snapshot. DSH executes root, foreground-child, and background-child tools through the common Product permission/Hook/Task/Plan plane; Explore follows the Claude Code-style read-oriented prompt with Bash available, general inherits the eligible parent catalog, and custom roles may only narrow the parent surface. Canonical Web DNS/transport behavior is compatible with bundled Node `24.14.0`, and historical DSH reasoning is projected at its durable content boundary instead of being accumulated into a synthetic trailing Think block. The source-bound pre-artifact report is `a7ef44373af894fd099d1621c6b60cfc256d6f2afd6082461560ce1daddab53b`; all three platform claims remain `implementation-complete_pending-native-validation` for these exact bytes.
 
 The unified-toolchain refresh is committed at `0c779d113f2244446d46ffde37998a61098b1680`. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, complete JavaScript/TypeScript tests, Web/Server/Bridge/CLI builds, Rust formatting and the Rust library suite pass; integration reports 476 passed with two opt-in native tests skipped by default, while Rust reports 1,181 passed and one external-archive test ignored. `tauri build --bundles app` compiles the release executable and assembles `MyAgents.app` plus the updater archive, then stops at the expected missing `TAURI_SIGNING_PRIVATE_KEY` boundary. The unsigned app executable is 85,311,344 bytes with SHA-256 `2fc054c6df68f0d4650429fc951bd604a834c94ce8998cb182e9415e27dc58c2`; the unsigned updater archive is 166,587,375 bytes with SHA-256 `bda6afcefd2b3a3c92f4c41ce5ca400c428b26b9dd156786c175dc7266a5e640`. The packaged public verifier accepts the exact handoff/Runtime/compatibility identities, packaged Node/npm report `24.14.0` / `11.15.0`, and the DSH resource inventory contains zero symbolic links. Packaged native smoke passes in 4.320 seconds; the 12-generation soak passes in 5.031 seconds with all unique Runtime PIDs released, descriptors stable at 14, and Host RSS growth of 770,048 bytes. This is local unsigned macOS evidence and does not promote any handoff platform claim.
 
