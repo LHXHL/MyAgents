@@ -46,7 +46,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimePermissionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, runtimeSupportsPrewarm, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimePermissionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
   runtimeSourceForBinding,
@@ -367,7 +367,6 @@ export {
   waitExternalTurnFinalization,
 } from './external-session/turn-lifecycle';
 import {
-  activateExternalPendingThinking,
   appendExternalAssistantText,
   appendExternalSubagentTraceDelta as appendExternalSubagentTraceDeltaToContent,
   appendExternalPendingText,
@@ -394,6 +393,7 @@ import {
   getExternalContentBlockCount,
   getExternalContentBlockText,
   getExternalPendingTextBuffer,
+  getExternalPendingThinkingIndex,
   getExternalSubagentAttachmentParent,
   getExternalTurnContentSnapshotPersistedContent,
   getExternalTurnContentSnapshotText,
@@ -542,6 +542,8 @@ let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
 let firstDeltaTraceEmitted = false;
+let firstThinkingDeltaTraceEmitted = false;
+let firstTextDeltaTraceEmitted = false;
 const activeToolTraceStarts = new Map<string, number>();
 let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
 let pendingExternalProxyRestart = false;
@@ -1696,10 +1698,25 @@ function flushPendingThinking(forceComplete: boolean): void {
   flushExternalPendingThinkingBlock(forceComplete);
 }
 
+function closePendingThinkingProjection(): void {
+  if (!isExternalPendingThinkingActive()) return;
+  const index = getExternalPendingThinkingIndex();
+  flushPendingThinking(true);
+  broadcast('chat:content-block-stop', { index, type: 'thinking' });
+}
+
+function openPendingThinkingProjection(index: number): void {
+  flushPendingText('mirror-completed-block');
+  closePendingThinkingProjection();
+  resetExternalPendingThinking({ index, active: true, startedAt: Date.now() });
+  broadcast('chat:thinking-start', { index });
+  fireExternalImCallback('activity', '');
+}
+
 /** Flush any incomplete blocks (thinking/tool) at turn boundary — handles interrupts */
 function flushAllPending(textMirrorDisposition: ExternalTextMirrorDisposition): void {
   flushPendingText(textMirrorDisposition);
-  flushPendingThinking(true);
+  closePendingThinkingProjection();
   for (const interrupted of flushExternalPendingToolInputsForTurn()) {
     applySubagentToolResult(interrupted.parentToolUseId, {
       kind: 'tool_result',
@@ -1855,6 +1872,8 @@ function beginExternalTurnTrace(
   currentTurnTraceRuntime = runtime;
   currentTurnTraceStartMs = nowMs();
   firstDeltaTraceEmitted = false;
+  firstThinkingDeltaTraceEmitted = false;
+  firstTextDeltaTraceEmitted = false;
   activeToolTraceStarts.clear();
   emitPerfTrace({
     trace: 'turn',
@@ -1894,10 +1913,21 @@ function emitExternalTurnTrace(
   });
 }
 
-function emitExternalFirstDeltaTrace(delta: string): void {
-  if (firstDeltaTraceEmitted || !currentTurnTraceId) return;
-  firstDeltaTraceEmitted = true;
-  emitExternalTurnTrace('first_delta', { sizeBytes: Buffer.byteLength(delta, 'utf8') });
+function emitExternalDeltaTrace(kind: 'thinking' | 'text', delta: string): void {
+  if (!currentTurnTraceId) return;
+  const sizeBytes = Buffer.byteLength(delta, 'utf8');
+  if (!firstDeltaTraceEmitted) {
+    firstDeltaTraceEmitted = true;
+    emitExternalTurnTrace('first_delta', { sizeBytes, detail: { kind } });
+  }
+  if (kind === 'thinking' && !firstThinkingDeltaTraceEmitted) {
+    firstThinkingDeltaTraceEmitted = true;
+    emitExternalTurnTrace('first_thinking_delta', { sizeBytes });
+  }
+  if (kind === 'text' && !firstTextDeltaTraceEmitted) {
+    firstTextDeltaTraceEmitted = true;
+    emitExternalTurnTrace('first_text_delta', { sizeBytes });
+  }
 }
 
 function emitExternalToolStartTrace(toolUseId: string, toolName: string, isSubAgent = false): void {
@@ -1926,6 +1956,8 @@ function clearExternalTurnTrace(): void {
   currentTurnTraceRuntime = '';
   currentTurnTraceStartMs = 0;
   firstDeltaTraceEmitted = false;
+  firstThinkingDeltaTraceEmitted = false;
+  firstTextDeltaTraceEmitted = false;
   activeToolTraceStarts.clear();
 }
 
@@ -6572,9 +6604,9 @@ export async function retryLastExternalUserMessage(
  * cold-start cost (spawn + `initialize` + `session/new` + prompt-file write).
  *
  * Called from the `/api/runtime/prewarm` HTTP endpoint when the frontend opens
- * a Chat tab whose runtime is Gemini or Codex (both persistent JSON-RPC
- * processes). Claude Code's `-p` mode exits after every turn, so pre-warming
- * it is wasted work — the endpoint gates that out before reaching this path.
+ * a Chat tab backed by a persistent protocol runtime (Integrated DSH, Gemini
+ * or Codex). Claude Code's `-p` mode exits after every turn, so pre-warming it
+ * is wasted work — the endpoint gates that out before reaching this path.
  *
  * Flow:
  *   1. Bail out if a session is already active (pre-warm is idempotent).
@@ -6609,9 +6641,9 @@ export async function prewarmExternalSession(options: {
     runtime: runtimeType,
     sessionId: options.sessionId,
   });
-  // Gemini, Codex, and Integrated DSH own persistent protocol processes.
+  // Persistent protocol runtimes can initialize before their first turn.
   // CC's `-p` mode exits after every turn, so pre-warming it is wasted.
-  if (runtimeType !== 'gemini' && runtimeType !== 'codex' && runtimeType !== 'dsh') {
+  if (!runtimeSupportsPrewarm(runtimeType)) {
     emitPerfTrace({
       trace: 'runtime',
       phase: 'prewarm_skipped',
@@ -7361,7 +7393,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (appendSubagentTraceDelta(event, 'AgentMessage')) {
         break;
       }
-      emitExternalFirstDeltaTrace(event.text);
+      closePendingThinkingProjection();
+      emitExternalDeltaTrace('text', event.text);
       appendExternalAssistantText(event.text);
       appendExternalPendingText(event.text);
       broadcast('chat:message-chunk', event.text);
@@ -7386,24 +7419,21 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (startSubagentTrace(event, 'Thinking')) {
         break;
       }
-      flushPendingText('mirror-completed-block');  // Close any open text block before thinking
-      if (isExternalPendingThinkingActive()) {
-        // Defensive close: a new reasoning block implies the previous one ended,
-        // even if the runtime never sent an explicit stop.
-        flushPendingThinking(true);
-      }
-      resetExternalPendingThinking({ index: event.index, active: true, startedAt: Date.now() });
-      broadcast('chat:thinking-start', { index: event.index });
-      fireExternalImCallback('activity', '');
+      openPendingThinkingProjection(event.index);
       break;
 
     case 'thinking_delta':
       if (appendSubagentTraceDelta(event, 'Thinking')) {
         break;
       }
-      if (!isExternalPendingThinkingActive()) {
-        activateExternalPendingThinking(event.index);
+      if (!isExternalPendingThinkingActive()
+        || getExternalPendingThinkingIndex() !== event.index) {
+        // DSH exposes thinking deltas without separate block lifecycle events.
+        // Synthesize the Product start before the first chunk so Renderer state
+        // is ready to accept it.
+        openPendingThinkingProjection(event.index);
       }
+      emitExternalDeltaTrace('thinking', event.text);
       appendExternalPendingThinkingText(event.text);
       // Frontend expects { index, delta } — match builtin SSE shape
       broadcast('chat:thinking-chunk', { index: event.index, delta: event.text });
@@ -7414,9 +7444,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (completeSubagentTrace(event, 'Thinking')) {
         break;
       }
-      flushPendingThinking(true);
-      // Emit content-block-stop so frontend closes the thinking block
-      broadcast('chat:content-block-stop', { index: event.index, type: 'thinking' });
+      closePendingThinkingProjection();
       break;
 
     case 'tool_use_start':
@@ -7428,6 +7456,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         handleSubagentToolUseStart(event.subAgent.parentToolUseId, event);
         break;
       }
+      closePendingThinkingProjection();
       flushPendingText('mirror-completed-block');  // Close any open text block before tool use
       startExternalToolUseInput({
         toolUseId: event.toolUseId,

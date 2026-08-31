@@ -91,6 +91,11 @@ export const RUNTIME_DISPLAY_NAMES: Record<RuntimeType, string> = {
   gemini: 'Google Gemini CLI (ACP)',
 };
 
+/** Runtime processes that can be started before the first user turn. */
+export function runtimeSupportsPrewarm(runtime: RuntimeType): boolean {
+  return runtime === 'dsh' || runtime === 'codex' || runtime === 'gemini';
+}
+
 /**
  * Coerce an arbitrary string (agent config value, persisted state, env) into a
  * valid `RuntimeType`, defaulting to `'builtin'` for missing/unknown values.

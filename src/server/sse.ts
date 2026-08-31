@@ -337,11 +337,10 @@ const SILENT_EVENTS = new Set([
 // (tool-use-start, message-complete, permission prompts, …) flushes the
 // pending buffer first to keep strict event ordering.
 //
-// Only `chat:message-chunk` is coalesced. `chat:thinking-chunk` carries
-// `{index, delta}` payloads where different index values can't legally merge,
-// and its frequency is lower to begin with; tool-input-delta is also low
-// frequency and flows through already. Keeping the rule narrow avoids
-// semantic surprises.
+// Text and thinking chunks are coalesced. Thinking buffers retain their block
+// index and flush before a different index or any structural event, so block
+// boundaries remain exact while token-at-a-time reasoning does not flood the
+// Tauri/WebKit IPC channel.
 const CHUNK_COALESCE_MS = 40;
 type LiveRevisionScope = {
   sessionId: string;
@@ -349,7 +348,9 @@ type LiveRevisionScope = {
 };
 
 type ChunkBuffer = {
+  kind: 'text' | 'thinking';
   merged: string;
+  index?: number;
   timer: ReturnType<typeof setTimeout>;
   liveScope?: LiveRevisionScope;
 };
@@ -375,16 +376,69 @@ function flushCoalescedChunk(event: string): void {
   if (!entry) return;
   chunkBuffers.delete(event);
   clearTimeout(entry.timer);
+  const payload = entry.kind === 'thinking'
+    ? { index: entry.index, delta: entry.merged }
+    : entry.merged;
   if (entry.liveScope) {
-    const envelope: LiveRevisionEnvelope<string> = {
+    const envelope: LiveRevisionEnvelope = {
       sessionId: entry.liveScope.sessionId,
       liveRevision: entry.liveScope.nextRevision(),
-      payload: entry.merged,
+      payload,
     };
     broadcastImmediate(event, envelope);
     return;
   }
-  broadcastImmediate(event, entry.merged);
+  broadcastImmediate(event, payload);
+}
+
+function coalesceStreamingChunk(
+  event: string,
+  data: unknown,
+  liveScope?: LiveRevisionScope,
+): boolean {
+  const descriptor = event === 'chat:message-chunk' && typeof data === 'string'
+    ? { kind: 'text' as const, delta: data, index: undefined }
+    : event === 'chat:thinking-chunk'
+      && data !== null
+      && typeof data === 'object'
+      && Number.isSafeInteger((data as { index?: unknown }).index)
+      && typeof (data as { delta?: unknown }).delta === 'string'
+      ? {
+          kind: 'thinking' as const,
+          delta: (data as { delta: string }).delta,
+          index: (data as { index: number }).index,
+        }
+      : null;
+  if (!descriptor) return false;
+
+  // A different streaming event is still an ordering boundary. Flush it now
+  // instead of relying on two independent timers to preserve arrival order.
+  for (const bufferedEvent of [...chunkBuffers.keys()]) {
+    if (bufferedEvent !== event) flushCoalescedChunk(bufferedEvent);
+  }
+
+  let entry = chunkBuffers.get(event);
+  const scopeChanged = Boolean(entry?.liveScope) !== Boolean(liveScope)
+    || (entry?.liveScope?.sessionId ?? '') !== (liveScope?.sessionId ?? '');
+  const blockChanged = entry?.kind !== descriptor.kind
+    || (descriptor.kind === 'thinking' && entry.index !== descriptor.index);
+  if (entry && (scopeChanged || blockChanged)) {
+    flushCoalescedChunk(event);
+    entry = undefined;
+  }
+  if (!entry) {
+    entry = {
+      kind: descriptor.kind,
+      merged: descriptor.delta,
+      ...(descriptor.index === undefined ? {} : { index: descriptor.index }),
+      ...(liveScope ? { liveScope } : {}),
+      timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
+    };
+    chunkBuffers.set(event, entry);
+  } else {
+    entry.merged += descriptor.delta;
+  }
+  return true;
 }
 
 function flushAllCoalesced(): void {
@@ -409,19 +463,7 @@ function broadcastImmediate(event: string, data: unknown): void {
 }
 
 export function broadcast(event: string, data: unknown): void {
-  if (event === 'chat:message-chunk' && typeof data === 'string') {
-    let entry = chunkBuffers.get(event);
-    if (!entry) {
-      entry = {
-        merged: data,
-        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
-      };
-      chunkBuffers.set(event, entry);
-    } else {
-      entry.merged += data;
-    }
-    return;
-  }
+  if (coalesceStreamingChunk(event, data)) return;
   // Every non-coalesced event flushes pending chunk buffers first so that
   // a tool-use-start or message-complete never lands before the text delta
   // that preceded it — except for events declared non-ordering above, which
@@ -437,24 +479,7 @@ export function broadcastLive(
   data: unknown,
   scope: LiveRevisionScope,
 ): void {
-  if (event === 'chat:message-chunk' && typeof data === 'string') {
-    let entry = chunkBuffers.get(event);
-    if (entry && entry.liveScope?.sessionId !== scope.sessionId) {
-      flushCoalescedChunk(event);
-      entry = undefined;
-    }
-    if (!entry) {
-      entry = {
-        merged: data,
-        liveScope: scope,
-        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
-      };
-      chunkBuffers.set(event, entry);
-    } else {
-      entry.merged += data;
-    }
-    return;
-  }
+  if (coalesceStreamingChunk(event, data, scope)) return;
 
   if (chunkBuffers.size > 0 && !NON_FLUSHING_EVENTS.has(event)) {
     flushAllCoalesced();

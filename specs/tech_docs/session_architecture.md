@@ -828,6 +828,10 @@ Renderer activity 只来自两种同源快照：
 
 `isStreamingRef` 仍只表示“React 已有 streaming message”，不能替代 backend activity；prewarm/system-init 也不能替代 `chat:status`。SSE reconnect 的 `chat:init idle` 仅保留为丢失 terminal 事件后的清理兜底，不从 `chat:init running` 推导新 activity。
 
+External Runtime 的 reasoning 投影不能假设底层一定发送独立 block lifecycle。若 Runtime 先发送 `thinking_delta`，Host 必须在同一 index 的首个 delta 前补发 `chat:thinking-start`，并在正文、工具、下一 reasoning block 或 turn terminal 前补发 `chat:content-block-stop`；单个 Runtime 的事件形状差异不能让 Renderer 丢弃已经到达的推理内容。SSE 允许把同一 thinking index 的连续 delta 在 40ms 窗口内合并，但 index 变化、text/thinking 类型切换和任意结构事件都必须先 flush，保持原始顺序。
+
+可保持 idle process 的 Runtime 由共享 `runtimeSupportsPrewarm()` 判定；当前集合是 integrated DSH、Codex app-server 和 Gemini ACP。Chat surface 建立并取得 Session/config owner 后即触发 prewarm，让 DSH 的进程启动、Session resume 和 extension snapshot 生效与用户阅读/输入并行，首条 query 不重复支付这段冷启动。性能日志中的 `turn:first_delta` 表示首个模型可见输出（thinking 或 text），并通过 `detail.kind` 标明类型；`first_thinking_delta` 与 `first_text_delta` 分别保留两类首包时间，禁止再用首段正文冒充模型首包。
+
 ### 9 种结束场景必须重置的状态
 
 | 变量 | 用途 |

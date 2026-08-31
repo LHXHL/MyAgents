@@ -30,6 +30,7 @@ type TurnScript =
     kind: 'success';
     text: string;
     thinking?: string;
+    thinkingDeltaOnly?: boolean;
     includeTool?: boolean;
     completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
@@ -474,6 +475,7 @@ class FakeRuntime implements AgentRuntime {
           script.completeDelayMs,
           script.usage,
           script.thinking,
+          script.thinkingDeltaOnly,
         );
         return;
       }
@@ -521,11 +523,12 @@ class FakeRuntime implements AgentRuntime {
     completeDelayMs = 0,
     usage?: { inputTokens: number; outputTokens: number },
     thinking?: string,
+    thinkingDeltaOnly = false,
   ): void {
     if (thinking) {
-      this.emit({ kind: 'thinking_start', index: 0 });
+      if (!thinkingDeltaOnly) this.emit({ kind: 'thinking_start', index: 0 });
       this.emit({ kind: 'thinking_delta', text: thinking, index: 0 });
-      this.emit({ kind: 'thinking_stop', index: 0 });
+      if (!thinkingDeltaOnly) this.emit({ kind: 'thinking_stop', index: 0 });
     }
     this.emit({ kind: 'text_delta', text });
     if (includeTool) {
@@ -1134,6 +1137,47 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.engine.getLatestAssistantResult()).toEqual({
       sessionId,
       latestResult: 'integrated DSH answer',
+    });
+  });
+
+  it('synthesizes a visible thinking lifecycle for DSH delta-only reasoning', async () => {
+    const harness = await createHarness([
+      {
+        kind: 'success',
+        thinking: 'reasoning arrives before ordinary text',
+        thinkingDeltaOnly: true,
+        text: 'visible answer',
+      },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-delta-only-thinking';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'show reasoning immediately'),
+      model: 'deepseek-v4-flash',
+      permissionMode: 'auto',
+    });
+    await waitFor(
+      () => broadcastEvents.some(({ event }) => event === 'chat:message-chunk'),
+      'DSH delta-only thinking projection',
+    );
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    const start = broadcastEvents.findIndex(({ event }) => event === 'chat:thinking-start');
+    const chunk = broadcastEvents.findIndex(({ event }) => event === 'chat:thinking-chunk');
+    const stop = broadcastEvents.findIndex(({ event, data }) => (
+      event === 'chat:content-block-stop'
+      && (data as { type?: string }).type === 'thinking'
+    ));
+    const text = broadcastEvents.findIndex(({ event }) => event === 'chat:message-chunk');
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(chunk).toBeGreaterThan(start);
+    expect(stop).toBeGreaterThan(chunk);
+    expect(text).toBeGreaterThan(stop);
+    expect(broadcastEvents[chunk]).toEqual({
+      event: 'chat:thinking-chunk',
+      data: { index: 0, delta: 'reasoning arrives before ordinary text' },
     });
   });
 

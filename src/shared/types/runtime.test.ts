@@ -13,6 +13,7 @@ import {
   resolveScheduledTurnPermissionMode,
   resolveEffectiveRuntime,
   runtimeSourceForRuntimeType,
+  runtimeSupportsPrewarm,
   VALID_RUNTIMES,
   type RuntimeType,
 } from './runtime';
@@ -185,6 +186,16 @@ describe('runtimeSourceForRuntimeType', () => {
     expect(runtimeSourceForRuntimeType('gemini', 'integrated')).toBe('system-cli');
     expect(runtimeSourceForRuntimeType('codex', 'managed-provider')).toBe('managed-provider');
     expect(runtimeSourceForRuntimeType('codex')).toBe('system-cli');
+  });
+});
+
+describe('runtimeSupportsPrewarm', () => {
+  test('keeps every persistent protocol runtime in the shared prewarm set', () => {
+    expect(runtimeSupportsPrewarm('dsh')).toBe(true);
+    expect(runtimeSupportsPrewarm('codex')).toBe(true);
+    expect(runtimeSupportsPrewarm('gemini')).toBe(true);
+    expect(runtimeSupportsPrewarm('claude-code')).toBe(false);
+    expect(runtimeSupportsPrewarm('builtin')).toBe(false);
   });
 });
 

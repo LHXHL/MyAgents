@@ -145,6 +145,7 @@ import {
   projectPermissionModeForRuntime,
   resolveEffectiveRuntime,
   runtimeSourceForRuntimeType,
+  runtimeSupportsPrewarm,
 } from '../../shared/types/runtime';
 import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics, RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, LaunchSessionBirthHint, SidecarConfigDisposition } from '@/types/tab';
@@ -1581,15 +1582,15 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
 
   // ─── External runtime pre-warm (v0.1.68) ───
   //
-  // Gemini and Codex run as persistent JSON-RPC processes (`gemini --acp` /
-  // `codex app-server`). On a cold start their first message pays 10–15s for
-  // CLI spawn + initialize handshake + session/new (and on Gemini: base-prompt
-  // extraction). Firing /api/runtime/prewarm as soon as the tab is ready
+  // DSH, Gemini and Codex run as persistent protocol processes. On a cold
+  // start their first message otherwise pays process spawn + initialize /
+  // Session creation before the Provider request begins. Firing
+  // /api/runtime/prewarm as soon as the tab is ready
   // overlaps that cost with the user still typing — by the time they hit
   // send, the process is already alive and the message goes straight to
   // stdin via sendExternalMessage Case 3.
   //
-  // Only fires for Gemini/Codex (backend no-ops for CC since `-p` mode exits
+  // Only fires for persistent runtimes (backend no-ops for CC since `-p` mode exits
   // per turn) and only once per (tab, session, runtime) combo — a ref keyed
   // by sessionId+runtime guards against re-firing on model/permission changes
   // or mid-session SSE reconnects. If the user sends a message before the
@@ -1597,7 +1598,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // serializes the two calls.
   const prewarmedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (currentRuntime !== 'gemini' && currentRuntime !== 'codex') return;
+    if (!runtimeSupportsPrewarm(currentRuntime)) return;
     if (!isActive || !isConnected || !sessionId) return;
     // Only a 'push' tab prewarms the sidecar with ITS config (model/permission).
     // 'pending' waits for the post-ensure resolver; 'adopt' must not override the
