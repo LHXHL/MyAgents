@@ -278,6 +278,18 @@ function hash(...parts: readonly string[]): string {
   return digest.digest('hex');
 }
 
+function systemContextFingerprint(options: SessionStartOptions): string {
+  return options.systemContext === undefined
+    ? options.systemPromptAppend ?? ''
+    : JSON.stringify(options.systemContext);
+}
+
+function systemContextParams(options: SessionStartOptions): DshRpcObject {
+  return options.systemContext === undefined
+    ? { systemPrompt: options.systemPromptAppend ?? '' }
+    : { systemPrompt: '', systemContext: options.systemContext };
+}
+
 function object(value: unknown, description: string): DshRpcObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${description} must be an object`);
@@ -413,7 +425,7 @@ function compileConfiguration(
       profile.revision,
       dshMode,
       OFFICIAL_INTERACTION_REVISION,
-      options.systemPromptAppend ?? '',
+      systemContextFingerprint(options),
     )}`,
   });
 }
@@ -982,7 +994,7 @@ export class DshRuntime implements AgentRuntime {
             configuration.profile.revision,
             bindingPermissionMode,
             OFFICIAL_INTERACTION_REVISION,
-            options.systemPromptAppend ?? '',
+            systemContextFingerprint(options),
           )}`;
       const bindingParams: DshRpcObject = {
         clientOperationId: `session-bind-${randomUUID()}`,
@@ -990,7 +1002,7 @@ export class DshRuntime implements AgentRuntime {
         provider: configuration.profile as unknown as DshRpcObject,
         configRevision: bindingConfigRevision,
         extensionDigest,
-        systemPrompt: options.systemPromptAppend ?? '',
+        ...systemContextParams(options),
         permissionMode: bindingPermissionMode,
         interactionScenario: OFFICIAL_INTERACTION_REVISION,
         ...(options.resumeSessionId ? { runtimeSessionId: options.resumeSessionId } : {}),
@@ -1526,7 +1538,7 @@ export class DshRuntime implements AgentRuntime {
       provider: configuration.profile as unknown as DshRpcObject,
       permissionMode: configuration.dshPermissionMode,
       interactionScenario: OFFICIAL_INTERACTION_REVISION,
-      systemPrompt: process.options.systemPromptAppend ?? '',
+      ...systemContextParams(process.options),
       executionEnvironmentRevision: process.executionEnvironment.revision,
       executionEnvironmentDigest: process.executionEnvironment.digest,
     });

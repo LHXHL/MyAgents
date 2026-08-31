@@ -54,23 +54,24 @@
     }
   },
   "dsh": {
-    "artifactManifestSha256": "ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2",
-    "artifactVersion": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
+    "artifactManifestSha256": "61b44cecaad8409fec0494527eae5d56480ef7a450af681c69f71a2a3c4616af",
+    "artifactVersion": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
     "runtimePackages": {
       "@deepseek-ai/cordis": "4.0.1",
-      "@deepseek-ai/dsh-agent": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-agent-loop": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-attachment": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-attachment-local": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-compaction": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-compaction-basic": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-llm": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-llm-deepseek": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-session": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-token-meter": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
-      "@deepseek-ai/dsh-tools": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367"
+      "@deepseek-ai/dsh-agent": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-agent-instructions": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-agent-loop": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-attachment": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-attachment-local": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-compaction": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-compaction-basic": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-llm": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-llm-deepseek": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-session": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-token-meter": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      "@deepseek-ai/dsh-tools": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def"
     }
   },
   "formatVersion": 1,
@@ -141,8 +142,8 @@
       "host/attachment/acquire",
       "host/attachment/release"
     ],
-    "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
-    "version": "2.1.0"
+    "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
+    "version": "2.2.0"
   },
   "runtimeActivation": "workstream-evidence-only",
   "stage": "batch-1-w4-a11",

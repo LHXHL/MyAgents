@@ -23,7 +23,7 @@
 //     and excessive context usage.
 
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync, type Dirent } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, relative } from 'path';
 
 // ─── Constants (replicated from Claude Code utils/claudemd.ts) ───
 
@@ -112,6 +112,7 @@ function collectRuleFiles(
   out: WorkspaceInstruction[],
   budget: CollectBudget,
   depth = 0,
+  maxTotalBytes = MAX_TOTAL_BYTES,
 ): void {
   if (depth > MAX_DEPTH) {
     if (!budget.truncated) {
@@ -128,7 +129,7 @@ function collectRuleFiles(
   } catch {
     return; // ENOENT / EACCES — silently skip
   }
-  entries.sort((a, b) => a.name.localeCompare(b.name));
+  entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
   for (const ent of entries) {
     if (out.length >= MAX_FILES) {
@@ -147,7 +148,7 @@ function collectRuleFiles(
     const full = join(dir, ent.name);
 
     if (ent.isDirectory()) {
-      collectRuleFiles(full, out, budget, depth + 1);
+      collectRuleFiles(full, out, budget, depth + 1, maxTotalBytes);
       continue;
     }
 
@@ -164,9 +165,9 @@ function collectRuleFiles(
       console.warn(`[workspace-instructions] Skipping oversized rule file (${size} bytes): ${full}`);
       continue;
     }
-    if (budget.totalBytes + size > MAX_TOTAL_BYTES) {
+    if (budget.totalBytes + size > maxTotalBytes) {
       if (!budget.truncated) {
-        console.warn(`[workspace-instructions] Total rules size cap reached (${MAX_TOTAL_BYTES} bytes) at ${full}`);
+        console.warn(`[workspace-instructions] Total rules size cap reached (${maxTotalBytes} bytes) at ${full}`);
         budget.truncated = true;
       }
       return;
@@ -272,6 +273,41 @@ function formatInstructions(instructions: WorkspaceInstruction[]): string {
 export function resolveCodexWorkspaceInstructions(workspacePath: string): string {
   const rules = readClaudeRulesOnly(workspacePath);
   return formatInstructions(rules);
+}
+
+/**
+ * DSH owns primary CLAUDE.md / AGENTS.md discovery. This Host snapshot carries
+ * only Claude companion sources that the DSH instruction plugin does not read.
+ */
+export function resolveDshWorkspaceSupplement(workspacePath: string): string {
+  const maxBytes = 512 * 1024;
+  const instructions: WorkspaceInstruction[] = [];
+  const budget: CollectBudget = { totalBytes: 0, truncated: false };
+  const companion = readIfExists(join(workspacePath, '.claude', 'CLAUDE.md'));
+  if (companion) {
+    const bytes = Buffer.byteLength(companion.content, 'utf8');
+    if (bytes <= maxBytes) {
+      instructions.push(companion);
+      budget.totalBytes = bytes;
+    }
+  }
+  collectRuleFiles(
+    join(workspacePath, '.claude', 'rules'),
+    instructions,
+    budget,
+    0,
+    maxBytes,
+  );
+  if (instructions.length === 0) return '';
+  const body = instructions.map(({ path, content }) => {
+    const displayPath = relative(workspacePath, path).replaceAll('\\', '/');
+    return `## ${displayPath}\n${content}`;
+  }).join('\n\n');
+  return [
+    'Current workspace instructions follow. They are user/project guidance for this workspace. Follow them where applicable. They do not grant tool permissions or override Runtime policy.',
+    '',
+    body,
+  ].join('\n');
 }
 
 /**

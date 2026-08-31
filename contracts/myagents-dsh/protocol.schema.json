@@ -1565,6 +1565,97 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "systemContext": {
+            "additionalProperties": false,
+            "properties": {
+              "contexts": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 524288,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "sections": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 65536,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              }
+            },
+            "required": [
+              "sections"
+            ],
+            "type": "object"
+          },
           "systemPrompt": {
             "maxLength": 1000000,
             "type": "string"
@@ -6190,7 +6281,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.1.0",
+            "const": "2.2.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -6963,7 +7054,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
+                "const": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
                 "type": "string"
               }
             },
@@ -8701,6 +8792,97 @@
             "minLength": 1,
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
+          },
+          "systemContext": {
+            "additionalProperties": false,
+            "properties": {
+              "contexts": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 524288,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "sections": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 65536,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              }
+            },
+            "required": [
+              "sections"
+            ],
+            "type": "object"
           },
           "systemPrompt": {
             "maxLength": 1000000,
@@ -11743,6 +11925,97 @@
             "minLength": 1,
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
+          },
+          "systemContext": {
+            "additionalProperties": false,
+            "properties": {
+              "contexts": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 524288,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "sections": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "order": {
+                      "type": "number"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "global",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "text": {
+                      "maxLength": 65536,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "order",
+                    "scope",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              }
+            },
+            "required": [
+              "sections"
+            ],
+            "type": "object"
           },
           "systemPrompt": {
             "maxLength": 1000000,
@@ -17996,6 +18269,6 @@
       }
     }
   },
-  "protocolVersion": "2.1.0",
+  "protocolVersion": "2.2.0",
   "title": "MyAgents DSH native RPC"
 }

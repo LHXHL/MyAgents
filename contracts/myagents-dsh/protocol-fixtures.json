@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.1.0",
-          "minVersion": "2.1.0"
+          "maxVersion": "2.2.0",
+          "minVersion": "2.2.0"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.1.0",
-          "minVersion": "2.1.0"
+          "maxVersion": "2.2.0",
+          "minVersion": "2.2.0"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "2.1.0",
+        "protocolVersion": "2.2.0",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -285,11 +285,11 @@
           "distribution": "myagents-dsh",
           "distributionVersion": "0.0.0",
           "name": "deepseek-harness",
-          "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367"
+          "version": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def"
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
+        "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
         "sessionFormat": "dsh-session-events-v1"
       }
     },
@@ -1072,8 +1072,8 @@
       }
     }
   ],
-  "protocolVersion": "2.1.0",
-  "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
+  "protocolVersion": "2.2.0",
+  "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
   "valid": [
     {
       "frame": {
@@ -1160,8 +1160,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "2.1.0",
-            "minVersion": "2.1.0"
+            "maxVersion": "2.2.0",
+            "minVersion": "2.2.0"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1189,7 +1189,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "2.1.0",
+          "protocolVersion": "2.2.0",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1264,11 +1264,11 @@
             "distribution": "myagents-dsh",
             "distributionVersion": "0.0.0",
             "name": "deepseek-harness",
-            "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367"
+            "version": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def"
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
+          "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
           "sessionFormat": "dsh-session-events-v1"
         }
       },
@@ -1276,6 +1276,61 @@
       "target": {
         "kind": "methodResult",
         "name": "initialize"
+      }
+    },
+    {
+      "frame": {
+        "id": "h:session-create-1",
+        "jsonrpc": "2.0",
+        "method": "session/create",
+        "params": {
+          "clientOperationId": "session-create-1",
+          "configRevision": "config-v1",
+          "extensionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "interactionScenario": "fixture-interaction",
+          "permissionMode": "default",
+          "persistenceRef": "persistence-1",
+          "provider": {
+            "api": "openai-completions",
+            "contextWindow": 8192,
+            "credentialRef": "fixture-credential",
+            "maxTokens": 1024,
+            "modelId": "fixture-model",
+            "provider": "fixture",
+            "providerRouteId": "fixture",
+            "revision": "provider-v1"
+          },
+          "systemContext": {
+            "contexts": [
+              {
+                "id": "workspace",
+                "order": 100,
+                "scope": "global",
+                "text": "Keep {{literal}}."
+              }
+            ],
+            "sections": [
+              {
+                "id": "product:identity",
+                "order": -80,
+                "scope": "global",
+                "text": "Fixture product."
+              },
+              {
+                "id": "session",
+                "order": 10,
+                "scope": "root",
+                "text": "Fixture session."
+              }
+            ]
+          },
+          "systemPrompt": ""
+        }
+      },
+      "name": "session-create-system-context-request",
+      "target": {
+        "kind": "methodParams",
+        "name": "session/create"
       }
     },
     {

@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "artifactId": "myagents-dsh",
   "handoff": {
-    "manifestSha256": "8d7ed25e825f373fe37e653d1238d53bde37ef722e9fa43a14650351f979e36b",
-    "sourceCommit": "699236c7c051319ce2b2f1422b9bba9ef25455e1",
-    "runtimeManifestSha256": "ff413f4710688ca452fa15ef8d160b9615d6deb765976068951e5f35baddba88",
-    "compatibilitySha256": "a726f113ed862c103995343f8b69ec32be9333db461513455d5a9232af2df9d3",
-    "generatedClientSha256": "01a980931633688cc246b327947f9b6286aa09b750cba863f5e9facda7697405",
-    "noticesSha256": "9e20b532bbe2de2571a5a4ee10a3ed29d70c51bd4f509dd10d85bafe40be1709"
+    "manifestSha256": "a759b370ef859ffc91aa1791cb3c2788e65c51d987aab2ca2e75a8ef4a2b3fef",
+    "sourceCommit": "1e1ba52c387f9cb2e9d79c5a053031e536090912",
+    "runtimeManifestSha256": "3265c9827f4bb326df72bc64a48ce1796a200a094b54c93cbbdc61997d9da02a",
+    "compatibilitySha256": "8f490dfb25bc06a950d71b0441d0377d63659d1c0fb6e56528ff91b13d70e5ef",
+    "generatedClientSha256": "bbb8492a7753b25c5eab722dbe95463afd0931667673f1c7e25a876a11a011bc",
+    "noticesSha256": "bea8714cda5a5586617f49a2d8d35d6c9c05d17928ae20ecb133e1c0f9e2ebed"
   },
   "runtime": {
     "version": "0.0.0",
@@ -16,42 +16,42 @@
     "requiredNodeVersion": "24.14.0"
   },
   "protocol": {
-    "version": "2.1.0",
-    "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
+    "version": "2.2.0",
+    "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
     "hostMethodCount": 40,
     "reverseMethodCount": 7,
     "notificationCount": 4
   },
   "profile": {
     "id": "myagents-dsh-batch-1-candidate-v1",
-    "digest": "4048cdb2983fd92959029cbad4a798edc4057630f50b3bb82b0bf334771c775c"
+    "digest": "74855d8592199aff51503b86ad82df08d43a5bd830212df2c50512c5f87c744b"
   },
   "dsh": {
-    "version": "0.1.1-rc.2.myagents.b150a551b8d4.8ac244cc6367",
+    "version": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
     "sourceCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-    "artifactManifestSha256": "ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2",
-    "patchSeriesSha256": "8ac244cc6367662c99c5fe4a6a7dad554344c3a3e6b846188ea651ce7fce1322"
+    "artifactManifestSha256": "61b44cecaad8409fec0494527eae5d56480ef7a450af681c69f71a2a3c4616af",
+    "patchSeriesSha256": "56f8f4241def8fc6c8194e477d664aa09ef2bda7264cbaea3a5cef37eb632c56"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "11576a160b37473bf08542174a434ba68364c25e0b4a209e8085a53630293c65"
+        "eacbdc1771c407ff5bd8a3902c994aabeed5c5cec6a69f2b37ce88aa2fc37de6"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "6e729b3fd564a77675b6fc80a4dee286144604ba9e194065c9887a4366243189"
+        "f07e689f65e864c83d3c0399ada61088d0be718fe9b528b8363234b63f97124e"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "429825885377d2993f626a1869f859dd4b31fbd745b6dfaee967d1b03f057198"
+        "eafce6d0db980c20468e25839d6c110b2ed7ba612e3217a67dd3c41ea63bf01a"
       ]
     }
   ],

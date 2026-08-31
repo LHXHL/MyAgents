@@ -67,8 +67,8 @@ describe("DSH initialize authority compiler", () => {
       second.executionEnvironment.digest,
     );
     expect(first.protocol).toEqual({
-      minVersion: "2.1.0",
-      maxVersion: "2.1.0",
+      minVersion: "2.2.0",
+      maxVersion: "2.2.0",
     });
     expect(first.host.nodeVersion).toBe("v24.14.0");
     expect(Object.isFrozen(first.executionEnvironment.workspace)).toBe(true);

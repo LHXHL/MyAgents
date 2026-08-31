@@ -3,7 +3,7 @@
 
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetection, RuntimeDiagnostics, RuntimeEnvPolicy, RuntimeExtensionDiagnostics, RuntimePermissionRuleMutationResult, RuntimePermissionRulesSnapshot, RuntimeSource } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
-import type { InteractionScenario } from '../system-prompt';
+import type { DshSystemContextSnapshot, InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
@@ -72,6 +72,8 @@ export interface SessionStartOptions {
   workspacePath: string;
   initialTurn?: RuntimeInitialTurn;
   systemPromptAppend?: string;
+  /** Declarative Host context used only by the Integrated DSH Runtime. */
+  systemContext?: DshSystemContextSnapshot;
   model?: string;
   permissionMode?: string;
   /** #324 — NORMALIZED reasoning effort level (never 'default'); absent =

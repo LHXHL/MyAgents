@@ -143,13 +143,31 @@ export interface SystemPromptOptions {
   enabledOfficialToolIds?: readonly OfficialToolId[];
 }
 
-export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
-  const parts: string[] = [];
+export interface DshHostPromptSection {
+  id: string;
+  order: number;
+  scope: 'global' | 'root';
+  text: string;
+}
 
-  // L1: Base identity (always) — rendered with current runtime's display name.
-  parts.push(renderTemplate(TMPL_BASE_IDENTITY, {
-    runtimeName: getRuntimeDisplayName(options?.runtime),
-  }));
+export interface DshHostPromptContext {
+  id: string;
+  order: number;
+  scope: 'global' | 'root';
+  text: string;
+}
+
+export interface DshSystemContextSnapshot {
+  sections: DshHostPromptSection[];
+  contexts?: DshHostPromptContext[];
+}
+
+const DSH_PRODUCT_IDENTITY = 'You are the active agent in MyAgents, a general-purpose desktop AI agent application. MyAgents owns the session UI, workspace binding, permissions, automations, channels, and product integrations. Use only capabilities that are actually present in this session. When current date or time matters, obtain it with an available tool rather than relying on prompt metadata.';
+
+const DSH_CAPABILITY_ROUTING = 'MyAgents capabilities are progressively disclosed. Use the available tool schemas and capability context to select a Skill, tool, or CLI entry point. Load detailed help only when needed. Mentioning a capability does not grant permission to execute it.';
+
+function buildProductSessionPrompt(scenario: InteractionScenario, options?: SystemPromptOptions): string {
+  const parts: string[] = [];
 
   // L2: Interaction channel (mutually exclusive)
   if (scenario.type === 'im' || scenario.type === 'agent-channel') {
@@ -219,4 +237,40 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
   }
 
   return parts.join('\n\n');
+}
+
+export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
+  const identity = renderTemplate(TMPL_BASE_IDENTITY, {
+    runtimeName: getRuntimeDisplayName(options?.runtime),
+  });
+  return [identity, buildProductSessionPrompt(scenario, options)].filter(Boolean).join('\n\n');
+}
+
+/** DSH-specific declarative projection; Runtime owns the generic operating contract. */
+export function buildDshSystemContext(
+  scenario: InteractionScenario,
+  options?: SystemPromptOptions,
+  workspaceSupplement = '',
+): DshSystemContextSnapshot {
+  const session = buildProductSessionPrompt(scenario, { ...options, runtime: 'dsh' });
+  return {
+    sections: [
+      { id: 'myagents:identity', order: -80, scope: 'global', text: DSH_PRODUCT_IDENTITY },
+      {
+        id: 'myagents:capability-routing',
+        order: -70,
+        scope: 'global',
+        text: DSH_CAPABILITY_ROUTING,
+      },
+      { id: 'myagents:session', order: 10, scope: 'root', text: session },
+    ],
+    contexts: workspaceSupplement
+      ? [{
+          id: 'workspace-supplement',
+          order: 100,
+          scope: 'global',
+          text: workspaceSupplement,
+        }]
+      : [],
+  };
 }

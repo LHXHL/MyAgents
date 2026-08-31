@@ -21,6 +21,11 @@
         "version": "0.1.1-rc.2"
       },
       {
+        "name": "@deepseek-ai/dsh-agent-instructions",
+        "role": "dsh-library",
+        "version": "0.1.1-rc.2"
+      },
+      {
         "name": "@deepseek-ai/dsh-agent-loop",
         "role": "dsh-library",
         "version": "0.1.1-rc.2"
@@ -298,7 +303,7 @@
     ]
   },
   "dsh": {
-    "baselineSha256": "eb00fc22cce3e07b5592b194f92dccdb9f6980e38b5a978aba9f6a9db48dd883",
+    "baselineSha256": "686c08f9135e9845384166478763185bae445434376e4a05b57d9f4df25ded4c",
     "release": "0.1.1-rc.2"
   },
   "formatVersion": 1,
@@ -312,8 +317,8 @@
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
-    "version": "2.1.0"
+    "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
+    "version": "2.2.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",
   "stage": "pre-batch-foundation",

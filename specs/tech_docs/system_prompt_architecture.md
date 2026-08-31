@@ -3,7 +3,7 @@
 ## 文档职责
 
 本文记录 MyAgents 对话 Session 的系统上下文如何组成、由谁拥有、何时固化，以及
-Builtin Claude Agent SDK、Claude Code、Codex、Gemini 四条 Runtime 路径如何接收同一套
+Builtin Claude Agent SDK、Claude Code、Codex、Gemini、Integrated DSH 五条 Runtime 路径如何接收同一套
 产品指令。
 
 本文拥有以下内容：
@@ -59,8 +59,14 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 
 ### 中央入口
 
-`src/server/system-prompt.ts::buildSystemPromptAppend()` 是产品级 Prompt 的唯一中央
-assembler。调用方传入：
+`src/server/system-prompt.ts` 是产品级 Prompt 的唯一中央 assembler。它先用
+`buildProductSessionPrompt()` 生成共同的场景/能力内容，再由两个公开出口投送：
+
+- `buildSystemPromptAppend()` 为 Builtin/Claude Code/Codex/Gemini 保留原有整串 append；
+- `buildDshSystemContext()` 为 Integrated DSH 输出有名字、顺序和 scope 的
+  `SystemContextSnapshot`，避免把产品变化重新硬编码进 Runtime。
+
+调用方传入：
 
 - `InteractionScenario`：当前 Session 的交互入口和场景。
 - `runtime`：用于生成准确的 Runtime 身份描述。
@@ -165,6 +171,7 @@ Prompt 中出现一个能力名称，不等于真实 Tool 已被注册或授权�
 | Claude Code CLI          | 临时文件 + `--append-system-prompt-file`                    | Claude Code 原生发现 `CLAUDE.md` / rules                                                                      |
 | Codex                    | `thread/start` / `thread/resume` 的 `developerInstructions` | Codex 原生发现 `AGENTS.md`，并将 `CLAUDE.md` 配为 fallback；MyAgents 另外把 `.claude/rules/*.md` 格式化后追加 |
 | Gemini                   | 写入 per-session `GEMINI_SYSTEM_MD`                         | 有 `GEMINI.md` 时原生加载；否则注入 `CLAUDE.md + .claude/CLAUDE.md + rules`，再否则 fallback 到 `AGENTS.md`   |
+| Integrated DSH           | 协议 `2.2.0` 的 `systemContext.sections/contexts`            | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
 
 External Runtime 的兼容读取拒绝 symlink，并限制递归深度、文件数量、单文件大小和总
 大小，避免 Workspace 文件把任意工作区外文件或无界内容注入模型上下文。
@@ -195,6 +202,26 @@ systemPrompt = { type: preset, preset: claude_code, append: MyAgentsPrompt }
 - Gemini：`GEMINI_SYSTEM_MD` 会整体替换内置 Prompt，因此先导出并缓存当前 Gemini
   版本的 base prompt，再生成“ MyAgents + Workspace + Gemini base”的 per-session
   合并文件；结束时清理 session 文件，base 版本缓存保留。
+
+### Integrated DSH
+
+DSH 不消费上述单体 append。`external-session.ts` 在 Session create/resume/config apply
+边界调用 `buildDshSystemContext()`，按下列稳定顺序发送：
+
+1. `global/product-identity`（order `-80`）：MyAgents 产品身份；
+2. `global/capability-routing`（order `-70`）：按需使用 Tool/Skill，不把 Prompt 当权限；
+3. `root/product-session`（order `10`）：当前 scenario 和产品会话内容；
+4. 可选 `global/workspace-supplement` context（order `100`）：Claude companion 文件。
+
+Runtime 自己维护更稳定的操作契约和 compaction continuity；Host 维护会随产品演进的
+身份、场景和 companion 内容。正文按 literal Markdown 投送，`{{...}}` 不做 DSH 变量
+替换。Snapshot 的 revision fingerprint 参与 DSH config identity；相同内容不触发无意义
+replacement，已有 admitted turn 仍使用 birth 时冻结值。
+
+根目录/嵌套主指令由 DSH Agent Instructions 自己发现和写入 durable Session：同一目录
+只取首个非空的 `CLAUDE.md`、`AGENTS.override.md`、`AGENTS.md`。Host collector 不再把
+这些主文件重复塞入 DSH system context；它只收集 `.claude/CLAUDE.md` 和按 code-point
+排序的 `.claude/rules/**/*.md`，并遵循现有 symlink/深度/数量/大小边界。
 
 Managed Codex 的 IM/Agent Channel 当前还会在中央 assembler 之后追加
 `myagents-managed-codex-interaction-limits`：禁用结构化问答工具的场景必须改用普通聊天
@@ -273,7 +300,8 @@ Task 智能讨论采用“薄动态 reminder + product-owned Skill”分工：`T
    只保留触发条件和高代价边界。
 5. 检查 pre-warm、resume、replacement 和 live Session 不可变语义。
 6. 更新本文件的片段矩阵，并补 `system-prompt*.unit.test.ts` 中相应的 inclusion / exclusion
-   断言。
+   断言；若影响 DSH，同时断言 contribution id/order/scope、literal body 与 legacy Runtime
+   不回归。
 
 ### 新增动态 Reminder
 

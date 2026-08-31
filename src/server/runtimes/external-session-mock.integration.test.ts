@@ -72,6 +72,7 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionResumeIds: Array<string | undefined> = [];
   readonly startSessionHasHostDispatcher: boolean[] = [];
   readonly startSessionDshExtensionSkills: string[][] = [];
+  readonly startSessionSystemContexts: Array<SessionStartOptions['systemContext']> = [];
   readonly replacedDshExtensionSkills: string[][] = [];
   dshExtensionReconcileCalls = 0;
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
@@ -236,6 +237,7 @@ class FakeRuntime implements AgentRuntime {
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
+    this.startSessionSystemContexts.push(options.systemContext);
     this.startSessionHasHostDispatcher.push(Boolean(
       options.managedCodexExtensions?.hostToolDispatcher
       ?? options.dshExtensions?.hostToolDispatcher,
@@ -1067,6 +1069,11 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
 
     expect(harness.runtime.startSessionInitialMessages).toEqual([undefined]);
+    expect(harness.runtime.startSessionSystemContexts[0]?.sections.map(({ id }) => id)).toEqual([
+      'myagents:identity',
+      'myagents:capability-routing',
+      'myagents:session',
+    ]);
     expect(harness.runtime.sentMessages).toEqual(['first Product input']);
     const metadata = harness.sessionStore.getSessionMetadata(sessionId);
     expect(metadata).toMatchObject({

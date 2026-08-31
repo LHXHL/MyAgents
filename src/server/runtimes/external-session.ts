@@ -11,7 +11,7 @@ import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from
 import { participatesInLiveRestore } from '../../shared/liveRevision';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
-import { buildSystemPromptAppend } from '../system-prompt';
+import { buildDshSystemContext, buildSystemPromptAppend } from '../system-prompt';
 import type { InteractionScenario } from '../system-prompt';
 import {
   getChannelInteractionDisallowedTools,
@@ -45,7 +45,7 @@ import {
   isDshRuntime,
   isExternalRuntime,
 } from './factory';
-import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
+import { resolveCodexWorkspaceInstructions, resolveDshWorkspaceSupplement } from './workspace-instructions';
 import { RUNTIME_DISPLAY_NAMES, runtimeSupportsPrewarm, type RuntimeEnvPolicy, type RuntimeExtensionDiagnostics, type RuntimePermissionDiagnostics, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import {
@@ -3438,12 +3438,22 @@ async function _doStartExternalSession(options: {
     options.workspacePath,
     existingMetadataAtStart,
   );
-  const baseSystemPrompt = buildSystemPromptAppend(options.scenario, {
+  const systemPromptOptions = {
     runtime: runtimeType,
     cliToolsEnabled: true,
     userCliToolsEnabled: isCliToolRegistryEnabled(),
     enabledOfficialToolIds,
-  });
+  } as const;
+  const baseSystemPrompt = runtimeType === 'dsh'
+    ? ''
+    : buildSystemPromptAppend(options.scenario, systemPromptOptions);
+  const dshSystemContext = runtimeType === 'dsh'
+    ? buildDshSystemContext(
+        options.scenario,
+        systemPromptOptions,
+        resolveDshWorkspaceSupplement(options.workspacePath),
+      )
+    : undefined;
 
   // Cross-runtime workspace protocol: append workspace instruction files
   // so external runtimes receive the same project context as the builtin SDK.
@@ -3709,6 +3719,7 @@ async function _doStartExternalSession(options: {
         // awaiting and before any runtime can consume the prompt.
         initialTurn: runtimeInitialTurn,
         systemPromptAppend,
+        ...(dshSystemContext === undefined ? {} : { systemContext: dshSystemContext }),
         model: startModel,
         permissionMode: runtimePermissionMode,
         reasoningEffort: startReasoningEffort,

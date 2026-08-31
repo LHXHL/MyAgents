@@ -1,7 +1,7 @@
 ---
 type: technical-rfc
 status: implementation-in-progress
-version: 0.27
+version: 0.28
 updated: 2026-09-01
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
@@ -14,15 +14,15 @@ audit_baseline:
   original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
   revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
 runtime_handoff:
-  status: protocol-2.1.0-dogfood-closure-ingested
-  reviewed_repository_head: 699236c7c051319ce2b2f1422b9bba9ef25455e1
-  source_commit: 699236c7c051319ce2b2f1422b9bba9ef25455e1
-  protocol: 2.1.0
-  manifest_sha256: 8d7ed25e825f373fe37e653d1238d53bde37ef722e9fa43a14650351f979e36b
-  runtime_manifest_sha256: ff413f4710688ca452fa15ef8d160b9615d6deb765976068951e5f35baddba88
-  compatibility_sha256: a726f113ed862c103995343f8b69ec32be9333db461513455d5a9232af2df9d3
-  protocol_schema_sha256: fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7
-  generated_client_sha256: 01a980931633688cc246b327947f9b6286aa09b750cba863f5e9facda7697405
+  status: protocol-2.2.0-system-context-ingested
+  reviewed_repository_head: 1e1ba52c387f9cb2e9d79c5a053031e536090912
+  source_commit: 1e1ba52c387f9cb2e9d79c5a053031e536090912
+  protocol: 2.2.0
+  manifest_sha256: a759b370ef859ffc91aa1791cb3c2788e65c51d987aab2ca2e75a8ef4a2b3fef
+  runtime_manifest_sha256: 3265c9827f4bb326df72bc64a48ce1796a200a094b54c93cbbdc61997d9da02a
+  compatibility_sha256: 8f490dfb25bc06a950d71b0441d0377d63659d1c0fb6e56528ff91b13d70e5ef
+  protocol_schema_sha256: 7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2
+  generated_client_sha256: bbb8492a7753b25c5eab722dbe95463afd0931667673f1c7e25a876a11a011bc
 ---
 
 # Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
@@ -626,7 +626,7 @@ MyAgents maintains desired and effective revisions for:
 
 - Provider/model and reasoning;
 - permission mode and interaction scenario;
-- system prompt;
+- structured system context;
 - execution environment;
 - MCP, Skills, agents, commands, Hooks and Host tools.
 
@@ -637,9 +637,25 @@ Apply according to negotiated DSH modes:
 - unsupported changes are rejected before updating effective UI;
 - failed apply leaves desired/effective drift visible and recoverable.
 
+Protocol `2.2.0` makes this configuration generic instead of requiring a Runtime-owned MyAgents
+shape. The Host sends named ordered `sections` and `contexts`, each scoped `global` or `root`.
+`system-prompt.ts` owns the recommended MyAgents profile: stable product identity and capability
+routing are global, scenario/session behavior is root-only, and the optional Claude companion
+Workspace supplement is a literal global context. `external-session.ts` freezes that snapshot from
+the actual admission scenario; `integrated-runtimes/dsh/runtime.ts` sends the same snapshot on
+create/resume/config apply and fingerprints its canonical JSON for revision identity. Product
+business changes therefore stay in MyAgents rather than requiring a Runtime release.
+
+Primary Workspace authority remains inside DSH. For each root or nested directory it selects the
+first non-empty `CLAUDE.md`, `AGENTS.override.md`, `AGENTS.md` and owns durable change/removal,
+resume and compaction behavior. MyAgents' bounded collector supplies only
+`.claude/CLAUDE.md` plus deterministically sorted `.claude/rules/**/*.md`; it does not duplicate
+the root primary files. New structured input requires the legacy `systemPrompt` string to be empty,
+while direct legacy callers without a snapshot retain the old migration path.
+
 Declarative extension snapshots contain only validated descriptors and references. Arbitrary Plugin JavaScript is never sent into DSH; trusted runtime plugins remain build-time DSH composition.
 
-H4 now compiles the existing Product capability winners into one deterministic DSH extension snapshot before Session admission. It re-reads and digest-verifies admitted Skill documents, projects Skills/commands/agents, admits HTTP/SSE MCP descriptors, and exposes Product in-process MCP/IM tools through DSH `host_tool` components backed by the runtime-neutral dispatcher in `src/server/runtimes/product-extensions/`. Header material remains only in generation-scoped Host bindings and crosses the MCP credential reverse port for an exact component/digest/revision request. The compiler uses the intersection of protocol `2.1.0` and the exact accepted Runtime compiler constraints; unsupported schema/name inputs degrade only their component and are published through DSH-owned Runtime diagnostics and Logs.
+H4 now compiles the existing Product capability winners into one deterministic DSH extension snapshot before Session admission. It re-reads and digest-verifies admitted Skill documents, projects Skills/commands/agents, admits HTTP/SSE MCP descriptors, and exposes Product in-process MCP/IM tools through DSH `host_tool` components backed by the runtime-neutral dispatcher in `src/server/runtimes/product-extensions/`. Header material remains only in generation-scoped Host bindings and crosses the MCP credential reverse port for an exact component/digest/revision request. The compiler uses the intersection of protocol `2.2.0` and the exact accepted Runtime compiler constraints; unsupported schema/name inputs degrade only their component and are published through DSH-owned Runtime diagnostics and Logs.
 
 Session Sidecar HTTP readiness may precede the first Product Session workspace binding. Mount-time Agent/MCP projection received in that interval is acknowledged as `pending_next_start` with `awaiting_product_session_owner`, not failed: the durable Agent/Project/Session sources are compiled by the same owner during Session birth. Once the owner is bound, live changes continue through normal immutable generation replacement. This staging rule does not suppress real compiler, admission or Runtime failures; those still produce component diagnostics and unified-log evidence.
 
@@ -649,7 +665,7 @@ The accepted Runtime composition currently declares no Host-approved stdio MCP l
 
 Live MCP/Skill/agent/command/Plugin/Host-tool changes compile a fresh immutable plane, attach a fresh Host dispatcher, register it by the protocol identity `componentGenerationId = revision:digest`, and call `extension/replace` without restarting the Sidecar or DSH process. `queued` remains desired/effective drift and is retried from both the successful and failed Product turn-finalization paths before queue drain; the DSH adapter also reconciles before admitting a later root turn. `applied` is accepted only after `extension/catalog` proves the exact revision, digest, Skill read-back and Host-tool catalog, then publishes the new Runtime tool catalog and diagnostics. `failed` releases only the rejected candidate and leaves the old effective plane usable.
 
-Reverse MCP credential and Host-tool calls select their Host plane by the exact generation carried in request authority; a stale or unknown generation fails before credential material or a Product dispatcher is reached. A once-effective old plane remains registered until the DSH process generation closes because protocol `2.1.0` permits background work to drain the previous component generation but exposes no Host retirement acknowledgement. Candidate generations that DSH explicitly rejects or replaces are released immediately. This bounded process-generation ownership prevents both cross-generation dispatch and premature cleanup. Live capability changes no longer set the compatibility Runtime restart latch. These semantics complete the live-extension implementation slice; H5 subsequently admits DSH only through development Labs/readiness policy, while H6 still gates promotion.
+Reverse MCP credential and Host-tool calls select their Host plane by the exact generation carried in request authority; a stale or unknown generation fails before credential material or a Product dispatcher is reached. A once-effective old plane remains registered until the DSH process generation closes because protocol `2.2.0` permits background work to drain the previous component generation but exposes no Host retirement acknowledgement. Candidate generations that DSH explicitly rejects or replaces are released immediately. This bounded process-generation ownership prevents both cross-generation dispatch and premature cleanup. Live capability changes no longer set the compatibility Runtime restart latch. These semantics complete the live-extension implementation slice; H5 subsequently admits DSH only through development Labs/readiness policy, while H6 still gates promotion.
 
 ## 13. Mutations and native history
 
@@ -666,7 +682,7 @@ General transaction rule:
 
 Rewind's file rollback claim remains limited to governed root-origin Write/Edit. The UI and documentation must not imply shell, child or external modifications are rolled back.
 
-Retry is admission-aware for DSH. Every persisted Product user records `runtimeOperationAnchor={runtime:'dsh',clientOperationId,runtimeSessionId}` before `turn/start`. `/chat/external-retry` verifies that anchor and queries native `turn/get`: a proven never-admitted tail may be removed Product-side only, while an admitted operation must complete the coordinated DSH rewind before Product truncation. Protocol `2.1.0` exposes an opaque `genesisBoundary`, so the first admitted turn uses the same transaction rather than a Product-only empty-history guess.
+Retry is admission-aware for DSH. Every persisted Product user records `runtimeOperationAnchor={runtime:'dsh',clientOperationId,runtimeSessionId}` before `turn/start`. `/chat/external-retry` verifies that anchor and queries native `turn/get`: a proven never-admitted tail may be removed Product-side only, while an admitted operation must complete the coordinated DSH rewind before Product truncation. Protocol `2.2.0` retains the opaque `genesisBoundary` introduced by `2.1.0`, so the first admitted turn uses the same transaction rather than a Product-only empty-history guess.
 
 No operation ever resumes DSH native history using Claude SDK, Pi, managed Codex or an External CLI.
 
@@ -935,10 +951,11 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `in_progress` |
 | B3-XR-REL | Force/partial/retry/genesis/permission reliability implementation and refreshed handoff | `complete`; signed/package acceptance pending |
 | B3-XR-DOG | Bash env, Grep concurrency/file path, TaskStop terminal and canonical Web dogfood closure | `in_progress`; handoff ingested, package acceptance pending |
+| B3-XR-SCTX | Generic DSH system context, project-instruction precedence and literal Host/child bodies | `in_progress`; implementation and `2.2.0` handoff ingestion complete, packaged/cache acceptance pending |
 
 ### 21.2 Current implementation evidence
 
-H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes interaction-reliability handoff `5ee7a6f07557b03a2e1353533fb5b3744148d20894d6f01699d8a0c61255e705`, Runtime `097e982e308633048f7957d17dc165603d613397375f35fa3bc6a68a4472eea7`, compatibility `c57a633993ecca5ae5e10e1d4d333bd60a6e1a69467252f4aac4b8e112d6403f`, protocol `2.1.0`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
+H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes system-context handoff `a759b370ef859ffc91aa1791cb3c2788e65c51d987aab2ca2e75a8ef4a2b3fef`, Runtime `3265c9827f4bb326df72bc64a48ce1796a200a094b54c93cbbdc61997d9da02a`, compatibility `8f490dfb25bc06a950d71b0441d0377d63659d1c0fb6e56528ff91b13d70e5ef`, protocol `2.2.0`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, admits the generated-contract change, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 
 The 2026-08-30 Provider portability refresh adds exact `zhipu` Coding Plan cells for `glm-5.3` and `glm-5-turbo` as direct `anthropic-messages`, while retaining `zhipu-ai` as direct `openai-completions`. Provider `apiProtocol/upstreamFormat` remains the source of truth, and the DSH path uses no Claude SDK Bridge. The refreshed Runtime also removes recursive Task metadata from all model-visible tool schemas. Its pre-artifact report is `e03caaf4865c275e123897a055a3ac27a4b73871363d07c3c760ac64d28d2853`; the outer handoff and an independent transfer copy both verify. A user-authorized local Zhipu Coding Plan credential then passed the official `approved-route` `coding-workspace` campaign against exact Runtime `8fccea44a04d29e6a2e2f134d4b1f9fd2192680c30316e119a398f7ae34f98c9`; sealed evidence `dbcbf4e8486e9824a74628de76a4054586fc6ce1118dc2ff1a5934155996ab62` proves exact artifact/generated-client identity, one successful terminal, the scenario postcondition and zero retained Runtime resources. The credential remained request-scoped and is not part of repository or evidence bytes. H6 stays `in_progress` because signed distribution, Windows/Linux native validation and the remaining J1–J18 product campaign are not promoted by this focused Runtime campaign.
 
@@ -959,6 +976,8 @@ The DSH first-response follow-up moves integrated DSH into the same shared persi
 The runtime-capability closure consumes source `ec2ab38b465995a6844bb71f78780fccea471041`, Runtime `2c08c37173e5f84e7296fae5ea41ae9054aff247b1656400a25c9b08db8dc270`, compatibility `c579ea3ab37616fa2497453a6015651268f8929217fe3fa3b86f257f0264254e`, and handoff `441d46bb88cc66d410d2f989e597fb66bf3afa47bb55b7a2afd8a2517c0739bd`. The shared Product Agent compiler now targets the selected kernel explicitly: Managed Codex retains its precise unsupported diagnostics, while Integrated DSH preserves per-role `tools`, `disallowedTools`, and `maxTurns` in the declarative snapshot. DSH executes root, foreground-child, and background-child tools through the common Product permission/Hook/Task/Plan plane; Explore follows the Claude Code-style read-oriented prompt with Bash available, general inherits the eligible parent catalog, and custom roles may only narrow the parent surface. Canonical Web DNS/transport behavior is compatible with bundled Node `24.14.0`, and historical DSH reasoning is projected at its durable content boundary instead of being accumulated into a synthetic trailing Think block. The source-bound pre-artifact report is `a7ef44373af894fd099d1621c6b60cfc256d6f2afd6082461560ce1daddab53b`; all three platform claims remain `implementation-complete_pending-native-validation` for these exact bytes.
 
 The 2026-09-01 dogfood follow-up keeps that ownership model and corrects four local integration behaviors. DSH Bash now receives the terminal-resolved PATH and ordinary home/user/shell values through the exact execution-environment allowlist; Grep accepts files and directories and uses stable identity rather than mutable directory timestamps; TaskStop-induced Bash termination maps to `aborted`; and canonical Web uses MyAgents proxy selection, pins direct DNS transport, lets an explicit Product proxy own remote DNS, and preserves actionable Host error messages. Exact Node/npm `24.14.0` / `11.15.0` repository gates pass in both repositories. Clean DSH source `699236c7c051319ce2b2f1422b9bba9ef25455e1` produces pre-artifact report `ba4d0319535077fe13e90e94a5eba00801a75e61a742155e1d2fd70127604f51`, Runtime `ff413f4710688ca452fa15ef8d160b9615d6deb765976068951e5f35baddba88`, compatibility `a726f113ed862c103995343f8b69ec32be9333db461513455d5a9232af2df9d3`, and immutable handoff `8d7ed25e825f373fe37e653d1238d53bde37ef722e9fa43a14650351f979e36b`. The public verifier, official MyAgents ingestion, staged-resource verifier and exact native process restart/resume smoke all pass. Packaged acceptance remains before this row is complete.
+
+The system-context refresh consumes clean MyAgents-dsh source `1e1ba52c387f9cb2e9d79c5a053031e536090912`, nine-patch DSH artifact `61b44cecaad8409fec0494527eae5d56480ef7a450af681c69f71a2a3c4616af`, Runtime `3265c9827f4bb326df72bc64a48ce1796a200a094b54c93cbbdc61997d9da02a`, compatibility `8f490dfb25bc06a950d71b0441d0377d63659d1c0fb6e56528ff91b13d70e5ef`, and handoff `a759b370ef859ffc91aa1791cb3c2788e65c51d987aab2ca2e75a8ef4a2b3fef`. The source-bound pre-artifact report `d73d4bdb1ff23b6d54e8405177849b57164c0d19f85a46dc9c66f0e5f768c1cd`, installed composition, public handoff verifier, official ingestion and staged-resource verifier pass. The macOS native report `1eec0c786eae9163e63c8ad2ab72effb684b5f6a517c8f26cc00e79d7b9d3983` is sealed as `unavailable` because `DEEPSEEK_API_KEY` is absent; all three platform claims therefore remain `implementation-complete_pending-native-validation`. MyAgents now owns stable product/session contribution names and the bounded Claude companion supplement, while DSH owns primary `CLAUDE.md` / `AGENTS.override.md` / `AGENTS.md` discovery, literal registration, Skill context and child inheritance.
 
 The unified-toolchain refresh is committed at `0c779d113f2244446d46ffde37998a61098b1680`. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, complete JavaScript/TypeScript tests, Web/Server/Bridge/CLI builds, Rust formatting and the Rust library suite pass; integration reports 476 passed with two opt-in native tests skipped by default, while Rust reports 1,181 passed and one external-archive test ignored. `tauri build --bundles app` compiles the release executable and assembles `MyAgents.app` plus the updater archive, then stops at the expected missing `TAURI_SIGNING_PRIVATE_KEY` boundary. The unsigned app executable is 85,311,344 bytes with SHA-256 `2fc054c6df68f0d4650429fc951bd604a834c94ce8998cb182e9415e27dc58c2`; the unsigned updater archive is 166,587,375 bytes with SHA-256 `bda6afcefd2b3a3c92f4c41ce5ca400c428b26b9dd156786c175dc7266a5e640`. The packaged public verifier accepts the exact handoff/Runtime/compatibility identities, packaged Node/npm report `24.14.0` / `11.15.0`, and the DSH resource inventory contains zero symbolic links. Packaged native smoke passes in 4.320 seconds; the 12-generation soak passes in 5.031 seconds with all unique Runtime PIDs released, descriptors stable at 14, and Host RSS growth of 770,048 bytes. This is local unsigned macOS evidence and does not promote any handoff platform claim.
 
