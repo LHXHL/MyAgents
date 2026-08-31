@@ -312,7 +312,7 @@
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "968dd0c0fb90965ad8881fe6599dcb71e1085dadc5809bf0716aaf3289f79eb7",
+    "schemaSha256": "fafa09ea56ff3e6b7c816f47505122b60370c1f231f07f4d443e4ad22daa68c7",
     "version": "2.1.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",

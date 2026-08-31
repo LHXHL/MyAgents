@@ -352,6 +352,8 @@ Provider selected 时直接复制 overlay，excluded 时直接复制 inherited�
 
 Node 进程内的 generic HTTP 调用必须走 `fetchWithGeneralProxy()`（需要 deadline 时走 `cancellableFetch()`），不能假设 global fetch 会消费 `HTTP_PROXY`。helper 显式选择 app overlay 或 inherited snapshot；所选 baseline 没有 proxy env 时使用显式 direct `Agent`。Plugin Bridge 是例外入口：社区插件无法强制改用 helper，因此 Bridge 在加载插件前把 package-pinned fetch 和同一 general dispatcher 安装为进程 global。Skills 安装器的 GitHub source 是产品构造的 `codeload.github.com` URL，在每跳 public-address 校验后使用完整 general dispatcher（app overlay 或 inherited baseline）；任意用户提供的 raw ZIP URL 继续使用 DNS-pinned direct dispatcher，避免代理侧重新解析重新打开 DNS rebinding / SSRF 窗口。raw ZIP 是显式安全例外，既不使用 app overlay，也不消费 inherited env proxy；这不是按域名扩展产品 scope。
 
+Integrated DSH canonical Web 是另一条显式路径：`WebFetch` 使用 general 代理决策，Provider utility/WebSearch 使用 Provider scope 决策。直连时 Host 校验并 pin 全部 public DNS answer，首个地址连接失败后继续尝试其余地址；用户显式选择代理时仍执行 URL/hostname/literal-IP policy，但远端 DNS 交给该代理。这与 Claude Code/普通 CLI 的显式代理语义一致，也允许在本地 DNS 被代理软件接管或不可直达时工作。
+
 ### Owner 分类与不透明进程边界
 
 这里的“通用 / Provider”是已有 helper、进程与请求 owner 的分类，不是按域名识别每个网络包。MyAgents 自己直接拥有的 generic 请求遵守 general；Builtin SDK、Managed Codex 等明确 Provider-owned 进程遵守 Provider 选择。若 SDK/Runtime 没有逐请求代理 API，同一不透明 Provider 进程内部代发的 remote MCP、connector、shell/tool 流量无法再次拆分，本期不增加 egress relay，也不宣称覆盖 WebView/系统浏览器网络栈。

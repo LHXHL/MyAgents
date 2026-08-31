@@ -3,6 +3,7 @@ import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { ProxyAgent, request as undiciRequest } from 'undici';
 
 import { DshCanonicalWebError, dshCanonicalWebTransportError } from './canonical-web-errors';
 
@@ -52,8 +53,19 @@ export interface DshSafeHttpTransport {
   ): Promise<DshRawHttpResponse>;
 }
 
+export interface DshSafeHttpProxyTransport {
+  dispatch(
+    url: URL,
+    request: Omit<DshSafeHttpRequest, 'signal'>,
+    signal: AbortSignal,
+    proxy: string,
+  ): Promise<DshRawHttpResponse>;
+}
+
 export type DshSafeHttpConfig = Readonly<{
   lookup?: (hostname: string, signal: AbortSignal) => Promise<readonly DshDnsAnswer[]>;
+  proxyForUrl?: (url: string) => string | undefined;
+  proxyTransport?: DshSafeHttpProxyTransport;
   transport?: DshSafeHttpTransport;
 }>;
 
@@ -273,10 +285,10 @@ function embeddedIpv4(address: string, pref64s: readonly Pref64[]): string | und
   return `${normalized >>> 24}.${(normalized >>> 16) & 0xff}.${(normalized >>> 8) & 0xff}.${normalized & 0xff}`;
 }
 
-function selectPublicAddress(
+function selectPublicAddresses(
   answers: readonly DshDnsAnswer[],
   pref64s: readonly Pref64[],
-): DshDnsAnswer {
+): readonly DshDnsAnswer[] {
   if (answers.length === 0) {
     throw new DshCanonicalWebError('unsafe_destination', 'Web destination has no DNS address');
   }
@@ -294,7 +306,7 @@ function selectPublicAddress(
       throw new DshCanonicalWebError('unsafe_destination', 'Web destination resolved to a non-public address');
     }
   }
-  return answers[0] as DshDnsAnswer;
+  return answers;
 }
 
 function normalizeHeaders(headers: IncomingHttpHeaders): DshRawHttpResponse['headers'] {
@@ -357,6 +369,49 @@ class NodePinnedHttpTransport implements DshSafeHttpTransport {
       else client.end();
     });
   }
+
+}
+
+class NodeProxyHttpTransport implements DshSafeHttpProxyTransport {
+  constructor(private readonly maxCompressedBytes: number) {}
+
+  async dispatch(
+    url: URL,
+    request: Omit<DshSafeHttpRequest, 'signal'>,
+    signal: AbortSignal,
+    proxy: string,
+  ): Promise<DshRawHttpResponse> {
+    const dispatcher = new ProxyAgent(proxy);
+    try {
+      const response = await undiciRequest(url, {
+        dispatcher,
+        method: request.method,
+        headers: request.headers,
+        ...(request.body === undefined ? {} : { body: request.body }),
+        signal,
+      });
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for await (const chunk of response.body) {
+        const bytes = Uint8Array.from(chunk);
+        total += bytes.byteLength;
+        if (total > this.maxCompressedBytes) {
+          throw new DshCanonicalWebError(
+            'unsupported_content',
+            'Web response exceeds its compressed byte bound',
+          );
+        }
+        chunks.push(bytes);
+      }
+      return Object.freeze({
+        statusCode: response.statusCode,
+        headers: Object.freeze(response.headers),
+        bytes: Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), total),
+      });
+    } finally {
+      await dispatcher.close().catch(() => undefined);
+    }
+  }
 }
 
 export function createDshPinnedLookup(address: DshDnsAnswer): LookupFunction {
@@ -406,6 +461,8 @@ export class DshSafeHttpClient {
   private active = 0;
   private readonly waiters: Array<(release: () => void) => void> = [];
   private readonly lookup: NonNullable<DshSafeHttpConfig['lookup']>;
+  private readonly proxyForUrl: DshSafeHttpConfig['proxyForUrl'];
+  private readonly proxyTransport: DshSafeHttpProxyTransport;
   private readonly transport: DshSafeHttpTransport;
 
   constructor(
@@ -413,6 +470,8 @@ export class DshSafeHttpClient {
     config: DshSafeHttpConfig = {},
   ) {
     this.lookup = config.lookup ?? systemLookup;
+    this.proxyForUrl = config.proxyForUrl;
+    this.proxyTransport = config.proxyTransport ?? new NodeProxyHttpTransport(policy.maxCompressedBytes);
     this.transport = config.transport ?? new NodePinnedHttpTransport(policy.maxCompressedBytes);
   }
 
@@ -425,23 +484,55 @@ export class DshSafeHttpClient {
       const redirectOrigins: string[] = [];
       for (let redirectCount = 0; ; redirectCount += 1) {
         signal.throwIfAborted();
-        const answers = await this.lookup(current.hostname.replace(/^\[|\]$/g, ''), signal);
-        if (!Array.isArray(answers) || answers.length > 64) {
-          throw new DshCanonicalWebError('unsafe_destination', 'Web destination returned invalid DNS data');
-        }
-        signal.throwIfAborted();
-        const pref64s = answers.some(answer => answer.family === 6) && isIP(current.hostname) === 0
-          ? discoverPref64(await this.lookup('ipv4only.arpa', signal).catch((error: unknown) => {
-              if (isDnsNoData(error)) return [];
-              throw error;
-            }))
-          : [];
-        const address = selectPublicAddress(answers, pref64s);
-        const response = await this.transport.dispatch(current, address, {
+        let response: DshRawHttpResponse | undefined;
+        const proxy = this.proxyForUrl?.(current.toString());
+        const requestWithoutSignal = {
           method: request.method,
           headers: request.headers,
           body: request.body,
-        }, signal);
+        } as const;
+        if (proxy) {
+          const literal = current.hostname.replace(/^\[|\]$/g, '');
+          const family = isIP(literal);
+          if (family === 4 || family === 6) {
+            selectPublicAddresses([{ address: literal, family }], []);
+          }
+          response = await this.proxyTransport.dispatch(
+            current,
+            requestWithoutSignal,
+            signal,
+            proxy,
+          );
+        } else {
+          const answers = await this.lookup(current.hostname.replace(/^\[|\]$/g, ''), signal);
+          if (!Array.isArray(answers) || answers.length > 64) {
+            throw new DshCanonicalWebError('unsafe_destination', 'Web destination returned invalid DNS data');
+          }
+          signal.throwIfAborted();
+          const pref64s = answers.some(answer => answer.family === 6) && isIP(current.hostname) === 0
+            ? discoverPref64(await this.lookup('ipv4only.arpa', signal).catch((error: unknown) => {
+                if (isDnsNoData(error)) return [];
+                throw error;
+              }))
+            : [];
+          const addresses = selectPublicAddresses(answers, pref64s);
+          let lastConnectionError: unknown;
+          for (const address of addresses) {
+            const attemptDeadline = addresses.length > 1 ? AbortSignal.timeout(15_000) : undefined;
+            const attemptSignal = attemptDeadline === undefined
+              ? signal
+              : AbortSignal.any([signal, attemptDeadline]);
+            try {
+              response = await this.transport.dispatch(current, address, requestWithoutSignal, attemptSignal);
+              break;
+            } catch (error) {
+              signal.throwIfAborted();
+              if (error instanceof DshCanonicalWebError) throw error;
+              lastConnectionError = error;
+            }
+          }
+          if (response === undefined) throw lastConnectionError ?? new Error('Web connection failed');
+        }
         signal.throwIfAborted();
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
           if (request.method !== 'GET' || redirectCount >= this.policy.maxRedirects) {

@@ -48,6 +48,14 @@ function json(value: unknown): DshRawHttpResponse {
   });
 }
 
+function jsonStatus(statusCode: number, value: unknown): DshRawHttpResponse {
+  return Object.freeze({
+    statusCode,
+    headers: Object.freeze({ 'content-type': 'application/json' }),
+    bytes: Buffer.from(JSON.stringify(value)),
+  });
+}
+
 function providerWith(dispatch: DshSafeHttpTransport['dispatch']): DshCanonicalWebProvider {
   return new DshCanonicalWebProvider({
     lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 as const }]),
@@ -189,6 +197,24 @@ describe('DshCanonicalWebProvider', () => {
       url: 'https://docs.bigmodel.cn/guide',
       snippet: 'Native result',
     }]);
+  });
+
+  it('reports Zhipu search quota failures without exposing the provider body', async () => {
+    const provider = providerWith(vi.fn(async () => jsonStatus(429, {
+      code: 1113,
+      msg: 'sensitive upstream wording',
+    })));
+
+    await expect(provider.runSearch({
+      profile: zhipuProfile,
+      apiKey: 'secret-zhipu',
+      query: 'DSH Host',
+      operationId: 'operation-quota',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'provider_search_failed',
+      message: 'Zhipu WebSearch has no available search resource package or balance',
+    });
   });
 
   it('runs WebFetch utility prompts without exposing tools and returns separately metered usage', async () => {

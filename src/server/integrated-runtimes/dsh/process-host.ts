@@ -73,6 +73,7 @@ export type DshRuntimeProcessHostOptions = Readonly<{
   notificationHandlers: DshRuntimeNotificationHandlers;
   commandDirectories?: readonly string[];
   inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  childEnvironment?: DshChildEnvironment;
   handshakeTimeoutMs?: number;
   shutdownGraceMs?: number;
   onStderrLine?: (redactedLine: string) => void;
@@ -281,7 +282,7 @@ export class DshRuntimeProcessHost {
         "DSH stderr forwarding requires an explicit redactor and sink",
       );
     }
-    this.childEnvironment = buildDshChildEnvironment({
+    this.childEnvironment = options.childEnvironment ?? buildDshChildEnvironment({
       nodeExecutablePath: options.installation.nodeExecutablePath,
       ...(options.commandDirectories
         ? { commandDirectories: options.commandDirectories }

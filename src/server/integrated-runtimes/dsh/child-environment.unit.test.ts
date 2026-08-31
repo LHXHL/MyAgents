@@ -13,6 +13,8 @@ describe("DSH child environment", () => {
       inheritedEnvironment: {
         LANG: "en_US.UTF-8",
         HOME: "/Users/example",
+        USER: "example",
+        SHELL: "/bin/zsh",
         NODE_OPTIONS: "--require=/tmp/inject.js",
         ANTHROPIC_API_KEY: "credential-canary",
         HTTPS_PROXY: "http://user:password@example.invalid",
@@ -20,11 +22,13 @@ describe("DSH child environment", () => {
     });
     expect(environment.env).toEqual({
       PATH: [dirname(node), "/verified/tools"].join(delimiter),
+      HOME: "/Users/example",
+      USER: "example",
+      SHELL: "/bin/zsh",
       LANG: "en_US.UTF-8",
     });
-    expect(environment.inheritedKeys).toEqual(["LANG"]);
+    expect(environment.inheritedKeys).toEqual(["HOME", "USER", "SHELL", "LANG"]);
     expect(JSON.stringify(environment)).not.toContain("credential-canary");
-    expect(environment.env).not.toHaveProperty("HOME");
     expect(environment.env).not.toHaveProperty("NODE_OPTIONS");
     expect(environment.env).not.toHaveProperty("HTTPS_PROXY");
   });

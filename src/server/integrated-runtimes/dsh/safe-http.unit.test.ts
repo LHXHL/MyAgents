@@ -9,6 +9,7 @@ import {
   type DshDnsAnswer,
   type DshRawHttpResponse,
   type DshSafeHttpPolicy,
+  type DshSafeHttpProxyTransport,
   type DshSafeHttpTransport,
 } from './safe-http';
 
@@ -92,6 +93,64 @@ describe('DshSafeHttpClient', () => {
     expect(result.contentType).toBe('text/plain');
     expect(result.finalUrl).toBe('https://example.com/page');
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('tries the next validated address when the first connection fails', async () => {
+    const dispatch = vi.fn(async (_url: URL, address: DshDnsAnswer) => {
+      if (address.address === '93.184.216.34') {
+        throw Object.assign(new Error('first address unavailable'), { code: 'ECONNREFUSED' });
+      }
+      return raw(200, Buffer.from('fallback'), { 'content-type': 'text/plain' });
+    });
+    const client = new DshSafeHttpClient(policy, {
+      lookup: vi.fn(async () => [
+        { address: '93.184.216.34', family: 4 as const },
+        { address: '93.184.216.35', family: 4 as const },
+      ]),
+      transport: { dispatch },
+    });
+
+    const result = await client.request('https://example.com/', {
+      method: 'GET',
+      signal: new AbortController().signal,
+    });
+
+    expect(Buffer.from(result.bytes).toString('utf8')).toBe('fallback');
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses explicit proxy DNS without invoking the direct resolver', async () => {
+    const lookup = publicLookup();
+    const proxyTransport = {
+      dispatch: vi.fn(async () => raw(200, Buffer.from('proxied'), {
+        'content-type': 'text/plain',
+      })),
+    } satisfies DshSafeHttpProxyTransport;
+    const client = new DshSafeHttpClient(policy, {
+      lookup,
+      proxyForUrl: () => 'http://127.0.0.1:7897',
+      proxyTransport,
+    });
+
+    const result = await client.request('https://example.com/', {
+      method: 'GET',
+      signal: new AbortController().signal,
+    });
+
+    expect(Buffer.from(result.bytes).toString('utf8')).toBe('proxied');
+    expect(lookup).not.toHaveBeenCalled();
+    expect(proxyTransport.dispatch).toHaveBeenCalledWith(
+      new URL('https://example.com/'),
+      expect.objectContaining({ method: 'GET' }),
+      expect.any(AbortSignal),
+      'http://127.0.0.1:7897',
+    );
+
+    await expect(client.request('http://127.0.0.1/', {
+      method: 'GET',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: 'unsafe_destination' });
+    expect(proxyTransport.dispatch).toHaveBeenCalledOnce();
   });
 
   it('revalidates every redirect and refuses a redirect that resolves privately', async () => {

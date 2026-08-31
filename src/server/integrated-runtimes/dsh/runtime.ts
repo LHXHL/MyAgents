@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, realpath } from 'node:fs/promises';
-import { dirname, join, normalize } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 
 import packageJson from '../../../../package.json';
 import type { Provider } from '../../../shared/config-types';
@@ -31,6 +31,7 @@ import {
 } from '../../utils/admin-config';
 import { getHomeDir } from '../../utils/platform';
 import { getBundledNodePath } from '../../utils/runtime';
+import { ensureShellPath } from '../../utils/shell';
 import type {
   AgentRuntime,
   ResolvedImagePayload,
@@ -46,6 +47,7 @@ import {
   type DshUnsettledTurn,
 } from '../../session-engine/dsh-turn-reconciliation';
 import { DshAttachmentRegistry } from './attachments';
+import { buildDshChildEnvironment } from './child-environment';
 import { DshCanonicalWebHost } from './canonical-web';
 import { DSH_CANONICAL_WEB_ADAPTER_ID } from './canonical-web-provider';
 import { DshRuntimeEventProjector } from './event-projector';
@@ -439,6 +441,7 @@ function executionEnvironment(
   workspacePath: string,
   workspaceIdentity: string,
   attachmentRoot: string,
+  allowedEnvironmentKeys: readonly string[],
 ): Omit<DshExecutionEnvironment, 'digest'> {
   const windows = process.platform === 'win32';
   return {
@@ -471,7 +474,7 @@ function executionEnvironment(
         : {}),
     },
     environment: {
-      allowedKeys: [],
+      allowedKeys: [...allowedEnvironmentKeys],
       inheritedKeys: [],
       secretValues: 'reverse-port-only',
     },
@@ -728,10 +731,19 @@ export class DshRuntime implements AgentRuntime {
     const attachments = new DshAttachmentRegistry(roots.attachmentRoot);
     await attachments.initialize();
     const workspaceIdentity = `myagents-workspace-v1:${hash(workspacePath)}`;
+    const commandDirectories = (await ensureShellPath())
+      .split(delimiter)
+      .filter(entry => entry.length > 0 && isAbsolute(entry));
+    const childEnvironment = buildDshChildEnvironment({
+      nodeExecutablePath: installation.nodeExecutablePath,
+      commandDirectories,
+      inheritedEnvironment: process.env,
+    });
     const environmentWithoutDigest = executionEnvironment(
       workspacePath,
       workspaceIdentity,
       roots.attachmentRoot,
+      childEnvironment.allowedKeys,
     );
     const configuration = compileConfiguration(options);
     const initialize = createDshInitializeParams({
@@ -898,9 +910,7 @@ export class DshRuntime implements AgentRuntime {
       initialize,
       hostHandlers,
       notificationHandlers,
-      commandDirectories: process.platform === 'win32'
-        ? [dirname(installation.nodeExecutablePath)]
-        : ['/bin', '/usr/bin'],
+      childEnvironment,
       onStderrLine: line => emitProductEvent({ kind: 'log', level: 'warn', message: line }),
       redactStderrLine: redactDshDiagnosticLine,
       onFailure: error => {

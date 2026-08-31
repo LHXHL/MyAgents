@@ -1,6 +1,14 @@
 import { delimiter, dirname, isAbsolute, normalize } from "node:path";
 
 const SAFE_INHERITED_ENVIRONMENT_KEYS = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USERNAME",
   "LANG",
   "LC_ALL",
   "LC_CTYPE",

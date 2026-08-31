@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { DshCanonicalWebHost } from './canonical-web';
+import { DshCanonicalWebError } from './canonical-web-errors';
 import type { DshCanonicalWebProviderPort } from './canonical-web-provider';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import type { DshRequestContext, DshRpcObject } from './protocol-types';
@@ -147,5 +148,26 @@ describe('DshCanonicalWebHost', () => {
 
     expect(result).toEqual({ state: 'failed', code: 'host_tool_authority_mismatch' });
     expect(webProvider.runSearch).not.toHaveBeenCalled();
+  });
+
+  it('returns an actionable bounded failure message to the Runtime', async () => {
+    const webProvider = provider();
+    webProvider.runSearch.mockRejectedValueOnce(new DshCanonicalWebError(
+      'provider_search_failed',
+      'Zhipu WebSearch has no available search resource package or balance',
+    ));
+
+    await expect(host(webProvider).execute({
+      tool: 'WebSearch',
+      input: { query: 'quota check' },
+      authority: authority('WebSearch'),
+    }, context())).resolves.toEqual({
+      state: 'failed',
+      code: 'provider_search_failed',
+      content: [{
+        type: 'text',
+        text: 'Zhipu WebSearch has no available search resource package or balance',
+      }],
+    });
   });
 });

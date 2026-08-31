@@ -1,4 +1,5 @@
 import type { DshModelExecutionProfile } from './profile-compiler';
+import { getProxyForProviderUrl, getProxyForUrl } from '../../proxy-state';
 import type { DshRequestContext, DshRpcObject } from './protocol-types';
 import { convertDshWebContent } from './canonical-web-content';
 import { DshCanonicalWebError } from './canonical-web-errors';
@@ -90,9 +91,17 @@ function authorityMatches(input: {
 function failure(error: unknown, signal: AbortSignal): DshRpcObject {
   if (signal.aborted) return { state: 'aborted', code: 'host_web_aborted' };
   if (error instanceof DshCanonicalWebError) {
-    return { state: 'failed', code: error.code };
+    return {
+      state: 'failed',
+      code: error.code,
+      content: [{ type: 'text', text: error.message.slice(0, 4_096) }],
+    };
   }
-  return { state: 'failed', code: 'network_policy_denied' };
+  return {
+    state: 'failed',
+    code: 'network_policy_denied',
+    content: [{ type: 'text', text: 'Host Web request failed' }],
+  };
 }
 
 export class DshCanonicalWebHost {
@@ -105,8 +114,16 @@ export class DshCanonicalWebHost {
     contentHttp?: DshSafeHttpConfig;
     provider?: DshCanonicalWebProviderPort;
   }>) {
-    this.contentClient = new DshSafeHttpClient(contentPolicy(), options.contentHttp);
-    this.provider = options.provider ?? new DshCanonicalWebProvider();
+    this.contentClient = new DshSafeHttpClient(
+      contentPolicy(),
+      options.contentHttp ?? { proxyForUrl: getProxyForUrl },
+    );
+    this.provider = options.provider ?? new DshCanonicalWebProvider({
+      proxyForUrl: url => getProxyForProviderUrl(
+        this.options.activeConfiguration().profile.provider,
+        url,
+      ),
+    });
   }
 
   handles(params: DshRpcObject): boolean {

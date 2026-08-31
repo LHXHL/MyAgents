@@ -737,7 +737,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Searches file content with the artifact-pinned ripgrep executable. Supports content, file-name, and count modes without invoking a shell.",
+      "description": "Searches file content with the artifact-pinned ripgrep executable. The optional path may name a file or directory. Supports content, file-name, and count modes without invoking a shell.",
       "errorCodes": [
         {
           "code": "path_denied",

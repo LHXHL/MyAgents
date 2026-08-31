@@ -222,7 +222,36 @@ function providerEndpoint(baseUrl: string | undefined, path: string): string {
 
 function parseJsonResponse(response: DshSafeHttpResponse, errorCode: 'provider_search_failed' | 'utility_model_failed'): Record<string, unknown> {
   if (response.statusCode < 200 || response.statusCode > 299) {
-    throw new DshCanonicalWebError(errorCode, 'Provider request failed');
+    let vendorCode: string | undefined;
+    try {
+      const payload = JSON.parse(Buffer.from(response.bytes).toString('utf8')) as unknown;
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const record = payload as Record<string, unknown>;
+        const nested = record.error && typeof record.error === 'object' && !Array.isArray(record.error)
+          ? record.error as Record<string, unknown>
+          : undefined;
+        const value = nested?.code ?? record.code;
+        if (typeof value === 'string' || typeof value === 'number') vendorCode = String(value);
+      }
+    } catch {
+      // The status is sufficient; provider response bytes are never surfaced.
+    }
+    if (response.statusCode === 429 && vendorCode === '1113') {
+      throw new DshCanonicalWebError(
+        errorCode,
+        'Zhipu WebSearch has no available search resource package or balance',
+      );
+    }
+    if (response.statusCode === 401 || response.statusCode === 403) {
+      throw new DshCanonicalWebError(errorCode, 'Provider rejected the configured credential');
+    }
+    if (response.statusCode === 429) {
+      throw new DshCanonicalWebError(errorCode, 'Provider rate limit or quota was exceeded');
+    }
+    if (response.statusCode >= 500) {
+      throw new DshCanonicalWebError(errorCode, 'Provider service is temporarily unavailable');
+    }
+    throw new DshCanonicalWebError(errorCode, `Provider request failed with HTTP ${response.statusCode}`);
   }
   try {
     const parsed: unknown = JSON.parse(Buffer.from(response.bytes).toString('utf8'));
