@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  assertProviderCellContractFacts,
   CONTRACT_PATHS,
   compareOrAcceptContracts,
   parseNamedArgs,
@@ -88,6 +89,27 @@ test("generated contracts are accepted mechanically and then drift-gated", () =>
       /generated contract contracts\/protocol-meta\.json mismatch/,
     );
   });
+});
+
+test("Host-owned Provider cells bind the exact accepted handoff profile", () => {
+  const lock = {
+    profile: { id: "candidate-v1", digest: "a".repeat(64) },
+    handoff: { compatibilitySha256: "b".repeat(64) },
+  };
+  const contract = {
+    runtimeProfileId: lock.profile.id,
+    runtimeProfileDigest: lock.profile.digest,
+    candidateProfileSha256: lock.profile.digest,
+    compatibilitySha256: lock.handoff.compatibilitySha256,
+  };
+  assert.doesNotThrow(() => assertProviderCellContractFacts(contract, lock));
+  assert.throws(
+    () => assertProviderCellContractFacts({
+      ...contract,
+      runtimeProfileDigest: "c".repeat(64),
+    }, lock),
+    /Provider cell Runtime profile digest mismatch/,
+  );
 });
 
 test("complete handoff staging replaces atomically only after verification", () => {
@@ -193,7 +215,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   assert.equal(lock.runtime.requiredNodeVersion, "24.14.0");
   assert.equal(lock.bundledNpm.version, "11.15.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
-  assert.equal(lock.protocol.version, "2.3.0");
+  assert.equal(lock.protocol.version, "2.4.0");
   assert.equal(lock.protocol.hostMethodCount, 40);
   assert.equal(lock.protocol.reverseMethodCount, 7);
   assert.equal(lock.protocol.notificationCount, 4);

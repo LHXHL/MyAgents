@@ -6333,7 +6333,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.3.0",
+            "const": "2.4.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -17582,12 +17582,7 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "detail": {
-                    "patternProperties": {
-                      "^.*$": {}
-                    },
-                    "type": "object"
-                  },
+                  "input": {},
                   "kind": {
                     "const": "tool",
                     "type": "string"
@@ -17599,26 +17594,227 @@
                     "type": "string"
                   },
                   "phase": {
-                    "anyOf": [
-                      {
-                        "const": "start",
-                        "type": "string"
-                      },
-                      {
-                        "const": "update",
-                        "type": "string"
-                      },
-                      {
-                        "const": "end",
-                        "type": "string"
-                      }
-                    ]
+                    "const": "start",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "phase",
+                  "name",
+                  "input"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "tool",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "phase": {
+                    "const": "update",
+                    "type": "string"
+                  },
+                  "progress": {
+                    "patternProperties": {
+                      "^.*$": {}
+                    },
+                    "type": "object"
                   }
                 },
                 "required": [
                   "kind",
                   "phase",
                   "name"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "tool",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "phase": {
+                    "const": "end",
+                    "type": "string"
+                  },
+                  "result": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "content": {
+                        "items": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "text": {
+                                  "maxLength": 262144,
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "const": "text",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "text"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "attachmentId": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                  "type": "string"
+                                },
+                                "height": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "mimeType": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "maxLength": 512,
+                                  "type": "string"
+                                },
+                                "sha256": {
+                                  "pattern": "^[a-f0-9]{64}$",
+                                  "type": "string"
+                                },
+                                "sizeBytes": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "type": {
+                                  "const": "image_ref",
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "attachmentId",
+                                "mimeType",
+                                "sizeBytes",
+                                "sha256"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "maxItems": 1024,
+                        "type": "array"
+                      },
+                      "isError": {
+                        "type": "boolean"
+                      },
+                      "metadata": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "cwd": {
+                            "maxLength": 8192,
+                            "type": "string"
+                          },
+                          "durationMs": {
+                            "anyOf": [
+                              {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "exitCode": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "processId": {
+                            "anyOf": [
+                              {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "status": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "state": {
+                        "anyOf": [
+                          {
+                            "const": "succeeded",
+                            "type": "string"
+                          },
+                          {
+                            "const": "failed",
+                            "type": "string"
+                          },
+                          {
+                            "const": "aborted",
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "isError",
+                      "content"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "phase",
+                  "name",
+                  "result"
                 ],
                 "type": "object"
               },
@@ -17747,15 +17943,8 @@
                 "additionalProperties": false,
                 "properties": {
                   "contextOccupiedTokens": {
-                    "anyOf": [
-                      {
-                        "minimum": 0,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "kind": {
                     "const": "context",
@@ -17810,16 +17999,22 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "detail": {
-                    "patternProperties": {
-                      "^.*$": {}
-                    },
-                    "type": "object"
-                  },
                   "kind": {
                     "const": "plan",
                     "type": "string"
                   },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "normal",
+                        "type": "string"
+                      },
+                      {
+                        "const": "plan",
+                        "type": "string"
+                      }
+                    ]
+                  },
                   "revision": {
                     "maxLength": 256,
                     "minLength": 1,
@@ -17829,68 +18024,250 @@
                 },
                 "required": [
                   "kind",
-                  "revision",
-                  "detail"
+                  "mode",
+                  "revision"
                 ],
                 "type": "object"
               },
               {
                 "additionalProperties": false,
                 "properties": {
-                  "detail": {
-                    "patternProperties": {
-                      "^.*$": {}
-                    },
-                    "type": "object"
-                  },
                   "kind": {
                     "const": "task_graph",
                     "type": "string"
                   },
-                  "revision": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                    "type": "string"
+                  "snapshot": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "revision": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "tasks": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "activeForm": {
+                              "maxLength": 512,
+                              "type": "string"
+                            },
+                            "id": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                              "type": "string"
+                            },
+                            "status": {
+                              "anyOf": [
+                                {
+                                  "const": "pending",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "in_progress",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "completed",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "cancelled",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "subject": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "subject",
+                            "status"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 256,
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "revision",
+                      "tasks"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
                   "kind",
-                  "revision",
-                  "detail"
+                  "snapshot"
                 ],
                 "type": "object"
               },
               {
                 "additionalProperties": false,
                 "properties": {
-                  "detail": {
-                    "patternProperties": {
-                      "^.*$": {}
-                    },
-                    "type": "object"
-                  },
                   "kind": {
                     "const": "work",
                     "type": "string"
                   },
-                  "phase": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                    "type": "string"
-                  },
-                  "taskId": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                    "type": "string"
+                  "snapshot": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "agentId": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "agentType": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "description": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "finishedAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "mode": {
+                        "anyOf": [
+                          {
+                            "const": "foreground",
+                            "type": "string"
+                          },
+                          {
+                            "const": "continuable",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "parentToolCallId": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "result": {
+                        "maxLength": 262144,
+                        "type": "string"
+                      },
+                      "resultTruncated": {
+                        "type": "boolean"
+                      },
+                      "startedAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "state": {
+                        "anyOf": [
+                          {
+                            "const": "running",
+                            "type": "string"
+                          },
+                          {
+                            "const": "stopping",
+                            "type": "string"
+                          },
+                          {
+                            "const": "succeeded",
+                            "type": "string"
+                          },
+                          {
+                            "const": "failed",
+                            "type": "string"
+                          },
+                          {
+                            "const": "aborted",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "taskId": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "usage": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "cacheReadTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "cacheWriteTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "costUsd": {
+                            "anyOf": [
+                              {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "inputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "outputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "totalTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "inputTokens",
+                          "outputTokens",
+                          "cacheReadTokens",
+                          "cacheWriteTokens",
+                          "totalTokens",
+                          "costUsd"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "taskId",
+                      "parentToolCallId",
+                      "agentId",
+                      "agentType",
+                      "description",
+                      "mode",
+                      "model",
+                      "state",
+                      "startedAt"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
                   "kind",
-                  "taskId",
-                  "phase"
+                  "snapshot"
                 ],
                 "type": "object"
               },
@@ -18321,6 +18698,6 @@
       }
     }
   },
-  "protocolVersion": "2.3.0",
+  "protocolVersion": "2.4.0",
   "title": "MyAgents DSH native RPC"
 }

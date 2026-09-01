@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+  assertProviderCellContractFacts,
   compareOrAcceptContracts,
   parseNamedArgs,
   resolveExplicitDirectory,
@@ -29,6 +30,15 @@ const lock = JSON.parse(
     "utf8",
   ),
 );
+const providerCells = JSON.parse(
+  readFileSync(
+    resolve(
+      repoRoot,
+      "src/shared/integrated-runtimes/dsh-provider-cells-v1.json",
+    ),
+    "utf8",
+  ),
+);
 
 runPublicVerifier(handoffRoot, lock.handoff.manifestSha256);
 const verified = verifyHandoffFacts(handoffRoot, lock);
@@ -37,6 +47,7 @@ compareOrAcceptContracts(
   resolve(repoRoot, "contracts"),
   args["--accept-contracts"] === true,
 );
+assertProviderCellContractFacts(providerCells, lock);
 stageCompleteHandoff(handoffRoot, outputRoot, (stagedRoot) => {
   runPublicVerifier(stagedRoot, lock.handoff.manifestSha256);
   verifyHandoffFacts(stagedRoot, lock);
