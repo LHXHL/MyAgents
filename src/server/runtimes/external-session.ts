@@ -531,6 +531,10 @@ let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let externalSessionMutationInFlight = false;
 /** Queue item whose force-send owns the current intentional turn interruption. */
 let externalForceTransferQueueId: string | null = null;
+let queuedDshRootRecovery: Readonly<{
+  sessionId: string;
+  promise: Promise<void>;
+}> | null = null;
 
 function hasPendingDshNativeWork(): boolean {
   if (getCurrentRuntimeType() !== 'dsh') return false;
@@ -1116,6 +1120,7 @@ function resetModuleState(): void {
   resetExternalLifecycleState();
   resetExternalTurnLifecycleState();
   externalForceTransferQueueId = null;
+  queuedDshRootRecovery = null;
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   currentWatchdogTimeoutMs = EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS;
   externalWatchdog.setTimeoutMs(EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS);
@@ -1151,6 +1156,13 @@ export function __resetExternalSessionForTests(): void {
   resetModuleState();
   externalSessionMutationInFlight = false;
   commitCodexConversationRewindForTests = null;
+}
+
+export function __isExternalWatchdogArmedForTests(): boolean {
+  if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+    throw new Error('__isExternalWatchdogArmedForTests is only available in tests');
+  }
+  return watchdogTimer !== null;
 }
 
 export function __setCodexConversationRewindCommitForTests(
@@ -1855,7 +1867,11 @@ function clearWatchdog(): void {
 }
 
 function recordRuntimeActivity(): void {
-  if (getExternalTurnStartTime() === 0 || isExternalTurnCompleted()) return;
+  if (
+    getExternalTurnStartTime() === 0
+    || isExternalTurnCompleted()
+    || getExternalUserRequestedStop()
+  ) return;
   resetWatchdog();
 }
 
@@ -4950,12 +4966,78 @@ function enqueueExternalTurnBoundaryOperation(
     canCancel: true,
     canForceExecute: true,
   });
+  void ensureQueuedDshRootRecovery().catch(() => undefined);
   return {
     queued: true,
     queueId: queued.queueId,
     userMessageId: operation.userProjection.message.id,
     dispatch: queued.dispatchAcceptance,
   };
+}
+
+function pendingQueuedDshRootRecoveryContext(): Readonly<{
+  sessionId: string;
+  workspacePath: string;
+  scenario: InteractionScenario;
+}> | null {
+  if (getCurrentRuntimeType() !== 'dsh' || hasExternalRuntimeProcess()) return null;
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  if (!sessionId || !workspacePath) return null;
+  if (!getSessionMetadata(sessionId)?.pendingDshRootOperation) return null;
+  return { sessionId, workspacePath, scenario: getExternalLifecycleScenario() };
+}
+
+function ensureQueuedDshRootRecovery(): Promise<void> {
+  const context = pendingQueuedDshRootRecoveryContext();
+  if (!context) return Promise.resolve();
+  if (queuedDshRootRecovery?.sessionId === context.sessionId) {
+    return queuedDshRootRecovery.promise;
+  }
+
+  const generation = getExternalOperationGeneration();
+  const recovery = (async () => {
+    await awaitExternalLifecycleStarting();
+    const current = pendingQueuedDshRootRecoveryContext();
+    if (!current || current.sessionId !== context.sessionId) {
+      scheduleExternalQueueDrainAfterTurnBoundary();
+      return;
+    }
+    const result = await prewarmExternalSession(current);
+    if (
+      !result.prewarmed
+      && pendingQueuedDshRootRecoveryContext()?.sessionId === context.sessionId
+    ) {
+      throw new Error(result.reason ?? 'DSH recovery did not start');
+    }
+    if (
+      getExternalLifecycleSessionId() === context.sessionId
+      && isCurrentExternalOperationGeneration(generation)
+    ) {
+      scheduleExternalQueueDrainAfterTurnBoundary();
+    }
+  })().catch((error) => {
+    const message = 'DSH root operation recovery failed before queued dispatch';
+    console.error(
+      `[external-session] ${message}:`,
+      summarizeExternalRuntimeMessageForLog(error),
+    );
+    if (
+      getExternalLifecycleSessionId() === context.sessionId
+      && isCurrentExternalOperationGeneration(generation)
+    ) {
+      broadcast('chat:agent-error', { message });
+      clearExternalQueueWithCancellation('failed', message);
+      setExternalSessionState('idle');
+    }
+    throw new Error(message, { cause: error });
+  }).finally(() => {
+    if (queuedDshRootRecovery?.promise === recovery) {
+      queuedDshRootRecovery = null;
+    }
+  });
+  queuedDshRootRecovery = Object.freeze({ sessionId: context.sessionId, promise: recovery });
+  return recovery;
 }
 
 export function enqueueExternalSendForDesktop(
@@ -5313,8 +5395,10 @@ export async function forceExecuteExternalQueueItem(queueId: string): Promise<bo
       throw error;
     }
   } else {
-    // Idle → drain now. Running-without-interrupt → no-op; the moved-to-front item runs at the
-    // next turn-end drain.
+    // Idle DSH work can still be blocked by a durable root-operation journal
+    // after process loss. Join the exact recovery owner before acknowledging
+    // force; ordinary queue:started remains the dispatch/surface authority.
+    await ensureQueuedDshRootRecovery();
     drainExternalQueueAfterTurn();
   }
   return true;
@@ -5706,8 +5790,15 @@ export async function stopExternalSession(options?: {
       `[external-session] Runtime process ${pid} is still alive after stop escalation`,
       gracefulError,
     );
+    resetExternalUserRequestedStop();
+    resetWatchdog();
     return false;
   }
+
+  // Runtime events can arrive while stopSession/kill escalation is settling.
+  // The stop marker prevents those events from re-arming the interval; clear
+  // once more at confirmed process terminal to close the watchdog owner.
+  clearWatchdog();
 
   emitPerfTrace({
     trace: 'runtime',

@@ -26,6 +26,7 @@ import type {
 const broadcastEvents: Array<{ event: string; data: unknown }> = [];
 
 type TurnScript =
+  | { kind: 'silent' }
   | {
     kind: 'success';
     text: string;
@@ -470,6 +471,7 @@ class FakeRuntime implements AgentRuntime {
     this.sentMessages.push(message);
     const script = this.scripts.shift() ?? { kind: 'success', text: `echo:${message}` };
     this.defer(() => {
+      if (script.kind === 'silent') return;
       if (script.kind === 'success') {
         this.emitSuccessfulTurn(
           script.text,
@@ -977,6 +979,78 @@ describe('external SessionEngine with fake runtime', () => {
         content: expect.stringContaining('new turn finished'),
       }),
     ]);
+  });
+
+  it('starts one DSH root recovery when new queued work follows a stopped process', async () => {
+    const harness = await createHarness([
+      { kind: 'silent' },
+      { kind: 'success', text: 'recovered operation terminal', completeDelayMs: 20 },
+      { kind: 'success', text: 'queued follow-up terminal' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-queued-recovery';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    const first = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'operation before process stop'),
+      permissionMode: 'auto',
+    });
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
+      .toBeDefined();
+
+    await expect(harness.engine.stopTurn()).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
+      .toBeDefined();
+
+    const followUp = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'run after exact recovery'),
+      permissionMode: 'auto',
+    });
+    expect(followUp).toMatchObject({ queued: true, queueId: expect.any(String) });
+    await expect(harness.engine.forceQueuedMessage(followUp.queueId!)).resolves.toBe(true);
+
+    await expect(followUp.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toEqual([undefined, undefined]);
+    expect(harness.runtime.sentMessages).toEqual([
+      'operation before process stop',
+      '__recovered_active_turn__',
+      'run after exact recovery',
+    ]);
+    expect(broadcastEvents.filter((item) => (
+      item.event === 'queue:started'
+        && (item.data as { userMessage?: { content?: string } }).userMessage?.content
+          === 'run after exact recovery'
+    ))).toHaveLength(1);
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
+      .toBeUndefined();
+  });
+
+  it('does not re-arm the external watchdog from a late intentional-stop event', async () => {
+    const harness = await createHarness([
+      { kind: 'silent' },
+    ], { emitSessionCompleteOnStop: true });
+    const sessionId = 'session-stop-watchdog-owner';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    const turn = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'silent operation before stop'),
+    );
+    await expect(turn.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(harness.externalSession.__isExternalWatchdogArmedForTests()).toBe(true);
+
+    await expect(harness.engine.stopTurn()).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+
+    expect(harness.externalSession.__isExternalWatchdogArmedForTests()).toBe(false);
   });
 
   it('replays a journaled Product user with the same DSH operation id before later work', async () => {

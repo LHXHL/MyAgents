@@ -475,6 +475,45 @@ describe('TabProvider session activity ownership', () => {
     expect(screen.getByTestId('agent-error-user-message-id')).toBeEmptyDOMElement();
   });
 
+  it('keeps root activity authoritative when a desktop send becomes queued work', async () => {
+    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/chat/send') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          success: true,
+          queued: true,
+          queueId: 'queue-recovery-follow-up',
+          isInFlight: false,
+          deliveryMode: 'turn',
+          canCancel: true,
+          canForceExecute: true,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
+    });
+    render(
+      <TabProvider
+        tabId="tab-queued-loading"
+        agentDir="/tmp/workspace"
+        sessionId="pending-queued-loading"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:status', { sessionState: 'starting' });
+    expect(readActivity().isLoading).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'send message' }));
+
+    await waitFor(() => expect(readQueueIds()).toContain('queue-recovery-follow-up'));
+    expect(readActivity()).toMatchObject({
+      isLoading: true,
+      sessionState: 'starting',
+    });
+  });
+
   it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {
     const refuseSessionOpening = vi.fn(() => null);
     render(

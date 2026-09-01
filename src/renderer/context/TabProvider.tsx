@@ -3948,6 +3948,7 @@ export default function TabProvider({
                 if (payload?.queueId) {
                     console.log(`[TabProvider] queue:cancelled queueId=${payload.queueId}`);
                     setQueuedMessages(prev => prev.filter(q => q.queueId !== payload.queueId));
+                    setIsLoading(isSessionActiveRef.current || isStreamingRef.current);
                 }
                 break;
             }
@@ -4447,6 +4448,13 @@ export default function TabProvider({
                 if (response.queued && response.queueId) {
                     pendingAttachmentsRef.current = null;
                     const realQueueId = response.queueId;
+                    if (!response.isInFlight) {
+                        // The queue pill now owns this request. Recompute the
+                        // root Composer from root Session/streaming truth so a
+                        // real prior turn remains active while an idle queued
+                        // receipt cannot preserve an optimistic loading latch.
+                        setIsLoading(isSessionActiveRef.current || isStreamingRef.current);
+                    }
                     if (startedQueueIdsRef.current.has(realQueueId)) {
                         // Already started (mid-turn injection) — clean up optimistic entry
                         startedQueueIdsRef.current.delete(realQueueId);
@@ -4508,6 +4516,9 @@ export default function TabProvider({
                 }
                 setAgentError(response.error ?? appText('tabProvider.sendFailed'));
                 pendingAttachmentsRef.current = null;
+                if (!isSessionActiveRef.current && !isStreamingRef.current) {
+                    setIsLoading(false);
+                }
             }
         }).catch((error) => {
             console.error(`[TabProvider ${tabId}] Send message failed:`, error);
@@ -4517,6 +4528,9 @@ export default function TabProvider({
             const msg = error instanceof Error ? error.message : appText('tabProvider.networkError');
             setAgentError(msg === 'Failed to fetch' ? appText('tabProvider.networkDisconnected') : msg);
             pendingAttachmentsRef.current = null;
+            if (!isSessionActiveRef.current && !isStreamingRef.current) {
+                setIsLoading(false);
+            }
         }).finally(() => {
             releaseSendTransition?.();
         });
@@ -5207,6 +5221,7 @@ export default function TabProvider({
             const response = await postJson<{ success: boolean; stale?: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
             if (response.success) {
                 setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
+                setIsLoading(isSessionActiveRef.current || isStreamingRef.current);
                 return response.cancelledText ?? null;
             }
             if (response.stale) {
@@ -5215,6 +5230,7 @@ export default function TabProvider({
                 // transition). Reconcile the local replica; restoring text
                 // here could duplicate an already-executed request.
                 setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
+                setIsLoading(isSessionActiveRef.current || isStreamingRef.current);
             }
             return null;
         } catch (error) {
