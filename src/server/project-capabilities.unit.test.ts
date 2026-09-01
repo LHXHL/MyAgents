@@ -119,6 +119,40 @@ describe('effective project capabilities', () => {
     ]);
   });
 
+  it('loads both workspace Skill conventions with deterministic Claude-first precedence', () => {
+    const { workspace } = makeFixture();
+    write(join(workspace, '.claude', 'skills', 'shared', 'SKILL.md'), skill('claude-shared', 'claude'));
+    write(join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'), skill('agents-shared', 'agents'));
+    write(join(workspace, '.agents', 'skills', 'portable', 'SKILL.md'), skill('portable', 'portable'));
+
+    const defaultSnapshot = resolveEffectiveProjectCapabilities(workspace);
+    expect(defaultSnapshot.enabledSkills).toEqual(expect.arrayContaining([
+      expect.objectContaining({ canonicalName: 'claude-shared', path: expect.stringContaining('.claude/skills/shared/SKILL.md') }),
+      expect.objectContaining({ canonicalName: 'portable', path: expect.stringContaining('.agents/skills/portable/SKILL.md') }),
+    ]));
+    expect(defaultSnapshot.candidates.some(item => item.canonicalName === 'agents-shared')).toBe(false);
+
+    const agentsOnly = resolveEffectiveProjectCapabilities(workspace, {
+      projectSkillDirectories: ['.agents/skills'],
+    });
+    expect(agentsOnly.enabledSkills).toEqual(expect.arrayContaining([
+      expect.objectContaining({ canonicalName: 'agents-shared' }),
+      expect.objectContaining({ canonicalName: 'portable' }),
+    ]));
+    expect(agentsOnly.candidates.some(item => item.canonicalName === 'claude-shared')).toBe(false);
+    expect(agentsOnly.revision).not.toBe(defaultSnapshot.revision);
+  });
+
+  it('lets a valid later-root Skill replace an invalid earlier-root folder', () => {
+    const { workspace } = makeFixture();
+    mkdirSync(join(workspace, '.claude', 'skills', 'shared'), { recursive: true });
+    write(join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'), skill('agents-shared', 'agents'));
+
+    expect(resolveEffectiveProjectCapabilities(workspace).enabledSkills).toContainEqual(
+      expect.objectContaining({ canonicalName: 'agents-shared' }),
+    );
+  });
+
   it('keeps required system Skills enabled and rejects disabling them', async () => {
     const { home, workspace } = makeFixture();
     write(join(home, '.myagents', 'skills', 'myagents-cli', 'SKILL.md'), skill('myagents-cli', 'required'));

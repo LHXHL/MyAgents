@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerDefinition } from '../../shared/config-types';
@@ -111,6 +111,50 @@ describe('Codex app-server protocol helpers', () => {
     } finally {
       materialized.cleanup();
     }
+  });
+
+  it('disables only Codex native .agents Skills absent from the admitted inventory', () => {
+    const repository = tempWorkspace();
+    mkdirSync(join(repository, '.git'), { recursive: true });
+    const workspace = join(repository, 'packages', 'app');
+    mkdirSync(workspace, { recursive: true });
+    const selectedSkillPath = join(workspace, '.agents', 'skills', 'selected', 'SKILL.md');
+    const disabledSkillPath = join(workspace, '.agents', 'skills', 'disabled', 'SKILL.md');
+    const ancestorSkillPath = join(repository, '.agents', 'skills', 'ancestor', 'SKILL.md');
+    mkdirSync(dirname(selectedSkillPath), { recursive: true });
+    mkdirSync(dirname(disabledSkillPath), { recursive: true });
+    mkdirSync(dirname(ancestorSkillPath), { recursive: true });
+    writeFileSync(selectedSkillPath, '---\nname: selected\ndescription: Selected Skill\n---\nRun.', 'utf8');
+    writeFileSync(disabledSkillPath, '---\nname: disabled\ndescription: Disabled Skill\n---\nRun.', 'utf8');
+    writeFileSync(ancestorSkillPath, '---\nname: ancestor\ndescription: Ancestor Skill\n---\nRun.', 'utf8');
+    const materialized = materializeManagedCodexExtensions({
+      revision: 'revision',
+      workspacePath: workspace,
+      scenario: { type: 'desktop' },
+      enabledPluginIds: [],
+      skills: [{
+        name: 'selected',
+        description: 'Selected Skill',
+        contentSha256: 'a'.repeat(64),
+        path: selectedSkillPath,
+        scope: 'project',
+        sourceId: 'workspace',
+        sourceLocalId: 'selected',
+      }],
+      commands: [],
+      agents: [],
+      mcpServers: [],
+      dynamicTools: [],
+      components: [],
+    });
+
+    expect(materialized.configArgs).toHaveLength(2);
+    expect(materialized.configArgs[0]).toBe('-c');
+    expect(materialized.configArgs[1]).toContain(`path=${JSON.stringify(realpathSync(ancestorSkillPath))}`);
+    expect(materialized.configArgs[1]).toContain(`path=${JSON.stringify(realpathSync(disabledSkillPath))}`);
+    expect(materialized.configArgs[1]).not.toContain(JSON.stringify(realpathSync(selectedSkillPath)));
+    expect(materialized.skills.map(skill => skill.name)).toEqual(['selected']);
+    materialized.cleanup();
   });
 
   it('holds Managed Codex Host tools behind the existing permission owner', async () => {

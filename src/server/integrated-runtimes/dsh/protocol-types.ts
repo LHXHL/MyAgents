@@ -178,7 +178,7 @@ export type DshExecutionEnvironment = Readonly<{
 }>;
 
 export type DshInitializeParams = Readonly<{
-  protocol: Readonly<{ minVersion: "2.2.0"; maxVersion: "2.2.0" }>;
+  protocol: Readonly<{ minVersion: "2.3.0"; maxVersion: "2.3.0" }>;
   host: Readonly<{
     name: string;
     version: string;
@@ -201,7 +201,7 @@ export type DshInitializeParams = Readonly<{
 }>;
 
 export type DshInitializeResult = Readonly<{
-  protocolVersion: "2.2.0";
+  protocolVersion: "2.3.0";
   schemaSha256: string;
   runtimeVersion: string;
   runtimeGeneration: string;

@@ -3337,6 +3337,58 @@
             "const": 1,
             "type": "number"
           },
+          "mcpLaunchPolicy": {
+            "additionalProperties": false,
+            "properties": {
+              "profiles": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "argv": {
+                      "items": {
+                        "maxLength": 65536,
+                        "type": "string"
+                      },
+                      "maxItems": 256,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "cwd": {
+                      "maxLength": 8192,
+                      "minLength": 1,
+                      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\(?:\\?\\\\|[^\\\\/]+[\\\\/][^\\\\/]+))[^\\u0000-\\u001F\\u007F]*$",
+                      "type": "string"
+                    },
+                    "ref": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z][A-Za-z0-9._:-]*$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "argv",
+                    "cwd"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 128,
+                "type": "array"
+              },
+              "revision": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "revision",
+              "profiles"
+            ],
+            "type": "object"
+          },
           "resources": {
             "items": {
               "anyOf": [
@@ -3511,7 +3563,7 @@
                   ],
                   "type": "object"
                 },
-                "maxItems": 64,
+                "maxItems": 128,
                 "type": "array"
               }
             },
@@ -6281,7 +6333,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.2.0",
+            "const": "2.3.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -18269,6 +18321,6 @@
       }
     }
   },
-  "protocolVersion": "2.2.0",
+  "protocolVersion": "2.3.0",
   "title": "MyAgents DSH native RPC"
 }

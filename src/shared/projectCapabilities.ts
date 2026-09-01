@@ -4,6 +4,21 @@ import type { SkillIntegrityIssue } from './skillIntegrity';
 
 export const PROJECT_CAPABILITY_SELECTION_VERSION = 1 as const;
 
+/**
+ * Ordered workspace Skill roots owned by the Host product profile.
+ *
+ * `.claude/skills` remains first to preserve existing MyAgents behavior;
+ * `.agents/skills` adds the cross-harness Agent Skills convention. Runtime
+ * adapters may pass an ordered subset when their native loader has a narrower
+ * compatibility surface.
+ */
+export const DEFAULT_PROJECT_SKILL_DIRECTORIES = Object.freeze([
+  '.claude/skills',
+  '.agents/skills',
+] as const);
+
+export type ProjectSkillDirectory = (typeof DEFAULT_PROJECT_SKILL_DIRECTORIES)[number];
+
 export type ProjectCapabilityKind = 'skill' | 'command';
 export type ProjectCapabilitySource = 'project' | 'global';
 

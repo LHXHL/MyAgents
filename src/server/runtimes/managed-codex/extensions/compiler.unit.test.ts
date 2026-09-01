@@ -265,6 +265,60 @@ describe('Managed Codex extension compiler', () => {
     expect(compileManagedCodexCommand('/compact', snapshot)).toBeNull();
   });
 
+  it('loads both project Skill roots with configurable Claude-first precedence', () => {
+    const workspace = tempRoot();
+    write(
+      join(workspace, '.claude', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: claude-shared\ndescription: Claude-compatible Skill\n---\nClaude.',
+    );
+    write(
+      join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: agents-shared\ndescription: Agents-compatible Skill\n---\nAgents.',
+    );
+    write(
+      join(workspace, '.agents', 'skills', 'portable', 'SKILL.md'),
+      '---\nname: portable\ndescription: Portable Skill\n---\nPortable.',
+    );
+
+    const defaults = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+    expect(defaults.skills.map(skill => skill.name)).toEqual(['claude-shared', 'portable']);
+
+    const agentsOnly = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+      projectSkillDirectories: ['.agents/skills'],
+    });
+    expect(agentsOnly.skills.map(skill => skill.name)).toEqual(['agents-shared', 'portable']);
+  });
+
+  it('does not let an invalid earlier-root folder hide a valid portable Skill', () => {
+    const workspace = tempRoot();
+    mkdirSync(join(workspace, '.claude', 'skills', 'shared'), { recursive: true });
+    write(
+      join(workspace, '.agents', 'skills', 'shared', 'SKILL.md'),
+      '---\nname: agents-shared\ndescription: Agents-compatible Skill\n---\nAgents.',
+    );
+
+    const snapshot = compileManagedCodexExtensionSnapshot({
+      workspacePath: workspace,
+      userConfigRoot: null,
+      enabledPluginIds: [],
+      mcpServers: [],
+      scenario: { type: 'desktop', surface: 'chat' },
+    });
+
+    expect(snapshot.skills.map(skill => skill.name)).toContain('agents-shared');
+  });
+
   it('appends arguments when a Command omits $ARGUMENTS and keeps secrets out of revisions', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();

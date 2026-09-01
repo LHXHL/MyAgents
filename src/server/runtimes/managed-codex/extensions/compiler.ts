@@ -26,8 +26,10 @@ import type {
 } from '../../../global-skill-inventory';
 import { isRequiredSystemSkill } from '../../../../shared/systemSkills';
 import {
+  DEFAULT_PROJECT_SKILL_DIRECTORIES,
   type EffectiveProjectCapabilitySnapshot,
   type ProjectCapabilityKind,
+  type ProjectSkillDirectory,
 } from '../../../../shared/projectCapabilities';
 import {
   getDefaultEnabledPluginIdsForWorkspace,
@@ -74,6 +76,8 @@ export interface CompileManagedCodexExtensionSnapshotInput {
   unavailableSkillNames?: readonly string[];
   /** DSH supports per-role tool narrowing; managed Codex does not project these fields yet. */
   agentRoleTarget?: 'managed-codex' | 'dsh';
+  /** Ordered Host-owned workspace Skill roots. */
+  projectSkillDirectories?: readonly ProjectSkillDirectory[];
 }
 
 function component(
@@ -320,6 +324,7 @@ function scanSkillsAtRoot(
   sourceId: string,
   reports: ManagedCodexExtensionComponentResult[],
   excludedFolderNames: ReadonlySet<string> = new Set(),
+  projectSlots?: Set<string>,
 ): ManagedCodexSkillSpec[] {
   const root = trustedDirectory(rootPath);
   if (!root) return [];
@@ -333,6 +338,7 @@ function scanSkillsAtRoot(
   const skills: ManagedCodexSkillSpec[] = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.name.startsWith('.')) continue;
+    if (projectSlots?.has(entry.name)) continue;
     if (excludedFolderNames.has(entry.name) && !isRequiredSystemSkill(entry.name)) {
       reports.push(component('skills', 'not_applicable', 'skill_disabled', `${sourceId}:${entry.name}`));
       continue;
@@ -342,7 +348,10 @@ function scanSkillsAtRoot(
       : trustedDirectory(join(root, entry.name));
     if (!folder || (scope !== 'project' && !isWithin(root, folder))) continue;
     const skill = readSkillFolder(scope === 'project' ? folder : root, folder, entry.name, scope, sourceId, reports);
-    if (skill) skills.push(skill);
+    if (skill) {
+      skills.push(skill);
+      projectSlots?.add(entry.name);
+    }
   }
   return skills;
 }
@@ -1071,7 +1080,9 @@ export function compileManagedCodexExtensionSnapshot(
       if (!item.sourceLocalId) return false;
       const source = item.scope === 'project' ? 'project' : 'global';
       const enabled = enabledCandidates.some(candidate => (
-        candidate.source === source && candidate.sourceLocalId === item.sourceLocalId
+        candidate.source === source
+        && candidate.sourceLocalId === item.sourceLocalId
+        && candidate.canonicalName === item.name
       ));
       if (!enabled) {
         reports.push(component(
@@ -1085,8 +1096,17 @@ export function compileManagedCodexExtensionSnapshot(
     });
   };
 
+  const projectSkillSlots = new Set<string>();
   const projectSkills = filterSelected(
-    scanSkillsAtRoot(join(input.workspacePath, '.claude', 'skills'), 'project', 'workspace', reports),
+    (input.projectSkillDirectories ?? DEFAULT_PROJECT_SKILL_DIRECTORIES)
+      .flatMap(directory => scanSkillsAtRoot(
+        join(input.workspacePath, ...directory.split('/')),
+        'project',
+        'workspace',
+        reports,
+        new Set(),
+        projectSkillSlots,
+      )),
     'skill',
   );
   const userSkills = filterSelected(

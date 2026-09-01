@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,6 +39,7 @@ describe('DSH declarative extension compiler', () => {
     expect(first.digest).toMatch(/^[a-f0-9]{64}$/u);
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.skillSourcePolicy)).toBe(true);
+    expect(Object.isFrozen(first.mcpLaunchPolicy)).toBe(true);
   });
 
   it('projects Product Skills, commands, agents, remote MCP, and Host tools without secrets', () => {
@@ -52,6 +53,7 @@ describe('DSH declarative extension compiler', () => {
       dispose: vi.fn(),
     };
     const plane = compileDshProductExtensionPlane(source({
+      workspacePath: root,
       skills: [{
         name: 'review',
         description: 'Review changes',
@@ -115,6 +117,7 @@ describe('DSH declarative extension compiler', () => {
       'command',
       'agent',
       'mcp',
+      'mcp',
       'host_tool',
     ]);
     expect(plane.snapshot.resources).toEqual(expect.arrayContaining([
@@ -131,14 +134,24 @@ describe('DSH declarative extension compiler', () => {
       }),
     }));
     expect(JSON.stringify(plane.snapshot)).not.toContain('private-token');
-    expect(plane.credentialBindings).toEqual([
+    expect(plane.credentialBindings).toEqual(expect.arrayContaining([
       expect.objectContaining({
         componentId: 'remote-tools',
         credentialRevision: 'remote-tools-credentials-v1',
         material: { authorization: 'Bearer private-token' },
       }),
+      expect.objectContaining({
+        componentId: 'local-tools',
+        materialSlot: 'env',
+      }),
+    ]));
+    expect(plane.snapshot.mcpLaunchPolicy.profiles).toEqual([
+      expect.objectContaining({
+        argv: expect.arrayContaining(['node']),
+        cwd: root,
+      }),
     ]);
-    const credential = plane.credentialBindings[0]!;
+    const credential = plane.credentialBindings.find(binding => binding.componentId === 'remote-tools')!;
     expect(findDshMcpCredentialBinding(plane, {
       componentId: credential.componentId,
       credentialRef: credential.credentialRef,
@@ -153,9 +166,103 @@ describe('DSH declarative extension compiler', () => {
     expect(plane.expectedSkillNames).toEqual(['review']);
     expect(plane.diagnostics).toContainEqual(expect.objectContaining({
       id: 'local-tools',
-      state: 'unsupported',
-      code: 'dsh_stdio_launch_profile_unavailable',
+      state: 'applied',
+      code: 'dsh_stdio_mcp_compiled',
     }));
+  });
+
+  it('changes the opaque stdio credential revision when effective env changes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myagents-dsh-stdio-revision-'));
+    const compile = (token: string) => compileDshProductExtensionPlane(source({
+      workspacePath: root,
+      mcpServers: [{
+        id: 'local-tools',
+        name: 'Local tools',
+        type: 'stdio',
+        command: 'node',
+        env: { TOKEN: token },
+        runtimeConfigRevision: 'same-config-revision',
+        isBuiltin: false,
+      }],
+    })).credentialBindings[0]?.credentialRevision;
+
+    const first = compile('first-secret');
+    const second = compile('second-secret');
+
+    expect(first).toMatch(/^mcp-env-[a-f0-9]{64}$/u);
+    expect(second).toMatch(/^mcp-env-[a-f0-9]{64}$/u);
+    expect(second).not.toBe(first);
+    expect(first).not.toContain('first-secret');
+  });
+
+  it('reports an outside-workspace project Skill as an explicit body-only result', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'myagents-dsh-workspace-'));
+    const outside = mkdtempSync(join(tmpdir(), 'myagents-dsh-outside-skill-'));
+    const skillPath = join(outside, 'SKILL.md');
+    const skillContent = '---\nname: linked\ndescription: Linked Skill\n---\n\nUse references/checklist.md.\n';
+    writeFileSync(skillPath, skillContent, 'utf8');
+
+    const plane = compileDshProductExtensionPlane(source({
+      workspacePath: workspace,
+      skills: [{
+        name: 'linked',
+        description: 'Linked Skill',
+        contentSha256: sha256(skillContent),
+        path: skillPath,
+        scope: 'project',
+        sourceId: 'workspace',
+      }],
+    }));
+
+    expect(plane.expectedSkillNames).toEqual(['linked']);
+    expect(plane.snapshot.skillSourcePolicy.roots).toEqual([]);
+    expect(plane.diagnostics).toContainEqual(expect.objectContaining({
+      id: 'linked',
+      state: 'applied',
+      code: 'dsh_skill_body_only_no_workspace_package_root',
+    }));
+  });
+
+  it('caps workspace Skill package roots and stdio MCP profiles per component', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'myagents-dsh-extension-limits-'));
+    const skills = Array.from({ length: 129 }, (_, index) => {
+      const name = `skill-${String(index).padStart(3, '0')}`;
+      const root = join(workspace, '.agents', 'skills', name);
+      const path = join(root, 'SKILL.md');
+      const content = `---\nname: ${name}\ndescription: Fixture ${name}\n---\n\nUse ${name}.\n`;
+      mkdirSync(root, { recursive: true });
+      writeFileSync(path, content, 'utf8');
+      return {
+        name,
+        description: `Fixture ${name}`,
+        contentSha256: sha256(content),
+        path,
+        scope: 'project' as const,
+        sourceId: 'workspace',
+      };
+    });
+    const mcpServers = Array.from({ length: 129 }, (_, index) => ({
+      id: `local-${String(index).padStart(3, '0')}`,
+      name: `Local ${String(index)}`,
+      type: 'stdio' as const,
+      command: 'node',
+      isBuiltin: false,
+    }));
+
+    const plane = compileDshProductExtensionPlane(source({
+      workspacePath: workspace,
+      skills,
+      mcpServers,
+    }));
+
+    expect(plane.snapshot.skillSourcePolicy.roots).toHaveLength(128);
+    expect(plane.expectedSkillNames).toHaveLength(128);
+    expect(plane.snapshot.mcpLaunchPolicy.profiles).toHaveLength(128);
+    expect(plane.credentialBindings.filter(binding => binding.materialSlot === 'env')).toHaveLength(128);
+    expect(plane.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'skill-128', state: 'unsupported', code: 'dsh_skill_source_root_limit' }),
+      expect.objectContaining({ id: 'local-128', state: 'unsupported', code: 'dsh_mcp_launch_profile_limit' }),
+    ]));
   });
 
   it('fails a changed Skill and degrades unsafe per-component inputs', () => {

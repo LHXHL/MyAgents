@@ -471,11 +471,70 @@ export function buildManagedCodexAgentRoleConfig(role: ManagedCodexAgentRoleSpec
   return `${lines.join('\n')}\n`;
 }
 
+function nativeProjectSkillPaths(workspacePath: string): string[] {
+  const workspace = resolve(workspacePath);
+  let projectRoot = workspace;
+  for (let current = workspace; ; current = dirname(current)) {
+    if (existsSync(join(current, '.git'))) {
+      projectRoot = current;
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+  }
+  const directories: string[] = [];
+  for (let current = workspace; ; current = dirname(current)) {
+    directories.push(current);
+    if (current === projectRoot) break;
+  }
+  return directories.flatMap(directory => {
+    const root = join(directory, '.agents', 'skills');
+    try {
+      return readdirSync(root, { withFileTypes: true })
+        .filter(entry => !entry.name.startsWith('.'))
+        .flatMap(entry => {
+          const path = join(root, entry.name, 'SKILL.md');
+          try {
+            return statSync(path).isFile() ? [realpathSync(path)] : [];
+          } catch {
+            return [];
+          }
+        });
+    } catch {
+      return [];
+    }
+  }).sort();
+}
+
+function disabledNativeSkillConfigArg(
+  workspacePath: string,
+  selectedSkills: readonly ManagedCodexSkillSpec[],
+): string[] {
+  const selectedPaths = new Set(selectedSkills.flatMap(skill => {
+    try {
+      return [realpathSync(skill.path)];
+    } catch {
+      return [];
+    }
+  }));
+  const paths = nativeProjectSkillPaths(workspacePath)
+    .filter(path => !selectedPaths.has(path));
+  if (paths.length === 0) return [];
+  return [
+    '-c',
+    `skills.config=[${paths.map(path => `{path=${tomlString(path)},enabled=false}`).join(',')}]`,
+  ];
+}
+
 export function materializeManagedCodexExtensions(
   snapshot: ManagedCodexExtensionSnapshot | undefined,
 ): ManagedCodexExtensionMaterialization {
-  if (!snapshot || (snapshot.agents.length === 0 && snapshot.skills.length === 0)) {
+  if (!snapshot) {
     return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+  }
+  const configArgs = disabledNativeSkillConfigArg(snapshot.workspacePath, snapshot.skills);
+  if (snapshot.agents.length === 0 && snapshot.skills.length === 0) {
+    return { configArgs, skillRoots: [], skills: [], cleanup() {} };
   }
   let root: string;
   try {
@@ -485,9 +544,8 @@ export function materializeManagedCodexExtensions(
       '[codex] managed extension materialization unavailable; continuing without projected Agents and Skills:',
       summarizeCodexErrorForLog(error),
     );
-    return { configArgs: [], skillRoots: [], skills: [], cleanup() {} };
+    return { configArgs, skillRoots: [], skills: [], cleanup() {} };
   }
-  const configArgs: string[] = [];
   const skillRoots: string[] = [];
   const skills: ManagedCodexSkillSpec[] = [];
   let cleaned = false;

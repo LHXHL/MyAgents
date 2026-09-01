@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "contractId": "myagents-dsh-provider-cells-v1",
   "runtimeProfileId": "myagents-dsh-batch-1-candidate-v1",
-  "runtimeProfileDigest": "74855d8592199aff51503b86ad82df08d43a5bd830212df2c50512c5f87c744b",
-  "compatibilitySha256": "29d35382d6cedf59bfd248e80d4b7fb03b770459c2fbc34803ff917df3bca285",
-  "candidateProfileSha256": "74855d8592199aff51503b86ad82df08d43a5bd830212df2c50512c5f87c744b",
+  "runtimeProfileDigest": "13e9cb35a70da156af13cca8bac874a8c49c4a92a593237550cf231741d08be5",
+  "compatibilitySha256": "dbedcc9ef0632833d82c7707ae4267f10d275ee00e922bbd20e1c1625f1216f3",
+  "candidateProfileSha256": "13e9cb35a70da156af13cca8bac874a8c49c4a92a593237550cf231741d08be5",
   "commonPiAiLimitations": [
     "provider-route-cell-required",
     "stop-sequences-unsupported-on-pi-ai",

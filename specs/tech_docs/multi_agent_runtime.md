@@ -607,7 +607,7 @@ External transcript owner 与 builtin 共用 SessionStore cursor 契约，但不
 
 ### Integrated DSH system context
 
-DSH adapter 使用协议 `2.2.0` 的结构化 `systemContext`，不把 MyAgents 单体 append 当作
+DSH adapter 使用协议 `2.3.0` 的结构化 `systemContext`，不把 MyAgents 单体 append 当作
 Runtime base prompt。`system-prompt.ts` 输出通用 contribution arrays：产品身份和能力路由
 是 `global`，当前交互场景是 `root`，可选 Claude companion Workspace 内容是 literal
 `global` context。`external-session.ts` 在实际 Session scenario/options 已知后构造一次；
@@ -621,7 +621,7 @@ Host 只冻结 `.claude/CLAUDE.md` 和 `.claude/rules/**/*.md` companion supplem
 贡献不会泄漏到 fresh child；global 贡献与 Runtime 稳定契约按 DSH scope 继承。完整分层
 见 [`system_prompt_architecture.md`](./system_prompt_architecture.md)。
 
-Force-execute 是一个完整的 turn-boundary transfer，不是单纯把 queue item 移到队首：facade 在 interrupt 前记录目标 queue identity，把预期 abort 归类为 stopped，先持久化已有 partial assistant，再等待精确 Runtime operation settlement，最后只 admission 一次目标消息；任一 barrier 失败都显式取消受影响 queue。DSH retry 还必须读取 Product user 的 `runtimeOperationAnchor` 并查询 native admission：never-admitted tail 才能只做 Product truncate，已 admission 的 turn 必须完成 DSH rewind（第一轮使用协议 `2.2.0` 保留的 genesis boundary）后再提交 Product branch。相关 agent error 携带精确 user message id；结构性 retraction 是 critical SSE，Renderer 不猜“最后一条 user”也不在 Server commit 前乐观清屏。
+Force-execute 是一个完整的 turn-boundary transfer，不是单纯把 queue item 移到队首：facade 在 interrupt 前记录目标 queue identity，把预期 abort 归类为 stopped，先持久化已有 partial assistant，再等待精确 Runtime operation settlement，最后只 admission 一次目标消息；任一 barrier 失败都显式取消受影响 queue。DSH retry 还必须读取 Product user 的 `runtimeOperationAnchor` 并查询 native admission：never-admitted tail 才能只做 Product truncate，已 admission 的 turn 必须完成 DSH rewind（第一轮使用协议 `2.3.0` 保留的 genesis boundary）后再提交 Product branch。相关 agent error 携带精确 user message id；结构性 retraction 是 critical SSE，Renderer 不猜“最后一条 user”也不在 Server commit 前乐观清屏。
 
 DSH resume 的第一次 `session/resume` 必须携带当前 Product Session 已解析出的实际 permission mode 与 configuration revision，不能再次使用仅供新 Session 出生的 bootstrap `default`。Runtime 会在折叠持久化 permission history 之前，以该请求恢复 replacement generation 的有效配置；这个 restore 不写新事件。`recovery_required` 也不是 mutation 的同义词：只有 Runtime 的 `unsettledMutations` 与 Product `pendingDshMutation` 精确对应时才进入 fork/rewind/delete 恢复，`persisted_history_invalid`、`persisted_product_state_invalid` 等原因必须保留本身的诊断身份。
 

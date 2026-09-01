@@ -142,8 +142,8 @@
       "host/attachment/acquire",
       "host/attachment/release"
     ],
-    "schemaSha256": "7828342b93450e3281dd219066e3df414c1b0bbb1f377690a72588062cd342b2",
-    "version": "2.2.0"
+    "schemaSha256": "82bf9509a8213fea2bca9771f3be8587e56e18461457634baa2fe88db55e063c",
+    "version": "2.3.0"
   },
   "runtimeActivation": "workstream-evidence-only",
   "stage": "batch-1-w4-a11",

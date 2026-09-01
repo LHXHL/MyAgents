@@ -58,6 +58,11 @@ export interface ManagedCodexMcpLaunchProjection {
   failures: ManagedCodexMcpProjectionFailure[];
 }
 
+export interface ResolvedStdioMcpLaunch {
+  command: string;
+  args: string[];
+}
+
 class ManagedCodexMcpProjectionError extends Error {
   constructor(
     readonly state: ManagedCodexMcpProjectionFailure['state'],
@@ -152,6 +157,31 @@ function unsafeCodexMcpStdioArgsReason(args: readonly string[]): string | null {
   return null;
 }
 
+export function resolveStdioMcpLaunch(server: McpServerDefinition): ResolvedStdioMcpLaunch {
+  if (server.type !== 'stdio') reject('server is not stdio');
+  let command = server.command;
+  if (command === '__builtin__') reject('in-process MCP has no subprocess launch');
+  if (command === '__browser_host__') reject('Browser Host marker has no subprocess launch');
+  if (command === '__bundled_cuse__') {
+    command = getBundledCusePath() ?? undefined;
+    if (!command) reject('bundled cuse binary not found');
+  }
+  if (!command) reject('missing stdio command');
+  let args = Array.isArray(server.args) ? [...server.args] : [];
+  if (command === 'npx') {
+    const invocation = resolveNpxMcpInvocation(args, {
+      pinPresetPackages: server.isBuiltin === true,
+    });
+    command = invocation.command;
+    args = invocation.args;
+  }
+  const commandReason = unsafeCodexMcpStdioValueReason(command);
+  if (commandReason) reject(`stdio command ${commandReason}`);
+  const argsReason = unsafeCodexMcpStdioArgsReason(args);
+  if (argsReason) reject(`stdio args unsafe for argv (${argsReason})`);
+  return { command, args };
+}
+
 function unsafeCodexMcpUrlReason(rawUrl: string): string | null {
   if (hasCodexMcpTemplate(rawUrl)) return 'contains MyAgents env placeholder';
   let parsed: URL;
@@ -218,29 +248,11 @@ export function projectManagedCodexMcpLaunchConfig(
       }
 
       if (server.type === 'stdio') {
-        let command = server.command;
-        if (command === '__builtin__') {
+        if (server.command === '__builtin__') {
           acceptedServerIds.push(server.id);
           continue;
         }
-        if (command === '__bundled_cuse__') {
-          command = getBundledCusePath() ?? undefined;
-          if (!command) reject('bundled cuse binary not found');
-        }
-        if (!command) reject('missing stdio command');
-        let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-        let projectedCommand = command;
-        if (projectedCommand === 'npx') {
-          const invocation = resolveNpxMcpInvocation(stdioArgs, {
-            pinPresetPackages: server.isBuiltin === true,
-          });
-          projectedCommand = invocation.command;
-          stdioArgs = invocation.args;
-        }
-        const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
-        if (commandReason) reject(`stdio command ${commandReason}`);
-        const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
-        if (argsReason) reject(`stdio args unsafe for Codex argv (${argsReason})`);
+        const { command: projectedCommand, args: stdioArgs } = resolveStdioMcpLaunch(server);
 
         const serverEnv = Object.entries(server.env ?? {});
         const unsafeEnvKeys = serverEnv

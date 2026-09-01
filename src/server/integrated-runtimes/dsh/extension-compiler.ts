@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { McpServerDefinition } from '../../../shared/config-types';
 import type { RuntimeExtensionComponentStatus } from '../../../shared/types/runtime';
@@ -12,6 +13,8 @@ import type {
   ProductDynamicToolSpec,
   ProductHostToolDispatcher,
 } from '../../runtimes/product-extensions/contracts';
+import { buildMcpSubprocessEnv } from '../../session-core/mcp-env-policy';
+import { resolveStdioMcpLaunch } from '../../runtimes/managed-codex/extensions/mcp-launch-projection';
 import type { DshRpcObject } from './protocol-types';
 
 const MAX_RESOURCE_CHARACTERS = 1_000_000;
@@ -21,8 +24,11 @@ const DSH_COMMAND_NAME = /^[a-z][a-z0-9_-]{0,255}$/u;
 // server, remote, and rendered public tool identities must all fit this bound.
 const HOST_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
 const MCP_NAME = HOST_TOOL_NAME;
+const MAX_DSH_SKILL_SOURCE_ROOTS = 128;
+const MAX_DSH_MCP_LAUNCH_PROFILES = 128;
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u;
 const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
+const MCP_ENV_REVISION_KEY = randomBytes(32);
 
 export type DshExtensionSnapshot = Readonly<{
   formatVersion: 1;
@@ -34,10 +40,15 @@ export type DshExtensionSnapshot = Readonly<{
     revision: string;
     roots: readonly DshRpcObject[];
   }>;
+  mcpLaunchPolicy: Readonly<{
+    revision: string;
+    profiles: readonly DshRpcObject[];
+  }>;
 }>;
 
 export type DshProductExtensionSource = Readonly<{
   revision: string;
+  workspacePath?: string;
   skills: readonly ManagedCodexSkillSpec[];
   commands: readonly ManagedCodexCommandSpec[];
   agents: readonly ManagedCodexAgentRoleSpec[];
@@ -51,7 +62,7 @@ export type DshMcpCredentialBinding = Readonly<{
   componentId: string;
   credentialRef: string;
   credentialRevision: string;
-  materialSlot: 'header';
+  materialSlot: 'env' | 'header';
   material: Readonly<Record<string, string>>;
 }>;
 
@@ -234,6 +245,7 @@ export function compileDshExtensionSnapshot(input?: {
   components?: readonly DshRpcObject[];
   resources?: readonly DshRpcObject[];
   skillRoots?: readonly DshRpcObject[];
+  mcpLaunchProfiles?: readonly DshRpcObject[];
 }): DshExtensionSnapshot {
   const revision = input?.revision ?? 'myagents-dsh-extensions-v1:empty';
   return createSnapshot({
@@ -244,6 +256,10 @@ export function compileDshExtensionSnapshot(input?: {
     skillSourcePolicy: {
       revision: `${revision}:skill-policy`,
       roots: structuredClone(input?.skillRoots ?? []),
+    },
+    mcpLaunchPolicy: {
+      revision: `${revision}:mcp-launch-policy`,
+      profiles: structuredClone(input?.mcpLaunchProfiles ?? []),
     },
   });
 }
@@ -256,6 +272,102 @@ function exactSkillContent(skill: ManagedCodexSkillSpec): string {
   return content;
 }
 
+function workspaceSkillRoot(
+  source: DshProductExtensionSource,
+  skill: ManagedCodexSkillSpec,
+): DshRpcObject | undefined {
+  if (skill.scope !== 'project' || !source.workspacePath || basename(skill.path) !== 'SKILL.md') {
+    return undefined;
+  }
+  const workspace = resolve(source.workspacePath);
+  const root = resolve(dirname(skill.path));
+  const rel = relative(workspace, root);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+  return {
+    sourceId: skill.name,
+    root,
+    enabledPaths: ['SKILL.md'],
+  };
+}
+
+function opaqueMcpEnvironmentRevision(
+  material: Readonly<Record<string, string>>,
+  runtimeConfigRevision: string | undefined,
+): string {
+  return `mcp-env-${createHmac('sha256', MCP_ENV_REVISION_KEY)
+    .update(stableJson({ material, runtimeConfigRevision: runtimeConfigRevision ?? null }))
+    .digest('hex')}`;
+}
+
+function stdioMcpComponent(
+  source: DshProductExtensionSource,
+  server: McpServerDefinition,
+  diagnostics: RuntimeExtensionComponentStatus[],
+  credentialBindings: DshMcpCredentialBinding[],
+): Readonly<{ component: DshRpcObject; launchProfile: DshRpcObject }> | null {
+  if (!MCP_NAME.test(server.id)) {
+    diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_mcp_name_invalid'));
+    return null;
+  }
+  if (!source.workspacePath) {
+    diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_stdio_workspace_missing'));
+    return null;
+  }
+  if (server.command === '__builtin__') return null;
+  try {
+    const launch = resolveStdioMcpLaunch(server);
+    const cwd = resolve(source.workspacePath);
+    const launchProfileRef = safeReference(
+      'mcp-launch',
+      stableJson({ id: server.id, argv: [launch.command, ...launch.args], cwd }),
+    );
+    const material = Object.freeze(buildMcpSubprocessEnv(process.env, server.env));
+    const credentialRevision = opaqueMcpEnvironmentRevision(material, server.runtimeConfigRevision);
+    const credentialRef = safeReference('mcp-env', server.id);
+    credentialBindings.push(Object.freeze({
+      componentId: server.id,
+      credentialRef,
+      credentialRevision,
+      materialSlot: 'env',
+      material,
+    }));
+    diagnostics.push(componentStatus('mcp', server.id, 'applied', 'dsh_stdio_mcp_compiled'));
+    return Object.freeze({
+      component: {
+        id: server.id,
+        enabled: true,
+        kind: 'mcp',
+        descriptor: {
+          transport: 'stdio',
+          launchProfileRef,
+          credential: {
+            credentialRef,
+            credentialRevision,
+            materialSlot: 'env',
+          },
+        },
+        ...(server.name || server.description
+          ? { metadata: { displayName: boundedText(server.name || server.id, 256, 'DSH MCP display name'), ...(server.description ? { description: boundedText(server.description, 8_192, 'DSH MCP description', true) } : {}) } }
+          : {}),
+      },
+      launchProfile: {
+        ref: launchProfileRef,
+        argv: [launch.command, ...launch.args],
+        cwd,
+      },
+    });
+  } catch (error) {
+    diagnostics.push(componentStatus(
+      'mcp',
+      server.id,
+      'failed',
+      'dsh_stdio_launch_invalid',
+      error instanceof Error ? error.message : String(error),
+    ));
+    return null;
+  }
+}
+
 function remoteMcpComponent(
   server: McpServerDefinition,
   diagnostics: RuntimeExtensionComponentStatus[],
@@ -263,16 +375,6 @@ function remoteMcpComponent(
 ): DshRpcObject | null {
   if (!MCP_NAME.test(server.id)) {
     diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_mcp_name_invalid'));
-    return null;
-  }
-  if (server.type === 'stdio') {
-    diagnostics.push(componentStatus(
-      'mcp',
-      server.id,
-      'unsupported',
-      'dsh_stdio_launch_profile_unavailable',
-      'The verified DSH Runtime contains no Host-approved stdio launch profile.',
-    ));
     return null;
   }
   if (!server.url) {
@@ -357,6 +459,8 @@ export function compileDshProductExtensionPlane(
   }
   const components: DshRpcObject[] = [];
   const resources: DshRpcObject[] = [];
+  const skillRoots: DshRpcObject[] = [];
+  const mcpLaunchProfiles: DshRpcObject[] = [];
   const credentialBindings: DshMcpCredentialBinding[] = [];
   const hostToolBindings: DshHostToolBinding[] = [];
   const diagnostics: RuntimeExtensionComponentStatus[] = [...(source.components ?? [])];
@@ -389,8 +493,30 @@ export function compileDshProductExtensionPlane(
         },
         metadata: { displayName: boundedText(skill.name, 256, 'DSH Skill name') },
       };
+      const skillRoot = workspaceSkillRoot(source, skill);
+      if (skillRoot && skillRoots.length >= MAX_DSH_SKILL_SOURCE_ROOTS) {
+        diagnostics.push(componentStatus(
+          'skills',
+          skill.name,
+          'unsupported',
+          'dsh_skill_source_root_limit',
+          'The DSH extension generation already contains 128 workspace Skill package roots.',
+        ));
+        continue;
+      }
       resources.push(resource);
       components.push(component);
+      if (skillRoot) {
+        skillRoots.push(skillRoot);
+      } else if (skill.scope === 'project') {
+        diagnostics.push(componentStatus(
+          'skills',
+          skill.name,
+          'applied',
+          'dsh_skill_body_only_no_workspace_package_root',
+          'The project Skill body is available, but its canonical package directory is outside the admitted workspace.',
+        ));
+      }
       admittedSkillNames.add(skill.name);
     } catch (error) {
       diagnostics.push(componentStatus(
@@ -478,6 +604,24 @@ export function compileDshProductExtensionPlane(
   }
 
   for (const server of [...source.mcpServers].sort((left, right) => left.id.localeCompare(right.id))) {
+    if (server.type === 'stdio') {
+      if (mcpLaunchProfiles.length >= MAX_DSH_MCP_LAUNCH_PROFILES) {
+        diagnostics.push(componentStatus(
+          'mcp',
+          server.id,
+          'unsupported',
+          'dsh_mcp_launch_profile_limit',
+          'The DSH extension generation already contains 128 stdio MCP launch profiles.',
+        ));
+        continue;
+      }
+      const compiled = stdioMcpComponent(source, server, diagnostics, credentialBindings);
+      if (compiled) {
+        components.push(compiled.component);
+        mcpLaunchProfiles.push(compiled.launchProfile);
+      }
+      continue;
+    }
     const component = remoteMcpComponent(server, diagnostics, credentialBindings);
     if (component) components.push(component);
   }
@@ -525,8 +669,14 @@ export function compileDshProductExtensionPlane(
   if (new Set(componentKeys).size !== componentKeys.length) {
     throw new Error('Product extension inventory has conflicting DSH component identities');
   }
-  const revision = `myagents-dsh-v2:${source.revision}`;
-  const snapshot = compileDshExtensionSnapshot({ revision, components, resources });
+  const revision = `myagents-dsh-v3:${source.revision}`;
+  const snapshot = compileDshExtensionSnapshot({
+    revision,
+    components,
+    resources,
+    skillRoots,
+    mcpLaunchProfiles,
+  });
   return Object.freeze({
     snapshot,
     credentialBindings: Object.freeze([...credentialBindings]),

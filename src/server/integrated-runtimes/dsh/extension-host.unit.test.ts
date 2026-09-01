@@ -14,6 +14,7 @@ function plane(dispatcher?: ProductHostToolDispatcher): DshCompiledExtensionPlan
       components: [],
       resources: [],
       skillSourcePolicy: { revision: 'skills-v1', roots: [] },
+      mcpLaunchPolicy: { revision: 'mcp-launch-v1', profiles: [] },
     },
     credentialBindings: [{
       componentId: 'remote-tools',

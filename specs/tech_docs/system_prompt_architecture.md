@@ -171,10 +171,17 @@ Prompt 中出现一个能力名称，不等于真实 Tool 已被注册或授权�
 | Claude Code CLI          | 临时文件 + `--append-system-prompt-file`                    | Claude Code 原生发现 `CLAUDE.md` / rules                                                                      |
 | Codex                    | `thread/start` / `thread/resume` 的 `developerInstructions` | Codex 原生发现 `AGENTS.md`，并将 `CLAUDE.md` 配为 fallback；MyAgents 另外把 `.claude/rules/*.md` 格式化后追加 |
 | Gemini                   | 写入 per-session `GEMINI_SYSTEM_MD`                         | 有 `GEMINI.md` 时原生加载；否则注入 `CLAUDE.md + .claude/CLAUDE.md + rules`，再否则 fallback 到 `AGENTS.md`   |
-| Integrated DSH           | 协议 `2.2.0` 的 `systemContext.sections/contexts`            | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
+| Integrated DSH           | 协议 `2.3.0` 保留的 `systemContext.sections/contexts`        | DSH 每目录互斥加载 `CLAUDE.md` → `AGENTS.override.md` → `AGENTS.md`；Host 仅冻结 `.claude/CLAUDE.md` 与 rules companion supplement |
 
 External Runtime 的兼容读取拒绝 symlink，并限制递归深度、文件数量、单文件大小和总
 大小，避免 Workspace 文件把任意工作区外文件或无界内容注入模型上下文。
+
+Workspace Skill 是另一条 progressive-disclosure 管线，不属于 Workspace instruction
+正文。Host 默认按 `.claude/skills`、`.agents/skills` 的顺序合并有效候选；相同有效
+folder 由前者优先，resolver/adapter API 可传入 ordered subset。初始 Prompt 只出现有效
+name/description。Integrated DSH 在调用 Skill 时通过 DSH `resourceBase` 暴露 package
+目录，Codex/Claude 继续使用各自 native parser；`references/`、`scripts/`、`assets/`
+只在模型实际需要时由普通工具读取，不递归塞入 system Prompt。
 
 ## Runtime 投送与生命周期
 
