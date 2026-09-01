@@ -3,6 +3,7 @@ import {
   getActiveRuntimeSource,
   getActiveRuntimeType,
   hasPendingExternalAskUserQuestion,
+  hasPendingExternalPlanApproval,
   isExternalSessionActive,
   popLastUserMessageForRetry,
   retryLastExternalUserMessage,
@@ -301,4 +302,11 @@ export function getAskUserQuestionResponseEngine(requestId: string): SessionEngi
   if (!shouldUseExternalRuntime()) return builtinEngine;
   if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
   return hasPendingExternalAskUserQuestion(requestId) ? externalEngine : builtinEngine;
+}
+
+/** Plan review responses follow the pending request owner, like AskUserQuestion. */
+export function getPlanApprovalResponseEngine(requestId: string): SessionEngine {
+  if (!shouldUseExternalRuntime()) return builtinEngine;
+  if (isDshRuntime(getCurrentRuntimeType())) return dshEngine;
+  return hasPendingExternalPlanApproval(requestId) ? externalEngine : builtinEngine;
 }

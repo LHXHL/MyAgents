@@ -465,6 +465,7 @@ export interface SessionEngine {
     reason?: string,
   ): Promise<boolean>;
   respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
+  respondPlanApproval(requestId: string, approved: boolean, feedback?: string): Promise<boolean>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
   forkAtAssistantMessage(
     messageId: string,

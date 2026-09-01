@@ -85,6 +85,15 @@ export type ExternalPendingInteractiveRequest =
       questions: AskUserQuestionInput['questions'];
       previewFormat: 'html' | 'markdown';
     };
+  }
+  | {
+    type: 'exit-plan-mode:request';
+    data: {
+      requestId: string;
+      sessionId?: string | null;
+      plan?: string;
+      allowedPrompts?: [];
+    };
   };
 
 export type ExternalConfigSource =

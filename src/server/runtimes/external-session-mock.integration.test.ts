@@ -1813,6 +1813,100 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
   });
 
+  it('routes DSH native compaction through the same Session operation', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-compact';
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'DSH prewarm');
+    broadcastEvents.length = 0;
+
+    await expect(harness.engine.compactContext()).resolves.toEqual({ success: true });
+
+    expect(harness.runtime.compactCalls).toBe(1);
+    expect(broadcastEvents.filter(({ event }) => event === 'chat:system-status')).toEqual([
+      { event: 'chat:system-status', data: { status: 'compacting' } },
+      { event: 'chat:system-status', data: { status: null, compactResult: 'success' } },
+    ]);
+  });
+
+  it('keeps DSH context, TaskGraph, Plan, and Plan review projections distinct', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-status-projections';
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop' },
+    });
+    await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'DSH projection prewarm');
+    broadcastEvents.length = 0;
+
+    harness.runtime.emitForTest({
+      kind: 'context_update',
+      contextOccupiedTokens: 0,
+      runtimeContextWindow: 128_000,
+    });
+    harness.runtime.emitForTest({
+      kind: 'agent_plan_update',
+      todos: [{ key: 'task-1', content: 'Inspect', activeForm: 'Inspecting', status: 'in_progress' }],
+    });
+    harness.runtime.emitForTest({
+      kind: 'plan_state_update',
+      mode: 'plan',
+      revision: 'plan-revision-1',
+      permissionMode: 'plan',
+    });
+    harness.runtime.emitForTest({
+      kind: 'permission_request',
+      requestId: 'plan-review-1',
+      toolName: 'ExitPlanMode',
+      toolUseId: 'exit-plan-call-1',
+      interactionKind: 'plan_approval',
+      input: {
+        questions: [{
+          id: 'review-1',
+          detail: '# Exact plan',
+          intent: { kind: 'plan-review', approve: 'Approve' },
+        }],
+      },
+    });
+
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:context-usage',
+      data: expect.objectContaining({
+        sessionId,
+        contextTokens: 0,
+        contextWindow: 128_000,
+        usedPercent: 0,
+        source: 'dsh',
+      }),
+    });
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:agent-plan-update',
+      data: {
+        sessionId,
+        todos: [{ key: 'task-1', content: 'Inspect', activeForm: 'Inspecting', status: 'in_progress' }],
+      },
+    });
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:permission-mode-changed',
+      data: { permissionMode: 'plan' },
+    });
+    expect(broadcastEvents).toContainEqual({
+      event: 'exit-plan-mode:request',
+      data: {
+        requestId: 'plan-review-1',
+        sessionId,
+        plan: '# Exact plan',
+        allowedPrompts: [],
+      },
+    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('permission:request');
+  });
+
   it('restarts an idle compatibility Runtime after blocked-link cleanup', async () => {
     const harness = await createHarness([{ kind: 'success', text: 'clean projection' }]);
     const sessionId = 'session-skill-projection-cleanup';

@@ -1213,16 +1213,21 @@ function broadcastExternalInteractiveExpired(
     } catch (e) {
       console.warn(`[external-session] broadcast permission:expired for ${requestId} failed:`, e);
     }
+    return;
+  }
+  if (entry.type === 'exit-plan-mode:request') {
+    try {
+      broadcast('exit-plan-mode:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
+    } catch (e) {
+      console.warn(`[external-session] broadcast exit-plan-mode:expired for ${requestId} failed:`, e);
+    }
   }
 }
 
 function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 'reset'): void {
-  // `pendingExternalInteractiveRequests` only ever holds
-  // `ask-user-question:request` (structured wizard) or `permission:request`
-  // (generic allow/deny card). External runtimes (CC / Codex / Gemini) don't
-  // expose ExitPlanMode / EnterPlanMode tools today, so those `*:expired`
-  // channels stay builtin-only. Filtering by entry.type keeps the broadcast
-  // honest if a future runtime starts using those interactive types.
+  // External runtimes may hold structured questions, permissions, or plan
+  // approval requests. Filtering by entry.type keeps expiry on the matching
+  // product channel while a stopped runtime drains every pending interaction.
   for (const [requestId, entry] of getExternalInteractiveRequestEntries()) {
     deleteExternalAskUserQuestion(requestId);
     deleteExternalInteractiveRequest(requestId);
@@ -5485,6 +5490,29 @@ export async function respondExternalPermission(
   return true;
 }
 
+/** Settle a Runtime-owned Plan review through the same interaction reverse port. */
+export async function respondExternalPlanApproval(
+  requestId: string,
+  approved: boolean,
+  feedback?: string,
+): Promise<boolean> {
+  const active = getExternalActivePair();
+  const pending = getExternalInteractiveRequest(requestId);
+  if (!active || pending?.type !== 'exit-plan-mode:request') return false;
+  await active.runtime.respondPermission(
+    active.process,
+    requestId,
+    approved ? 'allow_once' : 'deny',
+    feedback,
+    undefined,
+    { approved, ...(feedback?.trim() ? { feedback: feedback.trim() } : {}) },
+  );
+  if (!getExternalInteractiveRequest(requestId)) return true;
+  deleteExternalInteractiveRequest(requestId);
+  broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
+  return true;
+}
+
 function getExternalPermissionRulePair() {
   const active = getExternalActivePair();
   if (!active || active.process.exited) {
@@ -5535,6 +5563,11 @@ export async function revokeExternalPermissionRule(input: Readonly<{
  */
 export function hasPendingExternalAskUserQuestion(requestId: string): boolean {
   return hasExternalAskUserQuestion(requestId);
+}
+
+/** Whether an outstanding Runtime-owned plan review is tracked for this request. */
+export function hasPendingExternalPlanApproval(requestId: string): boolean {
+  return getExternalInteractiveRequest(requestId)?.type === 'exit-plan-mode:request';
 }
 
 /**
@@ -5892,11 +5925,11 @@ export async function compactExternalContext(): Promise<{
   error?: string;
 }> {
   await awaitExternalLifecycleStarting();
-  if (!isManagedCodexProductRuntime()) {
+  if (!isManagedCodexProductRuntime() && !isDshProductRuntime()) {
     return {
       success: false,
       status: 409,
-      error: 'Native context compaction is only available for Managed Codex',
+      error: 'Native context compaction is unavailable for this Runtime',
     };
   }
   if (isExternalSessionBusy()) {
@@ -5919,11 +5952,11 @@ export async function compactExternalContext(): Promise<{
   let started = false;
   try {
     const active = await getCodexConversationBranchPair();
-    if (!active || active.process.exited || active.runtime.type !== 'codex' || !active.runtime.compactContext) {
+    if (!active || active.process.exited || !active.runtime.compactContext) {
       return {
         success: false,
         status: 409,
-        error: 'Managed Codex Session is not ready for context compaction',
+        error: 'The active Runtime Session is not ready for context compaction',
       };
     }
 
@@ -5947,7 +5980,7 @@ export async function compactExternalContext(): Promise<{
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[external-session] Managed Codex context compaction failed: ${message}`);
+    console.error(`[external-session] Runtime context compaction failed: ${message}`);
     if (started) {
       broadcast('chat:system-status', {
         status: null,
@@ -7457,6 +7490,7 @@ function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'per
 }
 
 function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
+  if (event.interactionKind && event.interactionKind !== 'permission') return false;
   if (event.toolName === 'AskUserQuestion') return false;
   const scenario = getExternalLifecycleScenario();
   if (!shouldUseNonBypassForNativeAskUserQuestion(getExternalRuntimeDesiredPermissionMode(), scenario)) {
@@ -7471,7 +7505,9 @@ function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kin
 }
 
 function handleUnifiedEvent(event: UnifiedEvent): void {
-  recordRuntimeActivity();
+  if (event.kind !== 'subagent_lifecycle' || event.affectsRootActivity !== false) {
+    recordRuntimeActivity();
+  }
 
   switch (event.kind) {
     case 'root_turn_admitted':
@@ -7646,7 +7682,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'subagent_lifecycle': {
       const lifecycle = applyExternalSubagentLifecycle(event);
-      broadcastExternalSubagentLifecycle(event.parentToolUseId, lifecycle);
+      broadcast('chat:subagent-status', { parentToolUseId: event.parentToolUseId, lifecycle });
+      if (event.affectsRootActivity !== false) recordRuntimeActivity();
       break;
     }
 
@@ -7718,6 +7755,24 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
       if (autoAllowFullAgencyNativeCardRequest(event)) break;
+      if (event.interactionKind === 'plan_approval') {
+        const questions = Array.isArray(event.input.questions) ? event.input.questions : [];
+        const question = questions[0] && typeof questions[0] === 'object' && !Array.isArray(questions[0])
+          ? questions[0] as Record<string, unknown>
+          : {};
+        const requestPayload = {
+          requestId: event.requestId,
+          sessionId: getCurrentBoundSessionId() || undefined,
+          ...(typeof question.detail === 'string' ? { plan: question.detail } : {}),
+          allowedPrompts: [] as [],
+        };
+        setExternalInteractiveRequest(event.requestId, {
+          type: 'exit-plan-mode:request',
+          data: requestPayload,
+        });
+        broadcast('exit-plan-mode:request', requestPayload);
+        break;
+      }
       // AskUserQuestion carries a structured payload (questions/options/previews) and
       // needs the dedicated wizard UI, not the generic allow/deny card. Route it through
       // the ask-user-question:request channel so the frontend mounts AskUserQuestionPrompt
@@ -8301,6 +8356,32 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         // PRD 0.2.32 — 留住本轮最新快照；Codex 亚轮会多次进这里，不每次写盘，turn 末
         // persistTurnResult 快照后写一次（单一数据源，供重开 seed）。
         setExternalCurrentTurnContextUsage(ctxUsage);
+      }
+      break;
+    }
+
+    case 'context_update': {
+      const contextUsage = computeContextUsage({
+        occupiedTokens: event.contextOccupiedTokens,
+        runtimeWindow: event.runtimeContextWindow,
+        source: getExternalActiveRuntime()?.type ?? getCurrentRuntimeType(),
+        model: getExternalRuntimeDisplayModel() ?? undefined,
+        lookupWindow: lookupModelContextLength,
+      });
+      const sessionId = currentTurnTraceSessionId || getExternalLifecycleSessionId() || undefined;
+      broadcast('chat:context-usage', sessionId ? { ...contextUsage, sessionId } : contextUsage);
+      setExternalCurrentTurnContextUsage(contextUsage);
+      break;
+    }
+
+    case 'plan_state_update': {
+      applyDesiredExternalRuntimeConfigPatch({ permissionMode: event.permissionMode });
+      broadcast('chat:permission-mode-changed', { permissionMode: event.permissionMode });
+      const sessionId = getExternalLifecycleSessionId();
+      if (sessionId) {
+        void updateSessionMetadata(sessionId, { permissionMode: event.permissionMode }).catch((error) => {
+          console.warn('[external-session] Failed to persist projected DSH Plan mode:', error);
+        });
       }
       break;
     }

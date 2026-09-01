@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     builtinImContext: null as { senderId: string } | null,
     externalImContext: null as { senderId: string } | null,
     pendingExternalAsk: false,
+    pendingExternalPlan: false,
     providerDisabled: false,
     sessionMetadata: new Map<string, Record<string, unknown>>(),
   };
@@ -122,6 +123,7 @@ const mocks = vi.hoisted(() => {
     getStreamingAssistantId: vi.fn<() => string | null>(() => null),
     getSystemInitInfo: vi.fn<() => unknown>(() => null),
     handleAskUserQuestionResponse: vi.fn(() => true),
+    handleExitPlanModeResponse: vi.fn(() => true),
     handlePermissionResponse: vi.fn(() => true),
     interruptCurrentResponse: vi.fn(async () => false),
     isSessionBusy: vi.fn(() => false),
@@ -198,6 +200,7 @@ const mocks = vi.hoisted(() => {
     getLastExternalAssistantText: vi.fn(() => 'external answer'),
     hasExternalRuntimeProcess: vi.fn(() => state.externalProcessAlive || state.externalActive),
     hasPendingExternalAskUserQuestion: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalAsk),
+    hasPendingExternalPlanApproval: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalPlan),
     isExternalSessionActive: vi.fn(() => state.externalActive),
     isExternalSessionBusy: vi.fn(() => state.externalBusy),
     tryAcquireExternalSessionMutationLease: vi.fn(() => {
@@ -211,6 +214,7 @@ const mocks = vi.hoisted(() => {
     retryLastExternalUserMessage: vi.fn(async () => ({ success: true, content: 'dsh-retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
+    respondExternalPlanApproval: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
@@ -371,6 +375,7 @@ vi.mock('../agent-session', () => ({
   getStreamingAssistantId: mocks.getStreamingAssistantId,
   getSystemInitInfo: mocks.getSystemInitInfo,
   handleAskUserQuestionResponse: mocks.handleAskUserQuestionResponse,
+  handleExitPlanModeResponse: mocks.handleExitPlanModeResponse,
   handlePermissionResponse: mocks.handlePermissionResponse,
   interruptCurrentResponse: mocks.interruptCurrentResponse,
   isSessionBusy: mocks.isSessionBusy,
@@ -434,6 +439,7 @@ vi.mock('../runtimes/external-session', () => ({
   getProductExtensionConfigSnapshot: mocks.getProductExtensionConfigSnapshot,
   hasExternalRuntimeProcess: mocks.hasExternalRuntimeProcess,
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
+  hasPendingExternalPlanApproval: mocks.hasPendingExternalPlanApproval,
   isExternalSessionActive: mocks.isExternalSessionActive,
   isExternalSessionBusy: mocks.isExternalSessionBusy,
   tryAcquireExternalSessionMutationLease: mocks.tryAcquireExternalSessionMutationLease,
@@ -443,6 +449,7 @@ vi.mock('../runtimes/external-session', () => ({
   retryLastExternalUserMessage: mocks.retryLastExternalUserMessage,
   prewarmExternalSession: mocks.prewarmExternalSession,
   respondExternalAskUserQuestion: mocks.respondExternalAskUserQuestion,
+  respondExternalPlanApproval: mocks.respondExternalPlanApproval,
   respondExternalPermission: mocks.respondExternalPermission,
   restoreExternalSessionState: mocks.restoreExternalSessionState,
   sendExternalMessage: mocks.sendExternalMessage,
@@ -490,6 +497,7 @@ vi.mock('../sse', () => ({
 import {
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
+  getPlanApprovalResponseEngine,
   getSessionEngine,
   prewarmExternalRuntimeAtSelector,
   restoreInitialExternalSessionAtSelector,
@@ -532,6 +540,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.builtinImContext = null;
     mocks.state.externalImContext = null;
     mocks.state.pendingExternalAsk = false;
+    mocks.state.pendingExternalPlan = false;
     mocks.state.providerDisabled = false;
     mocks.state.sessionMetadata.clear();
     resetProductSessionBinding({ sessionId: 'external-session', workspacePath: '/workspace' });
@@ -2895,6 +2904,16 @@ describe('session-engine selector and adapters', () => {
     expect(getAskUserQuestionResponseEngine('ask-1').kind).toBe('external');
   });
 
+  it('routes plan approval responses by pending external request ownership', () => {
+    mocks.state.useExternal = true;
+
+    mocks.state.pendingExternalPlan = false;
+    expect(getPlanApprovalResponseEngine('plan-1').kind).toBe('builtin');
+
+    mocks.state.pendingExternalPlan = true;
+    expect(getPlanApprovalResponseEngine('plan-1').kind).toBe('external');
+  });
+
   it('keeps DSH interaction responses on the integrated owner after process loss', () => {
     mocks.state.useExternal = true;
     mocks.state.externalActive = false;
@@ -2905,6 +2924,7 @@ describe('session-engine selector and adapters', () => {
     try {
       expect(getPermissionResponseEngine().kind).toBe('integrated');
       expect(getAskUserQuestionResponseEngine('stale-ask').kind).toBe('integrated');
+      expect(getPlanApprovalResponseEngine('stale-plan').kind).toBe('integrated');
     } finally {
       if (previousRuntime === undefined) delete process.env.MYAGENTS_RUNTIME;
       else process.env.MYAGENTS_RUNTIME = previousRuntime;

@@ -1,9 +1,9 @@
 # Tool Attachment 一等公民管道
 
-> AI 运行时（Codex / 未来 Gemini / CC / builtin）产出的富媒体（图片为主，预留音频/PDF）走同一条
+> AI 运行时（Codex / Integrated DSH / 未来 Gemini / CC / builtin）产出的富媒体（图片为主，预留音频/PDF）走同一条
 > `UnifiedEvent.tool_result.attachments[]` 通道，前端用单一 `ToolAttachmentGallery` 组件渲染。
 >
-> 引入版本：v0.2.15。本期接入 Codex Runtime；builtin SDK / Gemini / CC 接入留 v0.2.16+。
+> 引入版本：v0.2.15；当前接入 Codex 与 Integrated DSH，builtin SDK / Gemini / CC 仍待后续接入。
 >
 > 设计 PRD：`specs/prd/prd_0.2.15_codex_tool_outputs_normalization.md`（本地存档，未入 git）。
 
@@ -24,6 +24,12 @@
 - 大图（base64 ≥ 数 MB）**不进 SSE / IPC JSON**（CLAUDE.md 红线：>256KB payload 走引用而非内联）
 - 异步落盘**不阻塞** SSE 流（同 turn 多图不出现 head-of-line block）
 - session resume / sidecar restart 后历史回放图片**仍能渲染**
+
+Integrated DSH 不把图片字节或任意绝对路径放进 `runtime/event`。协议只携带由
+Runtime attachment registry 签发的 `image_ref` 与内容元数据；DSH adapter 以精确
+generation/session/digest 获取只读 lease，确认本地路径后调用同一个
+`saveToolAttachment({ externalPath })`，最后无论成功失败都释放 lease。这样 DSH 富结果
+复用现有持久化、路径校验、SSE 和 Gallery，且 attachment 失败只降级该附件，不终止事件流。
 
 ---
 

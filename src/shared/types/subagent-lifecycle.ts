@@ -8,6 +8,19 @@ export interface SubagentLifecycle {
   status: SubagentLifecycleStatus;
   startedAt: number;
   finishedAt?: number;
+  agentType?: string;
+  description?: string;
+  mode?: 'foreground' | 'continuable';
+  model?: string;
+  result?: string;
+  resultTruncated?: boolean;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    costUsd?: number | null;
+  };
 }
 
 export function isTerminalSubagentLifecycleStatus(

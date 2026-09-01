@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 import type { UnifiedEvent, UnifiedEventCallback } from '../../runtimes/types';
 import type { DshRpcObject } from './protocol-types';
 
@@ -28,6 +29,11 @@ export type DshRuntimeEventProjectorOptions = Readonly<{
   onEvent: UnifiedEventCallback;
   onTurnTerminal?: (terminal: DshProjectedTurnTerminal) => void;
   clientUserMessageIdForOperation?: (clientOperationId: string) => string | undefined;
+  onPlan?: (snapshot: { mode: 'normal' | 'plan'; revision: string }) => void;
+  resolveToolImage?: (
+    image: DshRpcObject,
+    context: { runtimeSessionId: string; turnId?: string; toolUseId: string; toolName: string },
+  ) => Promise<ToolAttachment>;
 }>;
 
 function object(value: unknown, description: string): DshRpcObject {
@@ -129,30 +135,90 @@ function usageEvent(value: unknown, semantics: unknown, contextOccupiedTokens: u
   };
 }
 
-function planTodos(detail: DshRpcObject): Extract<UnifiedEvent, { kind: 'agent_plan_update' }>['todos'] | undefined {
-  const candidate = Array.isArray(detail.todos)
-    ? detail.todos
-    : Array.isArray(detail.tasks)
-      ? detail.tasks
-      : undefined;
-  if (!candidate) return undefined;
-  const todos = candidate.flatMap((entry, index) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-    const row = entry as DshRpcObject;
-    const content = optionalString(row.content) ?? optionalString(row.title);
-    if (!content) return [];
-    const rawStatus = optionalString(row.status);
-    const status: 'completed' | 'in_progress' | 'pending' = rawStatus === 'completed' || rawStatus === 'in_progress'
-      ? rawStatus
-      : 'pending';
+function taskGraphTodos(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 'agent_plan_update' }>['todos'] {
+  if (!Array.isArray(snapshot.tasks)) throw new Error('DSH TaskGraph snapshot tasks must be an array');
+  return snapshot.tasks.flatMap((entry) => {
+    const task = object(entry, 'DSH TaskGraph task');
+    if (task.status === 'cancelled') return [];
+    const content = string(task.subject, 'DSH TaskGraph task subject');
+    const status = task.status;
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+      throw new Error('DSH TaskGraph task status is invalid');
+    }
     return [{
-      key: optionalString(row.id) ?? optionalString(row.key) ?? `dsh-plan-${index}`,
+      key: string(task.id, 'DSH TaskGraph task id'),
       content,
-      activeForm: optionalString(row.activeForm) ?? content,
+      activeForm: optionalString(task.activeForm) ?? content,
       status,
     }];
   });
-  return todos;
+}
+
+function optionalFiniteNumber(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function toolMetadata(value: unknown): Extract<UnifiedEvent, { kind: 'tool_result' }>['metadata'] {
+  if (value === undefined) return undefined;
+  const metadata = object(value, 'DSH tool result metadata');
+  const exitCode = optionalFiniteNumber(metadata.exitCode);
+  const durationMs = optionalFiniteNumber(metadata.durationMs);
+  const processId = metadata.processId === null ? null : optionalString(metadata.processId);
+  const projected = {
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    ...(optionalString(metadata.cwd) ? { cwd: metadata.cwd as string } : {}),
+    ...(processId === undefined ? {} : { processId }),
+    ...(optionalString(metadata.status) ? { status: metadata.status as string } : {}),
+  };
+  return Object.keys(projected).length > 0 ? projected : undefined;
+}
+
+function workStatus(state: unknown): Extract<UnifiedEvent, { kind: 'subagent_lifecycle' }>['status'] {
+  if (state === 'running' || state === 'stopping') return 'running';
+  if (state === 'succeeded') return 'completed';
+  if (state === 'failed') return 'failed';
+  if (state === 'aborted') return 'interrupted';
+  throw new Error('DSH ProductWork state is invalid');
+}
+
+function timestamp(value: unknown, description: string): number {
+  const raw = string(value, description);
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) throw new Error(`${description} is invalid`);
+  return parsed;
+}
+
+function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 'subagent_lifecycle' }> {
+  const state = workStatus(snapshot.state);
+  const startedAt = timestamp(snapshot.startedAt, 'DSH ProductWork start time');
+  const finishedAt = snapshot.finishedAt === undefined
+    ? undefined
+    : timestamp(snapshot.finishedAt, 'DSH ProductWork finish time');
+  const usage = snapshot.usage === undefined ? undefined : object(snapshot.usage, 'DSH ProductWork usage');
+  return {
+    kind: 'subagent_lifecycle',
+    parentToolUseId: string(snapshot.parentToolCallId, 'DSH ProductWork parent tool call'),
+    status: state,
+    observedAt: state === 'running' ? startedAt : finishedAt ?? startedAt,
+    agentType: string(snapshot.agentType, 'DSH ProductWork agent type'),
+    description: string(snapshot.description, 'DSH ProductWork description'),
+    mode: snapshot.mode === 'foreground' ? 'foreground' : 'continuable',
+    model: string(snapshot.model, 'DSH ProductWork model'),
+    ...(optionalString(snapshot.result) ? { result: snapshot.result as string } : {}),
+    ...(typeof snapshot.resultTruncated === 'boolean' ? { resultTruncated: snapshot.resultTruncated } : {}),
+    ...(usage ? {
+      usage: {
+        inputTokens: finiteNumber(usage.inputTokens),
+        outputTokens: finiteNumber(usage.outputTokens),
+        cacheReadTokens: finiteNumber(usage.cacheReadTokens),
+        cacheCreationTokens: finiteNumber(usage.cacheWriteTokens),
+        ...(usage.costUsd === null || typeof usage.costUsd === 'number' ? { costUsd: usage.costUsd as number | null } : {}),
+      },
+    } : {}),
+    affectsRootActivity: false,
+  };
 }
 
 /**
@@ -191,7 +257,7 @@ export class DshRuntimeEventProjector {
     });
   }
 
-  private project(params: DshRpcObject): void {
+  private async project(params: DshRpcObject): Promise<void> {
     if (this.failureValue) throw this.failureValue;
     const envelope = parseEnvelope(params);
     if (
@@ -218,10 +284,10 @@ export class DshRuntimeEventProjector {
       this.observedDigests.delete(envelope.sequence - 4_096);
     }
     this.nextSequence += 1;
-    this.emit(envelope);
+    await this.emit(envelope);
   }
 
-  private emit(envelope: DshRuntimeEventEnvelope): void {
+  private async emit(envelope: DshRuntimeEventEnvelope): Promise<void> {
     const event = envelope.event;
     const kind = string(event.kind, 'DSH Runtime event kind');
     switch (kind) {
@@ -252,23 +318,51 @@ export class DshRuntimeEventProjector {
         const phase = string(event.phase, 'DSH tool phase');
         const toolUseId = envelope.toolCallId ?? envelope.itemId;
         if (!toolUseId) throw new Error('DSH tool event lacks a stable tool identity');
-        const detail = event.detail === undefined ? {} : object(event.detail, 'DSH tool detail');
         if (phase === 'start') {
-          this.options.onEvent({ kind: 'tool_use_start', toolUseId, toolName: string(event.name, 'DSH tool name'), input: detail });
-          this.options.onEvent({ kind: 'tool_use_stop', toolUseId, input: detail });
+          const input = event.input === undefined ? {} : object(event.input, 'DSH tool input');
+          this.options.onEvent({ kind: 'tool_use_start', toolUseId, toolName: string(event.name, 'DSH tool name'), input });
+          this.options.onEvent({ kind: 'tool_use_stop', toolUseId, input });
           return;
         }
         if (phase === 'end') {
-          const content = typeof detail.content === 'string'
-            ? detail.content
-            : detail.content === undefined
-              ? ''
-              : canonicalJson(detail.content);
+          const result = object(event.result, 'DSH tool result');
+          if (!Array.isArray(result.content)) throw new Error('DSH tool result content must be an array');
+          const textBlocks: string[] = [];
+          const attachments: ToolAttachment[] = [];
+          for (const candidate of result.content) {
+            const block = object(candidate, 'DSH tool result block');
+            if (block.type === 'text') {
+              textBlocks.push(typeof block.text === 'string' ? block.text : '');
+              continue;
+            }
+            if (block.type === 'image_ref' && this.options.resolveToolImage) {
+              try {
+                attachments.push(await this.options.resolveToolImage(block, {
+                  runtimeSessionId: envelope.runtimeSessionId,
+                  turnId: envelope.turnId,
+                  toolUseId,
+                  toolName: string(event.name, 'DSH tool name'),
+                }));
+              } catch {
+                textBlocks.push('[DSH image attachment unavailable]');
+                this.options.onEvent({
+                  kind: 'log',
+                  level: 'warn',
+                  message: `DSH tool image could not be registered for ${toolUseId}`,
+                });
+              }
+              continue;
+            }
+            textBlocks.push(`[Unsupported DSH tool result block: ${String(block.type)}]`);
+          }
+          const metadata = toolMetadata(result.metadata);
           this.options.onEvent({
             kind: 'tool_result',
             toolUseId,
-            content,
-            isError: detail.isError === true || detail.state === 'failed',
+            content: textBlocks.join('\n'),
+            ...(attachments.length > 0 ? { attachments } : {}),
+            isError: result.isError === true || result.state === 'failed',
+            ...(metadata ? { metadata } : {}),
           });
         }
         return;
@@ -277,17 +371,11 @@ export class DshRuntimeEventProjector {
         this.options.onEvent(usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow));
         return;
       case 'context': {
-        const occupied = event.contextOccupiedTokens;
-        if (occupied !== null) {
-          this.options.onEvent({
-            kind: 'usage',
-            inputTokens: 0,
-            outputTokens: 0,
-            semantics: 'delta',
-            contextOccupiedTokens: finiteNumber(occupied),
-            runtimeContextWindow: finiteNumber(event.runtimeContextWindow),
-          });
-        }
+        this.options.onEvent({
+          kind: 'context_update',
+          contextOccupiedTokens: finiteNumber(event.contextOccupiedTokens),
+          runtimeContextWindow: finiteNumber(event.runtimeContextWindow),
+        });
         return;
       }
       case 'queued_message':
@@ -295,10 +383,21 @@ export class DshRuntimeEventProjector {
           this.options.onEvent({ kind: 'user_message_accepted' });
         }
         return;
-      case 'plan':
       case 'task_graph': {
-        const todos = planTodos(object(event.detail, 'DSH plan detail'));
-        if (todos) this.options.onEvent({ kind: 'agent_plan_update', todos });
+        this.options.onEvent({
+          kind: 'agent_plan_update',
+          todos: taskGraphTodos(object(event.snapshot, 'DSH TaskGraph snapshot')),
+        });
+        return;
+      }
+      case 'plan': {
+        const mode = event.mode;
+        if (mode !== 'normal' && mode !== 'plan') throw new Error('DSH Plan mode is invalid');
+        this.options.onPlan?.({ mode, revision: string(event.revision, 'DSH Plan revision') });
+        return;
+      }
+      case 'work': {
+        this.options.onEvent(workLifecycle(object(event.snapshot, 'DSH ProductWork snapshot')));
         return;
       }
       case 'compaction':
@@ -327,7 +426,6 @@ export class DshRuntimeEventProjector {
       }
       case 'message_event':
       case 'interaction':
-      case 'work':
       case 'component':
       case 'catalog':
       case 'checkpoint':

@@ -557,6 +557,7 @@ import {
 import {
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
+  getPlanApprovalResponseEngine,
   getSessionEngine,
   restoreInitialExternalSessionAtSelector,
   stopActiveTurn,
@@ -4298,8 +4299,8 @@ async function main() {
               || (raw.feedback !== undefined && typeof raw.feedback !== 'string')) {
             return jsonResponse({ success: false, error: 'invalid payload' }, 400);
           }
-          const { handleExitPlanModeResponse } = await import('./agent-session');
-          const success = handleExitPlanModeResponse(raw.requestId, raw.approved, raw.feedback as string | undefined);
+          const success = await getPlanApprovalResponseEngine(raw.requestId)
+            .respondPlanApproval(raw.requestId, raw.approved, raw.feedback as string | undefined);
           return jsonResponse({ success });
         } catch (error) {
           console.error('[api/exit-plan-mode] Error:', error);

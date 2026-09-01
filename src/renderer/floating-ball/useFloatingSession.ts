@@ -1010,10 +1010,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // ── 交互表单（D13）：复用主 Chat 同款事件，渲染主组件 ──
                 // 这些是「控制转移工具」，即便 fullAgency 也会触发（agent-session.ts
                 // 快速通道排除它们），漏接 = 本轮永久 hang（PRD §14.1）。
-                // permission / ask-user-question 对 builtin + external 透明（external-session
-                // 桌面 scenario 广播同名事件）；plan 事件目前仅 builtin/CC——codex/gemini
-                // 不暴露 ExitPlanMode/EnterPlanMode 工具（external-session.ts 注释为证），故
-                // external 会话不触发 plan 卡片，分支留着无害、未来 runtime 支持即自动生效。
+                // permission / ask-user-question / plan 对 builtin + external 透明；是否
+                // 实际触发由当前 runtime 的能力决定。DSH 的 plan_approval 也复用这张卡。
                 case 'ask-user-question:request': {
                     const payload = data as AskUserQuestionRequest | null;
                     if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId) && Array.isArray(payload.questions)) {

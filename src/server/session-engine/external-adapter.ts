@@ -47,6 +47,7 @@ import {
   listExternalPermissionRules,
   respondExternalAskUserQuestion,
   respondExternalPermission,
+  respondExternalPlanApproval,
   revokeExternalPermissionRule,
   restoreExternalSessionState,
   rewindExternalConversation,
@@ -977,6 +978,10 @@ export function createExternalSessionEngine(): SessionEngine {
 
     respondAskUserQuestion(requestId, answers) {
       return respondExternalAskUserQuestion(requestId, answers);
+    },
+
+    respondPlanApproval(requestId, approved, feedback) {
+      return respondExternalPlanApproval(requestId, approved, feedback);
     },
 
     rewindToUserMessage(userMessageId) {

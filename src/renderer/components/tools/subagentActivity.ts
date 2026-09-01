@@ -43,7 +43,7 @@ export function hasRunningSubagentCall(tool: Pick<ToolUseSimple, 'subagentCalls'
  */
 export function isSubagentContainerRunning(tool: Pick<ToolUseSimple, 'name' | 'isLoading' | 'result' | 'subagentCalls' | 'subagentLifecycle'> | null | undefined): boolean {
   if (!tool || !isSubagentContainerTool(tool.name)) return false;
-  if (tool.name === 'CollabAgent' && tool.subagentLifecycle) {
+  if (tool.subagentLifecycle) {
     return tool.subagentLifecycle.status === 'running';
   }
   return (tool.isLoading === true && !tool.result) || hasRunningSubagentCall(tool);
@@ -52,7 +52,7 @@ export function isSubagentContainerRunning(tool: Pick<ToolUseSimple, 'name' | 'i
 export function getSubagentContainerLifecycleStatus(
   tool: Pick<ToolUseSimple, 'name' | 'subagentLifecycle'> | null | undefined,
 ): SubagentLifecycleStatus | null {
-  if (tool?.name !== 'CollabAgent') return null;
+  if (!tool || !isSubagentContainerTool(tool.name)) return null;
   return tool.subagentLifecycle?.status ?? null;
 }
 
@@ -60,7 +60,7 @@ export function getSubagentContainerDurationMs(
   tool: Pick<ToolUseSimple, 'name' | 'subagentLifecycle'> | null | undefined,
   now = Date.now(),
 ): number | null {
-  const lifecycle = tool?.name === 'CollabAgent' ? tool.subagentLifecycle : undefined;
+  const lifecycle = tool && isSubagentContainerTool(tool.name) ? tool.subagentLifecycle : undefined;
   if (!lifecycle) return null;
   const end = lifecycle.status === 'running' ? now : lifecycle.finishedAt ?? lifecycle.startedAt;
   return Math.max(0, end - lifecycle.startedAt);
@@ -87,7 +87,15 @@ export function applySubagentLifecycleToContent(
   const updated = [...content];
   updated[index] = {
     ...block,
-    tool: { ...block.tool, subagentLifecycle: lifecycle },
+    tool: {
+      ...block.tool,
+      subagentLifecycle: lifecycle,
+      ...(lifecycle.result === undefined ? {} : { result: lifecycle.result }),
+      ...(lifecycle.status === 'running' ? {} : {
+        isLoading: false,
+        isError: lifecycle.status === 'failed' || lifecycle.status === 'interrupted',
+      }),
+    },
   };
   return updated;
 }

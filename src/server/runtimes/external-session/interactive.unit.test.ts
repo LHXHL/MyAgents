@@ -28,6 +28,7 @@ import {
   hasPendingExternalAskUserQuestion,
   respondExternalPermission,
   respondExternalAskUserQuestion,
+  respondExternalPlanApproval,
 } from '../external-session';
 import { setExternalActiveProcess, setExternalActiveRuntime, resetExternalLifecycleState } from './lifecycle';
 import {
@@ -178,5 +179,36 @@ describe('external interactive owner integration', () => {
 
     await expect(respondExternalPermission(requestId, 'always_allow')).resolves.toBe(true);
     expect(mocks.broadcast).not.toHaveBeenCalledWith('permission:expired', expect.anything());
+  });
+
+  it('settles a DSH Plan review through the Runtime interaction owner', async () => {
+    const requestId = 'dsh-plan-review';
+    const respondPermission = vi.fn(async () => undefined);
+    setExternalActiveProcess({
+      pid: 123,
+      exited: false,
+      writeLine: vi.fn(async () => undefined),
+      kill: vi.fn(),
+      waitForExit: vi.fn(async () => 0),
+    } satisfies RuntimeProcess, []);
+    setExternalActiveRuntime({ type: 'dsh', respondPermission } as unknown as AgentRuntime);
+    setExternalInteractiveRequest(requestId, {
+      type: 'exit-plan-mode:request',
+      data: { requestId, plan: '# Plan', allowedPrompts: [] },
+    });
+
+    await expect(respondExternalPlanApproval(requestId, false, 'Cover rollback')).resolves.toBe(true);
+    expect(respondPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      requestId,
+      'deny',
+      'Cover rollback',
+      undefined,
+      { approved: false, feedback: 'Cover rollback' },
+    );
+    expect(mocks.broadcast).toHaveBeenCalledWith('exit-plan-mode:expired', {
+      requestId,
+      reason: 'resolved',
+    });
   });
 });

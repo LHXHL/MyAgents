@@ -253,4 +253,38 @@ describe('external-session sub-agent lifecycle owner', () => {
     expect(finalizeExternalSubagentLifecyclesForTurn({ status: 'failed', observedAt: 500 })).toEqual([]);
     expect(getExternalContentBlocksRef()[0].tool?.subagentLifecycle?.status).toBe('interrupted');
   });
+
+  it('projects ProductWork identity, result, and usage onto an Agent card', () => {
+    startExternalToolUseInput({
+      toolUseId: 'agent-work-1',
+      toolName: 'Agent',
+      toolInput: { subagent_type: 'Explore', description: 'Inspect files' },
+    });
+    finalizeExternalToolUseInput('agent-work-1');
+
+    const lifecycle = applyExternalSubagentLifecycle({
+      parentToolUseId: 'agent-work-1',
+      status: 'completed',
+      observedAt: 500,
+      agentType: 'Explore',
+      description: 'Inspect files',
+      mode: 'continuable',
+      model: 'deepseek-chat',
+      result: 'Inspection complete',
+      usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 2 },
+    });
+
+    expect(lifecycle).toMatchObject({
+      status: 'completed',
+      agentType: 'Explore',
+      mode: 'continuable',
+      result: 'Inspection complete',
+    });
+    expect(getExternalContentBlocksRef()[0].tool).toMatchObject({
+      isLoading: false,
+      isError: false,
+      result: 'Inspection complete',
+      subagentLifecycle: lifecycle,
+    });
+  });
 });

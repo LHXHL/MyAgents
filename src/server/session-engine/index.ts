@@ -1,6 +1,7 @@
 export {
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
+  getPlanApprovalResponseEngine,
   getSessionEngine,
   getSessionEngineKind,
   getSessionRuntimeType,

@@ -2,7 +2,7 @@
 type: technical-rfc
 status: implementation-in-progress
 version: 0.30
-updated: 2026-09-01
+updated: 2026-09-02
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
@@ -538,6 +538,8 @@ Plan is not encoded as a DSH permission string. At Session birth, `plan` compile
 
 Inline permission requests continue through `host/interaction/request`. One-shot allow/deny settles only that request. `always_allow` creates an exact durable Runtime rule. The adapter also exposes the generated `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke` operations so settings, diagnostics, or later policy UI can inspect and revoke authoritative Runtime state without scraping transcript events. Batch 3 need not add `default` or `dontAsk` to the ordinary desktop selector, but it must preserve them as valid protocol values and must not coerce them silently.
 
+`plan_approval` stays a distinct interaction kind. The DSH adapter presents it through the existing ExitPlanMode review card, and the response is routed through `SessionEngine.respondPlanApproval` using pending-request ownership. The HTTP route does not call the external-session implementation directly, and a rejection with feedback remains an answered Plan review rather than an interaction cancellation.
+
 Visibility and permission remain independent: hiding a tool is configuration; allowing it is execution policy. `fullAgency` removes interactive permission prompts but is not an OS sandbox and does not contain arbitrary Bash subprocess effects. Its UI copy must say this explicitly. Hard policy, origin/workspace/revision constraints and Hooks remain enforceable even in `fullAgency`.
 
 H4P applies the exact birth mapping before the first turn: Session creation uses the composition-supported `default`/`host-interaction-v1` admission pair, then `config/apply` establishes `acceptEdits` or `bypassPermissions`, and `plan/apply` establishes normal or Plan state. A stale Plan revision is reconciled by reading the current mode and retrying only the desired exact transition. Live product permission/model/reasoning changes use the same configuration owner.
@@ -577,6 +579,8 @@ Project canonical DSH events into existing MyAgents domains:
 If an event cannot be represented without losing user-visible semantics, extend `UnifiedEvent` and all exhaustive consumers. Do not serialize raw DSH protocol cards into the chat.
 
 H4 implements this projection in `src/server/integrated-runtimes/dsh/event-projector.ts`. One serialized inbox fences Product Session, Runtime generation and Runtime Session, accepts only exact duplicate replay, rejects conflicting replay or a sequence gap, and projects assistant/thinking/tool/usage/context/queue/plan/work/compaction/warning/terminal events into existing `UnifiedEvent` shapes. Runtime terminal produces the Product terminal, but idle publication remains downstream of Product transcript persistence so a fast status transition cannot discard the final projected chunks.
+
+The protocol `2.4.0` source consumer additionally treats the ready baseline and later live suffix as one ordered stream. Dedicated `context_update`, whole TaskGraph snapshots, and monotonic ProductWork lifecycle feed the existing context/Todo/Agent-status domains; Plan state remains separate from TaskGraph. Tool completion joins ordered text blocks and resolves supported DSH image references through an exact attachment lease into the existing Host attachment store. These source changes do not change the accepted handoff facts in the frontmatter: MyAgents remains locked to `2.3.0` until the official immutable `2.4.0` handoff is generated, verified, and ingested.
 
 H4 also reconciles the ordinary terminal/persistence crash window before a resumed Runtime becomes usable. `session/read` first verifies the complete native cursor chain and event digests; independent `turn/get` results must then match every durable admission and terminal exactly. A succeeded terminal's `assistantEventId` must resolve to the claimed final native `assistant/message`, from which text, reasoning, settled tool calls/results and terminal usage are deterministically projected. `SessionStore` inserts a missing assistant beside its exact Product user row under the transcript/index locks and commits a versioned `dshProjectionCursor`; exact replay is a no-op, while conflicting anchors, an unowned assistant, malformed history or divergent terminal truth fail closed. Non-success terminals never manufacture assistant rows.
 

@@ -41,6 +41,7 @@ import type {
   UnifiedEvent,
   UnifiedEventCallback,
 } from '../../runtimes/types';
+import { saveToolAttachment } from '../../runtimes/tool-attachments';
 import { recoverPendingDshMutation } from '../../session-engine/dsh-mutation-recovery';
 import {
   reconcileDshTurnsAtStartup,
@@ -304,10 +305,29 @@ function string(value: unknown, description: string): string {
   return value;
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown, description: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${description} is invalid`);
+  }
+  return value as number;
+}
+
 function productPermissionMode(value: string | undefined): ProductPermissionMode {
   if (value === undefined || value === '' || value === 'auto') return 'auto';
   if (value === 'plan' || value === 'fullAgency') return value;
   throw new Error(`Unsupported MyAgents DSH permission mode: ${value}`);
+}
+
+function productModeForPlanProjection(
+  mode: 'normal' | 'plan',
+  configured: ProductPermissionMode,
+): ProductPermissionMode {
+  if (mode === 'plan') return 'plan';
+  return configured === 'plan' ? 'auto' : configured;
 }
 
 function dshPermissionMode(value: ProductPermissionMode): DshPermissionMode {
@@ -509,12 +529,36 @@ function executionEnvironment(
   };
 }
 
-function answerValue(schema: DshRpcObject, updatedInput: Record<string, unknown> | undefined): DshRpcObject {
+function answerValue(
+  kind: PendingInteraction['kind'],
+  schema: DshRpcObject,
+  decision: 'deny' | 'allow_once' | 'always_allow',
+  reason: string | undefined,
+  updatedInput: Record<string, unknown> | undefined,
+): DshRpcObject {
   const answers = updatedInput?.answers;
   const answerMap = answers && typeof answers === 'object' && !Array.isArray(answers)
     ? answers as Record<string, unknown>
     : {};
   const questions = Array.isArray(schema.questions) ? schema.questions : [];
+  if (kind === 'plan_approval') {
+    const question = questions.length === 1 ? object(questions[0], 'DSH Plan approval question') : undefined;
+    if (!question) throw new Error('DSH Plan approval must contain one question');
+    const id = string(question.id, 'DSH Plan approval question id');
+    const intent = object(question.intent, 'DSH Plan approval intent');
+    const approve = string(intent.approve, 'DSH Plan approval label');
+    if (decision !== 'deny') return { answers: [{ id, selected: [approve] }] };
+    const feedback = typeof updatedInput?.feedback === 'string'
+      ? updatedInput.feedback.trim()
+      : reason?.trim();
+    if (feedback) return { answers: [{ id, selected: [], custom: feedback }] };
+    const options = Array.isArray(question.options) ? question.options : [];
+    const reject = options
+      .map(option => object(option, 'DSH Plan approval option'))
+      .map(option => optionalString(option.label))
+      .find(label => label !== undefined && label !== approve);
+    return { answers: [{ id, selected: reject ? [reject] : [] }] };
+  }
   return {
     answers: questions.flatMap((candidate, index) => {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
@@ -780,6 +824,7 @@ export class DshRuntime implements AgentRuntime {
     const initialExtensionGenerationId = dshExtensionGenerationId(extensionPlane);
     let processValue: DshProcess | undefined;
     let projector: DshRuntimeEventProjector | undefined;
+    let projectedPlan: { mode: 'normal' | 'plan'; revision: string } | undefined;
     const pendingInteractions = new Map<string, PendingInteraction>();
     const deferredProductActions: Array<() => void> = [];
     let productEventDeliveryReady = false;
@@ -876,13 +921,14 @@ export class DshRuntime implements AgentRuntime {
         const authority = object(params.authority, 'DSH interaction authority');
         const toolName = kind === 'permission'
           ? (typeof schema.tool === 'string' ? schema.tool : 'DSHTool')
-          : 'AskUserQuestion';
+          : kind === 'plan_approval' ? 'ExitPlanMode' : 'AskUserQuestion';
         emitProductEvent({
           kind: 'permission_request',
           requestId: interactionId,
           toolName,
           toolUseId: typeof authority.callId === 'string' ? authority.callId : interactionId,
           input: schema,
+          interactionKind: kind,
         });
         emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });
         return { registered: true };
@@ -944,6 +990,45 @@ export class DshRuntime implements AgentRuntime {
               processValue.activeOperationId = undefined;
             }
           });
+        },
+        onPlan: (snapshot) => {
+          projectedPlan = snapshot;
+          if (processValue) {
+            processValue.planMode = snapshot.mode;
+            processValue.planRevision = snapshot.revision;
+          }
+          const productPermissionMode = processValue?.configuration.productPermissionMode
+            ?? configuration.productPermissionMode;
+          emitProductEvent({
+            kind: 'plan_state_update',
+            mode: snapshot.mode,
+            revision: snapshot.revision,
+            permissionMode: productModeForPlanProjection(snapshot.mode, productPermissionMode),
+          });
+        },
+        resolveToolImage: async (image, context) => {
+          const lease = await attachments.acquire({
+            attachmentId: string(image.attachmentId, 'DSH tool image attachment id'),
+            expectedMimeType: string(image.mimeType, 'DSH tool image MIME type'),
+            expectedSizeBytes: nonNegativeInteger(image.sizeBytes, 'DSH tool image size'),
+            expectedSha256: string(image.sha256, 'DSH tool image digest'),
+          });
+          try {
+            return await saveToolAttachment(
+              { kind: 'externalPath', sourcePath: string(lease.readOnlyPath, 'DSH tool image lease path') },
+              {
+                sessionId: options.sessionId,
+                turnId: context.turnId ?? context.runtimeSessionId,
+                toolUseId: context.toolUseId,
+                mimeType: string(lease.mimeType, 'DSH tool image lease MIME type'),
+                kind: 'image',
+                caption: optionalString(image.name),
+                producedBy: context.toolName,
+              },
+            );
+          } finally {
+            attachments.release({ leaseId: string(lease.leaseId, 'DSH tool image lease id') });
+          }
         },
       });
       const extensionResult = await host.request(
@@ -1069,6 +1154,10 @@ export class DshRuntime implements AgentRuntime {
         turnReconciliation.activeTurn,
         pendingInteractions,
       );
+      if (projectedPlan) {
+        processValue.planMode = projectedPlan.mode;
+        processValue.planRevision = projectedPlan.revision;
+      }
       await projector.whenIdle();
       if (turnReconciliation.activeTurn) {
         onEvent({
@@ -1451,13 +1540,14 @@ export class DshRuntime implements AgentRuntime {
     if (result.state !== 'accepted' && result.state !== 'already_known') {
       throw new Error('DSH compaction was not accepted');
     }
+    await process.projector.whenIdle();
   }
 
   async respondPermission(
     runtimeProcess: RuntimeProcess,
     requestId: string,
     decision: 'deny' | 'allow_once' | 'always_allow',
-    _reason?: string,
+    reason?: string,
     _suggestions?: unknown[],
     updatedInput?: Record<string, unknown>,
   ): Promise<void> {
@@ -1466,14 +1556,14 @@ export class DshRuntime implements AgentRuntime {
     if (!pending) throw new Error('DSH interaction is no longer pending');
     const question = pending.kind !== 'permission';
     const wireDecision = question
-      ? (decision === 'deny' ? 'cancelled' : 'answered')
+      ? (pending.kind === 'plan_approval' || decision !== 'deny' ? 'answered' : 'cancelled')
       : decision;
     const result = await process.host.request('interaction/respond', {
       interactionId: requestId,
       expectedRevision: pending.desiredPolicyRevision,
       decision: wireDecision,
       ...(question && wireDecision === 'answered'
-        ? { value: answerValue(pending.schema, updatedInput) }
+        ? { value: answerValue(pending.kind, pending.schema, decision, reason, updatedInput) }
         : {}),
     });
     if (result.state === 'rejected') {

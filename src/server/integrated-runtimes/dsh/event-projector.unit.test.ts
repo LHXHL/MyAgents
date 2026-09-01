@@ -135,13 +135,13 @@ describe('DshRuntimeEventProjector', () => {
       kind: 'tool',
       phase: 'start',
       name: 'Read',
-      detail: { file_path: '/workspace/a.txt' },
+      input: { file_path: '/workspace/a.txt' },
     }, { toolCallId: 'call-1' }));
     await projector.accept(envelope(2, {
       kind: 'tool',
       phase: 'end',
       name: 'Read',
-      detail: { state: 'succeeded', isError: false, content: [{ type: 'text', text: 'ok' }] },
+      result: { state: 'succeeded', isError: false, content: [{ type: 'text', text: 'ok' }] },
     }, { toolCallId: 'call-1' }));
 
     expect(events).toEqual([
@@ -159,18 +159,20 @@ describe('DshRuntimeEventProjector', () => {
       {
         kind: 'tool_result',
         toolUseId: 'call-1',
-        content: '[{"text":"ok","type":"text"}]',
+        content: 'ok',
         isError: false,
       },
     ]);
   });
 
-  it('projects DSH thinking, Plan, and context metrics into existing Product events', async () => {
+  it('keeps Plan, TaskGraph, and context in separate Product domains', async () => {
     const events: UnifiedEvent[] = [];
+    const onPlan = vi.fn();
     const projector = new DshRuntimeEventProjector({
       productSessionId: 'product-session-1',
       runtimeGeneration: 'runtime-generation-1',
       onEvent: event => events.push(event),
+      onPlan,
     });
     await projector.accept(envelope(1, {
       kind: 'thinking_delta',
@@ -179,14 +181,20 @@ describe('DshRuntimeEventProjector', () => {
     await projector.accept(envelope(2, {
       kind: 'plan',
       revision: 'plan-revision-1',
-      detail: {
-        todos: [
-          { id: 'inspect', content: 'Inspect evidence', status: 'completed' },
-          { id: 'verify', title: 'Verify package', status: 'in_progress' },
+      mode: 'plan',
+    }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(3, {
+      kind: 'task_graph',
+      snapshot: {
+        revision: 'tasks-revision-1',
+        tasks: [
+          { id: 'inspect', subject: 'Inspect evidence', status: 'completed' },
+          { id: 'verify', subject: 'Verify package', status: 'in_progress' },
+          { id: 'old', subject: 'Cancelled task', status: 'cancelled' },
         ],
       },
     }, { turnId: 'turn-1' }));
-    await projector.accept(envelope(3, {
+    await projector.accept(envelope(4, {
       kind: 'context',
       contextOccupiedTokens: 12_345,
       runtimeContextWindow: 200_000,
@@ -217,13 +225,86 @@ describe('DshRuntimeEventProjector', () => {
         ],
       },
       {
-        kind: 'usage',
-        inputTokens: 0,
-        outputTokens: 0,
-        semantics: 'delta',
+        kind: 'context_update',
         contextOccupiedTokens: 12_345,
         runtimeContextWindow: 200_000,
       },
     ]);
+    expect(onPlan).toHaveBeenCalledWith({ mode: 'plan', revision: 'plan-revision-1' });
+  });
+
+  it('projects complete ProductWork lifecycle and resolves ordered rich tool results', async () => {
+    const events: UnifiedEvent[] = [];
+    const resolveToolImage = vi.fn(async () => ({
+      kind: 'image' as const,
+      mimeType: 'image/png',
+      refPath: '/api/attachment/tool/product-session-1/turn-1/image.png',
+    }));
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1',
+      runtimeGeneration: 'runtime-generation-1',
+      onEvent: event => events.push(event),
+      resolveToolImage,
+    });
+
+    await projector.accept(envelope(1, {
+      kind: 'work',
+      snapshot: {
+        taskId: 'task-1',
+        parentToolCallId: 'agent-call-1',
+        agentId: 'agent-1',
+        agentType: 'Explore',
+        description: 'Inspect the workspace',
+        mode: 'continuable',
+        model: 'deepseek-chat',
+        state: 'succeeded',
+        startedAt: '2026-08-30T00:00:00.000Z',
+        finishedAt: '2026-08-30T00:00:02.000Z',
+        result: 'Done',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cacheReadTokens: 2,
+          cacheWriteTokens: 1,
+          totalTokens: 17,
+          costUsd: null,
+        },
+      },
+    }));
+    await projector.accept(envelope(2, {
+      kind: 'tool',
+      phase: 'end',
+      name: 'Read',
+      result: {
+        state: 'succeeded',
+        isError: false,
+        content: [
+          { type: 'text', text: 'before' },
+          { type: 'image_ref', attachmentId: 'sha256:image', mimeType: 'image/png', sizeBytes: 10, sha256: 'a'.repeat(64) },
+          { type: 'text', text: 'after' },
+        ],
+        metadata: { durationMs: 20, status: 'succeeded' },
+      },
+    }, { turnId: 'turn-1', toolCallId: 'read-1' }));
+
+    expect(events[0]).toEqual(expect.objectContaining({
+      kind: 'subagent_lifecycle',
+      parentToolUseId: 'agent-call-1',
+      status: 'completed',
+      observedAt: Date.parse('2026-08-30T00:00:02.000Z'),
+      agentType: 'Explore',
+      description: 'Inspect the workspace',
+      mode: 'continuable',
+      result: 'Done',
+      affectsRootActivity: false,
+    }));
+    expect(events[1]).toEqual(expect.objectContaining({
+      kind: 'tool_result',
+      toolUseId: 'read-1',
+      content: 'before\nafter',
+      attachments: [expect.objectContaining({ kind: 'image' })],
+      metadata: { durationMs: 20, status: 'succeeded' },
+    }));
+    expect(resolveToolImage).toHaveBeenCalledOnce();
   });
 });

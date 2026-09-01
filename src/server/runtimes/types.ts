@@ -264,6 +264,21 @@ export type UnifiedEvent =
     parentToolUseId: string;
     status: SubagentLifecycleStatus;
     observedAt: number;
+    agentType?: string;
+    description?: string;
+    mode?: 'foreground' | 'continuable';
+    model?: string;
+    result?: string;
+    resultTruncated?: boolean;
+    usage?: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      costUsd?: number | null;
+    };
+    /** ProductWork is child/background state and must not drive root loading/watchdogs. */
+    affectsRootActivity?: boolean;
   }
 
   // === Turn lifecycle ===
@@ -279,6 +294,8 @@ export type UnifiedEvent =
     input: Record<string, unknown>;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
+    /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */
+    interactionKind?: 'permission' | 'ask_user' | 'plan_approval';
   }
   | {
     kind: 'interactive_request_resolved';
@@ -323,6 +340,18 @@ export type UnifiedEvent =
     contextOccupiedTokens?: number;
     /** PRD 0.2.32 — runtime 自报的 context 窗口（Codex `tokenUsage.modelContextWindow`）；不报传 null/省略 → 回落 registry/200K。 */
     runtimeContextWindow?: number | null;
+  }
+  | {
+    kind: 'context_update';
+    contextOccupiedTokens: number;
+    runtimeContextWindow: number;
+  }
+  | {
+    kind: 'plan_state_update';
+    mode: 'normal' | 'plan';
+    revision: string;
+    /** Product permission mode to display for this effective Plan state. */
+    permissionMode: string;
   }
   | { kind: 'model_update'; model: string }
   | { kind: 'log'; level: 'info' | 'warn' | 'error'; message: string }

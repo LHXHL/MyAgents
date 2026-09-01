@@ -33,6 +33,7 @@ import {
   getStreamingAssistantId,
   getSystemInitInfo,
   handleAskUserQuestionResponse,
+  handleExitPlanModeResponse,
   handlePermissionResponse,
   interruptCurrentResponse,
   isSessionBusy,
@@ -905,6 +906,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async respondAskUserQuestion(requestId, answers) {
       return handleAskUserQuestionResponse(requestId, answers);
+    },
+
+    async respondPlanApproval(requestId, approved, feedback) {
+      return handleExitPlanModeResponse(requestId, approved, feedback);
     },
 
     rewindToUserMessage(userMessageId) {
