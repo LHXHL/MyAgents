@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -19,6 +20,7 @@ import {
   resolveExplicitDirectory,
   stageCompleteHandoff,
 } from "./dsh-handoff-policy.mjs";
+import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -112,6 +114,60 @@ test("complete handoff staging replaces atomically only after verification", () 
     );
     assert.equal(readFileSync(resolve(output, "marker"), "utf8"), "new");
     assert.equal(existsSync(`${output}.backup`), false);
+  });
+});
+
+test("Dev freshness binds the bundled Runtime to one clean source commit", () => {
+  withTemporaryDirectory((root) => {
+    const sourceRoot = resolve(root, "MyAgents-dsh");
+    const runtimeRoot = resolve(root, "runtime");
+    mkdirSync(sourceRoot, { recursive: true });
+    mkdirSync(resolve(runtimeRoot, "runtime-artifact"), { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: sourceRoot });
+    execFileSync("git", ["config", "user.email", "test@example.invalid"], {
+      cwd: sourceRoot,
+    });
+    execFileSync("git", ["config", "user.name", "Runtime Test"], {
+      cwd: sourceRoot,
+    });
+    writeFileSync(resolve(sourceRoot, "tracked.txt"), "clean\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: sourceRoot });
+    execFileSync("git", ["commit", "--quiet", "-m", "test: fixture"], {
+      cwd: sourceRoot,
+    });
+    const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRoot,
+      encoding: "utf8",
+    }).trim();
+    const manifestPath = resolve(
+      runtimeRoot,
+      "runtime-artifact/runtime-artifact-v1.json",
+    );
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify({ build: { repositoryHead: sourceHead } })}\n`,
+    );
+
+    assert.deepEqual(
+      verifyDshDevelopmentFreshness({ runtimeRoot, sourceRoot }),
+      { checked: true, repositoryHead: sourceHead },
+    );
+
+    writeFileSync(resolve(sourceRoot, "tracked.txt"), "dirty\n");
+    assert.throws(
+      () => verifyDshDevelopmentFreshness({ runtimeRoot, sourceRoot }),
+      /uncommitted source changes/,
+    );
+    execFileSync("git", ["checkout", "--", "tracked.txt"], { cwd: sourceRoot });
+
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify({ build: { repositoryHead: "0".repeat(40) } })}\n`,
+    );
+    assert.throws(
+      () => verifyDshDevelopmentFreshness({ runtimeRoot, sourceRoot }),
+      /bundled Runtime is stale/,
+    );
   });
 });
 

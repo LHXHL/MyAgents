@@ -279,7 +279,7 @@ test('every setup, dev, and release entry point delegates document resources to 
   );
   assert.match(
     packageJson.scripts['tauri:dev'],
-    /^npm run prepare:document-processing && npm run verify:dsh-runtime && tauri dev$/,
+    /^npm run prepare:document-processing && npm run verify:dsh-runtime && npm run verify:dsh-runtime:fresh && tauri dev$/,
   );
 });
 
