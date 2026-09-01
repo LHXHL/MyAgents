@@ -578,6 +578,78 @@ describe('DSH Product mutation journal', () => {
     }));
   });
 
+  it('retains an exact historical partial assistant owned by a non-success native terminal', async () => {
+    const sessionId = 'dsh-partial-terminal-reconciliation';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    const metadata = createSessionMetadata('/tmp/dsh-workspace', {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId,
+      configSnapshotAt: '2026-08-30T00:00:00.000Z',
+    });
+    await store.saveSessionMetadata(metadata);
+    const transcript = await store.loadSessionTranscript(sessionId);
+    const content = JSON.stringify([{ type: 'text', text: 'partial native output' }]);
+    await expect(store.appendSessionMessages(sessionId, transcript.cursor, [
+      {
+        id: 'user-partial-terminal',
+        role: 'user',
+        content: 'run until interrupted',
+        timestamp: '2026-08-30T00:00:00.000Z',
+      },
+      {
+        id: 'assistant-partial-terminal',
+        role: 'assistant',
+        content,
+        timestamp: '2026-08-30T00:00:01.000Z',
+        completionState: 'partial',
+        terminalStatus: 'stopped',
+        runtimeTurnAnchor: {
+          turnId: 'product-turn-partial-terminal',
+          rootUserMessageId: 'user-partial-terminal',
+        },
+      },
+    ])).resolves.toMatchObject({ ok: true });
+    const cursor = {
+      schemaVersion: 1 as const,
+      runtimeSessionId,
+      durableSequence: 21,
+      transcriptPostcondition: 'e'.repeat(64),
+    };
+    const reconciliation = {
+      sessionId,
+      runtimeSessionId,
+      cursor,
+      assistantMessages: [],
+      nativeRootOperations: [{
+        clientOperationId: 'operation-partial-terminal',
+        clientUserMessageId: 'user-partial-terminal',
+        productTurnId: 'product-turn-partial-terminal',
+        terminal: true,
+        partialTerminalStatus: 'error' as const,
+      }],
+    };
+
+    await expect(store.reconcileDshTurnProjections(reconciliation)).resolves.toEqual({
+      success: true,
+      value: { transcriptChanged: true, cursor },
+    });
+    await expect(store.reconcileDshTurnProjections(reconciliation)).resolves.toEqual({
+      success: true,
+      value: { transcriptChanged: false, cursor },
+    });
+    expect(store.getSessionData(sessionId)?.messages[1]).toEqual(expect.objectContaining({
+      id: 'assistant-partial-terminal',
+      content,
+      completionState: 'partial',
+      terminalStatus: 'error',
+      runtimeTurnAnchor: {
+        turnId: 'product-turn-partial-terminal',
+        rootUserMessageId: 'user-partial-terminal',
+      },
+    }));
+  });
+
   it('keeps a fork hidden until Runtime and Product commit identities match', async () => {
     const sourceId = 'dsh-fork-source';
     const targetId = 'dsh-fork-target';

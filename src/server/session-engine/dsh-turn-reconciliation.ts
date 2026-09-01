@@ -65,6 +65,7 @@ export type DshRecoveredTurnProjection = Readonly<{
 
 export type DshNativeRootOperation = DshUnsettledTurn & Readonly<{
   terminal: boolean;
+  partialTerminalStatus?: 'stopped' | 'error';
 }>;
 
 export type DshTurnProjectionSnapshot = Readonly<{
@@ -429,11 +430,17 @@ export function buildDshTurnProjectionSnapshot(
       throw new Error('DSH turn/get admission differs from durable Session truth');
     }
     const terminal = terminalById.get(operation.clientOperationId);
+    const terminalKind = terminal === undefined
+      ? undefined
+      : string(terminal.terminal.kind, 'DSH terminal kind');
     rootOperations.push(Object.freeze({
       clientOperationId: operation.clientOperationId,
       clientUserMessageId: operation.clientUserMessageId,
       productTurnId: operation.productTurnId,
       terminal: terminal !== undefined,
+      ...(terminalKind === undefined || terminalKind === 'succeeded'
+        ? {}
+        : { partialTerminalStatus: terminalKind === 'aborted' ? 'stopped' as const : 'error' as const }),
     }));
     if (!terminal) {
       if (lookup.terminal) throw new DshHistoryAdvancedError('DSH history advanced after session/read');
@@ -453,7 +460,8 @@ export function buildDshTurnProjectionSnapshot(
     if (!lookup.terminal || canonicalJson(lookup.terminal) !== canonicalJson(terminal.terminal)) {
       throw new Error('DSH turn/get terminal differs from durable Session truth');
     }
-    const kind = string(terminal.terminal.kind, 'DSH terminal kind');
+    if (terminalKind === undefined) throw new Error('DSH terminal kind is absent');
+    const kind = terminalKind;
     if ([
       'failed',
       'aborted',

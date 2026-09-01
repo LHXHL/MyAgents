@@ -204,6 +204,39 @@ describe('DSH ordinary turn reconciliation', () => {
     );
     expect(snapshot.assistantTurns).toEqual([]);
     expect(snapshot.runtimeUsageTotals).toBeUndefined();
+    expect(snapshot.rootOperations).toEqual([{
+      clientOperationId: 'operation-1',
+      clientUserMessageId: 'user-1',
+      productTurnId: 'product-turn-1',
+      terminal: true,
+      partialTerminalStatus: 'error',
+    }]);
+  });
+
+  it('classifies an aborted terminal as a stopped partial owner without manufacturing content', () => {
+    const fixture = succeededHistory();
+    const aborted = { kind: 'aborted', reason: 'user' };
+    const events = fixture.history.events.map(candidate => candidate.eventType === 'myagents/operation/terminal'
+      ? event(candidate.sequence, candidate.eventType, {
+          clientOperationId: 'operation-1',
+          productTurnId: 'product-turn-1',
+          terminal: aborted,
+          finalDshTurn: 1,
+          terminalAt: 2_000,
+        })
+      : candidate);
+    const snapshot = buildDshTurnProjectionSnapshot(
+      { ...fixture.history, events },
+      new Map([['operation-1', {
+        ...fixture.lookups.get('operation-1')!,
+        terminal: aborted,
+      }]]),
+    );
+    expect(snapshot.assistantTurns).toEqual([]);
+    expect(snapshot.rootOperations[0]).toMatchObject({
+      terminal: true,
+      partialTerminalStatus: 'stopped',
+    });
   });
 
   it('fails closed when turn/get disagrees with the durable terminal', () => {

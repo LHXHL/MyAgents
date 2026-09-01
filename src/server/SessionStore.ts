@@ -1435,6 +1435,7 @@ export async function reconcileDshTurnProjections(input: {
         clientUserMessageId: string;
         productTurnId: string;
         terminal: boolean;
+        partialTerminalStatus?: 'stopped' | 'error';
     }[];
     unsettledTurn?: {
         clientOperationId: string;
@@ -1463,6 +1464,32 @@ export async function reconcileDshTurnProjections(input: {
                     || current.pendingDshMutation
                 ) {
                     return dshMutationFailure('precondition_failed', 'The DSH projection authority changed');
+                }
+
+                const nativeRoots = new Map<string, (typeof input.nativeRootOperations)[number]>();
+                const nativeRootsByTurn = new Map<string, (typeof input.nativeRootOperations)[number]>();
+                const nativeRootsByUser = new Map<string, (typeof input.nativeRootOperations)[number]>();
+                for (const operation of input.nativeRootOperations) {
+                    if (
+                        !validDshOperationIdentifier(operation.clientOperationId)
+                        || !validDshOperationIdentifier(operation.clientUserMessageId)
+                        || !validDshOperationIdentifier(operation.productTurnId)
+                        || typeof operation.terminal !== 'boolean'
+                        || (
+                            operation.partialTerminalStatus !== undefined
+                            && operation.partialTerminalStatus !== 'stopped'
+                            && operation.partialTerminalStatus !== 'error'
+                        )
+                        || (!operation.terminal && operation.partialTerminalStatus !== undefined)
+                        || nativeRoots.has(operation.clientOperationId)
+                        || nativeRootsByTurn.has(operation.productTurnId)
+                        || nativeRootsByUser.has(operation.clientUserMessageId)
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH native root operation set is ambiguous');
+                    }
+                    nativeRoots.set(operation.clientOperationId, operation);
+                    nativeRootsByTurn.set(operation.productTurnId, operation);
+                    nativeRootsByUser.set(operation.clientUserMessageId, operation);
                 }
 
                 const projectedIds = new Set<string>();
@@ -1532,15 +1559,35 @@ export async function reconcileDshTurnProjections(input: {
                     target.splice(insertionIndex, 0, structuredClone(assistant));
                     transcriptChanged = true;
                 }
-                if (target.some(message => (
-                    message.role === 'assistant'
-                    && message.runtimeTurnAnchor !== undefined
-                    && (
-                        !projectedTurns.has(message.runtimeTurnAnchor.turnId)
-                        || !projectedRoots.has(message.runtimeTurnAnchor.rootUserMessageId)
-                    )
-                ))) {
-                    return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
+                const retainedPartialTurns = new Set<string>();
+                const retainedPartialRoots = new Set<string>();
+                for (let messageIndex = 0; messageIndex < target.length; messageIndex += 1) {
+                    const message = target[messageIndex]!;
+                    if (message.role !== 'assistant' || message.runtimeTurnAnchor === undefined) continue;
+                    const anchor = message.runtimeTurnAnchor;
+                    if (projectedTurns.has(anchor.turnId) && projectedRoots.has(anchor.rootUserMessageId)) continue;
+                    const nativeByTurn = nativeRootsByTurn.get(anchor.turnId);
+                    const nativeByUser = nativeRootsByUser.get(anchor.rootUserMessageId);
+                    if (
+                        nativeByTurn === undefined
+                        || nativeByTurn !== nativeByUser
+                        || !nativeByTurn.terminal
+                        || nativeByTurn.partialTerminalStatus === undefined
+                        || message.completionState !== 'partial'
+                        || retainedPartialTurns.has(anchor.turnId)
+                        || retainedPartialRoots.has(anchor.rootUserMessageId)
+                    ) {
+                        return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
+                    }
+                    retainedPartialTurns.add(anchor.turnId);
+                    retainedPartialRoots.add(anchor.rootUserMessageId);
+                    if (message.terminalStatus !== nativeByTurn.partialTerminalStatus) {
+                        target[messageIndex] = {
+                            ...message,
+                            terminalStatus: nativeByTurn.partialTerminalStatus,
+                        };
+                        transcriptChanged = true;
+                    }
                 }
                 if (input.unsettledTurn) {
                     const matchingUsers = target.filter(message => (
@@ -1560,18 +1607,6 @@ export async function reconcileDshTurnProjections(input: {
                     }
                 }
 
-                const nativeRoots = new Map<string, (typeof input.nativeRootOperations)[number]>();
-                for (const operation of input.nativeRootOperations) {
-                    if (
-                        !validDshOperationIdentifier(operation.clientOperationId)
-                        || !validDshOperationIdentifier(operation.clientUserMessageId)
-                        || !validDshOperationIdentifier(operation.productTurnId)
-                        || nativeRoots.has(operation.clientOperationId)
-                    ) {
-                        return dshMutationFailure('storage_consistency_error', 'The DSH native root operation set is ambiguous');
-                    }
-                    nativeRoots.set(operation.clientOperationId, operation);
-                }
                 let pendingDshRootOperation = current.pendingDshRootOperation;
                 if (pendingDshRootOperation) {
                     if (
