@@ -211,12 +211,18 @@ DSH 不消费上述单体 append。`external-session.ts` 在 Session create/resu
 1. `global/product-identity`（order `-80`）：MyAgents 产品身份；
 2. `global/capability-routing`（order `-70`）：按需使用 Tool/Skill，不把 Prompt 当权限；
 3. `root/product-session`（order `10`）：当前 scenario 和产品会话内容；
-4. 可选 `global/workspace-supplement` context（order `100`）：Claude companion 文件。
+4. Runtime 根据 initialize 已接受的执行环境注册 `runtime:workspace` context（order `90`）；
+5. 可选 `global/workspace-supplement` context（order `100`）：Claude companion 文件。
 
 Runtime 自己维护更稳定的操作契约和 compaction continuity；Host 维护会随产品演进的
 身份、场景和 companion 内容。正文按 literal Markdown 投送，`{{...}}` 不做 DSH 变量
 替换。Snapshot 的 revision fingerprint 参与 DSH config identity；相同内容不触发无意义
 replacement，已有 admitted turn 仍使用 birth 时冻结值。
+
+`runtime:workspace` 只告诉模型受管 Workspace 的规范绝对路径，并由 DSH scope 传给 fresh
+child；它不增加 allowed root，也不授予文件或进程权限。该值属于 Workspace binding 的
+动态 context，不进入更稳定的 system-section 前缀，也不需要 Host 在产品 snapshot 中
+重复维护。
 
 根目录/嵌套主指令由 DSH Agent Instructions 自己发现和写入 durable Session：同一目录
 只取首个非空的 `CLAUDE.md`、`AGENTS.override.md`、`AGENTS.md`。Host collector 不再把

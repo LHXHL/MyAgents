@@ -3,7 +3,7 @@
   "contractId": "myagents-dsh-provider-cells-v1",
   "runtimeProfileId": "myagents-dsh-batch-1-candidate-v1",
   "runtimeProfileDigest": "74855d8592199aff51503b86ad82df08d43a5bd830212df2c50512c5f87c744b",
-  "compatibilitySha256": "8f490dfb25bc06a950d71b0441d0377d63659d1c0fb6e56528ff91b13d70e5ef",
+  "compatibilitySha256": "29d35382d6cedf59bfd248e80d4b7fb03b770459c2fbc34803ff917df3bca285",
   "candidateProfileSha256": "74855d8592199aff51503b86ad82df08d43a5bd830212df2c50512c5f87c744b",
   "commonPiAiLimitations": [
     "provider-route-cell-required",
