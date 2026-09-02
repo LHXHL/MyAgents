@@ -344,6 +344,13 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
           || error.code === 'provider_search_failed')) {
         throw error;
       }
+      if (error instanceof DshCanonicalWebError) {
+        throw new DshCanonicalWebError(
+          'provider_search_failed',
+          `Provider WebSearch transport failed: ${error.message}`,
+          { cause: error },
+        );
+      }
       throw new DshCanonicalWebError('provider_search_failed', 'Provider WebSearch request failed', { cause: error });
     }
   }

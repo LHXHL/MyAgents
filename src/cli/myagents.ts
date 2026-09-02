@@ -1700,7 +1700,7 @@ export function printModelList(providers: Array<Record<string, unknown>>): void 
   }
 }
 
-function printAgentList(agents: Array<Record<string, unknown>>): void {
+export function printAgentList(agents: Array<Record<string, unknown>>): void {
   if (!agents || agents.length === 0) {
     console.log('No agents configured.');
     return;
@@ -1720,7 +1720,11 @@ function printAgentList(agents: Array<Record<string, unknown>>): void {
       + String(a.name),
     );
   }
-  console.log('\n* current Agent for this CLI caller');
+  if (agents.some(agent => agent.isCurrent === true)) {
+    console.log('\n* current Agent for this CLI caller');
+  } else {
+    console.log('\nNo current Agent for this CLI caller; run from a linked Agent workspace to resolve one.');
+  }
 }
 
 function printSessionList(

@@ -492,7 +492,9 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(unfocused.data.at(-1)?.id).toBe('assistant-final');
     expect(unfocused.firstItemIndex).toBe(999_995);
     expect(unfocused.heightEstimates).toEqual([150, 270, 900]);
-    expect(unfocused.components).not.toBe(focusedComponents);
+    // The list values remain live, but the Virtuoso component registry must stay
+    // identity-stable so status/footer updates cannot remount interaction cards.
+    expect(unfocused.components).toBe(focusedComponents);
 
     unfocused.atBottomStateChange?.(false);
     expect(handleAtBottomChange).toHaveBeenCalledWith(false);
@@ -527,7 +529,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().data.at(-1)?.id).toBe('assistant-final');
     expect(lastData().firstItemIndex).toBe(999_995);
     expect(lastData().heightEstimates).toEqual([150, 270, 900]);
-    expect(lastData().components).not.toBe(focusedComponents);
+    expect(lastData().components).toBe(focusedComponents);
     expect(scrollToBottom).toHaveBeenCalledTimes(1);
   });
 

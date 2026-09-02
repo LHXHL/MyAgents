@@ -497,12 +497,22 @@ export class DshSafeHttpClient {
           if (family === 4 || family === 6) {
             selectPublicAddresses([{ address: literal, family }], []);
           }
-          response = await this.proxyTransport.dispatch(
-            current,
-            requestWithoutSignal,
-            signal,
-            proxy,
-          );
+          try {
+            response = await this.proxyTransport.dispatch(
+              current,
+              requestWithoutSignal,
+              signal,
+              proxy,
+            );
+          } catch (error) {
+            signal.throwIfAborted();
+            if (error instanceof DshCanonicalWebError) throw error;
+            throw new DshCanonicalWebError(
+              'web_connect_failed',
+              'Web request through the configured proxy failed',
+              { cause: error },
+            );
+          }
         } else {
           const answers = await this.lookup(current.hostname.replace(/^\[|\]$/g, ''), signal);
           if (!Array.isArray(answers) || answers.length > 64) {

@@ -153,6 +153,26 @@ describe('DshSafeHttpClient', () => {
     expect(proxyTransport.dispatch).toHaveBeenCalledOnce();
   });
 
+  it('identifies the configured proxy path when its transport cannot connect', async () => {
+    const client = new DshSafeHttpClient(policy, {
+      lookup: publicLookup(),
+      proxyForUrl: () => 'http://127.0.0.1:7897',
+      proxyTransport: {
+        dispatch: vi.fn(async () => {
+          throw Object.assign(new Error('synthetic proxy refusal'), { code: 'ECONNREFUSED' });
+        }),
+      },
+    });
+
+    await expect(client.request('https://example.com/', {
+      method: 'GET',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'web_connect_failed',
+      message: 'Web request through the configured proxy failed',
+    });
+  });
+
   it('revalidates every redirect and refuses a redirect that resolves privately', async () => {
     const dispatch = vi.fn(async () => raw(302, new Uint8Array(), {
       location: 'http://private.example/secret',

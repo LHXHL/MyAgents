@@ -17,6 +17,7 @@ import {
   normalizeSkillSourceForRequest,
   parseArgs,
   parseDispatchAtValue,
+  printAgentList,
   printModelList,
   printGoalResult,
   printResult,
@@ -1457,6 +1458,33 @@ describe('myagents CLI Agent / Session collaboration contracts', () => {
       agentId: 'agent-1',
       limit: 10,
     });
+  });
+
+  it('does not advertise a current Agent marker when the caller has none', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printAgentList([
+        {
+          agentId: 'agent-user',
+          archived: false,
+          enabled: true,
+          channelCount: 0,
+          name: 'mino',
+        },
+        {
+          agentId: 'agent-system',
+          archived: false,
+          enabled: true,
+          channelCount: 0,
+          name: 'Mino',
+        },
+      ]);
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('No current Agent for this CLI caller');
+      expect(output).not.toContain('* current Agent for this CLI caller');
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('builds fresh Session start with the same prompt contract as send', () => {

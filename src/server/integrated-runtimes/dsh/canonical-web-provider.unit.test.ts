@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { DshCanonicalWebProvider } from './canonical-web-provider';
+import { DshCanonicalWebError } from './canonical-web-errors';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import type { DshRawHttpResponse, DshSafeHttpTransport } from './safe-http';
 
@@ -214,6 +215,26 @@ describe('DshCanonicalWebProvider', () => {
     })).rejects.toMatchObject({
       code: 'provider_search_failed',
       message: 'Zhipu WebSearch has no available search resource package or balance',
+    });
+  });
+
+  it('preserves the configured proxy path in a WebSearch transport failure', async () => {
+    const provider = providerWith(vi.fn(async () => {
+      throw new DshCanonicalWebError(
+        'web_connect_failed',
+        'Web request through the configured proxy failed',
+      );
+    }));
+
+    await expect(provider.runSearch({
+      profile: zhipuProfile,
+      apiKey: 'secret-zhipu',
+      query: 'DSH Host',
+      operationId: 'operation-proxy-failure',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'provider_search_failed',
+      message: 'Provider WebSearch transport failed: Web request through the configured proxy failed',
     });
   });
 

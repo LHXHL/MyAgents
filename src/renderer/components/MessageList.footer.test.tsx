@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -22,8 +22,32 @@ vi.mock('react-virtuoso', () => ({
 }));
 
 vi.mock('@/components/Message', () => ({ default: () => <div data-testid="msg" /> }));
-vi.mock('@/components/PermissionPrompt', () => ({ PermissionPrompt: () => null }));
-vi.mock('@/components/AskUserQuestionPrompt', () => ({ AskUserQuestionPrompt: () => null }));
+vi.mock('@/components/PermissionPrompt', async () => {
+  const { useState } = await import('react');
+  return {
+    PermissionPrompt: () => {
+      const [responding, setResponding] = useState(false);
+      return (
+        <button data-testid="permission-choice" disabled={responding} onClick={() => setResponding(true)}>
+          permission
+        </button>
+      );
+    },
+  };
+});
+vi.mock('@/components/AskUserQuestionPrompt', async () => {
+  const { useState } = await import('react');
+  return {
+    AskUserQuestionPrompt: () => {
+      const [selected, setSelected] = useState(false);
+      return (
+        <button data-testid="ask-choice" aria-pressed={selected} onClick={() => setSelected(true)}>
+          answer
+        </button>
+      );
+    },
+  };
+});
 vi.mock('@/components/ExitPlanModePrompt', () => ({ ExitPlanModePrompt: () => null }));
 
 import MessageList from './MessageList';
@@ -85,5 +109,49 @@ describe('MessageList footer status positioning', () => {
     expect(document.querySelector('[data-chat-status-row]')).not.toBeInTheDocument();
     expect(document.querySelector('[data-chat-footer-spacer]')).toBeInTheDocument();
     expect(document.body).toHaveTextContent('Saved');
+  });
+
+  it('preserves interaction-card state while volatile loading footer values change', () => {
+    const pendingAskUserQuestion = {
+      requestId: 'ask-1',
+      questions: [{
+        question: 'Choose',
+        header: 'Choice',
+        options: [
+          { label: 'One', description: 'First' },
+          { label: 'Two', description: 'Second' },
+        ],
+        multiSelect: false,
+      }],
+    };
+    const pendingPermission = {
+      requestId: 'permission-1',
+      toolName: 'Bash',
+      input: '{}',
+    };
+    const first = createBaseProps({
+      isLoading: true,
+      pendingAskUserQuestion,
+      onAskUserQuestionSubmit: vi.fn(),
+      onAskUserQuestionCancel: vi.fn(),
+      pendingPermission,
+      onPermissionDecision: vi.fn(),
+      bottomSpacerPx: 152,
+    });
+    const view = render(<MessageList {...first} />);
+
+    fireEvent.click(screen.getByTestId('ask-choice'));
+    fireEvent.click(screen.getByTestId('permission-choice'));
+    expect(screen.getByTestId('ask-choice')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('permission-choice')).toBeDisabled();
+
+    view.rerender(<MessageList {...createBaseProps({
+      ...first,
+      systemStatus: 'api_retry:2:3',
+      bottomSpacerPx: 168,
+    })} />);
+
+    expect(screen.getByTestId('ask-choice')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('permission-choice')).toBeDisabled();
   });
 });
