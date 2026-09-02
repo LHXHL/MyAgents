@@ -306,6 +306,11 @@
           "when": "The target changed after its qualifying Read."
         },
         {
+          "code": "directory_not_found",
+          "retryable": false,
+          "when": "The parent directory of a new target does not exist."
+        },
+        {
           "code": "path_denied",
           "retryable": false,
           "when": "The target is outside an allowed write root or changes identity."

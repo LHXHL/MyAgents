@@ -215,7 +215,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   assert.equal(lock.runtime.requiredNodeVersion, "24.14.0");
   assert.equal(lock.bundledNpm.version, "11.15.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
-  assert.equal(lock.protocol.version, "2.4.0");
+  assert.equal(lock.protocol.version, "2.4.1");
   assert.equal(lock.protocol.hostMethodCount, 40);
   assert.equal(lock.protocol.reverseMethodCount, 7);
   assert.equal(lock.protocol.notificationCount, 4);

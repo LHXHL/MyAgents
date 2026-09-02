@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.4.0",
-          "minVersion": "2.4.0"
+          "maxVersion": "2.4.1",
+          "minVersion": "2.4.1"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.4.0",
-          "minVersion": "2.4.0"
+          "maxVersion": "2.4.1",
+          "minVersion": "2.4.1"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "2.4.0",
+        "protocolVersion": "2.4.1",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -289,7 +289,7 @@
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "6aa05e6011f4ad83c93cb439701386103031da52b5f7926c296f917ce8ab909c",
+        "schemaSha256": "bf620aae4445bd540c665b0dba2dd93a982fc95c5bbda40610cb5fe36034eca0",
         "sessionFormat": "dsh-session-events-v1"
       }
     },
@@ -318,7 +318,7 @@
         "runtimeSessionId": "runtime-session-1",
         "state": "ready",
         "toolCatalog": {
-          "contractSha256": "36fc628d9375211b93203003232d67deec6d4f6733766a2d34f8e9cfea2789b9",
+          "contractSha256": "2c34c434385efee0cd040c9945b7a06e1ea4513c8fbd600b5a8af2c5302ffbcc",
           "diagnostics": [
             {
               "available": true,
@@ -401,7 +401,7 @@
               "tool": "TaskUpdate"
             }
           ],
-          "digest": "8a07ed66cf6d808b9044311fda0c15e4b815c737692683921e12e1fecb5b9921",
+          "digest": "9e62955aedfcb3e7ec565cc0e730972a340f70d31597058147936d86072529c4",
           "effectiveTools": [
             "Read",
             "Write",
@@ -1176,8 +1176,8 @@
       }
     }
   ],
-  "protocolVersion": "2.4.0",
-  "schemaSha256": "6aa05e6011f4ad83c93cb439701386103031da52b5f7926c296f917ce8ab909c",
+  "protocolVersion": "2.4.1",
+  "schemaSha256": "bf620aae4445bd540c665b0dba2dd93a982fc95c5bbda40610cb5fe36034eca0",
   "valid": [
     {
       "frame": {
@@ -1264,8 +1264,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "2.4.0",
-            "minVersion": "2.4.0"
+            "maxVersion": "2.4.1",
+            "minVersion": "2.4.1"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1293,7 +1293,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "2.4.0",
+          "protocolVersion": "2.4.1",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1372,7 +1372,7 @@
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "6aa05e6011f4ad83c93cb439701386103031da52b5f7926c296f917ce8ab909c",
+          "schemaSha256": "bf620aae4445bd540c665b0dba2dd93a982fc95c5bbda40610cb5fe36034eca0",
           "sessionFormat": "dsh-session-events-v1"
         }
       },
