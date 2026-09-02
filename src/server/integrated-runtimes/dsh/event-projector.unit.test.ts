@@ -165,6 +165,58 @@ describe('DshRuntimeEventProjector', () => {
     ]);
   });
 
+  it('keeps Provider-owned activity distinct from canonical tool execution', async () => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1',
+      runtimeGeneration: 'runtime-generation-1',
+      onEvent: event => events.push(event),
+    });
+    await projector.accept(envelope(1, {
+      kind: 'provider_tool',
+      phase: 'start',
+      providerRouteId: 'fixture-provider',
+      providerToolCallId: 'provider-call-1',
+      providerBlockType: 'server_tool_use',
+      name: 'web_search',
+      input: { query: 'public reference' },
+    }, { turnId: 'turn-1', toolCallId: 'provider-call-1' }));
+    await projector.accept(envelope(2, {
+      kind: 'provider_tool',
+      phase: 'end',
+      providerRouteId: 'fixture-provider',
+      providerToolCallId: 'provider-call-1',
+      providerBlockType: 'web_search_tool_result',
+      name: 'web_search',
+      result: {
+        state: 'succeeded',
+        isError: false,
+        content: [{ type: 'text', text: '[{"title":"Reference"}]' }],
+      },
+    }, { turnId: 'turn-1', toolCallId: 'provider-call-1' }));
+
+    expect(events).toEqual([
+      {
+        kind: 'provider_tool_use_start',
+        providerRouteId: 'fixture-provider',
+        providerBlockType: 'server_tool_use',
+        toolUseId: 'provider-call-1',
+        toolName: 'web_search',
+        input: { query: 'public reference' },
+      },
+      {
+        kind: 'provider_tool_result',
+        providerRouteId: 'fixture-provider',
+        providerBlockType: 'web_search_tool_result',
+        toolUseId: 'provider-call-1',
+        toolName: 'web_search',
+        content: '[{"title":"Reference"}]',
+        isError: false,
+      },
+    ]);
+    expect(events.some(event => event.kind === 'tool_use_start' || event.kind === 'tool_result')).toBe(false);
+  });
+
   it('keeps Plan, TaskGraph, and context in separate Product domains', async () => {
     const events: UnifiedEvent[] = [];
     const onPlan = vi.fn();

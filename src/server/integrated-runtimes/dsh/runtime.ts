@@ -598,6 +598,7 @@ class DshProcess implements RuntimeProcess {
     readonly host: DshRuntimeProcessHost,
     readonly projector: DshRuntimeEventProjector,
     readonly attachments: DshAttachmentRegistry,
+    readonly canonicalWeb: DshCanonicalWebHost,
     readonly options: SessionStartOptions,
     readonly onEvent: UnifiedEventCallback,
     readonly executionEnvironment: DshExecutionEnvironment,
@@ -656,6 +657,11 @@ class DshProcess implements RuntimeProcess {
     if (this.resourcesClosed) return;
     this.resourcesClosed = true;
     this.attachments.close();
+    void this.canonicalWeb.close().catch((error: unknown) => {
+      console.warn(
+        `[dsh-web] failed to close Host Web resources: ${error instanceof Error ? error.name : 'unknown'}`,
+      );
+    });
     const dispatchers = new Set(
       [...this.extensionPlanes.values()]
         .map(plane => plane.hostToolDispatcher)
@@ -1143,6 +1149,7 @@ export class DshRuntime implements AgentRuntime {
         host,
         projector,
         attachments,
+        canonicalWeb,
         options,
         onEvent,
         initialize.executionEnvironment,
@@ -1216,6 +1223,7 @@ export class DshRuntime implements AgentRuntime {
       return processValue;
     } catch (error) {
       attachments.close();
+      await canonicalWeb.close().catch(() => undefined);
       extensionPlane.hostToolDispatcher?.dispose('session_admission_failed');
       await host.stop('session_admission_failed').catch(() => undefined);
       throw error;

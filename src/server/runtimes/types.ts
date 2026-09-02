@@ -224,6 +224,23 @@ export type UnifiedEvent =
   | { kind: 'tool_use_stop'; toolUseId: string; input?: Record<string, unknown>; subAgent?: SubAgentScope }
   | { kind: 'tool_result_delta'; toolUseId: string; delta: string; subAgent?: SubAgentScope }
   | {
+    kind: 'provider_tool_use_start';
+    providerRouteId: string;
+    providerBlockType: string;
+    toolUseId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  }
+  | {
+    kind: 'provider_tool_result';
+    providerRouteId: string;
+    providerBlockType: string;
+    toolUseId: string;
+    toolName: string;
+    content: string;
+    isError: boolean;
+  }
+  | {
     kind: 'tool_result';
     toolUseId: string;
     content: string;

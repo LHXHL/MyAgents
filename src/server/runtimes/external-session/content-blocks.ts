@@ -431,6 +431,58 @@ export function startExternalToolUseInput(input: {
   });
 }
 
+export function startExternalProviderToolUse(input: {
+  toolUseId: string;
+  toolName: string;
+  providerRouteId: string;
+  providerBlockType: string;
+  toolInput: Record<string, unknown>;
+}): void {
+  const inputJson = JSON.stringify(input.toolInput, null, 2);
+  currentContentBlocks.push({
+    type: 'server_tool_use',
+    providerRouteId: input.providerRouteId,
+    providerBlockType: input.providerBlockType,
+    tool: {
+      id: input.toolUseId,
+      name: input.toolName,
+      input: input.toolInput,
+      inputJson,
+      streamIndex: currentContentBlocks.length,
+      isLoading: true,
+    },
+  });
+}
+
+export function applyExternalProviderToolResult(input: {
+  toolUseId: string;
+  providerRouteId: string;
+  providerBlockType: string;
+  content: string;
+  isError: boolean;
+}): boolean {
+  for (let index = currentContentBlocks.length - 1; index >= 0; index -= 1) {
+    const block = currentContentBlocks[index];
+    if (block.type !== 'server_tool_use'
+      || block.tool?.id !== input.toolUseId
+      || block.providerRouteId !== input.providerRouteId) continue;
+    block.resultProviderBlockType = input.providerBlockType;
+    block.tool.result = input.content;
+    block.tool.isError = input.isError;
+    block.tool.isLoading = false;
+    return true;
+  }
+  return false;
+}
+
+export function finalizeExternalProviderToolsForTurn(): void {
+  for (const block of currentContentBlocks) {
+    if (block.type === 'server_tool_use' && block.tool?.isLoading) {
+      block.tool.isLoading = false;
+    }
+  }
+}
+
 export function appendExternalToolInputDelta(
   toolUseId: string,
   delta: string,

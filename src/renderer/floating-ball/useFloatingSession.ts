@@ -48,7 +48,7 @@ import {
 import type { FbPendingKind } from './petStateMapper';
 import { resolveBoundWorkspace, type FbProject } from './workspaceBinding';
 import { SESSION_MIGRATED_EVENT, type FloatingBallSessionMigratedPayload } from './sessionBinding';
-import type { ContentBlock, ToolAttachment, ToolInput, ToolUseSimple } from '@/types/chat';
+import type { ContentBlock, ProviderToolUsePayload, ToolAttachment, ToolInput, ToolUseSimple } from '@/types/chat';
 import type { ToolUse } from '@/types/stream';
 
 export interface FbAttachment {
@@ -639,7 +639,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         });
     }, [updateLiveContent]);
 
-    const appendToolBlock = useCallback((payload: ToolUse, blockType: 'tool_use' | 'server_tool_use') => {
+    const appendToolBlock = useCallback((payload: ToolUse | ProviderToolUsePayload, blockType: 'tool_use' | 'server_tool_use') => {
         const initialInputJson = Object.keys(payload.input ?? {}).length > 0
             ? JSON.stringify(payload.input, null, 2)
             : '';
@@ -662,7 +662,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         updateLiveContent((content) => ({
             content: [
                 ...closeOpenThinkingBlocks(content),
-                { type: blockType, tool },
+                {
+                    type: blockType,
+                    providerRouteId: blockType === 'server_tool_use'
+                        ? (payload as ProviderToolUsePayload).providerRouteId
+                        : undefined,
+                    providerBlockType: blockType === 'server_tool_use'
+                        ? (payload as ProviderToolUsePayload).providerBlockType
+                        : undefined,
+                    tool,
+                },
             ],
             streamingTextActive: false,
         }));
@@ -757,9 +766,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'chat:server-tool-use-start': {
-                    const payload = data as ToolUse | null;
+                    const payload = data as ProviderToolUsePayload | null;
                     if (!payload?.id || !payload.name) break;
-                    setBusy(true);
                     appendToolBlock(payload, 'server_tool_use');
                     break;
                 }

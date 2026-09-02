@@ -373,6 +373,7 @@ import {
   appendExternalPendingThinkingText,
   appendExternalToolResultDeltaToContent,
   appendExternalToolInputDelta,
+  applyExternalProviderToolResult,
   applyExternalReplayedToolResultToContent,
   applyExternalSubagentLifecycle,
   applyExternalSubagentAttachmentUpdate,
@@ -388,6 +389,7 @@ import {
   flushExternalPendingTextBlock,
   flushExternalPendingThinkingBlock,
   flushExternalPendingToolInputsForTurn,
+  finalizeExternalProviderToolsForTurn,
   getExternalAssistantText,
   getExternalChildToolParent,
   getExternalContentBlockCount,
@@ -405,6 +407,7 @@ import {
   resetExternalPendingThinking,
   startExternalSubagentToolUse,
   startExternalSubagentTraceTool,
+  startExternalProviderToolUse,
   startExternalToolUseInput,
 } from './external-session/content-blocks';
 import {
@@ -1765,6 +1768,7 @@ function flushAllPending(textMirrorDisposition: ExternalTextMirrorDisposition): 
       isError: interrupted.isError,
     });
   }
+  finalizeExternalProviderToolsForTurn();
 }
 
 // ─── Watchdog timer (10 min inactivity → kill hung process) ───
@@ -7703,6 +7707,52 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         ? pendingInput.then(() => dispatchExternalToolResult(event))
         : dispatchExternalToolResult(event);
       trackInFlightSave(dispatched);
+      break;
+    }
+
+    case 'provider_tool_use_start':
+      closePendingThinkingProjection();
+      flushPendingText('mirror-completed-block');
+      startExternalProviderToolUse({
+        toolUseId: event.toolUseId,
+        toolName: event.toolName,
+        providerRouteId: event.providerRouteId,
+        providerBlockType: event.providerBlockType,
+        toolInput: event.input,
+      });
+      broadcast('chat:server-tool-use-start', {
+        id: event.toolUseId,
+        name: event.toolName,
+        input: event.input,
+        providerRouteId: event.providerRouteId,
+        providerBlockType: event.providerBlockType,
+      });
+      broadcast('chat:content-block-stop', {
+        index: -1,
+        toolId: event.toolUseId,
+        type: 'server_tool_use',
+        input: event.input,
+      });
+      break;
+
+    case 'provider_tool_result': {
+      if (!applyExternalProviderToolResult({
+        toolUseId: event.toolUseId,
+        providerRouteId: event.providerRouteId,
+        providerBlockType: event.providerBlockType,
+        content: event.content,
+        isError: event.isError,
+      })) {
+        console.warn(`[external-session] Ignoring uncorrelated Provider tool result ${event.toolUseId}`);
+        break;
+      }
+      broadcast('chat:tool-result-complete', {
+        toolUseId: event.toolUseId,
+        content: event.content,
+        isError: event.isError,
+        providerRouteId: event.providerRouteId,
+        providerBlockType: event.providerBlockType,
+      });
       break;
     }
 

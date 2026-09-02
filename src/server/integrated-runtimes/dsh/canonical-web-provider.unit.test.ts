@@ -173,15 +173,38 @@ describe('DshCanonicalWebProvider', () => {
     });
   });
 
-  it('uses Zhipu native search for an Anthropic-compatible model route', async () => {
+  it('uses Claude Code-compatible server search for a Zhipu Anthropic Messages route', async () => {
     const dispatch = vi.fn<DshSafeHttpTransport['dispatch']>(async (url, _address, request) => {
-      expect(url.toString()).toBe('https://open.bigmodel.cn/api/paas/v4/web_search');
+      expect(url.toString()).toBe('https://open.bigmodel.cn/api/anthropic/v1/messages');
       expect(request.headers?.authorization).toBe('Bearer secret-zhipu');
-      expect(request.headers).not.toHaveProperty('x-api-key');
+      expect(request.headers?.['x-api-key']).toBe('secret-zhipu');
+      const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as Record<string, unknown>;
+      expect(body.tools).toEqual([expect.objectContaining({
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5,
+      })]);
       return json({
-        search_result: [
-          { title: 'Zhipu', link: 'https://docs.bigmodel.cn/guide', content: 'Native result' },
+        stop_reason: 'end_turn',
+        content: [
+          {
+            type: 'web_search_tool_result',
+            content: [{
+              type: 'web_search_result',
+              title: 'Zhipu',
+              url: 'https://docs.bigmodel.cn/guide',
+            }],
+          },
+          {
+            type: 'text',
+            text: 'Answer',
+            citations: [{
+              url: 'https://docs.bigmodel.cn/guide',
+              cited_text: 'Compatible result',
+            }],
+          },
         ],
+        usage: { input_tokens: 3, output_tokens: 2, server_tool_use: { web_search_requests: 1 } },
       });
     });
 
@@ -196,7 +219,7 @@ describe('DshCanonicalWebProvider', () => {
     expect(result.results).toEqual([{
       title: 'Zhipu',
       url: 'https://docs.bigmodel.cn/guide',
-      snippet: 'Native result',
+      snippet: 'Compatible result',
     }]);
   });
 

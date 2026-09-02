@@ -130,6 +130,13 @@ export class DshCanonicalWebHost {
     return params.tool === 'WebFetch' || params.tool === 'WebSearch';
   }
 
+  async close(): Promise<void> {
+    await Promise.all([
+      this.contentClient.close(),
+      this.provider.close?.(),
+    ]);
+  }
+
   async execute(params: DshRpcObject, context: DshRequestContext): Promise<DshRpcObject> {
     const tool = params.tool as CanonicalTool;
     const configuration = this.options.activeConfiguration();
@@ -151,7 +158,7 @@ export class DshCanonicalWebHost {
       const result = failure(error, context.signal);
       const authority = record(params.authority);
       console.warn(
-        `[dsh-web] tool=${tool} code=${String(result.code)} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
+        `[dsh-web] tool=${tool} code=${String(result.code)} phase=${error instanceof DshCanonicalWebError ? error.phase ?? 'unknown' : 'unknown'} system=${error instanceof DshCanonicalWebError ? error.systemErrorClass ?? 'unknown' : 'unknown'} backend=${configuration.profile.api} route=${configuration.profile.providerRouteId} operation=${String(authority?.clientOperationId ?? 'unknown')} call=${String(authority?.callId ?? 'unknown')}`,
       );
       return result;
     }

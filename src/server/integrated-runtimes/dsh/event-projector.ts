@@ -367,6 +367,48 @@ export class DshRuntimeEventProjector {
         }
         return;
       }
+      case 'provider_tool': {
+        const phase = string(event.phase, 'DSH Provider tool phase');
+        const toolUseId = string(event.providerToolCallId, 'DSH Provider tool call id');
+        const providerRouteId = string(event.providerRouteId, 'DSH Provider route id');
+        const providerBlockType = string(event.providerBlockType, 'DSH Provider block type');
+        const toolName = string(event.name, 'DSH Provider tool name');
+        if (phase === 'start') {
+          this.options.onEvent({
+            kind: 'provider_tool_use_start',
+            providerRouteId,
+            providerBlockType,
+            toolUseId,
+            toolName,
+            input: object(event.input, 'DSH Provider tool input'),
+          });
+          return;
+        }
+        if (phase === 'end') {
+          const result = object(event.result, 'DSH Provider tool result');
+          if (!Array.isArray(result.content)) {
+            throw new Error('DSH Provider tool result content must be an array');
+          }
+          const content = result.content.map((candidate) => {
+            const block = object(candidate, 'DSH Provider tool result block');
+            if (block.type !== 'text' || typeof block.text !== 'string') {
+              throw new Error('DSH Provider tool result supports bounded text blocks only');
+            }
+            return block.text;
+          }).join('\n');
+          this.options.onEvent({
+            kind: 'provider_tool_result',
+            providerRouteId,
+            providerBlockType,
+            toolUseId,
+            toolName,
+            content,
+            isError: result.isError === true || result.state === 'failed',
+          });
+          return;
+        }
+        throw new Error(`DSH Provider tool phase is unsupported: ${phase}`);
+      }
       case 'usage':
         this.options.onEvent(usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow));
         return;

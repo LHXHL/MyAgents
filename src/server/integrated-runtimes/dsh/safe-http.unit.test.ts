@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -5,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DshCanonicalWebError } from './canonical-web-errors';
 import {
   DshSafeHttpClient,
+  DshNodeProxyHttpTransport,
   createDshPinnedLookup,
   type DshDnsAnswer,
   type DshRawHttpResponse,
@@ -170,7 +173,78 @@ describe('DshSafeHttpClient', () => {
     })).rejects.toMatchObject({
       code: 'web_connect_failed',
       message: 'Web request through the configured proxy failed',
+      phase: 'proxy_connect',
+      systemErrorClass: 'ECONNREFUSED',
     });
+  });
+
+  it('classifies a proxy connection timeout without claiming generic network failure', async () => {
+    const client = new DshSafeHttpClient(policy, {
+      proxyForUrl: () => 'http://127.0.0.1:7897',
+      proxyTransport: {
+        dispatch: vi.fn(async () => {
+          throw Object.assign(new Error('synthetic timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' });
+        }),
+      },
+    });
+
+    await expect(client.request('https://example.com/', {
+      method: 'GET',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'web_request_timeout',
+      message: 'Web proxy connection timed out',
+      phase: 'proxy_connect',
+      systemErrorClass: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+  });
+
+  it('reuses the composition-owned proxy dispatcher across sequential requests', async () => {
+    const sockets = new Set<Duplex>();
+    let connectCount = 0;
+    const proxy = createServer();
+    proxy.on('connect', (_request, socket) => {
+      connectCount += 1;
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      let buffered = '';
+      socket.on('data', (chunk: Buffer) => {
+        buffered += chunk.toString('latin1');
+        while (buffered.includes('\r\n\r\n')) {
+          buffered = buffered.slice(buffered.indexOf('\r\n\r\n') + 4);
+          socket.write([
+            'HTTP/1.1 200 OK',
+            'Content-Type: text/plain',
+            'Content-Length: 2',
+            'Connection: keep-alive',
+            '',
+            'ok',
+          ].join('\r\n'));
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      proxy.once('error', reject);
+      proxy.listen(0, '127.0.0.1', resolve);
+    });
+    const address = proxy.address();
+    if (!address || typeof address === 'string') throw new Error('Proxy fixture has no TCP address');
+
+    try {
+      const transport = new DshNodeProxyHttpTransport(policy.maxCompressedBytes);
+      for (let index = 0; index < 5; index += 1) {
+        const response = await transport.dispatch(new URL('http://127.0.0.2/reuse'), {
+          method: 'GET',
+        }, new AbortController().signal, `http://127.0.0.1:${address.port}`);
+        expect(Buffer.from(response.bytes).toString('utf8')).toBe('ok');
+      }
+      expect(connectCount).toBeLessThan(5);
+      await transport.close();
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
+    }
   });
 
   it('revalidates every redirect and refuses a redirect that resolves privately', async () => {

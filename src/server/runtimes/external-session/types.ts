@@ -28,8 +28,11 @@ export interface PersistToolResultMeta {
 }
 
 export interface PersistContentBlock {
-  type: 'text' | 'tool_use' | 'thinking';
+  type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
+  providerRouteId?: string;
+  providerBlockType?: string;
+  resultProviderBlockType?: string;
   tool?: {
     id: string;
     name: string;

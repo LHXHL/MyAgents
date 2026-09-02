@@ -50,7 +50,7 @@ import {
     shouldPreserveSnapshotOnPendingBirthPropSync,
 } from './sessionScopedEventGuards';
 import { isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
-import type { AgentStatusTodoSnapshot, Message, MessageAttachment, ContentBlock, ToolUseSimple, ToolInput, TaskStats, SubagentToolCall } from '@/types/chat';
+import type { AgentStatusTodoSnapshot, Message, MessageAttachment, ContentBlock, ToolUseSimple, ToolInput, TaskStats, SubagentToolCall, ProviderToolUsePayload } from '@/types/chat';
 import type { ToolUse } from '@/types/stream';
 import type { SystemInitInfo } from '../../shared/types/system';
 import {
@@ -254,7 +254,7 @@ function finalizeAssistantForHistory(msg: Message, status: 'completed' | 'stoppe
             : {};
     const hasIncomplete = msg.content.some(b =>
         (b.type === 'thinking' && !b.isComplete) ||
-        (b.type === 'tool_use' && b.tool?.isLoading)
+        ((b.type === 'tool_use' || b.type === 'server_tool_use') && b.tool?.isLoading)
     );
     if (!hasIncomplete) return msg;
     return {
@@ -270,7 +270,7 @@ function finalizeAssistantForHistory(msg: Message, status: 'completed' | 'stoppe
                         : undefined
                 };
             }
-            if (block.type === 'tool_use' && block.tool?.isLoading) {
+            if ((block.type === 'tool_use' || block.type === 'server_tool_use') && block.tool?.isLoading) {
                 return {
                     ...block,
                     tool: { ...block.tool, isLoading: false, ...statusFlags }
@@ -2584,12 +2584,11 @@ export default function TabProvider({
                 // so a same-React-batch message-chunk can't overwrite this tool block (see thinking-start).
                 if (!isStreamingRef.current) {
                     flushSync(() => {
-                        setIsLoading(true);
                         setStreamingMessage({ id: Date.now().toString(), role: 'assistant', content: [], timestamp: new Date() });
                     });
                     isStreamingRef.current = true;
                 }
-                const tool = data as ToolUse;
+                const tool = data as ProviderToolUsePayload;
 
                 // Track tool_use event (server-side tools)
                 trackTabEvent('tool_use', { tool: tool.name });
@@ -2604,6 +2603,8 @@ export default function TabProvider({
                 setStreamingMessage(prev => {
                     const toolBlock: ContentBlock = {
                         type: 'server_tool_use',
+                        providerRouteId: tool.providerRouteId,
+                        providerBlockType: tool.providerBlockType,
                         tool: toolSimple
                     };
                     if (prev?.role === 'assistant') {
@@ -2615,7 +2616,6 @@ export default function TabProvider({
                         return { ...prev, content: [...content, toolBlock] };
                     }
                     isStreamingRef.current = true;
-                    setIsLoading(true);
                     return { id: Date.now().toString(), role: 'assistant', content: [toolBlock], timestamp: new Date() };
                 });
                 break;
@@ -2783,6 +2783,8 @@ export default function TabProvider({
                     isError?: boolean;
                     metadata?: import('@/types/chat').ToolResultMeta;
                     attachments?: import('@/types/chat').ToolAttachment[];
+                    providerRouteId?: string;
+                    providerBlockType?: string;
                 };
 
                 // Pattern 3 §3.2.2 — drain any pending RAF deltas for this tool
@@ -2812,6 +2814,9 @@ export default function TabProvider({
                     const updated = [...contentArray];
                     updated[idx] = {
                         ...block,
+                        resultProviderBlockType: block.type === 'server_tool_use'
+                            ? payload.providerBlockType ?? block.resultProviderBlockType
+                            : block.resultProviderBlockType,
                         tool: {
                             ...block.tool,
                             result: payload.content ?? block.tool.result,

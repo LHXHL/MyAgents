@@ -139,9 +139,17 @@ export interface ToolUseSimple extends ToolUse {
   display?: ToolDisplayPayload;
 }
 
+export interface ProviderToolUsePayload extends ToolUse {
+  providerRouteId?: string;
+  providerBlockType?: string;
+}
+
 export interface ContentBlock {
   type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
+  providerRouteId?: string;
+  providerBlockType?: string;
+  resultProviderBlockType?: string;
   tool?: ToolUseSimple;
   thinking?: string;
   thinkingStartedAt?: number;

@@ -588,6 +588,7 @@
     "toolChrome": {
       "common": {
         "background": "Background",
+        "providerOwned": "Provider",
         "copy": "Copy",
         "copied": "Copied",
         "exportMarkdown": "Export Markdown",

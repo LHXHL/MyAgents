@@ -60,6 +60,7 @@ export interface DshSafeHttpProxyTransport {
     signal: AbortSignal,
     proxy: string,
   ): Promise<DshRawHttpResponse>;
+  close?(): Promise<void>;
 }
 
 export type DshSafeHttpConfig = Readonly<{
@@ -372,7 +373,18 @@ class NodePinnedHttpTransport implements DshSafeHttpTransport {
 
 }
 
-class NodeProxyHttpTransport implements DshSafeHttpProxyTransport {
+type ProxyDispatcherEntry = {
+  readonly proxy: string;
+  readonly dispatcher: ProxyAgent;
+  active: number;
+  retired: boolean;
+  closing?: Promise<void>;
+};
+
+export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
+  private current: ProxyDispatcherEntry | undefined;
+  private readonly entries = new Set<ProxyDispatcherEntry>();
+
   constructor(private readonly maxCompressedBytes: number) {}
 
   async dispatch(
@@ -381,10 +393,10 @@ class NodeProxyHttpTransport implements DshSafeHttpProxyTransport {
     signal: AbortSignal,
     proxy: string,
   ): Promise<DshRawHttpResponse> {
-    const dispatcher = new ProxyAgent(proxy);
+    const entry = this.acquire(proxy);
     try {
       const response = await undiciRequest(url, {
-        dispatcher,
+        dispatcher: entry.dispatcher,
         method: request.method,
         headers: request.headers,
         ...(request.body === undefined ? {} : { body: request.body }),
@@ -409,8 +421,51 @@ class NodeProxyHttpTransport implements DshSafeHttpProxyTransport {
         bytes: Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), total),
       });
     } finally {
-      await dispatcher.close().catch(() => undefined);
+      this.release(entry);
     }
+  }
+
+  async close(): Promise<void> {
+    this.current = undefined;
+    const closing = [...this.entries].map(entry => {
+      entry.retired = true;
+      return this.closeEntry(entry, true);
+    });
+    await Promise.all(closing);
+  }
+
+  private acquire(proxy: string): ProxyDispatcherEntry {
+    if (this.current?.proxy === proxy && !this.current.retired) {
+      this.current.active += 1;
+      return this.current;
+    }
+    if (this.current) {
+      this.current.retired = true;
+      void this.closeEntry(this.current, false);
+    }
+    const entry: ProxyDispatcherEntry = {
+      proxy,
+      dispatcher: new ProxyAgent(proxy),
+      active: 1,
+      retired: false,
+    };
+    this.entries.add(entry);
+    this.current = entry;
+    return entry;
+  }
+
+  private release(entry: ProxyDispatcherEntry): void {
+    entry.active -= 1;
+    if (entry.retired) void this.closeEntry(entry, false);
+  }
+
+  private closeEntry(entry: ProxyDispatcherEntry, force: boolean): Promise<void> {
+    if (entry.closing) return entry.closing;
+    if (!force && entry.active > 0) return Promise.resolve();
+    entry.closing = entry.dispatcher.close()
+      .catch(() => undefined)
+      .finally(() => this.entries.delete(entry));
+    return entry.closing;
   }
 }
 
@@ -471,7 +526,7 @@ export class DshSafeHttpClient {
   ) {
     this.lookup = config.lookup ?? systemLookup;
     this.proxyForUrl = config.proxyForUrl;
-    this.proxyTransport = config.proxyTransport ?? new NodeProxyHttpTransport(policy.maxCompressedBytes);
+    this.proxyTransport = config.proxyTransport ?? new DshNodeProxyHttpTransport(policy.maxCompressedBytes);
     this.transport = config.transport ?? new NodePinnedHttpTransport(policy.maxCompressedBytes);
   }
 
@@ -507,11 +562,7 @@ export class DshSafeHttpClient {
           } catch (error) {
             signal.throwIfAborted();
             if (error instanceof DshCanonicalWebError) throw error;
-            throw new DshCanonicalWebError(
-              'web_connect_failed',
-              'Web request through the configured proxy failed',
-              { cause: error },
-            );
+            throw dshCanonicalWebTransportError(error, 'proxy');
           }
         } else {
           const answers = await this.lookup(current.hostname.replace(/^\[|\]$/g, ''), signal);
@@ -582,12 +633,19 @@ export class DshSafeHttpClient {
     } catch (error) {
       if (request.signal.aborted) throw request.signal.reason;
       if (deadline.aborted) {
-        throw new DshCanonicalWebError('web_request_timeout', 'Web request exceeded its deadline');
+        throw new DshCanonicalWebError('web_request_timeout', 'Web request exceeded its deadline', {
+          phase: 'deadline',
+          systemErrorClass: 'TimeoutError',
+        });
       }
       throw dshCanonicalWebTransportError(error);
     } finally {
       release();
     }
+  }
+
+  async close(): Promise<void> {
+    await this.proxyTransport.close?.();
   }
 
   private async acquire(signal: AbortSignal): Promise<() => void> {

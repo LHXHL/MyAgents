@@ -139,3 +139,25 @@ describe('ProcessRow tool body layout ownership', () => {
     expect(container.querySelector('[data-process-body-layout="indented"]')).toHaveClass('ml-7');
   });
 });
+
+describe('ProcessRow Provider tool ownership', () => {
+  it('labels server tool activity as Provider-owned', () => {
+    const block = {
+      type: 'server_tool_use',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      tool: {
+        id: 'provider-call-1',
+        name: 'web_search',
+        input: { query: 'reference' },
+        result: '[]',
+        isLoading: false,
+        streamIndex: 0,
+      },
+    } as ContentBlock;
+
+    const { container } = render(<ProcessRow block={block} index={0} totalBlocks={1} />);
+
+    expect(container.querySelector('[data-provider-owned="true"]')).toHaveTextContent('Provider 执行');
+  });
+});

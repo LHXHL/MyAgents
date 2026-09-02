@@ -1,22 +1,80 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   applyExternalSubagentToolResult,
+  applyExternalProviderToolResult,
   applyExternalSubagentAttachmentUpdate,
   applyExternalToolAttachmentUpdate,
   applyExternalToolResultToContent,
   appendExternalToolResultDeltaToContent,
   buildCurrentExternalAssistantSnapshotContent,
   finalizeExternalToolUseInput,
+  finalizeExternalProviderToolsForTurn,
   replaceExternalToolUseInput,
   resetExternalContentState,
   getExternalSubagentAttachmentParent,
   startExternalSubagentToolUse,
+  startExternalProviderToolUse,
   startExternalToolUseInput,
 } from './content-blocks';
 
 afterEach(() => resetExternalContentState());
 
 describe('external live assistant content', () => {
+  it('persists Provider-owned activity as a distinct server tool block', () => {
+    startExternalProviderToolUse({
+      toolUseId: 'provider-call-1',
+      toolName: 'web_search',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      toolInput: { query: 'public reference' },
+    });
+
+    expect(applyExternalProviderToolResult({
+      toolUseId: 'provider-call-1',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'web_search_tool_result',
+      content: '[{"title":"Reference"}]',
+      isError: false,
+    })).toBe(true);
+
+    const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent() ?? '[]');
+    expect(blocks).toEqual([{
+      type: 'server_tool_use',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      resultProviderBlockType: 'web_search_tool_result',
+      tool: {
+        id: 'provider-call-1',
+        name: 'web_search',
+        input: { query: 'public reference' },
+        inputJson: '{\n  "query": "public reference"\n}',
+        streamIndex: 0,
+        isLoading: false,
+        result: '[{"title":"Reference"}]',
+        isError: false,
+      },
+    }]);
+  });
+
+  it('settles a Provider-owned block at the root turn boundary without inventing a result', () => {
+    startExternalProviderToolUse({
+      toolUseId: 'provider-call-without-result',
+      toolName: 'web_search',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      toolInput: { query: 'public reference' },
+    });
+
+    finalizeExternalProviderToolsForTurn();
+
+    const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent() ?? '[]');
+    expect(blocks[0].tool).toMatchObject({
+      id: 'provider-call-without-result',
+      isLoading: false,
+    });
+    expect(blocks[0].tool).not.toHaveProperty('result');
+  });
+
   it('keeps top-level tool result deltas in the owner snapshot', () => {
     startExternalToolUseInput({ toolUseId: 'tool-1', toolName: 'Read' });
     finalizeExternalToolUseInput('tool-1');

@@ -576,9 +576,14 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
     if (block.type === 'thinking') {
       return !block.isComplete;
     }
-    if (block.type === 'tool_use' || block.type === 'server_tool_use') {
-      // Tool is incomplete if it doesn't have a result yet
-      // server_tool_use is treated the same as tool_use for streaming state
+    if (block.type === 'server_tool_use') {
+      // Provider tools own their own completion bit. An empty Provider result is
+      // still a valid terminal result and must not keep the message streaming.
+      return Boolean(block.tool?.isLoading);
+    }
+    if (block.type === 'tool_use') {
+      // Local tools can predate the explicit loading bit, so retain the legacy
+      // result fallback for history compatibility.
       const subagentRunning = block.tool?.subagentCalls?.some((call) => call.isLoading);
       return Boolean(block.tool?.isLoading) || Boolean(subagentRunning) || !block.tool?.result;
     }

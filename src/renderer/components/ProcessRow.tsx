@@ -352,6 +352,14 @@ const ProcessRow = memo(function ProcessRow({
                         {mainLabel}
                     </span>
                     {/* Background task badge */}
+                    {isServerTool && (
+                        <span
+                            data-provider-owned="true"
+                            className="rounded-full bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
+                        >
+                            {t('shell.toolChrome.common.providerOwned')}
+                        </span>
+                    )}
                     {isTaskTool && isBackgroundSubagentTool(block.tool) && (
                         <span className="rounded-full bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
                             {t('shell.toolChrome.common.background')}

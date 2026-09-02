@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { DSH_PROVIDER_CELL_CONTRACT } from '../../../shared/integrated-runtimes/dsh-provider-cells';
+import { anthropicAuthHeaders } from '../../provider-probe';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import { DshCanonicalWebError } from './canonical-web-errors';
 import { truncateDshWebText } from './canonical-web-content';
@@ -12,6 +14,10 @@ const ZHIPU_WEB_SEARCH_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/web_sear
 const MAX_UTILITY_TOKENS = 4_096;
 const MAX_SEARCH_USES = 5;
 const MAX_ANTHROPIC_PAUSES = 3;
+const PROVIDER_ENDPOINT_HOSTS = Object.freeze([...new Set([
+  ...DSH_PROVIDER_CELL_CONTRACT.cells.map(cell => new URL(cell.profile.baseUrl).hostname),
+  new URL(ZHIPU_WEB_SEARCH_ENDPOINT).hostname,
+])]);
 
 export type DshCanonicalTokenUsage = Readonly<{
   inputTokens: number;
@@ -56,6 +62,7 @@ export interface DshCanonicalWebProviderPort {
     usage: DshCanonicalTokenUsage;
     truncated: boolean;
   }>>;
+  close?(): Promise<void>;
 }
 
 const ZERO_USAGE: DshCanonicalTokenUsage = Object.freeze({
@@ -264,7 +271,7 @@ function parseJsonResponse(response: DshSafeHttpResponse, errorCode: 'provider_s
 
 function providerPolicy(): ConstructorParameters<typeof DshSafeHttpClient>[0] {
   return Object.freeze({
-    allowedHosts: Object.freeze(['api.anthropic.com', 'open.bigmodel.cn']),
+    allowedHosts: PROVIDER_ENDPOINT_HOSTS,
     allowedPorts: Object.freeze([443]),
     deniedHosts: Object.freeze(['metadata.google.internal']),
     maxCompressedBytes: MAX_PROVIDER_RESPONSE_BYTES,
@@ -277,15 +284,30 @@ function providerPolicy(): ConstructorParameters<typeof DshSafeHttpClient>[0] {
   });
 }
 
+function profileAuthType(profile: DshModelExecutionProfile) {
+  const cell = DSH_PROVIDER_CELL_CONTRACT.cells.find(candidate => (
+    candidate.profile.providerRouteId === profile.providerRouteId
+    && candidate.profile.api === profile.api
+    && candidate.profile.provider === profile.provider
+    && candidate.profile.baseUrl === profile.baseUrl
+    && candidate.modelId === profile.modelId
+  ));
+  if (!cell) {
+    throw new DshCanonicalWebError(
+      'web_search_unavailable',
+      'Frozen Provider has no admitted authentication profile',
+    );
+  }
+  return cell.product.authType;
+}
+
 function providerHeaders(profile: DshModelExecutionProfile, apiKey: string): Readonly<Record<string, string>> {
   return profile.api === 'anthropic-messages'
     ? Object.freeze({
+        ...anthropicAuthHeaders(profileAuthType(profile), apiKey),
         accept: 'application/json',
         'accept-encoding': 'identity',
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
         'user-agent': 'MyAgents/DSH-Host-Web-v1',
-        'x-api-key': apiKey,
       })
     : Object.freeze({
         accept: 'application/json',
@@ -326,15 +348,17 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     this.client = new DshSafeHttpClient(providerPolicy(), config);
   }
 
+  async close(): Promise<void> {
+    await this.client.close();
+  }
+
   async runSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     try {
-      if (input.profile.provider === 'zhipu' || input.profile.provider === 'zhipu-ai') {
-        return await this.runZhipuSearch(input);
+      if (input.profile.api === 'anthropic-messages') {
+        return await this.runAnthropicCompatibleSearch(input);
       }
-      if (input.profile.provider === 'anthropic-api'
-        && input.profile.api === 'anthropic-messages'
-        && new URL(input.profile.baseUrl ?? '').origin === 'https://api.anthropic.com') {
-        return await this.runAnthropicSearch(input);
+      if (input.profile.provider === 'zhipu-ai' && input.profile.api === 'openai-completions') {
+        return await this.runZhipuNativeSearch(input);
       }
       throw new DshCanonicalWebError('web_search_unavailable', 'Frozen Provider has no Host WebSearch adapter');
     } catch (error) {
@@ -348,7 +372,11 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
         throw new DshCanonicalWebError(
           'provider_search_failed',
           `Provider WebSearch transport failed: ${error.message}`,
-          { cause: error },
+          {
+            cause: error,
+            phase: error.phase,
+            systemErrorClass: error.systemErrorClass,
+          },
         );
       }
       throw new DshCanonicalWebError('provider_search_failed', 'Provider WebSearch request failed', { cause: error });
@@ -432,7 +460,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     }
   }
 
-  private async runAnthropicSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
+  private async runAnthropicCompatibleSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     const domains = normalizeDomains(input);
     const startedAt = performance.now();
     const messages: unknown[] = [{
@@ -516,7 +544,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     );
   }
 
-  private async runZhipuSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
+  private async runZhipuNativeSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     const domains = normalizeDomains(input);
     if (input.query.length > 70) {
       throw new DshCanonicalWebError('provider_search_failed', 'Zhipu WebSearch query exceeds Provider bounds');

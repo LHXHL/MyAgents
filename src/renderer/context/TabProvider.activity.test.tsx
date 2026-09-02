@@ -514,6 +514,57 @@ describe('TabProvider session activity ownership', () => {
     });
   });
 
+  it('renders Provider activity without acquiring root Composer loading', async () => {
+    render(
+      <TabProvider
+        tabId="tab-provider-tool"
+        agentDir="/tmp/workspace"
+        sessionId="pending-provider-tool"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    expect(readActivity().isLoading).toBe(false);
+
+    emit('chat:server-tool-use-start', {
+      id: 'provider-call-1',
+      name: 'web_search',
+      input: { query: 'public reference' },
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+    });
+
+    expect(readActivity().isLoading).toBe(false);
+    expect(readStreamingContent()).toEqual([expect.objectContaining({
+      type: 'server_tool_use',
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'server_tool_use',
+      tool: expect.objectContaining({ id: 'provider-call-1', isLoading: true }),
+    })]);
+
+    emit('chat:tool-result-complete', {
+      toolUseId: 'provider-call-1',
+      content: '[{"title":"Reference"}]',
+      isError: false,
+      providerRouteId: 'fixture-provider',
+      providerBlockType: 'web_search_tool_result',
+    });
+
+    expect(readActivity().isLoading).toBe(false);
+    expect(readStreamingContent()).toEqual([expect.objectContaining({
+      type: 'server_tool_use',
+      resultProviderBlockType: 'web_search_tool_result',
+      tool: expect.objectContaining({
+        id: 'provider-call-1',
+        isLoading: false,
+        result: '[{"title":"Reference"}]',
+      }),
+    })]);
+  });
+
   it('keeps the prior terminal agent error when desktop turn admission is refused', async () => {
     const refuseSessionOpening = vi.fn(() => null);
     render(
