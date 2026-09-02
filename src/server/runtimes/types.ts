@@ -499,13 +499,19 @@ export interface AgentRuntime {
     process: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string; clientOperationId?: string },
+    options?: {
+      clientUserMessageId?: string;
+      clientOperationId?: string;
+      /** Recovered roots remain turn-boundary-only until their exact terminal settles. */
+      allowRealtimeSteer?: boolean;
+    },
   ): Promise<void>;
 
-  /** Exact root operation currently owned by a resumed Runtime, when any. */
+  /** Exact active root and whether this Host generation may steer it in-place. */
   getActiveRootOperation?(process: RuntimeProcess): Readonly<{
     clientOperationId: string;
     clientUserMessageId: string;
+    realtimeSteerEligible?: boolean;
   }> | null;
 
   /**

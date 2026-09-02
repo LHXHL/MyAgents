@@ -75,6 +75,7 @@ class FakeRuntime implements AgentRuntime {
   readonly startSessionDshExtensionSkills: string[][] = [];
   readonly startSessionSystemContexts: Array<SessionStartOptions['systemContext']> = [];
   readonly replacedDshExtensionSkills: string[][] = [];
+  readonly sendMessageRealtimeSteerEligibilities: Array<boolean | undefined> = [];
   dshExtensionReconcileCalls = 0;
   readonly steeredMessages: Array<{ message: string; clientUserMessageId?: string }> = [];
   readonly conversationBranches: Array<{ kind: 'through-turn' | 'before-turn'; runtimeTurnId: string }> = [];
@@ -108,6 +109,7 @@ class FakeRuntime implements AgentRuntime {
     clientOperationId: string;
     clientUserMessageId: string;
   }> | null;
+  private activeRootRealtimeSteerEligible = false;
   private pendingDshExtensions: NonNullable<SessionStartOptions['dshExtensions']> | null = null;
 
   constructor(private readonly scripts: TurnScript[], options: {
@@ -296,10 +298,12 @@ class FakeRuntime implements AgentRuntime {
       if (!options?.clientOperationId || !options.clientUserMessageId) {
         throw new Error('fake DSH dispatch lacks Product operation identity');
       }
+      this.sendMessageRealtimeSteerEligibilities.push(options.allowRealtimeSteer);
       this.activeRootOperation = {
         clientOperationId: options.clientOperationId,
         clientUserMessageId: options.clientUserMessageId,
       };
+      this.activeRootRealtimeSteerEligible = options.allowRealtimeSteer !== false;
     }
     this.emitRootTurnAdmission(options?.clientUserMessageId);
     this.playTurn(message);
@@ -412,8 +416,14 @@ class FakeRuntime implements AgentRuntime {
   getActiveRootOperation(): Readonly<{
     clientOperationId: string;
     clientUserMessageId: string;
+    realtimeSteerEligible?: boolean;
   }> | null {
-    return this.activeRootOperation;
+    return this.activeRootOperation
+      ? {
+        ...this.activeRootOperation,
+        realtimeSteerEligible: this.activeRootRealtimeSteerEligible,
+      }
+      : null;
   }
 
   async setModel(): Promise<void> {
@@ -561,7 +571,10 @@ class FakeRuntime implements AgentRuntime {
       && this.activeRootOperation
       ? { ...event, clientOperationId: this.activeRootOperation.clientOperationId }
       : event;
-    if (event.kind === 'turn_complete') this.activeRootOperation = null;
+    if (event.kind === 'turn_complete') {
+      this.activeRootOperation = null;
+      this.activeRootRealtimeSteerEligible = false;
+    }
     this.callback(projected);
   }
 
@@ -1108,6 +1121,7 @@ describe('external SessionEngine with fake runtime', () => {
       'persisted before native admission',
       'later work must wait',
     ]);
+    expect(harness.runtime.sendMessageRealtimeSteerEligibilities[0]).toBe(false);
     expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
       .toBeUndefined();
     expect(harness.sessionStore.getSessionData(sessionId)?.messages).toEqual([
@@ -1157,6 +1171,58 @@ describe('external SessionEngine with fake runtime', () => {
       runtimeBinding: { family: 'integrated', id: 'dsh' },
     });
     expect(metadata).not.toHaveProperty('pendingDshRootOperation');
+  });
+
+  it('steers a realtime Desktop follow-up into a normally active DSH root turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'single DSH answer after steer', completeDelayMs: 300 },
+    ], {
+      runtimeType: 'dsh',
+      realtimeSteering: true,
+    });
+    const sessionId = 'session-dsh-realtime-steer';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const first = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'first DSH question'),
+      permissionMode: 'auto',
+    });
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => harness.runtime.sentMessages.includes('first DSH question'), 'first DSH dispatch');
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshRootOperation)
+      .toBeDefined();
+
+    const second = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'realtime DSH correction'),
+      permissionMode: 'auto',
+    });
+
+    expect(second).toMatchObject({
+      success: true,
+      queued: true,
+      isInFlight: true,
+      deliveryMode: 'realtime',
+    });
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'DSH realtime steer dispatch');
+    expect(harness.runtime.sentMessages).toEqual(['first DSH question']);
+    expect(harness.runtime.steeredMessages[0]).toMatchObject({ message: 'realtime DSH correction' });
+
+    // DSH projects durable queued-message delivery without a Product user id;
+    // the Host consumes the pending realtime projection in FIFO order.
+    harness.runtime.emitUserMessageAccepted();
+    await waitFor(() => broadcastEvents.some((item) => (
+      item.event === 'queue:started'
+        && (item.data as { userMessage?: { content?: string } }).userMessage?.content
+          === 'realtime DSH correction'
+    )), 'DSH runtime accepted realtime user message');
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages
+      .filter(message => message.role === 'user')
+      .map(message => message.content)).toEqual([
+      'first DSH question',
+      'realtime DSH correction',
+    ]);
   });
 
   it('projects DSH thinking, text, tools, usage, and terminal truth through the Product session', async () => {

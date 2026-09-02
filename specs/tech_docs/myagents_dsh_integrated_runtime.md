@@ -618,6 +618,14 @@ MyAgents projects canonical compaction events and context metrics into its exist
 - Force-send records the selected queue identity before interrupting, classifies the expected abort as a stopped control transfer, persists any partial projection, then drains that selected item exactly once.
 - Queue drain waits terminal persistence and exact DSH operation settlement; a failed barrier cancels affected work explicitly instead of admitting against an uncertain native prefix.
 
+For realtime response mode, the current Host generation may call `turn/steer` only after its own
+`turn/start` acknowledgement and only while the active root identity exactly matches the
+`pendingDshRootOperation` journal. That journal is durable admission proof for a normally active
+root, not by itself a reason to downgrade realtime input to a turn-boundary queue. A root taken
+over after resume, or replayed from a pre-native-admission journal, remains explicitly ineligible
+for realtime steering until its exact terminal settles; DSH mutation journals continue to block
+all message admission.
+
 The current historical fallback that tries an External stop and then Builtin interrupt must not apply to a DSH-bound Session.
 
 H4 reuses the existing Product admission queue and transcript owners through an explicitly `integrated` SessionEngine adapter; this is physical code reuse, not External Runtime classification. An active DSH turn uses exact `turn/steer`, stop uses the admitted operation identity with `turn/interrupt`, and explicit compaction uses `session/compact`. Pre-admission follow-up cancellation remains Product-owned. Ordinary succeeded-terminal loss between DSH durability and Product assistant persistence is reconciled through matching `turn/get` and verified `session/read` truth. A Runtime-durable non-terminal operation is taken over under the same exact identity, while newly submitted Product work waits for its terminal boundary. If Product durability wins before native admission, the immutable `pendingDshRootOperation` is replayed with its original Product user and `clientOperationId`; terminal publication clears it only after the required Product persistence settles. Live Product extension changes now use the same terminal boundary owner rather than scheduling a compatibility-Runtime restart. Exact permission rules use the same facade and remain DSH-owned.

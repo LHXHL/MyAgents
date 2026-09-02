@@ -577,6 +577,7 @@ class DshProcess implements RuntimeProcess {
   readonly runtimeGeneration: string;
   loadedSkillNames: readonly string[];
   activeOperationId: string | undefined;
+  realtimeSteerEligibleOperationId: string | undefined;
   planRevision: string | undefined;
   planMode: 'normal' | 'plan' | undefined;
   configuration: DshConfiguration;
@@ -989,6 +990,9 @@ export class DshRuntime implements AgentRuntime {
             if (processValue?.activeOperationId === terminal.clientOperationId) {
               processValue.activeOperationId = undefined;
             }
+            if (processValue?.realtimeSteerEligibleOperationId === terminal.clientOperationId) {
+              processValue.realtimeSteerEligibleOperationId = undefined;
+            }
           });
         },
         onPlan: (snapshot) => {
@@ -1239,6 +1243,7 @@ export class DshRuntime implements AgentRuntime {
     images: readonly ResolvedImagePayload[] | undefined,
     clientUserMessageId: string,
     requestedClientOperationId?: string,
+    allowRealtimeSteer = true,
   ): Promise<void> {
     if (process.activeOperationId) throw new Error('DSH already owns an active root turn');
     if (process.desiredExtensionPlane) {
@@ -1249,6 +1254,7 @@ export class DshRuntime implements AgentRuntime {
     }
     const clientOperationId = requestedClientOperationId ?? `turn-${randomUUID()}`;
     process.activeOperationId = clientOperationId;
+    process.realtimeSteerEligibleOperationId = undefined;
     process.operationUserMessages.set(clientOperationId, clientUserMessageId);
     try {
       const result = await process.host.request('turn/start', {
@@ -1267,8 +1273,14 @@ export class DshRuntime implements AgentRuntime {
       if (result.state !== 'accepted' && result.state !== 'already_known') {
         throw new Error('DSH root turn was not admitted');
       }
+      if (allowRealtimeSteer && process.activeOperationId === clientOperationId) {
+        process.realtimeSteerEligibleOperationId = clientOperationId;
+      }
     } catch (error) {
       if (process.activeOperationId === clientOperationId) process.activeOperationId = undefined;
+      if (process.realtimeSteerEligibleOperationId === clientOperationId) {
+        process.realtimeSteerEligibleOperationId = undefined;
+      }
       throw error;
     }
   }
@@ -1277,7 +1289,7 @@ export class DshRuntime implements AgentRuntime {
     runtimeProcess: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string; clientOperationId?: string },
+    options?: Parameters<AgentRuntime['sendMessage']>[3],
   ): Promise<void> {
     await this.startTurn(
       dshProcess(runtimeProcess),
@@ -1285,6 +1297,7 @@ export class DshRuntime implements AgentRuntime {
       images,
       options?.clientUserMessageId ?? `user-${randomUUID()}`,
       options?.clientOperationId,
+      options?.allowRealtimeSteer !== false,
     );
   }
 
@@ -1507,6 +1520,7 @@ export class DshRuntime implements AgentRuntime {
   getActiveRootOperation(runtimeProcess: RuntimeProcess): Readonly<{
     clientOperationId: string;
     clientUserMessageId: string;
+    realtimeSteerEligible?: boolean;
   }> | null {
     const process = dshProcess(runtimeProcess);
     const clientOperationId = process.activeOperationId;
@@ -1515,7 +1529,11 @@ export class DshRuntime implements AgentRuntime {
     if (!clientUserMessageId) {
       throw new Error('DSH active root operation lost its Product user owner');
     }
-    return Object.freeze({ clientOperationId, clientUserMessageId });
+    return Object.freeze({
+      clientOperationId,
+      clientUserMessageId,
+      realtimeSteerEligible: process.realtimeSteerEligibleOperationId === clientOperationId,
+    });
   }
 
   async steerMessage(
@@ -1525,6 +1543,9 @@ export class DshRuntime implements AgentRuntime {
   ): Promise<void> {
     const process = dshProcess(runtimeProcess);
     if (!process.activeOperationId) throw new Error('DSH has no active root turn to steer');
+    if (process.realtimeSteerEligibleOperationId !== process.activeOperationId) {
+      throw new Error('DSH active root turn is not eligible for realtime steering');
+    }
     await process.host.request('turn/steer', {
       clientOperationId: process.activeOperationId,
       input: await this.canonicalInput(process, message, images),

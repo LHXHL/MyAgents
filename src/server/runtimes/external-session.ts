@@ -536,11 +536,22 @@ let queuedDshRootRecovery: Readonly<{
   promise: Promise<void>;
 }> | null = null;
 
-function hasPendingDshNativeWork(): boolean {
-  if (getCurrentRuntimeType() !== 'dsh') return false;
+function getBoundDshMetadata() {
+  if (getCurrentRuntimeType() !== 'dsh') return null;
   const sessionId = getExternalLifecycleSessionId();
-  const metadata = sessionId ? getSessionMetadata(sessionId) : null;
-  return Boolean(metadata?.pendingDshMutation || metadata?.pendingDshRootOperation);
+  return sessionId ? getSessionMetadata(sessionId) : null;
+}
+
+function hasPendingDshMutation(): boolean {
+  return Boolean(getBoundDshMetadata()?.pendingDshMutation);
+}
+
+function getPendingDshRootOperation() {
+  return getBoundDshMetadata()?.pendingDshRootOperation;
+}
+
+function hasPendingDshNativeWork(): boolean {
+  return hasPendingDshMutation() || Boolean(getPendingDshRootOperation());
 }
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
@@ -1111,6 +1122,17 @@ function getExternalActiveSteerPair(): SteerCapableActivePair | null {
   if (!active || active.process.exited || !active.runtime.steerMessage) return null;
   if (getExternalLifecycleState() !== 'running') return null;
   if (isExternalTurnCompleted() || getExternalTurnStartTime() === 0) return null;
+  if (active.runtime.type === 'dsh') {
+    const root = active.runtime.getActiveRootOperation?.(active.process) ?? null;
+    const pending = getPendingDshRootOperation();
+    if (
+      !root?.realtimeSteerEligible
+      || !pending
+      || pending.clientOperationId !== root.clientOperationId
+      || pending.clientUserMessageId !== root.clientUserMessageId
+      || pending.sourceRuntimeSessionId !== getExternalRuntimeSessionId()
+    ) return null;
+  }
   return active as SteerCapableActivePair;
 }
 
@@ -1611,6 +1633,7 @@ async function resumePendingDshRootOperation(
     {
       clientUserMessageId: pending.clientUserMessageId,
       clientOperationId: pending.clientOperationId,
+      allowRealtimeSteer: false,
     },
   );
   return true;
@@ -5065,6 +5088,8 @@ export function enqueueExternalSendForDesktop(
     ? 'turn'
     : resolveChatQueueResponseMode(loadAdminConfig().chatQueueResponseMode, true);
   const canSteerActiveTurn = getExternalActiveSteerPair() !== null;
+  const pendingDshRootBlocksAdmission = Boolean(getPendingDshRootOperation())
+    && !canSteerActiveTurn;
   // Mid-turn defer: turn-level external runtimes hold this as a queue pill
   // instead of starting a 2nd turn. Codex app-server can append to the active
   // turn via turn/steer, but only in realtime mode and only when no earlier
@@ -5074,7 +5099,8 @@ export function enqueueExternalSendForDesktop(
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
   if (
     externalSessionMutationInFlight
-    || hasPendingDshNativeWork()
+    || hasPendingDshMutation()
+    || pendingDshRootBlocksAdmission
     || shouldQueueExternalOperation(getExternalLifecycleState(), {
       responseMode: queueResponseMode,
       canSteerActiveTurn,
