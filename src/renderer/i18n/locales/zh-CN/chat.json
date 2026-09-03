@@ -1125,6 +1125,7 @@
       },
       "starting": "AI 启动中…（首次启动可能较慢）",
       "loadingHistory": "加载对话记录…",
+      "waitingForInteraction": "等待你的选择",
       "streaming": {
         "0": "苦思冥想中…",
         "1": "深思熟虑中…",

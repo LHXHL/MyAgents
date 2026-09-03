@@ -4726,11 +4726,11 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   }, [respondPermission]);
 
   const handleAskUserQuestionSubmit = useCallback((_requestId: string, answers: Record<string, string>) => {
-    void respondAskUserQuestion(answers);
+    return respondAskUserQuestion(answers);
   }, [respondAskUserQuestion]);
 
   const handleAskUserQuestionCancel = useCallback(() => {
-    void respondAskUserQuestion(null);
+    return respondAskUserQuestion(null);
   }, [respondAskUserQuestion]);
 
   const handleExitPlanModeApprove = useCallback(async () => {

@@ -5274,11 +5274,13 @@ export default function TabProvider({
 
     // Respond to permission request
     const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
-        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) {
+            throw new Error('Permission response is unavailable while Session restore is unresolved');
+        }
         const permission = requestIdOverride
             ? pendingPermissions.find(item => item.requestId === requestIdOverride)
             : pendingPermission;
-        if (!permission) return;
+        if (!permission) throw new Error('Permission request is no longer pending');
 
         const requestId = permission.requestId;
         const toolName = permission.toolName;
@@ -5306,20 +5308,26 @@ export default function TabProvider({
 
     // Respond to AskUserQuestion request
     const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {
-        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) return;
-        if (!pendingAskUserQuestion) return;
+        if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) {
+            throw new Error('Question response is unavailable while Session restore is unresolved');
+        }
+        if (!pendingAskUserQuestion) throw new Error('Question request is no longer pending');
 
         const requestId = pendingAskUserQuestion.requestId;
         console.log(`[TabProvider] AskUserQuestion response: ${answers ? 'submitted' : 'cancelled'}`);
 
-        // Clear pending question immediately for UI responsiveness
-        setPendingAskUserQuestion(null);
-
-        // Send response to backend
         try {
-            await postJson('/api/ask-user-question/respond', { requestId, answers });
+            const response = await postJson<{ success?: boolean; error?: string }>(
+                '/api/ask-user-question/respond',
+                { requestId, answers },
+            );
+            if (response.success !== true) {
+                throw new Error(response.error || 'Question response was not accepted by backend');
+            }
+            setPendingAskUserQuestion(prev => prev?.requestId === requestId ? null : prev);
         } catch (error) {
             console.error('[TabProvider] Failed to send AskUserQuestion response:', error);
+            throw error;
         }
     }, [pendingAskUserQuestion, postJson]);
 

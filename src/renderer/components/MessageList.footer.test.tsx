@@ -154,4 +154,44 @@ describe('MessageList footer status positioning', () => {
     expect(screen.getByTestId('ask-choice')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('permission-choice')).toBeDisabled();
   });
+
+  it('projects interaction waiting as a static status instead of a reasoning timer', () => {
+    renderList({
+      isLoading: true,
+      pendingAskUserQuestion: {
+        requestId: 'ask-static',
+        questions: [{
+          question: 'Choose',
+          header: 'Choice',
+          options: [
+            { label: 'One', description: 'First' },
+            { label: 'Two', description: 'Second' },
+          ],
+          multiSelect: false,
+        }],
+      },
+      onAskUserQuestionSubmit: vi.fn(),
+      onAskUserQuestionCancel: vi.fn(),
+    });
+
+    const status = document.querySelector('[data-chat-waiting-for-interaction]');
+    expect(status).toBeInTheDocument();
+    expect(status).toHaveTextContent('等待你的选择');
+    expect(status?.querySelector('.animate-spin')).not.toBeInTheDocument();
+  });
+
+  it('returns to execution status after a plan response is accepted', () => {
+    renderList({
+      isLoading: true,
+      pendingExitPlanMode: {
+        requestId: 'plan-accepted',
+        resolved: 'approved',
+      },
+      onExitPlanModeApprove: vi.fn(),
+      onExitPlanModeReject: vi.fn(),
+    });
+
+    expect(document.querySelector('[data-chat-waiting-for-interaction]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-status-row]')).toBeInTheDocument();
+  });
 });

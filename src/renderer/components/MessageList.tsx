@@ -67,8 +67,8 @@ interface MessageListProps {
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
-  onAskUserQuestionCancel?: (requestId: string) => void;
+  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void | Promise<void>;
+  onAskUserQuestionCancel?: (requestId: string) => void | Promise<void>;
   pendingExitPlanMode?: ExitPlanModeRequest | null;
   onExitPlanModeApprove?: () => void;
   onExitPlanModeReject?: (feedback?: string) => void;
@@ -96,10 +96,11 @@ type MessageListFooterState = Readonly<{
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
-  onAskUserQuestionCancel?: (requestId: string) => void;
+  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void | Promise<void>;
+  onAskUserQuestionCancel?: (requestId: string) => void | Promise<void>;
   showStatus: boolean;
   statusMessage: string;
+  waitingForInteraction: boolean;
   systemNotice?: SystemNotice | null;
   onDismissSystemNotice?: () => void;
   bottomSpacerPx?: number;
@@ -180,6 +181,21 @@ const StatusTimer = memo(function StatusTimer({ message }: { message: string }) 
   );
 });
 
+const InteractionWaitingStatus = memo(function InteractionWaitingStatus({ message }: { message: string }) {
+  return (
+    <div
+      data-chat-status-row=""
+      data-chat-waiting-for-interaction=""
+      className="flex items-center gap-2 overflow-hidden px-3 py-1.5 text-xs text-[var(--ink-muted)]"
+      style={{ height: STATUS_ROW_HEIGHT_PX }}
+      title={message}
+    >
+      <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden="true" />
+      <span className="min-w-0 truncate">{message}</span>
+    </div>
+  );
+});
+
 const SystemNoticeRow = memo(function SystemNoticeRow({
   notice,
   onDismiss,
@@ -226,7 +242,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter() {
   const {
     pendingPermission, onPermissionDecision,
     pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel,
-    showStatus, statusMessage,
+    showStatus, statusMessage, waitingForInteraction,
     systemNotice, onDismissSystemNotice,
     bottomSpacerPx,
   } = state;
@@ -244,10 +260,12 @@ const VirtuosoFooter = memo(function VirtuosoFooter() {
       )}
       {pendingAskUserQuestion && onAskUserQuestionSubmit && onAskUserQuestionCancel && (
         <div className="py-2">
-          <AskUserQuestionPrompt request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
+          <AskUserQuestionPrompt key={pendingAskUserQuestion.requestId} request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
         </div>
       )}
-      {showStatus && <StatusTimer message={statusMessage} />}
+      {showStatus && (waitingForInteraction
+        ? <InteractionWaitingStatus message={statusMessage} />
+        : <StatusTimer message={statusMessage} />)}
       {!showStatus && systemNotice && (
         <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
       )}
@@ -373,14 +391,21 @@ const MessageList = memo(function MessageList({
     );
   }, [pendingExitPlanMode, onExitPlanModeApprove, onExitPlanModeReject]);
 
-  const showStatus = isLoading || !!systemStatus;
+  const waitingForInteraction = Boolean(
+    pendingPermission
+    || pendingAskUserQuestion
+    || (pendingExitPlanMode && pendingExitPlanMode.resolved === undefined),
+  );
+  const showStatus = waitingForInteraction || isLoading || !!systemStatus;
   // (issue #174) During 'starting' the SDK subprocess is alive but hasn't
   // sent system_init — the random "苦思冥想中…" line would falsely imply the
   // model is already thinking. Surface a startup-specific hint instead.
   // systemStatus (e.g. compacting / api_retry) still wins because it carries
   // a more specific signal that overrides both starting and the generic
   // thinking line.
-  const statusMessage = systemStatus
+  const statusMessage = waitingForInteraction
+    ? t('shell.messageList.waitingForInteraction')
+    : systemStatus
     ? resolveSystemStatus(systemStatus, t)
     : sessionState === 'starting'
       ? t('shell.messageList.starting')
@@ -628,10 +653,11 @@ const MessageList = memo(function MessageList({
     onAskUserQuestionCancel,
     showStatus,
     statusMessage,
+    waitingForInteraction,
     systemNotice,
     onDismissSystemNotice,
     bottomSpacerPx,
-  }), [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
+  }), [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, waitingForInteraction, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
 
   // ── Freeze the data fed to Virtuoso while the internal Tab is inactive ──────
   // An inactive internal Tab is wrapped in `content-visibility: hidden`, so any

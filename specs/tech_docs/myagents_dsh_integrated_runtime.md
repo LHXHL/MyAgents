@@ -2,7 +2,7 @@
 type: technical-rfc
 status: implementation-in-progress
 version: 0.30
-updated: 2026-09-02
+updated: 2026-09-04
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
@@ -538,6 +538,8 @@ Plan is not encoded as a DSH permission string. At Session birth, `plan` compile
 
 Inline permission requests continue through `host/interaction/request`. One-shot allow/deny settles only that request. `always_allow` creates an exact durable Runtime rule. The adapter also exposes the generated `permission/rules/list`, `permission/rules/add`, and `permission/rules/revoke` operations so settings, diagnostics, or later policy UI can inspect and revoke authoritative Runtime state without scraping transcript events. Batch 3 need not add `default` or `dontAsk` to the ordinary desktop selector, but it must preserve them as valid protocol values and must not coerce them silently.
 
+Once an AskUserQuestion, permission or Plan interaction is registered, desktop human think time has no Host wall-clock timeout. The exact pending interaction suspends the external inactivity watchdog by re-baselining it until settlement; registration/response transport and post-approval execution remain separately bounded. The Renderer keeps the card and its draft until the response route returns an authoritative success, preserves both on rejection for retry, and renders one static waiting status instead of advancing the reasoning timer. Root loading/Stop ownership remains with the root Session stream rather than any card or child lifecycle.
+
 `plan_approval` stays a distinct interaction kind. The DSH adapter presents it through the existing ExitPlanMode review card, and the response is routed through `SessionEngine.respondPlanApproval` using pending-request ownership. The HTTP route does not call the external-session implementation directly, and a rejection with feedback remains an answered Plan review rather than an interaction cancellation.
 
 Visibility and permission remain independent: hiding a tool is configuration; allowing it is execution policy. `fullAgency` removes interactive permission prompts but is not an OS sandbox and does not contain arbitrary Bash subprocess effects. Its UI copy must say this explicitly. Hard policy, origin/workspace/revision constraints and Hooks remain enforceable even in `fullAgency`.
@@ -743,7 +745,7 @@ Agent, Channel, Settings and Launcher changes atomically persist the authoritati
 
 ### 14.3 Conversation
 
-DSH uses existing MessageList, composer, queue, stop, inline tool/permission/question/plan cards, attachment pipeline, history actions and status panel. Every visible control must call a real SessionEngine capability. Permission/AskUser cards settle through the reverse request exactly once; switching the product to Plan uses `plan/apply`, not a decorative local state; any exact always-allow rule shown by product UI is read from Runtime and is revocable through the generated rule API.
+DSH uses existing MessageList, composer, queue, stop, inline tool/permission/question/plan cards, attachment pipeline, history actions and status panel. Every visible control must call a real SessionEngine capability. Permission/AskUser cards settle through the reverse request exactly once and clear only after successful acknowledgement; submission failure retains the exact local draft for retry. A registered interaction replaces the cycling reasoning footer with a static waiting status while the owning root operation stays active. Switching the product to Plan uses `plan/apply`, not a decorative local state; any exact always-allow rule shown by product UI is read from Runtime and is revocable through the generated rule API.
 
 ## 15. IM, Agent Channel and automation
 
@@ -968,11 +970,14 @@ Each step updates an implementation ledger in this document or a linked dev plan
 | MA-B3-H5  | Desktop/IM/Task/Goal/Inbox UI and entrypoint integration                               | `complete`    |
 | MA-B3-H6  | Packaged cross-repository J1–J18 acceptance                                            | `in_progress` |
 | B3-XR-REL | Force/partial/retry/genesis/permission reliability implementation and refreshed handoff | `complete`; signed/package acceptance pending |
+| B3-XR-IWC | Exact collaborator identifiers and durable human-interaction waiting | `in_progress`; Runtime/Host source and repository gates complete, refreshed handoff pending |
 | B3-XR-DOG | Bash env, Grep concurrency/file path, TaskStop terminal and canonical Web dogfood closure | `in_progress`; handoff ingested, package acceptance pending |
 | B3-XR-SCTX | Generic DSH system context, project-instruction precedence and literal Host/child bodies | `in_progress`; implementation, credentialed quality/cache and refreshed local unsigned macOS package acceptance complete; signed/cross-platform acceptance pending |
 | B3-XR-SKILL-MCP | Ordered workspace Skill packages and local stdio MCP through DSH-native owners | `complete`; exact `2.3.0` handoff, Host gates and refreshed local unsigned macOS package/native acceptance pass |
 
 ### 21.2 Current implementation evidence
+
+The B3-XR-IWC Host source keeps permission and AskUserQuestion pending state until the response route acknowledges success, makes Ask submission retryable without clearing selected/custom answers, and projects a static interaction-waiting footer. Existing exact external-interaction ownership continues to suspend/re-baseline the inactivity watchdog; no second timer or interaction store was added. Exact Node `24.14.0` / npm `11.15.0` typecheck, lint, the complete build-script/unit/DOM/integration test pipeline, and Web/Server/Bridge/CLI builds pass. The refreshed source-bound Runtime handoff remains pending.
 
 H5 and its direct ownership audit are closed on the `dev/intergration_myagents-dsh` worktree at `f2aa6334c540453063cf8af31150e9f72742e934`, with deterministic/package evidence at `f4ba61515ac2e7b5da52d0a333c73257385ec5a4` and follow-up authority fixes through `b9bc80374442fd5904153f1c75da7156460f87b6`. `ab046c1593e8ab0c34eb17e07f1f10d77f34969c` makes the distribution policy authoritative in Renderer, Rust Session birth and IM; `b9bc80374442fd5904153f1c75da7156460f87b6` adds the allowlisted Developer default across those owners and fixes DSH legacy projection to exact `dsh/integrated`. The current worktree consumes workspace-Skills/stdio-MCP handoff `999a80f5d9cc33f858cf3c11a8031a431ad8303221ddf0a3ec74452cb265dba7`, Runtime `4b3bc9de9a00b58c5284eb21563fb0e8fc64dbf1b6b98f458056d8da78b8959e`, compatibility `dbedcc9ef0632833d82c7707ae4267f10d275ee00e922bbd20e1c1625f1216f3`, protocol `2.3.0`, and exact Node/npm `24.14.0` / `11.15.0` across development, build provenance and bundled resources. The official ingestion command verifies the external handoff, atomically replaces the complete resource directory, and verifies the staged copy against the committed lock.
 

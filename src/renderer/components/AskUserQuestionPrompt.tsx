@@ -37,8 +37,8 @@ function sanitizePreviewHtml(html: string): string {
 
 interface AskUserQuestionPromptProps {
     request: AskUserQuestionRequest;
-    onSubmit: (requestId: string, answers: Record<string, string>) => void;
-    onCancel: (requestId: string) => void;
+    onSubmit: (requestId: string, answers: Record<string, string>) => void | Promise<void>;
+    onCancel: (requestId: string) => void | Promise<void>;
 }
 
 /**
@@ -54,10 +54,12 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
     const customInputRef = useRef<HTMLInputElement>(null);
     const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mountedRef = useRef(true);
 
     // Cleanup timers on unmount
     useEffect(() => {
         return () => {
+            mountedRef.current = false;
             if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
             if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
         };
@@ -166,7 +168,7 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
         }
     }, [hasCurrentAnswer, isLastQuestion]);
 
-    const handleSubmit = useCallback(() => {
+    const handleSubmit = useCallback(async () => {
         if (!allAnswered || isSubmitting) return;
         setIsSubmitting(true);
 
@@ -184,13 +186,23 @@ export function AskUserQuestionPrompt({ request, onSubmit, onCancel }: AskUserQu
             formattedAnswers[question.id ?? String(idx)] = finalOptions.join(',');
         });
 
-        onSubmit(request.requestId, formattedAnswers);
+        try {
+            await onSubmit(request.requestId, formattedAnswers);
+        } catch (error) {
+            console.error('[AskUserQuestionPrompt] Question response failed:', error);
+            if (mountedRef.current) setIsSubmitting(false);
+        }
     }, [allAnswered, isSubmitting, answers, customInputs, request, onSubmit]);
 
-    const handleCancel = useCallback(() => {
+    const handleCancel = useCallback(async () => {
         if (isSubmitting) return;
         setIsSubmitting(true);
-        onCancel(request.requestId);
+        try {
+            await onCancel(request.requestId);
+        } catch (error) {
+            console.error('[AskUserQuestionPrompt] Question cancellation failed:', error);
+            if (mountedRef.current) setIsSubmitting(false);
+        }
     }, [isSubmitting, request.requestId, onCancel]);
 
     // Navigate to specific question by clicking indicator

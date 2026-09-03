@@ -1125,6 +1125,7 @@
       },
       "starting": "Starting AI... first launch may take a while.",
       "loadingHistory": "Loading chat history...",
+      "waitingForInteraction": "Waiting for your response",
       "streaming": {
         "0": "Thinking hard...",
         "1": "Thinking it through...",

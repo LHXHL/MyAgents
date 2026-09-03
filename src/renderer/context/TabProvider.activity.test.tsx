@@ -144,6 +144,8 @@ function Probe() {
     sendMessage,
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
+    pendingAskUserQuestion,
+    respondAskUserQuestion,
   } = useTabState();
   const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
   return (
@@ -171,6 +173,7 @@ function Probe() {
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <output data-testid="agent-error">{agentError ?? ''}</output>
       <output data-testid="agent-error-user-message-id">{agentErrorUserMessageId ?? ''}</output>
+      <output data-testid="pending-ask-id">{pendingAskUserQuestion?.requestId ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
       <button type="button" onClick={() => void sendMessage('hello')}>send message</button>
       <button type="button" onClick={() => void resetSession()}>reset session</button>
@@ -182,6 +185,7 @@ function Probe() {
       <button type="button" onClick={() => void adoptMigratedSession('session-migrated-b', { sidecarAlreadyMigrated: true })}>adopt migrated session</button>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
+      <button type="button" onClick={() => void respondAskUserQuestion({ 0: 'One' }).catch(() => undefined)}>answer question</button>
     </>
   );
 }
@@ -401,6 +405,50 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(readActivity().isLoading).toBe(false));
     expect(claimSessionOpeningTransition).not.toHaveBeenCalled();
     expect(tauriHarness.ensureSessionSidecar).not.toHaveBeenCalled();
+  });
+
+  it('retains an AskUserQuestion card until the backend acknowledges its response', async () => {
+    render(
+      <TabProvider
+        tabId="tab-ask-ack"
+        agentDir="/tmp/workspace"
+        sessionId="pending-ask-ack"
+        claimSessionOpeningTransition={allowSessionOpening}
+      >
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('ask-user-question:request', {
+      requestId: 'ask-ack-1',
+      sessionId: 'pending-ask-ack',
+      questions: [{
+        question: 'Choose one',
+        header: 'Choice',
+        options: [
+          { label: 'One', description: 'First' },
+          { label: 'Two', description: 'Second' },
+        ],
+        multiSelect: false,
+      }],
+    });
+    expect(screen.getByTestId('pending-ask-id')).toHaveTextContent('ask-ack-1');
+
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'not applied' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'answer question' }));
+    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalled());
+    expect(screen.getByTestId('pending-ask-id')).toHaveTextContent('ask-ack-1');
+
+    tauriHarness.proxyFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'answer question' }));
+    await waitFor(() => expect(screen.getByTestId('pending-ask-id')).toBeEmptyDOMElement());
   });
 
   it('does not submit a turn while App is deleting the Session', () => {
