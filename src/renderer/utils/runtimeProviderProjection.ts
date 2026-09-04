@@ -1,9 +1,12 @@
 import type { Provider } from '@/config/types';
-import { isDshProviderModelCompatible } from '../../shared/integrated-runtimes/dsh-provider-cells';
+import {
+  isDshApiModelSelectable,
+  isDshApiProviderEligible,
+} from '../../shared/integrated-runtimes/provider-constraints';
 import { isRuntimeBackedProvider, isRuntimeBackedProviderId } from '../../shared/providerExecution';
 import type { RuntimeType } from '../../shared/types/runtime';
 
-/** Project Product Provider choices through the selected Runtime's exact contract. */
+/** Project Product Provider choices through the selected Runtime's execution owners. */
 export function projectProvidersForRuntime(
   providers: readonly Provider[],
   runtime: RuntimeType,
@@ -16,23 +19,16 @@ export function projectProvidersForRuntime(
     if (isRuntimeBackedProvider(provider)) {
       return [provider];
     }
-    const models = (provider.models ?? []).filter((model) => (
-      isDshProviderModelCompatible(provider.id, model.model)
-    ));
-    if (models.length === 0) return [];
-    const primaryModel = models.some((model) => model.model === provider.primaryModel)
-      ? provider.primaryModel
-      : models[0].model;
-    return [{ ...provider, models, primaryModel }];
+    return isDshApiProviderEligible(provider) ? [provider] : [];
   });
 }
 
 export function isProviderModelCompatibleWithRuntime(
   runtime: RuntimeType,
-  providerId: string | undefined,
+  provider: Provider | undefined,
   model: string | undefined,
 ): boolean {
   if (runtime !== 'dsh') return true;
-  if (isRuntimeBackedProviderId(providerId)) return !!model;
-  return !!providerId && !!model && isDshProviderModelCompatible(providerId, model);
+  if (isRuntimeBackedProviderId(provider?.id)) return !!model;
+  return !!provider && isDshApiModelSelectable(provider, model);
 }

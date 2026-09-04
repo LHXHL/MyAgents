@@ -103,8 +103,8 @@ export function createDshInitializeParams(options: {
     .digest("hex");
   return deepFreeze({
     protocol: {
-      minVersion: "2.4.1",
-      maxVersion: "2.4.1",
+      minVersion: "2.5.0",
+      maxVersion: "2.5.0",
     },
     host: {
       name: "MyAgents",

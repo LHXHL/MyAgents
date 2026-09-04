@@ -4,7 +4,7 @@ import { PRESET_PROVIDERS, type Provider } from "../../../shared/config-types";
 import {
   compileDshModelExecutionProfile,
   dshProviderCredentialRef,
-  DshProfileCompilerError,
+  type DshProfileCompilerError,
 } from "./profile-compiler";
 
 function preset(id: string): Provider {
@@ -14,194 +14,166 @@ function preset(id: string): Provider {
 }
 
 describe("DSH ModelExecutionProfile compiler", () => {
-  it("compiles native DeepSeek only from the included candidate profile", () => {
-    const profile = compileDshModelExecutionProfile({
-      provider: preset("deepseek"),
-      modelId: "deepseek-v4-flash",
-    });
-    expect(profile).toMatchObject({
-      providerRouteId: "deepseek-official",
-      api: "openai-completions",
-      provider: "deepseek",
-      modelId: "deepseek-v4-flash",
-      baseUrl: "https://api.deepseek.com",
-      credentialRef: "MYAGENTS_PROVIDER_DEEPSEEK_API_KEY",
-      contextWindow: 1_000_000,
-      maxTokens: 32_768,
-      reasoning: true,
-      effort: "high",
-    });
-    expect(profile.revision).toMatch(/^myagents-dsh-profile-v1:[a-f0-9]{64}$/);
-    expect(profile).not.toHaveProperty("compatibility");
-    expect(Object.isFrozen(profile)).toBe(true);
+  it("compiles every configured model on the official DeepSeek native route", () => {
+    for (const modelId of ["deepseek-v4-pro", "deepseek-v4-flash"]) {
+      const profile = compileDshModelExecutionProfile({
+        provider: preset("deepseek"),
+        modelId,
+      });
+      expect(profile).toMatchObject({
+        providerRouteId: "deepseek-official",
+        api: "openai-completions",
+        provider: "deepseek",
+        modelId,
+        baseUrl: "https://api.deepseek.com",
+        credentialRef: "MYAGENTS_PROVIDER_DEEPSEEK_API_KEY",
+        contextWindow: 1_000_000,
+        maxTokens: 384_000,
+        inputModalities: ["text"],
+        reasoning: true,
+        effort: "high",
+      });
+      expect(profile.revision).toMatch(/^myagents-dsh-profile-v1:[a-f0-9]{64}$/);
+      expect(profile).not.toHaveProperty("compatibility");
+      expect(Object.isFrozen(profile)).toBe(true);
+    }
   });
 
-  it("preserves the configured Anthropic Messages and OpenAI Chat protocols", () => {
+  it("compiles ordinary API Providers by their declared API family", () => {
     const anthropic = compileDshModelExecutionProfile({
       provider: preset("anthropic-api"),
-      modelId: "claude-sonnet-4-6",
+      modelId: "claude-sonnet-5",
     });
     expect(anthropic).toMatchObject({
       api: "anthropic-messages",
       providerRouteId: "myagents-anthropic-api-anthropic-messages",
       baseUrl: "https://api.anthropic.com",
-      contextWindow: 200_000,
-      maxTokens: 64_000,
-      inputModalities: ["text", "image"],
-      compatibility: {
-        version: 1,
-        family: "anthropic-messages",
-        credentialMode: "pi-ai-api-key",
-      },
+      compatibility: { version: 1, family: "anthropic-messages" },
     });
 
-    const zhipuCodingPlan = compileDshModelExecutionProfile({
-      provider: preset("zhipu"),
-      modelId: "glm-5.3",
-    });
-    expect(zhipuCodingPlan).toMatchObject({
-      api: "anthropic-messages",
-      providerRouteId: "myagents-zhipu-anthropic-messages",
-      provider: "zhipu",
-      baseUrl: "https://open.bigmodel.cn/api/anthropic",
-      contextWindow: 1_000_000,
-      maxTokens: 131_072,
-      inputModalities: ["text"],
-      compatibility: {
-        version: 1,
-        family: "anthropic-messages",
-        credentialMode: "pi-ai-api-key",
-      },
-    });
-
-    const openai = compileDshModelExecutionProfile({
+    const chat = compileDshModelExecutionProfile({
       provider: preset("zhipu-ai"),
       modelId: "glm-5.3",
     });
-    expect(openai).toMatchObject({
+    expect(chat).toMatchObject({
       api: "openai-completions",
       providerRouteId: "myagents-zhipu-ai-openai-completions",
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-      contextWindow: 1_000_000,
-      maxTokens: 131_072,
+      compatibility: { version: 1, family: "openai-completions" },
+    });
+
+    const responses = preset("zhipu-ai");
+    responses.id = "custom-responses";
+    responses.upstreamFormat = "responses";
+    responses.config.baseUrl = "https://responses.example.test/v1/";
+    const responseProfile = compileDshModelExecutionProfile({
+      provider: responses,
+      modelId: "glm-5.3",
+    });
+    expect(responseProfile).toMatchObject({
+      api: "openai-responses",
+      providerRouteId: "myagents-custom-responses-openai-responses",
+      baseUrl: "https://responses.example.test/v1",
+      compatibility: { version: 1, family: "openai-responses" },
+    });
+  });
+
+  it("uses current Product endpoint and model capacity without a compatibility cell", () => {
+    const provider = preset("moonshot");
+    provider.id = "custom-moonshot";
+    provider.config.baseUrl = "https://gateway.example.test/anthropic";
+    provider.models = [{
+      model: "future-model",
+      modelName: "Future",
+      modelSeries: "future",
+    }];
+    const profile = compileDshModelExecutionProfile({ provider, modelId: "future-model" });
+    expect(profile).toMatchObject({
+      provider: "custom-moonshot",
+      modelId: "future-model",
+      baseUrl: "https://gateway.example.test/anthropic",
+      contextWindow: 200_000,
+      maxTokens: 8_192,
       inputModalities: ["text"],
-      compatibility: {
-        version: 1,
-        family: "openai-completions",
-        credentialMode: "pi-ai-api-key",
-      },
+    });
+
+    provider.models[0].contextLength = 300_000;
+    provider.models[0].maxOutputTokens = 16_384;
+    const changed = compileDshModelExecutionProfile({ provider, modelId: "future-model" });
+    expect(changed).toMatchObject({ contextWindow: 300_000, maxTokens: 16_384 });
+    expect(changed.revision).not.toBe(profile.revision);
+  });
+
+  it("maps supported OpenAI wire overrides instead of rejecting them", () => {
+    const provider = preset("zhipu-ai");
+    provider.maxOutputTokensParamName = "max_completion_tokens";
+    const profile = compileDshModelExecutionProfile({ provider, modelId: "glm-5.3" });
+    expect(profile.compatibility?.wireCompat).toEqual({
+      maxTokensField: "max_completion_tokens",
     });
   });
 
   it("produces stable revisions without copying credential material", () => {
     const provider = preset("anthropic-api");
     provider.apiKey = "secret-canary-do-not-copy";
-    const first = compileDshModelExecutionProfile({
-      provider,
-      modelId: "claude-haiku-4-5",
-    });
-    const second = compileDshModelExecutionProfile({
-      provider,
-      modelId: "claude-haiku-4-5",
-    });
+    const first = compileDshModelExecutionProfile({ provider, modelId: "claude-sonnet-5" });
+    const second = compileDshModelExecutionProfile({ provider, modelId: "claude-sonnet-5" });
     expect(first.revision).toBe(second.revision);
     expect(JSON.stringify(first)).not.toContain("secret-canary-do-not-copy");
     expect(first.credentialRef).toBe(dshProviderCredentialRef("anthropic-api"));
   });
 
-  it("rejects unallowlisted, subscription, OAuth, and catalog-only routes", () => {
-    const cases: Array<[Provider, string]> = [
-      [preset("deepseek"), "deepseek-v4-pro"],
-      [preset("anthropic-sub"), "claude-sonnet-4-6"],
-      [preset("xai-sub"), "grok-4.5"],
-      [
-        {
-          ...preset("zhipu-ai"),
-          id: "catalog-only",
-          config: { baseUrl: "https://api.openai.com/v1" },
-        },
-        "glm-5.3",
-      ],
-    ];
-    for (const [provider, modelId] of cases) {
-      expect(() =>
-        compileDshModelExecutionProfile({ provider, modelId }),
-      ).toThrowError(
-        expect.objectContaining({ code: "provider-cell-not-allowlisted" }),
-      );
-    }
+  it("rejects only invalid ownership, availability, endpoint, or capacity", () => {
+    const subscription = preset("anthropic-sub");
+    expect(() => compileDshModelExecutionProfile({
+      provider: subscription,
+      modelId: subscription.primaryModel,
+    })).toThrowError(expect.objectContaining({
+      code: "provider-execution-owner-unsupported",
+    } satisfies Partial<DshProfileCompilerError>));
+
+    const unavailable = preset("anthropic-api");
+    expect(() => compileDshModelExecutionProfile({
+      provider: unavailable,
+      modelId: "not-configured",
+    })).toThrowError(expect.objectContaining({ code: "model-unavailable" }));
+
+    const disabled = preset("zhipu");
+    disabled.enabled = false;
+    expect(() => compileDshModelExecutionProfile({
+      provider: disabled,
+      modelId: disabled.primaryModel,
+    })).toThrowError(expect.objectContaining({ code: "provider-disabled" }));
+
+    const invalidEndpoint = preset("zhipu-ai");
+    invalidEndpoint.config.baseUrl = "not-a-url";
+    expect(() => compileDshModelExecutionProfile({
+      provider: invalidEndpoint,
+      modelId: invalidEndpoint.primaryModel,
+    })).toThrowError(expect.objectContaining({ code: "provider-endpoint-invalid" }));
+
+    const invalidCapacity = preset("zhipu-ai");
+    invalidCapacity.models[0].contextLength = -1;
+    expect(() => compileDshModelExecutionProfile({
+      provider: invalidCapacity,
+      modelId: invalidCapacity.models[0].model,
+    })).toThrowError(expect.objectContaining({ code: "model-capabilities-invalid" }));
   });
 
-  it("rejects drift in endpoint, auth, model capacity, and Bridge-only overrides", () => {
-    const endpoint = preset("zhipu-ai");
-    endpoint.config.baseUrl = "https://proxy.example.invalid/v1";
-    expect(() =>
-      compileDshModelExecutionProfile({
-        provider: endpoint,
-        modelId: "glm-5.3",
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "provider-facts-mismatch" }),
-    );
-
-    const capacity = preset("anthropic-api");
-    const model = capacity.models.find(
-      (candidate) => candidate.model === "claude-sonnet-4-6",
-    );
-    if (!model) throw new Error("Missing model fixture");
-    model.contextLength = 123;
-    expect(() =>
-      compileDshModelExecutionProfile({
-        provider: capacity,
-        modelId: model.model,
-      }),
-    ).toThrowError(expect.objectContaining({ code: "model-facts-mismatch" }));
-
-    const bridgeOverride = preset("zhipu-ai");
-    bridgeOverride.maxOutputTokensParamName = "max_completion_tokens";
-    expect(() =>
-      compileDshModelExecutionProfile({
-        provider: bridgeOverride,
-        modelId: "glm-5.3",
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "provider-facts-mismatch" }),
-    );
-
-    const runtimeBacked = preset("anthropic-api");
-    runtimeBacked.execution = {
-      kind: "runtime-backed",
-      runtime: "codex",
-      source: "managed-provider",
-    };
-    expect(() =>
-      compileDshModelExecutionProfile({
-        provider: runtimeBacked,
-        modelId: "claude-sonnet-4-6",
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "provider-facts-mismatch" }),
-    );
-  });
-
-  it("allows only cell-declared reasoning selections", () => {
+  it("keeps explicit reasoning effort on the native route only", () => {
     const high = compileDshModelExecutionProfile({
       provider: preset("deepseek"),
-      modelId: "deepseek-v4-flash",
+      modelId: "deepseek-v4-pro",
       reasoningEffort: "max",
     });
     expect(high).toMatchObject({ reasoning: true, effort: "max" });
 
-    expect(() =>
-      compileDshModelExecutionProfile({
-        provider: preset("zhipu-ai"),
-        modelId: "glm-5.3",
-        reasoningEffort: "high",
-      }),
-    ).toThrowError(
-      expect.objectContaining({
-        code: "reasoning-effort-unsupported",
-      } satisfies Partial<DshProfileCompilerError>),
-    );
+    expect(() => compileDshModelExecutionProfile({
+      provider: preset("zhipu-ai"),
+      modelId: "glm-5.3",
+      reasoningEffort: "high",
+    })).toThrowError(expect.objectContaining({
+      code: "reasoning-effort-unsupported",
+    } satisfies Partial<DshProfileCompilerError>));
   });
 });

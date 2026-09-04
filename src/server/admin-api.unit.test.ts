@@ -1656,11 +1656,11 @@ describe('admin-api task runtime model identity', () => {
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
-  it('rejects Task Provider/model pairs outside the accepted DSH cells', async () => {
+  it('rejects Task subscription Providers because DSH admits ordinary API routes only', async () => {
     const { handleTaskCreateDirect } = await import('./admin-api');
 
     const result = await handleTaskCreateDirect({
-      name: 'invalid-dsh-cell',
+      name: 'invalid-dsh-provider-owner',
       runtime: 'dsh',
       runtimeConfig: { source: 'integrated' },
       providerId: 'anthropic-sub',
@@ -1668,7 +1668,7 @@ describe('admin-api task runtime model identity', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('accepted DSH compatibility cells');
+    expect(result.error).toContain('enabled ordinary API route configured for DSH');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 

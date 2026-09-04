@@ -1862,7 +1862,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "session_serial",
-      "description": "Asks one to four structured questions and returns the single registered response to this tool call. Use only when the interaction owner is available.",
+      "description": "Asks one to four structured questions and waits without a human-decision timeout for the single registered response to this tool call. Use only when the interaction owner is available; the wait ends on an answer, explicit cancellation, or authoritative operation/Session termination.",
       "errorCodes": [
         {
           "code": "interaction_unavailable",
@@ -2097,8 +2097,7 @@
         "revision": "operation-birth-and-durable-session"
       },
       "resultSemantics": "Return the one registered answer set, including explicit free text when Other is selected.",
-      "sideEffect": "interaction",
-      "timeoutMs": 600000
+      "sideEffect": "interaction"
     },
     {
       "behaviorFixtureIds": [
@@ -2464,7 +2463,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type to use the built-in general descriptor, which inherits eligible parent tools. Explore keeps read/search/Web/Bash tools with a read-only role instruction. Custom descriptors may narrow inherited visibility. Background returns a retained work handle; foreground waits for the child terminal.",
+      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type to use the built-in general descriptor, which inherits eligible parent tools. Explore keeps read/search/Web/Bash tools with a read-only role instruction. Custom descriptors may narrow inherited visibility. The result's taskId is for TaskStop; agentId addresses the live child with SendMessage. Background returns a retained work handle; foreground waits for the child terminal.",
       "errorCodes": [
         {
           "code": "agent_unavailable",
@@ -2501,12 +2500,6 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
-          "name": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
-          },
           "prompt": {
             "maxLength": 1000000,
             "minLength": 1,
@@ -2537,12 +2530,6 @@
             "type": "string"
           },
           "model": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-            "type": "string"
-          },
-          "name": {
             "maxLength": 256,
             "minLength": 1,
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
@@ -2872,7 +2859,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "session_serial",
-      "description": "Delivers an ordered plain-text message to one resolvable parent, child, or sibling Agent in this Runtime Session. Cross-Session and broadcast delivery are unsupported.",
+      "description": "Delivers an ordered plain-text message within the caller's root lineage. Use the agentId returned by Agent for one live child or sibling; a child may use the literal parent for the root. taskId, caller-defined names, broadcasts, team aliases, cross-Session recipients, and stopping or terminal Agents are unsupported. A queued receipt means admission for the recipient's next child-turn boundary, not interruption or completed work; delivered and queued are receipts, not terminal results.",
       "errorCodes": [
         {
           "code": "recipient_not_found",
@@ -3004,7 +2991,7 @@
         "mode": "denied",
         "revision": "operation-birth-and-durable-session"
       },
-      "resultSemantics": "Return an ordered delivery receipt after resolving one in-scope collaborator.",
+      "resultSemantics": "Return an ordered delivery receipt after resolving one exact live in-scope collaborator by agentId or the child-only parent alias.",
       "sideEffect": "delegation",
       "timeoutMs": 120000
     },

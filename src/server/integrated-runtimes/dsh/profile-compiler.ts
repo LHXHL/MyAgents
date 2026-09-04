@@ -1,14 +1,26 @@
 import { createHash } from "node:crypto";
 
-import type { ModelEntity, Provider } from "../../../shared/config-types";
+import type { Provider } from "../../../shared/config-types";
+import { SDK_DEFAULT_CONTEXT_WINDOW } from "../../../shared/contextUsage";
+import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
 import {
-  DSH_PROVIDER_CELL_CONTRACT,
-  findDshProviderCell,
-  type DshInputModality,
-  type DshProviderCompatibilityProfile,
-  type DshProviderCell,
-  type DshReasoningEffort,
-} from "../../../shared/integrated-runtimes/dsh-provider-cells";
+  getProviderExecutionConstraint,
+  OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,
+} from "../../../shared/integrated-runtimes/provider-constraints";
+
+export type DshInputModality = "text" | "image";
+export type DshReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export type DshProviderWireCompatibilityV1 = Readonly<{
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
+}>;
+
+export type DshProviderCompatibilityProfile = Readonly<{
+  version: 1;
+  family: "anthropic-messages" | "openai-completions" | "openai-responses";
+  credentialMode: "pi-ai-api-key";
+  wireCompat?: DshProviderWireCompatibilityV1;
+}>;
 
 export type DshModelExecutionProfile = Readonly<{
   revision: string;
@@ -36,10 +48,12 @@ export type DshModelExecutionProfile = Readonly<{
 }>;
 
 export type DshProfileCompilerErrorCode =
-  | "provider-cell-not-allowlisted"
   | "provider-disabled"
-  | "provider-facts-mismatch"
-  | "model-facts-mismatch"
+  | "provider-execution-owner-unsupported"
+  | "provider-api-family-unsupported"
+  | "provider-endpoint-invalid"
+  | "model-unavailable"
+  | "model-capabilities-invalid"
   | "reasoning-effort-unsupported";
 
 export class DshProfileCompilerError extends Error {
@@ -61,10 +75,7 @@ export class DshProfileCompilerError extends Error {
   }
 }
 
-export type DshReasoningEffortSelection =
-  | "default"
-  | "off"
-  | DshReasoningEffort;
+export type DshReasoningEffortSelection = "default" | "off" | DshReasoningEffort;
 
 type DshProfileCompilerProvider = Pick<
   Provider,
@@ -72,93 +83,96 @@ type DshProfileCompilerProvider = Pick<
   | "type"
   | "enabled"
   | "execution"
-  | "authType"
   | "apiProtocol"
   | "upstreamFormat"
   | "maxOutputTokens"
   | "maxOutputTokensParamName"
   | "config"
   | "models"
-  | "apiKey"
 >;
 
-function mismatch(
-  code: Extract<
-    DshProfileCompilerErrorCode,
-    "provider-facts-mismatch" | "model-facts-mismatch"
-  >,
-  cell: DshProviderCell,
-  fact: string,
-): never {
-  throw new DshProfileCompilerError(
-    code,
-    cell.providerId,
-    cell.modelId,
-    `DSH cell ${cell.cellId} does not match current ${fact}`,
-  );
-}
-
-function sameStrings(
-  left: readonly string[] | undefined,
-  right: readonly string[],
-): boolean {
-  return JSON.stringify(left ?? []) === JSON.stringify(right);
-}
-
-function validateProviderFacts(
-  provider: DshProfileCompilerProvider,
-  cell: DshProviderCell,
-): ModelEntity {
-  if (provider.enabled === false) {
-    throw new DshProfileCompilerError(
-      "provider-disabled",
-      cell.providerId,
-      cell.modelId,
-      `Provider ${cell.providerId} is disabled`,
-    );
-  }
-  const apiProtocol = provider.apiProtocol ?? "anthropic";
-  const upstreamFormat = provider.upstreamFormat ?? "chat_completions";
-  const authType = provider.authType ?? "both";
-  if (
-    provider.id !== cell.providerId ||
-    provider.type !== cell.product.type ||
-    (provider.execution?.kind ?? "builtin") !== "builtin" ||
-    authType !== cell.product.authType ||
-    apiProtocol !== cell.product.apiProtocol ||
-    upstreamFormat !== cell.product.upstreamFormat ||
-    provider.config.baseUrl !== cell.product.baseUrl
-  ) {
-    mismatch("provider-facts-mismatch", cell, "Provider route facts");
-  }
-  if (
-    provider.maxOutputTokens !== undefined ||
-    provider.maxOutputTokensParamName !== undefined
-  ) {
-    mismatch("provider-facts-mismatch", cell, "Claude-SDK Bridge overrides");
-  }
-
-  const model = provider.models.find(
-    (candidate) => candidate.model === cell.modelId,
-  );
-  if (!model) mismatch("model-facts-mismatch", cell, "Provider model catalog");
-  if (
-    model.contextLength !== cell.product.contextWindow ||
-    model.maxOutputTokens !== cell.product.maxOutputTokens ||
-    !sameStrings(model.inputModalities, cell.product.inputModalities)
-  ) {
-    mismatch("model-facts-mismatch", cell, "Provider model capabilities");
-  }
-  return model;
-}
+const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
+const OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL = "https://api.deepseek.com";
 
 function deepFreeze<T>(value: T): T {
-  if (!value || typeof value !== "object" || Object.isFrozen(value))
-    return value;
-  for (const entry of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(entry);
-  }
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const entry of Object.values(value as Record<string, unknown>)) deepFreeze(entry);
   return Object.freeze(value);
+}
+
+function boundedIdentity(value: string, description: string): string {
+  const hasControlCharacter = [...value].some(character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+  if (!value || value.length > 256 || hasControlCharacter) {
+    throw new Error(`${description} is not a valid DSH identifier`);
+  }
+  return value;
+}
+
+function canonicalHttpUrl(value: string | undefined): string {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value ?? "");
+  } catch {
+    throw new Error("Provider base URL must be an absolute HTTP(S) URL");
+  }
+  if (
+    (endpoint.protocol !== "https:" && endpoint.protocol !== "http:")
+    || !endpoint.hostname
+    || endpoint.username
+    || endpoint.password
+    || endpoint.search
+    || endpoint.hash
+  ) {
+    throw new Error(
+      "Provider base URL must be an absolute HTTP(S) URL without credentials, query or fragment",
+    );
+  }
+  return endpoint.toString().replace(/\/$/u, "");
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  const candidate = value ?? fallback;
+  return Number.isSafeInteger(candidate) && candidate > 0 ? candidate : 0;
+}
+
+function modelCapabilities(
+  provider: DshProfileCompilerProvider,
+  modelId: string,
+): Readonly<{
+  contextWindow: number;
+  maxTokens: number;
+  inputModalities: readonly DshInputModality[];
+}> {
+  const model = provider.models.find((candidate) => candidate.model === modelId);
+  if (!model) {
+    throw new DshProfileCompilerError(
+      "model-unavailable",
+      provider.id,
+      modelId,
+      `Model ${modelId} is not configured for Provider ${provider.id}`,
+    );
+  }
+  const contextWindow = positiveInteger(model.contextLength, SDK_DEFAULT_CONTEXT_WINDOW);
+  const maxTokens = positiveInteger(
+    model.maxOutputTokens ?? provider.maxOutputTokens,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+  );
+  if (!contextWindow || !maxTokens) {
+    throw new DshProfileCompilerError(
+      "model-capabilities-invalid",
+      provider.id,
+      modelId,
+      `Model ${provider.id}/${modelId} has invalid token capacity`,
+    );
+  }
+  const inputModalities = Object.freeze([
+    "text" as const,
+    ...(model.inputModalities?.includes("image") ? ["image" as const] : []),
+  ]);
+  return Object.freeze({ contextWindow, maxTokens, inputModalities });
 }
 
 function assertCredentialRef(value: string): string {
@@ -173,109 +187,59 @@ export function dshProviderCredentialRef(providerId: string): string {
   return assertCredentialRef(`MYAGENTS_PROVIDER_${normalized}_API_KEY`);
 }
 
+export function isOfficialDeepSeekDshRoute(
+  provider: Pick<Provider, "id" | "type" | "execution" | "apiProtocol" | "upstreamFormat" | "config">,
+): boolean {
+  return provider.id === "deepseek"
+    && provider.type === "api"
+    && (provider.execution?.kind ?? "builtin") === "builtin"
+    && (provider.apiProtocol ?? "anthropic") === "anthropic"
+    && (provider.upstreamFormat ?? "chat_completions") === "chat_completions"
+    && provider.config.baseUrl === OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL;
+}
+
 function applyReasoningSelection(
   profile: Omit<DshModelExecutionProfile, "revision">,
-  cell: DshProviderCell,
   selection: DshReasoningEffortSelection,
+  nativeDeepSeek: boolean,
 ): Omit<DshModelExecutionProfile, "revision"> {
   if (selection === "default") return profile;
-  if (cell.profile.source === "native-candidate") {
-    if (selection === "off") {
-      const { effort: _effort, ...withoutEffort } = profile;
-      return { ...withoutEffort, reasoning: false };
-    }
-    if (!cell.profile.reasoningEfforts.includes(selection as "high" | "max")) {
-      throw new DshProfileCompilerError(
-        "reasoning-effort-unsupported",
-        cell.providerId,
-        cell.modelId,
-        `DSH cell ${cell.cellId} does not support reasoning effort ${selection}`,
-      );
-    }
-    return { ...profile, reasoning: true, effort: selection };
-  }
-
   if (selection === "off") {
-    const {
-      effort: _effort,
-      reasoningEffortMap: _reasoningEffortMap,
-      ...withoutReasoning
-    } = profile;
-    return { ...withoutReasoning, reasoning: false };
+    const { effort: _effort, reasoningEffortMap: _map, ...withoutEffort } = profile;
+    return { ...withoutEffort, reasoning: false };
   }
-  if (!cell.profile.reasoningEffortMap?.[selection]) {
+  if (!nativeDeepSeek || (selection !== "high" && selection !== "max")) {
     throw new DshProfileCompilerError(
       "reasoning-effort-unsupported",
-      cell.providerId,
-      cell.modelId,
-      `DSH cell ${cell.cellId} does not support reasoning effort ${selection}`,
+      profile.provider,
+      profile.modelId,
+      `Provider/model ${profile.provider}/${profile.modelId} does not declare reasoning effort ${selection}`,
     );
   }
   return { ...profile, reasoning: true, effort: selection };
 }
 
-function profileRevision(
-  cell: DshProviderCell,
-  profile: Omit<DshModelExecutionProfile, "revision">,
-): string {
+function profileRevision(profile: Omit<DshModelExecutionProfile, "revision">): string {
   const digest = createHash("sha256")
-    .update(
-      JSON.stringify({
-        contractId: DSH_PROVIDER_CELL_CONTRACT.contractId,
-        runtimeProfileDigest: DSH_PROVIDER_CELL_CONTRACT.runtimeProfileDigest,
-        cellId: cell.cellId,
-        profile,
-      }),
-    )
+    .update(JSON.stringify({ runtimeProfileDigest: dshLock.profile.digest, profile }))
     .digest("hex");
   return `myagents-dsh-profile-v1:${digest}`;
 }
 
-function nativeCandidateProfile(
-  cell: DshProviderCell,
-): Omit<DshModelExecutionProfile, "revision"> {
-  if (cell.profile.source !== "native-candidate") {
-    throw new Error("Expected one native DSH Provider cell");
-  }
+function genericCompatibility(
+  provider: DshProfileCompilerProvider,
+  family: "anthropic-messages" | "openai-completions" | "openai-responses",
+): DshProviderCompatibilityProfile {
+  const maxTokensField = family === "openai-completions"
+    && (provider.maxOutputTokensParamName === "max_tokens"
+      || provider.maxOutputTokensParamName === "max_completion_tokens")
+    ? provider.maxOutputTokensParamName
+    : undefined;
   return {
-    providerRouteId: cell.profile.providerRouteId,
-    api: cell.profile.api,
-    provider: cell.profile.provider,
-    modelId: cell.modelId,
-    baseUrl: cell.profile.baseUrl,
-    credentialRef: dshProviderCredentialRef(cell.providerId),
-    contextWindow: cell.profile.contextWindow,
-    maxTokens: cell.profile.maxTokens,
-    reasoning: true,
-    effort: "high",
-  };
-}
-
-function piAiCellProfile(
-  cell: DshProviderCell,
-): Omit<DshModelExecutionProfile, "revision"> {
-  if (cell.profile.source !== "pi-ai-cell") {
-    throw new Error("Expected one pi-ai DSH Provider cell");
-  }
-  return {
-    providerRouteId: cell.profile.providerRouteId,
-    api: cell.profile.api,
-    provider: cell.profile.provider,
-    modelId: cell.modelId,
-    baseUrl: cell.profile.baseUrl,
-    credentialRef: dshProviderCredentialRef(cell.providerId),
-    contextWindow: cell.profile.contextWindow,
-    maxTokens: cell.profile.maxTokens,
-    inputModalities: [...cell.profile.inputModalities],
-    ...(cell.profile.reasoningEffortMap
-      ? { reasoningEffortMap: { ...cell.profile.reasoningEffortMap } }
-      : {}),
-    compatibility: {
-      ...cell.profile.compatibility,
-      ...(cell.profile.compatibility.wireCompat
-        ? { wireCompat: { ...cell.profile.compatibility.wireCompat } }
-        : {}),
-    },
+    version: 1,
+    family,
+    credentialMode: "pi-ai-api-key",
+    ...(maxTokensField ? { wireCompat: { maxTokensField } } : {}),
   };
 }
 
@@ -284,27 +248,85 @@ export function compileDshModelExecutionProfile(args: {
   modelId: string;
   reasoningEffort?: DshReasoningEffortSelection | null;
 }): DshModelExecutionProfile {
-  const cell = findDshProviderCell(args.provider.id, args.modelId);
-  if (!cell) {
+  const providerId = boundedIdentity(args.provider.id, "Provider id");
+  const modelId = boundedIdentity(args.modelId, "Model id");
+  if (args.provider.enabled === false) {
     throw new DshProfileCompilerError(
-      "provider-cell-not-allowlisted",
-      args.provider.id,
-      args.modelId,
-      `Provider/model ${args.provider.id}/${args.modelId} has no DSH compatibility cell`,
+      "provider-disabled",
+      providerId,
+      modelId,
+      `Provider ${providerId} is disabled`,
     );
   }
-  validateProviderFacts(args.provider, cell);
-  const base =
-    cell.profile.source === "native-candidate"
-      ? nativeCandidateProfile(cell)
-      : piAiCellProfile(cell);
+
+  let constraint: ReturnType<typeof getProviderExecutionConstraint>;
+  try {
+    constraint = getProviderExecutionConstraint(args.provider);
+  } catch (error) {
+    throw new DshProfileCompilerError(
+      args.provider.type === "api"
+        ? "provider-api-family-unsupported"
+        : "provider-execution-owner-unsupported",
+      providerId,
+      modelId,
+      error instanceof Error ? error.message : `Provider ${providerId} cannot execute in DSH`,
+    );
+  }
+  if (constraint.kind !== "portable" || args.provider.type !== "api") {
+    throw new DshProfileCompilerError(
+      "provider-execution-owner-unsupported",
+      providerId,
+      modelId,
+      `Provider ${providerId} belongs to another execution owner`,
+    );
+  }
+
+  let baseUrl: string;
+  try {
+    baseUrl = canonicalHttpUrl(args.provider.config.baseUrl);
+  } catch (error) {
+    throw new DshProfileCompilerError(
+      "provider-endpoint-invalid",
+      providerId,
+      modelId,
+      error instanceof Error ? error.message : `Provider ${providerId} has an invalid endpoint`,
+    );
+  }
+  const capabilities = modelCapabilities(args.provider, modelId);
+  const nativeDeepSeek = isOfficialDeepSeekDshRoute(args.provider);
+  const base: Omit<DshModelExecutionProfile, "revision"> = nativeDeepSeek
+    ? {
+        providerRouteId: "deepseek-official",
+        api: "openai-completions",
+        provider: providerId,
+        modelId,
+        baseUrl: OFFICIAL_DEEPSEEK_RUNTIME_BASE_URL,
+        credentialRef: dshProviderCredentialRef(providerId),
+        contextWindow: capabilities.contextWindow,
+        maxTokens: capabilities.maxTokens,
+        inputModalities: capabilities.inputModalities,
+        reasoning: true,
+        effort: "high",
+      }
+    : {
+        providerRouteId: boundedIdentity(
+          `myagents-${providerId}-${constraint.apiFamily}`,
+          "Provider route id",
+        ),
+        api: constraint.apiFamily,
+        provider: providerId,
+        modelId,
+        baseUrl,
+        credentialRef: dshProviderCredentialRef(providerId),
+        contextWindow: capabilities.contextWindow,
+        maxTokens: capabilities.maxTokens,
+        inputModalities: capabilities.inputModalities,
+        compatibility: genericCompatibility(args.provider, constraint.apiFamily),
+      };
   const selected = applyReasoningSelection(
     base,
-    cell,
     args.reasoningEffort ?? "default",
+    nativeDeepSeek,
   );
-  return deepFreeze({
-    revision: profileRevision(cell, selected),
-    ...selected,
-  });
+  return deepFreeze({ revision: profileRevision(selected), ...selected });
 }

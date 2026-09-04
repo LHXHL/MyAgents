@@ -25,22 +25,25 @@ function provider(id: string, primaryModel: string, models: string[]): Provider 
 }
 
 describe('runtime Provider projection', () => {
-  it('keeps only exact DSH provider/model cells and repairs the visible primary model', () => {
+  it('keeps every ordinary API Provider and all of its configured models', () => {
     const projected = projectProvidersForRuntime([
-      provider('deepseek', 'unsupported', ['unsupported', 'deepseek-v4-flash']),
+      provider('deepseek', 'deepseek-v4-pro', ['deepseek-v4-pro', 'deepseek-v4-flash']),
       provider('openrouter', 'anthropic/claude', ['anthropic/claude']),
     ], 'dsh');
 
-    expect(projected).toHaveLength(1);
-    expect(projected[0].id).toBe('deepseek');
-    expect(projected[0].primaryModel).toBe('deepseek-v4-flash');
-    expect(projected[0].models?.map((model) => model.model)).toEqual(['deepseek-v4-flash']);
+    expect(projected).toHaveLength(2);
+    expect(projected[0].models?.map((model) => model.model)).toEqual([
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+    ]);
+    expect(projected[1].models?.map((model) => model.model)).toEqual(['anthropic/claude']);
   });
 
-  it('fails closed for an unsupported DSH pair without restricting Builtin', () => {
-    expect(isProviderModelCompatibleWithRuntime('dsh', 'openrouter', 'claude')).toBe(false);
-    expect(isProviderModelCompatibleWithRuntime('dsh', 'deepseek', 'deepseek-v4-flash')).toBe(true);
-    expect(isProviderModelCompatibleWithRuntime('builtin', 'openrouter', 'claude')).toBe(true);
+  it('uses Product Provider/model membership without restricting Builtin', () => {
+    const openrouter = provider('openrouter', 'claude', ['claude', 'future-model']);
+    expect(isProviderModelCompatibleWithRuntime('dsh', openrouter, 'claude')).toBe(true);
+    expect(isProviderModelCompatibleWithRuntime('dsh', openrouter, 'missing')).toBe(false);
+    expect(isProviderModelCompatibleWithRuntime('builtin', openrouter, 'missing')).toBe(true);
   });
 
   it('keeps Managed Codex as a runtime-backed choice without admitting it as a DSH cell', () => {
@@ -55,6 +58,6 @@ describe('runtime Provider projection', () => {
     };
 
     expect(projectProvidersForRuntime([managedCodex], 'dsh')).toEqual([managedCodex]);
-    expect(isProviderModelCompatibleWithRuntime('dsh', 'codex-sub', 'gpt-5.4-codex')).toBe(true);
+    expect(isProviderModelCompatibleWithRuntime('dsh', managedCodex, 'gpt-5.4-codex')).toBe(true);
   });
 });

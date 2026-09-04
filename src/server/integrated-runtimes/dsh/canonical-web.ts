@@ -1,4 +1,5 @@
 import type { DshModelExecutionProfile } from './profile-compiler';
+import type { ProviderAuthType } from '../../../shared/config-types';
 import { getProxyForProviderUrl, getProxyForUrl } from '../../proxy-state';
 import type { DshRequestContext, DshRpcObject } from './protocol-types';
 import { convertDshWebContent } from './canonical-web-content';
@@ -18,6 +19,7 @@ const MAX_FETCH_BYTES = 8 * 1_024 * 1_024;
 type ActiveWebConfiguration = Readonly<{
   profile: DshModelExecutionProfile;
   apiKey: string;
+  authType: ProviderAuthType;
   revision: string;
 }>;
 
@@ -195,6 +197,7 @@ export class DshCanonicalWebHost {
     const utility = await this.provider.runUtility({
       profile: configuration.profile,
       apiKey: configuration.apiKey,
+      authType: configuration.authType,
       source: converted.text,
       prompt,
       finalUrl: fetched.finalUrl,
@@ -227,6 +230,7 @@ export class DshCanonicalWebHost {
     return await this.provider.runSearch({
       profile: configuration.profile,
       apiKey: configuration.apiKey,
+      authType: configuration.authType,
       query,
       allowedDomains: domainArray(input.allowed_domains, 'WebSearch allowed domains'),
       blockedDomains: domainArray(input.blocked_domains, 'WebSearch blocked domains'),

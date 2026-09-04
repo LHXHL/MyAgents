@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { DSH_PROVIDER_CELL_CONTRACT } from '../../../shared/integrated-runtimes/dsh-provider-cells';
+import type { ProviderAuthType } from '../../../shared/config-types';
 import { anthropicAuthHeaders } from '../../provider-probe';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import { DshCanonicalWebError } from './canonical-web-errors';
@@ -14,10 +14,6 @@ const ZHIPU_WEB_SEARCH_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/web_sear
 const MAX_UTILITY_TOKENS = 4_096;
 const MAX_SEARCH_USES = 5;
 const MAX_ANTHROPIC_PAUSES = 3;
-const PROVIDER_ENDPOINT_HOSTS = Object.freeze([...new Set([
-  ...DSH_PROVIDER_CELL_CONTRACT.cells.map(cell => new URL(cell.profile.baseUrl).hostname),
-  new URL(ZHIPU_WEB_SEARCH_ENDPOINT).hostname,
-])]);
 
 export type DshCanonicalTokenUsage = Readonly<{
   inputTokens: number;
@@ -44,6 +40,7 @@ type SearchInput = Readonly<{
 type ProviderInput = Readonly<{
   profile: DshModelExecutionProfile;
   apiKey: string;
+  authType: ProviderAuthType;
 }>;
 
 type UtilityInput = ProviderInput & Readonly<{
@@ -271,7 +268,7 @@ function parseJsonResponse(response: DshSafeHttpResponse, errorCode: 'provider_s
 
 function providerPolicy(): ConstructorParameters<typeof DshSafeHttpClient>[0] {
   return Object.freeze({
-    allowedHosts: PROVIDER_ENDPOINT_HOSTS,
+    allowedHosts: Object.freeze([]),
     allowedPorts: Object.freeze([443]),
     deniedHosts: Object.freeze(['metadata.google.internal']),
     maxCompressedBytes: MAX_PROVIDER_RESPONSE_BYTES,
@@ -284,27 +281,14 @@ function providerPolicy(): ConstructorParameters<typeof DshSafeHttpClient>[0] {
   });
 }
 
-function profileAuthType(profile: DshModelExecutionProfile) {
-  const cell = DSH_PROVIDER_CELL_CONTRACT.cells.find(candidate => (
-    candidate.profile.providerRouteId === profile.providerRouteId
-    && candidate.profile.api === profile.api
-    && candidate.profile.provider === profile.provider
-    && candidate.profile.baseUrl === profile.baseUrl
-    && candidate.modelId === profile.modelId
-  ));
-  if (!cell) {
-    throw new DshCanonicalWebError(
-      'web_search_unavailable',
-      'Frozen Provider has no admitted authentication profile',
-    );
-  }
-  return cell.product.authType;
-}
-
-function providerHeaders(profile: DshModelExecutionProfile, apiKey: string): Readonly<Record<string, string>> {
+function providerHeaders(
+  profile: DshModelExecutionProfile,
+  apiKey: string,
+  authType: ProviderAuthType,
+): Readonly<Record<string, string>> {
   return profile.api === 'anthropic-messages'
     ? Object.freeze({
-        ...anthropicAuthHeaders(profileAuthType(profile), apiKey),
+        ...anthropicAuthHeaders(authType, apiKey),
         accept: 'application/json',
         'accept-encoding': 'identity',
         'user-agent': 'MyAgents/DSH-Host-Web-v1',
@@ -410,7 +394,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       let usage: DshCanonicalTokenUsage;
       let answer: string;
       if (input.profile.api === 'anthropic-messages') {
-        const response = await this.post(input.profile, input.apiKey, 'v1/messages', {
+        const response = await this.post(input.profile, input.apiKey, input.authType, 'v1/messages', {
           model: input.profile.modelId,
           max_tokens: Math.min(input.profile.maxTokens, MAX_UTILITY_TOKENS),
           system,
@@ -425,8 +409,8 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
               : {};
             return item.type === 'text' && typeof item.text === 'string' ? [item.text] : [];
           }).join('\n').trim();
-      } else if (input.profile.provider === 'zhipu-ai' && input.profile.api === 'openai-completions') {
-        const response = await this.post(input.profile, input.apiKey, 'chat/completions', {
+      } else if (input.profile.api === 'openai-completions') {
+        const response = await this.post(input.profile, input.apiKey, input.authType, 'chat/completions', {
           model: input.profile.modelId,
           max_tokens: Math.min(input.profile.maxTokens, MAX_UTILITY_TOKENS),
           stream: false,
@@ -477,7 +461,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     const payloads: Record<string, unknown>[] = [];
     let usage = ZERO_USAGE;
     for (let pause = 0; pause <= MAX_ANTHROPIC_PAUSES; pause += 1) {
-      const response = await this.post(input.profile, input.apiKey, 'v1/messages', {
+      const response = await this.post(input.profile, input.apiKey, input.authType, 'v1/messages', {
         model: input.profile.modelId,
         max_tokens: Math.min(input.profile.maxTokens, MAX_UTILITY_TOKENS),
         messages,
@@ -598,6 +582,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
   private async post(
     profile: DshModelExecutionProfile,
     apiKey: string,
+    authType: ProviderAuthType,
     path: string,
     body: unknown,
     signal: AbortSignal,
@@ -605,7 +590,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     try {
       return await this.client.request(providerEndpoint(profile.baseUrl, path), {
         method: 'POST',
-        headers: providerHeaders(profile, apiKey),
+        headers: providerHeaders(profile, apiKey, authType),
         body: jsonBytes(body),
         signal,
       });

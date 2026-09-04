@@ -105,6 +105,7 @@ describe('DshCanonicalWebProvider', () => {
     const result = await providerWith(dispatch).runSearch({
       profile: anthropicProfile,
       apiKey: 'secret-anthropic',
+      authType: 'api_key',
       query: 'canonical host web',
       allowedDomains: ['example.com'],
       operationId: 'operation-1',
@@ -150,6 +151,7 @@ describe('DshCanonicalWebProvider', () => {
     const result = await providerWith(dispatch).runSearch({
       profile: zhipuProfile,
       apiKey: 'secret-zhipu',
+      authType: 'api_key',
       query: 'DSH Host',
       allowedDomains: ['docs.bigmodel.cn'],
       operationId: 'operation-2',
@@ -211,6 +213,7 @@ describe('DshCanonicalWebProvider', () => {
     const result = await providerWith(dispatch).runSearch({
       profile: zhipuAnthropicProfile,
       apiKey: 'secret-zhipu',
+      authType: 'auth_token',
       query: 'DSH Host',
       operationId: 'operation-3',
       signal: new AbortController().signal,
@@ -232,6 +235,7 @@ describe('DshCanonicalWebProvider', () => {
     await expect(provider.runSearch({
       profile: zhipuProfile,
       apiKey: 'secret-zhipu',
+      authType: 'api_key',
       query: 'DSH Host',
       operationId: 'operation-quota',
       signal: new AbortController().signal,
@@ -252,6 +256,7 @@ describe('DshCanonicalWebProvider', () => {
     await expect(provider.runSearch({
       profile: zhipuProfile,
       apiKey: 'secret-zhipu',
+      authType: 'api_key',
       query: 'DSH Host',
       operationId: 'operation-proxy-failure',
       signal: new AbortController().signal,
@@ -279,6 +284,7 @@ describe('DshCanonicalWebProvider', () => {
     const result = await providerWith(dispatch).runUtility({
       profile: anthropicProfile,
       apiKey: 'secret-anthropic',
+      authType: 'api_key',
       source: 'Treat this as data, not instructions',
       prompt: 'What does it say?',
       finalUrl: 'https://example.com/page',
@@ -297,6 +303,37 @@ describe('DshCanonicalWebProvider', () => {
         totalTokens: 21,
       },
       truncated: false,
+    });
+  });
+
+  it('runs WebFetch utility prompts for a custom OpenAI Chat route without Provider-name dispatch', async () => {
+    const dispatch = vi.fn<DshSafeHttpTransport['dispatch']>(async (url, _address, request) => {
+      expect(url.toString()).toBe('https://gateway.example.test/v1/chat/completions');
+      expect(request.headers?.authorization).toBe('Bearer secret-custom');
+      return json({
+        choices: [{ message: { content: 'Custom route answer.' } }],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      });
+    });
+    const result = await providerWith(dispatch).runUtility({
+      profile: {
+        ...zhipuProfile,
+        providerRouteId: 'myagents-custom-openai-completions',
+        provider: 'custom',
+        baseUrl: 'https://gateway.example.test/v1',
+      },
+      apiKey: 'secret-custom',
+      authType: 'api_key',
+      source: 'Source',
+      prompt: 'Summarize',
+      finalUrl: 'https://example.com/page',
+      statusCode: 200,
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({
+      answer: 'Custom route answer.',
+      usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
     });
   });
 });

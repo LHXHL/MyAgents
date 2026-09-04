@@ -5,7 +5,6 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
-  assertProviderCellContractFacts,
   compareOrAcceptContracts,
   parseNamedArgs,
   resolveExplicitDirectory,
@@ -32,20 +31,9 @@ const lock = JSON.parse(
     "utf8",
   ),
 );
-const providerCells = JSON.parse(
-  readFileSync(
-    resolve(
-      repoRoot,
-      "src/shared/integrated-runtimes/dsh-provider-cells-v1.json",
-    ),
-    "utf8",
-  ),
-);
-
 runPublicVerifier(runtimeRoot, lock.handoff.manifestSha256);
 const verified = verifyHandoffFacts(runtimeRoot, lock);
 compareOrAcceptContracts(runtimeRoot, resolve(repoRoot, "contracts"), false);
-assertProviderCellContractFacts(providerCells, lock);
 
 if (args["--skip-node"] !== true) {
   const nodeRoot = resolveExplicitDirectory(

@@ -456,6 +456,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         provider?.apiProtocol,
         provider?.id,
         selectedModel ?? provider?.primaryModel,
+        provider?.config.baseUrl,
       )
     : null;
   const openEffortSubmenu = useCallback(() => {

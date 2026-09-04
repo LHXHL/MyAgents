@@ -9,12 +9,11 @@ const DSH_API_FAMILIES = [
 ] as const satisfies readonly DshApiFamily[];
 
 const REQUIRED_LIMITATIONS = [
-  "provider-route-cell-required",
   "stop-sequences-unsupported-on-pi-ai",
   "catalog-is-advisory",
   "native-cloud-and-oauth-auth-unadvertised",
   "pi-ai-reasoning-token-usage-unavailable",
-  "non-deepseek-web-requires-host",
+  "canonical-web-route-dependent",
   "checkpoint-coverage",
 ] as const;
 
@@ -24,9 +23,9 @@ export type DshApiFamilyCompatibility = Readonly<{
   piAiVersion: string;
   compatibilityProfileVersion: 1;
   credentialMode: "request-scoped-api-key";
-  routeAdmission: "exact-host-profile";
-  modelCapabilities: "profile-cell-required";
-  webBackend: "host-canonical-web-required";
+  routeAdmission: "host-declared-api-family";
+  modelCapabilities: "host-profile";
+  webBackend: "route-dependent";
   liveApply: "next-turn";
   deterministicEvidence: readonly (
     | "reasoning"
@@ -134,9 +133,9 @@ export function parseDshCompatibilityManifest(
       typeof family.piAiVersion !== "string" ||
       family.compatibilityProfileVersion !== 1 ||
       family.credentialMode !== "request-scoped-api-key" ||
-      family.routeAdmission !== "exact-host-profile" ||
-      family.modelCapabilities !== "profile-cell-required" ||
-      family.webBackend !== "host-canonical-web-required" ||
+      family.routeAdmission !== "host-declared-api-family" ||
+      family.modelCapabilities !== "host-profile" ||
+      family.webBackend !== "route-dependent" ||
       family.liveApply !== "next-turn" ||
       !Array.isArray(family.deterministicEvidence)
     ) {
@@ -167,9 +166,9 @@ export function parseDshCompatibilityManifest(
       piAiVersion: family.piAiVersion,
       compatibilityProfileVersion: 1,
       credentialMode: "request-scoped-api-key",
-      routeAdmission: "exact-host-profile",
-      modelCapabilities: "profile-cell-required",
-      webBackend: "host-canonical-web-required",
+      routeAdmission: "host-declared-api-family",
+      modelCapabilities: "host-profile",
+      webBackend: "route-dependent",
       liveApply: "next-turn",
       deterministicEvidence: Object.freeze([
         ...evidence,

@@ -27,7 +27,7 @@ export const CONTRACT_PATHS = Object.freeze([
   "contracts/host-client.generated.ts",
   "contracts/myagents-dsh-compatibility-v1.json",
   "contracts/official-product-profile-v1.json",
-  "contracts/protocol-2.4.1-evidence.json",
+  "contracts/protocol-2.5.0-evidence.json",
   "contracts/protocol-fixtures.json",
   "contracts/protocol-meta.json",
   "contracts/protocol.schema.json",
@@ -288,29 +288,6 @@ export function verifyHandoffFacts(root, lock) {
     protocolVersion: lock.protocol.version,
     sourceCommit: lock.handoff.sourceCommit,
   };
-}
-
-export function assertProviderCellContractFacts(contract, lock) {
-  assertEqual(
-    contract.runtimeProfileId,
-    lock.profile.id,
-    "Provider cell Runtime profile id",
-  );
-  assertEqual(
-    contract.runtimeProfileDigest,
-    lock.profile.digest,
-    "Provider cell Runtime profile digest",
-  );
-  assertEqual(
-    contract.candidateProfileSha256,
-    lock.profile.digest,
-    "Provider cell candidate profile digest",
-  );
-  assertEqual(
-    contract.compatibilitySha256,
-    lock.handoff.compatibilitySha256,
-    "Provider cell compatibility digest",
-  );
 }
 
 export function compareOrAcceptContracts(

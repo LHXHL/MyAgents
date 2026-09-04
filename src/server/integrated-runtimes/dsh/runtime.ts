@@ -3,11 +3,7 @@ import { access, mkdir, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 
 import packageJson from '../../../../package.json';
-import type { Provider } from '../../../shared/config-types';
-import {
-  DSH_PROVIDER_CELL_CONTRACT,
-  findDshProviderCell,
-} from '../../../shared/integrated-runtimes/dsh-provider-cells';
+import type { Provider, ProviderAuthType } from '../../../shared/config-types';
 import {
   DSH_PERMISSION_MODES,
   type RuntimeDiagnostics,
@@ -103,6 +99,7 @@ type PendingInteraction = Readonly<{
 type DshConfiguration = Readonly<{
   profile: DshModelExecutionProfile;
   apiKey: string;
+  authType: ProviderAuthType;
   productPermissionMode: ProductPermissionMode;
   dshPermissionMode: DshPermissionMode;
   reasoningEffort: DshReasoningEffortSelection;
@@ -402,19 +399,13 @@ function providerForSession(options: SessionStartOptions, requestedOverride?: st
     || options.model;
   const providerId = isConcreteProviderRoute(metadata?.providerRoute)
     ? metadata.providerRoute.providerId
-    : metadata?.providerId || agent?.providerId
-      || (requestedModel
-        ? DSH_PROVIDER_CELL_CONTRACT.cells.find(cell => cell.modelId === requestedModel)?.providerId
-        : undefined);
+    : metadata?.providerId || agent?.providerId;
   if (!providerId) {
     throw new Error('DSH Session has no concrete Provider authority');
   }
   const provider = findEffectiveProvider(providerId, config) as Provider | null;
   if (!provider) throw new Error(`DSH Provider ${providerId} is unavailable`);
   const modelId = requestedModel || provider.primaryModel;
-  if (!findDshProviderCell(providerId, modelId)) {
-    throw new Error(`Provider/model ${providerId}/${modelId} is not accepted by the DSH handoff`);
-  }
   const resolved = resolveProviderEnv(providerId, config);
   if (!resolved?.apiKey) {
     throw new Error(`DSH Provider ${providerId} has no Host-owned API credential`);
@@ -438,11 +429,13 @@ function compileConfiguration(
   return Object.freeze({
     profile,
     apiKey: selected.apiKey,
+    authType: selected.provider.authType ?? 'both',
     productPermissionMode: productMode,
     dshPermissionMode: dshMode,
     reasoningEffort: effort,
     revision: `myagents-dsh-config-v1:${hash(
       profile.revision,
+      selected.provider.authType ?? 'both',
       dshMode,
       OFFICIAL_INTERACTION_REVISION,
       systemContextFingerprint(options),
@@ -766,12 +759,8 @@ export class DshRuntime implements AgentRuntime {
   }
 
   async queryModels(): Promise<RuntimeModelInfo[]> {
-    return DSH_PROVIDER_CELL_CONTRACT.cells.map((cell, index) => ({
-      value: cell.modelId,
-      displayName: cell.modelId,
-      description: `${cell.providerId} · verified MyAgents-dsh cell`,
-      isDefault: index === 0,
-    }));
+    // DSH model choices are owned by the selected Product Provider catalog.
+    return [];
   }
 
   getPermissionModes(): RuntimePermissionMode[] {

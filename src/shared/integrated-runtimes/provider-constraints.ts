@@ -12,6 +12,9 @@ export type DshApiFamily =
 
 export type ApiFamily = DshApiFamily;
 
+export const OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL =
+  "https://api.deepseek.com/anthropic";
+
 export type ProviderExecutionConstraint =
   | { kind: "portable"; apiFamily: ApiFamily }
   | {
@@ -29,15 +32,14 @@ export type ProviderExecutionConstraint =
 
 type ProviderConstraintShape = Pick<
   Provider,
-  "id" | "type" | "apiProtocol" | "upstreamFormat"
+  "id" | "type" | "execution" | "apiProtocol" | "upstreamFormat"
 >;
 
 /**
  * Resolve the product execution requirement from explicit Provider fields.
  *
- * This is intentionally independent from the DSH Provider/model cell table:
- * a transport family describes the ordinary Provider route, while one exact
- * DSH cell is still required before DSH readiness may admit that route.
+ * Ordinary API Providers are portable by their declared wire family. Product
+ * Provider and model records remain the authority for route-specific facts.
  */
 export function getProviderExecutionConstraint(
   provider: ProviderConstraintShape,
@@ -68,8 +70,28 @@ export function getProviderExecutionConstraint(
       `Subscription Provider ${provider.id} has no declared execution owner`,
     );
   }
-  if (provider.apiProtocol !== "openai") {
+  if (provider.execution?.kind === "runtime-backed") {
+    throw new Error(
+      `Provider ${provider.id} is owned by ${provider.execution.runtime}`,
+    );
+  }
+  if (provider.apiProtocol === undefined || provider.apiProtocol === "anthropic") {
+    if (provider.upstreamFormat === "responses") {
+      throw new Error(
+        `Anthropic Provider ${provider.id} cannot use the OpenAI Responses format`,
+      );
+    }
     return { kind: "portable", apiFamily: "anthropic-messages" };
+  }
+  if (provider.apiProtocol !== "openai") {
+    throw new Error(`Provider ${provider.id} declares an unsupported API protocol`);
+  }
+  if (
+    provider.upstreamFormat !== undefined
+    && provider.upstreamFormat !== "chat_completions"
+    && provider.upstreamFormat !== "responses"
+  ) {
+    throw new Error(`Provider ${provider.id} declares an unsupported OpenAI format`);
   }
   return {
     kind: "portable",
@@ -78,4 +100,36 @@ export function getProviderExecutionConstraint(
         ? "openai-responses"
         : "openai-completions",
   };
+}
+
+type DshSelectableProviderShape = Pick<
+  Provider,
+  | "id"
+  | "type"
+  | "execution"
+  | "enabled"
+  | "apiProtocol"
+  | "upstreamFormat"
+  | "models"
+>;
+
+export function isDshApiProviderEligible(
+  provider: DshSelectableProviderShape,
+): boolean {
+  if (provider.enabled === false || provider.type !== "api") return false;
+  try {
+    return getProviderExecutionConstraint(provider).kind === "portable";
+  } catch {
+    return false;
+  }
+}
+
+export function isDshApiModelSelectable(
+  provider: DshSelectableProviderShape,
+  modelId: string | null | undefined,
+): boolean {
+  const model = modelId?.trim();
+  return isDshApiProviderEligible(provider)
+    && !!model
+    && provider.models.some((candidate) => candidate.model === model);
 }

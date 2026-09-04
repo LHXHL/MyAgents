@@ -2,43 +2,43 @@
   "schemaVersion": 1,
   "runtime": {
     "version": "0.0.0",
-    "artifactSha256": "632aaf50a313642b182dbecc37f1f351ce27990abc34b988c146294cfd12d7b3",
+    "artifactSha256": "5fe48eaeaf023b3257830625d79d08efbc78d7e4c0c2e62e9a3214b0b62b3265",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v1",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "0d531cb43e400eacf62a4b2a00ded8df05c5d886509e65f5916d802a320609e8"
+    "profileDigest": "51a88bd941b36992299584f82687fbc3311a653bf802e193e2210aab23dd6dda"
   },
   "protocol": {
-    "version": "2.4.1",
-    "schemaSha256": "bf620aae4445bd540c665b0dba2dd93a982fc95c5bbda40610cb5fe36034eca0",
-    "generatedClientSha256": "aaebc6f0fb7df5bc82a5e36dc057e062183dcff4c9023d306d898247ec59fe5f"
+    "version": "2.5.0",
+    "schemaSha256": "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
+    "generatedClientSha256": "406595619a83edd619f91cf42018b5de563815f8e330e9ad2bdcad497677bbdd"
   },
   "dsh": {
-    "version": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+    "version": "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
     "sourceCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-    "patchSeriesSha256": "56f8f4241def8fc6c8194e477d664aa09ef2bda7264cbaea3a5cef37eb632c56",
-    "artifactManifestSha256": "a3a24e90b9ac5406a706da924ceb6e3cea88241418f9a18d37c48af2504692d4"
+    "patchSeriesSha256": "398a736e065a889a89b48b7d8d44357db1935161145c23e0227dd8ff74ad49b1",
+    "artifactManifestSha256": "b53667aed87f2b9cd0dbc8fb02f097e4fb9127227705f78d132bbedae7ed46aa"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "c0f2e19de2facf7d0d17dc3b66192f579236d572cc3fe2dc2d2fc23def9277e2"
+        "1b0b34cd24398640b45c6ecc48b99fea7489268585a113d9ae5d2f44e347ab4b"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "ad26b3e5c526e85d04be788ae4ce3b00a0527dca6423f6732cafaf110321bee3"
+        "20de2c8e373e48950522053de6851e0a3aeed5e9f27048c08b47a460c45c246e"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "60eb79cf2244c639c9a84775c75fa83dc2af3e9b8ff8e9e18a0c68486af4823c"
+        "68d67507d5e37598d2dc7e285f7241cbb0b3d9c5886721ab31a2d6eae5626a27"
       ]
     }
   ],
@@ -49,9 +49,9 @@
       "piAiVersion": "0.82.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
-      "routeAdmission": "exact-host-profile",
-      "modelCapabilities": "profile-cell-required",
-      "webBackend": "host-canonical-web-required",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
       "liveApply": "next-turn",
       "deterministicEvidence": [
         "reasoning",
@@ -68,9 +68,9 @@
       "piAiVersion": "0.82.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
-      "routeAdmission": "exact-host-profile",
-      "modelCapabilities": "profile-cell-required",
-      "webBackend": "host-canonical-web-required",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
       "liveApply": "next-turn",
       "deterministicEvidence": [
         "reasoning",
@@ -87,9 +87,9 @@
       "piAiVersion": "0.82.1",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
-      "routeAdmission": "exact-host-profile",
-      "modelCapabilities": "profile-cell-required",
-      "webBackend": "host-canonical-web-required",
+      "routeAdmission": "host-declared-api-family",
+      "modelCapabilities": "host-profile",
+      "webBackend": "route-dependent",
       "liveApply": "next-turn",
       "deterministicEvidence": [
         "reasoning",
@@ -415,10 +415,6 @@
   ],
   "limitations": [
     {
-      "id": "provider-route-cell-required",
-      "statement": "An API family does not certify every Provider/model; each visible route requires one exact Host profile and conformance cell."
-    },
-    {
       "id": "stop-sequences-unsupported-on-pi-ai",
       "statement": "GenerateOptions.stop is not available on pi-ai routes in the locked adapter."
     },
@@ -435,8 +431,8 @@
       "statement": "The locked public pi-ai adapter exposes reasoning content but does not project provider reasoning-token counts into DSH TokenUsage."
     },
     {
-      "id": "non-deepseek-web-requires-host",
-      "statement": "Non-DeepSeek routes require Host capability myagents-host-canonical-web-v1 for the complete 20-tool catalog."
+      "id": "canonical-web-route-dependent",
+      "statement": "Base model execution does not require Web. Canonical Web tools use the native backend or optional Host capability myagents-host-canonical-web-v1 when available."
     },
     {
       "id": "checkpoint-coverage",

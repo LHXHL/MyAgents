@@ -118,14 +118,14 @@ function initializeResult(
   overrides: Partial<DshInitializeResult> = {},
 ): DshInitializeResult {
   return {
-    protocolVersion: "2.4.1",
+    protocolVersion: "2.5.0",
     schemaSha256:
-      "bf620aae4445bd540c665b0dba2dd93a982fc95c5bbda40610cb5fe36034eca0",
+      "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
     sessionFormat: "dsh-session-events-v1",
     profileDigest:
-      "0d531cb43e400eacf62a4b2a00ded8df05c5d886509e65f5916d802a320609e8",
+      "51a88bd941b36992299584f82687fbc3311a653bf802e193e2210aab23dd6dda",
     limits: {
       maxFrameBytes: 1_048_576,
       maxPendingRequests: 128,
@@ -135,7 +135,7 @@ function initializeResult(
     },
     runtimeEngine: {
       name: "deepseek-harness",
-      version: "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+      version: "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
       distribution: "myagents-dsh",
       distributionVersion: "0.0.0",
     },
@@ -299,7 +299,7 @@ describe("DSH RuntimeProcessHost", () => {
     expect(identity).toMatchObject({
       productSessionId: "product-session-1",
       runtimeGeneration: "artifact-process-generation",
-      protocolVersion: "2.4.1",
+      protocolVersion: "2.5.0",
       sessionFormat: "dsh-session-events-v1",
     });
     expect(test.host.state).toBe("protocol-ready");

@@ -8,7 +8,11 @@ import {
   XAI_SUBSCRIPTION_PROVIDER_ID,
   type Provider,
 } from "../config-types";
-import { getProviderExecutionConstraint } from "./provider-constraints";
+import {
+  getProviderExecutionConstraint,
+  isDshApiModelSelectable,
+  isDshApiProviderEligible,
+} from "./provider-constraints";
 
 function preset(id: string): Provider {
   const provider = PRESET_PROVIDERS.find((candidate) => candidate.id === id);
@@ -65,18 +69,15 @@ describe("Provider execution constraints", () => {
     });
   });
 
-  it("does not infer transport from a Provider name or URL", () => {
-    expect(
+  it("rejects contradictory protocol fields without inferring from names or URLs", () => {
+    expect(() =>
       getProviderExecutionConstraint({
         id: "looks-like-openai",
         type: "api",
         apiProtocol: "anthropic",
         upstreamFormat: "responses",
       }),
-    ).toEqual({
-      kind: "portable",
-      apiFamily: "anthropic-messages",
-    });
+    ).toThrow(/cannot use the OpenAI Responses format/);
   });
 
   it("fails closed for undeclared subscription owners", () => {
@@ -86,5 +87,14 @@ describe("Provider execution constraints", () => {
         type: "subscription",
       }),
     ).toThrow(/no declared execution owner/);
+  });
+
+  it("admits current ordinary API models without a Provider/model allowlist", () => {
+    const deepseek = preset("deepseek");
+    expect(isDshApiProviderEligible(deepseek)).toBe(true);
+    expect(isDshApiModelSelectable(deepseek, "deepseek-v4-pro")).toBe(true);
+    expect(isDshApiModelSelectable(deepseek, "deepseek-v4-flash")).toBe(true);
+    expect(isDshApiModelSelectable(deepseek, "not-configured")).toBe(false);
+    expect(isDshApiProviderEligible(preset("anthropic-sub"))).toBe(false);
   });
 });

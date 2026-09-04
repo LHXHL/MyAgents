@@ -62,8 +62,14 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
     expect(reasoningEffortChoices('codex')).toEqual(CODEX_EFFORT_LEVELS);
     expect(CODEX_EFFORT_LEVELS).not.toContain('max');
   });
-  it('DSH projects the exact selected Provider-cell effort vocabulary', () => {
-    expect(reasoningEffortChoices('dsh', 'openai', 'deepseek', 'deepseek-v4-flash'))
+  it('DSH projects the exact selected Provider effort vocabulary', () => {
+    expect(reasoningEffortChoices(
+      'dsh',
+      'anthropic',
+      'deepseek',
+      'deepseek-v4-flash',
+      'https://api.deepseek.com/anthropic',
+    ))
       .toEqual(['high', 'max']);
     expect(reasoningEffortChoices('dsh', 'anthropic', 'anthropic-api', 'claude-sonnet-4-6'))
       .toBeNull();

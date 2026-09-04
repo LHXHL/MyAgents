@@ -20,6 +20,7 @@ import {
   splitProviderModelInput,
   type McpServerDefinition,
   type PermissionMode,
+  type Provider,
   type ProxySettings,
 } from '../shared/config-types';
 import {
@@ -129,7 +130,7 @@ import {
 } from '../shared/types/runtime';
 import { getExternalRuntime, isRuntimeSupported } from './runtimes/factory';
 import { queryRuntimeModels } from './runtimes/external-session';
-import { isDshProviderModelCompatible } from '../shared/integrated-runtimes/dsh-provider-cells';
+import { isDshApiModelSelectable } from '../shared/integrated-runtimes/provider-constraints';
 import { isManagedCodexRuntimeInstalled } from './runtimes/codex-command-context';
 import { trackServer } from './analytics';
 
@@ -6798,16 +6799,19 @@ async function validateTaskOverrides(
     effectiveRuntime === 'dsh'
     && hasProviderOverride
     && typeof modelOverride === 'string'
-    && !isDshProviderModelCompatible(payload.providerId as string, modelOverride)
   ) {
-    return {
-      success: false,
-      error: `Provider/model '${String(payload.providerId)}/${modelOverride}' is not in the accepted DSH compatibility cells.`,
-      recoveryHint: {
-        recoveryCommand: 'myagents runtime describe dsh',
-        message: 'Choose an exact DSH-compatible Provider/model pair.',
-      },
-    };
+    const providerId = payload.providerId as string;
+    const provider = findEffectiveProvider(providerId, loadConfig()) as Provider | null;
+    if (!provider || !isDshApiModelSelectable(provider, modelOverride)) {
+      return {
+        success: false,
+        error: `Provider/model '${providerId}/${modelOverride}' is not an enabled ordinary API route configured for DSH.`,
+        recoveryHint: {
+          recoveryCommand: 'myagents model list',
+          message: 'Choose a model from an enabled API Provider.',
+        },
+      };
+    }
   }
   if (
     modelOverride !== undefined

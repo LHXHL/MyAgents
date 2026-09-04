@@ -310,7 +310,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     ? isProviderAvailable(selectedProvider, apiKeys, providerVerifyStatus)
       && isProviderModelCompatibleWithRuntime(
         currentRuntime,
-        selectedProvider.id,
+        selectedProvider,
         effectiveModel ?? selectedProvider.primaryModel,
       )
     : true;
@@ -337,6 +337,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
     selectedProvider?.apiProtocol,
     selectedProvider?.id,
     effectiveModel ?? undefined,
+    selectedProvider?.config.baseUrl,
   );
   const visibleReasoningEffortChoices = currentRuntime === 'dsh'
     ? (effectiveReasoningEffortChoices ?? [])

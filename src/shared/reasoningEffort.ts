@@ -1,4 +1,4 @@
-import { findDshProviderCell } from './integrated-runtimes/dsh-provider-cells';
+import { OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL } from './integrated-runtimes/provider-constraints';
 
 // Reasoning effort (推理强度) — shared vocabulary between renderer and sidecar.
 //
@@ -85,6 +85,7 @@ export function reasoningEffortChoices(
   apiProtocol?: 'anthropic' | 'openai',
   providerId?: string,
   model?: string,
+  providerBaseUrl?: string,
 ): readonly string[] | null {
   switch (runtime) {
     case 'builtin': {
@@ -98,14 +99,11 @@ export function reasoningEffortChoices(
       return CODEX_EFFORT_LEVELS;
     case 'dsh': {
       if (!providerId || !model) return null;
-      const cell = findDshProviderCell(providerId, model);
-      if (!cell) return null;
-      if (cell.profile.source === 'native-candidate') {
-        return cell.profile.reasoningEfforts;
-      }
-      const effortMap = cell.profile.reasoningEffortMap;
-      if (!effortMap) return null;
-      return Object.keys(effortMap).filter((effort) => effort !== 'off');
+      return providerId === 'deepseek'
+        && (apiProtocol ?? 'anthropic') === 'anthropic'
+        && providerBaseUrl === OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL
+        ? ['high', 'max']
+        : null;
     }
     default:
       // Gemini (no ACP effort surface) and unknown runtimes → hidden.

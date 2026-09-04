@@ -1680,7 +1680,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     : selectedModel;
   const runtimeProviderSelectionIncomplete = !isProviderModelCompatibleWithRuntime(
     currentRuntime,
-    currentProvider?.id,
+    currentProvider,
     effectiveModel,
   );
   const runtimeExecutionUnavailable = currentRuntime === 'dsh'
@@ -3740,6 +3740,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       currentProvider.apiProtocol,
       currentProvider.id,
       selectedModel,
+      currentProvider.config.baseUrl,
     );
     if ((choices && !choices.includes(reasoningEffort))
       || (currentRuntime === 'dsh' && choices === null)) {

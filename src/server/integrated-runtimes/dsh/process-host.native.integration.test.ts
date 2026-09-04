@@ -192,7 +192,7 @@ describe.runIf(nativeSmokeEnabled)(
         });
         expect(identity).toMatchObject({
           runtimeGeneration: "artifact-process-generation",
-          protocolVersion: "2.4.1",
+          protocolVersion: "2.5.0",
           sessionFormat: "dsh-session-events-v1",
         });
         expect(host.state).toBe("protocol-ready");
@@ -519,7 +519,7 @@ describe.runIf(nativeSoakEnabled)(
         try {
           const identity = await fixture.host.start();
           expect(identity).toMatchObject({
-            protocolVersion: "2.4.1",
+            protocolVersion: "2.5.0",
             sessionFormat: "dsh-session-events-v1",
           });
           runtimePid = fixture.host.pid;

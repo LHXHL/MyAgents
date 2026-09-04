@@ -302,7 +302,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const launcherProviderModelIncomplete = launcherRuntime === 'dsh'
         && !isProviderModelCompatibleWithRuntime(
             launcherRuntime,
-            launcherProvider?.id,
+            launcherProvider,
             launcherSelectedModel ?? launcherProvider?.primaryModel,
         );
     const imageUnderstandingConfiguredForInput = useMemo(() => {

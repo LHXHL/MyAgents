@@ -75,7 +75,12 @@ function provider(): DshCanonicalWebProviderPort & Readonly<{
 
 function host(webProvider = provider()): DshCanonicalWebHost {
   return new DshCanonicalWebHost({
-    activeConfiguration: () => ({ profile, apiKey: 'secret', revision: 'config-v1' }),
+    activeConfiguration: () => ({
+      profile,
+      apiKey: 'secret',
+      authType: 'api_key',
+      revision: 'config-v1',
+    }),
     runtimeSessionId: () => 'runtime-session-1',
     provider: webProvider,
     contentHttp: {
@@ -113,6 +118,7 @@ describe('DshCanonicalWebHost', () => {
     });
     expect(webProvider.runUtility).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: 'secret',
+      authType: 'api_key',
       prompt: 'Summarize it',
       source: '# Hello\n\nWorld',
     }));
@@ -133,6 +139,7 @@ describe('DshCanonicalWebHost', () => {
     expect(webProvider.runSearch).toHaveBeenCalledWith(expect.objectContaining({
       profile,
       apiKey: 'secret',
+      authType: 'api_key',
       allowedDomains: ['example.com'],
       operationId: 'operation-1:call-1',
     }));

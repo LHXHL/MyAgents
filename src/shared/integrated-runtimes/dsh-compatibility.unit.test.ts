@@ -17,9 +17,9 @@ describe("DSH compatibility manifest", () => {
     expect(getDshApiFamilyCompatibility("openai-responses")).toMatchObject({
       compatibilityProfileVersion: 1,
       credentialMode: "request-scoped-api-key",
-      routeAdmission: "exact-host-profile",
-      modelCapabilities: "profile-cell-required",
-      webBackend: "host-canonical-web-required",
+      routeAdmission: "host-declared-api-family",
+      modelCapabilities: "host-profile",
+      webBackend: "route-dependent",
     });
   });
 

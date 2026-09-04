@@ -6333,7 +6333,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.4.1",
+            "const": "2.5.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -7106,7 +7106,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.1-rc.2.myagents.b150a551b8d4.56f8f4241def",
+                "const": "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
                 "type": "string"
               }
             },
@@ -9215,7 +9215,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "2c34c434385efee0cd040c9945b7a06e1ea4513c8fbd600b5a8af2c5302ffbcc",
+                    "const": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -12349,7 +12349,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "2c34c434385efee0cd040c9945b7a06e1ea4513c8fbd600b5a8af2c5302ffbcc",
+                    "const": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -17821,6 +17821,207 @@
               {
                 "additionalProperties": false,
                 "properties": {
+                  "input": {
+                    "patternProperties": {
+                      "^.*$": {}
+                    },
+                    "type": "object"
+                  },
+                  "kind": {
+                    "const": "provider_tool",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "phase": {
+                    "const": "start",
+                    "type": "string"
+                  },
+                  "providerBlockType": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "providerRouteId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "providerToolCallId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "phase",
+                  "providerRouteId",
+                  "providerToolCallId",
+                  "providerBlockType",
+                  "name",
+                  "input"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "provider_tool",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "phase": {
+                    "const": "end",
+                    "type": "string"
+                  },
+                  "providerBlockType": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "providerRouteId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "providerToolCallId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "result": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "content": {
+                        "items": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "text": {
+                                  "maxLength": 262144,
+                                  "type": "string"
+                                },
+                                "type": {
+                                  "const": "text",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "text"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "attachmentId": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                  "type": "string"
+                                },
+                                "height": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "mimeType": {
+                                  "maxLength": 256,
+                                  "minLength": 1,
+                                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "maxLength": 512,
+                                  "type": "string"
+                                },
+                                "sha256": {
+                                  "pattern": "^[a-f0-9]{64}$",
+                                  "type": "string"
+                                },
+                                "sizeBytes": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "type": {
+                                  "const": "image_ref",
+                                  "type": "string"
+                                },
+                                "width": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "attachmentId",
+                                "mimeType",
+                                "sizeBytes",
+                                "sha256"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "maxItems": 1024,
+                        "type": "array"
+                      },
+                      "isError": {
+                        "type": "boolean"
+                      },
+                      "state": {
+                        "anyOf": [
+                          {
+                            "const": "succeeded",
+                            "type": "string"
+                          },
+                          {
+                            "const": "failed",
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "isError",
+                      "content"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "phase",
+                  "providerRouteId",
+                  "providerToolCallId",
+                  "providerBlockType",
+                  "name",
+                  "result"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
                   "contextOccupiedTokens": {
                     "anyOf": [
                       {
@@ -18698,6 +18899,6 @@
       }
     }
   },
-  "protocolVersion": "2.4.1",
+  "protocolVersion": "2.5.0",
   "title": "MyAgents DSH native RPC"
 }
