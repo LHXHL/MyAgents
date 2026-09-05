@@ -1,3 +1,4 @@
+import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
@@ -118,14 +119,12 @@ function initializeResult(
   overrides: Partial<DshInitializeResult> = {},
 ): DshInitializeResult {
   return {
-    protocolVersion: "2.5.0",
-    schemaSha256:
-      "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
+    protocolVersion: "2.7.0",
+    schemaSha256: dshLock.protocol.schemaSha256,
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
     sessionFormat: "dsh-session-events-v1",
-    profileDigest:
-      "51a88bd941b36992299584f82687fbc3311a653bf802e193e2210aab23dd6dda",
+    profileDigest: dshLock.profile.digest,
     limits: {
       maxFrameBytes: 1_048_576,
       maxPendingRequests: 128,
@@ -135,7 +134,7 @@ function initializeResult(
     },
     runtimeEngine: {
       name: "deepseek-harness",
-      version: "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
+      version: dshLock.dsh.version,
       distribution: "myagents-dsh",
       distributionVersion: "0.0.0",
     },
@@ -299,7 +298,7 @@ describe("DSH RuntimeProcessHost", () => {
     expect(identity).toMatchObject({
       productSessionId: "product-session-1",
       runtimeGeneration: "artifact-process-generation",
-      protocolVersion: "2.5.0",
+      protocolVersion: "2.7.0",
       sessionFormat: "dsh-session-events-v1",
     });
     expect(test.host.state).toBe("protocol-ready");

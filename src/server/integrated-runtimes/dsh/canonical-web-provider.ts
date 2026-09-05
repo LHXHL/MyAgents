@@ -1,17 +1,20 @@
 import { createHash } from 'node:crypto';
 
 import type { ProviderAuthType } from '../../../shared/config-types';
+import { OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL } from '../../../shared/integrated-runtimes/provider-constraints';
 import { anthropicAuthHeaders } from '../../provider-probe';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import { DshCanonicalWebError } from './canonical-web-errors';
 import { truncateDshWebText } from './canonical-web-content';
 import { DshSafeHttpClient, type DshSafeHttpConfig, type DshSafeHttpResponse } from './safe-http';
+import { parseCompatibleServerSearchContent } from './canonical-web-search-content';
 
 export const DSH_CANONICAL_WEB_ADAPTER_ID = 'myagents-host-canonical-web-v1';
 
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1_024 * 1_024;
 const ZHIPU_WEB_SEARCH_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/web_search';
 const MAX_UTILITY_TOKENS = 4_096;
+const MAX_SEARCH_TOKENS = 32_000;
 const MAX_SEARCH_USES = 5;
 const MAX_ANTHROPIC_PAUSES = 3;
 
@@ -120,7 +123,7 @@ function openAiUsage(payload: Record<string, unknown>): DshCanonicalTokenUsage {
     : object(usage.prompt_tokens_details, 'OpenAI-compatible prompt usage');
   const inputTokens = nonNegativeInteger(usage.prompt_tokens, 'OpenAI-compatible input usage');
   const outputTokens = nonNegativeInteger(usage.completion_tokens, 'OpenAI-compatible output usage');
-  const cacheReadTokens = optionalInteger(details.cached_tokens, 'OpenAI-compatible cache-read usage');
+  const cacheReadTokens = optionalInteger(details.cached_tokens ?? usage.prompt_cache_hit_tokens, 'OpenAI-compatible cache-read usage');
   const uncachedInputTokens = inputTokens - cacheReadTokens;
   if (uncachedInputTokens < 0) {
     throw new DshCanonicalWebError('provider_search_failed', 'OpenAI-compatible cache usage is invalid');
@@ -282,7 +285,7 @@ function providerPolicy(): ConstructorParameters<typeof DshSafeHttpClient>[0] {
 }
 
 function providerHeaders(
-  profile: DshModelExecutionProfile,
+  profile: Pick<DshModelExecutionProfile, 'api'>,
   apiKey: string,
   authType: ProviderAuthType,
 ): Readonly<Record<string, string>> {
@@ -309,20 +312,36 @@ function searchOutput(
   searchCount: number,
   startedAt: number,
   truncated = false,
+  presentation?: Readonly<{ answer: string; unverified: boolean; domainFilterUnverified: boolean }>,
 ): Record<string, unknown> {
-  const bounded = results.slice(0, 100);
-  if (bounded.length === 0) {
-    throw new DshCanonicalWebError('provider_search_failed', 'Provider returned no citeable WebSearch results');
+  let answer = presentation ? truncateDshWebText(presentation.answer, 65_536) : undefined;
+  for (let limit = 32_768; answer && Buffer.byteLength(JSON.stringify(answer.text), 'utf8') > 65_536; limit = Math.floor(limit / 2)) {
+    answer = { ...truncateDshWebText(answer.text, limit), truncated: true };
   }
-  return {
+  const output = {
     query,
-    results: bounded,
-    citations: bounded.map(({ title, url }) => ({ title, url })),
+    ...(answer ? { answer: answer.text } : {}),
+    ...(presentation?.unverified ? { warnings: [
+      'unverified_search_results', ...(presentation.domainFilterUnverified ? ['unverified_domain_filter'] : []),
+    ] } : {}),
+    results: [] as DshCanonicalWebResult[],
+    citations: [] as Array<{ title: string; url: string }>,
     usage,
-    truncated: truncated || results.length > bounded.length,
+    truncated: truncated || answer?.truncated === true,
     searchCount,
     durationMs: Math.max(0, Math.floor(performance.now() - startedAt)),
   };
+  for (const result of results.slice(0, 100)) {
+    output.results.push(result);
+    output.citations.push({ title: result.title, url: result.url });
+    if (Buffer.byteLength(JSON.stringify(output), 'utf8') > 262_144) {
+      output.results.pop();
+      output.citations.pop();
+      break;
+    }
+  }
+  output.truncated ||= results.length > output.results.length;
+  return output;
 }
 
 export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
@@ -338,6 +357,15 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
 
   async runSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
     try {
+      if (input.profile.providerRouteId === 'deepseek-official') {
+        if (input.profile.provider !== 'deepseek' || input.profile.api !== 'openai-completions'
+          || input.profile.baseUrl !== 'https://api.deepseek.com') {
+          throw new DshCanonicalWebError('web_search_unavailable', 'Native DeepSeek search binding is invalid');
+        }
+        return await this.runAnthropicCompatibleSearch(input, Object.freeze({
+          api: 'anthropic-messages', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,
+        }));
+      }
       if (input.profile.api === 'anthropic-messages') {
         return await this.runAnthropicCompatibleSearch(input);
       }
@@ -347,22 +375,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       throw new DshCanonicalWebError('web_search_unavailable', 'Frozen Provider has no Host WebSearch adapter');
     } catch (error) {
       if (input.signal.aborted) throw input.signal.reason;
-      if (error instanceof DshCanonicalWebError
-        && (error.code === 'domain_policy_invalid' || error.code === 'web_search_unavailable'
-          || error.code === 'provider_search_failed')) {
-        throw error;
-      }
-      if (error instanceof DshCanonicalWebError) {
-        throw new DshCanonicalWebError(
-          'provider_search_failed',
-          `Provider WebSearch transport failed: ${error.message}`,
-          {
-            cause: error,
-            phase: error.phase,
-            systemErrorClass: error.systemErrorClass,
-          },
-        );
-      }
+      if (error instanceof DshCanonicalWebError) throw error;
       throw new DshCanonicalWebError('provider_search_failed', 'Provider WebSearch request failed', { cause: error });
     }
   }
@@ -424,6 +437,30 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
         const choice = Array.isArray(payload.choices) ? object(payload.choices[0], 'Utility choice') : {};
         const message = object(choice.message, 'Utility message');
         answer = typeof message.content === 'string' ? message.content.trim() : '';
+      } else if (input.profile.api === 'openai-responses') {
+        const response = await this.post(input.profile, input.apiKey, input.authType, 'responses', {
+          model: input.profile.modelId,
+          max_output_tokens: Math.min(input.profile.maxTokens, MAX_UTILITY_TOKENS),
+          stream: false,
+          store: false,
+          instructions: system,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: user }] }],
+        }, input.signal);
+        payload = parseJsonResponse(response, 'utility_model_failed');
+        const metering = object(payload.usage, 'Responses usage');
+        const details = metering.input_tokens_details === undefined ? {} : object(metering.input_tokens_details, 'Responses cache usage');
+        const inputTokens = nonNegativeInteger(metering.input_tokens, 'Responses input usage');
+        const cacheReadTokens = optionalInteger(details.cached_tokens, 'Responses cache usage');
+        const outputTokens = nonNegativeInteger(metering.output_tokens, 'Responses output usage');
+        if (cacheReadTokens > inputTokens) throw new DshCanonicalWebError('utility_model_failed', 'Responses cache usage is invalid');
+        usage = Object.freeze({ inputTokens: inputTokens - cacheReadTokens, cacheReadTokens, cacheWriteTokens: 0, outputTokens, totalTokens: inputTokens + outputTokens });
+        answer = (Array.isArray(payload.output) ? payload.output : []).flatMap(value => {
+          const item = object(value, 'Responses output');
+          return item.type === 'message' && Array.isArray(item.content) ? item.content.flatMap(value => {
+            const content = object(value, 'Responses content');
+            return content.type === 'output_text' && typeof content.text === 'string' ? [content.text] : [];
+          }) : [];
+        }).join('\n').trim();
       } else {
         throw new DshCanonicalWebError('utility_model_failed', 'Frozen Provider has no Host utility adapter');
       }
@@ -439,12 +476,15 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       });
     } catch (error) {
       if (input.signal.aborted) throw input.signal.reason;
-      if (error instanceof DshCanonicalWebError && error.code === 'utility_model_failed') throw error;
+      if (error instanceof DshCanonicalWebError) throw error;
       throw new DshCanonicalWebError('utility_model_failed', 'Provider utility request failed', { cause: error });
     }
   }
 
-  private async runAnthropicCompatibleSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
+  private async runAnthropicCompatibleSearch(
+    input: ProviderInput & SearchInput,
+    target: Pick<DshModelExecutionProfile, 'api' | 'baseUrl'> = input.profile,
+  ): Promise<Record<string, unknown>> {
     const domains = normalizeDomains(input);
     const startedAt = performance.now();
     const messages: unknown[] = [{
@@ -461,9 +501,9 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     const payloads: Record<string, unknown>[] = [];
     let usage = ZERO_USAGE;
     for (let pause = 0; pause <= MAX_ANTHROPIC_PAUSES; pause += 1) {
-      const response = await this.post(input.profile, input.apiKey, input.authType, 'v1/messages', {
+      const response = await this.post(target, input.apiKey, input.authType, 'v1/messages', {
         model: input.profile.modelId,
-        max_tokens: Math.min(input.profile.maxTokens, MAX_UTILITY_TOKENS),
+        max_tokens: Math.min(input.profile.maxTokens, MAX_SEARCH_TOKENS),
         messages,
         tools,
       }, input.signal);
@@ -478,6 +518,19 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     }
     const snippets = new Map<string, string>();
     const rawResults: unknown[] = [];
+    const fallbackContent: string[] = [];
+    const commentary: string[] = [];
+    let unverified = false;
+    const searchCallIds = new Set<string>();
+    for (const payload of payloads) {
+      for (const value of Array.isArray(payload.content) ? payload.content : []) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const block = value as Record<string, unknown>;
+        if ((block.type === 'server_tool_use' || block.type === 'mcp_tool_use')
+          && typeof block.id === 'string' && block.id) searchCallIds.add(block.id);
+      }
+    }
+    const resultIds = new Set<string>();
     let resultBlockCount = 0;
     let searchCount = 0;
     for (const payload of payloads) {
@@ -487,33 +540,45 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
         : object(usageValue.server_tool_use, 'Anthropic server-tool usage');
       searchCount += optionalInteger(serverUsage?.web_search_requests, 'Anthropic search count');
       for (const blockValue of Array.isArray(payload.content) ? payload.content : []) {
-        const block = object(blockValue, 'Anthropic WebSearch content block');
+        if (!blockValue || typeof blockValue !== 'object' || Array.isArray(blockValue)) {
+          unverified = true;
+          continue;
+        }
+        const block = blockValue as Record<string, unknown>;
+        if (block.type === 'text' && typeof block.text === 'string') commentary.push(block.text);
         if (block.type === 'text' && Array.isArray(block.citations)) {
           for (const citationValue of block.citations) {
-            const citation = object(citationValue, 'Anthropic WebSearch citation');
+            if (!citationValue || typeof citationValue !== 'object' || Array.isArray(citationValue)) continue;
+            const citation = citationValue as Record<string, unknown>;
             if (typeof citation.url === 'string' && typeof citation.cited_text === 'string') {
               snippets.set(citation.url, citation.cited_text.slice(0, 8192));
             }
           }
         }
-        if (block.type !== 'web_search_tool_result') continue;
-        resultBlockCount += 1;
-        if (!Array.isArray(block.content)) {
-          throw new DshCanonicalWebError('provider_search_failed', 'Anthropic WebSearch returned a tool error');
+        const compatibleResult = block.type === 'tool_result' && typeof block.tool_use_id === 'string'
+          && searchCallIds.has(block.tool_use_id);
+        if (block.type !== 'web_search_tool_result' && !compatibleResult) continue;
+        if (block.is_error === true) {
+          throw new DshCanonicalWebError('provider_search_failed', 'Provider server-search tool failed', { phase: 'provider_response' });
         }
-        for (const resultValue of block.content) {
-          const candidate = object(resultValue, 'Anthropic WebSearch result');
-          if (candidate.type === 'web_search_result') rawResults.push(candidate);
-          else if (typeof candidate.type === 'string' && candidate.type.endsWith('_error')) {
-            throw new DshCanonicalWebError('provider_search_failed', 'Anthropic WebSearch returned a tool error');
-          }
+        if (typeof block.tool_use_id !== 'string' || !resultIds.has(block.tool_use_id)) {
+          resultBlockCount += 1;
+          if (typeof block.tool_use_id === 'string') resultIds.add(block.tool_use_id);
         }
+        const normalized = parseCompatibleServerSearchContent(block.content);
+        rawResults.push(...normalized.results);
+        fallbackContent.push(...normalized.text);
+        unverified ||= normalized.unverified;
       }
+    }
+    if (resultBlockCount === 0) {
+      unverified = true;
     }
     const seen = new Set<string>();
     const results = rawResults.flatMap(value => {
       const candidate = value as Record<string, unknown>;
-      const withSnippet = { ...candidate, snippet: typeof candidate.url === 'string' ? snippets.get(candidate.url) ?? '' : '' };
+      const withSnippet = { ...candidate, snippet: typeof candidate.snippet === 'string' && candidate.snippet ? candidate.snippet
+        : typeof candidate.url === 'string' ? snippets.get(candidate.url) ?? '' : '' };
       const result = boundedResult(withSnippet, domains);
       if (!result || seen.has(result.url)) return [];
       seen.add(result.url);
@@ -525,6 +590,12 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       usage,
       searchCount || resultBlockCount,
       startedAt,
+      payloads.some(payload => payload.stop_reason === 'max_tokens'),
+      unverified || commentary.length > 0 ? {
+        answer: [...fallbackContent, ...commentary].join('\n\n'),
+        unverified,
+        domainFilterUnverified: domains.allowed !== undefined || domains.blocked !== undefined,
+      } : undefined,
     );
   }
 
@@ -568,9 +639,12 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       return parseJsonResponse(response, 'provider_search_failed');
     }));
     const seen = new Set<string>();
-    const results = payloads.flatMap(payload => (
-      Array.isArray(payload.search_result) ? payload.search_result : []
-    )).flatMap(value => {
+    const results = payloads.flatMap(payload => {
+      if (!Array.isArray(payload.search_result)) {
+        throw new DshCanonicalWebError('provider_search_failed', 'Zhipu WebSearch returned no search result array');
+      }
+      return payload.search_result as unknown[];
+    }).flatMap(value => {
       const result = boundedResult(value, domains);
       if (!result || seen.has(result.url)) return [];
       seen.add(result.url);
@@ -580,7 +654,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
   }
 
   private async post(
-    profile: DshModelExecutionProfile,
+    profile: Pick<DshModelExecutionProfile, 'api' | 'baseUrl'>,
     apiKey: string,
     authType: ProviderAuthType,
     path: string,

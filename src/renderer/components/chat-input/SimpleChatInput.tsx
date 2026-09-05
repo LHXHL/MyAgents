@@ -4,6 +4,7 @@ import {
   ChevronRight,
   ChevronUp,
   Gauge,
+  GitBranch,
   Loader,
   Paperclip,
   Plus,
@@ -195,6 +196,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onRefreshProviders,
   onOpenAgentSettings,
   onManagePermissionRules,
+  onManageAgentWork,
   onWorkspaceRefresh,
   cronModeEnabled = false,
   cronConfig,
@@ -1962,6 +1964,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 />
               </Popover>
 
+              {onManageAgentWork && <Tip label={t('agentTree.title')}><button type="button" onClick={onManageAgentWork} aria-label={t('agentTree.title')} className="rounded-lg p-2 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"><GitBranch className="h-4 w-4" /></button></Tip>}
               {/* Tool/MCP Dropdown */}
               <>
               <button

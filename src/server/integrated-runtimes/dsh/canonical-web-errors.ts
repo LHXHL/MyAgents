@@ -2,6 +2,7 @@ export type DshCanonicalWebErrorCode =
   | 'network_policy_denied'
   | 'web_dns_failed'
   | 'web_connect_failed'
+  | 'web_request_failed'
   | 'web_request_timeout'
   | 'unsafe_destination'
   | 'unsupported_content'
@@ -16,6 +17,10 @@ export type DshCanonicalWebFailurePhase =
   | 'proxy_connect'
   | 'tls'
   | 'request'
+  | 'request_construction'
+  | 'response_headers'
+  | 'response_body'
+  | 'provider_response'
   | 'deadline';
 
 type DshCanonicalWebErrorOptions = ErrorOptions & Readonly<{
@@ -69,15 +74,22 @@ function errorClass(error: unknown): string | undefined {
 export function dshCanonicalWebTransportError(
   error: unknown,
   route: 'direct' | 'proxy' = 'direct',
+  phase?: DshCanonicalWebFailurePhase,
 ): DshCanonicalWebError {
   if (error instanceof DshCanonicalWebError) return error;
   const systemErrorClass = errorClass(error);
   const metadata = {
     systemErrorClass,
-    phase: route === 'proxy' ? 'proxy_connect' as const : 'connect' as const,
+    phase: phase ?? (route === 'proxy' ? 'proxy_connect' as const : 'connect' as const),
     cause: error,
   };
   const code = systemErrorClass;
+  if (code === 'TypeError' || code === 'UND_ERR_INVALID_ARG' || code === 'UND_ERR_INVALID_RETURN_VALUE') {
+    return new DshCanonicalWebError('web_request_failed', 'Web transport could not construct the request', {
+      ...metadata,
+      phase: phase ?? 'request_construction',
+    });
+  }
   if (code === 'ENOTFOUND' || code === 'ENODATA' || code === 'EAI_AGAIN') {
     return new DshCanonicalWebError('web_dns_failed', 'Web destination DNS lookup failed', {
       ...metadata,
@@ -90,8 +102,14 @@ export function dshCanonicalWebTransportError(
     || code === 'UND_ERR_BODY_TIMEOUT') {
     return new DshCanonicalWebError(
       'web_request_timeout',
-      route === 'proxy' ? 'Web proxy connection timed out' : 'Web request timed out',
-      metadata,
+      code === 'UND_ERR_BODY_TIMEOUT' ? 'Web response body timed out'
+        : code === 'UND_ERR_HEADERS_TIMEOUT' ? 'Web response headers timed out'
+        : route === 'proxy' ? 'Web proxy connection timed out' : 'Web request timed out',
+      {
+        ...metadata,
+        phase: code === 'UND_ERR_BODY_TIMEOUT' ? 'response_body'
+          : code === 'UND_ERR_HEADERS_TIMEOUT' ? 'response_headers' : metadata.phase,
+      },
     );
   }
   if (code && /(?:CERT|TLS|SSL)/u.test(code)) {
@@ -99,6 +117,9 @@ export function dshCanonicalWebTransportError(
       ...metadata,
       phase: 'tls',
     });
+  }
+  if (phase === 'response_body') {
+    return new DshCanonicalWebError('web_request_failed', 'Web response body could not be read', metadata);
   }
   return new DshCanonicalWebError(
     'web_connect_failed',

@@ -15,6 +15,8 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import { CreateDialog, NewSkillChooser, InstallFromUrlDialog, type InstallFromUrlResponse } from './SkillDialogs';
 import type { SkillItem, CommandItem, SkillsListResponse } from '../../shared/skillsTypes';
 import type { SkillIntegrityIssue } from '../../shared/skillIntegrity';
+import { RuntimeExtensionStatusPanel } from './RuntimeExtensionStatusPanel';
+import type { RuntimeExtensionDiagnostics } from '../../shared/types/runtime';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 
 interface SkillsCommandsListProps {
@@ -59,6 +61,28 @@ export default function SkillsCommandsList({
 
     // Track if we're in tab context (stable boolean that won't change)
     const isInTabContext = !!tabState;
+    const [runtimeAvailability, setRuntimeAvailability] = useState<{ runtime: string; extensionStatus?: RuntimeExtensionDiagnostics }>();
+    useEffect(() => {
+        setRuntimeAvailability(undefined);
+        if (!apiGet) return;
+        let cancelled = false;
+        let pending = false;
+        const refresh = async () => {
+            if (pending) return;
+            pending = true;
+            try {
+                const snapshot = await apiGet<{ runtime: string; extensionStatus?: RuntimeExtensionDiagnostics }>('/api/session/config');
+                if (!cancelled) setRuntimeAvailability(snapshot);
+            } catch {
+                if (!cancelled) setRuntimeAvailability(undefined);
+            } finally {
+                pending = false;
+            }
+        };
+        void refresh();
+        const timer = setInterval(() => { void refresh(); }, 5_000);
+        return () => { cancelled = true; clearInterval(timer); };
+    }, [apiGet, refreshKey]);
     const [loading, setLoading] = useState(true);
     const [skills, setSkills] = useState<SkillItem[]>([]);
     const [commands, setCommands] = useState<CommandItem[]>([]);
@@ -344,6 +368,7 @@ export default function SkillsCommandsList({
 
     return (
         <div className="p-6">
+            {runtimeAvailability?.runtime === 'dsh' && <RuntimeExtensionStatusPanel status={runtimeAvailability.extensionStatus} />}
             {/* Skills Section */}
             <div className="mb-8">
                 <div className="mb-4 flex items-center justify-between">

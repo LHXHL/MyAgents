@@ -26,6 +26,10 @@ export const DSH_HOST_METHOD_NAMES = [
   "session/rewind/commit",
   "session/rewind/rollback",
   "session/rewind/status",
+  "work/list",
+  "work/agent/resume",
+  "work/agent/stop",
+  "work/agent/message",
   "turn/start",
   "turn/get",
   "turn/steer",
@@ -71,6 +75,10 @@ export const DSH_CLIENT_METHOD_BY_PROTOCOL = {
   "session/rewind/commit": "sessionRewindCommit",
   "session/rewind/rollback": "sessionRewindRollback",
   "session/rewind/status": "sessionRewindStatus",
+  "work/list": "workList",
+  "work/agent/resume": "workAgentResume",
+  "work/agent/stop": "workAgentStop",
+  "work/agent/message": "workAgentMessage",
   "turn/start": "turnStart",
   "turn/get": "turnGet",
   "turn/steer": "turnSteer",
@@ -178,7 +186,7 @@ export type DshExecutionEnvironment = Readonly<{
 }>;
 
 export type DshInitializeParams = Readonly<{
-  protocol: Readonly<{ minVersion: "2.5.0"; maxVersion: "2.5.0" }>;
+  protocol: Readonly<{ minVersion: "2.7.0"; maxVersion: "2.7.0" }>;
   host: Readonly<{
     name: string;
     version: string;
@@ -201,7 +209,7 @@ export type DshInitializeParams = Readonly<{
 }>;
 
 export type DshInitializeResult = Readonly<{
-  protocolVersion: "2.5.0";
+  protocolVersion: "2.7.0";
   schemaSha256: string;
   runtimeVersion: string;
   runtimeGeneration: string;

@@ -18,6 +18,8 @@ describe("DSH child environment", () => {
         NODE_OPTIONS: "--require=/tmp/inject.js",
         ANTHROPIC_API_KEY: "credential-canary",
         HTTPS_PROXY: "http://user:password@example.invalid",
+        MYAGENTS_PORT: "1",
+        MYAGENTS_SESSION_ID: "stale-session",
       },
     });
     expect(environment.env).toEqual({
@@ -31,6 +33,33 @@ describe("DSH child environment", () => {
     expect(JSON.stringify(environment)).not.toContain("credential-canary");
     expect(environment.env).not.toHaveProperty("NODE_OPTIONS");
     expect(environment.env).not.toHaveProperty("HTTPS_PROXY");
+    expect(environment.env).not.toHaveProperty("MYAGENTS_PORT");
+    expect(environment.env).not.toHaveProperty("MYAGENTS_SESSION_ID");
+  });
+
+  it('seals explicit Product routing independently of stale ambient variables and generation rotation', () => {
+    for (const [productSessionId, sidecarPort] of [['product-a', 31417], ['product-b', 31418], ['product-a', 31419]] as const) {
+      const environment = buildDshChildEnvironment({
+        nodeExecutablePath: '/verified/node',
+        inheritedEnvironment: { MYAGENTS_PORT: '1', MYAGENTS_SESSION_ID: 'old-runtime-session', NODE_OPTIONS: 'injected' },
+        sessionRoute: { productSessionId, sidecarPort },
+      });
+      expect(environment.env.MYAGENTS_PORT).toBe(String(sidecarPort));
+      expect(environment.env.MYAGENTS_SESSION_ID).toBe(productSessionId);
+      expect(environment.allowedKeys).toEqual(['PATH', 'MYAGENTS_PORT', 'MYAGENTS_SESSION_ID']);
+      expect(environment.inheritedKeys).toEqual([]);
+      expect(environment.env.NODE_OPTIONS).toBeUndefined();
+    }
+    for (const sidecarPort of [0, -1, 65_536, NaN, 1.5]) {
+      expect(() => buildDshChildEnvironment({
+        nodeExecutablePath: '/verified/node', sessionRoute: { productSessionId: 'product-a', sidecarPort },
+      })).toThrow(/route/);
+    }
+    for (const productSessionId of ['', 'with\nnewline', 'a/b', 'a'.repeat(100)]) {
+      expect(() => buildDshChildEnvironment({
+        nodeExecutablePath: '/verified/node', sessionRoute: { productSessionId, sidecarPort: 31417 },
+      })).toThrow(/route/);
+    }
   });
 
   it("rejects relative executable authorities", () => {

@@ -67,6 +67,11 @@ const ProcessRow = memo(function ProcessRow({
     const isThinking = block.type === 'thinking';
     const isTool = block.type === 'tool_use' || block.type === 'server_tool_use';
     const isServerTool = block.type === 'server_tool_use';
+    const providerOutcome = isServerTool
+        ? block.tool?.isLoading && isStreaming ? 'running'
+            : block.tool?.isError ? 'failed'
+                : block.tool?.result !== undefined ? 'succeeded' : 'unknown'
+        : undefined;
     const isLastBlock = index === totalBlocks - 1;
     const isTaskTool = isTool && !isServerTool && !!block.tool?.name && isSubagentContainerTool(block.tool.name);
     const isFilePatchTool = isTool
@@ -81,7 +86,7 @@ const ProcessRow = memo(function ProcessRow({
     const subagentLifecycleStatus = isTaskTool
         ? getSubagentContainerLifecycleStatus(block.tool)
         : null;
-    const isToolActive = isTool
+    const isToolActive = isServerTool ? providerOutcome === 'running' : isTool
         && isLastBlock
         && isStreaming
         && (Boolean(block.tool?.isLoading) || !block.tool?.result)
@@ -355,9 +360,10 @@ const ProcessRow = memo(function ProcessRow({
                     {isServerTool && (
                         <span
                             data-provider-owned="true"
+                            data-provider-outcome={providerOutcome}
                             className="rounded-full bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]"
                         >
-                            {t('shell.toolChrome.common.providerOwned')}
+                            {t('shell.toolChrome.common.providerOwned')} · {t(`shell.toolChrome.common.providerOutcome.${providerOutcome ?? 'unknown'}`)}
                         </span>
                     )}
                     {isTaskTool && isBackgroundSubagentTool(block.tool) && (
@@ -366,6 +372,11 @@ const ProcessRow = memo(function ProcessRow({
                         </span>
                     )}
                     {/* Task duration - similar to thinking duration */}
+                    {isTaskTool && subagentLifecycleStatus === 'completed' && block.tool?.subagentLifecycle?.handleState === 'open' && (
+                        <span className="text-xs text-[var(--success)]" data-subagent-continuable="true">
+                            {t('shell.toolChrome.common.completedContinuable')}
+                        </span>
+                    )}
                     {taskDuration && (
                         <span className="text-xs text-[var(--ink-muted)]">
                             {taskDuration}

@@ -2,51 +2,51 @@
   "schemaVersion": 1,
   "runtime": {
     "version": "0.0.0",
-    "artifactSha256": "5f2e9e66689d876a13e9e90db7a82007e89b3f3754f2dcfdd63e19616121ded1",
+    "artifactSha256": "4b06ddd841f957719acfec3b212ff260f25a26d5a27a6aec67b46f88396ac35d",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v1",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "51a88bd941b36992299584f82687fbc3311a653bf802e193e2210aab23dd6dda"
+    "profileDigest": "0b5734cd4f2c795897adc27ee579cb96e5e297861dbf9f279221d640bde8ed68"
   },
   "protocol": {
-    "version": "2.5.0",
-    "schemaSha256": "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
-    "generatedClientSha256": "406595619a83edd619f91cf42018b5de563815f8e330e9ad2bdcad497677bbdd"
+    "version": "2.7.0",
+    "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
+    "generatedClientSha256": "55d4f71f6484760f8eb2b0640615ad3559ec96cc0061fe1f6e316cbbbc418484"
   },
   "dsh": {
-    "version": "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
-    "sourceCommit": "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
-    "patchSeriesSha256": "398a736e065a889a89b48b7d8d44357db1935161145c23e0227dd8ff74ad49b1",
-    "artifactManifestSha256": "b53667aed87f2b9cd0dbc8fb02f097e4fb9127227705f78d132bbedae7ed46aa"
+    "version": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+    "sourceCommit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
+    "patchSeriesSha256": "3fff39022bbded09c619ffa042330fe34b90fd264adc7c016f35e502c6449b4c",
+    "artifactManifestSha256": "b081b253d3337761ac6a1f15d3667cd9ff36b966ffdf93325ada4c2391168575"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "a4f5045772b2502a6afad06a56c4fc6f75c6cd6cbd759fe7219c70b684084274"
+        "67f6c5d07dd9c7f9f93c298bcb00d2d776f12107e8b2f35e1dcf50659c378025"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "915240a512d6cd38d8ece8d369ed22c34eea24841cb827079ef5c079649f80ba"
+        "6b303394be90f01c366e496f31efe6328dc8a652e79ad0b4f01227d9b01a5f1a"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "c43898371996ee43dadf4bf5886a318ecba8adac08c7cc3f73b80f92b23f912e"
+        "41891c427b76bfed73ea4c0fc5e6e2152500abfc1e5ec807b584438e67b65ae5"
       ]
     }
   ],
   "apiFamilies": [
     {
       "id": "anthropic-messages",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.1-rc.2",
-      "piAiVersion": "0.82.1",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+      "piAiVersion": "0.84.2",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
       "routeAdmission": "host-declared-api-family",
@@ -64,8 +64,8 @@
     },
     {
       "id": "openai-completions",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.1-rc.2",
-      "piAiVersion": "0.82.1",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+      "piAiVersion": "0.84.2",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
       "routeAdmission": "host-declared-api-family",
@@ -83,8 +83,8 @@
     },
     {
       "id": "openai-responses",
-      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.1-rc.2",
-      "piAiVersion": "0.82.1",
+      "adapter": "@deepseek-ai/dsh-llm-pi-ai@0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+      "piAiVersion": "0.84.2",
       "compatibilityProfileVersion": 1,
       "credentialMode": "request-scoped-api-key",
       "routeAdmission": "host-declared-api-family",
@@ -308,6 +308,22 @@
     },
     {
       "method": "session/rewind/status",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/list",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/resume",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/stop",
+      "availability": "runtime"
+    },
+    {
+      "method": "work/agent/message",
       "availability": "runtime"
     },
     {

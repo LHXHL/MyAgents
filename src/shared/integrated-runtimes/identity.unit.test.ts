@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import packageJson from "../../../package.json";
+import dshLock from "./dsh-lock.json";
 import {
   CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION,
   createDshBinding,
@@ -67,24 +68,21 @@ describe("Integrated Runtime identity", () => {
     ).toBeUndefined();
   });
 
-  it("creates DSH bindings exclusively from the committed lock", () => {
-    const binding = createDshBinding("darwin-arm64");
+  it.each(["darwin-arm64", "win32-x64", "linux-x64"])("creates %s DSH bindings exclusively from the committed lock", (platformTarget) => {
+    const binding = createDshBinding(platformTarget);
     expect(binding).toMatchObject({
       family: "integrated",
       id: "dsh",
-      implementationVersion: "0.0.0",
-      protocolVersion: "2.5.0",
-      protocolSchemaSha256:
-        "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
-      runtimeArtifactSha256:
-        "5fe48eaeaf023b3257830625d79d08efbc78d7e4c0c2e62e9a3214b0b62b3265",
-      compatibilityManifestSha256:
-        "a4e7a058916c7d53ffa21b45d575d996b9c5c965de38a50a6ca4c78d9762ae6c",
-      sessionFormat: "dsh-session-events-v1",
-      platformTarget: "darwin-arm64",
+      implementationVersion: dshLock.runtime.version,
+      protocolVersion: dshLock.protocol.version,
+      protocolSchemaSha256: dshLock.protocol.schemaSha256,
+      runtimeArtifactSha256: dshLock.handoff.runtimeManifestSha256,
+      compatibilityManifestSha256: dshLock.handoff.compatibilitySha256,
+      sessionFormat: dshLock.runtime.sessionFormat,
+      platformTarget,
     });
     expect(parseEffectiveRuntimeBinding(binding)).toEqual(binding);
-    expect(runtimeBindingKey(binding)).toBe("integrated:dsh:0.0.0");
+    expect(runtimeBindingKey(binding)).toBe(`integrated:dsh:${dshLock.runtime.version}`);
     expect(legacyProjectionForBinding(binding)).toEqual({
       runtime: "dsh",
       runtimeSource: "integrated",

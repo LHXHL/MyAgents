@@ -1,3 +1,4 @@
+import { DshCollaborationSettings } from './DshCollaborationSettings';
 import { Check, ChevronDown, Copy, Download, FolderOpen, ImageIcon, KeyRound, Link, Loader2, Plus, RefreshCw, SlidersHorizontal, Square, Trash2, Unlink, X, AlertCircle, Globe, ExternalLink as ExternalLinkIcon, Settings2 } from 'lucide-react';
 import { ExternalLink } from '@/components/ExternalLink';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -4503,6 +4504,8 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                     </div>
                                 </div>
                             </div>
+
+                            <DshCollaborationSettings value={config.dshCollaboration} providers={providers} updateConfig={updateConfig} />
 
                             {/* Notification Settings */}
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">

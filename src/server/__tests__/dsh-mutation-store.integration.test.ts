@@ -212,7 +212,7 @@ describe('DSH Product mutation journal', () => {
       productSessionId: sessionId,
       runtimeSessionId,
       controller: { readHistory, getTurn } as never,
-    })).resolves.toEqual({ transcriptChanged: true, reconciledOperations: 1 });
+    })).resolves.toEqual({ transcriptChanged: true, reconciledOperations: 1, settledTurnIds: ['product-turn-crash-window'] });
     expect(readHistory).toHaveBeenCalledTimes(1);
     expect(getTurn).toHaveBeenCalledWith('operation-crash-window', undefined);
     expect(store.getSessionData(sessionId)?.messages).toEqual([
@@ -292,6 +292,7 @@ describe('DSH Product mutation journal', () => {
     })).resolves.toEqual({
       transcriptChanged: false,
       reconciledOperations: 0,
+      settledTurnIds: [],
       activeTurn: {
         clientOperationId: 'operation-active-owner',
         clientUserMessageId: 'user-active-owner',
@@ -365,7 +366,7 @@ describe('DSH Product mutation journal', () => {
       productSessionId: sessionId,
       runtimeSessionId,
       controller: { readHistory: emptyHistory, getTurn: vi.fn() } as never,
-    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0 });
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0, settledTurnIds: [] });
     expect(store.getSessionMetadata(sessionId)?.pendingDshRootOperation).toMatchObject({
       clientOperationId: 'operation-journal-owner',
       clientUserMessageId: user.id,
@@ -423,8 +424,100 @@ describe('DSH Product mutation journal', () => {
           terminal,
         })),
       } as never,
-    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0 });
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 0, settledTurnIds: ['product-turn-journal-owner'] });
     expect(store.getSessionMetadata(sessionId)?.pendingDshRootOperation).toBeUndefined();
+  });
+
+  it('reconciles autonomous collaboration before a pending user without manufacturing a user row', async () => {
+    const sessionId = 'dsh-collaboration-reconciliation';
+    const runtimeSessionId = `runtime-${sessionId}`;
+    await store.saveSessionMetadata(createSessionMetadata('/tmp/dsh-workspace', { id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'), runtimeSessionId, configSnapshotAt: '2026-08-30T00:00:00.000Z' }));
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await store.appendSessionMessages(sessionId, transcript.cursor, [{ id: 'pending-user', role: 'user', content: 'next request', timestamp: '2026-08-30T00:00:00.000Z',
+      runtimeOperationAnchor: { runtime: 'dsh', runtimeSessionId, clientOperationId: 'pending-operation' } }]);
+    const cursor = { schemaVersion: 1 as const, runtimeSessionId, durableSequence: 20, transcriptPostcondition: 'c'.repeat(64) };
+    const assistant: SessionMessage = { id: 'auto-assistant', role: 'assistant', content: 'background result processed', timestamp: '2026-08-30T00:00:01.000Z',
+      runtimeTurnAnchor: { turnId: 'auto-turn', clientOperationId: 'auto-operation', origin: 'collaboration' } };
+    const native = { clientOperationId: 'auto-operation', clientUserMessageId: 'work-report', productTurnId: 'auto-turn', origin: 'collaboration' as const, terminal: true };
+    const params = { sessionId, runtimeSessionId, cursor, assistantMessages: [assistant], nativeRootOperations: [native] };
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true, value: { transcriptChanged: true } });
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true, value: { transcriptChanged: false } });
+    expect((await store.loadSessionTranscript(sessionId)).messages.map(message => [message.role, message.id])).toEqual([
+      ['assistant', 'auto-assistant'], ['user', 'pending-user'],
+    ]);
+    await expect(store.reconcileDshTurnProjections({ ...params, nativeRootOperations: [{ ...native, origin: undefined }] })).resolves.toMatchObject({ success: false });
+  });
+
+  it.each(['before-append', 'after-append', 'cancelled'] as const)('reconciles a durable realtime input intent across process loss (%s)', async crashWindow => {
+    const sessionId = `dsh-input-journal-${crashWindow}`;
+    const runtimeSessionId = `runtime-${sessionId}`;
+    await store.saveSessionMetadata(createSessionMetadata('/tmp/dsh-workspace', { id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'), runtimeSessionId, configSnapshotAt: '2026-08-30T00:00:00.000Z' }));
+    const transcript = await store.loadSessionTranscript(sessionId);
+    await store.appendSessionMessages(sessionId, transcript.cursor, [{ id: 'root', role: 'user', content: 'begin', timestamp: '2026-08-30T00:00:00.000Z' }]);
+    const userMessage: SessionMessage = { id: 'input', role: 'user', content: 'intervene', timestamp: '2026-08-30T00:00:00.100Z',
+      runtimeOperationAnchor: { runtime: 'dsh', runtimeSessionId, clientOperationId: 'operation' } };
+    const intent = { sessionId, runtimeSessionId, clientOperationId: 'operation', queueId: 'queue', userMessage,
+      productImageSha256: [], runtimeInputFingerprint: 'a'.repeat(64) };
+    const beforeIntent = store.getSessionMetadata(sessionId)!;
+    await expect(store.beginDshInput(intent)).resolves.toMatchObject({ success: true });
+    await expect(store.beginDshInput(intent)).resolves.toMatchObject({ success: true });
+    await expect(store.beginDshInput({ ...intent, userMessage: { ...userMessage, content: 'changed retry' } })).resolves.toMatchObject({ success: false });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshInputs).toHaveLength(1);
+    await store.saveSessionMetadata({ ...beforeIntent, title: 'Concurrent title update' });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshInputs).toHaveLength(1);
+    const pendingSnapshot = store.getSessionMetadata(sessionId)!;
+    await expect(store.updateSessionMetadata(sessionId, { runtimeSessionId: 'wrong-runtime' })).resolves.toBeNull();
+    await expect(store.saveSessionMetadata({ ...pendingSnapshot, runtimeSessionId: 'wrong-runtime' })).rejects.toThrow('prevent changing Runtime');
+    expect((await store.loadSessionTranscript(sessionId)).messages.map(message => message.id)).toEqual(['root']);
+    if (crashWindow === 'after-append') {
+      const current = await store.loadSessionTranscript(sessionId);
+      await store.appendSessionMessages(sessionId, current.cursor, [userMessage]);
+    }
+    if (crashWindow === 'cancelled') {
+      await expect(store.settleDshInput({ sessionId, clientOperationId: 'operation', clientUserMessageId: 'input', state: 'cancel_requested' })).resolves.toMatchObject({ success: true });
+      expect(store.getSessionMetadata(sessionId)?.pendingDshInputs?.[0]?.state).toBe('cancel_requested');
+    }
+    const receipt = { clientOperationId: 'operation', clientUserMessageId: 'input', inputFingerprint: 'a'.repeat(64), sequence: 5,
+      state: crashWindow === 'cancelled' ? 'cancelled' as const : 'consumed' as const };
+    const params = { sessionId, runtimeSessionId,
+      cursor: { schemaVersion: 1 as const, runtimeSessionId, durableSequence: 10, transcriptPostcondition: 'b'.repeat(64) },
+      assistantMessages: [], nativeRootOperations: [{ clientOperationId: 'operation', clientUserMessageId: 'root', productTurnId: 'turn', terminal: false,
+        consumedUserMessageIds: crashWindow === 'cancelled' ? [] : ['input'] }], nativeInputReceipts: [receipt] };
+    await expect(store.reconcileDshTurnProjections({ ...params, nativeInputReceipts: [{ ...receipt, inputFingerprint: 'f'.repeat(64) }] })).resolves.toMatchObject({ success: false });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshInputs).toHaveLength(1);
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true });
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true, value: { transcriptChanged: false } });
+    expect(store.getSessionMetadata(sessionId)?.pendingDshInputs).toBeUndefined();
+    await store.saveSessionMetadata(pendingSnapshot);
+    expect(store.getSessionMetadata(sessionId)?.pendingDshInputs).toBeUndefined();
+    expect((await store.loadSessionTranscript(sessionId)).messages.map(message => message.id)).toEqual(crashWindow === 'cancelled' ? ['root'] : ['root', 'input']);
+  });
+
+  it.each(['user', 'collaboration'] as const)('recovers the assistant after exactly its consumed realtime users (%s)', async origin => {
+    const sessionId = `dsh-realtime-${origin}`;
+    const runtimeSessionId = `runtime-${sessionId}`;
+    await store.saveSessionMetadata(createSessionMetadata('/tmp/dsh-workspace', { id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'), runtimeSessionId, configSnapshotAt: '2026-08-30T00:00:00.000Z' }));
+    const transcript = await store.loadSessionTranscript(sessionId);
+    const user = (id: string): SessionMessage => ({ id, role: 'user', content: id, timestamp: '2026-08-30T00:00:00.000Z',
+      runtimeOperationAnchor: { runtime: 'dsh', runtimeSessionId, clientOperationId: id === 'pending' ? 'next-operation' : 'operation' } });
+    await store.appendSessionMessages(sessionId, transcript.cursor, [
+      ...(origin === 'user' ? [user('root')] : []), user('realtime-1'), user('realtime-2'), user('pending'),
+    ]);
+    const native = { clientOperationId: 'operation', clientUserMessageId: 'root', productTurnId: 'turn', terminal: true,
+      ...(origin === 'collaboration' ? { origin } : {}), consumedUserMessageIds: ['realtime-1', 'realtime-2'] };
+    const assistant: SessionMessage = { id: 'recovered', role: 'assistant', content: 'answer', timestamp: '2026-08-30T00:00:01.000Z',
+      runtimeTurnAnchor: origin === 'collaboration' ? { turnId: 'turn', origin, clientOperationId: 'operation' } : { turnId: 'turn', rootUserMessageId: 'root' } };
+    const params = { sessionId, runtimeSessionId, cursor: { schemaVersion: 1 as const, runtimeSessionId, durableSequence: 20, transcriptPostcondition: 'a'.repeat(64) },
+      assistantMessages: [assistant], nativeRootOperations: [native] };
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true, value: { transcriptChanged: true } });
+    await expect(store.reconcileDshTurnProjections(params)).resolves.toMatchObject({ success: true, value: { transcriptChanged: false } });
+    const ids = (await store.loadSessionTranscript(sessionId)).messages.map(message => message.id);
+    expect(ids).toEqual([...(origin === 'user' ? ['root'] : []), 'realtime-1', 'realtime-2', 'recovered', 'pending']);
+    await expect(store.reconcileDshTurnProjections({ ...params, nativeRootOperations: [{ ...native, consumedUserMessageIds: ['pending'] }] })).resolves.toMatchObject({ success: false });
+    expect((await store.loadSessionTranscript(sessionId)).messages.map(message => message.id)).toEqual(ids);
   });
 
   it('publishes a missing terminal assistant exactly once with its verified native cursor', async () => {
@@ -466,7 +559,7 @@ describe('DSH Product mutation journal', () => {
       runtimeSessionId: `runtime-${sessionId}`,
       cursor,
       assistantMessages: [assistant],
-      nativeRootOperations: [],
+      nativeRootOperations: [{ clientOperationId: 'operation-recovered', clientUserMessageId: 'user-recovered', productTurnId: 'product-turn-recovered', terminal: true }],
       runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
     })).resolves.toEqual({
       success: true,
@@ -477,7 +570,7 @@ describe('DSH Product mutation journal', () => {
       runtimeSessionId: `runtime-${sessionId}`,
       cursor,
       assistantMessages: [assistant],
-      nativeRootOperations: [],
+      nativeRootOperations: [{ clientOperationId: 'operation-recovered', clientUserMessageId: 'user-recovered', productTurnId: 'product-turn-recovered', terminal: true }],
       runtimeUsageTotals: { inputTokens: 8, outputTokens: 2 },
     })).resolves.toEqual({
       success: true,
@@ -563,7 +656,7 @@ describe('DSH Product mutation journal', () => {
           rootUserMessageId: 'user-stale-projection',
         },
       }],
-      nativeRootOperations: [],
+      nativeRootOperations: [{ clientOperationId: 'operation-repair', clientUserMessageId: 'user-stale-projection', productTurnId: 'product-turn-repair', terminal: true }],
       runtimeUsageTotals: { inputTokens: 10, outputTokens: 4 },
     })).resolves.toEqual({
       success: true,

@@ -3,6 +3,7 @@ import type {
   SubagentLifecycle,
   SubagentLifecycleStatus,
 } from '../../../shared/types/subagent-lifecycle';
+import { mergeSubagentLifecycleUpdate } from '../../../shared/types/subagent-lifecycle';
 
 /**
  * Tools that render as an expandable sub-agent container (a card holding a nested
@@ -62,6 +63,7 @@ export function getSubagentContainerDurationMs(
 ): number | null {
   const lifecycle = tool && isSubagentContainerTool(tool.name) ? tool.subagentLifecycle : undefined;
   if (!lifecycle) return null;
+  if (lifecycle.timingVerified === false) return null;
   const end = lifecycle.status === 'running' ? now : lifecycle.finishedAt ?? lifecycle.startedAt;
   return Math.max(0, end - lifecycle.startedAt);
 }
@@ -83,18 +85,14 @@ export function applySubagentLifecycleToContent(
   const block = content[index];
   if (block.type !== 'tool_use' || !block.tool) return null;
   const current = block.tool.subagentLifecycle;
-  if (current && current.status !== 'running') return content;
+  const next = mergeSubagentLifecycleUpdate(current, lifecycle);
+  if (next === current) return content;
   const updated = [...content];
   updated[index] = {
     ...block,
     tool: {
       ...block.tool,
-      subagentLifecycle: lifecycle,
-      ...(lifecycle.result === undefined ? {} : { result: lifecycle.result }),
-      ...(lifecycle.status === 'running' ? {} : {
-        isLoading: false,
-        isError: lifecycle.status === 'failed' || lifecycle.status === 'interrupted',
-      }),
+      subagentLifecycle: next,
     },
   };
   return updated;

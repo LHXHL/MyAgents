@@ -675,7 +675,7 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const noopApiPost = useCallback(async <T,>(_path: string, _body?: unknown): Promise<T> => { throw new Error('no apiPost'); }, []);
   const { stats: bgStats } = useBackgroundTaskPolling({
     outputFile,
-    isActive: isBackgroundTask && !!outputFile && !isRunning && !bgComplete,
+    isActive: !tool.subagentLifecycle && isBackgroundTask && !!outputFile && !isRunning && !bgComplete,
     apiPost: tabApi?.apiPost ?? noopApiPost
   });
 
@@ -683,17 +683,18 @@ export default function TaskTool({ tool }: TaskToolProps) {
   // and main Agent hasn't provided a final status yet.
   // Keep showing even when bgComplete=true so TaskBackgroundStats renders "后台完成/失败".
   // Only dismiss when parsedResult gets a real completion/error status (e.g. from Phase 4 SSE).
-  const showBackgroundStats = isBackgroundTask && !isRunning
+  const showBackgroundStats = !tool.subagentLifecycle && isBackgroundTask && !isRunning
     && parsedResult?.status !== 'completed' && parsedResult?.status !== 'error';
 
   // Extract text content from result
   const textContent = useMemo(() => {
+    if (tool.subagentLifecycle?.result !== undefined) return tool.subagentLifecycle.result;
     if (!parsedResult?.content) return null;
     return parsedResult.content
       .filter((item) => item.type === 'text' && item.text)
       .map((item) => item.text)
       .join('\n\n');
-  }, [parsedResult]);
+  }, [parsedResult, tool.subagentLifecycle?.result]);
 
   if (!input) {
     return <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.task.initializing')}</div>;
@@ -703,6 +704,9 @@ export default function TaskTool({ tool }: TaskToolProps) {
 
   return (
     <div className="flex flex-col gap-3 text-sm select-none">
+      {tool.subagentLifecycle?.status === 'completed' && tool.subagentLifecycle.handleState === 'open' && (
+        <span className="text-xs text-[var(--success)]">{t('shell.toolChrome.common.completedContinuable')}</span>
+      )}
       {/* 1. 统计栏 (第一行，可展开 Trace) */}
       <div ref={statsBarRef}>
         {isRunning && effectiveStartTime ? (

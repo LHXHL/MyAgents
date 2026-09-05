@@ -1970,5 +1970,40 @@
       "cronTaskDescription": "View and manage running recurring tasks for development debugging.",
       "openPanel": "Open Panel"
     }
+  },
+  "collaboration": {
+    "title": "DSH agent collaboration",
+    "description": "Configure models and collaboration limits for DSH sessions. Changes apply at a safe boundary; existing agents retain their original model.",
+    "depth": "Maximum nesting depth",
+    "active": "Concurrent agents",
+    "retained": "Retained agents",
+    "depthHint": "Root depth is 0. Default 1 lets the root create children; those children cannot delegate further. All levels share execution capacity.",
+    "strategy": "Default child model",
+    "inherit": "Inherit direct parent",
+    "fixed": "Use a specific model",
+    "agent": "Allow agent selection",
+    "roles": "Models by role",
+    "roleName": "Extension agent role",
+    "addRole": "Add role",
+    "authorized": "Additional authorized models",
+    "authorizedHint": "The root and fixed role models are included automatically. Agent selection uses this authorized catalog. Removing a model blocks further requests by agents using it.",
+    "timing": "Collaboration message timing",
+    "timingHint": "Controls messages between agents and completion reports. Realtime delivers after the current model or tool step. The chat queue setting above controls user input.",
+    "unavailable": "Model unavailable"
+  },
+  "runtimeAvailability": {
+    "title": "Current Session availability",
+    "explanation": "Installation and enablement do not guarantee Runtime admission. Model invocation still requires execution permission.",
+    "generation": "Effective generation: {{effective}} · Requested: {{desired}}",
+    "unknown": "Unknown",
+    "noReceipts": "No admission receipts yet. Start or refresh the Session to check availability.",
+    "ready": "Admitted",
+    "rejected": "Rejected",
+    "disabled": "Disabled",
+    "pending": "Pending application",
+    "yes": "Yes",
+    "no": "No",
+    "enabled": "Enabled: {{value}}",
+    "invocation": "Model invocation: {{value}}"
   }
 }

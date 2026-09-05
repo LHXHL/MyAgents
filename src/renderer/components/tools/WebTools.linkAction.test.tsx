@@ -55,4 +55,32 @@ describe('web tool link actions', () => {
 
     expect(openUrl).toHaveBeenCalledWith('https://example.com/page');
   });
+
+  it('shows retained service text alongside confirmed sources without turning prose into links', () => {
+    const tool = {
+      id: 'partial-search', name: 'WebSearch', parsedInput: { query: 'example' }, streamIndex: 0,
+      result: JSON.stringify({
+        results: [{ title: 'Confirmed source', url: 'https://example.com/result' }],
+        answer: 'Unconfirmed https://unconfirmed.test remains service text',
+        warnings: ['unverified_search_results'],
+      }),
+    } as ToolUseSimple;
+    renderInChat(<WebSearchTool tool={tool} />);
+    expect(screen.getByText('Unconfirmed https://unconfirmed.test remains service text')).toBeInTheDocument();
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: /Confirmed source/ })).toBeInTheDocument();
+    expect(screen.queryByText(/"warnings"/)).not.toBeInTheDocument();
+  });
+
+  it('keeps legacy SDK text in a mixed search result', () => {
+    const tool = {
+      id: 'sdk-search', name: 'WebSearch', parsedInput: { query: 'example' }, streamIndex: 0,
+      result: JSON.stringify({ results: [
+        'SDK service summary', { content: [{ title: 'SDK source', url: 'https://example.com/sdk' }] },
+      ] }),
+    } as ToolUseSimple;
+    renderInChat(<WebSearchTool tool={tool} />);
+    expect(screen.getByText('SDK service summary')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /SDK source/ })).toBeInTheDocument();
+  });
 });

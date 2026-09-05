@@ -1,3 +1,4 @@
+import type { RuntimeAgentWorkControl } from '../../shared/types/subagent-lifecycle';
 import type { McpServerDefinition } from '../../shared/config-types';
 import { normalizeOfficialToolIds } from '../../shared/official-tools';
 import { getSessionEngine } from '../session-engine';
@@ -190,6 +191,33 @@ export async function handleSessionConfigRoute(
       console.error('[api/session/permission-mode] Error:', error);
       return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to set permission mode' }, 500);
     }
+  }
+
+  if (pathname === '/api/session/agent-work' && request.method === 'GET') {
+    const engine = getSessionEngine();
+    if (!engine.listAgentWork) return jsonResponse({ success: false, error: 'Agent work is unavailable' }, 409);
+    try { return jsonResponse({ success: true, ...await engine.listAgentWork() }); }
+    catch (error) { return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Agent work read failed' }, 409); }
+  }
+  if (pathname === '/api/session/agent-work' && request.method === 'POST') {
+    const engine = getSessionEngine();
+    if (!engine.controlAgentWork) return jsonResponse({ success: false, error: 'Agent controls are unavailable' }, 409);
+    try {
+      const value: unknown = await request.json();
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return jsonResponse({ success: false, error: 'Invalid Agent action' }, 400);
+      const input = value as Record<string, unknown>;
+      const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
+      const kind = input.kind;
+      if (!identifier(input.agentId) || !['resume', 'stop', 'message'].includes(String(kind))
+        || (kind === 'message' ? !identifier(input.clientMessageId) || typeof input.message !== 'string' || input.message.length < 1 || input.message.length > 12000
+          : !Number.isSafeInteger(input.expectedHandleRevision) || Number(input.expectedHandleRevision) < 0)
+        || (kind === 'resume' && !identifier(input.clientRequestId))) return jsonResponse({ success: false, error: 'Invalid Agent action' }, 400);
+      const allowed = kind === 'message' ? ['kind', 'agentId', 'clientMessageId', 'message']
+        : kind === 'resume' ? ['kind', 'agentId', 'expectedHandleRevision', 'clientRequestId'] : ['kind', 'agentId', 'expectedHandleRevision'];
+      if (Object.keys(input).some(key => !allowed.includes(key))) return jsonResponse({ success: false, error: 'Unknown Agent action field' }, 400);
+      await engine.controlAgentWork(input as RuntimeAgentWorkControl);
+      return jsonResponse({ success: true });
+    } catch (error) { return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Agent action failed' }, 409); }
   }
 
   if (pathname === '/api/session/permission-rules' && request.method === 'GET') {

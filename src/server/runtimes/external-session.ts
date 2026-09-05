@@ -1,3 +1,4 @@
+import type { RuntimeAgentWorkControl } from '../../shared/types/subagent-lifecycle';
 // External Runtime Session Handler (v0.1.59)
 //
 // Manages the lifecycle of an external CLI runtime session (Claude Code, Codex).
@@ -73,6 +74,7 @@ import {
   commitCodexConversationRewind,
   abortDshForkProduct,
   beginDshForkMutation,
+  beginDshInput,
   beginDshRewindMutation,
   commitDshForkProduct,
   commitDshRewindProduct,
@@ -83,6 +85,7 @@ import {
   resolvePendingConversationMutation,
   saveSessionMetadata,
   settleDshRootOperation,
+  settleDshInput,
   stageDshForkProduct,
   updateSessionMetadata,
   getSessionMetadata,
@@ -193,6 +196,7 @@ import {
   compileManagedCodexCommand,
   compileManagedCodexExtensionSnapshot,
 } from './managed-codex/extensions/compiler';
+import { compileProductExtensionSnapshot } from './product-extensions/compiler';
 import type {
   ManagedCodexExtensionSnapshot,
   ManagedCodexExtensionUpdateResult,
@@ -553,8 +557,13 @@ function getPendingDshRootOperation() {
   return getBoundDshMetadata()?.pendingDshRootOperation;
 }
 
+let pendingDshProductEvents = 0;
 function hasPendingDshNativeWork(): boolean {
-  return hasPendingDshMutation() || Boolean(getPendingDshRootOperation());
+  if (getCurrentRuntimeType() !== 'dsh') return false;
+  const active = getExternalActivePair();
+  return hasPendingDshMutation() || Boolean(getPendingDshRootOperation()) || pendingDshProductEvents > 0
+    || (getBoundDshMetadata()?.pendingDshInputs?.length ?? 0) > 0
+    || Boolean(active?.runtime.getActiveRootOperation?.(active.process));
 }
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
@@ -726,7 +735,17 @@ function scheduleExternalQueueDrainAfterTurnBoundary(): void {
     return;
   }
   const dshReconciliation = isDshProductRuntime()
-    ? reconcileDshExtensionsAtTurnBoundary()
+    ? (async () => {
+      await reconcileDshExtensionsAtTurnBoundary();
+      const active = getExternalActivePair();
+      if (active && !active.process.exited && getPendingDshRootOperation()
+        && !active.runtime.getActiveRootOperation?.(active.process)) await resumePendingDshRootOperation(active.runtime, active.process);
+      const sessionId = getExternalLifecycleSessionId();
+      const workspacePath = getExternalLifecycleWorkspacePath();
+      if (active && !active.process.exited && sessionId && workspacePath) await resumePendingDshInputs(active.runtime, active.process, {
+        sessionId, workspacePath, scenario: getExternalLifecycleScenario(), channelDelivery: NO_CHANNEL_DELIVERY,
+      });
+    })()
     : null;
   if (!dshReconciliation && pendingExternalProcessConfigRestartReasons().length === 0) {
     setTimeout(() => drainExternalQueueAfterTurn(), 0);
@@ -778,6 +797,7 @@ interface PendingRealtimeSteeredUserMessage {
   activityFacts: SessionActivityTurnFacts;
   channelDelivery: TurnChannelDelivery;
   userChannelProjection: ExternalUserChannelProjection;
+  admission?: Promise<void>;
 }
 
 const pendingRealtimeSteeredUserMessages: PendingRealtimeSteeredUserMessage[] = [];
@@ -925,6 +945,7 @@ function clearPendingRealtimeSteeredUserMessagesWithCancellation(): void {
   while (pendingRealtimeSteeredUserMessages.length > 0) {
     const pending = pendingRealtimeSteeredUserMessages.shift();
     if (pending) {
+      if (getSessionMetadata(pending.sessionId)?.pendingDshInputs?.some(input => input.clientUserMessageId === pending.operation.userProjection.message.id)) continue;
       markExternalUserMessageRetracted(pending.operation);
       broadcast('queue:cancelled', { queueId: pending.queueId });
     }
@@ -969,7 +990,13 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
     userMsg.id,
     '[external-session] Failed to persist accepted realtime steered user message',
     admissionActivityAt,
-  ).then(() => {
+  ).then(async () => {
+    const anchor = userMsg.runtimeOperationAnchor;
+    if (anchor?.runtime === 'dsh') {
+      const settled = await settleDshInput({ sessionId: entry.sessionId, clientOperationId: anchor.clientOperationId,
+        clientUserMessageId: userMsg.id, state: 'projected' });
+      if (!settled.success) throw new Error(settled.error);
+    }
     markExternalUserMessagePersisted(entry.operation);
     return true;
   }).catch((err) => {
@@ -1128,6 +1155,7 @@ function getExternalActiveSteerPair(): SteerCapableActivePair | null {
   if (active.runtime.type === 'dsh') {
     const root = active.runtime.getActiveRootOperation?.(active.process) ?? null;
     const pending = getPendingDshRootOperation();
+    if (root?.origin === 'collaboration' && root.realtimeSteerEligible) return active as SteerCapableActivePair;
     if (
       !root?.realtimeSteerEligible
       || !pending
@@ -1594,6 +1622,7 @@ async function resumePendingDshRootOperation(
   const runtimeSessionId = getExternalRuntimeSessionId();
   const active = runtime.getActiveRootOperation?.(process) ?? null;
   if (active) {
+    if (active.origin === 'collaboration') return true;
     if (pending && (
       pending.clientOperationId !== active.clientOperationId
       || pending.clientUserMessageId !== active.clientUserMessageId
@@ -1640,6 +1669,40 @@ async function resumePendingDshRootOperation(
     },
   );
   return true;
+}
+
+async function resumePendingDshInputs(runtime: AgentRuntime, process: RuntimeProcess, context: ExternalSendContext): Promise<void> {
+  if (runtime.type !== 'dsh') return;
+  const inputs = getSessionMetadata(context.sessionId)?.pendingDshInputs ?? [];
+  if (inputs.length > 32) throw new Error('The DSH input journal exceeds its recovery bound');
+  if (!inputs.length) return;
+  if (!runtime.steerMessage || !runtime.cancelSteeredMessage) throw new Error('DSH input recovery ports are unavailable');
+  const recoveries = inputs.map(input => {
+    if (input.sourceRuntimeSessionId !== getExternalRuntimeSessionId()) throw new Error('DSH input recovery changed Runtime Session authority');
+    const replay = replayDshProductInput(input, input.userMessage);
+    const images = resolveImagePayloads(context.sessionId, replay.images);
+    assertDshResolvedImagesMatch(input, images);
+    const admission = Promise.withResolvers<void>();
+    void admission.promise.catch(() => undefined);
+    if (!pendingRealtimeSteeredUserMessages.some(entry => entry.operation.userProjection.message.id === input.clientUserMessageId)) {
+      const operation = createExternalMessageOperation({ text: replay.message, images: replay.images, context,
+        runtimeConfig: captureExternalRuntimeConfigSnapshot(undefined, undefined, context), userMessage: structuredClone(input.userMessage),
+        surfaceMode: 'queue-started', queueId: input.queueId });
+      registerPendingRealtimeSteeredUserMessage({ queueId: input.queueId, sessionId: context.sessionId, operation, text: replay.message,
+        activityFacts: { inputText: replay.message }, channelDelivery: NO_CHANNEL_DELIVERY, userChannelProjection: { kind: 'skip' }, admission: admission.promise });
+    }
+    return { input, replay, images, admission };
+  });
+  for (const { input, replay, images, admission } of recoveries) {
+    try {
+      if (input.state === 'cancel_requested') {
+        await runtime.cancelSteeredMessage(process, { clientOperationId: input.clientOperationId, clientUserMessageId: input.clientUserMessageId });
+      } else {
+        await runtime.steerMessage(process, replay.message, images, { clientOperationId: input.clientOperationId, clientUserMessageId: input.clientUserMessageId });
+      }
+      admission.resolve();
+    } catch (error) { admission.reject(error); throw error; }
+  }
 }
 
 /** Register a new session in SessionStore on the first real user message.
@@ -2758,7 +2821,8 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     ?? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
   const skillAdmission = input?.skillAdmission
     ?? buildCurrentExternalSkillAdmission(workspacePath);
-  return compileManagedCodexExtensionSnapshot({
+  const compile = isDshProductRuntime() ? compileProductExtensionSnapshot : compileManagedCodexExtensionSnapshot;
+  return compile({
     workspacePath,
     scenario: input?.scenario
       ?? (isDshProductRuntime() ? dshDesiredInteractionScenario : null)
@@ -3773,6 +3837,47 @@ async function _doStartExternalSession(options: {
   );
 
   let runtimeInitialTurn: RuntimeInitialTurn | undefined;
+  let dshProductTail = Promise.resolve();
+  let dshProductProjectionFailed = false;
+  let dshProductQueuedCount = 0;
+  let dshProductQueuedBytes = 0;
+  const failDshProductProjection = (error: unknown): void => {
+    if (dshProductProjectionFailed) return;
+    dshProductProjectionFailed = true;
+    console.error('[external-session] DSH Product event projection failed:', error);
+    startedProcess?.kill();
+    setExternalSessionState('error');
+    broadcast('chat:agent-error', { message: 'Failed to restore DSH collaboration state' });
+  };
+  const receiveRuntimeEvent = (event: UnifiedEvent): void => {
+    if (runtimeType !== 'dsh') { handleUnifiedEvent(event); return; }
+    if (dshProductProjectionFailed) return;
+    const eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+    if (dshProductQueuedCount >= 2_048 || dshProductQueuedBytes + eventBytes > 8 * 1024 * 1024) {
+      failDshProductProjection(new Error('DSH Product event projection exceeded its bounded queue'));
+      return;
+    }
+    dshProductQueuedCount++;
+    dshProductQueuedBytes += eventBytes;
+    pendingDshProductEvents++;
+    dshProductTail = dshProductTail.then(async () => {
+      if (dshProductProjectionFailed || getExternalLifecycleSessionId() !== options.sessionId || (startedProcess && getExternalActivePair()?.process && getExternalActivePair()?.process !== startedProcess)) return;
+      if (event.kind === 'root_turn_admitted' && event.origin === 'collaboration') {
+        if (!await waitExternalTurnFinalization(30_000)) throw new Error('DSH collaboration is waiting for the previous Product turn persistence');
+      }
+      if (event.kind === 'user_message_cancelled') {
+        const pending = getSessionMetadata(options.sessionId)?.pendingDshInputs?.find(input => input.clientUserMessageId === event.clientUserMessageId);
+        if (pending) {
+          const result = await settleDshInput({ sessionId: options.sessionId, clientOperationId: pending.clientOperationId,
+            clientUserMessageId: pending.clientUserMessageId, state: 'cancelled' });
+          if (!result.success) throw new Error(result.error);
+        }
+      }
+      handleUnifiedEvent(event);
+    }).catch(failDshProductProjection).finally(() => {
+      pendingDshProductEvents--; dshProductQueuedCount--; dshProductQueuedBytes -= eventBytes;
+    });
+  };
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
       {
@@ -3796,7 +3901,7 @@ async function _doStartExternalSession(options: {
         managedCodexExtensions: managedCodexExtensionSnapshot,
         dshExtensions: dshExtensionSnapshot,
       },
-      handleUnifiedEvent,
+      receiveRuntimeEvent,
     );
 
   let startedProcess: RuntimeProcess | null = null;
@@ -3895,6 +4000,10 @@ async function _doStartExternalSession(options: {
       ));
     }
     startedProcess = process;
+    if (dshProductProjectionFailed) {
+      process.kill();
+      throw new Error('DSH Product event projection failed during startup');
+    }
     setExternalActiveProcess(process, enabledOfficialToolIds, externalSkillAdmission.revision);
     if (managedCodexExtensionSnapshot) {
       markManagedCodexExtensionEffective(
@@ -3913,6 +4022,9 @@ async function _doStartExternalSession(options: {
     if (runtimeType === 'dsh') {
       await waitExternalTurnFinalization(60_000);
       recoveredDshRootInFlight = await resumePendingDshRootOperation(runtime, process);
+      await resumePendingDshInputs(runtime, process, { sessionId: options.sessionId, workspacePath: options.workspacePath,
+        scenario: options.scenario, channelDelivery: NO_CHANNEL_DELIVERY });
+      await dshProductTail;
     }
     let deferredInitialDispatched = false;
     if (deferInitialAdmission) {
@@ -4893,6 +5005,15 @@ async function steerExternalMessageForDesktop(input: {
       : undefined,
     inboxMeta: input.context.inboxMeta,
   });
+  if (getCurrentRuntimeType() === 'dsh') {
+    const owner = active.runtime.getActiveRootOperation?.(active.process);
+    const runtimeSessionId = getSessionMetadata(input.context.sessionId)?.runtimeSessionId;
+    if (!owner || !runtimeSessionId) return { queued: false, error: 'DSH realtime input lost its native operation owner' };
+    userMsg.runtimeOperationAnchor = { runtime: 'dsh', runtimeSessionId, clientOperationId: owner.clientOperationId };
+  }
+  const admission = Promise.withResolvers<void>();
+  let dshIntentPersisted = false;
+  void admission.promise.catch(() => undefined);
   registerPendingRealtimeSteeredUserMessage({
     queueId: input.queueId,
     sessionId: input.context.sessionId,
@@ -4909,17 +5030,39 @@ async function steerExternalMessageForDesktop(input: {
       input.text,
       resolvedImages,
     ),
+    admission: admission.promise,
   });
   try {
     await active.runtime.steerMessage(
       active.process,
       input.text,
       resolvedImages && resolvedImages.length > 0 ? resolvedImages : undefined,
-      { clientUserMessageId: userMsg.id },
+      { clientUserMessageId: userMsg.id,
+        ...(userMsg.runtimeOperationAnchor?.runtime === 'dsh' ? {
+          clientOperationId: userMsg.runtimeOperationAnchor.clientOperationId,
+          beforeDispatch: async (identity: { clientOperationId: string; inputFingerprint: string }) => {
+            const anchor = userMsg.runtimeOperationAnchor!;
+            if (identity.clientOperationId !== anchor.clientOperationId) throw new Error('DSH realtime input changed its Product operation owner');
+            const intent = await beginDshInput({ sessionId: input.context.sessionId, runtimeSessionId: anchor.runtimeSessionId,
+              clientOperationId: anchor.clientOperationId, queueId: input.queueId, userMessage: userMsg,
+              productImageSha256: (resolvedImages ?? []).map(image => createHash('sha256').update(Buffer.from(image.data, 'base64')).digest('hex')),
+              runtimeInputFingerprint: identity.inputFingerprint });
+            if (!intent.success) throw new Error(intent.error);
+            dshIntentPersisted = true;
+          },
+        } : {}),
+      },
     );
+    admission.resolve();
     return { queued: true };
   } catch (err) {
+    admission.reject(err);
     const message = err instanceof Error ? err.message : String(err);
+    if (dshIntentPersisted) {
+      console.warn('[external-session] DSH realtime input awaits native receipt reconciliation');
+      broadcast('chat:agent-error', { message: '消息已保存，正在等待 Runtime 确认；重新连接后会核对原消息状态。' });
+      return { queued: true };
+    }
     console.warn(`[external-session] realtime steer failed, retracting user message ${userMsg.id}: ${message}`);
     forgetPendingRealtimeSteeredUserMessage(userMsg.id);
     markExternalUserMessageRetracted(input.operation);
@@ -5032,7 +5175,8 @@ function pendingQueuedDshRootRecoveryContext(): Readonly<{
   const sessionId = getExternalLifecycleSessionId();
   const workspacePath = getExternalLifecycleWorkspacePath();
   if (!sessionId || !workspacePath) return null;
-  if (!getSessionMetadata(sessionId)?.pendingDshRootOperation) return null;
+  const metadata = getSessionMetadata(sessionId);
+  if (!metadata?.pendingDshRootOperation && !metadata?.pendingDshInputs?.length) return null;
   return { sessionId, workspacePath, scenario: getExternalLifecycleScenario() };
 }
 
@@ -5461,7 +5605,53 @@ export type ExternalQueueCancellation = {
 };
 
 /** Cancel a queued external item (the pill ✕). Returns its settlement when startup is in flight. */
-export function cancelExternalQueueItem(queueId: string): ExternalQueueCancellation | null {
+export async function cancelExternalQueueItem(queueId: string): Promise<ExternalQueueCancellation | null> {
+  let pending = pendingRealtimeSteeredUserMessages.find(entry => entry.queueId === queueId);
+  if (!pending) {
+    const sessionId = getExternalLifecycleSessionId();
+    const saved = getBoundDshMetadata()?.pendingDshInputs?.find(input => input.queueId === queueId);
+    if (sessionId && saved) {
+      const intent = await settleDshInput({ sessionId, clientOperationId: saved.clientOperationId, clientUserMessageId: saved.clientUserMessageId, state: 'cancel_requested' });
+      if (!intent.success) throw new Error(intent.error);
+      await ensureQueuedDshRootRecovery();
+      const active = getExternalActivePair();
+      const workspacePath = getExternalLifecycleWorkspacePath();
+      if (active && !active.process.exited && workspacePath) await resumePendingDshInputs(active.runtime, active.process, {
+        sessionId, workspacePath, scenario: getExternalLifecycleScenario(), channelDelivery: NO_CHANNEL_DELIVERY,
+      });
+      pending = pendingRealtimeSteeredUserMessages.find(entry => entry.queueId === queueId);
+      if (!pending) {
+        if (getSessionMetadata(sessionId)?.pendingDshInputs?.some(input => input.clientUserMessageId === saved.clientUserMessageId)) {
+          throw new Error('DSH input cancellation is still waiting for Runtime recovery');
+        }
+        return getSessionData(sessionId)?.messages.some(message => message.id === saved.clientUserMessageId)
+          ? null : { cancelledText: saved.userMessage.content };
+      }
+    }
+  }
+  const anchor = pending?.operation.userProjection.message.runtimeOperationAnchor;
+  if (pending && anchor?.runtime === 'dsh') {
+    const active = getExternalActivePair();
+    if (!active || active.process.exited || !active.runtime.cancelSteeredMessage
+      || pending.sessionId !== getExternalLifecycleSessionId()) return null;
+    // Input preparation may still be publishing its native identity. Cancel
+    // only after that admission resolves, keeping the pill on transport failure.
+    const intent = await settleDshInput({ sessionId: pending.sessionId, clientOperationId: anchor.clientOperationId,
+      clientUserMessageId: pending.operation.userProjection.message.id, state: 'cancel_requested' });
+    if (!intent.success) throw new Error(intent.error);
+    await pending.admission?.catch(() => undefined);
+    const state = await active.runtime.cancelSteeredMessage(active.process, {
+      clientOperationId: anchor.clientOperationId,
+      clientUserMessageId: pending.operation.userProjection.message.id,
+    });
+    if (state !== 'cancelled') return null;
+    const settled = await settleDshInput({ sessionId: pending.sessionId, clientOperationId: anchor.clientOperationId,
+      clientUserMessageId: pending.operation.userProjection.message.id, state: 'cancelled' });
+    if (!settled.success) throw new Error(settled.error);
+    const entry = takePendingRealtimeSteeredUserMessage(pending.operation.userProjection.message.id);
+    if (entry) { markExternalUserMessageRetracted(entry.operation); broadcast('queue:cancelled', { queueId }); }
+    return { cancelledText: pending.text };
+  }
   if (isExternalTurnCurrent(queueId)) return null;
   const item = cancelExternalQueuedMessageOperation(queueId);
   if (!item) {
@@ -5498,7 +5688,13 @@ export function hasExternalQueuedTurnByOwner(
 
 /** Current external queue (for /chat/queue/status). Mirrors builtin getQueueStatus shape. */
 export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string }> {
-  return getExternalQueueStatusSnapshot();
+  const queued = getExternalQueueStatusSnapshot();
+  const ids = new Set(queued.map(item => item.id));
+  const result = [...queued, ...pendingRealtimeSteeredUserMessages.filter(entry => !ids.has(entry.queueId))
+    .map(entry => ({ id: entry.queueId, messagePreview: entry.text.slice(0, 120) }))];
+  const displayed = new Set(result.map(item => item.id));
+  return [...result, ...(getBoundDshMetadata()?.pendingDshInputs ?? []).filter(input => !displayed.has(input.queueId))
+    .map(input => ({ id: input.queueId, messagePreview: input.userMessage.content.slice(0, 120) }))];
 }
 
 /**
@@ -5568,6 +5764,17 @@ function getExternalPermissionRulePair() {
     throw new Error('The active Runtime does not expose authoritative permission rules');
   }
   return active;
+}
+
+export async function listExternalAgentWork() {
+  const active = getExternalActivePair();
+  if (!active?.runtime.listAgentWork) throw new Error('Active Runtime does not expose Agent work');
+  return active.runtime.listAgentWork(active.process);
+}
+export async function controlExternalAgentWork(input: RuntimeAgentWorkControl) {
+  const active = getExternalActivePair();
+  if (!active?.runtime.controlAgentWork) throw new Error('Active Runtime does not expose Agent controls');
+  return active.runtime.controlAgentWork(active.process, input);
 }
 
 export async function listExternalPermissionRules() {
@@ -7166,7 +7373,7 @@ async function persistTurnResult(
       persistFailureReason = persistResult.failureReason;
       console.error(`[external-session] Failed to save session messages: ${persistFailureReason ?? 'unknown error'}`);
     }
-    if (runtimeType === 'dsh' && persistResult.ok) {
+    if (runtimeType === 'dsh' && persistResult.ok && runtimeTurnAnchor?.origin !== 'collaboration') {
       if (!clientOperationId) {
         throw new Error('DSH terminal persistence lacks its exact operation identity');
       }
@@ -7578,10 +7785,17 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
   switch (event.kind) {
     case 'root_turn_admitted':
       if (getCurrentRuntimeType() === 'codex' || getCurrentRuntimeType() === 'dsh') {
-        setExternalRuntimeTurnAnchor({
-          turnId: event.runtimeTurnId,
-          rootUserMessageId: event.clientUserMessageId,
-        });
+        if (event.origin === 'collaboration') {
+          clearExternalPrewarmingSession();
+          setExternalTurnCompleted(false); setExternalLastTurnSucceeded(false);
+          resetTurnAccumulators(); seedTurnWatchdogEstimate(); resetWatchdog();
+          markExternalTurnStarted();
+          beginExternalTurnTrace('dsh_collaboration_turn_started', getExternalLifecycleSessionId());
+          setExternalSessionState('running');
+          setExternalRuntimeTurnAnchor({ turnId: event.runtimeTurnId, origin: 'collaboration', clientOperationId: event.clientOperationId });
+        } else {
+          setExternalRuntimeTurnAnchor({ turnId: event.runtimeTurnId, rootUserMessageId: event.clientUserMessageId });
+        }
       }
       break;
 
@@ -8120,6 +8334,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'user_message_cancelled': {
+      const entry = takePendingRealtimeSteeredUserMessage(event.clientUserMessageId);
+      if (entry) { markExternalUserMessageRetracted(entry.operation); broadcast('queue:cancelled', { queueId: entry.queueId }); }
+      break;
+    }
+
     case 'user_message_accepted': {
       surfaceAcceptedRealtimeSteeredUserMessage(event.clientUserMessageId);
       break;
@@ -8138,7 +8358,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // Defensive fallback: Codex should emit item/started userMessage for
       // accepted turn/steer input. If an older app-server does not, promote the
       // pending pill at the turn boundary rather than leaving it orphaned.
-      surfaceAllPendingRealtimeSteeredUserMessages();
+      if (getCurrentRuntimeType() !== 'dsh') surfaceAllPendingRealtimeSteeredUserMessages();
       finalizeExternalSubagentLifecycleProjection(
         getExternalUserRequestedStop() ? 'interrupted' : 'failed',
       );
@@ -8154,7 +8374,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (turnPlan.kind !== 'persist-success') {
         const message = turnPlan.message;
         let dshTerminalSettlement: Promise<void> | null = null;
-        if (getCurrentRuntimeType() === 'dsh') {
+        if (getCurrentRuntimeType() === 'dsh' && getExternalRuntimeTurnAnchor()?.origin !== 'collaboration') {
           dshTerminalSettlement = event.clientOperationId
             ? settleDshRootOperation({
                 sessionId: getExternalLifecycleSessionId(),

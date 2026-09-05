@@ -820,6 +820,11 @@ export type RuntimeExtensionApplyState =
   | 'failed';
 
 export interface RuntimeExtensionComponentStatus {
+  /** Admission and invocation are runtime facts, separate from installed/enabled settings and permission. */
+  admission?: 'ready' | 'rejected' | 'disabled' | 'pending';
+  enabled?: boolean;
+  modelInvocable?: boolean;
+  effectiveGeneration?: string;
   component: string;
   id?: string;
   state: RuntimeExtensionApplyState;

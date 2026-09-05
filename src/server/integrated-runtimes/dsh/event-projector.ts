@@ -1,7 +1,9 @@
+import type { RuntimeAgentWorkSnapshot } from '../../../shared/types/subagent-lifecycle';
 import { createHash } from 'node:crypto';
 
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
-import type { UnifiedEvent, UnifiedEventCallback } from '../../runtimes/types';
+import type { SubagentLifecycle } from '../../../shared/types/subagent-lifecycle';
+import type { UnifiedEvent } from '../../runtimes/types';
 import type { DshRpcObject } from './protocol-types';
 
 type DshRuntimeEventEnvelope = Readonly<{
@@ -26,9 +28,11 @@ export type DshProjectedTurnTerminal = Readonly<{
 export type DshRuntimeEventProjectorOptions = Readonly<{
   productSessionId: string;
   runtimeGeneration: string;
-  onEvent: UnifiedEventCallback;
+  onEvent: (event: UnifiedEvent, turnId?: string) => void;
   onTurnTerminal?: (terminal: DshProjectedTurnTerminal) => void;
+  onCollaborationAdmitted?: (clientOperationId: string, turnId: string) => void;
   clientUserMessageIdForOperation?: (clientOperationId: string) => string | undefined;
+  clientUserMessageIdForInjection?: (messageId: string) => string | undefined;
   onPlan?: (snapshot: { mode: 'normal' | 'plan'; revision: string }) => void;
   resolveToolImage?: (
     image: DshRpcObject,
@@ -190,8 +194,37 @@ function timestamp(value: unknown, description: string): number {
   return parsed;
 }
 
+function nonNegative(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error('Agent metric is invalid');
+  return Number(value);
+}
+
 function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 'subagent_lifecycle' }> {
-  const state = workStatus(snapshot.state);
+  const tree = snapshot.tree === undefined ? undefined : object(snapshot.tree, 'Agent tree');
+  const route = snapshot.modelRoute === undefined ? undefined : object(snapshot.modelRoute, 'Agent model route');
+  if (tree && (nonNegative(tree.depth) < 1 || Number(tree.depth) > 8)) throw new Error('Agent depth is invalid');
+  if (route && !['inherit', 'fixed', 'agent'].includes(String(route.selection))) throw new Error('Agent model selection is invalid');
+  let activation: SubagentLifecycle['activation'];
+  if (snapshot.activation !== undefined) {
+    const value = object(snapshot.activation, 'DSH ProductWork activation');
+    const states = ['queued', 'running', 'waiting_interaction', 'waiting_child', 'waiting_delivery', 'completed', 'failed', 'aborted'];
+    if (!states.includes(String(value.state)) || !Number.isSafeInteger(value.ordinal) || Number(value.ordinal) < 1) {
+      throw new Error('DSH ProductWork activation is invalid');
+    }
+    activation = {
+      id: string(value.id, 'DSH ProductWork activation identity'),
+      ordinal: Number(value.ordinal),
+      state: value.state as NonNullable<SubagentLifecycle['activation']>['state'],
+    };
+  }
+  const handleState = snapshot.handleState;
+  if (handleState !== undefined && handleState !== 'open' && handleState !== 'stopping' && handleState !== 'closed') {
+    throw new Error('DSH ProductWork handle state is invalid');
+  }
+  const state = activation === undefined ? workStatus(snapshot.state)
+    : activation.state === 'completed' ? 'completed'
+      : activation.state === 'failed' ? 'failed'
+        : activation.state === 'aborted' ? 'interrupted' : 'running';
   const startedAt = timestamp(snapshot.startedAt, 'DSH ProductWork start time');
   const finishedAt = snapshot.finishedAt === undefined
     ? undefined
@@ -199,6 +232,14 @@ function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 's
   const usage = snapshot.usage === undefined ? undefined : object(snapshot.usage, 'DSH ProductWork usage');
   return {
     kind: 'subagent_lifecycle',
+    agentId: string(snapshot.agentId, 'Agent ID'), taskId: string(snapshot.taskId, 'Agent task ID'),
+    ...(snapshot.handleRevision === undefined ? {} : { handleRevision: nonNegative(snapshot.handleRevision) }),
+    ...(snapshot.lastActivityAt === undefined ? {} : { lastActivityAt: timestamp(snapshot.lastActivityAt, 'Agent activity time') }),
+    ...(tree ? { tree: { rootAgentId: string(tree.rootAgentId, 'Root ID'), parentAgentId: string(tree.parentAgentId, 'Parent ID'), depth: Number(tree.depth) } } : {}),
+    ...(route ? { modelRoute: { provider: string(route.provider, 'Agent Provider'), profileRevision: string(route.profileRevision, 'Agent profile'), selection: route.selection as 'inherit' | 'fixed' | 'agent' } } : {}),
+    ...(activation === undefined ? {} : { activation }),
+    ...(handleState === undefined ? {} : { handleState }),
+    startedAt,
     parentToolUseId: string(snapshot.parentToolCallId, 'DSH ProductWork parent tool call'),
     status: state,
     observedAt: state === 'running' ? startedAt : finishedAt ?? startedAt,
@@ -218,6 +259,24 @@ function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 's
       },
     } : {}),
     affectsRootActivity: false,
+  };
+}
+
+export function projectDshAgentWorkSnapshot(snapshot: DshRpcObject): RuntimeAgentWorkSnapshot {
+  const lifecycle = workLifecycle(snapshot);
+  const usage = snapshot.totalUsage === undefined ? undefined : object(snapshot.totalUsage, 'Agent total usage');
+  const pressure = snapshot.context === undefined ? undefined : object(snapshot.context, 'Agent context');
+  return {
+    ...lifecycle,
+    startedAt: lifecycle.startedAt ?? lifecycle.observedAt,
+    ...(snapshot.finishedAt === undefined ? {} : { finishedAt: timestamp(snapshot.finishedAt, 'Agent completion time') }),
+    agentId: string(snapshot.agentId, 'Agent ID'), taskId: string(snapshot.taskId, 'Agent task ID'),
+    ...(usage ? { totalUsage: { inputTokens: nonNegative(usage.inputTokens), outputTokens: nonNegative(usage.outputTokens),
+      cacheReadTokens: nonNegative(usage.cacheReadTokens), cacheWriteTokens: nonNegative(usage.cacheWriteTokens), totalTokens: nonNegative(usage.totalTokens), costUsd: typeof usage.costUsd === 'number' ? usage.costUsd : null } } : {}),
+    ...(pressure ? { context: { ...(pressure.capacity === undefined ? {} : { capacity: nonNegative(pressure.capacity) }),
+      ...(pressure.projectedInputTokens === undefined ? {} : { projectedInputTokens: nonNegative(pressure.projectedInputTokens) }),
+      ...(pressure.providerInputTokens === undefined ? {} : { providerInputTokens: nonNegative(pressure.providerInputTokens) }),
+    } } : {}),
   };
 }
 
@@ -288,6 +347,8 @@ export class DshRuntimeEventProjector {
   }
 
   private async emit(envelope: DshRuntimeEventEnvelope): Promise<void> {
+    const onEvent = (event: UnifiedEvent): void => this.options.onEvent(event,
+      envelope.turnId ?? (event.kind === 'root_turn_admitted' ? event.runtimeTurnId : undefined));
     const event = envelope.event;
     const kind = string(event.kind, 'DSH Runtime event kind');
     switch (kind) {
@@ -295,8 +356,13 @@ export class DshRuntimeEventProjector {
         const admission = object(event.admission, 'DSH turn admission');
         const clientOperationId = string(admission.clientOperationId, 'DSH client operation id');
         const clientUserMessageId = this.options.clientUserMessageIdForOperation?.(clientOperationId);
-        if (clientUserMessageId) {
-          this.options.onEvent({
+        if (admission.origin === 'collaboration') {
+          if (clientUserMessageId !== undefined) throw new Error('DSH collaboration operation conflicts with a Product user');
+          this.options.onCollaborationAdmitted?.(clientOperationId, string(admission.turnId, 'DSH collaboration turn id'));
+          onEvent({ kind: 'root_turn_admitted', origin: 'collaboration', clientOperationId,
+            runtimeTurnId: string(admission.turnId, 'DSH collaboration turn id') });
+        } else if (clientUserMessageId) {
+          onEvent({
             kind: 'root_turn_admitted',
             runtimeTurnId: string(admission.turnId, 'DSH turn id'),
             clientUserMessageId,
@@ -305,14 +371,14 @@ export class DshRuntimeEventProjector {
         return;
       }
       case 'turn_started':
-        this.options.onEvent({ kind: 'turn_started' });
-        this.options.onEvent({ kind: 'status_change', state: 'running' });
+        onEvent({ kind: 'turn_started' });
+        onEvent({ kind: 'status_change', state: 'running' });
         return;
       case 'assistant_delta':
-        this.options.onEvent({ kind: 'text_delta', text: string(event.delta, 'DSH assistant delta') });
+        onEvent({ kind: 'text_delta', text: string(event.delta, 'DSH assistant delta') });
         return;
       case 'thinking_delta':
-        this.options.onEvent({ kind: 'thinking_delta', text: string(event.delta, 'DSH thinking delta'), index: 0 });
+        onEvent({ kind: 'thinking_delta', text: string(event.delta, 'DSH thinking delta'), index: 0 });
         return;
       case 'tool': {
         const phase = string(event.phase, 'DSH tool phase');
@@ -320,8 +386,8 @@ export class DshRuntimeEventProjector {
         if (!toolUseId) throw new Error('DSH tool event lacks a stable tool identity');
         if (phase === 'start') {
           const input = event.input === undefined ? {} : object(event.input, 'DSH tool input');
-          this.options.onEvent({ kind: 'tool_use_start', toolUseId, toolName: string(event.name, 'DSH tool name'), input });
-          this.options.onEvent({ kind: 'tool_use_stop', toolUseId, input });
+          onEvent({ kind: 'tool_use_start', toolUseId, toolName: string(event.name, 'DSH tool name'), input });
+          onEvent({ kind: 'tool_use_stop', toolUseId, input });
           return;
         }
         if (phase === 'end') {
@@ -345,7 +411,7 @@ export class DshRuntimeEventProjector {
                 }));
               } catch {
                 textBlocks.push('[DSH image attachment unavailable]');
-                this.options.onEvent({
+                onEvent({
                   kind: 'log',
                   level: 'warn',
                   message: `DSH tool image could not be registered for ${toolUseId}`,
@@ -356,7 +422,7 @@ export class DshRuntimeEventProjector {
             textBlocks.push(`[Unsupported DSH tool result block: ${String(block.type)}]`);
           }
           const metadata = toolMetadata(result.metadata);
-          this.options.onEvent({
+          onEvent({
             kind: 'tool_result',
             toolUseId,
             content: textBlocks.join('\n'),
@@ -374,7 +440,7 @@ export class DshRuntimeEventProjector {
         const providerBlockType = string(event.providerBlockType, 'DSH Provider block type');
         const toolName = string(event.name, 'DSH Provider tool name');
         if (phase === 'start') {
-          this.options.onEvent({
+          onEvent({
             kind: 'provider_tool_use_start',
             providerRouteId,
             providerBlockType,
@@ -396,7 +462,7 @@ export class DshRuntimeEventProjector {
             }
             return block.text;
           }).join('\n');
-          this.options.onEvent({
+          onEvent({
             kind: 'provider_tool_result',
             providerRouteId,
             providerBlockType,
@@ -410,23 +476,27 @@ export class DshRuntimeEventProjector {
         throw new Error(`DSH Provider tool phase is unsupported: ${phase}`);
       }
       case 'usage':
-        this.options.onEvent(usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow));
+        onEvent(usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow));
         return;
       case 'context': {
-        this.options.onEvent({
+        onEvent({
           kind: 'context_update',
           contextOccupiedTokens: finiteNumber(event.contextOccupiedTokens),
           runtimeContextWindow: finiteNumber(event.runtimeContextWindow),
         });
         return;
       }
-      case 'queued_message':
-        if (event.state === 'delivered') {
-          this.options.onEvent({ kind: 'user_message_accepted' });
+      case 'queued_message': {
+        const clientUserMessageId = this.options.clientUserMessageIdForInjection?.(string(event.messageId, 'DSH queued message id'));
+        if (clientUserMessageId !== undefined && event.state === 'delivered') {
+          onEvent({ kind: 'user_message_accepted', clientUserMessageId });
+        } else if (clientUserMessageId !== undefined && event.state === 'cancelled') {
+          onEvent({ kind: 'user_message_cancelled', clientUserMessageId });
         }
         return;
+      }
       case 'task_graph': {
-        this.options.onEvent({
+        onEvent({
           kind: 'agent_plan_update',
           todos: taskGraphTodos(object(event.snapshot, 'DSH TaskGraph snapshot')),
         });
@@ -439,27 +509,30 @@ export class DshRuntimeEventProjector {
         return;
       }
       case 'work': {
-        this.options.onEvent(workLifecycle(object(event.snapshot, 'DSH ProductWork snapshot')));
+        const lifecycle = workLifecycle(object(event.snapshot, 'DSH ProductWork snapshot'));
+        // Only direct children own tools in the root conversation. Deeper
+        // nodes are read through the Runtime tree, never keyed by a root call ID.
+        if (lifecycle.tree === undefined || lifecycle.tree.parentAgentId === envelope.runtimeSessionId) onEvent(lifecycle);
         return;
       }
       case 'compaction':
-        this.options.onEvent({ kind: 'log', level: event.phase === 'failed' ? 'error' : 'info', message: `DSH compaction ${String(event.phase)}` });
+        onEvent({ kind: 'log', level: event.phase === 'failed' ? 'error' : 'info', message: `DSH compaction ${String(event.phase)}` });
         return;
       case 'warning':
-        this.options.onEvent({ kind: 'log', level: 'warn', message: `${string(event.code, 'DSH warning code')}: ${string(event.message, 'DSH warning message')}` });
+        onEvent({ kind: 'log', level: 'warn', message: `${string(event.code, 'DSH warning code')}: ${string(event.message, 'DSH warning message')}` });
         return;
       case 'session':
-        if (event.phase === 'ready') this.options.onEvent({ kind: 'status_change', state: 'idle' });
+        if (event.phase === 'ready') onEvent({ kind: 'status_change', state: 'idle' });
         return;
       case 'turn_terminal': {
         const clientOperationId = string(event.clientOperationId, 'DSH terminal operation id');
         const terminal = object(event.terminal, 'DSH turn terminal');
         if (terminal.usage) {
           const summary = object(terminal.usage, 'DSH terminal usage');
-          this.options.onEvent(usageEvent(summary, 'delta', summary.contextOccupiedTokens, summary.runtimeContextWindow));
+          onEvent(usageEvent(summary, 'delta', summary.contextOccupiedTokens, summary.runtimeContextWindow));
         }
         this.options.onTurnTerminal?.({ clientOperationId, turnId: envelope.turnId, terminal });
-        this.options.onEvent({
+        onEvent({
           kind: 'turn_complete',
           clientOperationId,
           ...terminalStatus(terminal),
@@ -474,7 +547,7 @@ export class DshRuntimeEventProjector {
       case 'retry':
         return;
       default:
-        this.options.onEvent({ kind: 'raw', data: structuredClone(envelope) });
+        onEvent({ kind: 'raw', data: structuredClone(envelope) });
     }
   }
 }

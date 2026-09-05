@@ -7,6 +7,8 @@ import type {
   DshMutationController,
 } from '../integrated-runtimes/dsh/mutations';
 import type { DshRpcObject } from '../integrated-runtimes/dsh/protocol-types';
+import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
+import { isProtocolIdentifier, projectWorkHistory, providerContentFailed, providerIdentity } from '../integrated-runtimes/dsh/history-content';
 import { reconcileDshTurnProjections } from '../SessionStore';
 import type {
   DshProjectionCursor,
@@ -23,7 +25,7 @@ type ProductContentBlock =
       isComplete: true;
     }>
   | Readonly<{
-      type: 'tool_use';
+      type: 'tool_use' | 'server_tool_use';
       tool: {
         id: string;
         name: string;
@@ -31,11 +33,15 @@ type ProductContentBlock =
         inputJson: string;
         result?: string;
         isError?: boolean;
+        providerRouteId?: string;
+        providerBlockType?: string;
+        subagentLifecycle?: SubagentLifecycle;
         streamIndex: number;
       };
     }>;
 
 type AcceptedOperation = Readonly<{
+  origin?: 'collaboration';
   sequence: number;
   clientOperationId: string;
   clientUserMessageId: string;
@@ -53,6 +59,7 @@ type TerminalOperation = Readonly<{
 }>;
 
 export type DshUnsettledTurn = Readonly<{
+  origin?: 'collaboration';
   clientOperationId: string;
   clientUserMessageId: string;
   productTurnId: string;
@@ -65,6 +72,7 @@ export type DshRecoveredTurnProjection = Readonly<{
 
 export type DshNativeRootOperation = DshUnsettledTurn & Readonly<{
   terminal: boolean;
+  consumedUserMessageIds?: readonly string[];
   partialTerminalStatus?: 'stopped' | 'error';
 }>;
 
@@ -73,12 +81,22 @@ export type DshTurnProjectionSnapshot = Readonly<{
   assistantTurns: readonly DshRecoveredTurnProjection[];
   rootOperations: readonly DshNativeRootOperation[];
   unsettledTurns: readonly DshUnsettledTurn[];
+  inputReceipts: readonly DshInputReceipt[];
   runtimeUsageTotals?: MessageUsage;
+}>;
+
+export type DshInputReceipt = Readonly<{
+  clientOperationId: string;
+  clientUserMessageId: string;
+  inputFingerprint: string;
+  sequence: number;
+  state: 'pending' | 'consumed' | 'cancelled';
 }>;
 
 export type DshTurnReconciliationResult = Readonly<{
   transcriptChanged: boolean;
   reconciledOperations: number;
+  settledTurnIds: readonly string[];
   activeTurn?: DshUnsettledTurn;
 }>;
 
@@ -150,6 +168,7 @@ function parseAccepted(event: DshVerifiedHistoryEvent): AcceptedOperation {
   const row = object(event.data, 'DSH operation acceptance');
   return Object.freeze({
     sequence: event.sequence,
+    ...(row.rootContextMessage === true ? { origin: 'collaboration' as const } : {}),
     clientOperationId: string(row.clientOperationId, 'DSH accepted operation id'),
     clientUserMessageId: string(row.clientUserMessageId, 'DSH accepted user message id'),
     productTurnId: string(row.productTurnId, 'DSH accepted Product turn id'),
@@ -261,7 +280,8 @@ function projectOperationContent(
   };
   const events = history.events.filter(owned);
   const content: ProductContentBlock[] = [];
-  const tools = new Map<string, Extract<ProductContentBlock, { type: 'tool_use' }>['tool']>();
+  const tools = new Map<string, Extract<ProductContentBlock, { tool: unknown }>['tool']>();
+  const providerTools = new Map<string, Extract<ProductContentBlock, { tool: unknown }>['tool']>();
   const durableToolCalls = new Set<string>();
   let finalModel: string | undefined;
 
@@ -317,6 +337,34 @@ function projectOperationContent(
           content.push(Object.freeze({ type: 'tool_use', tool }));
           continue;
         }
+        if (type === 'provider-tool-call') {
+          const id = providerIdentity(string(block.id, 'DSH Provider call id'), 'provider-call');
+          if (providerTools.has(id)) throw new Error('DSH Provider call identity is duplicated');
+          const input = object(block.input, 'DSH Provider call input');
+          const name = string(block.name, 'DSH Provider tool name');
+          const tool = {
+            id,
+            name: isProtocolIdentifier(name) ? name : 'Tool',
+            input,
+            inputJson: JSON.stringify(input, null, 2),
+            providerRouteId: providerIdentity(string(source.provider, 'DSH Provider route'), 'provider'),
+            providerBlockType: string(block.providerType, 'DSH Provider block type'),
+            streamIndex: content.length,
+          };
+          providerTools.set(id, tool);
+          content.push(Object.freeze({ type: 'server_tool_use', tool }));
+          continue;
+        }
+        if (type === 'provider-tool-result') {
+          const id = providerIdentity(string(block.toolCallId, 'DSH Provider result call id'), 'provider-call');
+          const tool = providerTools.get(id);
+          if (!tool || tool.result !== undefined) throw new Error('DSH Provider result lacks one unsettled call');
+          tool.result = typeof block.content === 'string' ? block.content
+            : block.content === undefined ? '(no output)' : canonicalJson(block.content);
+          tool.isError = block.isError === true || providerContentFailed(block.content);
+          tool.providerBlockType = string(block.providerType, 'DSH Provider result block type');
+          continue;
+        }
         throw new Error(`Unsupported DSH assistant content block during recovery: ${type}`);
       }
       continue;
@@ -350,11 +398,18 @@ function projectOperationContent(
     if (!tool || tool.result !== undefined) {
       throw new Error('DSH tool-result does not match one unsettled assistant tool block');
     }
-    tool.result = canonicalJson(result.content);
+    tool.result = result.content.map(candidate => {
+      const block = object(candidate, 'DSH tool result content');
+      return block.type === 'text' && typeof block.text === 'string' ? block.text : canonicalJson(block);
+    }).join('\n');
     tool.isError = data.error !== undefined || result.isError === true;
   }
   if ([...tools.entries()].some(([id, tool]) => !durableToolCalls.has(id) || tool.result === undefined)) {
     throw new Error('DSH assistant tool block lacks a settled durable call/result pair');
+  }
+  for (const [callId, tool] of tools) {
+    const lifecycle = projectWorkHistory(history, callId);
+    if (lifecycle !== undefined) tool.subagentLifecycle = lifecycle;
   }
 
   const assistantEventId = string(terminal.terminal.assistantEventId, 'DSH terminal assistant event id');
@@ -396,19 +451,50 @@ export function buildDshTurnProjectionSnapshot(
   const terminalById = uniqueBy(terminals, value => value.clientOperationId, 'DSH terminal operation');
   const claimedByOperation = new Map<string, number[]>();
   const claimedTurnOwners = new Map<number, string>();
+  const claimedMessageIds = new Set<string>();
+  const consumedUsers = new Map<string, string[]>();
+  const identifiedInputs = new Map<string, { operationId: string; userId: string; inputFingerprint: string; sequence: number; cancelled: boolean }>();
+  for (const event of history.events.filter(candidate => candidate.eventType === 'myagents/operation/message')) {
+    const row = object(event.data, 'DSH operation input');
+    if (row.contextMessage === true || row.kind !== 'follow_up') continue;
+    const messageId = string(row.messageId, 'DSH input message id');
+    const operationId = string(row.clientOperationId, 'DSH input operation id');
+    const userId = string(row.clientMessageId, 'DSH input user id');
+    const owner = acceptedById.get(operationId);
+    const prior = identifiedInputs.get(messageId);
+    if (!owner || owner.sequence >= event.sequence || messageId !== userId
+      || (row.state !== 'queued' && row.state !== 'cancelled')) throw new Error('DSH identified input lacks its native owner');
+    if (row.state === 'queued') {
+      if (prior) throw new Error('DSH identified input is duplicated');
+      const inputFingerprint = string(row.inputFingerprint, 'DSH identified input fingerprint');
+      if (!/^[a-f0-9]{64}$/u.test(inputFingerprint)) throw new Error('DSH identified input fingerprint is invalid');
+      identifiedInputs.set(messageId, { operationId, userId, inputFingerprint, sequence: event.sequence, cancelled: false });
+    } else {
+      if (!prior || prior.operationId !== operationId || prior.userId !== userId || prior.cancelled) throw new Error('DSH input cancellation changed its owner');
+      prior.cancelled = true;
+    }
+  }
   for (const event of history.events.filter(candidate => candidate.eventType === 'myagents/operation/claimed')) {
     const row = object(event.data, 'DSH operation claim');
     const operationId = string(row.clientOperationId, 'DSH claimed operation id');
     if (!acceptedById.has(operationId)) throw new Error('DSH operation claim lacks an accepted owner');
     const turn = safeInteger(row.dshTurn, 'DSH claimed native turn', 1);
+    const messageId = string(row.messageId, 'DSH claimed message id');
+    if (claimedMessageIds.has(messageId)) throw new Error('DSH operation repeats one message claim');
+    claimedMessageIds.add(messageId);
+    const input = identifiedInputs.get(messageId);
+    if (input) {
+      if (input.operationId !== operationId || input.sequence >= event.sequence || input.cancelled) throw new Error('DSH consumed input contradicts its native receipt');
+      const users = consumedUsers.get(operationId) ?? [];
+      users.push(input.userId); consumedUsers.set(operationId, users);
+    }
     const priorOwner = claimedTurnOwners.get(turn);
     if (priorOwner && priorOwner !== operationId) throw new Error('DSH native turn has multiple Product owners');
     const claims = claimedByOperation.get(operationId) ?? [];
-    if (claims.includes(turn)) throw new Error('DSH operation repeats one native turn claim');
-    if (claims.length > 0 && claims[claims.length - 1]! >= turn) {
+    if (claims.length > 0 && claims[claims.length - 1]! > turn) {
       throw new Error('DSH operation native turn claims are non-monotonic');
     }
-    claims.push(turn);
+    if (claims.at(-1) !== turn) claims.push(turn);
     claimedByOperation.set(operationId, claims);
     claimedTurnOwners.set(turn, operationId);
   }
@@ -426,6 +512,7 @@ export function buildDshTurnProjectionSnapshot(
       || lookup.admission.clientOperationId !== operation.clientOperationId
       || lookup.admission.turnId !== operation.productTurnId
       || lookup.admission.admittedAt !== expectedAdmittedAt
+      || (lookup.admission.origin === 'collaboration') !== (operation.origin === 'collaboration')
     ) {
       throw new Error('DSH turn/get admission differs from durable Session truth');
     }
@@ -434,10 +521,12 @@ export function buildDshTurnProjectionSnapshot(
       ? undefined
       : string(terminal.terminal.kind, 'DSH terminal kind');
     rootOperations.push(Object.freeze({
+      ...(operation.origin === undefined ? {} : { origin: operation.origin }),
       clientOperationId: operation.clientOperationId,
       clientUserMessageId: operation.clientUserMessageId,
       productTurnId: operation.productTurnId,
       terminal: terminal !== undefined,
+      ...(consumedUsers.has(operation.clientOperationId) ? { consumedUserMessageIds: Object.freeze(consumedUsers.get(operation.clientOperationId)!) } : {}),
       ...(terminalKind === undefined || terminalKind === 'succeeded'
         ? {}
         : { partialTerminalStatus: terminalKind === 'aborted' ? 'stopped' as const : 'error' as const }),
@@ -445,6 +534,7 @@ export function buildDshTurnProjectionSnapshot(
     if (!terminal) {
       if (lookup.terminal) throw new DshHistoryAdvancedError('DSH history advanced after session/read');
       unsettledTurns.push(Object.freeze({
+        ...(operation.origin === undefined ? {} : { origin: operation.origin }),
         clientOperationId: operation.clientOperationId,
         clientUserMessageId: operation.clientUserMessageId,
         productTurnId: operation.productTurnId,
@@ -493,7 +583,9 @@ export function buildDshTurnProjectionSnapshot(
       ...(projected.toolCount > 0 ? { toolCount: projected.toolCount } : {}),
       runtimeTurnAnchor: {
         turnId: operation.productTurnId,
-        rootUserMessageId: operation.clientUserMessageId,
+        ...(operation.origin === 'collaboration'
+          ? { origin: 'collaboration' as const, clientOperationId: operation.clientOperationId }
+          : { rootUserMessageId: operation.clientUserMessageId }),
       },
     };
     assistantTurns.push(Object.freeze({
@@ -519,6 +611,10 @@ export function buildDshTurnProjectionSnapshot(
     assistantTurns: Object.freeze(assistantTurns),
     rootOperations: Object.freeze(rootOperations),
     unsettledTurns: Object.freeze(unsettledTurns),
+    inputReceipts: Object.freeze([...identifiedInputs.entries()].map(([messageId, input]): DshInputReceipt => Object.freeze({
+      clientOperationId: input.operationId, clientUserMessageId: input.userId, inputFingerprint: input.inputFingerprint,
+      sequence: input.sequence, state: input.cancelled ? 'cancelled' : claimedMessageIds.has(messageId) ? 'consumed' : 'pending',
+    }))),
     ...(runtimeUsageTotals ? { runtimeUsageTotals: Object.freeze(runtimeUsageTotals) } : {}),
   });
 }
@@ -565,8 +661,10 @@ export async function reconcileDshTurnsAtStartup(input: {
     cursor: snapshot.cursor,
     assistantMessages: snapshot.assistantTurns.map(turn => turn.assistantMessage),
     nativeRootOperations: snapshot.rootOperations,
+    nativeInputReceipts: snapshot.inputReceipts,
     ...(activeTurn ? {
       unsettledTurn: {
+        ...(activeTurn.origin === undefined ? {} : { origin: activeTurn.origin }),
         clientOperationId: activeTurn.clientOperationId,
         productTurnId: activeTurn.productTurnId,
         clientUserMessageId: activeTurn.clientUserMessageId,
@@ -578,6 +676,7 @@ export async function reconcileDshTurnsAtStartup(input: {
   return Object.freeze({
     transcriptChanged: result.value.transcriptChanged,
     reconciledOperations: snapshot.assistantTurns.length,
+    settledTurnIds: Object.freeze(snapshot.rootOperations.filter(operation => operation.terminal).map(operation => operation.productTurnId)),
     ...(activeTurn ? { activeTurn } : {}),
   });
 }

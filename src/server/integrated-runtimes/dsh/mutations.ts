@@ -63,6 +63,7 @@ export type DshNativeHistory = Readonly<{
 export type DshTurnLookup = Readonly<{
   clientOperationId: string;
   admission?: Readonly<{
+    origin?: 'collaboration';
     clientOperationId: string;
     turnId: string;
     admittedAt: string;
@@ -455,7 +456,9 @@ export class DshMutationController {
       if (!Number.isFinite(Date.parse(admittedAt))) {
         throw new Error('DSH turn admission timestamp is invalid');
       }
+      if (row.origin !== undefined && row.origin !== 'user' && row.origin !== 'collaboration') throw new Error('DSH turn admission origin is invalid');
       admission = Object.freeze({
+        ...(row.origin === 'collaboration' ? { origin: 'collaboration' as const } : {}),
         clientOperationId: expectedId,
         turnId: string(row.turnId, 'DSH admitted turn id'),
         admittedAt,

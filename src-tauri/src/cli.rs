@@ -103,7 +103,7 @@ pub fn is_cli_mode(args: &[String]) -> bool {
     args.first().is_some_and(|arg| arg == CLI_BOOTSTRAP_ARG)
         || args
             .iter()
-            .any(|arg| CLI_COMMANDS.contains(&arg.as_str()) || arg == "--help" || arg == "-h")
+            .any(|arg| CLI_COMMANDS.contains(&arg.as_str()) || arg == "--help" || arg == "-h" || arg == "--version")
 }
 
 fn forwarded_cli_args(args: &[String]) -> &[String] {
@@ -151,7 +151,8 @@ pub fn run(args: &[String]) -> i32 {
     // Preserve an explicit Session port. Only terminal-style invocations with
     // no inherited port may fall back to the Global Sidecar port file.
     let inherited_port = std::env::var("MYAGENTS_PORT").ok();
-    if should_inject_global_port(inherited_port.as_deref()) {
+    let inherited_session = std::env::var("MYAGENTS_SESSION_ID").ok();
+    if should_inject_global_port(inherited_port.as_deref(), inherited_session.as_deref()) {
         if let Some(port) = discover_sidecar_port() {
             command.env("MYAGENTS_PORT", port);
         }
@@ -177,8 +178,9 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-fn should_inject_global_port(inherited_port: Option<&str>) -> bool {
-    !matches!(inherited_port, Some(value) if !value.trim().is_empty())
+fn should_inject_global_port(inherited_port: Option<&str>, inherited_session: Option<&str>) -> bool {
+    inherited_session.is_none()
+        && !matches!(inherited_port, Some(value) if !value.trim().is_empty())
 }
 
 /// Reconcile the product-owned CLI launchers against the current app binary.
@@ -792,15 +794,20 @@ mod tests {
 
     #[test]
     fn direct_binary_groups_remain_backwards_compatible() {
+        assert!(is_cli_mode(&["--version".to_string()]));
         assert!(is_cli_mode(&["mcp".to_string(), "list".to_string()]));
         assert!(!is_cli_mode(&["myagents://open".to_string()]));
     }
 
     #[test]
     fn session_port_prevents_global_port_injection() {
-        assert!(!should_inject_global_port(Some("31417")));
-        assert!(should_inject_global_port(Some("  ")));
-        assert!(should_inject_global_port(None));
+        assert!(!should_inject_global_port(Some("31417"), None));
+        assert!(should_inject_global_port(Some("  "), None));
+        assert!(should_inject_global_port(None, None));
+        assert!(!should_inject_global_port(None, Some("session-a")));
+        assert!(!should_inject_global_port(Some(""), Some("session-a")));
+        assert!(!should_inject_global_port(Some("invalid"), Some("session-a")));
+        assert!(!should_inject_global_port(None, Some("")));
     }
 
     #[test]

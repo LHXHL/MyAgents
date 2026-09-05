@@ -1,5 +1,3 @@
-import type { McpServerDefinition } from '../../../../shared/config-types';
-import type { InteractionScenario } from '../../../system-prompt';
 import type {
   ProductDynamicToolSpec,
   ProductExtensionApplyState,
@@ -30,40 +28,9 @@ export interface ManagedCodexExtensionUpdateResult {
   error?: string;
 }
 
-export interface ManagedCodexCommandSpec {
-  name: string;
-  description: string;
-  body: string;
-  scope: 'project' | 'user' | 'plugin';
-  sourceId: string;
-  sourceLocalId?: string;
-}
-
-export interface ManagedCodexSkillSpec {
-  name: string;
-  description: string;
-  /** Digest of the trusted SKILL.md contents; never the user-authored body. */
-  contentSha256: string;
-  path: string;
-  scope: 'project' | 'user' | 'plugin';
-  sourceId: string;
-  sourceLocalId?: string;
-}
-
-export interface ManagedCodexAgentRoleSpec {
-  name: string;
-  description: string;
-  prompt: string;
-  model?: string;
-  /** Runtime-specific visible tool allowlist. Omitted means inherit the eligible parent catalog. */
-  tools?: string[];
-  /** Tools removed after inheritance/allowlist resolution. */
-  disallowedTools?: string[];
-  maxTurns?: number;
-  skills: Array<{ name: string; path: string }>;
-  scope: 'project' | 'user' | 'plugin';
-  sourceId: string;
-}
+export type ManagedCodexCommandSpec = import("../../product-extensions/contracts").ProductCommandSpec;
+export type ManagedCodexSkillSpec = import("../../product-extensions/contracts").ProductSkillSpec;
+export type ManagedCodexAgentRoleSpec = import("../../product-extensions/contracts").ProductAgentRoleSpec;
 
 export type ManagedCodexDynamicToolSpec = ProductDynamicToolSpec;
 export type ManagedCodexHostToolCall = ProductHostToolCall;
@@ -71,23 +38,6 @@ export type ManagedCodexHostToolContentItem = ProductHostToolContentItem;
 export type ManagedCodexHostToolResult = ProductHostToolResult;
 export type ManagedCodexHostToolDispatcher = ProductHostToolDispatcher;
 
-export interface ManagedCodexExtensionSnapshot {
-  revision: string;
-  workspacePath: string;
-  scenario: InteractionScenario;
-  enabledPluginIds: string[];
-  skills: ManagedCodexSkillSpec[];
-  commands: ManagedCodexCommandSpec[];
-  agents: ManagedCodexAgentRoleSpec[];
-  mcpServers: McpServerDefinition[];
-  dynamicTools: ManagedCodexDynamicToolSpec[];
-  hostToolDispatcher?: ManagedCodexHostToolDispatcher;
-  components: ManagedCodexExtensionComponentResult[];
-}
 
-export interface ManagedCodexCommandExpansion {
-  commandName: string;
-  rawText: string;
-  runtimeText: string;
-  revision: string;
-}
+export type ManagedCodexExtensionSnapshot = import("../../product-extensions/contracts").ProductExtensionSnapshot;
+export type ManagedCodexCommandExpansion = import("../../product-extensions/contracts").ProductCommandExpansion;

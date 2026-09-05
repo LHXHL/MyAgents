@@ -101,6 +101,7 @@ export interface SimpleChatInputProps {
   onOpenAgentSettings?: () => void;
   /** Open the active Runtime's authoritative exact permission-rule inspector. */
   onManagePermissionRules?: () => void;
+  onManageAgentWork?: () => void;
   onWorkspaceRefresh?: () => void;
   cronModeEnabled?: boolean;
   cronConfig?: {

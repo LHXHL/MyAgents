@@ -92,6 +92,40 @@ describe('DshRuntimeEventProjector', () => {
     });
   });
 
+  it('projects root child identities and does not attach deep child calls to the root transcript', async () => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event) });
+    const snapshot = { taskId: 'task-1', agentId: 'child-1', agentType: 'general-purpose', description: 'Fixture child',
+      parentToolCallId: 'call-reused', model: 'fixture-model', mode: 'continuable', state: 'succeeded',
+      startedAt: '2026-08-30T00:00:00.000Z', finishedAt: '2026-08-30T00:00:01.000Z', handleState: 'open', handleRevision: 19,
+      activation: { id: 'epoch-1', ordinal: 1, state: 'completed' },
+      modelRoute: { provider: 'fixture-provider', profileRevision: 'profile-child', selection: 'fixed' },
+      tree: { rootAgentId: 'runtime-session-1', parentAgentId: 'runtime-session-1', depth: 1 } };
+    await projector.accept(envelope(1, { kind: 'work', snapshot }));
+    await projector.accept(envelope(2, { kind: 'work', snapshot: { ...snapshot, taskId: 'task-2', agentId: 'grandchild',
+      tree: { ...snapshot.tree, parentAgentId: 'child-1', depth: 2 } } }));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ agentId: 'child-1', handleRevision: 19, modelRoute: snapshot.modelRoute, tree: snapshot.tree });
+  });
+
+  it('keeps automatic Root admission and user injection receipts distinct', async () => {
+    const events: UnifiedEvent[] = [];
+    const admitted = vi.fn();
+    const emitted = vi.fn((event: UnifiedEvent) => events.push(event));
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1',
+      onEvent: emitted, onCollaborationAdmitted: admitted,
+      clientUserMessageIdForInjection: id => id === 'product-user-1' ? id : undefined });
+    await projector.accept(envelope(1, { kind: 'turn_admitted', admission: {
+      clientOperationId: 'auto-1', turnId: 'auto-turn-1', admittedAt: '2026-08-30T00:00:00.000Z', origin: 'collaboration' } }));
+    await projector.accept(envelope(2, { kind: 'queued_message', messageId: 'work-report-1', state: 'delivered' }));
+    await projector.accept(envelope(3, { kind: 'queued_message', messageId: 'product-user-1', state: 'queued' }));
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({ kind: 'root_turn_admitted' }), 'auto-turn-1');
+    expect(events).toEqual([{ kind: 'root_turn_admitted', origin: 'collaboration', clientOperationId: 'auto-1', runtimeTurnId: 'auto-turn-1' }]);
+    await projector.accept(envelope(4, { kind: 'queued_message', messageId: 'product-user-1', state: 'cancelled' }));
+    expect(events.at(-1)).toEqual({ kind: 'user_message_cancelled', clientUserMessageId: 'product-user-1' });
+    expect(admitted).toHaveBeenCalledExactlyOnceWith('auto-1', 'auto-turn-1');
+  });
+
   it('accepts exact replay but fails closed on conflicts, gaps, and generation drift', async () => {
     const projector = new DshRuntimeEventProjector({
       productSessionId: 'product-session-1',
@@ -309,7 +343,9 @@ describe('DshRuntimeEventProjector', () => {
         description: 'Inspect the workspace',
         mode: 'continuable',
         model: 'deepseek-chat',
-        state: 'succeeded',
+        state: 'aborted',
+        handleState: 'closed',
+        activation: { id: 'activation-1', ordinal: 1, state: 'completed' },
         startedAt: '2026-08-30T00:00:00.000Z',
         finishedAt: '2026-08-30T00:00:02.000Z',
         result: 'Done',
@@ -343,6 +379,8 @@ describe('DshRuntimeEventProjector', () => {
       kind: 'subagent_lifecycle',
       parentToolUseId: 'agent-call-1',
       status: 'completed',
+      handleState: 'closed',
+      activation: { id: 'activation-1', ordinal: 1, state: 'completed' },
       observedAt: Date.parse('2026-08-30T00:00:02.000Z'),
       agentType: 'Explore',
       description: 'Inspect the workspace',

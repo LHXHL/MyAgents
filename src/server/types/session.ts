@@ -90,6 +90,8 @@ export interface SessionMetadata {
     pendingDshMutation?: PendingDshMutation;
     /** Product-owned root-turn admission retained until exact DSH terminal settlement. */
     pendingDshRootOperation?: PendingDshRootOperation;
+    /** Bounded Product input intents awaiting native consumption/cancellation. */
+    pendingDshInputs?: PendingDshInput[];
     /** Last verified DSH durable head reconciled into the Product transcript projection. */
     dshProjectionCursor?: DshProjectionCursor;
     /** Runtime-level cumulative usage totals for restore-safe delta calculation. */
@@ -252,10 +254,17 @@ export interface SessionMessage {
     metadata?: MessageSourceMetadata;
 }
 
-export interface RuntimeTurnAnchor {
+export type RuntimeTurnAnchor = {
     turnId: string;
     rootUserMessageId: string;
-}
+    origin?: 'user';
+    clientOperationId?: string;
+} | {
+    turnId: string;
+    origin: 'collaboration';
+    clientOperationId: string;
+    rootUserMessageId?: never;
+};
 
 export interface RuntimeOperationAnchor {
     runtime: 'dsh';
@@ -279,6 +288,14 @@ export interface PendingDshRootOperation {
     productImageSha256: string[];
     /** Digest of the immutable Product user/input projection used for replay. */
     productInputFingerprint: string;
+}
+
+export interface PendingDshInput extends PendingDshRootOperation {
+    queueId: string;
+    userMessage: SessionMessage;
+    runtimeInputFingerprint: string;
+    delivery: 'realtime';
+    state: 'pending' | 'cancel_requested';
 }
 
 export type PendingConversationMutation =

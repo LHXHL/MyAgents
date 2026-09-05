@@ -61,6 +61,18 @@ afterEach(() => {
 });
 
 describe('Managed Codex extension compiler', () => {
+  it('preserves complete Skill declarations for DSH admission while retaining Managed Codex policy', () => {
+    const workspace = tempRoot();
+    for (const [name, fields] of [['guidance', 'allowed-tools: Bash(example:*)'], ['forked', 'context: fork\nagent: Explore']]) {
+      write(join(workspace, '.claude', 'skills', name!, 'SKILL.md'), `---\nname: ${name}\ndescription: Fixture\n${fields}\n---\nInstructions.`);
+    }
+    const input = { workspacePath: workspace, scenario: { type: 'desktop' as const, surface: 'chat' as const }, mcpServers: [], userConfigRoot: null };
+    const dsh = compileManagedCodexExtensionSnapshot({ ...input, agentRoleTarget: 'dsh' });
+    expect(dsh.skills.map(skill => skill.name)).toEqual(['forked', 'guidance']);
+    expect(dsh.skills.find(skill => skill.name === 'guidance')?.frontmatter?.['allowed-tools']).toBe('Bash(example:*)');
+    expect(compileManagedCodexExtensionSnapshot(input).skills).toEqual([]);
+  });
+
   it('expands a Unicode filename-derived Command even when its display name contains spaces', () => {
     const workspace = tempRoot();
     const userRoot = tempRoot();

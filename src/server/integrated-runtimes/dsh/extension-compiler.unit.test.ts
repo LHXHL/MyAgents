@@ -42,6 +42,30 @@ describe('DSH declarative extension compiler', () => {
     expect(Object.isFrozen(first.mcpLaunchPolicy)).toBe(true);
   });
 
+  it('keeps tool-guidance Skills and isolates execution-context semantics without changing other components', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myagents-dsh-skill-admission-'));
+    const definitions = [
+      ['guidance', 'allowed-tools: Bash(example:*)\n'],
+      ['forked', 'context: fork\nagent: Explore\n'],
+      ['user-only', 'disable-model-invocation: true\nuser-invocable: true\n'],
+    ];
+    const skills = definitions.map(([name, metadata]) => {
+      const content = `---\nname: ${name}\ndescription: Fixture\n${metadata}---\n\nSynthetic instructions.\n`;
+      const path = join(root, `${name}.md`);
+      writeFileSync(path, content);
+      return { name: name!, description: 'Fixture', contentSha256: sha256(content), path, scope: 'user' as const, sourceId: 'global' };
+    });
+    const plane = compileDshProductExtensionPlane(source({ skills }));
+    expect(plane.snapshot.components.map(component => component.id)).toEqual(['guidance', 'user-only']);
+    expect(plane.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'guidance', code: 'dsh_skill_tool_guidance', state: 'applied' }),
+      expect.objectContaining({ id: 'forked', code: 'dsh_skill_execution_context_unsupported', state: 'unsupported' }),
+    ]));
+    expect(plane.snapshot.components.find(component => component.id === 'user-only')).toMatchObject({
+      descriptor: { invocation: { modelInvocable: false, userInvocable: true } },
+    });
+  });
+
   it('projects Product Skills, commands, agents, remote MCP, and Host tools without secrets', () => {
     const root = mkdtempSync(join(tmpdir(), 'myagents-dsh-extension-'));
     const skillPath = join(root, 'SKILL.md');
@@ -270,7 +294,7 @@ describe('DSH declarative extension compiler', () => {
     const skillPath = join(root, 'SKILL.md');
     writeFileSync(skillPath, '# Changed\n', 'utf8');
 
-    expect(() => compileDshProductExtensionPlane(source({
+    expect(compileDshProductExtensionPlane(source({
       skills: [{
         name: 'review',
         description: 'Review',
@@ -279,7 +303,9 @@ describe('DSH declarative extension compiler', () => {
         scope: 'project',
         sourceId: 'workspace',
       }],
-    }))).toThrow(/changed after Product capability admission/u);
+    })).diagnostics).toContainEqual(expect.objectContaining({
+      component: 'skills', state: 'failed', code: 'dsh_skill_descriptor_invalid',
+    }));
 
     const degraded = compileDshProductExtensionPlane(source({
       mcpServers: [{

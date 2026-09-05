@@ -19,6 +19,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 import type { DshProjectionCursor, MessageUsage, PendingConversationMutation, PendingDshMutation, PendingDshRootOperation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
+import type { PendingDshInput } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
@@ -791,7 +792,14 @@ export async function saveSessionMetadata(session: SessionMetadata): Promise<voi
         const index = all.findIndex(s => s.id === session.id);
 
         if (index >= 0) {
-            all[index] = session;
+            const current = all[index]!;
+            if (current.pendingDshInputs?.length && (session.runtimeSessionId !== current.runtimeSessionId
+                || JSON.stringify(session.runtimeBinding) !== JSON.stringify(current.runtimeBinding))) {
+                throw new Error('Pending DSH input intents prevent changing Runtime Session authority');
+            }
+            // Full metadata callers do not own input settlement. A stale
+            // snapshot must neither erase a pending intent nor resurrect one.
+            all[index] = { ...session, pendingDshInputs: current.pendingDshInputs };
         } else {
             all.push(session);
         }
@@ -1337,6 +1345,7 @@ export async function beginDshRootOperation(input: {
                     || !sessionUsesDsh(current)
                     || current.runtimeSessionId !== input.runtimeSessionId
                     || current.pendingDshMutation
+                    || (current.pendingDshInputs?.length ?? 0) > 0
                 ) {
                     return dshMutationFailure('precondition_failed', 'The DSH Session authority changed before root admission');
                 }
@@ -1355,6 +1364,90 @@ export async function beginDshRootOperation(input: {
     } catch (error) {
         return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error));
     }
+}
+
+/** Product input intent lands before the native follow-up request can be sent. */
+export async function beginDshInput(input: {
+    sessionId: string;
+    runtimeSessionId: string;
+    clientOperationId: string;
+    queueId: string;
+    userMessage: SessionMessage;
+    productImageSha256: readonly string[];
+    runtimeInputFingerprint: string;
+}): Promise<DshMutationStoreResult<PendingDshInput>> {
+    ensureStorageDir();
+    try {
+        const pending: PendingDshInput = {
+            schemaVersion: 1, clientOperationId: input.clientOperationId, clientUserMessageId: input.userMessage.id,
+            sourceRuntimeSessionId: input.runtimeSessionId, queueId: input.queueId, userMessage: structuredClone(input.userMessage),
+            productImageSha256: [...input.productImageSha256],
+            productInputFingerprint: fingerprintDshProductInput(input.userMessage, input.clientOperationId, input.productImageSha256),
+            runtimeInputFingerprint: input.runtimeInputFingerprint, delivery: 'realtime', state: 'pending',
+        };
+        if (![input.clientOperationId, input.queueId, input.userMessage.id].every(validDshOperationIdentifier)
+            || !/^[a-f0-9]{64}$/u.test(input.runtimeInputFingerprint)
+            || input.userMessage.runtimeOperationAnchor?.clientOperationId !== input.clientOperationId
+            || input.userMessage.runtimeOperationAnchor.runtimeSessionId !== input.runtimeSessionId) {
+            return dshMutationFailure('precondition_failed', 'The DSH input intent identity is invalid');
+        }
+        return await withSessionFileLock(input.sessionId, () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = all[index];
+            if (!current || !sessionUsesDsh(current) || current.runtimeSessionId !== input.runtimeSessionId || current.pendingDshMutation) {
+                return dshMutationFailure('precondition_failed', 'The DSH input intent lost its Product Session authority');
+            }
+            const inputs = current.pendingDshInputs ?? [];
+            const existing = inputs.find(item => item.clientUserMessageId === pending.clientUserMessageId);
+            if (existing) {
+                if (JSON.stringify({ ...existing, state: 'pending' }) !== JSON.stringify(pending)) return dshMutationFailure('precondition_failed', 'The DSH input retry changed immutable Product input');
+                return { success: true, value: structuredClone(existing) };
+            }
+            if (inputs.some(item => item.queueId === input.queueId) || inputs.length >= 32
+                || Buffer.byteLength(JSON.stringify([...inputs, pending])) > 8 * 1024 * 1024) {
+                return dshMutationFailure('precondition_failed', 'The DSH pending input journal is full or its queue identity is reused');
+            }
+            if (readSessionMessagesForMutation(input.sessionId).some(message => message.id === pending.clientUserMessageId)) {
+                return dshMutationFailure('precondition_failed', 'The DSH input identity is already in Product history');
+            }
+            all[index] = { ...current, pendingDshInputs: [...inputs, pending] };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: structuredClone(pending) };
+        }));
+    } catch (error) { return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error)); }
+}
+
+/** Record cancel intent or retire the exact journal after a native receipt. */
+export async function settleDshInput(input: {
+    sessionId: string; clientOperationId: string; clientUserMessageId: string;
+    state: 'cancel_requested' | 'cancelled' | 'projected';
+}): Promise<DshMutationStoreResult<{ settled: boolean }>> {
+    ensureStorageDir();
+    try {
+        return await withSessionFileLock(input.sessionId, () => withSessionsLock(async () => {
+            const all = readSessionsIndexForWrite();
+            const index = all.findIndex(session => session.id === input.sessionId);
+            const current = all[index];
+            const inputs = current?.pendingDshInputs ?? [];
+            const pending = inputs.find(item => item.clientUserMessageId === input.clientUserMessageId);
+            if (!current || !pending) return { success: true, value: { settled: false } };
+            if (!sessionUsesDsh(current) || current.runtimeSessionId !== pending.sourceRuntimeSessionId || current.pendingDshMutation
+                || pending.clientOperationId !== input.clientOperationId) return dshMutationFailure('precondition_failed', 'The DSH input settlement changed its owner');
+            const users = readSessionMessagesForMutation(input.sessionId).filter(message => message.id === input.clientUserMessageId);
+            if (input.state === 'projected') {
+                if (users.length !== 1) return dshMutationFailure('storage_consistency_error', 'A consumed DSH input has no exact durable Product projection');
+                assertDshProductInputMatches(pending, users[0]!);
+            } else if (input.state === 'cancelled' && users.length > 0) {
+                return dshMutationFailure('storage_consistency_error', 'A consumed Product input cannot be cancelled');
+            }
+            const next = input.state === 'cancel_requested' ? inputs.map(item => item === pending ? { ...item, state: 'cancel_requested' as const } : item)
+                : inputs.filter(item => item !== pending);
+            all[index] = { ...current, pendingDshInputs: next.length ? next : undefined };
+            atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+            return { success: true, value: { settled: input.state !== 'cancel_requested' } };
+        }));
+    } catch (error) { return dshMutationFailure('write_error', error instanceof Error ? error.message : String(error)); }
 }
 
 /** Clear a journal only when its root user never became durable. */
@@ -1430,7 +1523,13 @@ export async function reconcileDshTurnProjections(input: {
     runtimeSessionId: string;
     cursor: DshProjectionCursor;
     assistantMessages: readonly SessionMessage[];
+    nativeInputReceipts?: readonly {
+        clientOperationId: string; clientUserMessageId: string; inputFingerprint: string;
+        sequence: number; state: 'pending' | 'consumed' | 'cancelled';
+    }[];
     nativeRootOperations: readonly {
+        origin?: 'collaboration';
+        consumedUserMessageIds?: readonly string[];
         clientOperationId: string;
         clientUserMessageId: string;
         productTurnId: string;
@@ -1438,6 +1537,7 @@ export async function reconcileDshTurnProjections(input: {
         partialTerminalStatus?: 'stopped' | 'error';
     }[];
     unsettledTurn?: {
+        origin?: 'collaboration';
         clientOperationId: string;
         productTurnId: string;
         clientUserMessageId: string;
@@ -1469,12 +1569,14 @@ export async function reconcileDshTurnProjections(input: {
                 const nativeRoots = new Map<string, (typeof input.nativeRootOperations)[number]>();
                 const nativeRootsByTurn = new Map<string, (typeof input.nativeRootOperations)[number]>();
                 const nativeRootsByUser = new Map<string, (typeof input.nativeRootOperations)[number]>();
+                const consumedUserOwners = new Map<string, string>();
                 for (const operation of input.nativeRootOperations) {
                     if (
                         !validDshOperationIdentifier(operation.clientOperationId)
                         || !validDshOperationIdentifier(operation.clientUserMessageId)
                         || !validDshOperationIdentifier(operation.productTurnId)
                         || typeof operation.terminal !== 'boolean'
+                        || (operation.origin !== undefined && operation.origin !== 'collaboration')
                         || (
                             operation.partialTerminalStatus !== undefined
                             && operation.partialTerminalStatus !== 'stopped'
@@ -1490,6 +1592,15 @@ export async function reconcileDshTurnProjections(input: {
                     nativeRoots.set(operation.clientOperationId, operation);
                     nativeRootsByTurn.set(operation.productTurnId, operation);
                     nativeRootsByUser.set(operation.clientUserMessageId, operation);
+                    for (const userId of operation.consumedUserMessageIds ?? []) {
+                        if (!validDshOperationIdentifier(userId) || consumedUserOwners.has(userId)) {
+                            return dshMutationFailure('storage_consistency_error', 'The DSH consumed user identity is ambiguous');
+                        }
+                        consumedUserOwners.set(userId, operation.clientOperationId);
+                    }
+                }
+                if ([...consumedUserOwners.keys()].some(id => nativeRootsByUser.has(id))) {
+                    return dshMutationFailure('storage_consistency_error', 'A DSH continuation cannot borrow a root user');
                 }
 
                 const projectedIds = new Set<string>();
@@ -1497,8 +1608,114 @@ export async function reconcileDshTurnProjections(input: {
                 const projectedRoots = new Set<string>();
                 const target = [...messages];
                 let transcriptChanged = false;
+                const retainedInputs = [...(current.pendingDshInputs ?? [])];
+                const receiptIds = new Set<string>();
+                for (const receipt of input.nativeInputReceipts ?? []) {
+                    if (receiptIds.has(receipt.clientUserMessageId) || !nativeRoots.has(receipt.clientOperationId)
+                        || !/^[a-f0-9]{64}$/u.test(receipt.inputFingerprint)) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH input receipt set is ambiguous');
+                    }
+                    if ((nativeRoots.get(receipt.clientOperationId)?.consumedUserMessageIds?.includes(receipt.clientUserMessageId) ?? false)
+                        !== (receipt.state === 'consumed')) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH input receipt contradicts its consumed operation association');
+                    }
+                    receiptIds.add(receipt.clientUserMessageId);
+                    const pending = retainedInputs.find(item => item.clientUserMessageId === receipt.clientUserMessageId);
+                    if (!pending) continue;
+                    if (pending.sourceRuntimeSessionId !== input.runtimeSessionId || pending.clientOperationId !== receipt.clientOperationId
+                        || pending.runtimeInputFingerprint !== receipt.inputFingerprint) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH receipt changed its durable Product input');
+                    }
+                    assertDshProductInputMatches(pending, pending.userMessage);
+                    if (receipt.state === 'pending') continue;
+                    const existing = target.filter(message => message.id === pending.clientUserMessageId);
+                    if (receipt.state === 'cancelled') {
+                        if (existing.length) return dshMutationFailure('storage_consistency_error', 'DSH cancelled an input already projected as consumed');
+                    } else {
+                        const native = nativeRoots.get(receipt.clientOperationId)!;
+                        const consumed = native.consumedUserMessageIds ?? [];
+                        const position = consumed.indexOf(pending.clientUserMessageId);
+                        if (position < 0 || existing.length > 1) return dshMutationFailure('storage_consistency_error', 'The DSH consumed input lacks its operation association');
+                        if (existing.length === 1) assertDshProductInputMatches(pending, existing[0]!);
+                        else {
+                            const predecessor = position > 0 ? consumed[position - 1] : native.origin === 'collaboration' ? undefined : native.clientUserMessageId;
+                            let insertion: number;
+                            if (predecessor !== undefined) {
+                                const indexes = target.flatMap((message, index) => message.role === 'user' && message.id === predecessor ? [index] : []);
+                                if (indexes.length !== 1) return dshMutationFailure('storage_consistency_error', 'The recovered DSH input lost its preceding Product input');
+                                insertion = indexes[0]! + 1;
+                            } else {
+                                const order = input.nativeRootOperations.indexOf(native);
+                                const index = target.findIndex(message => {
+                                    const other = message.runtimeTurnAnchor ? nativeRootsByTurn.get(message.runtimeTurnAnchor.turnId)
+                                        : message.runtimeOperationAnchor ? nativeRoots.get(message.runtimeOperationAnchor.clientOperationId) : undefined;
+                                    return other ? input.nativeRootOperations.indexOf(other) >= order
+                                        : message.role === 'user' && message.runtimeOperationAnchor?.runtime === 'dsh';
+                                });
+                                insertion = index < 0 ? target.length : index;
+                            }
+                            target.splice(insertion, 0, structuredClone(pending.userMessage)); transcriptChanged = true;
+                        }
+                    }
+                    retainedInputs.splice(retainedInputs.indexOf(pending), 1);
+                }
+                const lastConsumedUserIndex = (native: (typeof input.nativeRootOperations)[number], rootIndex?: number): number | undefined => {
+                    let previous = rootIndex;
+                    for (const userId of native.consumedUserMessageIds ?? []) {
+                        const matches = target.flatMap((message, index) => message.role === 'user' && message.id === userId ? [index] : []);
+                        const index = matches[0];
+                        if (matches.length !== 1 || index === undefined || (previous !== undefined && index !== previous + 1)) {
+                            throw new Error('The DSH consumed input is missing, duplicated or out of order in Product history');
+                        }
+                        const anchor = target[index]!.runtimeOperationAnchor;
+                        if (anchor && (anchor.clientOperationId !== native.clientOperationId || anchor.runtimeSessionId !== input.runtimeSessionId)) {
+                            throw new Error('The DSH consumed input changed its Product operation owner');
+                        }
+                        previous = index;
+                    }
+                    return previous;
+                };
                 for (const assistant of input.assistantMessages) {
                     const anchor = assistant.runtimeTurnAnchor;
+                    if (anchor?.origin === 'collaboration') {
+                        const native = nativeRootsByTurn.get(anchor.turnId);
+                        if (assistant.role !== 'assistant' || !assistant.id || !native?.terminal || native.origin !== 'collaboration'
+                            || native.clientOperationId !== anchor.clientOperationId || anchor.rootUserMessageId !== undefined
+                            || projectedIds.has(assistant.id) || projectedTurns.has(anchor.turnId)) {
+                            return dshMutationFailure('storage_consistency_error', 'The DSH collaboration projection lacks its native owner');
+                        }
+                        projectedIds.add(assistant.id); projectedTurns.add(anchor.turnId);
+                        const lastInputIndex = lastConsumedUserIndex(native);
+                        const matches = target.flatMap((message, index) => message.role === 'assistant'
+                            && message.runtimeTurnAnchor?.turnId === anchor.turnId ? [{ message, index }] : []);
+                        if (matches.length > 1 || (matches[0] && (matches[0].message.runtimeTurnAnchor?.origin !== 'collaboration'
+                            || matches[0].message.runtimeTurnAnchor.clientOperationId !== native.clientOperationId))) {
+                            return dshMutationFailure('storage_consistency_error', 'The Product transcript changed a collaboration owner');
+                        }
+                        const existing = matches[0];
+                        if (existing) {
+                            if (lastInputIndex !== undefined && existing.index !== lastInputIndex + 1) {
+                                return dshMutationFailure('storage_consistency_error', 'The collaboration assistant precedes its consumed Product input');
+                            }
+                            const repaired = { ...structuredClone(assistant), id: existing.message.id };
+                            if (JSON.stringify(existing.message) !== JSON.stringify(repaired)) { target[existing.index] = repaired; transcriptChanged = true; }
+                        } else {
+                            if (target.some(message => message.id === assistant.id)) return dshMutationFailure('storage_consistency_error', 'The collaboration assistant id is already owned');
+                            const order = input.nativeRootOperations.indexOf(native);
+                            const insertion = target.findIndex(message => {
+                                const other = message.runtimeTurnAnchor ? nativeRootsByTurn.get(message.runtimeTurnAnchor.turnId)
+                                    : message.runtimeOperationAnchor ? nativeRoots.get(message.runtimeOperationAnchor.clientOperationId) : undefined;
+                                return other ? input.nativeRootOperations.indexOf(other) > order
+                                    : message.role === 'user' && message.runtimeOperationAnchor?.runtime === 'dsh';
+                            });
+                            const position = insertion < 0 ? target.length : insertion;
+                            if (lastInputIndex !== undefined && position !== lastInputIndex + 1) {
+                                return dshMutationFailure('storage_consistency_error', 'The collaboration input overlaps another Product operation');
+                            }
+                            target.splice(position, 0, structuredClone(assistant)); transcriptChanged = true;
+                        }
+                        continue;
+                    }
                     if (
                         assistant.role !== 'assistant'
                         || !assistant.id
@@ -1513,6 +1730,10 @@ export async function reconcileDshTurnProjections(input: {
                     projectedIds.add(assistant.id);
                     projectedTurns.add(anchor.turnId);
                     projectedRoots.add(anchor.rootUserMessageId);
+                    const native = nativeRootsByTurn.get(anchor.turnId);
+                    if (!native?.terminal || native.origin === 'collaboration' || native.clientUserMessageId !== anchor.rootUserMessageId) {
+                        return dshMutationFailure('storage_consistency_error', 'The DSH assistant lacks its exact native user operation');
+                    }
 
                     const userIndexes = target.flatMap((message, messageIndex) => (
                         message.role === 'user' && message.id === anchor.rootUserMessageId
@@ -1522,6 +1743,7 @@ export async function reconcileDshTurnProjections(input: {
                     if (userIndexes.length !== 1) {
                         return dshMutationFailure('storage_consistency_error', 'The DSH root user projection is missing or duplicated');
                     }
+                    const insertionIndex = lastConsumedUserIndex(native, userIndexes[0]!)! + 1;
                     const matchingAssistants = target.flatMap((message, messageIndex) => {
                         if (message.role !== 'assistant' || !message.runtimeTurnAnchor) return [];
                         const candidate = message.runtimeTurnAnchor;
@@ -1537,7 +1759,7 @@ export async function reconcileDshTurnProjections(input: {
                         if (
                             existing.message.runtimeTurnAnchor?.turnId !== anchor.turnId
                             || existing.message.runtimeTurnAnchor.rootUserMessageId !== anchor.rootUserMessageId
-                            || existing.messageIndex !== userIndexes[0]! + 1
+                            || existing.messageIndex !== insertionIndex
                         ) {
                             return dshMutationFailure('storage_consistency_error', 'The Product transcript changed a DSH terminal anchor');
                         }
@@ -1551,7 +1773,6 @@ export async function reconcileDshTurnProjections(input: {
                     if (target.some(message => message.id === assistant.id)) {
                         return dshMutationFailure('storage_consistency_error', 'The deterministic DSH assistant id is already owned');
                     }
-                    const insertionIndex = userIndexes[0]! + 1;
                     const next = target[insertionIndex];
                     if (next?.role === 'assistant') {
                         return dshMutationFailure('storage_consistency_error', 'An unowned Product assistant occupies the DSH turn projection');
@@ -1565,9 +1786,11 @@ export async function reconcileDshTurnProjections(input: {
                     const message = target[messageIndex]!;
                     if (message.role !== 'assistant' || message.runtimeTurnAnchor === undefined) continue;
                     const anchor = message.runtimeTurnAnchor;
-                    if (projectedTurns.has(anchor.turnId) && projectedRoots.has(anchor.rootUserMessageId)) continue;
+                    if (projectedTurns.has(anchor.turnId) && (anchor.origin === 'collaboration' || projectedRoots.has(anchor.rootUserMessageId))) continue;
                     const nativeByTurn = nativeRootsByTurn.get(anchor.turnId);
-                    const nativeByUser = nativeRootsByUser.get(anchor.rootUserMessageId);
+                    const nativeByUser = anchor.origin === 'collaboration'
+                        ? nativeByTurn?.origin === 'collaboration' && nativeByTurn.clientOperationId === anchor.clientOperationId ? nativeByTurn : undefined
+                        : nativeRootsByUser.get(anchor.rootUserMessageId);
                     if (
                         nativeByTurn === undefined
                         || nativeByTurn !== nativeByUser
@@ -1575,12 +1798,12 @@ export async function reconcileDshTurnProjections(input: {
                         || nativeByTurn.partialTerminalStatus === undefined
                         || message.completionState !== 'partial'
                         || retainedPartialTurns.has(anchor.turnId)
-                        || retainedPartialRoots.has(anchor.rootUserMessageId)
+                        || (anchor.rootUserMessageId !== undefined && retainedPartialRoots.has(anchor.rootUserMessageId))
                     ) {
                         return dshMutationFailure('storage_consistency_error', 'The Product transcript contains a terminal absent from DSH native truth');
                     }
                     retainedPartialTurns.add(anchor.turnId);
-                    retainedPartialRoots.add(anchor.rootUserMessageId);
+                    if (anchor.rootUserMessageId !== undefined) retainedPartialRoots.add(anchor.rootUserMessageId);
                     if (message.terminalStatus !== nativeByTurn.partialTerminalStatus) {
                         target[messageIndex] = {
                             ...message,
@@ -1602,7 +1825,10 @@ export async function reconcileDshTurnProjections(input: {
                             || message.runtimeTurnAnchor.rootUserMessageId === input.unsettledTurn?.clientUserMessageId
                         )
                     ));
-                    if (matchingUsers.length !== 1 || conflictingAssistant) {
+                    const unsettledNative = nativeRoots.get(input.unsettledTurn.clientOperationId);
+                    if ((input.unsettledTurn.origin === 'collaboration'
+                        ? unsettledNative?.origin !== 'collaboration' || unsettledNative.terminal || unsettledNative.productTurnId !== input.unsettledTurn.productTurnId
+                        : matchingUsers.length !== 1) || conflictingAssistant) {
                         return dshMutationFailure('storage_consistency_error', 'The active DSH turn lacks one exact Product user owner');
                     }
                 }
@@ -1646,6 +1872,7 @@ export async function reconcileDshTurnProjections(input: {
                     }
                     if (
                         input.unsettledTurn
+                        && input.unsettledTurn.origin !== 'collaboration'
                         && pendingDshRootOperation
                         && input.unsettledTurn.clientOperationId !== pendingDshRootOperation.clientOperationId
                     ) {
@@ -1660,6 +1887,7 @@ export async function reconcileDshTurnProjections(input: {
                     stats: calculateSessionStats(target),
                     lastMessagePreview: preview,
                     dshProjectionCursor: structuredClone(input.cursor),
+                    pendingDshInputs: retainedInputs.length ? retainedInputs : undefined,
                     pendingDshRootOperation: pendingDshRootOperation
                         ? structuredClone(pendingDshRootOperation)
                         : undefined,
@@ -1703,6 +1931,7 @@ export async function beginDshDeleteMutation(input: {
                     || !current.runtimeSessionId
                     || current.pendingDshMutation
                     || current.pendingDshRootOperation
+                    || (current.pendingDshInputs?.length ?? 0) > 0
                     || isSystemMaintenanceSession(current)
                 ) {
                     return dshMutationFailure('precondition_failed', 'The DSH delete authority changed');
@@ -1871,6 +2100,7 @@ export async function beginDshForkMutation(input: {
                         || !source.runtimeSessionId
                         || source.pendingDshMutation
                         || source.pendingDshRootOperation
+                        || (source.pendingDshInputs?.length ?? 0) > 0
                         || all.some(session => session.id === input.targetProductSessionId)
                     ) {
                         return dshMutationFailure('precondition_failed', 'The DSH fork source or target changed');
@@ -2190,6 +2420,7 @@ export async function beginDshRewindMutation(input: {
                     || !current.runtimeSessionId
                     || current.pendingDshMutation
                     || current.pendingDshRootOperation
+                    || (current.pendingDshInputs?.length ?? 0) > 0
                 ) {
                     return dshMutationFailure('precondition_failed', 'The DSH rewind source changed');
                 }
@@ -3047,6 +3278,8 @@ export async function updateSessionMetadata(
             patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
         }
         const updated: SessionMetadata = { ...current, ...patch };
+        if (current.pendingDshInputs?.length && (updated.runtimeSessionId !== current.runtimeSessionId
+            || JSON.stringify(updated.runtimeBinding) !== JSON.stringify(current.runtimeBinding))) return;
         all[idx] = updated;
         try {
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));

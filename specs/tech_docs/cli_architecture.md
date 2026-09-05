@@ -75,9 +75,16 @@ CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundl
 优先级：--port 标志 > 已继承 MYAGENTS_PORT > Global sidecar.port
 ```
 
-- **AI 调用场景**：`buildClaudeSessionEnv()` 注入 `MYAGENTS_PORT` 环境变量（当前 Session Sidecar 端口）
-- **终端调用场景**：只有环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口
+- **AI 调用场景**：SDK 路径由 `buildClaudeSessionEnv()` 提供端口；DSH generation 由 Host 显式注入当前 `MYAGENTS_PORT` 与 Product `MYAGENTS_SESSION_ID`，来源为 Sidecar bootstrap 和 Session binding，不继承环境中的陈旧 routing 值。
+- **终端调用场景**：只有没有 Session 身份且环境没有有效 `MYAGENTS_PORT` 时，`cli.rs` 才从 `~/.myagents/sidecar.port` 读取并校验 Global 端口。已有 Session 身份（包括格式无效的值）不能回退 Global。
 - **显式覆盖**：Node CLI parser 最后解析 `--port`，所以命令行值高于 Rust 保留或补入的环境值
+
+Session-scoped CLI 对每个 Admin 请求附加 `x-myagents-session-id`；通用 Sidecar 入口通过
+`SessionEngine.currentSessionContext()` 和共享 `cli-session-scope.ts` 校验，不按 Runtime 分支。
+错误 Session/Global 落点在业务 handler 前拒绝，缺失/非法端口在 CLI 发 HTTP 前返回结构化
+scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。顶层 `--version` 与 `version`
+进入同一路由，`--help` 仍可本地运行。构建后的 CLI fixture 覆盖两 Session 的 current/task/goal、
+身份头、缺失/非法路由与既有全局命令；实际安装包/Bash 联合证据由 DSH 自检 workstream 管理。
 
 ### 命令体系
 
@@ -565,3 +572,5 @@ PATH 优先级（agent-session.ts::buildClaudeSessionEnv）：
 | 终端 `myagents` 找不到 | 场景 2 需要用完整路径或创建 alias，`~/.myagents/bin` 默认不在 shell PATH |
 | `Management API not available` | Node.js Sidecar 起来了但 Rust Management API 没起 — CLI 会附带 `→ Run: myagents status` 指引 |
 | `MyAgents <new-group>` 进了 GUI | app-binary 直调只兼容已发布 group；canonical `myagents <new-group>` 不受 Rust group 名单约束 |
+
+DSH Session 路由下，`myagents skill list` 的 JSON 保留安装字段，并增加 `runtimeAvailability`（准入状态、effective/desired revision、组件调用开关与原因）。文本输出使用同一回执。没有回执显示 unknown，不用 enabled 推断模型可调用；模型可调用不代表已经授予执行权限。

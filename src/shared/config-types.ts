@@ -749,6 +749,18 @@ export function normalizeClaudeTranscriptCleanupPeriodDays(value: unknown): numb
   return Math.max(1, Math.floor(numericValue));
 }
 
+export interface DshCollaborationModelRef { providerId: string; modelId: string; }
+export interface DshCollaborationSettings {
+  maxDepth?: number;
+  maxActiveChildren?: number;
+  maxRetainedChildren?: number;
+  messageDelivery?: 'realtime' | 'turn';
+  modelPolicy?: 'inherit' | 'fixed' | 'agent';
+  fixedModel?: DshCollaborationModelRef;
+  roleModels?: (DshCollaborationModelRef & { role: string })[];
+  allowedModels?: DshCollaborationModelRef[];
+}
+
 export interface AppConfig {
   // Default settings for new projects
   defaultProviderId?: string;
@@ -790,6 +802,8 @@ export interface AppConfig {
    *  不支持实时 steering 的 external runtime 自动 fallback 到 'turn' 行为。
    *  仅桌面交互发送读取；IM/Task/Inbox 等非桌面来源保持既有语义。 */
   chatQueueResponseMode?: ChatQueueResponseMode;
+  /** Host model catalog and tree limits for Integrated DSH; applied at a safe configuration boundary. */
+  dshCollaboration?: DshCollaborationSettings;
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
   /** 开发者开关：在 AI 对话页顶栏显示旧的工作区历史入口。默认关闭。 */
   showChatHistoryEntry?: boolean;

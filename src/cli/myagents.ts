@@ -22,6 +22,8 @@
 // ---------------------------------------------------------------------------
 
 // Port is resolved after arg parsing (--port flag can override env)
+import { CLI_SESSION_HEADER, isCliProductSessionId } from '../shared/cli-session-scope';
+
 let PORT = process.env.MYAGENTS_PORT ?? '';
 let BASE = '';
 
@@ -29,6 +31,14 @@ export function resolveCliPort(portFlag: unknown, inheritedPort: string): string
   return typeof portFlag === 'string' && portFlag.length > 0
     ? portFlag
     : inheritedPort;
+}
+
+export function validateCliRouting(port: string, sessionId: string | undefined): string | undefined {
+  if (sessionId !== undefined && !isCliProductSessionId(sessionId)) return 'CLI_SESSION_SCOPE_INVALID';
+  if (!/^\d{1,5}$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
+    return sessionId === undefined ? 'MYAGENTS_PORT_REQUIRED' : 'CLI_SESSION_ROUTE_REQUIRED';
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +107,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
       // Add any new presence-only flag here.
       if (
         key === 'help' ||
+        key === 'version' ||
         key === 'json' ||
         key === 'dry-run' ||
         key === 'disable-nonessential' ||
@@ -459,7 +470,12 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
   try {
     const resp = await fetch(`${BASE}/${route}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.MYAGENTS_SESSION_ID === undefined ? {} : {
+          [CLI_SESSION_HEADER]: process.env.MYAGENTS_SESSION_ID,
+        }),
+      },
       body: JSON.stringify(body),
     });
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
@@ -2107,7 +2123,7 @@ function printPluginList(plugins: Array<Record<string, unknown>>): void {
   console.log(`\n${plugins.length} plugin(s) installed`);
 }
 
-function printSkillList(skills: Array<Record<string, unknown>>): void {
+export function printSkillList(skills: Array<Record<string, unknown>>): void {
   if (!skills || skills.length === 0) {
     console.log('No skills installed.');
     return;
@@ -2123,8 +2139,16 @@ function printSkillList(skills: Array<Record<string, unknown>>): void {
       pad(enabled, 10) +
       desc,
     );
+    const availability = s.runtimeAvailability as Record<string, unknown> | undefined;
+    if (availability?.runtime === 'dsh') {
+      const component = availability.component as Record<string, unknown> | undefined;
+      console.log(`  Runtime admission: ${availability.state ?? 'unknown'}; model invocation: ${component?.modelInvocable === true ? 'available (permission still required)' : component?.modelInvocable === false ? 'unavailable' : 'unknown'}`);
+      console.log(`  Effective generation: ${availability.effectiveRevision ?? 'not active'}; desired: ${availability.desiredRevision ?? 'unknown'}`);
+      if (component?.code) console.log(`  Reason: ${component.code}`);
+    }
   }
   console.log(`\n${skills.length} skill(s)`);
+  console.log('Enabled reflects installation settings. Session availability also depends on the active Runtime admission and extension generation.');
 }
 
 function printSkillInfo(data: Record<string, unknown>): void {
@@ -2575,6 +2599,8 @@ async function main(): Promise<void> {
   const { positional, flags } = parseArgs(rawArgs);
   const jsonMode = !!flags.json;
 
+  if (positional.length === 0 && flags.version) positional.push('version');
+
   // Top-level help (no args, or bare --help)
   if (positional.length === 0) {
     console.log(TOP_HELP);
@@ -2588,15 +2614,16 @@ async function main(): Promise<void> {
 
   // Resolve port: --port flag overrides env
   PORT = resolveCliPort(flags.port, PORT);
-  if (!PORT) {
-    if (groupIsSpaceCommand(positional[0]) && jsonMode) {
+  const routeError = validateCliRouting(PORT, process.env.MYAGENTS_SESSION_ID);
+  if (routeError) {
+    if (jsonMode) {
       return exitAgentCliError(flags, {
-        code: 'MYAGENTS_PORT_REQUIRED',
-        error: 'The MyAgents local API port is unavailable.',
+        code: routeError,
+        error: 'The MyAgents CLI Session route is missing or invalid.',
         suggestion: 'Run this command from an active MyAgents Session or start the app and retry.',
       }, 3);
     }
-    console.error('Error: MYAGENTS_PORT not set. This CLI runs within the MyAgents app.');
+    console.error(`Error: ${routeError}. Retry from the active MyAgents Session or start the app.`);
     process.exit(3);
   }
   BASE = `http://127.0.0.1:${PORT}/api/admin`;
@@ -2682,10 +2709,6 @@ async function main(): Promise<void> {
     const exitCode = commandResultExitCode(result);
     if (exitCode !== 0) process.exit(exitCode);
   }
-}
-
-function groupIsSpaceCommand(group: string | undefined): boolean {
-  return group === 'space' || group === 'issue';
 }
 
 export function rejectUnsupportedSpaceDryRun(

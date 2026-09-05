@@ -1523,6 +1523,7 @@ describe('external SessionEngine with fake runtime', () => {
     expect(revoked).toEqual({ state: 'applied', revision: 'permission-revision-3' });
     await expect(harness.engine.listPermissionRules?.()).resolves.toMatchObject({ rules: [] });
     harness.runtime.emitPermissionDiagnostics();
+    await waitFor(() => harness.engine.getSessionConfigSnapshot().permissionStatus?.policyRevision === 'permission-revision-3', 'serialized permission diagnostics');
     expect(harness.engine.getSessionConfigSnapshot()).toMatchObject({
       permissionStatus: {
         desiredProductMode: 'auto',
@@ -1999,6 +2000,7 @@ describe('external SessionEngine with fake runtime', () => {
       input: { tool: 'Bash', permissionClass: 'process.execute', target: workspacePath, origin: 'root' },
       display,
     });
+    await waitFor(() => broadcastEvents.some(event => event.event === 'permission:request'), 'serialized permission delivery');
     expect(broadcastEvents).toContainEqual({ event: 'permission:request', data: expect.objectContaining({ display }) });
     expect(harness.engine.getStreamReplaySnapshot().pendingInteractiveRequests).toContainEqual({
       type: 'permission:request', data: expect.objectContaining({ display }),
@@ -2048,6 +2050,8 @@ describe('external SessionEngine with fake runtime', () => {
       },
     });
 
+    // Plan review is the last submitted event: its delivery proves earlier projections drained.
+    await waitFor(() => broadcastEvents.some(event => event.event === 'exit-plan-mode:request'), 'serialized plan review');
     expect(broadcastEvents).toContainEqual({
       event: 'chat:context-usage',
       data: expect.objectContaining({

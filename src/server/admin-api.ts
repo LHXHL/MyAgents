@@ -5719,7 +5719,19 @@ export async function handleCcPluginToggle(payload: { id?: string; name?: string
 export async function handleSkillList(): Promise<AdminResponse> {
   const { json } = await sidecarSelf('/api/skills?scope=all');
   if (json.success) {
-    return { success: true, data: json.skills ?? [] };
+    const config = getSessionEngine().getSessionConfigSnapshot();
+    const status = config.runtime === 'dsh' ? config.extensionStatus : undefined;
+    const skills = Array.isArray(json.skills) ? json.skills : [];
+    return { success: true, data: skills.map((skill: Record<string, unknown>) => {
+      if (config.runtime !== 'dsh') return skill;
+      const matches = status?.components.filter(component => component.component === 'skill' && component.id === skill.name && component.admission !== undefined) ?? [];
+      return { ...skill, runtimeAvailability: {
+        runtime: 'dsh', desiredRevision: status?.desiredRevision ?? null,
+        effectiveRevision: status?.effectiveRevision ?? null,
+        state: matches.length === 1 ? matches[0].admission : 'unknown',
+        ...(matches.length === 1 ? { component: matches[0] } : {}),
+      } };
+    }) };
   }
   return { success: false, error: String(json.error ?? 'Failed to list skills') };
 }

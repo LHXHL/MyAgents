@@ -160,6 +160,18 @@
                     "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   },
+                  "origin": {
+                    "anyOf": [
+                      {
+                        "const": "user",
+                        "type": "string"
+                      },
+                      {
+                        "const": "collaboration",
+                        "type": "string"
+                      }
+                    ]
+                  },
                   "turnId": {
                     "maxLength": 256,
                     "minLength": 1,
@@ -277,8 +289,7 @@
                     },
                     "required": [
                       "kind",
-                      "assistantEventId",
-                      "usage"
+                      "assistantEventId"
                     ],
                     "type": "object"
                   },
@@ -1020,6 +1031,631 @@
       "params": {
         "additionalProperties": false,
         "properties": {
+          "collaboration": {
+            "additionalProperties": false,
+            "properties": {
+              "maxActiveChildren": {
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxDepth": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxRetainedChildren": {
+                "maximum": 256,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "messageDelivery": {
+                "anyOf": [
+                  {
+                    "const": "realtime",
+                    "type": "string"
+                  },
+                  {
+                    "const": "turn",
+                    "type": "string"
+                  }
+                ]
+              },
+              "modelPolicy": {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "inherit",
+                        "type": "string"
+                      },
+                      {
+                        "const": "fixed",
+                        "type": "string"
+                      },
+                      {
+                        "const": "agent",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "profileRef": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "roles": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "profileRef": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        },
+                        "role": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "profileRef"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 128,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "roles"
+                ],
+                "type": "object"
+              },
+              "modelProfiles": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "api": {
+                      "anyOf": [
+                        {
+                          "const": "anthropic-messages",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-completions",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-responses",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "baseUrl": {
+                      "format": "uri",
+                      "maxLength": 2048,
+                      "type": "string"
+                    },
+                    "compatibility": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "anthropic-messages",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-completions",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-responses",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "contextWindow": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "credentialRef": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "effort": {
+                      "anyOf": [
+                        {
+                          "const": "low",
+                          "type": "string"
+                        },
+                        {
+                          "const": "medium",
+                          "type": "string"
+                        },
+                        {
+                          "const": "high",
+                          "type": "string"
+                        },
+                        {
+                          "const": "xhigh",
+                          "type": "string"
+                        },
+                        {
+                          "const": "max",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "inputModalities": {
+                      "items": {
+                        "anyOf": [
+                          {
+                            "const": "text",
+                            "type": "string"
+                          },
+                          {
+                            "const": "image",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "maxItems": 2,
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "maxTokens": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "modelId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "pricing": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "cacheReadUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "cacheWriteUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "inputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "outputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "inputUsdPerMillionTokens",
+                        "outputUsdPerMillionTokens",
+                        "cacheReadUsdPerMillionTokens",
+                        "cacheWriteUsdPerMillionTokens"
+                      ],
+                      "type": "object"
+                    },
+                    "provider": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "providerRouteId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    },
+                    "reasoningEffortMap": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "high": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "low": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "max": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "medium": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "off": {
+                          "type": "null"
+                        },
+                        "xhigh": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "revision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "providerRouteId",
+                    "api",
+                    "provider",
+                    "modelId",
+                    "credentialRef",
+                    "contextWindow",
+                    "maxTokens"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "version": {
+                "const": 1,
+                "type": "number"
+              }
+            },
+            "required": [
+              "version",
+              "maxDepth",
+              "maxActiveChildren",
+              "maxRetainedChildren",
+              "messageDelivery",
+              "modelPolicy",
+              "modelProfiles"
+            ],
+            "type": "object"
+          },
           "executionEnvironmentDigest": {
             "pattern": "^[a-f0-9]{64}$",
             "type": "string"
@@ -6333,7 +6969,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.5.0",
+            "const": "2.7.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -7047,6 +7683,42 @@
                       }
                     ]
                   },
+                  "messageTiming": {
+                    "anyOf": [
+                      {
+                        "const": "realtime-or-turn-v1",
+                        "type": "string"
+                      },
+                      {
+                        "const": "unavailable",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "modelPolicy": {
+                    "anyOf": [
+                      {
+                        "const": "host-authorized-model-set-v1",
+                        "type": "string"
+                      },
+                      {
+                        "const": "unavailable",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "nesting": {
+                    "anyOf": [
+                      {
+                        "const": "host-bounded-tree-v1",
+                        "type": "string"
+                      },
+                      {
+                        "const": "unavailable",
+                        "type": "string"
+                      }
+                    ]
+                  },
                   "taskGraph": {
                     "anyOf": [
                       {
@@ -7058,10 +7730,26 @@
                         "type": "string"
                       }
                     ]
+                  },
+                  "userResume": {
+                    "anyOf": [
+                      {
+                        "const": "retained-handle-revision-v1",
+                        "type": "string"
+                      },
+                      {
+                        "const": "unavailable",
+                        "type": "string"
+                      }
+                    ]
                   }
                 },
                 "required": [
                   "children",
+                  "nesting",
+                  "modelPolicy",
+                  "userResume",
+                  "messageTiming",
                   "background",
                   "taskGraph",
                   "mailbox"
@@ -7106,7 +7794,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
+                "const": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
                 "type": "string"
               }
             },
@@ -8294,6 +8982,631 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "collaboration": {
+            "additionalProperties": false,
+            "properties": {
+              "maxActiveChildren": {
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxDepth": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxRetainedChildren": {
+                "maximum": 256,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "messageDelivery": {
+                "anyOf": [
+                  {
+                    "const": "realtime",
+                    "type": "string"
+                  },
+                  {
+                    "const": "turn",
+                    "type": "string"
+                  }
+                ]
+              },
+              "modelPolicy": {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "inherit",
+                        "type": "string"
+                      },
+                      {
+                        "const": "fixed",
+                        "type": "string"
+                      },
+                      {
+                        "const": "agent",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "profileRef": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "roles": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "profileRef": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        },
+                        "role": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "profileRef"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 128,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "roles"
+                ],
+                "type": "object"
+              },
+              "modelProfiles": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "api": {
+                      "anyOf": [
+                        {
+                          "const": "anthropic-messages",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-completions",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-responses",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "baseUrl": {
+                      "format": "uri",
+                      "maxLength": 2048,
+                      "type": "string"
+                    },
+                    "compatibility": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "anthropic-messages",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-completions",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-responses",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "contextWindow": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "credentialRef": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "effort": {
+                      "anyOf": [
+                        {
+                          "const": "low",
+                          "type": "string"
+                        },
+                        {
+                          "const": "medium",
+                          "type": "string"
+                        },
+                        {
+                          "const": "high",
+                          "type": "string"
+                        },
+                        {
+                          "const": "xhigh",
+                          "type": "string"
+                        },
+                        {
+                          "const": "max",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "inputModalities": {
+                      "items": {
+                        "anyOf": [
+                          {
+                            "const": "text",
+                            "type": "string"
+                          },
+                          {
+                            "const": "image",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "maxItems": 2,
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "maxTokens": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "modelId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "pricing": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "cacheReadUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "cacheWriteUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "inputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "outputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "inputUsdPerMillionTokens",
+                        "outputUsdPerMillionTokens",
+                        "cacheReadUsdPerMillionTokens",
+                        "cacheWriteUsdPerMillionTokens"
+                      ],
+                      "type": "object"
+                    },
+                    "provider": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "providerRouteId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    },
+                    "reasoningEffortMap": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "high": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "low": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "max": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "medium": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "off": {
+                          "type": "null"
+                        },
+                        "xhigh": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "revision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "providerRouteId",
+                    "api",
+                    "provider",
+                    "modelId",
+                    "credentialRef",
+                    "contextWindow",
+                    "maxTokens"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "version": {
+                "const": 1,
+                "type": "number"
+              }
+            },
+            "required": [
+              "version",
+              "maxDepth",
+              "maxActiveChildren",
+              "maxRetainedChildren",
+              "messageDelivery",
+              "modelPolicy",
+              "modelProfiles"
+            ],
+            "type": "object"
+          },
           "configRevision": {
             "maxLength": 256,
             "minLength": 1,
@@ -9215,7 +10528,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
+                    "const": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -11427,6 +12740,631 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "collaboration": {
+            "additionalProperties": false,
+            "properties": {
+              "maxActiveChildren": {
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxDepth": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "maxRetainedChildren": {
+                "maximum": 256,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "messageDelivery": {
+                "anyOf": [
+                  {
+                    "const": "realtime",
+                    "type": "string"
+                  },
+                  {
+                    "const": "turn",
+                    "type": "string"
+                  }
+                ]
+              },
+              "modelPolicy": {
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "const": "inherit",
+                        "type": "string"
+                      },
+                      {
+                        "const": "fixed",
+                        "type": "string"
+                      },
+                      {
+                        "const": "agent",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "profileRef": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "roles": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "profileRef": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        },
+                        "role": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "profileRef"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 128,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "roles"
+                ],
+                "type": "object"
+              },
+              "modelProfiles": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "api": {
+                      "anyOf": [
+                        {
+                          "const": "anthropic-messages",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-completions",
+                          "type": "string"
+                        },
+                        {
+                          "const": "openai-responses",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "baseUrl": {
+                      "format": "uri",
+                      "maxLength": 2048,
+                      "type": "string"
+                    },
+                    "compatibility": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "anthropic-messages",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-completions",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialMode": {
+                              "const": "pi-ai-api-key",
+                              "type": "string"
+                            },
+                            "family": {
+                              "const": "openai-responses",
+                              "type": "string"
+                            },
+                            "version": {
+                              "const": 1,
+                              "type": "number"
+                            },
+                            "wireCompat": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "maxTokensField": {
+                                  "anyOf": [
+                                    {
+                                      "const": "max_completion_tokens",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "max_tokens",
+                                      "type": "string"
+                                    }
+                                  ]
+                                },
+                                "requiresAssistantAfterToolResult": {
+                                  "type": "boolean"
+                                },
+                                "requiresToolResultName": {
+                                  "type": "boolean"
+                                },
+                                "supportsDeveloperRole": {
+                                  "type": "boolean"
+                                },
+                                "supportsReasoningEffort": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictMode": {
+                                  "type": "boolean"
+                                },
+                                "supportsStrictTools": {
+                                  "type": "boolean"
+                                },
+                                "supportsTemperature": {
+                                  "type": "boolean"
+                                },
+                                "supportsUsageInStreaming": {
+                                  "type": "boolean"
+                                },
+                                "thinkingFormat": {
+                                  "anyOf": [
+                                    {
+                                      "const": "openai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "deepseek",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "openrouter",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "together",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "zai",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "qwen-chat-template",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "string-thinking",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "ant-ling",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "family",
+                            "credentialMode"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "contextWindow": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "credentialRef": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "effort": {
+                      "anyOf": [
+                        {
+                          "const": "low",
+                          "type": "string"
+                        },
+                        {
+                          "const": "medium",
+                          "type": "string"
+                        },
+                        {
+                          "const": "high",
+                          "type": "string"
+                        },
+                        {
+                          "const": "xhigh",
+                          "type": "string"
+                        },
+                        {
+                          "const": "max",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "inputModalities": {
+                      "items": {
+                        "anyOf": [
+                          {
+                            "const": "text",
+                            "type": "string"
+                          },
+                          {
+                            "const": "image",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "maxItems": 2,
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "maxTokens": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "modelId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "pricing": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "cacheReadUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "cacheWriteUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "inputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "outputUsdPerMillionTokens": {
+                          "maximum": 1000000,
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "inputUsdPerMillionTokens",
+                        "outputUsdPerMillionTokens",
+                        "cacheReadUsdPerMillionTokens",
+                        "cacheWriteUsdPerMillionTokens"
+                      ],
+                      "type": "object"
+                    },
+                    "provider": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "providerRouteId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    },
+                    "reasoningEffortMap": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "high": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "low": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "max": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "medium": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "off": {
+                          "type": "null"
+                        },
+                        "xhigh": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "revision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "revision",
+                    "providerRouteId",
+                    "api",
+                    "provider",
+                    "modelId",
+                    "credentialRef",
+                    "contextWindow",
+                    "maxTokens"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "version": {
+                "const": 1,
+                "type": "number"
+              }
+            },
+            "required": [
+              "version",
+              "maxDepth",
+              "maxActiveChildren",
+              "maxRetainedChildren",
+              "messageDelivery",
+              "modelPolicy",
+              "modelProfiles"
+            ],
+            "type": "object"
+          },
           "configRevision": {
             "maxLength": 256,
             "minLength": 1,
@@ -12349,7 +14287,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
+                    "const": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -13961,6 +15899,18 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "delivery": {
+            "anyOf": [
+              {
+                "const": "realtime",
+                "type": "string"
+              },
+              {
+                "const": "turn",
+                "type": "string"
+              }
+            ]
+          },
           "input": {
             "additionalProperties": false,
             "properties": {
@@ -14140,6 +16090,18 @@
                 "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                 "type": "string"
               },
+              "origin": {
+                "anyOf": [
+                  {
+                    "const": "user",
+                    "type": "string"
+                  },
+                  {
+                    "const": "collaboration",
+                    "type": "string"
+                  }
+                ]
+              },
               "turnId": {
                 "maxLength": 256,
                 "minLength": 1,
@@ -14259,8 +16221,7 @@
                 },
                 "required": [
                   "kind",
-                  "assistantEventId",
-                  "usage"
+                  "assistantEventId"
                 ],
                 "type": "object"
               },
@@ -15351,6 +17312,18 @@
                     "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   },
+                  "origin": {
+                    "anyOf": [
+                      {
+                        "const": "user",
+                        "type": "string"
+                      },
+                      {
+                        "const": "collaboration",
+                        "type": "string"
+                      }
+                    ]
+                  },
                   "turnId": {
                     "maxLength": 256,
                     "minLength": 1,
@@ -15468,8 +17441,7 @@
                     },
                     "required": [
                       "kind",
-                      "assistantEventId",
-                      "usage"
+                      "assistantEventId"
                     ],
                     "type": "object"
                   },
@@ -16453,6 +18425,528 @@
         ],
         "type": "object"
       }
+    },
+    "work/agent/message": {
+      "direction": "host_to_runtime",
+      "params": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "clientMessageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId",
+          "clientMessageId",
+          "message"
+        ],
+        "type": "object"
+      },
+      "result": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "work/agent/resume": {
+      "direction": "host_to_runtime",
+      "params": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "clientRequestId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "expectedHandleRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "clientRequestId",
+          "expectedHandleRevision"
+        ],
+        "type": "object"
+      },
+      "result": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "work/agent/stop": {
+      "direction": "host_to_runtime",
+      "params": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          },
+          "expectedHandleRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "expectedHandleRevision"
+        ],
+        "type": "object"
+      },
+      "result": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
+    "work/list": {
+      "direction": "host_to_runtime",
+      "params": {
+        "additionalProperties": false,
+        "properties": {
+          "afterTaskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "result": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "activation": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "ordinal": {
+                      "maximum": 10000,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "anyOf": [
+                        {
+                          "const": "queued",
+                          "type": "string"
+                        },
+                        {
+                          "const": "running",
+                          "type": "string"
+                        },
+                        {
+                          "const": "waiting_interaction",
+                          "type": "string"
+                        },
+                        {
+                          "const": "waiting_child",
+                          "type": "string"
+                        },
+                        {
+                          "const": "waiting_delivery",
+                          "type": "string"
+                        },
+                        {
+                          "const": "completed",
+                          "type": "string"
+                        },
+                        {
+                          "const": "failed",
+                          "type": "string"
+                        },
+                        {
+                          "const": "aborted",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "ordinal",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "agentId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "agentType": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "context": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "capacity": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "projectedInputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "providerInputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                },
+                "description": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "finishedAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "handleRevision": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "handleState": {
+                  "anyOf": [
+                    {
+                      "const": "open",
+                      "type": "string"
+                    },
+                    {
+                      "const": "stopping",
+                      "type": "string"
+                    },
+                    {
+                      "const": "closed",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "lastActivityAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "mode": {
+                  "anyOf": [
+                    {
+                      "const": "foreground",
+                      "type": "string"
+                    },
+                    {
+                      "const": "continuable",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "model": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "modelRoute": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "profileRevision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "provider": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "selection": {
+                      "anyOf": [
+                        {
+                          "const": "inherit",
+                          "type": "string"
+                        },
+                        {
+                          "const": "fixed",
+                          "type": "string"
+                        },
+                        {
+                          "const": "agent",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "profileRevision",
+                    "selection"
+                  ],
+                  "type": "object"
+                },
+                "parentToolCallId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "result": {
+                  "maxLength": 262144,
+                  "type": "string"
+                },
+                "resultTruncated": {
+                  "type": "boolean"
+                },
+                "startedAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "state": {
+                  "anyOf": [
+                    {
+                      "const": "running",
+                      "type": "string"
+                    },
+                    {
+                      "const": "stopping",
+                      "type": "string"
+                    },
+                    {
+                      "const": "succeeded",
+                      "type": "string"
+                    },
+                    {
+                      "const": "failed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "aborted",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "taskId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "type": "string"
+                },
+                "totalUsage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cacheReadTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "cacheWriteTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "costUsd": {
+                      "anyOf": [
+                        {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "inputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "outputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "totalTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheReadTokens",
+                    "cacheWriteTokens",
+                    "totalTokens",
+                    "costUsd"
+                  ],
+                  "type": "object"
+                },
+                "tree": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "depth": {
+                      "maximum": 8,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "parentAgentId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    },
+                    "rootAgentId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "rootAgentId",
+                    "parentAgentId",
+                    "depth"
+                  ],
+                  "type": "object"
+                },
+                "usage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cacheReadTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "cacheWriteTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "costUsd": {
+                      "anyOf": [
+                        {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "inputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "outputTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "totalTokens": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheReadTokens",
+                    "cacheWriteTokens",
+                    "totalTokens",
+                    "costUsd"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "activation",
+                "handleState",
+                "taskId",
+                "parentToolCallId",
+                "agentId",
+                "agentType",
+                "description",
+                "mode",
+                "model",
+                "state",
+                "startedAt"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "nextTaskId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      }
     }
   },
   "notifications": {
@@ -16565,6 +19059,18 @@
                         "minLength": 1,
                         "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                         "type": "string"
+                      },
+                      "origin": {
+                        "anyOf": [
+                          {
+                            "const": "user",
+                            "type": "string"
+                          },
+                          {
+                            "const": "collaboration",
+                            "type": "string"
+                          }
+                        ]
                       },
                       "turnId": {
                         "maxLength": 256,
@@ -16716,8 +19222,7 @@
                         },
                         "required": [
                           "kind",
-                          "assistantEventId",
-                          "usage"
+                          "assistantEventId"
                         ],
                         "type": "object"
                       },
@@ -18320,6 +20825,64 @@
                   "snapshot": {
                     "additionalProperties": false,
                     "properties": {
+                      "activation": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          },
+                          "ordinal": {
+                            "maximum": 10000,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "state": {
+                            "anyOf": [
+                              {
+                                "const": "queued",
+                                "type": "string"
+                              },
+                              {
+                                "const": "running",
+                                "type": "string"
+                              },
+                              {
+                                "const": "waiting_interaction",
+                                "type": "string"
+                              },
+                              {
+                                "const": "waiting_child",
+                                "type": "string"
+                              },
+                              {
+                                "const": "waiting_delivery",
+                                "type": "string"
+                              },
+                              {
+                                "const": "completed",
+                                "type": "string"
+                              },
+                              {
+                                "const": "failed",
+                                "type": "string"
+                              },
+                              {
+                                "const": "aborted",
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "ordinal",
+                          "state"
+                        ],
+                        "type": "object"
+                      },
                       "agentId": {
                         "maxLength": 256,
                         "minLength": 1,
@@ -18332,12 +20895,55 @@
                         "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                         "type": "string"
                       },
+                      "context": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capacity": {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "projectedInputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "providerInputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "type": "object"
+                      },
                       "description": {
                         "maxLength": 512,
                         "minLength": 1,
                         "type": "string"
                       },
                       "finishedAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "handleRevision": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "handleState": {
+                        "anyOf": [
+                          {
+                            "const": "open",
+                            "type": "string"
+                          },
+                          {
+                            "const": "stopping",
+                            "type": "string"
+                          },
+                          {
+                            "const": "closed",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "lastActivityAt": {
                         "format": "date-time",
                         "type": "string"
                       },
@@ -18358,6 +20964,45 @@
                         "minLength": 1,
                         "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                         "type": "string"
+                      },
+                      "modelRoute": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "profileRevision": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          },
+                          "provider": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          },
+                          "selection": {
+                            "anyOf": [
+                              {
+                                "const": "inherit",
+                                "type": "string"
+                              },
+                              {
+                                "const": "fixed",
+                                "type": "string"
+                              },
+                              {
+                                "const": "agent",
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "profileRevision",
+                          "selection"
+                        ],
+                        "type": "object"
                       },
                       "parentToolCallId": {
                         "maxLength": 256,
@@ -18406,6 +21051,79 @@
                         "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                         "type": "string"
                       },
+                      "totalUsage": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "cacheReadTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "cacheWriteTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "costUsd": {
+                            "anyOf": [
+                              {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "inputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "outputTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "totalTokens": {
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "inputTokens",
+                          "outputTokens",
+                          "cacheReadTokens",
+                          "cacheWriteTokens",
+                          "totalTokens",
+                          "costUsd"
+                        ],
+                        "type": "object"
+                      },
+                      "tree": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "maximum": 8,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "parentAgentId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          },
+                          "rootAgentId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "rootAgentId",
+                          "parentAgentId",
+                          "depth"
+                        ],
+                        "type": "object"
+                      },
                       "usage": {
                         "additionalProperties": false,
                         "properties": {
@@ -18453,6 +21171,8 @@
                       }
                     },
                     "required": [
+                      "activation",
+                      "handleState",
                       "taskId",
                       "parentToolCallId",
                       "agentId",
@@ -18899,6 +21619,6 @@
       }
     }
   },
-  "protocolVersion": "2.5.0",
+  "protocolVersion": "2.7.0",
   "title": "MyAgents DSH native RPC"
 }

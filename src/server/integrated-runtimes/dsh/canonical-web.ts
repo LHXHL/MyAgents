@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { DshModelExecutionProfile } from './profile-compiler';
 import type { ProviderAuthType } from '../../../shared/config-types';
 import { getProxyForProviderUrl, getProxyForUrl } from '../../proxy-state';
@@ -21,6 +22,7 @@ type ActiveWebConfiguration = Readonly<{
   apiKey: string;
   authType: ProviderAuthType;
   revision: string;
+  bindings?: readonly Readonly<{ profile: DshModelExecutionProfile; apiKey: string; authType: ProviderAuthType }>[];
 }>;
 
 type CanonicalTool = 'WebFetch' | 'WebSearch';
@@ -107,6 +109,7 @@ function failure(error: unknown, signal: AbortSignal): DshRpcObject {
 }
 
 export class DshCanonicalWebHost {
+  private readonly requestProvider = new AsyncLocalStorage<string>();
   private readonly contentClient: DshSafeHttpClient;
   private readonly provider: DshCanonicalWebProviderPort;
 
@@ -122,7 +125,7 @@ export class DshCanonicalWebHost {
     );
     this.provider = options.provider ?? new DshCanonicalWebProvider({
       proxyForUrl: url => getProxyForProviderUrl(
-        this.options.activeConfiguration().profile.provider,
+        this.requestProvider.getStore() ?? this.options.activeConfiguration().profile.provider,
         url,
       ),
     });
@@ -141,7 +144,15 @@ export class DshCanonicalWebHost {
 
   async execute(params: DshRpcObject, context: DshRequestContext): Promise<DshRpcObject> {
     const tool = params.tool as CanonicalTool;
-    const configuration = this.options.activeConfiguration();
+    const active = this.options.activeConfiguration();
+    const input = record(params.input);
+    const requestedProfile = input?.modelProfileRevision;
+    const selected = requestedProfile === undefined ? active
+      : (active.bindings ?? [active]).find(binding => binding.profile.revision === requestedProfile);
+    if (!selected) return { state: 'failed', code: 'host_tool_model_unauthorized' };
+    const configuration = { ...active, ...selected };
+    const routedParams = input && requestedProfile !== undefined ? { ...params,
+      input: Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'modelProfileRevision')) } : params;
     if (!this.handles(params) || !authorityMatches({
       tool,
       params,
@@ -151,9 +162,9 @@ export class DshCanonicalWebHost {
       return { state: 'failed', code: 'host_tool_authority_mismatch' };
     }
     try {
-      const structured = tool === 'WebFetch'
-        ? await this.webFetch(params, configuration, context.signal)
-        : await this.webSearch(params, configuration, context.signal);
+      const structured = await this.requestProvider.run(configuration.profile.provider, () => tool === 'WebFetch'
+        ? this.webFetch(routedParams, configuration, context.signal)
+        : this.webSearch(routedParams, configuration, context.signal));
       context.signal.throwIfAborted();
       return { state: 'succeeded', structured };
     } catch (error) {
@@ -194,19 +205,24 @@ export class DshCanonicalWebHost {
       contentType: fetched.contentType,
       signal,
     });
+    // The request retains its full retrieval URL; returned provenance is the
+    // bounded public page identity required by the canonical Runtime contract.
+    const finalUrl = new URL(fetched.finalUrl);
+    finalUrl.search = '';
+    finalUrl.hash = '';
     const utility = await this.provider.runUtility({
       profile: configuration.profile,
       apiKey: configuration.apiKey,
       authType: configuration.authType,
       source: converted.text,
       prompt,
-      finalUrl: fetched.finalUrl,
+      finalUrl: finalUrl.toString(),
       statusCode: fetched.statusCode,
       signal,
     });
     return {
       url,
-      finalUrl: fetched.finalUrl,
+      finalUrl: finalUrl.toString(),
       answer: utility.answer,
       citations: utility.citations,
       usage: utility.usage satisfies DshCanonicalTokenUsage,

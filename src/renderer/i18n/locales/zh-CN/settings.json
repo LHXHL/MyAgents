@@ -1970,5 +1970,40 @@
       "cronTaskDescription": "查看和管理运行中的循环任务（开发调试用）",
       "openPanel": "打开面板"
     }
+  },
+  "collaboration": {
+    "title": "DSH 子 Agent 协作",
+    "description": "为 DSH 会话设置子 Agent 的模型与协作范围。配置在安全边界生效；已有子 Agent 保留创建时的模型。",
+    "depth": "最大嵌套深度",
+    "active": "同时执行上限",
+    "retained": "保留 Agent 上限",
+    "depthHint": "根 Agent 深度为 0。默认 1：允许根创建子 Agent，子 Agent 不能再创建后代。所有层共享执行额度。",
+    "strategy": "默认子模型策略",
+    "inherit": "继承直接父 Agent",
+    "fixed": "指定模型",
+    "agent": "允许 Agent 自主选择",
+    "roles": "角色指定模型",
+    "roleName": "扩展 Agent 的角色名",
+    "addRole": "添加角色",
+    "authorized": "额外授权模型",
+    "authorizedHint": "根模型与角色指定模型自动进入授权集合。开启自主选择后，Agent 可从这些模型中选择；取消授权会阻止旧子 Agent 的后续请求。",
+    "timing": "协作消息生效时机",
+    "timingHint": "仅控制 Agent 间消息与完成报告。默认实时：最近一次模型思考或工具步骤结束后注入。上方对话队列设置继续控制用户输入。",
+    "unavailable": "模型当前不可用"
+  },
+  "runtimeAvailability": {
+    "title": "当前会话组件可用性",
+    "explanation": "安装、启用与运行时准入分别判断。允许模型调用后，执行仍需通过权限检查。",
+    "generation": "当前生效版本：{{effective}} · 请求版本：{{desired}}",
+    "unknown": "未知",
+    "noReceipts": "尚无准入回执，请启动或刷新会话后查看。",
+    "ready": "已准入",
+    "rejected": "未准入",
+    "disabled": "已停用",
+    "pending": "等待生效",
+    "yes": "是",
+    "no": "否",
+    "enabled": "已启用：{{value}}",
+    "invocation": "模型可调用：{{value}}"
   }
 }

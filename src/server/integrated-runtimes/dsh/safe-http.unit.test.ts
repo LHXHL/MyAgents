@@ -4,7 +4,7 @@ import { gzipSync } from 'node:zlib';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { DshCanonicalWebError } from './canonical-web-errors';
+import { DshCanonicalWebError, dshCanonicalWebTransportError } from './canonical-web-errors';
 import {
   DshSafeHttpClient,
   DshNodeProxyHttpTransport,
@@ -44,6 +44,102 @@ function publicLookup(address = '93.184.216.34') {
 }
 
 describe('DshSafeHttpClient', () => {
+  it('keeps frozen GET and Provider POST headers isolated through real proxy reuse, concurrency and rotation', async () => {
+    const sockets = new Set<Duplex>();
+    const received: Array<{ method: string; host: string; credential: string; body: string }> = [];
+    const tunneled = createServer(async (request, response) => {
+      sockets.add(request.socket);
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
+      received.push({
+        method: request.method!, host: request.headers.host!,
+        credential: String(request.headers.authorization ?? request.headers['x-api-key'] ?? ''), body,
+      });
+      response.end('ok');
+    });
+    let connects = 0;
+    const proxies = [createServer(), createServer()];
+    const routes: string[] = [];
+    const transport = new DshNodeProxyHttpTransport(policy.maxCompressedBytes);
+    try {
+      for (const proxy of proxies) {
+        proxy.on('connect', (_request, socket) => {
+          connects += 1;
+          sockets.add(socket);
+          socket.once('close', () => sockets.delete(socket));
+          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          tunneled.emit('connection', socket);
+        });
+        await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+        const address = proxy.address();
+        if (!address || typeof address === 'string') throw new Error('Missing proxy fixture address');
+        routes.push(`http://127.0.0.1:${address.port}`);
+      }
+      const headers = [
+        Object.freeze({ accept: 'text/html' }),
+        Object.freeze({ authorization: 'Bearer synthetic-a', 'content-type': 'application/json' }),
+        Object.freeze({ 'x-api-key': 'synthetic-b', 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }),
+      ];
+      const before = JSON.stringify(headers);
+      for (const route of routes) {
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          const results = await Promise.all(headers.map((entry, index) => transport.dispatch(
+            new URL(`http://127.0.0.${index + 2}/page`), {
+              method: index === 0 ? 'GET' : 'POST', headers: entry,
+              ...(index === 0 ? {} : { body: Buffer.from(`{"index":${index}}`) }),
+            }, new AbortController().signal, route,
+          )));
+          expect(results.map(result => Buffer.from(result.bytes).toString())).toEqual(['ok', 'ok', 'ok']);
+        }
+      }
+      expect(JSON.stringify(headers)).toBe(before);
+      expect(headers.every(entry => !Object.hasOwn(entry, 'host'))).toBe(true);
+      expect(received).toHaveLength(12);
+      for (const entry of received) {
+        const index = Number(entry.host.split('.').at(-1)) - 2;
+        expect(entry.credential).toBe(['', 'Bearer synthetic-a', 'synthetic-b'][index]);
+        expect(entry.body).toBe(index === 0 ? '' : `{"index":${index}}`);
+        expect(entry.method).toBe(index === 0 ? 'GET' : 'POST');
+      }
+      expect(connects).toBeLessThan(received.length);
+      const beforeInvalidHeaders = connects;
+      await expect(transport.dispatch(new URL('http://127.0.0.2/'), {
+        method: 'GET', headers: Object.freeze({ 'invalid header': 'synthetic-private-value' }),
+      }, new AbortController().signal, routes[1]!)).rejects.toMatchObject({
+        code: 'web_request_failed', phase: 'request_construction',
+      });
+      expect(connects).toBe(beforeInvalidHeaders);
+      const cancelled = new AbortController();
+      cancelled.abort(new Error('fixture cancellation'));
+      const previousConnects = connects;
+      await expect(transport.dispatch(new URL('http://127.0.0.2/'), {
+        method: 'GET', headers: headers[0],
+      }, cancelled.signal, routes[1]!)).rejects.toBe(cancelled.signal.reason);
+      expect(connects).toBe(previousConnects);
+      await transport.close();
+      await expect(transport.dispatch(new URL('http://127.0.0.2/'), {
+        method: 'GET', headers: headers[0],
+      }, new AbortController().signal, routes[1]!)).rejects.toMatchObject({ code: 'web_request_failed' });
+    } finally {
+      await transport.close();
+      for (const socket of sockets) socket.destroy();
+      await Promise.all(proxies.map(proxy => new Promise<void>(resolve => proxy.close(() => resolve()))));
+      tunneled.close();
+    }
+  });
+
+  it.each([
+    ['TypeError', 'request_construction'], ['ENOTFOUND', 'dns'],
+    ['ECONNREFUSED', 'proxy_connect'], ['CERT_HAS_EXPIRED', 'tls'],
+    ['UND_ERR_HEADERS_TIMEOUT', 'response_headers'], ['UND_ERR_BODY_TIMEOUT', 'response_body'],
+  ] as const)('classifies %s without exposing private error content', (code, phase) => {
+    const original = code === 'TypeError' ? new TypeError('private body secret')
+      : Object.assign(new Error('private body secret'), { code });
+    const error = dshCanonicalWebTransportError(original, 'proxy');
+    expect(error.phase).toBe(phase);
+    expect(error.message).not.toContain('private');
+  });
+
   it('implements both Node 24 pinned lookup callback shapes', async () => {
     const answer = Object.freeze({ address: '93.184.216.34', family: 4 as const });
     const lookup = createDshPinnedLookup(answer);

@@ -1,3 +1,4 @@
+import { parseFullSkillContent } from '../../../shared/slashCommands';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -5,10 +6,10 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import type { McpServerDefinition } from '../../../shared/config-types';
 import type { RuntimeExtensionComponentStatus } from '../../../shared/types/runtime';
 import type {
-  ManagedCodexAgentRoleSpec,
-  ManagedCodexCommandSpec,
-  ManagedCodexSkillSpec,
-} from '../../runtimes/managed-codex/extensions/contracts';
+  ProductAgentRoleSpec,
+  ProductCommandSpec,
+  ProductSkillSpec,
+} from '../../runtimes/product-extensions/contracts';
 import type {
   ProductDynamicToolSpec,
   ProductHostToolDispatcher,
@@ -49,9 +50,9 @@ export type DshExtensionSnapshot = Readonly<{
 export type DshProductExtensionSource = Readonly<{
   revision: string;
   workspacePath?: string;
-  skills: readonly ManagedCodexSkillSpec[];
-  commands: readonly ManagedCodexCommandSpec[];
-  agents: readonly ManagedCodexAgentRoleSpec[];
+  skills: readonly ProductSkillSpec[];
+  commands: readonly ProductCommandSpec[];
+  agents: readonly ProductAgentRoleSpec[];
   mcpServers: readonly McpServerDefinition[];
   dynamicTools: readonly ProductDynamicToolSpec[];
   hostToolDispatcher?: ProductHostToolDispatcher;
@@ -264,7 +265,7 @@ export function compileDshExtensionSnapshot(input?: {
   });
 }
 
-function exactSkillContent(skill: ManagedCodexSkillSpec): string {
+function exactSkillContent(skill: ProductSkillSpec): string {
   const content = readFileSync(skill.path, 'utf8');
   if (content.length < 1 || content.length > MAX_RESOURCE_CHARACTERS || digest(content) !== skill.contentSha256) {
     throw new Error(`DSH Skill ${skill.name} changed after Product capability admission`);
@@ -274,7 +275,7 @@ function exactSkillContent(skill: ManagedCodexSkillSpec): string {
 
 function workspaceSkillRoot(
   source: DshProductExtensionSource,
-  skill: ManagedCodexSkillSpec,
+  skill: ProductSkillSpec,
 ): DshRpcObject | undefined {
   if (skill.scope !== 'project' || !source.workspacePath || basename(skill.path) !== 'SKILL.md') {
     return undefined;
@@ -471,8 +472,19 @@ export function compileDshProductExtensionPlane(
       diagnostics.push(componentStatus('skills', skill.name, 'failed', 'dsh_skill_name_invalid'));
       continue;
     }
-    const content = exactSkillContent(skill);
     try {
+      const content = exactSkillContent(skill);
+      const { frontmatter } = parseFullSkillContent(content);
+      const unsupported = (['context', 'agent'] as const).filter(field => Boolean(frontmatter[field]));
+      if (unsupported.length) {
+        diagnostics.push(componentStatus('skills', skill.name, 'unsupported', 'dsh_skill_execution_context_unsupported',
+          `This Skill requests ${unsupported.join(', ')}; this Runtime cannot execute that context. Other Skills remain available.`));
+        continue;
+      }
+      if (frontmatter['allowed-tools']) {
+        diagnostics.push(componentStatus('skills', skill.name, 'applied', 'dsh_skill_tool_guidance',
+          'Tool guidance is retained in the Skill. Every tool still requires the current catalog and permission policy; no permission grant is created.'));
+      }
       const resourceId = safeReference('skill-document', `${skill.sourceId}:${skill.name}:${skill.contentSha256}`);
       const resource: DshRpcObject = {
         id: resourceId,
@@ -488,7 +500,10 @@ export function compileDshProductExtensionPlane(
         descriptor: {
           resourceId,
           description: boundedText(skill.description, 4_096, `DSH Skill ${skill.name} description`),
-          invocation: { modelInvocable: true, userInvocable: true },
+          invocation: {
+            modelInvocable: frontmatter['disable-model-invocation'] !== true,
+            userInvocable: frontmatter['user-invocable'] !== false,
+          },
           rank: skill.scope === 'project' ? 300 : skill.scope === 'user' ? 200 : 100,
         },
         metadata: { displayName: boundedText(skill.name, 256, 'DSH Skill name') },
@@ -531,7 +546,8 @@ export function compileDshProductExtensionPlane(
 
   for (const command of [...source.commands].sort((left, right) => left.name.localeCompare(right.name))) {
     if (!DSH_COMMAND_NAME.test(command.name)) {
-      diagnostics.push(componentStatus('commands', command.name, 'unsupported', 'dsh_command_name_unsupported'));
+      diagnostics.push(componentStatus('commands', command.name, 'unsupported', 'dsh_command_name_unsupported',
+        'The installed name is preserved. To enable this command in DSH, give it a unique lowercase name beginning with a letter, using letters, digits, underscores or hyphens; names are never silently lowercased.'));
       continue;
     }
     try {

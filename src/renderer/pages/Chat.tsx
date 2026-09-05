@@ -42,6 +42,7 @@ import SelectionCommentMenu from '@/components/SelectionCommentMenu';
 import TerminalReasonBanner from '@/components/TerminalReasonBanner';
 import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
 import DshPermissionRulesDialog from '@/components/DshPermissionRulesDialog';
+import DshAgentTreeDialog from '@/components/DshAgentTreeDialog';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/WorkspaceConfigPanel';
 import CronTaskSettingsModal, {
@@ -1158,6 +1159,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   }, []);
 
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
+  const [showAgentWork, setShowAgentWork] = useState(false);
   const [showDshPermissionRules, setShowDshPermissionRules] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (currentAgent?.permissionMode as PermissionMode | undefined) ?? currentProject?.permissionMode ?? 'auto'
@@ -5707,6 +5709,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             onWorkspacePluginToggle={handleWorkspacePluginToggle}
             onRefreshProviders={refreshProviderData}
             onOpenAgentSettings={handleOpenAgentSettings}
+            onManageAgentWork={currentRuntime === 'dsh' && currentRuntimeSource === 'integrated' ? () => setShowAgentWork(true) : undefined}
             onManagePermissionRules={currentRuntime === 'dsh' && currentRuntimeSource === 'integrated'
               ? () => setShowDshPermissionRules(true)
               : undefined}
@@ -6112,6 +6115,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       )}
 
       {/* Workspace Config Panel */}
+      {showAgentWork && <DshAgentTreeDialog onClose={() => setShowAgentWork(false)} />}
       {showDshPermissionRules && (
         <DshPermissionRulesDialog
           desiredProductMode={inputChromePermissionMode}

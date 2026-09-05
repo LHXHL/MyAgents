@@ -384,6 +384,7 @@ type ProxyDispatcherEntry = {
 export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
   private current: ProxyDispatcherEntry | undefined;
   private readonly entries = new Set<ProxyDispatcherEntry>();
+  private closed = false;
 
   constructor(private readonly maxCompressedBytes: number) {}
 
@@ -393,15 +394,20 @@ export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
     signal: AbortSignal,
     proxy: string,
   ): Promise<DshRawHttpResponse> {
+    signal.throwIfAborted();
     const entry = this.acquire(proxy);
+    let responseStarted = false;
     try {
       const response = await undiciRequest(url, {
         dispatcher: entry.dispatcher,
         method: request.method,
-        headers: request.headers,
+        // Undici's ProxyAgent adds Host. The immutable description belongs to
+        // the caller; each dispatch owns its own mutable transport headers.
+        headers: { ...request.headers },
         ...(request.body === undefined ? {} : { body: request.body }),
         signal,
       });
+      responseStarted = true;
       const chunks: Uint8Array[] = [];
       let total = 0;
       for await (const chunk of response.body) {
@@ -420,12 +426,16 @@ export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
         headers: Object.freeze(response.headers),
         bytes: Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), total),
       });
+    } catch (error) {
+      signal.throwIfAborted();
+      throw dshCanonicalWebTransportError(error, 'proxy', responseStarted ? 'response_body' : undefined);
     } finally {
       this.release(entry);
     }
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     this.current = undefined;
     const closing = [...this.entries].map(entry => {
       entry.retired = true;
@@ -435,6 +445,7 @@ export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
   }
 
   private acquire(proxy: string): ProxyDispatcherEntry {
+    if (this.closed) throw new DshCanonicalWebError('web_request_failed', 'Web transport is closed', { phase: 'request' });
     if (this.current?.proxy === proxy && !this.current.retired) {
       this.current.active += 1;
       return this.current;
@@ -462,7 +473,7 @@ export class DshNodeProxyHttpTransport implements DshSafeHttpProxyTransport {
   private closeEntry(entry: ProxyDispatcherEntry, force: boolean): Promise<void> {
     if (entry.closing) return entry.closing;
     if (!force && entry.active > 0) return Promise.resolve();
-    entry.closing = entry.dispatcher.close()
+    entry.closing = (force ? entry.dispatcher.destroy() : entry.dispatcher.close())
       .catch(() => undefined)
       .finally(() => this.entries.delete(entry));
     return entry.closing;

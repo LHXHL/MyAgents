@@ -2,7 +2,7 @@ import { buildFilePatchDisplayDescriptor } from '../../../shared/toolDisplay/fil
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 import {
   finalizeResidualSubagentCall,
-  isTerminalSubagentLifecycleStatus,
+  mergeSubagentLifecycleUpdate,
   type SubagentLifecycle,
   type SubagentLifecycleStatus,
 } from '../../../shared/types/subagent-lifecycle';
@@ -197,23 +197,18 @@ function mergeSubagentLifecycle(
   current: SubagentLifecycle | undefined,
   status: SubagentLifecycleStatus,
   observedAt: number,
-  details: Omit<SubagentLifecycle, 'status' | 'startedAt' | 'finishedAt'> = {},
+  details: Partial<Omit<SubagentLifecycle, 'status' | 'finishedAt'>> = {},
 ): SubagentLifecycle {
   const safeObservedAt = Number.isFinite(observedAt) && observedAt > 0 ? observedAt : Date.now();
-  if (current && isTerminalSubagentLifecycleStatus(current.status)) return current;
-  if (status === 'running') {
-    return current
-      ? { ...current, ...details }
-      : { status, startedAt: safeObservedAt, ...details };
-  }
-  const startedAt = current?.startedAt ?? safeObservedAt;
-  return {
-    ...current,
+  const sameActivation = current?.activation?.id === details.activation?.id;
+  const startedAt = details.startedAt ?? (sameActivation ? current?.startedAt : undefined) ?? safeObservedAt;
+  return mergeSubagentLifecycleUpdate(current, {
+    ...(sameActivation ? current : {}),
     ...details,
     status,
     startedAt,
-    finishedAt: Math.max(startedAt, safeObservedAt),
-  };
+    ...(status === 'running' ? { finishedAt: undefined } : { finishedAt: Math.max(startedAt, safeObservedAt) }),
+  });
 }
 
 export function attachExternalPendingSubagentLifecycle(
@@ -227,18 +222,24 @@ export function attachExternalPendingSubagentLifecycle(
         parentTool.subagentLifecycle,
         pending.status,
         pending.status === 'running' ? pending.startedAt : pending.finishedAt ?? pending.startedAt,
+        pending,
       )
     : { ...pending };
-  if (parentTool.subagentLifecycle.result !== undefined) {
-    parentTool.result = parentTool.subagentLifecycle.result;
-  }
-  if (parentTool.subagentLifecycle.status !== 'running') parentTool.isLoading = false;
-  parentTool.isError = parentTool.subagentLifecycle.status === 'failed'
-    || parentTool.subagentLifecycle.status === 'interrupted';
+  // Lifecycle is a separate projection. Only tool_result owns the original
+  // call's result, error and loading state, including an early lifecycle event.
   pendingSubagentLifecyclesByParent.delete(parentToolUseId);
 }
 
 export function applyExternalSubagentLifecycle(input: {
+  handleRevision?: number;
+  agentId?: string;
+  taskId?: string;
+  tree?: SubagentLifecycle['tree'];
+  modelRoute?: SubagentLifecycle['modelRoute'];
+  lastActivityAt?: number;
+  activation?: SubagentLifecycle['activation'];
+  handleState?: SubagentLifecycle['handleState'];
+  startedAt?: number;
   parentToolUseId: string;
   status: SubagentLifecycleStatus;
   observedAt: number;
@@ -251,6 +252,15 @@ export function applyExternalSubagentLifecycle(input: {
   usage?: SubagentLifecycle['usage'];
 }): SubagentLifecycle {
   const details = {
+    ...(input.handleRevision === undefined ? {} : { handleRevision: input.handleRevision }),
+    ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+    ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+    ...(input.tree === undefined ? {} : { tree: input.tree }),
+    ...(input.modelRoute === undefined ? {} : { modelRoute: input.modelRoute }),
+    ...(input.lastActivityAt === undefined ? {} : { lastActivityAt: input.lastActivityAt }),
+    ...(input.activation === undefined ? {} : { activation: input.activation }),
+    ...(input.handleState === undefined ? {} : { handleState: input.handleState }),
+    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
     ...(input.agentType === undefined ? {} : { agentType: input.agentType }),
     ...(input.description === undefined ? {} : { description: input.description }),
     ...(input.mode === undefined ? {} : { mode: input.mode }),
@@ -268,11 +278,6 @@ export function applyExternalSubagentLifecycle(input: {
       input.observedAt,
       details,
     );
-    if (input.result !== undefined) parent.tool.result = input.result;
-    if (input.status !== 'running') {
-      parent.tool.isLoading = false;
-      parent.tool.isError = input.status === 'failed' || input.status === 'interrupted';
-    }
     return parent.tool.subagentLifecycle;
   }
 
@@ -294,6 +299,7 @@ export function finalizeExternalSubagentLifecyclesForTurn(input: {
   for (const block of currentContentBlocks) {
     const tool = block.tool;
     if (block.type !== 'tool_use' || !tool?.subagentLifecycle) continue;
+    if (tool.subagentLifecycle.activation && tool.subagentLifecycle.handleState !== 'closed') continue;
     if (tool.subagentLifecycle.status === 'running') {
       tool.subagentLifecycle = mergeSubagentLifecycle(
         tool.subagentLifecycle,
@@ -309,12 +315,15 @@ export function finalizeExternalSubagentLifecyclesForTurn(input: {
     }
   }
   for (const [parentToolUseId, calls] of pendingSubagentCallsByParent) {
+    const lifecycle = pendingSubagentLifecyclesByParent.get(parentToolUseId);
+    if (lifecycle?.activation && lifecycle.handleState !== 'closed') continue;
     pendingSubagentCallsByParent.set(
       parentToolUseId,
       calls.map(call => finalizeResidualSubagentCall(call, input.status)),
     );
   }
   for (const [parentToolUseId, lifecycle] of pendingSubagentLifecyclesByParent) {
+    if (lifecycle.activation && lifecycle.handleState !== 'closed') continue;
     if (lifecycle.status !== 'running') continue;
     const terminal = mergeSubagentLifecycle(lifecycle, input.status, input.observedAt);
     pendingSubagentLifecyclesByParent.set(parentToolUseId, terminal);

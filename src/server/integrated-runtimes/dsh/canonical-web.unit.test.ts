@@ -97,6 +97,20 @@ function host(webProvider = provider()): DshCanonicalWebHost {
 }
 
 describe('DshCanonicalWebHost', () => {
+  it('retains the retrieval query but returns query-free page provenance', async () => {
+    const webProvider = provider();
+    const result = await host(webProvider).execute({
+      tool: 'WebFetch',
+      input: { url: 'https://example.com/final?synthetic=value#section', prompt: 'Summarize it' },
+      authority: authority('WebFetch'),
+    }, context());
+    expect(result).toMatchObject({ state: 'succeeded', structured: {
+      url: 'https://example.com/final?synthetic=value#section',
+      finalUrl: 'https://example.com/final', citations: [{ url: 'https://example.com/final' }],
+    } });
+    expect(webProvider.runUtility).toHaveBeenCalledWith(expect.objectContaining({ finalUrl: 'https://example.com/final' }));
+  });
+
   it('converts fetched HTML and returns the exact structured WebFetch result', async () => {
     const webProvider = provider();
     const result = await host(webProvider).execute({

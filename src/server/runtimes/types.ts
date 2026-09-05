@@ -1,3 +1,4 @@
+import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
@@ -6,7 +7,7 @@ import type { McpServerDefinition } from '../../shared/config-types';
 import type { DshSystemContextSnapshot, InteractionScenario } from '../system-prompt';
 import type { ModelUsageEntry } from '../types/session';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
-import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
+import type { SubagentLifecycle, SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
 import type { DshProductExtensionSource } from '../integrated-runtimes/dsh/extension-compiler';
@@ -279,6 +280,15 @@ export type UnifiedEvent =
   // === Normalized child-turn lifecycle ===
   | {
     kind: 'subagent_lifecycle';
+    handleRevision?: number;
+    agentId?: string;
+    taskId?: string;
+    tree?: SubagentLifecycle['tree'];
+    modelRoute?: SubagentLifecycle['modelRoute'];
+    lastActivityAt?: number;
+    activation?: SubagentLifecycle['activation'];
+    handleState?: SubagentLifecycle['handleState'];
+    startedAt?: number;
     parentToolUseId: string;
     status: SubagentLifecycleStatus;
     observedAt: number;
@@ -301,7 +311,8 @@ export type UnifiedEvent =
 
   // === Turn lifecycle ===
   | { kind: 'turn_started' }
-  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientUserMessageId: string }
+  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientUserMessageId: string; origin?: 'user' }
+  | { kind: 'root_turn_admitted'; runtimeTurnId: string; clientOperationId: string; origin: 'collaboration'; clientUserMessageId?: never }
 
   // === Permission delegation ===
   | {
@@ -413,6 +424,7 @@ export type UnifiedEvent =
   // a visible user bubble; the turn/steer RPC response alone is only transport
   // acknowledgement.
   | { kind: 'user_message_accepted'; clientUserMessageId?: string }
+  | { kind: 'user_message_cancelled'; clientUserMessageId: string }
 
   // === Passthrough for unrecognized events ===
   | { kind: 'raw'; data: unknown };
@@ -494,6 +506,8 @@ export interface AgentRuntime {
   ): Promise<RuntimeExtensionDiagnostics | null>;
 
   /** Inspect the authoritative Runtime permission policy for this Session. */
+  listAgentWork?(process: RuntimeProcess): Promise<RuntimeAgentWorkTree>;
+  controlAgentWork?(process: RuntimeProcess, input: RuntimeAgentWorkControl): Promise<void>;
   listPermissionRules?(process: RuntimeProcess): Promise<RuntimePermissionRulesSnapshot>;
 
   /** Pre-authorize one exact Runtime-owned permission tuple. */
@@ -529,7 +543,8 @@ export interface AgentRuntime {
   /** Exact active root and whether this Host generation may steer it in-place. */
   getActiveRootOperation?(process: RuntimeProcess): Readonly<{
     clientOperationId: string;
-    clientUserMessageId: string;
+    clientUserMessageId?: string;
+    origin?: 'collaboration';
     realtimeSteerEligible?: boolean;
   }> | null;
 
@@ -555,8 +570,18 @@ export interface AgentRuntime {
     process: RuntimeProcess,
     message: string,
     images?: ResolvedImagePayload[],
-    options?: { clientUserMessageId?: string },
+    options?: {
+      clientUserMessageId?: string;
+      clientOperationId?: string;
+      beforeDispatch?: (identity: { clientOperationId: string; inputFingerprint: string }) => Promise<void>;
+    },
   ): Promise<void>;
+
+  /** Cancel one identified input; a consumed input cannot be retracted. */
+  cancelSteeredMessage?(
+    process: RuntimeProcess,
+    input: { clientOperationId: string; clientUserMessageId: string },
+  ): Promise<'cancelled' | 'delivered'>;
 
   /** Respond to a permission request from the runtime */
   respondPermission(

@@ -1,4 +1,5 @@
 import { delimiter, dirname, isAbsolute, normalize } from "node:path";
+import { isCliProductSessionId } from '../../../shared/cli-session-scope';
 
 const SAFE_INHERITED_ENVIRONMENT_KEYS = [
   "HOME",
@@ -46,6 +47,7 @@ export function buildDshChildEnvironment(options: {
   nodeExecutablePath: string;
   commandDirectories?: readonly string[];
   inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  sessionRoute?: Readonly<{ productSessionId: string; sidecarPort: number }>;
 }): DshChildEnvironment {
   if (!isAbsolute(options.nodeExecutablePath)) {
     throw new Error("DSH bundled Node path must be absolute");
@@ -62,6 +64,15 @@ export function buildDshChildEnvironment(options: {
   const env: NodeJS.ProcessEnv = {
     PATH: uniquePathEntries.join(delimiter),
   };
+  if (options.sessionRoute !== undefined) {
+    const { productSessionId, sidecarPort } = options.sessionRoute;
+    if (!isCliProductSessionId(productSessionId)
+      || !Number.isSafeInteger(sidecarPort) || sidecarPort < 1 || sidecarPort > 65_535) {
+      throw new Error('DSH Product Session CLI route is missing or invalid');
+    }
+    env.MYAGENTS_PORT = String(sidecarPort);
+    env.MYAGENTS_SESSION_ID = productSessionId;
+  }
   const inheritedKeys: string[] = [];
   for (const key of SAFE_INHERITED_ENVIRONMENT_KEYS) {
     const value = safeEnvironmentValue(source[key]);

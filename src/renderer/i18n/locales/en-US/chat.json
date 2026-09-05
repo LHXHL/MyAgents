@@ -589,8 +589,15 @@
     },
     "toolChrome": {
       "common": {
+        "completedContinuable": "Completed · available for follow-up",
         "background": "Background",
         "providerOwned": "Provider",
+        "providerOutcome": {
+          "running": "Running",
+          "succeeded": "Result returned",
+          "failed": "Failed",
+          "unknown": "Result unconfirmed"
+        },
         "copy": "Copy",
         "copied": "Copied",
         "exportMarkdown": "Export Markdown",
@@ -790,6 +797,9 @@
         "partialFiles": "Showing files {{start}}–{{end}} of {{total}}"
       },
       "webSearch": {
+        "unverifiedText": "Some source links could not be confirmed. The search service's text is retained below.",
+        "unverifiedDomainText": "Some source links and domain filters could not be confirmed. The search service's text is retained below.",
+        "noMatches": "No matching pages found.",
         "initializing": "Initializing search...",
         "expandRemaining": "Show {{count}} more results",
         "toolOutput": "Tool Output",
@@ -1150,6 +1160,53 @@
         "18": "Worth taking a little time...",
         "19": "Taking your question seriously..."
       }
+    }
+  },
+  "agentTree": {
+    "title": "Agent work tree",
+    "close": "Close",
+    "description": "Follow-ups retain context. Stop closes this agent and its descendants; resume opens only this node for a new message. Context is estimated; token totals include Provider-reported usage.",
+    "totals": "{{active}} active · {{tokens}} reported child tokens",
+    "partial": "Some usage is unknown",
+    "unknown": "Unknown",
+    "loading": "Loading…",
+    "empty": "No child agents in this session.",
+    "descendants": "This activation finished; descendants remain active",
+    "tokens": "Reported tokens",
+    "context": "Estimated next input / capacity",
+    "details": "Identity and latest result",
+    "parent": "Direct parent",
+    "message": "Follow up",
+    "resume": "Resume this node",
+    "stop": "Stop subtree",
+    "send": "Send",
+    "states": {
+      "queued": "Queued",
+      "running": "Running",
+      "waiting_child": "Waiting for child",
+      "waiting_delivery": "Waiting for delivery",
+      "waiting_interaction": "Waiting for user",
+      "completed": "Completed, continuable",
+      "failed": "Activation failed",
+      "aborted": "Activation interrupted",
+      "interrupted": "Activation interrupted",
+      "stopping": "Stopping",
+      "closed": "Closed; user resume required"
+    },
+    "messageAccepted": "Message received. It takes effect at the next allowed execution boundary.",
+    "effective": "Effective: depth {{depth}} · active limit {{active}} · retained limit {{retained}} · {{policy}} · collaboration {{delivery}}",
+    "policies": {
+      "inherit": "inherit parent model",
+      "fixed": "fixed model",
+      "agent": "authorized model selection"
+    },
+    "delivery": {
+      "realtime": "realtime",
+      "turn": "next turn"
+    },
+    "config": {
+      "pending": "Settings pending; applied with the next user request",
+      "invalid": "New settings are unavailable; execution uses the effective configuration"
     }
   }
 }

@@ -12,6 +12,7 @@ import {
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
+import { getSidecarPort } from './session-core/sidecar-port';
 import { resolveNpxMcpInvocation } from './utils/mcp-command';
 import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
@@ -1504,7 +1505,6 @@ const _pendingAttachments: MessageAttachment[] = [];
 // in `./openai-bridge/bridge-registry`; this module owns its session's
 // token (`activeSessionBridgeToken` below) and the resolver that updates
 // when `configState.currentProviderEnv` / `configState.currentModel` change.
-let sidecarPort: number = 0;
 
 /** Set the sidecar port (called once from index.ts on startup).
  *
@@ -1518,17 +1518,7 @@ let sidecarPort: number = 0;
  *  The builtin SDK path still sets `env.MYAGENTS_PORT` explicitly in
  *  `buildClaudeSessionEnv()` (idempotent) because pre-warm can spawn before
  *  this function is called and the process.env write would arrive too late. */
-export function setSidecarPort(port: number): void {
-  sidecarPort = port;
-  if (port > 0) {
-    process.env.MYAGENTS_PORT = String(port);
-  }
-}
-
-/** Get the current sidecar port (used by admin-api for self-loopback) */
-export function getSidecarPort(): number {
-  return sidecarPort;
-}
+export { getSidecarPort, setSidecarPort } from './session-core/sidecar-port';
 
 // ── Active session bridge token (PRD #124) ────────────────────────────────
 //
@@ -6067,6 +6057,7 @@ export function buildClaudeSessionEnv(
   // projected into project .claude/skills/ at Query birth.
 
   // Self-Config CLI: expose sidecar port so the `myagents` CLI can call back
+  const sidecarPort = getSidecarPort();
   if (sidecarPort > 0) {
     env.MYAGENTS_PORT = String(sidecarPort);
   }

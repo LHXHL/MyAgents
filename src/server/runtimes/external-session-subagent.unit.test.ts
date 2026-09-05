@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { PersistContentBlock, PersistSubagentCall } from './external-session/types';
 import {
   buildExternalAssistantSnapshotContent,
-  type PersistContentBlock,
-  type PersistSubagentCall,
-} from './external-session';
-import {
   applyExternalSubagentLifecycle,
+  applyExternalToolResultToContent,
   finalizeExternalSubagentLifecyclesForTurn,
   finalizeExternalSubagentToolInput,
   finalizeExternalToolUseInput,
@@ -261,6 +259,8 @@ describe('external-session sub-agent lifecycle owner', () => {
       toolInput: { subagent_type: 'Explore', description: 'Inspect files' },
     });
     finalizeExternalToolUseInput('agent-work-1');
+    const handle = JSON.stringify({ taskId: 'work-1', agentId: 'child-1', state: 'background', outputPath: '/fixture/output' });
+    applyExternalToolResultToContent({ toolUseId: 'agent-work-1', content: handle, isError: false });
 
     const lifecycle = applyExternalSubagentLifecycle({
       parentToolUseId: 'agent-work-1',
@@ -281,10 +281,10 @@ describe('external-session sub-agent lifecycle owner', () => {
       result: 'Inspection complete',
     });
     expect(getExternalContentBlocksRef()[0].tool).toMatchObject({
-      isLoading: false,
       isError: false,
-      result: 'Inspection complete',
+      result: handle,
       subagentLifecycle: lifecycle,
     });
+    expect(getExternalContentBlocksRef()[0].tool?.isLoading).not.toBe(true);
   });
 });

@@ -18,6 +18,7 @@ import {
   parseArgs,
   parseDispatchAtValue,
   printAgentList,
+  printSkillList,
   printModelList,
   printGoalResult,
   printResult,
@@ -25,6 +26,7 @@ import {
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
   resolveCliPort,
+  validateCliRouting,
   validateCliCommand,
 } from './myagents';
 
@@ -40,6 +42,16 @@ afterEach(() => {
 });
 
 describe('myagents CLI port authority', () => {
+  it('rejects a missing or invalid Session route while preserving explicit terminal routing', () => {
+    expect(validateCliRouting('31417', 'product-a')).toBeUndefined();
+    expect(validateCliRouting('31417', undefined)).toBeUndefined();
+    expect(validateCliRouting('', 'product-a')).toBe('CLI_SESSION_ROUTE_REQUIRED');
+    expect(validateCliRouting('31417', '')).toBe('CLI_SESSION_SCOPE_INVALID');
+    for (const port of ['0', '65536', '-1', '1/path', '31417@evil', 'Infinity', ' 31417']) {
+      expect(validateCliRouting(port, 'product-a')).toBe('CLI_SESSION_ROUTE_REQUIRED');
+    }
+    expect(parseArgs(['--version', '--json'])).toEqual({ positional: [], flags: { version: true, json: true } });
+  });
   it('keeps --port above inherited Session or Rust-injected Global ports', () => {
     expect(resolveCliPort('32003', '32002')).toBe('32003');
     expect(resolveCliPort(undefined, '32002')).toBe('32002');
@@ -2152,5 +2164,20 @@ describe('myagents CLI cron time handling', () => {
   it('formats instants with timezone name and offset for human output', () => {
     expect(formatCronInstantForDisplay('2026-07-09T01:00:00Z', 'Asia/Shanghai', 'long'))
       .toBe('2026-07-09 09:00 Asia/Shanghai (UTC+08:00)');
+  });
+});
+
+
+describe('CLI skill availability', () => {
+  it('prints Session admission and invocation separately from enabled inventory', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printSkillList([{ name: 'manual-only', scope: 'project', enabled: true,
+        runtimeAvailability: { runtime: 'dsh', state: 'ready', effectiveRevision: 'effective-v1', desiredRevision: 'next-v2', component: { modelInvocable: false } } }]);
+      const text = log.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(text).toContain('Runtime admission: ready; model invocation: unavailable');
+      expect(text).toContain('Effective generation: effective-v1; desired: next-v2');
+      expect(text).toContain('Enabled reflects installation settings');
+    } finally { log.mockRestore(); }
   });
 });

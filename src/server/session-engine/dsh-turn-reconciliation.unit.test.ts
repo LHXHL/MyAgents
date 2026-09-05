@@ -132,6 +132,41 @@ function succeededHistory(): {
 }
 
 describe('DSH ordinary turn reconciliation', () => {
+  it('accepts different realtime inputs claimed in one turn and excludes collaboration and cancelled input', () => {
+    const fixture = succeededHistory();
+    const events = [...fixture.history.events.slice(0, 6),
+      event(6, 'myagents/operation/message', { clientOperationId: 'operation-1', messageId: 'user-2', clientMessageId: 'user-2', kind: 'follow_up', state: 'queued', inputFingerprint: 'a'.repeat(64) }),
+      event(7, 'myagents/operation/claimed', { clientOperationId: 'operation-1', messageId: 'user-2', dshTurn: 1 }),
+      event(8, 'myagents/operation/message', { clientOperationId: 'operation-1', messageId: 'report', clientMessageId: 'report', kind: 'follow_up', state: 'queued', inputFingerprint: 'a'.repeat(64), contextMessage: true }),
+      event(9, 'myagents/operation/claimed', { clientOperationId: 'operation-1', messageId: 'report', dshTurn: 1 }),
+      event(10, 'myagents/operation/message', { clientOperationId: 'operation-1', messageId: 'cancelled-user', clientMessageId: 'cancelled-user', kind: 'follow_up', state: 'queued', inputFingerprint: 'a'.repeat(64) }),
+      event(11, 'myagents/operation/message', { clientOperationId: 'operation-1', messageId: 'cancelled-user', clientMessageId: 'cancelled-user', kind: 'follow_up', state: 'cancelled' }),
+      ...fixture.history.events.slice(6).map(candidate => ({ ...candidate, sequence: candidate.sequence + 6 })),
+    ];
+    const terminal = { ...fixture.lookups.get('operation-1')!.terminal!, assistantEventId: durableEventId(12) };
+    events[14] = event(14, 'myagents/operation/terminal', { ...(events[14]!.data as object), terminal });
+    const history = { ...fixture.history, events, durableSequence: events.length };
+    const lookups = new Map([['operation-1', { ...fixture.lookups.get('operation-1')!, terminal }]]);
+    expect(buildDshTurnProjectionSnapshot(history, lookups).rootOperations[0]?.consumedUserMessageIds).toEqual(['user-2']);
+    const duplicate = events.map(candidate => candidate.sequence === 9
+      ? event(9, 'myagents/operation/claimed', { clientOperationId: 'operation-1', messageId: 'user-2', dshTurn: 1 }) : candidate);
+    expect(() => buildDshTurnProjectionSnapshot({ ...history, events: duplicate }, lookups)).toThrow('repeats one message claim');
+    const cancelled = events.map(candidate => candidate.sequence === 9
+      ? event(9, 'myagents/operation/claimed', { clientOperationId: 'operation-1', messageId: 'cancelled-user', dshTurn: 1 }) : candidate);
+    expect(() => buildDshTurnProjectionSnapshot({ ...history, events: cancelled }, lookups)).toThrow('contradicts its native receipt');
+  });
+
+  it('recovers a collaboration assistant with a native operation anchor and no invented user', () => {
+    const fixture = succeededHistory();
+    const history = { ...fixture.history, events: fixture.history.events.map(event => event.eventType === 'myagents/operation/accepted'
+      ? { ...event, data: { ...(event.data as object), rootContextMessage: true } } : event) };
+    const lookups = new Map([...fixture.lookups].map(([id, value]) => [id, { ...value, admission: { ...value.admission!, origin: 'collaboration' as const } }]));
+    const snapshot = buildDshTurnProjectionSnapshot(history, lookups);
+    expect(snapshot.rootOperations[0]).toMatchObject({ origin: 'collaboration' });
+    expect(snapshot.assistantTurns[0]?.assistantMessage.runtimeTurnAnchor).toEqual({ turnId: 'product-turn-1', origin: 'collaboration', clientOperationId: 'operation-1' });
+    expect(() => buildDshTurnProjectionSnapshot(history, fixture.lookups)).toThrow('admission differs');
+  });
+
   it('derives one stable Product assistant from matching session/read and turn/get truth', () => {
     const fixture = succeededHistory();
     const snapshot = buildDshTurnProjectionSnapshot(fixture.history, fixture.lookups);
@@ -174,13 +209,41 @@ describe('DSH ordinary turn reconciliation', () => {
           name: 'Read',
           input: { file_path: '/tmp/a' },
           inputJson: '{\n  "file_path": "/tmp/a"\n}',
-          result: '[{"text":"file body","type":"text"}]',
+          result: 'file body',
           isError: false,
           streamIndex: 1,
         },
       },
       { type: 'text', text: 'Done.' },
     ]);
+  });
+
+  it.each([
+    { result: undefined, failed: undefined },
+    { result: [{ title: 'Public reference', url: 'https://example.com/' }], failed: false },
+    { result: { type: 'web_search_tool_result_error', error_code: 'unavailable' }, failed: true },
+    { result: "Provider supplied an unfamiliar search format", failed: false },
+  ])('preserves Provider-owned calls and result evidence during cold reconstruction: $failed', ({ result, failed }) => {
+    const fixture = succeededHistory();
+    const source = fixture.history.events[6]!;
+    const data = structuredClone(source.data) as { message: { content: unknown[] } };
+    data.message.content.unshift({
+      type: 'provider-tool-call', id: 'search-1', name: 'renamed_search', input: { query: 'public fixture' },
+      providerType: 'server_tool_use',
+    });
+    if (result !== undefined) data.message.content.push({
+      type: 'provider-tool-result', toolCallId: 'search-1', providerType: 'tool_result', content: result,
+    });
+    const history = { ...fixture.history, events: fixture.history.events.map(item => item === source ? event(6, source.eventType, data) : item) };
+    const snapshot = buildDshTurnProjectionSnapshot(history, fixture.lookups);
+    const message = snapshot.assistantTurns[0]!.assistantMessage;
+    const content = JSON.parse(message.content) as Array<{ type: string; tool?: { result?: string; isError?: boolean; name: string } }>;
+    const provider = content.find(block => block.type === 'server_tool_use');
+    expect(provider?.tool?.name).toBe('renamed_search');
+    expect(provider?.tool?.isError).toBe(failed);
+    if (result === undefined || typeof result === 'string') expect(provider?.tool?.result).toBe(result);
+    else expect(JSON.parse(provider?.tool?.result ?? 'null')).toEqual(result);
+    expect(message.toolCount).toBe(1);
   });
 
   it('does not manufacture an assistant for a failed terminal', () => {

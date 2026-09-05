@@ -45,6 +45,8 @@ import {
   isExternalSessionStateRestoredFor,
   isExternalTurnCurrent,
   listExternalPermissionRules,
+  listExternalAgentWork,
+  controlExternalAgentWork,
   respondExternalAskUserQuestion,
   respondExternalPermission,
   respondExternalPlanApproval,
@@ -847,7 +849,7 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async cancelQueuedMessage(queueId) {
-      const cancellation = cancelExternalQueueItem(queueId);
+      const cancellation = await cancelExternalQueueItem(queueId);
       if (!cancellation) return { status: 'not_found' as const };
       const settlement = await cancellation.promotion?.settled;
       if (
@@ -877,6 +879,9 @@ export function createExternalSessionEngine(): SessionEngine {
     updatePermissionMode(mode) {
       return setExternalPermissionMode(mode);
     },
+
+    listAgentWork() { return listExternalAgentWork(); },
+    controlAgentWork(input) { return controlExternalAgentWork(input); },
 
     listPermissionRules() {
       return listExternalPermissionRules();

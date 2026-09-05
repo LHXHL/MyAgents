@@ -16,75 +16,57 @@ interface SearchResult {
   url: string;
 }
 
-/**
- * Parse search results from the complex tool_use_result format
- *
- * The actual format is:
- * {
- *   "query": "...",
- *   "results": [
- *     "text string...",
- *     { "tool_use_id": "...", "content": [{ "title": "...", "url": "..." }, ...] },
- *     "more text..."
- *   ]
- * }
- */
-function parseSearchResults(resultStr: string): SearchResult[] {
+function parseSearchPresentation(resultStr: string): {
+  results: SearchResult[];
+  text: string;
+  unverified: boolean;
+  domainUnverified: boolean;
+  completedEmpty: boolean;
+} {
   const results: SearchResult[] = [];
-
+  const text: string[] = [];
+  const seen = new Set<string>();
+  const addResult = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const item = value as Record<string, unknown>;
+    if (typeof item.title !== 'string' || typeof item.url !== 'string' || seen.has(item.url)) return;
+    try {
+      const url = new URL(item.url);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return;
+    } catch { return; }
+    seen.add(item.url);
+    results.push({ title: item.title, url: item.url });
+  };
   try {
-    const parsed = JSON.parse(resultStr);
-
-    // Handle the nested results format
-    if (parsed.results && Array.isArray(parsed.results)) {
-      for (const item of parsed.results) {
-        // Skip string items (text content)
-        if (typeof item === 'string') continue;
-
-        // Extract from { content: [{ title, url }, ...] } format
-        if (item && Array.isArray(item.content)) {
-          for (const contentItem of item.content) {
-            if (contentItem.title && contentItem.url) {
-              results.push({
-                title: contentItem.title,
-                url: contentItem.url,
-              });
-            }
-          }
-        }
+    const parsed: unknown = JSON.parse(resultStr);
+    const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown> : {};
+    const rows = Array.isArray(parsed) ? parsed : Array.isArray(record.results) ? record.results : undefined;
+    if (typeof record.answer === 'string' && record.answer) text.push(record.answer);
+    for (const item of rows ?? []) {
+      if (typeof item === 'string') { text.push(item); continue; }
+      addResult(item);
+      if (item && typeof item === 'object' && Array.isArray(item.content)) {
+        for (const child of item.content) addResult(child);
       }
     }
-
-    // Fallback: try simple array format
-    if (results.length === 0 && Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (item.title && item.url) {
-          results.push({ title: item.title, url: item.url });
-        }
-      }
-    }
-
-    // Fallback: try { results: [{ title, url }] } format
-    if (results.length === 0 && parsed.results && Array.isArray(parsed.results)) {
-      for (const item of parsed.results) {
-        if (typeof item === 'object' && item.title && item.url) {
-          results.push({ title: item.title, url: item.url });
-        }
-      }
-    }
+    const unverified = Array.isArray(record.warnings) && record.warnings.includes('unverified_search_results');
+    const domainUnverified = Array.isArray(record.warnings) && record.warnings.includes('unverified_domain_filter');
+    return {
+      results, text: text.join('\n\n') || (rows === undefined ? resultStr : ''),
+      unverified, domainUnverified, completedEmpty: rows !== undefined && results.length === 0 && !unverified,
+    };
   } catch {
-    // Parsing failed, return empty array
+    return { results, text: resultStr, unverified: false, domainUnverified: false, completedEmpty: false };
   }
-
-  return results;
 }
 
 export default function WebSearchTool({ tool }: WebSearchToolProps) {
   const { t } = useTranslation('chat');
   const [expanded, setExpanded] = useState(false);
   const input = tool.parsedInput as WebSearchInput;
-  const results = tool.result ? parseSearchResults(tool.result) : [];
-  const showRawResult = tool.result && results.length === 0;
+  const presentation = tool.result ? parseSearchPresentation(tool.result) : undefined;
+  const results = presentation?.results ?? [];
 
   if (!input && !tool.inputJson) {
     return <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.webSearch.initializing')}</div>;
@@ -139,12 +121,21 @@ export default function WebSearchTool({ tool }: WebSearchToolProps) {
         </div>
       )}
 
-      {/* Raw Output fallback — height-clamped for consistency with other tools */}
-      {showRawResult && tool.result && (
+      {presentation?.unverified && (
+        <div className="text-sm text-[var(--ink-muted)]">
+          {t(presentation.domainUnverified
+            ? 'shell.toolChrome.webSearch.unverifiedDomainText'
+            : 'shell.toolChrome.webSearch.unverifiedText')}
+        </div>
+      )}
+      {presentation?.completedEmpty && !presentation.text && (
+        <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.webSearch.noMatches')}</div>
+      )}
+      {presentation?.text && (
         <div className="space-y-2">
           <div className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">{t('shell.toolChrome.webSearch.toolOutput')}</div>
           <ExpandableResult
-            content={tool.result}
+            content={presentation.text}
             className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-inset)] p-3 text-xs text-[var(--ink-secondary)]"
           />
         </div>

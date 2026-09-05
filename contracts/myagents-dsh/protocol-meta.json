@@ -1,6 +1,6 @@
 {
   "artifactFormatVersion": 1,
-  "canonicalToolContractSha256": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
+  "canonicalToolContractSha256": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
   "canonicalTools": [
     "Read",
     "Write",
@@ -23,12 +23,12 @@
     "TaskList",
     "TaskUpdate"
   ],
-  "capabilityProfileDigest": "80d3f130738d75c57caa6ad6d233b6f2cfc57a7ad3a786985d985445c7177d02",
-  "contractSourceSha256": "9c6adb2dcff16454b8faee2f86f84fe1347bcff63d1487825210e7c7ab08951f",
-  "developmentDshVersion": "0.1.1-rc.2",
-  "dshArtifactManifestSha256": "b53667aed87f2b9cd0dbc8fb02f097e4fb9127227705f78d132bbedae7ed46aa",
-  "dshEngineVersion": "0.1.1-rc.2.myagents.b150a551b8d4.398a736e065a",
-  "fixturesSha256": "653a85bb3cf43382c46ecc2b9f658b79e489e24449b6779aa220d6bcc18b54e9",
+  "capabilityProfileDigest": "be811eb7deec5a352193a024997629fc92b20b05d842b81e274f0798c6c257eb",
+  "contractSourceSha256": "76939e0b23c04ad263271fe381f3cea121cc7b93585a97e4dc2d9f1c120c9c65",
+  "developmentDshVersion": "0.1.2-rc.1",
+  "dshArtifactManifestSha256": "b081b253d3337761ac6a1f15d3667cd9ff36b966ffdf93325ada4c2391168575",
+  "dshEngineVersion": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+  "fixturesSha256": "fbc3e98d66e3f62273de64ddeb0ee9ee296c39f22dbf9f487d62d655e9938780",
   "hostMethods": [
     "initialize",
     "runtime/status",
@@ -51,6 +51,10 @@
     "session/rewind/commit",
     "session/rewind/rollback",
     "session/rewind/status",
+    "work/list",
+    "work/agent/resume",
+    "work/agent/stop",
+    "work/agent/message",
     "turn/start",
     "turn/get",
     "turn/steer",
@@ -77,7 +81,7 @@
     "runtime/event",
     "host/interaction/cancel"
   ],
-  "protocolVersion": "2.5.0",
+  "protocolVersion": "2.7.0",
   "reverseMethods": [
     "host/credential/resolve",
     "host/interaction/request",
@@ -88,6 +92,6 @@
     "host/attachment/release"
   ],
   "runtimeVersion": "0.0.0",
-  "schemaSha256": "73cc08a69bd13f47583e9b072ae2a21f1858b5589047676c1c89a77eac22f33c",
+  "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
   "sessionFormat": "dsh-session-events-v1"
 }

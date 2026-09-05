@@ -1,6 +1,6 @@
 {
   "artifactFormatVersion": 1,
-  "contractSha256": "dee6528e97bff11415526f6cc05d2327cab5df616e02aeb27039e135758bacc2",
+  "contractSha256": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
   "tools": [
     {
       "behaviorFixtureIds": [
@@ -34,7 +34,8 @@
         "existing_file_requires_complete_read",
         "atomic_replace_and_checkpoint_receipt",
         "external_change_conflict",
-        "abort_before_commit"
+        "abort_before_commit",
+        "journaled_parent_creation_and_rewind"
       ],
       "invalidInput": {
         "content": "fixture",

@@ -598,6 +598,7 @@ import {
 } from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import { CLI_SESSION_HEADER, cliSessionScopeError } from '../shared/cli-session-scope';
 import {
   isSystemMaintenanceSession,
 } from '../shared/managedScheduledJob';
@@ -4453,6 +4454,11 @@ async function main() {
       // ============= ADMIN API (Self-Config CLI) =============
       if (pathname.startsWith('/api/admin/') && request.method === 'POST') {
         try {
+          const scopeError = cliSessionScopeError(
+            request.headers.get(CLI_SESSION_HEADER),
+            getSessionEngine().getCurrentSessionContext().sessionId,
+          );
+          if (scopeError) return jsonResponse(scopeError, 409);
           const payload = pathname === '/api/admin/status'
             ? {}
             : await request.json().catch(() => ({})) as Record<string, unknown>;
