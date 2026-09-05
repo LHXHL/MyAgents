@@ -58,6 +58,7 @@ import {
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation } from './installation';
+import { reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { DshMutationController } from './mutations';
 import {
   parseDshPermissionRuleMutation,
@@ -1587,8 +1588,17 @@ export class DshRuntime implements AgentRuntime {
     if (result.state === 'rejected') {
       throw new Error(`DSH interaction response was rejected: ${String(result.code)}`);
     }
-    if (result.state === 'expired') {
-      throw new Error('DSH interaction expired before the response was applied');
+    if (
+      reconcileExpiredDshInteractionResponse(
+        result.state,
+        requestId,
+        interactionId => {
+          process.pendingInteractions.delete(interactionId);
+        },
+        process.onEvent,
+      )
+    ) {
+      return;
     }
     if (result.state !== 'applied' && result.state !== 'already_settled') {
       throw new Error('DSH interaction response returned an invalid state');
