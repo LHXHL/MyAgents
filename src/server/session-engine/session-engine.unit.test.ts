@@ -180,7 +180,7 @@ const mocks = vi.hoisted(() => {
       dispatch: Promise.resolve({ queued: true }),
     })),
     forceExecuteExternalQueueItem: vi.fn(async () => true),
-    getActiveRuntimeSource: vi.fn<() => 'system-cli' | 'managed-provider'>(() => 'system-cli'),
+    getActiveRuntimeSource: vi.fn<() => 'integrated' | 'system-cli' | 'managed-provider'>(() => 'system-cli'),
     getExternalMcpEffectiveSnapshot: vi.fn(() => null),
     getActiveRuntimeType: vi.fn(() => 'codex'),
     getCurrentBoundSessionId: vi.fn<() => string | null>(() => null),
@@ -2487,6 +2487,40 @@ describe('session-engine selector and adapters', () => {
       .toBeLessThan(mocks.updateSessionMetadata.mock.invocationCallOrder[0]);
     expect(mocks.updateSessionMetadata).toHaveBeenCalledWith(prepared.sessionId, { runtimeSessionId: 'runtime-thread-id' });
     expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(prepared.sessionId, '/workspace', { type: 'desktop' });
+  });
+
+  it('does not carry a provisional DSH native Session across Product materialization', async () => {
+    mocks.state.useExternal = true;
+    mocks.getActiveRuntimeType.mockReturnValue('dsh');
+    mocks.getActiveRuntimeSource.mockReturnValue('integrated');
+    resetProductSessionBinding({ sessionId: 'pending-dsh-session' });
+    mocks.state.sessionMetadata.clear();
+    mocks.getExternalQueueStatus.mockReturnValueOnce([]);
+    const prepared = await getSessionEngine().materializePendingDesktopSession({
+      workspacePath: '/workspace',
+      phase: 'prepare',
+    });
+    expect(prepared).toMatchObject({ success: true, sessionId: expect.any(String) });
+
+    mocks.state.externalProcessAlive = true;
+
+    const result = await getSessionEngine().materializePendingDesktopSession({
+      workspacePath: '/workspace',
+      phase: 'commit',
+      preparedSessionId: prepared.sessionId,
+    });
+
+    expect(result).toMatchObject({ success: true, sessionId: prepared.sessionId });
+    expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
+    expect(mocks.updateSessionMetadata).not.toHaveBeenCalledWith(
+      prepared.sessionId,
+      expect.objectContaining({ runtimeSessionId: expect.any(String) }),
+    );
+    expect(mocks.restoreExternalSessionState).toHaveBeenCalledWith(
+      prepared.sessionId,
+      '/workspace',
+      { type: 'desktop' },
+    );
   });
 
   it('stops the external runtime when an injected turn times out', async () => {

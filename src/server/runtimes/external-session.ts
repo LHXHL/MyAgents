@@ -2241,7 +2241,23 @@ export async function restoreExternalSessionState(
   const isCrossRuntime = persistedRuntimeType !== undefined
     && persistedRuntimeType !== currentRuntimeType;
 
-  if (isCrossRuntime) {
+  if (
+    !isCrossRuntime
+    && currentRuntimeType === 'dsh'
+    && meta?.runtimeSessionId
+    && !hasExistingMessages
+    && !meta.pendingDshRootOperation
+  ) {
+    const cleared = await updateSessionMetadata(sessionId, { runtimeSessionId: '' });
+    if (!cleared) {
+      return {
+        success: false,
+        error: 'Failed to clear a pre-turn DSH Runtime Session binding',
+      };
+    }
+    clearExternalRuntimeSessionId();
+    console.log(`[external-session] Cleared pre-turn DSH Runtime Session binding for ${sessionId}`);
+  } else if (isCrossRuntime) {
     clearExternalRuntimeSessionId(); // Different runtime — cannot resume
     console.log(`[external-session] Cross-runtime session: persisted=${persistedRuntimeType}, current=${currentRuntimeType}, will start fresh`);
   } else if (meta?.runtimeSessionId) {
@@ -6767,7 +6783,10 @@ export async function retryLastExternalUserMessage(
 
 /**
  * Pre-warm an external runtime process so the first user message skips the
- * cold-start cost (spawn + `initialize` + `session/new` + prompt-file write).
+ * cold-start cost (spawn + `initialize` + native Session open/resume +
+ * prompt-file write). Integrated DSH is intentionally resume-only here: a fresh DSH
+ * native Session is born with the first admitted Product turn, after Product
+ * Session identity is stable.
  *
  * Called from the `/api/runtime/prewarm` HTTP endpoint when the frontend opens
  * a Chat tab backed by a persistent protocol runtime (Integrated DSH, Gemini
@@ -6777,7 +6796,8 @@ export async function retryLastExternalUserMessage(
  * Flow:
  *   1. Bail out if a session is already active (pre-warm is idempotent).
  *   2. Call startExternalSession with NO initialMessage — the runtime spawns
- *      the CLI, does its handshake, opens a session, and then sits idle.
+ *      the CLI, does its handshake, opens or resumes a session, and then sits
+ *      idle. Fresh DSH Sessions skip this path.
  *   3. First real user message hits sendExternalMessage Case 3 (process alive)
  *      and writes directly to stdin via activeRuntime.sendMessage — no cold
  *      boot.
@@ -6903,6 +6923,22 @@ export async function prewarmExternalSession(options: {
   const resumeSessionId = (getExternalLifecycleSessionId() === options.sessionId && getExternalRuntimeSessionId())
     ? getExternalRuntimeSessionId()
     : undefined;
+
+  if (runtimeType === 'dsh' && !resumeSessionId) {
+    emitPerfTrace({
+      trace: 'runtime',
+      phase: 'prewarm_skipped',
+      runtime: runtimeType,
+      sessionId: options.sessionId,
+      durationMs: elapsedMs(start),
+      status: 'skipped',
+      detail: { reason: 'awaiting_first_turn' },
+    });
+    return {
+      prewarmed: false,
+      reason: 'Fresh DSH Session starts with the first Product turn',
+    };
+  }
 
   // Permission always comes from the persisted Session/Agent authority. A Tab
   // reopen may prewarm before renderer state has hydrated; accepting a caller

@@ -889,6 +889,32 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
   };
 }
 
+async function restorePersistedDshSession(
+  harness: Harness,
+  sessionId: string,
+  workspacePath: string,
+): Promise<void> {
+  mkdirSync(workspacePath, { recursive: true });
+  await harness.sessionStore.saveSessionMetadata(createSessionMetadata(workspacePath, {
+    id: sessionId,
+    runtimeBinding: createDshBinding('darwin-arm64'),
+    runtimeSessionId: `runtime-${sessionId}`,
+    configSnapshotAt: '2026-09-05T00:00:00.000Z',
+  }));
+  const transcript = await harness.sessionStore.loadSessionTranscript(sessionId);
+  await expect(harness.sessionStore.appendSessionMessages(sessionId, transcript.cursor, [{
+    id: `user-${sessionId}`,
+    role: 'user',
+    content: 'existing DSH turn',
+    timestamp: '2026-09-05T00:00:00.000Z',
+  }])).resolves.toMatchObject({ ok: true });
+  await expect(harness.externalSession.restoreExternalSessionState(
+    sessionId,
+    workspacePath,
+    { type: 'desktop' },
+  )).resolves.toEqual({ success: true });
+}
+
 type TestInjectedTurnRequest = Omit<InjectedTurnRequest, 'assistantChannelDelivery'>
   & Partial<Pick<InjectedTurnRequest, 'assistantChannelDelivery'>>;
 
@@ -925,6 +951,65 @@ describe('external SessionEngine with fake runtime', () => {
       },
     });
     expect(harness.runtime.startSessionInitialMessages).toHaveLength(0);
+  });
+
+  it('creates a fresh DSH native Session only when the first Product turn is sent', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first DSH answer' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-materialized-before-first-turn';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+    })).resolves.toEqual({
+      prewarmed: false,
+      reason: 'Fresh DSH Session starts with the first Product turn',
+    });
+    expect(harness.runtime.startSessionInitialMessages).toEqual([]);
+
+    await harness.sessionStore.saveSessionMetadata(createSessionMetadata(workspacePath, {
+      id: sessionId,
+      runtimeBinding: createDshBinding('darwin-arm64'),
+      runtimeSessionId: 'provisional-dsh-session',
+      configSnapshotAt: '2026-09-05T00:00:00.000Z',
+      model: 'deepseek-v4-pro',
+    }));
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId,
+      workspacePath,
+      { type: 'desktop' },
+    )).resolves.toEqual({ success: true });
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.runtimeSessionId).toBe('');
+
+    await expect(harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      model: 'deepseek-v4-pro',
+    })).resolves.toEqual({
+      prewarmed: false,
+      reason: 'Fresh DSH Session starts with the first Product turn',
+    });
+    expect(harness.runtime.startSessionInitialMessages).toEqual([]);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(false);
+
+    const sent = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'create DSH on first send'),
+      model: 'deepseek-v4-pro',
+      permissionMode: 'auto',
+    });
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionResumeIds).toEqual([undefined]);
+    expect(harness.runtime.startSessionInitialMessages).toEqual([undefined]);
+    expect(harness.runtime.sentMessages).toEqual(['create DSH on first send']);
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.runtimeSessionId)
+      .toBe('fake-thread-1');
   });
 
   it('queues a new Product turn behind the exact active DSH operation recovered on resume', async () => {
@@ -1882,12 +1967,15 @@ describe('external SessionEngine with fake runtime', () => {
   it('routes DSH native compaction through the same Session operation', async () => {
     const harness = await createHarness([], { runtimeType: 'dsh' });
     const sessionId = 'session-dsh-compact';
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
     await harness.externalSession.prewarmExternalSession({
       sessionId,
-      workspacePath: join(harness.home, 'workspace'),
+      workspacePath,
       scenario: { type: 'desktop' },
     });
     await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'DSH prewarm');
+    expect(harness.runtime.startSessionResumeIds).toEqual([`runtime-${sessionId}`]);
     broadcastEvents.length = 0;
 
     await expect(harness.engine.compactContext()).resolves.toEqual({ success: true });
@@ -1902,9 +1990,11 @@ describe('external SessionEngine with fake runtime', () => {
   it('keeps DSH context, TaskGraph, Plan, and Plan review projections distinct', async () => {
     const harness = await createHarness([], { runtimeType: 'dsh' });
     const sessionId = 'session-dsh-status-projections';
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
     await harness.externalSession.prewarmExternalSession({
       sessionId,
-      workspacePath: join(harness.home, 'workspace'),
+      workspacePath,
       scenario: { type: 'desktop' },
     });
     await waitFor(() => harness.externalSession.hasExternalRuntimeProcess(), 'DSH projection prewarm');

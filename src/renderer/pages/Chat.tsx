@@ -1584,7 +1584,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   //
   // DSH, Gemini and Codex run as persistent protocol processes. On a cold
   // start their first message otherwise pays process spawn + initialize /
-  // Session creation before the Provider request begins. Firing
+  // Session creation before the Provider request begins. DSH only uses this
+  // path to resume an existing native Session; a fresh DSH Session is created
+  // with the first admitted Product turn after Product identity is stable.
+  // Firing
   // /api/runtime/prewarm as soon as the tab is ready
   // overlaps that cost with the user still typing — by the time they hit
   // send, the process is already alive and the message goes straight to
