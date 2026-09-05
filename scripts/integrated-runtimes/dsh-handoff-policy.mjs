@@ -274,6 +274,7 @@ export function verifyHandoffFacts(root, lock) {
   for (const platform of lock.platforms) {
     if (
       platform.claim !== "implementation-complete_pending-native-validation"
+      && platform.claim !== "verified"
     ) {
       fail(
         `unaccepted platform claim for ${platform.target}: ${platform.claim}`,

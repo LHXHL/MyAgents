@@ -3390,8 +3390,10 @@ fn dsh_resource_identity_matches(root: &Path, lock: &serde_json::Value, target: 
         .is_some_and(|platforms| {
             platforms.iter().any(|platform| {
                 platform.get("target").and_then(serde_json::Value::as_str) == Some(target)
-                    && platform.get("claim").and_then(serde_json::Value::as_str)
-                        == Some("implementation-complete_pending-native-validation")
+                    && matches!(
+                        platform.get("claim").and_then(serde_json::Value::as_str),
+                        Some("implementation-complete_pending-native-validation" | "verified")
+                    )
             })
         });
     platform_claim_matches

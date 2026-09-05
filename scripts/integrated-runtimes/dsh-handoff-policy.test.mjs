@@ -19,6 +19,7 @@ import {
   parseNamedArgs,
   resolveExplicitDirectory,
   stageCompleteHandoff,
+  verifyHandoffFacts,
 } from "./dsh-handoff-policy.mjs";
 import { verifyDshDevelopmentFreshness } from "./verify-dsh-dev-freshness.mjs";
 
@@ -181,6 +182,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   const packageJson = JSON.parse(
     readFileSync(resolve(repoRoot, "package.json"), "utf8"),
   );
+  verifyHandoffFacts(resolve(repoRoot, "src-tauri/resources/integrated-runtimes/dsh"), lock);
   const tauriConfig = JSON.parse(
     readFileSync(resolve(repoRoot, "src-tauri/tauri.conf.json"), "utf8"),
   );

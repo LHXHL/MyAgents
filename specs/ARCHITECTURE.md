@@ -1198,3 +1198,8 @@ DSH 协作设置、Agent 树与原生 Root 协作回复的当前 owner 见 [MyAg
 DSH 实时用户输入的有界 Product 意图由同一 SessionStore 持久化；它冻结输入与 native operation 身份，Runtime 回执仍是接收、消费、取消的 authority。冷恢复按原消息 fingerprint 和 consumed user 关联重建 Product 投影，Session mutation 必须等待这些意图收敛；详见上述集成模块。
 
 DSH 组件可用性由当前 Session 的 native admission receipt 经既有配置快照投影到 Tab Skills 面板和 Session CLI；安装开关、模型调用与执行权限分开呈现，详见 [DSH 集成模块](./tech_docs/myagents_dsh_integrated_runtime.md#current-session-component-availability-and-startup-replay)。
+
+DSH delivery admission binds the committed outer/Runtime/compatibility identities and accepts
+`verified` or `implementation-complete_pending-native-validation` platform claims. The official
+verifier checks the native evidence required by `verified`; the [DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md)
+records the exact current delivery and remaining native/user acceptance boundaries.
