@@ -1,6 +1,6 @@
 {
   "artifactFormatVersion": 1,
-  "contractSha256": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
+  "contractSha256": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
   "tools": [
     {
       "behaviorFixtureIds": [
@@ -139,28 +139,117 @@
     },
     {
       "behaviorFixtureIds": [
-        "foreground_success_and_nonzero_exit",
-        "explicit_background_handle",
-        "timeout_promotes_same_work_entry",
-        "disabled_background_kills_tree",
-        "session_close_generation_cleanup"
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
       ],
       "invalidInput": {
         "command": "printf fixture",
+        "description": "Print fixture",
         "unexpected": true
       },
-      "name": "Bash",
+      "name": "bash",
       "validInput": {
-        "command": "printf fixture"
+        "command": "printf fixture",
+        "description": "Print fixture"
       },
       "validOutput": {
-        "background": false,
-        "durationMs": 1,
-        "exitCode": 0,
-        "interrupted": false,
-        "outputTruncated": false,
-        "stderr": "",
-        "stdout": "fixture"
+        "jobId": "job-1",
+        "kind": "background"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "invalidInput": {
+        "command": "Write-Output fixture",
+        "description": "Print fixture",
+        "unexpected": true
+      },
+      "name": "pwsh",
+      "validInput": {
+        "command": "Write-Output fixture",
+        "description": "Print fixture"
+      },
+      "validOutput": {
+        "jobId": "job-1",
+        "kind": "background"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "invalidInput": {
+        "job_id": "job-1",
+        "unexpected": true
+      },
+      "name": "job_output",
+      "validInput": {
+        "job_id": "job-1"
+      },
+      "validOutput": {
+        "job": {
+          "id": "job-1",
+          "kind": "bash",
+          "label": "Print fixture",
+          "startedAt": 1,
+          "status": "completed"
+        },
+        "text": "fixture"
+      }
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "invalidInput": {
+        "unexpected": true
+      },
+      "name": "job_list",
+      "validInput": {},
+      "validOutput": []
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "invalidInput": {
+        "job_id": "job-1",
+        "unexpected": true
+      },
+      "name": "job_kill",
+      "validInput": {
+        "job_id": "job-1"
+      },
+      "validOutput": {
+        "job": {
+          "id": "job-1",
+          "kind": "bash",
+          "label": "Print fixture",
+          "startedAt": 1,
+          "status": "completed"
+        },
+        "outcome": "already-finished"
       }
     },
     {

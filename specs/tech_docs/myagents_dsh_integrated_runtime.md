@@ -1146,3 +1146,17 @@ The exact staged Runtime passes native start/restart and the 12-generation lifec
 (file descriptors 14 to 14), plus 11 Rust DSH tests. Web, Sidecar, Bridge and CLI bundles rebuild
 successfully with the final lock. The handoff policy regression validates the complete staged
 facts against that lock, including the verified macOS claim.
+
+### 2026-09-06 Official DSH Shell adoption (UPG-W10)
+
+The Runtime now owns Shell execution through official `tool-bash`/`tool-pwsh`, executors, shell environment and Jobs components. Host initialize uses protocol 3.0.0 `shellRef: runtime-shell` and a platform-matching `shellDialect`; custom Windows PowerShell supervisor/prelude references are removed. Windows uses PowerShell directly and does not require Git Bash for DSH commands. macOS/Linux use Bash. The release remains pinned to DSH 0.1.2-rc.1.
+
+The shared terminal presenter recognizes `bash`/`pwsh` while retaining historic `Bash`/`PowerShell` rendering. It uses official rendered output plus Runtime-derived exit/cwd/state metadata and highlights PowerShell syntax. Official `job_output`/`job_list`/`job_kill` use the existing generic tool projection. A foreground timeout ends the command; background execution must be explicit. Permission review preserves full command/cwd for both official Shell tools. Legacy Agent tool-name selectors `Bash` compile to the Shell family (`bash`, `pwsh`), then the Runtime's effective platform catalog narrows visibility; disallowed selectors are translated symmetrically. Durable permission grants are not broadened or renamed.
+
+Implementation and integration are complete. The final immutable handoff is verified and ingested; earlier receipts above remain historical. Windows/Linux claims remain pending native validation.
+
+Final Shell delivery: Runtime source `62b67740ec5c089101a38a5f95e8ab1c8193de80`, Runtime manifest `c56038b8e3a3bcc99f271ec18ee4bb12e3f2fb2989daa63937f33aaa2bde0b33`, handoff `0a1323fbea128972eaa53a14f3513ae3083606eeb12393b74ee2c2e71b92f4ef`. The 72-package DSH artifact is `58ff076944e029d835e34bbdf433609422ac88d381bdede3e7b216b28975e6f8`; source version and ten core patches are unchanged. Protocol 3.0.0 has 44 Host methods, seven reverse methods and four notifications. The implementation catalog contains 24 definitions; each platform exposes its selected Shell and 22 other tools.
+
+The final Runtime passes source-bound pre-artifact report `98971cf42ce92c91d3a6c7ad71498ddcb66c987b62b21a7e7648ae119eb53495`, 723 Runtime tests and packed/process gates. A fresh external Tester ran all eight real-model standard scenarios once: all passed, with zero active resources, attachment leases, credential scopes and unexpected Host fatal errors. Native macOS report `cb0f71b0ec5b86451e6fc3a33fa549f1500aa570f547a75999a5f56610b0e976` verifies these exact bytes; Windows/Linux evidence is newly bound to the same Runtime and retains the pending label.
+
+Host full validation passes: 4035 unit, 1118 DOM and 499 integration tests, typecheck and lint. The final staged bytes additionally pass DSH unit and handoff-policy checks, actual handshake/configured restart and 12-generation lifecycle soak (descriptors 14→14, RSS growth 0), and 11 Rust DSH tests. Web/Sidecar/Bridge/CLI bundles are rebuilt with the final lock. Official resource verification and the exact source freshness check pass. The remaining acceptance is the user's desktop journey and Windows/Linux campaigns on their native machines.

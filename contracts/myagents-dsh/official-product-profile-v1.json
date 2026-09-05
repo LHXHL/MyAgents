@@ -46,6 +46,11 @@
         "version": "0.1.2-rc.1"
       },
       {
+        "name": "@deepseek-ai/dsh-bash-local",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
         "name": "@deepseek-ai/dsh-commands",
         "role": "dsh-library",
         "version": "0.1.2-rc.1"
@@ -116,6 +121,11 @@
         "version": "0.1.2-rc.1"
       },
       {
+        "name": "@deepseek-ai/dsh-pwsh-local",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
         "name": "@deepseek-ai/dsh-sandbox",
         "role": "dsh-library",
         "version": "0.1.2-rc.1"
@@ -167,6 +177,11 @@
       },
       {
         "name": "@deepseek-ai/dsh-shell",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
+        "name": "@deepseek-ai/dsh-shell-env",
         "role": "dsh-library",
         "version": "0.1.2-rc.1"
       },
@@ -226,12 +241,27 @@
         "version": "0.1.2-rc.1"
       },
       {
+        "name": "@deepseek-ai/dsh-tool-bash",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
         "name": "@deepseek-ai/dsh-tool-call-timeout-policy",
         "role": "dsh-library",
         "version": "0.1.2-rc.1"
       },
       {
         "name": "@deepseek-ai/dsh-tool-fs-search",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
+        "name": "@deepseek-ai/dsh-tool-jobs",
+        "role": "dsh-library",
+        "version": "0.1.2-rc.1"
+      },
+      {
+        "name": "@deepseek-ai/dsh-tool-pwsh",
         "role": "dsh-library",
         "version": "0.1.2-rc.1"
       },
@@ -313,7 +343,7 @@
     ]
   },
   "dsh": {
-    "baselineSha256": "b99dc29f27b0d941cff733e980d8dd6f6d7fba137c45b24967b8d2f7509b8840",
+    "baselineSha256": "d70660aba56f4c703259798ead4045fc5c627d3d50123c53ca82deb4b818d338",
     "release": "0.1.2-rc.1"
   },
   "formatVersion": 1,
@@ -327,8 +357,8 @@
   },
   "profileId": "myagents-dsh-official-v1",
   "protocol": {
-    "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
-    "version": "2.7.0"
+    "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
+    "version": "3.0.0"
   },
   "runtimeActivation": "forbidden-until-patched-dsh-and-batch-1-gate",
   "stage": "pre-batch-foundation",

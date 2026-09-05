@@ -151,13 +151,11 @@ export type DshExecutionEnvironment = Readonly<{
   }>;
   executables: Readonly<{
     bundledNodeRef: string;
-    bashRef: string;
+    shellRef: string;
     ripgrepRef: string;
-    bashDialect: "bash";
+    shellDialect: "bash" | "pwsh";
     allowedCommandRefs: readonly string[];
     pathPolicy: "sealed";
-    windowsPowerShellRef?: string;
-    windowsUtf8PreludeRef?: string;
   }>;
   environment: Readonly<{
     allowedKeys: readonly string[];
@@ -186,7 +184,7 @@ export type DshExecutionEnvironment = Readonly<{
 }>;
 
 export type DshInitializeParams = Readonly<{
-  protocol: Readonly<{ minVersion: "2.7.0"; maxVersion: "2.7.0" }>;
+  protocol: Readonly<{ minVersion: "3.0.0"; maxVersion: "3.0.0" }>;
   host: Readonly<{
     name: string;
     version: string;
@@ -209,7 +207,7 @@ export type DshInitializeParams = Readonly<{
 }>;
 
 export type DshInitializeResult = Readonly<{
-  protocolVersion: "2.7.0";
+  protocolVersion: "3.0.0";
   schemaSha256: string;
   runtimeVersion: string;
   runtimeGeneration: string;

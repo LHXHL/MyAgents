@@ -548,6 +548,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 ### 9. Multi-Agent Runtime
 
+DSH 的终端执行、超时和后台 Jobs 由固定版本的官方组件维护；Windows 选择 PowerShell，macOS/Linux 选择 Bash。Host 只声明平台环境、处理权限与复用现有终端展示，接入契约见 [DSH 集成指南](./tech_docs/myagents_dsh_integrated_runtime.md)。
+
 产品 Runtime taxonomy 分为 Integrated（Claude Agent SDK、DSH）、Managed Provider Runtime（Managed Codex）和 External CLI（Claude Code、Codex、Gemini）。`config.multiAgentRuntime`（默认关闭，设置 → 关于 → 实验室）是选择器可用性开关，不再是 existing Session 的 Runtime kill switch；分发 policy 决定允许项与构建默认值。Developer Settings 的 root `config.defaultIntegratedRuntime` 可在 policy allowlist 内覆盖 Default Integrated Runtime，专用于选择器不可用时的新 ordinary-provider Session；非法或已被当前分发排除的值回落到构建默认，既有 frozen Session 不被改写。
 
 **抽象层**：

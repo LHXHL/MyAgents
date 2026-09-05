@@ -72,9 +72,9 @@ function executionEnvironment(): Omit<DshExecutionEnvironment, "digest"> {
     },
     executables: {
       bundledNodeRef: "node-v24",
-      bashRef: "bash",
+      shellRef: "bash",
       ripgrepRef: "rg",
-      bashDialect: "bash",
+      shellDialect: "bash",
       allowedCommandRefs: ["node-v24", "bash", "rg"],
       pathPolicy: "sealed",
     },
@@ -119,7 +119,7 @@ function initializeResult(
   overrides: Partial<DshInitializeResult> = {},
 ): DshInitializeResult {
   return {
-    protocolVersion: "2.7.0",
+    protocolVersion: "3.0.0",
     schemaSha256: dshLock.protocol.schemaSha256,
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
@@ -298,7 +298,7 @@ describe("DSH RuntimeProcessHost", () => {
     expect(identity).toMatchObject({
       productSessionId: "product-session-1",
       runtimeGeneration: "artifact-process-generation",
-      protocolVersion: "2.7.0",
+      protocolVersion: "3.0.0",
       sessionFormat: "dsh-session-events-v1",
     });
     expect(test.host.state).toBe("protocol-ready");

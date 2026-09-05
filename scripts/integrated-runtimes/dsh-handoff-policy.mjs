@@ -27,7 +27,7 @@ export const CONTRACT_PATHS = Object.freeze([
   "contracts/host-client.generated.ts",
   "contracts/myagents-dsh-compatibility-v1.json",
   "contracts/official-product-profile-v1.json",
-  "contracts/protocol-2.7.0-evidence.json",
+  "contracts/protocol-3.0.0-evidence.json",
   "contracts/protocol-fixtures.json",
   "contracts/protocol-meta.json",
   "contracts/protocol.schema.json",

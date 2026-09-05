@@ -6529,16 +6529,6 @@
                     "type": "array",
                     "uniqueItems": true
                   },
-                  "bashDialect": {
-                    "const": "bash",
-                    "type": "string"
-                  },
-                  "bashRef": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                    "type": "string"
-                  },
                   "bundledNodeRef": {
                     "maxLength": 256,
                     "minLength": 1,
@@ -6555,13 +6545,19 @@
                     "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   },
-                  "windowsPowerShellRef": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                    "type": "string"
+                  "shellDialect": {
+                    "anyOf": [
+                      {
+                        "const": "bash",
+                        "type": "string"
+                      },
+                      {
+                        "const": "pwsh",
+                        "type": "string"
+                      }
+                    ]
                   },
-                  "windowsUtf8PreludeRef": {
+                  "shellRef": {
                     "maxLength": 256,
                     "minLength": 1,
                     "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
@@ -6570,9 +6566,9 @@
                 },
                 "required": [
                   "bundledNodeRef",
-                  "bashRef",
+                  "shellRef",
                   "ripgrepRef",
-                  "bashDialect",
+                  "shellDialect",
                   "allowedCommandRefs",
                   "pathPolicy"
                 ],
@@ -6969,7 +6965,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "2.7.0",
+            "const": "3.0.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -10528,7 +10524,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
+                    "const": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -10779,7 +10775,7 @@
                                 "type": "boolean"
                               },
                               "tool": {
-                                "const": "Bash",
+                                "const": "bash",
                                 "type": "string"
                               }
                             },
@@ -10803,7 +10799,195 @@
                                 "type": "string"
                               },
                               "tool": {
-                                "const": "Bash",
+                                "const": "bash",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "pwsh",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "pwsh",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_output",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_output",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_list",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_list",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_kill",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_kill",
                                 "type": "string"
                               }
                             },
@@ -11475,7 +11659,7 @@
                         ]
                       }
                     ],
-                    "minItems": 20,
+                    "minItems": 24,
                     "type": "array"
                   },
                   "digest": {
@@ -11506,7 +11690,23 @@
                           "type": "string"
                         },
                         {
-                          "const": "Bash",
+                          "const": "bash",
+                          "type": "string"
+                        },
+                        {
+                          "const": "pwsh",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_output",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_list",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_kill",
                           "type": "string"
                         },
                         {
@@ -11567,7 +11767,7 @@
                         }
                       ]
                     },
-                    "maxItems": 20,
+                    "maxItems": 24,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -11599,7 +11799,23 @@
                         "type": "string"
                       },
                       {
-                        "const": "Bash",
+                        "const": "bash",
+                        "type": "string"
+                      },
+                      {
+                        "const": "pwsh",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_output",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_list",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_kill",
                         "type": "string"
                       },
                       {
@@ -11659,7 +11875,7 @@
                         "type": "string"
                       }
                     ],
-                    "minItems": 20,
+                    "minItems": 24,
                     "type": "array"
                   },
                   "revision": {
@@ -14287,7 +14503,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
+                    "const": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -14538,7 +14754,7 @@
                                 "type": "boolean"
                               },
                               "tool": {
-                                "const": "Bash",
+                                "const": "bash",
                                 "type": "string"
                               }
                             },
@@ -14562,7 +14778,195 @@
                                 "type": "string"
                               },
                               "tool": {
-                                "const": "Bash",
+                                "const": "bash",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "pwsh",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "pwsh",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_output",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_output",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_list",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_list",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available",
+                              "reasonCode"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": true,
+                                "type": "boolean"
+                              },
+                              "tool": {
+                                "const": "job_kill",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "tool",
+                              "available"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "available": {
+                                "const": false,
+                                "type": "boolean"
+                              },
+                              "reasonCode": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                                "type": "string"
+                              },
+                              "tool": {
+                                "const": "job_kill",
                                 "type": "string"
                               }
                             },
@@ -15234,7 +15638,7 @@
                         ]
                       }
                     ],
-                    "minItems": 20,
+                    "minItems": 24,
                     "type": "array"
                   },
                   "digest": {
@@ -15265,7 +15669,23 @@
                           "type": "string"
                         },
                         {
-                          "const": "Bash",
+                          "const": "bash",
+                          "type": "string"
+                        },
+                        {
+                          "const": "pwsh",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_output",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_list",
+                          "type": "string"
+                        },
+                        {
+                          "const": "job_kill",
                           "type": "string"
                         },
                         {
@@ -15326,7 +15746,7 @@
                         }
                       ]
                     },
-                    "maxItems": 20,
+                    "maxItems": 24,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -15358,7 +15778,23 @@
                         "type": "string"
                       },
                       {
-                        "const": "Bash",
+                        "const": "bash",
+                        "type": "string"
+                      },
+                      {
+                        "const": "pwsh",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_output",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_list",
+                        "type": "string"
+                      },
+                      {
+                        "const": "job_kill",
                         "type": "string"
                       },
                       {
@@ -15418,7 +15854,7 @@
                         "type": "string"
                       }
                     ],
-                    "minItems": 20,
+                    "minItems": 24,
                     "type": "array"
                   },
                   "revision": {
@@ -21619,6 +22055,6 @@
       }
     }
   },
-  "protocolVersion": "2.7.0",
+  "protocolVersion": "3.0.0",
   "title": "MyAgents DSH native RPC"
 }

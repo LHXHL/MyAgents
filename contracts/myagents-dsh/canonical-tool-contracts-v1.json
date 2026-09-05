@@ -12,7 +12,11 @@
     "Edit",
     "Glob",
     "Grep",
-    "Bash",
+    "bash",
+    "pwsh",
+    "job_output",
+    "job_list",
+    "job_kill",
     "ls",
     "WebFetch",
     "WebSearch",
@@ -1144,174 +1148,220 @@
     },
     {
       "behaviorFixtureIds": [
-        "foreground_success_and_nonzero_exit",
-        "explicit_background_handle",
-        "timeout_promotes_same_work_entry",
-        "disabled_background_kills_tree",
-        "session_close_generation_cleanup"
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Runs a Bash command in the workspace using the sealed execution environment. Commands may run in the background and return a read-only output path. The Runtime does not provide an OS sandbox.",
+      "description": "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell: no state (cwd, variables, functions) persists between calls — pass `workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`. Current harness environment facts are exposed through managed `$DSH_*` variables; inspect them when needed. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`.",
       "errorCodes": [
-        {
-          "code": "shell_dependency_missing",
-          "retryable": false,
-          "when": "The sealed Bash prerequisite is unavailable."
-        },
         {
           "code": "permission_denied",
           "retryable": false,
-          "when": "Hard policy or permission denies process execution."
-        },
-        {
-          "code": "process_timeout",
-          "retryable": true,
-          "when": "A non-promotable bounded execution timed out."
-        },
-        {
-          "code": "process_spawn_failed",
-          "retryable": true,
-          "when": "The sealed environment cannot start the process."
+          "when": "Product execution policy denies the call."
         }
       ],
       "executionInputSchema": {
-        "additionalProperties": false,
         "properties": {
           "command": {
-            "maxLength": 262144,
-            "minLength": 1,
+            "description": "The bash command to execute.",
             "type": "string"
           },
           "description": {
-            "maxLength": 512,
+            "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\".",
             "type": "string"
           },
           "run_in_background": {
+            "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
             "type": "boolean"
           },
-          "timeout": {
-            "maximum": 600000,
-            "minimum": 1,
-            "type": "integer"
+          "timeoutMs": {
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "type": "number"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
           }
         },
         "required": [
-          "command"
+          "command",
+          "description"
         ],
         "type": "object"
       },
       "inputSchema": {
-        "additionalProperties": false,
         "properties": {
           "command": {
-            "maxLength": 262144,
-            "minLength": 1,
+            "description": "The bash command to execute.",
             "type": "string"
           },
           "description": {
-            "maxLength": 512,
+            "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\".",
             "type": "string"
           },
           "run_in_background": {
+            "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
             "type": "boolean"
           },
-          "timeout": {
-            "maximum": 600000,
-            "minimum": 1,
-            "type": "integer"
+          "timeoutMs": {
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "type": "number"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
           }
         },
         "required": [
-          "command"
+          "command",
+          "description"
         ],
         "type": "object"
       },
       "lifecycle": {
         "cancellation": "abort_signal_exactly_one_terminal",
         "durableResult": "dsh_tool_result_before_runtime_visibility",
-        "headless": "policy_required",
-        "timeout": "work_registry"
+        "headless": "allowed",
+        "timeout": "bounded_executor"
       },
-      "name": "Bash",
+      "name": "bash",
       "originPolicy": {
         "mode": "all",
         "revision": "operation-birth"
       },
       "outputLimits": {
         "maxInlineBytes": 262144,
-        "maxRetainedOutputBytes": 262144,
-        "maxStructuredItems": 32
+        "maxStructuredItems": 1024
       },
       "outputSchema": {
-        "anyOf": [
+        "oneOf": [
           {
             "additionalProperties": false,
             "properties": {
-              "background": {
-                "const": false,
-                "type": "boolean"
-              },
-              "durationMs": {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "exitCode": {
-                "maximum": 9007199254740991,
-                "minimum": -9007199254740991,
-                "type": "integer"
-              },
-              "interrupted": {
-                "type": "boolean"
-              },
-              "outputTruncated": {
-                "type": "boolean"
-              },
-              "stderr": {
-                "maxLength": 262144,
+              "jobId": {
                 "type": "string"
               },
-              "stdout": {
-                "maxLength": 262144,
+              "kind": {
+                "const": "background",
                 "type": "string"
               }
             },
             "required": [
-              "background",
-              "stdout",
-              "stderr",
-              "exitCode",
-              "durationMs",
-              "interrupted",
-              "outputTruncated"
+              "kind",
+              "jobId"
             ],
             "type": "object"
           },
           {
             "additionalProperties": false,
             "properties": {
-              "background": {
-                "const": true,
+              "aborted": {
                 "type": "boolean"
               },
-              "outputPath": {
-                "maxLength": 8192,
-                "minLength": 1,
-                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "exitCode": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "foreground",
                 "type": "string"
               },
-              "taskId": {
-                "maxLength": 256,
-                "minLength": 1,
-                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-                "type": "string"
+              "sandbox": {
+                "additionalProperties": false,
+                "properties": {
+                  "denied": {
+                    "type": "boolean"
+                  },
+                  "enforcement": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "runnerFailed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "denied"
+                ],
+                "type": "object"
+              },
+              "signal": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stderr": {
+                "additionalProperties": false,
+                "properties": {
+                  "spillPath": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "text",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "stdout": {
+                "additionalProperties": false,
+                "properties": {
+                  "spillPath": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "text",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "timedOut": {
+                "type": "boolean"
+              },
+              "timeoutMs": {
+                "type": "number"
               }
             },
             "required": [
-              "taskId",
-              "background",
-              "outputPath"
+              "kind",
+              "exitCode",
+              "signal",
+              "timedOut",
+              "aborted",
+              "timeoutMs",
+              "stdout",
+              "stderr"
             ],
             "type": "object"
           }
@@ -1323,9 +1373,598 @@
         "mode": "denied",
         "revision": "operation-birth-and-durable-session"
       },
-      "resultSemantics": "Foreground returns bounded streams and process terminal; background returns one retained WorkRegistry identity and output path.",
-      "sideEffect": "process",
-      "timeoutMs": 600000
+      "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
+      "sideEffect": "process"
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Execute a PowerShell command (`pwsh -Command`) and return its stdout/stderr. Each call runs in a fresh pwsh process: no state (cwd, variables, functions) persists between calls — pass `workdir` instead of using `cd`. Paths use native Windows form (`C:\\...`); read environment variables with `$env:NAME`. Non-zero exits are reported as `[exit code: N]`. Current harness environment facts are exposed through managed `$env:DSH_*` variables; inspect them when needed. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. On Windows a force-killed command settles as `[exit code: 1]` without a signal marker — treat it as an interruption, not a command failure. Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`.",
+      "errorCodes": [
+        {
+          "code": "permission_denied",
+          "retryable": false,
+          "when": "Product execution policy denies the call."
+        }
+      ],
+      "executionInputSchema": {
+        "properties": {
+          "command": {
+            "description": "The PowerShell command to execute.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"Get-Process\" → \"List running processes\".",
+            "type": "string"
+          },
+          "run_in_background": {
+            "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "type": "number"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "The PowerShell command to execute.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"Get-Process\" → \"List running processes\".",
+            "type": "string"
+          },
+          "run_in_background": {
+            "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "description": "Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry.",
+            "type": "number"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "pwsh",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 1024
+      },
+      "outputSchema": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "background",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "jobId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aborted": {
+                "type": "boolean"
+              },
+              "exitCode": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "foreground",
+                "type": "string"
+              },
+              "sandbox": {
+                "additionalProperties": false,
+                "properties": {
+                  "denied": {
+                    "type": "boolean"
+                  },
+                  "enforcement": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "runnerFailed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "denied"
+                ],
+                "type": "object"
+              },
+              "signal": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stderr": {
+                "additionalProperties": false,
+                "properties": {
+                  "spillPath": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "text",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "stdout": {
+                "additionalProperties": false,
+                "properties": {
+                  "spillPath": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "text",
+                  "truncated"
+                ],
+                "type": "object"
+              },
+              "timedOut": {
+                "type": "boolean"
+              },
+              "timeoutMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "exitCode",
+              "signal",
+              "timedOut",
+              "aborted",
+              "timeoutMs",
+              "stdout",
+              "stderr"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "permissionClass": "process.execute",
+      "planPolicy": {
+        "denialCode": "plan_mode_side_effect_forbidden",
+        "mode": "denied",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
+      "sideEffect": "process"
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Read a background job. Stream jobs return only output since the previous read; final-output jobs return their result after settlement. Every response ends with `[status: ...]`. Reads are non-blocking unless `wait: true`, which waits up to the configured cap.",
+      "errorCodes": [
+        {
+          "code": "permission_denied",
+          "retryable": false,
+          "when": "Product execution policy denies the call."
+        }
+      ],
+      "executionInputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Max wait in milliseconds (only meaningful with wait: true). Defaults to the configured wait timeout; capped by the configured maximum.",
+            "type": "number"
+          },
+          "wait": {
+            "description": "Block until the job reaches a terminal status or the timeout expires. A timed-out wait returns [status: running] and leaves the job alive.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Max wait in milliseconds (only meaningful with wait: true). Defaults to the configured wait timeout; capped by the configured maximum.",
+            "type": "number"
+          },
+          "wait": {
+            "description": "Block until the job reaches a terminal status or the timeout expires. A timed-out wait returns [status: running] and leaves the job alive.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "job_output",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 1024
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "integer"
+              },
+              "status": {
+                "enum": [
+                  "running",
+                  "stopping",
+                  "completed",
+                  "killed",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "label",
+              "status",
+              "startedAt"
+            ],
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "job"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "workspace.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
+      "sideEffect": "read"
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "List your background jobs (running and finished) with their ids, kinds, and statuses.",
+      "errorCodes": [
+        {
+          "code": "permission_denied",
+          "retryable": false,
+          "when": "Product execution policy denies the call."
+        }
+      ],
+      "executionInputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "job_list",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 1024
+      },
+      "outputSchema": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "finishedAt": {
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "integer"
+            },
+            "status": {
+              "enum": [
+                "running",
+                "stopping",
+                "completed",
+                "killed",
+                "failed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "label",
+            "status",
+            "startedAt"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "permissionClass": "workspace.read",
+      "planPolicy": {
+        "mode": "allowed",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
+      "sideEffect": "read"
+    },
+    {
+      "behaviorFixtureIds": [
+        "official_definition",
+        "permission_and_origin",
+        "output_and_exit",
+        "cancellation",
+        "owner_scoped_jobs"
+      ],
+      "checkpoint": "none",
+      "concurrency": "parallel",
+      "description": "Request cancellation of a running background job by job id. Returns immediately; the job settles as killed once its work actually stops.",
+      "errorCodes": [
+        {
+          "code": "permission_denied",
+          "retryable": false,
+          "when": "Product execution policy denies the call."
+        }
+      ],
+      "executionInputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Optional short reason, recorded in the log and forwarded to the job.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "Job id returned by the tool that started the background work.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Optional short reason, recorded in the log and forwarded to the job.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "lifecycle": {
+        "cancellation": "abort_signal_exactly_one_terminal",
+        "durableResult": "dsh_tool_result_before_runtime_visibility",
+        "headless": "allowed",
+        "timeout": "bounded_executor"
+      },
+      "name": "job_kill",
+      "originPolicy": {
+        "mode": "all",
+        "revision": "operation-birth"
+      },
+      "outputLimits": {
+        "maxInlineBytes": 262144,
+        "maxStructuredItems": 1024
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "integer"
+              },
+              "status": {
+                "enum": [
+                  "running",
+                  "stopping",
+                  "completed",
+                  "killed",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "label",
+              "status",
+              "startedAt"
+            ],
+            "type": "object"
+          },
+          "outcome": {
+            "enum": [
+              "cancellation-requested",
+              "already-finished"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "job"
+        ],
+        "type": "object"
+      },
+      "permissionClass": "work.stop",
+      "planPolicy": {
+        "denialCode": "plan_mode_side_effect_forbidden",
+        "mode": "denied",
+        "revision": "operation-birth-and-durable-session"
+      },
+      "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
+      "sideEffect": "process"
     },
     {
       "behaviorFixtureIds": [
@@ -2747,7 +3386,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "session_serial",
-      "description": "Stops an owned background Bash process or child Agent by task ID and waits for terminal state and resource finalization.",
+      "description": "Stops an owned child Agent by task ID and waits for terminal state and resource finalization.",
       "errorCodes": [
         {
           "code": "task_not_found",
@@ -2812,16 +3451,8 @@
             "type": "boolean"
           },
           "kind": {
-            "anyOf": [
-              {
-                "const": "process",
-                "type": "string"
-              },
-              {
-                "const": "agent",
-                "type": "string"
-              }
-            ]
+            "const": "agent",
+            "type": "string"
           },
           "taskId": {
             "maxLength": 256,

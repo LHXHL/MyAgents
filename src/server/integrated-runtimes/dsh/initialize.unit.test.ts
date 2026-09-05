@@ -14,9 +14,9 @@ function executionEnvironment(): Omit<DshExecutionEnvironment, "digest"> {
     },
     executables: {
       bundledNodeRef: "node-v24",
-      bashRef: "bash",
+      shellRef: "bash",
       ripgrepRef: "rg",
-      bashDialect: "bash",
+      shellDialect: "bash",
       allowedCommandRefs: ["node-v24", "bash", "rg"],
       pathPolicy: "sealed",
     },
@@ -67,8 +67,8 @@ describe("DSH initialize authority compiler", () => {
       second.executionEnvironment.digest,
     );
     expect(first.protocol).toEqual({
-      minVersion: "2.7.0",
-      maxVersion: "2.7.0",
+      minVersion: "3.0.0",
+      maxVersion: "3.0.0",
     });
     expect(first.host.nodeVersion).toBe("v24.14.0");
     expect(Object.isFrozen(first.executionEnvironment.workspace)).toBe(true);

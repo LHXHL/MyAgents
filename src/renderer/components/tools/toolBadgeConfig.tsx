@@ -133,6 +133,8 @@ function getSubagentCallLabel(call: SubagentToolCall, t?: ToolChromeTranslator, 
       }
       break;
     }
+    case 'bash':
+    case 'pwsh':
     case 'Bash':
     case 'PowerShell': {
       const desc = getSubagentStringProp(call, 'description');
@@ -321,7 +323,13 @@ export function getToolBadgeConfig(toolName: string): ToolBadgeConfig {
         }
       };
     // Terminal/Shell operations - Orange/Amber
+    case 'bash':
+    case 'pwsh':
     case 'Bash':
+    case 'job_output':
+    case 'job_list':
+    case 'job_kill':
+    case 'PowerShell':
     case 'BashOutput':
       return {
         icon: <Terminal className="size-4" />,
@@ -644,7 +652,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
         if (tool.name === 'Read' || tool.name === 'Write' || tool.name === 'Edit') {
           return parsed.file_path ? `${tool.name} ${parsed.file_path.split(/[/\\]/).pop()}` : tool.name;
         }
-        if (tool.name === 'Bash') {
+        if (['Bash', 'PowerShell', 'bash', 'pwsh'].includes(tool.name)) {
           return parsed.description || parsed.command ?
               parsed.description || parsed.command.split(' ')[0]
             : tc(t, 'labels.runCommand');
@@ -671,7 +679,7 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
           return tc(t, 'labels.killShell');
         }
       } catch {
-        if (tool.name === 'Bash') {
+        if (['Bash', 'PowerShell', 'bash', 'pwsh'].includes(tool.name)) {
           const raw = tool.inputJson.trim();
           if (raw) {
             const cmd = raw.split(' ')[0];
@@ -698,6 +706,8 @@ export function getToolLabel(tool: ToolUseSimple, t?: ToolChromeTranslator): str
       }
       return tool.name;
     }
+    case 'bash':
+    case 'pwsh':
     case 'Bash': {
       const description = getStringProp(tool.parsedInput, 'description');
       if (description) return description;
@@ -801,6 +811,8 @@ export function getToolExpandedLabel(tool: ToolUseSimple, t?: ToolChromeTranslat
       return tc(t, 'labels.search');
     case 'WebFetch':
       return tc(t, 'labels.fetch');
+    case 'bash':
+    case 'pwsh':
     case 'Bash': {
       const description = getStringProp(tool.parsedInput, 'description');
       return description || tc(t, 'labels.runCommand');

@@ -36,11 +36,11 @@
               "bash",
               "rg"
             ],
-            "bashDialect": "bash",
-            "bashRef": "bash",
             "bundledNodeRef": "node-v24",
             "pathPolicy": "sealed",
-            "ripgrepRef": "rg"
+            "ripgrepRef": "rg",
+            "shellDialect": "bash",
+            "shellRef": "bash"
           },
           "network": {
             "mode": "deny"
@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.7.0",
-          "minVersion": "2.7.0"
+          "maxVersion": "3.0.0",
+          "minVersion": "3.0.0"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -133,11 +133,11 @@
               "bash",
               "rg"
             ],
-            "bashDialect": "bash",
-            "bashRef": "bash",
             "bundledNodeRef": "node-v24",
             "pathPolicy": "sealed",
-            "ripgrepRef": "rg"
+            "ripgrepRef": "rg",
+            "shellDialect": "bash",
+            "shellRef": "bash"
           },
           "network": {
             "mode": "deny"
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "2.7.0",
-          "minVersion": "2.7.0"
+          "maxVersion": "3.0.0",
+          "minVersion": "3.0.0"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "2.7.0",
+        "protocolVersion": "3.0.0",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -293,7 +293,7 @@
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
+        "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
         "sessionFormat": "dsh-session-events-v1"
       }
     },
@@ -322,7 +322,7 @@
         "runtimeSessionId": "runtime-session-1",
         "state": "ready",
         "toolCatalog": {
-          "contractSha256": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
+          "contractSha256": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
           "diagnostics": [
             {
               "available": true,
@@ -346,7 +346,23 @@
             },
             {
               "available": true,
-              "tool": "Bash"
+              "tool": "bash"
+            },
+            {
+              "available": true,
+              "tool": "pwsh"
+            },
+            {
+              "available": true,
+              "tool": "job_output"
+            },
+            {
+              "available": true,
+              "tool": "job_list"
+            },
+            {
+              "available": true,
+              "tool": "job_kill"
             },
             {
               "available": true,
@@ -405,14 +421,18 @@
               "tool": "TaskUpdate"
             }
           ],
-          "digest": "bde71a156b8d520ba0a11338c8dc5fcbe96fb0519d12a4017e4670826d7d5b2d",
+          "digest": "42183f7314fd9ed7b0652bab468373a96ddb6237839ee821d7927341c67980c6",
           "effectiveTools": [
             "Read",
             "Write",
             "Edit",
             "Glob",
             "Grep",
-            "Bash",
+            "bash",
+            "pwsh",
+            "job_output",
+            "job_list",
+            "job_kill",
             "ls",
             "WebFetch",
             "WebSearch",
@@ -435,7 +455,11 @@
             "Edit",
             "Glob",
             "Grep",
-            "Bash",
+            "bash",
+            "pwsh",
+            "job_output",
+            "job_list",
+            "job_kill",
             "ls",
             "WebFetch",
             "WebSearch",
@@ -1180,8 +1204,8 @@
       }
     }
   ],
-  "protocolVersion": "2.7.0",
-  "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
+  "protocolVersion": "3.0.0",
+  "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
   "valid": [
     {
       "frame": {
@@ -1217,11 +1241,11 @@
                 "bash",
                 "rg"
               ],
-              "bashDialect": "bash",
-              "bashRef": "bash",
               "bundledNodeRef": "node-v24",
               "pathPolicy": "sealed",
-              "ripgrepRef": "rg"
+              "ripgrepRef": "rg",
+              "shellDialect": "bash",
+              "shellRef": "bash"
             },
             "network": {
               "mode": "deny"
@@ -1268,8 +1292,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "2.7.0",
-            "minVersion": "2.7.0"
+            "maxVersion": "3.0.0",
+            "minVersion": "3.0.0"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1297,7 +1321,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "2.7.0",
+          "protocolVersion": "3.0.0",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1380,7 +1404,7 @@
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
+          "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
           "sessionFormat": "dsh-session-events-v1"
         }
       },

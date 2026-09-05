@@ -452,6 +452,11 @@ function remoteMcpComponent(
   };
 }
 
+/** Legacy MyAgents/Claude Agent selectors name the terminal capability; Runtime visibility selects its platform Shell. */
+const dshAgentToolSelectors = (tools: readonly string[]): string[] => [...new Set(tools.flatMap(tool =>
+  tool === 'Bash' ? ['bash', 'pwsh'] : tool === 'PowerShell' ? ['pwsh'] : [tool],
+))];
+
 export function compileDshProductExtensionPlane(
   source: DshProductExtensionSource,
 ): DshCompiledExtensionPlane {
@@ -601,8 +606,8 @@ export function compileDshProductExtensionPlane(
         descriptor: {
           description: boundedText(agent.description, 8_192, `DSH agent ${agent.name} description`),
           prompt: boundedText(agent.prompt, MAX_RESOURCE_CHARACTERS, `DSH agent ${agent.name} prompt`),
-          ...(agent.tools === undefined ? {} : { tools: agent.tools }),
-          ...(agent.disallowedTools === undefined ? {} : { disallowedTools: agent.disallowedTools }),
+          ...(agent.tools === undefined ? {} : { tools: dshAgentToolSelectors(agent.tools) }),
+          ...(agent.disallowedTools === undefined ? {} : { disallowedTools: dshAgentToolSelectors(agent.disallowedTools) }),
           ...(agent.maxTurns === undefined ? {} : { maxTurns: agent.maxTurns }),
           ...(requiredSkills.length > 0 ? { skills: requiredSkills } : {}),
         },

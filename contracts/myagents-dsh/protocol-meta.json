@@ -1,13 +1,17 @@
 {
   "artifactFormatVersion": 1,
-  "canonicalToolContractSha256": "aeb3069e1f5280c41fe8426ac7461d7391d656725456c3c8beabf1c0665a5b8c",
+  "canonicalToolContractSha256": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
   "canonicalTools": [
     "Read",
     "Write",
     "Edit",
     "Glob",
     "Grep",
-    "Bash",
+    "bash",
+    "pwsh",
+    "job_output",
+    "job_list",
+    "job_kill",
     "ls",
     "WebFetch",
     "WebSearch",
@@ -24,11 +28,11 @@
     "TaskUpdate"
   ],
   "capabilityProfileDigest": "be811eb7deec5a352193a024997629fc92b20b05d842b81e274f0798c6c257eb",
-  "contractSourceSha256": "76939e0b23c04ad263271fe381f3cea121cc7b93585a97e4dc2d9f1c120c9c65",
+  "contractSourceSha256": "281991fcc08f6d3817da871e1d524cd09efac622734dfe1fc4c092a06fa4d724",
   "developmentDshVersion": "0.1.2-rc.1",
-  "dshArtifactManifestSha256": "b081b253d3337761ac6a1f15d3667cd9ff36b966ffdf93325ada4c2391168575",
+  "dshArtifactManifestSha256": "58ff076944e029d835e34bbdf433609422ac88d381bdede3e7b216b28975e6f8",
   "dshEngineVersion": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
-  "fixturesSha256": "fbc3e98d66e3f62273de64ddeb0ee9ee296c39f22dbf9f487d62d655e9938780",
+  "fixturesSha256": "c1b543bb2884864a9acb61c215ef3ba22d85819a4275ade1f263de98957f8119",
   "hostMethods": [
     "initialize",
     "runtime/status",
@@ -81,7 +85,7 @@
     "runtime/event",
     "host/interaction/cancel"
   ],
-  "protocolVersion": "2.7.0",
+  "protocolVersion": "3.0.0",
   "reverseMethods": [
     "host/credential/resolve",
     "host/interaction/request",
@@ -92,6 +96,6 @@
     "host/attachment/release"
   ],
   "runtimeVersion": "0.0.0",
-  "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
+  "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
   "sessionFormat": "dsh-session-events-v1"
 }

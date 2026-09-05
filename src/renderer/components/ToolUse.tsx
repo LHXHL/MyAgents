@@ -69,7 +69,7 @@ export default function ToolUse({ tool: rawTool }: ToolUseProps) {
   // Bash and file-patch tools own specialized, bounded projections. Generic
   // pre-clamping would corrupt their structured completion wrappers before the
   // authoritative parser can separate streams or applied file changes.
-  const ownsBoundedProjection = rawTool.name === 'Bash'
+  const ownsBoundedProjection = ['Bash', 'bash', 'pwsh'].includes(rawTool.name)
     || rawTool.name === 'PowerShell'
     || rawTool.name === 'Edit'
     || rawTool.name === 'MultiEdit'
@@ -87,6 +87,8 @@ export default function ToolUse({ tool: rawTool }: ToolUseProps) {
 
 function renderToolBody(tool: ToolUseSimple): React.JSX.Element {
   switch (tool.name) {
+    case 'bash':
+    case 'pwsh':
     case 'Bash':
     case 'PowerShell':
       return <BashTool tool={tool} />;

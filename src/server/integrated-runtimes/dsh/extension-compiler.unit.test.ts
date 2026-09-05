@@ -152,8 +152,8 @@ describe('DSH declarative extension compiler', () => {
       id: 'reviewer',
       kind: 'agent',
       descriptor: expect.objectContaining({
-        tools: ['Read', 'Bash'],
-        disallowedTools: ['Bash'],
+        tools: ['Read', 'bash', 'pwsh'],
+        disallowedTools: ['bash', 'pwsh'],
         maxTurns: 12,
       }),
     }));

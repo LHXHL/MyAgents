@@ -504,7 +504,7 @@ function executionEnvironment(
 ): Omit<DshExecutionEnvironment, 'digest'> {
   const windows = process.platform === 'win32';
   return {
-    revision: `myagents-dsh-execution-v1:${hash(
+    revision: `myagents-dsh-execution-v2:${hash(
       platformTarget(),
       workspaceIdentity,
       workspacePath,
@@ -518,19 +518,11 @@ function executionEnvironment(
     },
     executables: {
       bundledNodeRef: 'bundled-node',
-      bashRef: 'bundled-bash',
+      shellRef: 'runtime-shell',
       ripgrepRef: 'bundled-ripgrep',
-      bashDialect: 'bash',
-      allowedCommandRefs: windows
-        ? ['bundled-bash', 'bundled-node', 'bundled-powershell', 'bundled-ripgrep']
-        : ['bundled-bash', 'bundled-node', 'bundled-ripgrep'],
+      shellDialect: windows ? 'pwsh' : 'bash',
+      allowedCommandRefs: ['runtime-shell', 'bundled-node', 'bundled-ripgrep'],
       pathPolicy: 'sealed',
-      ...(windows
-        ? {
-          windowsPowerShellRef: 'bundled-powershell',
-          windowsUtf8PreludeRef: 'windows-powershell-utf8-v1',
-        }
-        : {}),
     },
     environment: {
       allowedKeys: [...allowedEnvironmentKeys],

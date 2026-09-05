@@ -2,43 +2,43 @@
   "schemaVersion": 1,
   "runtime": {
     "version": "0.0.0",
-    "artifactSha256": "ef003339095e457d49ddf5a758c1800ea1e52e64ce6c2e5c2dacfd9d201dc57d",
+    "artifactSha256": "c56038b8e3a3bcc99f271ec18ee4bb12e3f2fb2989daa63937f33aaa2bde0b33",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v1",
     "profileId": "myagents-dsh-batch-1-candidate-v1",
-    "profileDigest": "0b5734cd4f2c795897adc27ee579cb96e5e297861dbf9f279221d640bde8ed68"
+    "profileDigest": "de68ea3da91f7744ea3841c49b5377a036a993e5a46d51a687176176fcc5273f"
   },
   "protocol": {
-    "version": "2.7.0",
-    "schemaSha256": "c9ff2ba94b14ac744b7e1773ac7358f024fba98881342bce4e7d2a76c9a72259",
-    "generatedClientSha256": "55d4f71f6484760f8eb2b0640615ad3559ec96cc0061fe1f6e316cbbbc418484"
+    "version": "3.0.0",
+    "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
+    "generatedClientSha256": "edd83877801cba19abee0ab843454b46a0f240451b79a378dba38384e70b38bb"
   },
   "dsh": {
     "version": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
     "sourceCommit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
     "patchSeriesSha256": "3fff39022bbded09c619ffa042330fe34b90fd264adc7c016f35e502c6449b4c",
-    "artifactManifestSha256": "b081b253d3337761ac6a1f15d3667cd9ff36b966ffdf93325ada4c2391168575"
+    "artifactManifestSha256": "58ff076944e029d835e34bbdf433609422ac88d381bdede3e7b216b28975e6f8"
   },
   "platforms": [
     {
       "target": "darwin-arm64",
       "claim": "verified",
       "evidenceSha256": [
-        "5c0b8a302b0c2a56055f6cb54264cbe33d7597b4fb52018cf5db984cc509c44b"
+        "cb0f71b0ec5b86451e6fc3a33fa549f1500aa570f547a75999a5f56610b0e976"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "28e7472865bd67baec45f2b8fb4281d130e65c45c7214e61d0c2893588430a8a"
+        "755da4062f6e2393ee3a9cd87e306facb0161fdb61665b63886a526324e7f904"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "786042daf56c639b1a27702f1bc1766c3ffd90d73cf81832bd6f214fae1c04cb"
+        "de203cf153340347e3a5357f44b6b8699415a4e5a8431137fe7093a4cb9a7a20"
       ]
     }
   ],
@@ -123,7 +123,23 @@
       "availability": "runtime"
     },
     {
-      "name": "Bash",
+      "name": "bash",
+      "availability": "runtime"
+    },
+    {
+      "name": "pwsh",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_output",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_list",
+      "availability": "runtime"
+    },
+    {
+      "name": "job_kill",
       "availability": "runtime"
     },
     {

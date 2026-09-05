@@ -87,10 +87,10 @@ async function createNativeHostFixture(label: string) {
     },
     executables: {
       bundledNodeRef: "bundled-node",
-      bashRef: "bundled-bash",
+      shellRef: "runtime-shell",
       ripgrepRef: "bundled-ripgrep",
-      bashDialect: "bash",
-      allowedCommandRefs: ["bundled-bash", "bundled-node", "bundled-ripgrep"],
+      shellDialect: "bash",
+      allowedCommandRefs: ["runtime-shell", "bundled-node", "bundled-ripgrep"],
       pathPolicy: "sealed",
     },
     environment: {
@@ -192,7 +192,7 @@ describe.runIf(nativeSmokeEnabled)(
         });
         expect(identity).toMatchObject({
           runtimeGeneration: "artifact-process-generation",
-          protocolVersion: "2.7.0",
+          protocolVersion: "3.0.0",
           sessionFormat: "dsh-session-events-v1",
         });
         expect(host.state).toBe("protocol-ready");
@@ -336,13 +336,13 @@ describe.runIf(nativeSmokeEnabled)(
         });
         const granted = await host.request("permission/rules/add", {
           expectedRevision: rules.revision,
-          tool: "Bash",
+          tool: "bash",
           permissionClass: "process.execute",
           target: "echo native-smoke",
         });
         expect(granted).toMatchObject({ state: "applied" });
         expect(granted.rule).toMatchObject({
-          tool: "Bash",
+          tool: "bash",
           permissionClass: "process.execute",
           target: "echo native-smoke",
           origin: "root",
@@ -519,7 +519,7 @@ describe.runIf(nativeSoakEnabled)(
         try {
           const identity = await fixture.host.start();
           expect(identity).toMatchObject({
-            protocolVersion: "2.7.0",
+            protocolVersion: "3.0.0",
             sessionFormat: "dsh-session-events-v1",
           });
           runtimePid = fixture.host.pid;

@@ -50,6 +50,7 @@ export interface BashTranscriptModel {
 interface BashDisplayInput extends Record<string, unknown> {
   command?: string;
   cwd?: string;
+  workdir?: string;
   run_in_background?: boolean;
   commandActions?: unknown[];
   timeout?: number;
@@ -113,6 +114,7 @@ const SDK_BASH_OUTPUT_KEYS = new Set([
 const BASH_INPUT_FIELDS = new Set([
   'command',
   'cwd',
+  'workdir',
   'description',
   'run_in_background',
   'dangerouslyDisableSandbox',
@@ -148,8 +150,8 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
   );
 
   return {
-    shell: detectShellWrapper(rawCommand),
-    commandLanguage: tool.name === 'PowerShell' ? 'powershell' : 'bash',
+    shell: tool.name === 'pwsh' ? 'PowerShell' : tool.name === 'bash' ? 'Bash' : detectShellWrapper(rawCommand),
+    commandLanguage: tool.name === 'PowerShell' || tool.name === 'pwsh' ? 'powershell' : 'bash',
     command: commandText
       ? {
           raw: commandText,
@@ -166,7 +168,7 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
     streams: resolveBashStreams(tool, parsedResult),
     status,
     meta: {
-      cwd: stringOrUndefined(tool.resultMeta?.cwd) ?? stringOrUndefined(input.cwd),
+      cwd: stringOrUndefined(tool.resultMeta?.cwd) ?? stringOrUndefined(input.cwd) ?? stringOrUndefined(input.workdir),
       durationMs: nonNegativeNumberOrUndefined(tool.resultMeta?.durationMs),
       processId: stringOrUndefined(tool.resultMeta?.processId),
       exitCode: finiteNumberOrUndefined(tool.resultMeta?.exitCode),
