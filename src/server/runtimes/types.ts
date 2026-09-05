@@ -10,6 +10,7 @@ import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecy
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
 import type { DshProductExtensionSource } from '../integrated-runtimes/dsh/extension-compiler';
+import type { PermissionOperationDisplay } from '../../shared/types/runtime';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
@@ -309,6 +310,7 @@ export type UnifiedEvent =
     toolName: string;
     toolUseId: string;
     input: Record<string, unknown>;
+    display?: PermissionOperationDisplay;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
     /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */

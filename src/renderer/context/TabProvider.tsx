@@ -3541,8 +3541,8 @@ export default function TabProvider({
 
             case 'permission:request': {
                 // Agent is requesting permission to use a tool
-                const payload = data as { requestId: string; sessionId?: string | null; toolName: string; input: string } | null;
-                console.log(`[TabProvider] permission:request received:`, payload);
+                const payload = data as PermissionRequest | null;
+                console.log('[TabProvider] permission:request received:', payload?.requestId);
                 if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     console.log(`[TabProvider] Queueing pendingPermission for: ${payload.toolName}`);
                     setPendingPermissions(prev => enqueuePermissionRequest(prev, {
@@ -3550,6 +3550,7 @@ export default function TabProvider({
                         sessionId: payload.sessionId,
                         toolName: payload.toolName,
                         input: payload.input || '',
+                        ...(payload.display === undefined ? {} : { display: payload.display }),
                     }));
                     // Send system notification if user is not focused on the app
                     notifyPermissionRequest(payload.toolName);

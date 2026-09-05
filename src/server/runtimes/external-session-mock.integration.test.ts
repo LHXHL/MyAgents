@@ -1987,6 +1987,24 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
   });
 
+  it('retains full permission display through live delivery and reconnect replay', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-permission-display';
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    const display = { command: `printf '%s' '${'example'.repeat(200)}'`, cwd: workspacePath, alwaysAllowScope: 'session_workspace' as const };
+    harness.runtime.emitForTest({
+      kind: 'permission_request', requestId: 'permission-display', toolName: 'Bash', toolUseId: 'bash-display',
+      input: { tool: 'Bash', permissionClass: 'process.execute', target: workspacePath, origin: 'root' },
+      display,
+    });
+    expect(broadcastEvents).toContainEqual({ event: 'permission:request', data: expect.objectContaining({ display }) });
+    expect(harness.engine.getStreamReplaySnapshot().pendingInteractiveRequests).toContainEqual({
+      type: 'permission:request', data: expect.objectContaining({ display }),
+    });
+  });
+
   it('keeps DSH context, TaskGraph, Plan, and Plan review projections distinct', async () => {
     const harness = await createHarness([], { runtimeType: 'dsh' });
     const sessionId = 'session-dsh-status-projections';

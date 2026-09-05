@@ -59,6 +59,7 @@ import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation } from './installation';
 import { reconcileExpiredDshInteractionResponse } from './interaction-response';
+import { dshPermissionDisplay } from './permission-display';
 import { DshMutationController } from './mutations';
 import {
   parseDshPermissionRuleMutation,
@@ -919,12 +920,17 @@ export class DshRuntime implements AgentRuntime {
         const toolName = kind === 'permission'
           ? (typeof schema.tool === 'string' ? schema.tool : 'DSHTool')
           : kind === 'plan_approval' ? 'ExitPlanMode' : 'AskUserQuestion';
+        const display = kind === 'permission' ? dshPermissionDisplay(schema) : undefined;
+        // Keep full operation details out of the legacy, truncated input summary.
+        const permissionInput = { ...schema };
+        delete permissionInput.display;
         emitProductEvent({
           kind: 'permission_request',
           requestId: interactionId,
           toolName,
           toolUseId: typeof authority.callId === 'string' ? authority.callId : interactionId,
-          input: schema,
+          input: kind === 'permission' ? permissionInput : schema,
+          ...(display === undefined ? {} : { display }),
           interactionKind: kind,
         });
         emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });

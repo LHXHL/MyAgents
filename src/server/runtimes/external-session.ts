@@ -7918,6 +7918,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         toolName: event.toolName,
         toolUseId: event.toolUseId,
         input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
+        ...(event.display === undefined ? {} : { display: event.display }),
       };
       setExternalInteractiveRequest(event.requestId, {
         type: 'permission:request',

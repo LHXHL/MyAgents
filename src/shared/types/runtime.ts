@@ -31,6 +31,14 @@ export type RuntimeType = 'builtin' | 'dsh' | 'claude-code' | 'codex' | 'gemini'
  */
 export type RuntimeSource = 'integrated' | 'system-cli' | 'managed-provider';
 
+/** Optional review details, separate from the Runtime's authorization input. */
+export interface PermissionOperationDisplay {
+  command: string;
+  cwd: string;
+  description?: string;
+  alwaysAllowScope?: 'session_workspace';
+}
+
 /** Canonical source projection for legacy RuntimeType consumers and analytics. */
 export function runtimeSourceForRuntimeType(
   runtime: RuntimeType,

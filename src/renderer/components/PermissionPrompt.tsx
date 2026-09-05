@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, X, Check, CheckCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { PermissionOperationDisplay } from '../../shared/types/runtime';
 
 export interface PermissionRequest {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
     input: string;
+    display?: PermissionOperationDisplay;
     queuePosition?: number;
     queueTotal?: number;
 }
@@ -81,7 +83,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
         return null;
     }
 
-    const formattedInput = formatInput(request.input);
+    const formattedInput = request.display?.command ?? formatInput(request.input);
     const queuePosition = request.queuePosition ?? 1;
     const queueTotal = request.queueTotal ?? 1;
     const showQueueProgress = queueTotal > 1;
@@ -125,12 +127,27 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                     <span className="mb-1.5 inline-block rounded-md bg-[var(--warning)]/15 px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">
                         {formatToolName(request.toolName)}
                     </span>
+                    {request.display?.description && (
+                        <p className="mb-2 text-xs text-[var(--ink-secondary)]">{request.display.description}</p>
+                    )}
                     {formattedInput && (
                         <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[var(--ink-secondary)]">
                             {formattedInput}
                         </div>
                     )}
+                    {request.display && (
+                        <div className="mt-2 text-xs text-[var(--ink-muted)]">
+                            <span>{t('shell.permissionPrompt.cwd')}: </span>
+                            <span className="break-all font-mono">{request.display.cwd}</span>
+                        </div>
+                    )}
                 </div>
+
+                {request.display?.alwaysAllowScope === 'session_workspace' && (
+                    <p className="mt-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+                        {t('shell.permissionPrompt.sessionWorkspaceScope')}
+                    </p>
+                )}
 
                 {/* Actions — 主操作（允许）实心琥珀靠右 */}
                 <div className="mt-3 flex items-center gap-2">

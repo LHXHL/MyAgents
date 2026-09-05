@@ -526,6 +526,8 @@
       "cancelQueued": "Cancel queued"
     },
     "permissionPrompt": {
+      "cwd": "Working directory",
+      "sessionWorkspaceScope": "Always allow also permits other Bash commands in this workspace for this session while the permission rule remains valid.",
       "progress": "Permission approval {{index}} / {{total}}",
       "title": "Permission request",
       "subtitle": "AI wants to run the following action",
