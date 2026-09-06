@@ -3907,6 +3907,22 @@ describe('admin-api Agent / Session discovery', () => {
     expect(shown.data).not.toHaveProperty('id');
   });
 
+  it('counts exactly the visible active Agent list, including disabled and legacy orphan Agents', async () => {
+    const agents = ['active', 'disabled', 'archived', 'internal', 'orphan'].map(id => ({
+      id, name: id, enabled: id !== 'disabled', workspacePath: `/tmp/${id}`, channels: [],
+    }));
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents });
+    writeJson(join(scratch, '.myagents', 'projects.json'), agents.filter(agent => agent.id !== 'orphan').map(agent => ({
+      id: `project-${agent.id}`, name: agent.name, path: agent.workspacePath, agentId: agent.id,
+      ...(agent.id === 'archived' ? { archivedAt: '2026-09-01T00:00:00.000Z' } : {}),
+      ...(agent.id === 'internal' ? { internal: true } : {}),
+    })));
+    const { handleAgentList, handleStatus } = await import('./admin-api');
+    const list = await handleAgentList();
+    expect((list.data as Array<{ agentId: string }>).map(agent => agent.agentId)).toEqual(['active', 'disabled', 'orphan']);
+    expect(await handleStatus()).toMatchObject({ success: true, data: { agents: 3 } });
+  });
+
   it('lists persisted history only, newest first, without exposing prepared Sessions', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), {
       agents: [{ id: 'agent-1', name: 'Workspace', enabled: true, workspacePath: '/tmp/workspace', channels: [] }],

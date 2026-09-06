@@ -418,22 +418,35 @@ export class DshMutationController {
   ) {}
 
   async readHistory(signal?: AbortSignal): Promise<DshNativeHistory> {
-    const assembler = new DshHistoryAssembler();
-    let cursor: string | undefined;
-    do {
-      const page = await this.transport.request(
-        'session/read',
-        cursor ? { cursor } : {},
-        signal ? { signal } : undefined,
-      );
-      assembler.accept(page, cursor);
-      cursor = assembler.nextCursor;
-    } while (cursor !== undefined);
-    const history = assembler.finish();
-    if (history.runtimeSessionId !== this.expectedRuntimeSessionId) {
-      throw new Error('DSH durable history belongs to a different Runtime Session');
+    for (let attempt = 0; ; attempt += 1) {
+      const assembler = new DshHistoryAssembler();
+      let cursor: string | undefined;
+      for (let pageIndex = 0; ; pageIndex += 1) {
+        signal?.throwIfAborted();
+        if (pageIndex >= 1_024) throw new Error('DSH history exceeded its page bound');
+        let page: DshRpcObject;
+        try {
+          page = await this.transport.request(
+            'session/read', cursor === undefined ? {} : { cursor }, signal ? { signal } : undefined,
+          );
+        } catch (error) {
+          signal?.throwIfAborted();
+          // The loaded public ProtocolError crosses a module boundary; use its explicit fields.
+          if (attempt < 2 && error instanceof Error
+            && 'retryable' in error && error.retryable === true && 'code' in error
+            && (error.code === 'cursor_stale' || error.code === 'session_read_unstable')) break;
+          throw error;
+        }
+        assembler.accept(page, cursor);
+        cursor = assembler.nextCursor;
+        if (cursor !== undefined) continue;
+        const history = assembler.finish();
+        if (history.runtimeSessionId !== this.expectedRuntimeSessionId) {
+          throw new Error('DSH durable history belongs to a different Runtime Session');
+        }
+        return history;
+      }
     }
-    return history;
   }
 
   async getTurn(clientOperationId: string, signal?: AbortSignal): Promise<DshTurnLookup> {

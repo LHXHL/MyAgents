@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { TaskCreateInput, TaskGetInput, TaskUpdateInput, ToolUseSimple } from '@/types/chat';
 
-import { getTaskListSnapshot } from '@/utils/taskTodoState';
+import { getTaskListSnapshot, getTaskResultOwner } from '@/utils/taskTodoState';
 
 import TodoChecklist from './TodoChecklist';
 
@@ -28,7 +28,7 @@ export default function TaskTodoTool({ tool }: TaskTodoToolProps) {
     if (snapshot.length === 0) {
       return <div className="text-sm text-[var(--ink-muted)]">{t('shell.toolChrome.taskOp.emptyList')}</div>;
     }
-    return <TodoChecklist items={snapshot.map(task => ({ content: task.content, status: task.status, key: task.id }))} />;
+    return <TodoChecklist items={snapshot.map(task => ({ content: task.content, status: task.status, key: task.id, detail: task.owner ? taskOwnerLabel(task.owner, t) : undefined }))} />;
   }
 
   return <TaskOpRow tool={tool} />;
@@ -37,15 +37,22 @@ export default function TaskTodoTool({ tool }: TaskTodoToolProps) {
 function TaskOpRow({ tool }: { tool: ToolUseSimple }) {
   const { t } = useTranslation('chat');
   const { icon, text, accent } = describeTaskOp(tool, t);
+  const owner = getTaskResultOwner(tool);
   return (
     <div className="flex items-center gap-2 text-sm">
       <span className={accent ? 'text-[var(--accent)]' : 'text-[var(--ink-muted)]'}>{icon}</span>
-      <span className="select-text text-[var(--ink-secondary)]">{text}</span>
+      <span className="select-text text-[var(--ink-secondary)]">{text}
+        {owner && <span className="block text-xs text-[var(--ink-muted)]">{taskOwnerLabel(owner, t)}</span>}
+      </span>
     </div>
   );
 }
 
 type ChatTranslator = (key: string, options?: Record<string, unknown>) => string;
+
+function taskOwnerLabel(owner: string, t: ChatTranslator): string {
+  return t(owner === 'root' ? 'shell.toolChrome.taskOp.rootOwner' : 'shell.toolChrome.taskOp.agentOwner', { owner });
+}
 
 function describeTaskOp(tool: ToolUseSimple, t: ChatTranslator): { icon: React.ReactNode; text: string; accent: boolean } {
   const iconCls = 'size-4 shrink-0';

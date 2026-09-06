@@ -228,3 +228,47 @@ describe('DSH native mutation controller', () => {
     }, 'product-turn-1')).toThrow(/one stable mutation boundary/u);
   });
 });
+
+
+describe('history snapshot restart', () => {
+  it('drops partial chunks and reads a new complete snapshot after cursor_stale', async () => {
+    const pages = historyPages();
+    const staleFirst = { ...pages[0], runtimeSessionId: 'discarded-session' };
+    const request = vi.fn<DshMutationTransport['request']>()
+      .mockResolvedValueOnce(staleFirst)
+      .mockRejectedValueOnce(Object.assign(new Error('snapshot changed'), { code: 'cursor_stale', retryable: true }))
+      .mockResolvedValueOnce(pages[0]!)
+      .mockResolvedValueOnce(pages[1]!);
+    const history = await new DshMutationController({ request }, 'runtime-session-1').readHistory();
+    expect(history.runtimeSessionId).toBe('runtime-session-1');
+    expect(request.mock.calls.map(call => call[1])).toEqual([{}, { cursor: 'cursor-1' }, {}, { cursor: 'cursor-1' }]);
+  });
+
+  it.each(['cursor_stale', 'session_read_unstable'])('bounds retries for %s', async (code) => {
+    const error = Object.assign(new Error('changing'), { code, retryable: true });
+    const request = vi.fn<DshMutationTransport['request']>().mockRejectedValue(error);
+    await expect(new DshMutationController({ request }, 'runtime-session-1').readHistory()).rejects.toBe(error);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { code: 'cursor_invalid', retryable: true }, { code: 'cursor_stale', retryable: false },
+    { code: 'protocol_closed', retryable: true },
+  ])('does not retry $code with retryable=$retryable', async (fields) => {
+    const error = Object.assign(new Error('failure'), fields);
+    const request = vi.fn<DshMutationTransport['request']>().mockRejectedValue(error);
+    await expect(new DshMutationController({ request }, 'runtime-session-1').readHistory()).rejects.toBe(error);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restart after cancellation', async () => {
+    const abort = new AbortController();
+    const cancelled = new Error('cancelled');
+    const request = vi.fn<DshMutationTransport['request']>().mockImplementation(() => {
+      abort.abort(cancelled);
+      return Promise.reject(Object.assign(new Error('changed'), { code: 'cursor_stale', retryable: true }));
+    });
+    await expect(new DshMutationController({ request }, 'runtime-session-1').readHistory(abort.signal)).rejects.toBe(cancelled);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});

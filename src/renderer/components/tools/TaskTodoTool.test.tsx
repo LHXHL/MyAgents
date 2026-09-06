@@ -33,6 +33,23 @@ describe('TaskTodoTool', () => {
     expect(screen.getByText('跑测试')).toBeInTheDocument();
   });
 
+  it('explains root and child owners while retaining stable ids', () => {
+    render(<TaskTodoTool tool={tool({ name: 'TaskList', result: JSON.stringify({ tasks: [
+      { id: 'a', subject: 'Main work', status: 'in_progress', owner: 'root' },
+      { id: 'b', subject: 'Child work', status: 'pending', owner: 'child-123' },
+    ] }) })} />);
+    expect(screen.getByText('负责人：主 Agent（root）')).toBeInTheDocument();
+    expect(screen.getByText('负责人：Agent（child-123）')).toBeInTheDocument();
+  });
+
+  it('shows the actual TaskGet owner and ignores an unaccepted TaskUpdate owner', () => {
+    render(<TaskTodoTool tool={tool({ name: 'TaskGet', parsedInput: { taskId: 'a' }, result: JSON.stringify({ task: { id: 'a', owner: 'root' } }) })} />);
+    expect(screen.getByText('负责人：主 Agent（root）')).toBeInTheDocument();
+    cleanup();
+    render(<TaskTodoTool tool={tool({ name: 'TaskUpdate', parsedInput: { taskId: 'a', owner: 'root' }, isError: true, result: 'denied' })} />);
+    expect(screen.queryByText('负责人：主 Agent（root）')).not.toBeInTheDocument();
+  });
+
   it('renders a TaskCreate op with its subject', () => {
     render(<TaskTodoTool tool={tool({ name: 'TaskCreate', parsedInput: { subject: '初始化项目', description: '' } })} />);
     expect(screen.getByText('创建任务：初始化项目')).toBeInTheDocument();
