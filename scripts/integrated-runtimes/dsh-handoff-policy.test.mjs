@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,6 +119,68 @@ test("complete handoff staging replaces atomically only after verification", () 
     );
     assert.equal(readFileSync(resolve(output, "marker"), "utf8"), "new");
     assert.equal(existsSync(`${output}.backup`), false);
+  });
+});
+
+test("sealed handoff evidence can be packaged without changing source bytes or modes", {
+  skip: process.platform === "win32",
+}, () => {
+  withTemporaryDirectory((root) => {
+    const source = resolve(root, "handoff");
+    const output = resolve(root, "resources/dsh");
+    mkdirSync(source);
+    writeFileSync(resolve(source, "evidence.json"), '{"verified":true}\n', { mode: 0o400 });
+    writeFileSync(resolve(source, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o500 });
+    chmodSync(source, 0o500);
+    try {
+      if (process.platform === "darwin") {
+        const oldBundle = resolve(root, "old.app");
+        cpSync(source, oldBundle, { recursive: true });
+        try {
+          const result = spawnSync("/usr/bin/xattr", ["-crs", oldBundle], { encoding: "utf8" });
+          assert.equal(result.status, 1);
+          assert.match(result.stderr, /Permission denied/);
+        } finally {
+          chmodSync(oldBundle, 0o755);
+        }
+      }
+      stageCompleteHandoff(source, output, (staged) => {
+        assert.equal(statSync(staged).mode & 0o777, 0o755);
+        assert.equal(statSync(resolve(staged, "evidence.json")).mode & 0o777, 0o644);
+        assert.equal(statSync(resolve(staged, "tool")).mode & 0o777, 0o755);
+        for (const name of ["evidence.json", "tool"]) {
+          assert.deepEqual(readFileSync(resolve(staged, name)), readFileSync(resolve(source, name)));
+        }
+        if (process.platform === "darwin") {
+          execFileSync("/usr/bin/xattr", ["-crs", staged]);
+        }
+      });
+      assert.equal(statSync(source).mode & 0o777, 0o500);
+      assert.equal(statSync(resolve(source, "evidence.json")).mode & 0o777, 0o400);
+      assert.equal(statSync(resolve(source, "tool")).mode & 0o777, 0o500);
+    } finally {
+      chmodSync(source, 0o755);
+    }
+  });
+});
+
+test("resource permissions never follow a link outside the staging copy", {
+  skip: process.platform === "win32",
+}, () => {
+  withTemporaryDirectory((root) => {
+    const source = resolve(root, "handoff");
+    const output = resolve(root, "resources/dsh");
+    const outside = resolve(root, "outside.json");
+    mkdirSync(source);
+    mkdirSync(output, { recursive: true });
+    writeFileSync(resolve(output, "marker"), "accepted");
+    writeFileSync(outside, "sealed", { mode: 0o400 });
+    symlinkSync(outside, resolve(source, "link"));
+    assert.throws(() => stageCompleteHandoff(source, output, () => {
+      assert.fail("a linked copy cannot reach verification");
+    }), /link-free/);
+    assert.equal(statSync(outside).mode & 0o777, 0o400);
+    assert.equal(readFileSync(resolve(output, "marker"), "utf8"), "accepted");
   });
 });
 

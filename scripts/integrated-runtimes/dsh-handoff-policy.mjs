@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -337,6 +339,7 @@ export function stageCompleteHandoff(sourceRoot, outputRoot, verify) {
       preserveTimestamps: true,
       verbatimSymlinks: true,
     });
+    prepareResourcePermissions(temporaryRoot);
     verify(temporaryRoot);
 
     if (existsSync(outputRoot)) {
@@ -351,6 +354,24 @@ export function stageCompleteHandoff(sourceRoot, outputRoot, verify) {
       renameSync(backupRoot, outputRoot);
     }
     throw error;
+  }
+}
+
+function prepareResourcePermissions(path) {
+  const stat = lstatSync(path);
+  if (stat.isDirectory()) {
+    chmodSync(path, 0o755);
+    for (const name of readdirSync(path)) {
+      prepareResourcePermissions(resolve(path, name));
+    }
+  } else if (stat.isFile()) {
+    // The immutable source may seal evidence as 0400. Build resources must be
+    // readable by app users and writable by the builder for macOS xattr/signing.
+    // Normalize only the private copy; preserve executable intent and verify
+    // the complete handoff again before publishing it to resources.
+    chmodSync(path, stat.mode & 0o111 ? 0o755 : 0o644);
+  } else {
+    fail(`staged handoff must be link-free regular files/directories: ${path}`);
   }
 }
 
