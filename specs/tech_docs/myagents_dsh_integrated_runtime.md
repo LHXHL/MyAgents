@@ -1,37 +1,24 @@
 ---
-type: technical-rfc
-status: implementation-in-progress
-version: 0.31
-updated: 2026-09-05
+type: module-technical-document
+status: implemented-native-validation-partial
+version: 0.32
+updated: 2026-09-07
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
-implementation_baseline:
-  version: 0.4.11
-  commit: c7dc5d79b2752a713e53ec9eee4f1db2324fa7fd
-audit_baseline:
-  version: 0.4.12
-  original_commit: c39d7387a6122f9ebed5f4ec94583aebd1da93f6
-  revalidated_commit: 61a81af384a2333dd8f4fc5f14436ab6e360c820
-runtime_handoff:
-  status: protocol-2.3.0-workspace-skills-stdio-mcp-ingested
-  reviewed_repository_head: 1a776194c33fcafeff5de46bca36e354b80b20d5
-  source_commit: 1a776194c33fcafeff5de46bca36e354b80b20d5
-  protocol: 2.3.0
-  manifest_sha256: 999a80f5d9cc33f858cf3c11a8031a431ad8303221ddf0a3ec74452cb265dba7
-  runtime_manifest_sha256: 4b3bc9de9a00b58c5284eb21563fb0e8fc64dbf1b6b98f458056d8da78b8959e
-  compatibility_sha256: dbedcc9ef0632833d82c7707ae4267f10d275ee00e922bbd20e1c1625f1216f3
-  protocol_schema_sha256: 82bf9509a8213fea2bca9771f3be8587e56e18461457634baa2fe88db55e063c
-  generated_client_sha256: f300f2567a87727c40fd84c318bcf1730075ab556933dcfd1bab10f4c7db288a
+main_baseline:
+  version: 0.4.15
+  commit: 7544161c
+runtime_authority: src/shared/integrated-runtimes/dsh-lock.json
 ---
 
-# Batch 3 Technical RFC — MyAgents integration of MyAgents-dsh
+# MyAgents-dsh Integrated Runtime — implementation and delivery ledger
 
-> This is the canonical MyAgents Host integration RFC and implementation ledger. Product scope remains owned by the paired PRD, and exact Runtime behavior remains owned by generated contracts and the immutable handoff.
+> Current owners and data flow follow `specs/ARCHITECTURE.md` and the implementation. The accepted Runtime identity, toolchain and platform claims are read from `src/shared/integrated-runtimes/dsh-lock.json`, generated contracts and the verified immutable handoff. Product scope remains owned by the paired PRD. Earlier design audits and delivery receipts below are historical evidence; their version numbers and worktree observations do not describe the current checkout.
 
 ## 1. Decision summary
 
-MyAgents will add DSH as a first-party **Integrated Runtime**, not as an External CLI and not as a Managed Provider Runtime.
+MyAgents implements DSH as a first-party **Integrated Runtime**. Provider configuration remains Host-owned and session operations use the existing SessionEngine facade.
 
 The implementation reuses the existing product architecture:
 
@@ -74,11 +61,11 @@ MyAgents-dsh continues to own:
 - provider-profile execution and exact compatibility manifest;
 - the verified Runtime artifact.
 
-## 2. Audited current state
+## 2. Historical design audit (MyAgents 0.4.12)
 
 This RFC was originally audited against MyAgents `0.4.12` at commit `c39d7387a6122f9ebed5f4ec94583aebd1da93f6` and was revalidated against committed HEAD `61a81af384a2333dd8f4fc5f14436ab6e360c820` after the formal DSH `2.0.0` handoff was produced. Since the previous audit at `d6ba358f…`, committed changes touching `Launcher.tsx` and `specs/ARCHITECTURE.md` are limited to the Record/AI-discussion flow; they do not alter `src/server/session-engine/`, Runtime identity types, Provider execution policy, or the Rust Runtime identity owner. The architectural findings therefore remain valid.
 
-The live MyAgents worktree also contains unrelated uncommitted Record/AI-discussion and UI work. It was inspected for boundary overlap and does not implement DSH integration. It is not design authority for Batch 3 and must be preserved during implementation; an implementation branch or worktree must not absorb, overwrite, or reinterpret it.
+At the original audit, the MyAgents worktree contained unrelated uncommitted Record/AI-discussion and UI work. It was inspected for boundary overlap and preserved separately during the initial integration. This is a historical worktree observation.
 
 ### 2.1 Reusable product owners
 
@@ -1255,3 +1242,16 @@ The signed App build and final packaged-process acceptance are owned by the immu
 created only after their checks pass, so recording those results does not invalidate this source
 freeze. macOS is verified; Windows/Linux remain implementation-complete_pending-native-validation.
 User desktop acceptance remains the final product acceptance step.
+
+
+### 2026-09-07 main 0.4.15 and Node/npm convergence (UPG-W15)
+
+The integration branch includes main `7544161c` (MyAgents `0.4.15`) and the final W14 Host commit `21b0a890`. Main remains authoritative for core product behavior and the compact architecture/documentation structure. DSH owner details stay in the Runtime module and this historical delivery ledger. No product owner or process type was added by this merge.
+
+Semantic resolutions retain main's Codex generation/FIFO and acknowledged-input rules alongside DSH's native admission journal; preserve stable message-list context and interaction state; reuse main's per-model TokenDance protocol selection for DSH root and child profiles; and align the Claude SDK implementation identity to installed `0.3.261`. Bundled Node/npm now come from main's single official distribution manifest, including the actual npm package metadata, instead of the older independently replaced npm/marker convention.
+
+MyAgents-dsh source `67c899a6164d3030c366028bd6e62f741c4dfaa6` pins exact Node `24.20.0` / npm `11.19.0`. The official DSH source and patch series are unchanged. The rebuilt patched DSH manifest is `5ba6a2f5dcf8437c176c0c806c918c526d5a2c8da895501bc3dfcd9c6c669081`; Runtime manifest `08b0b651eb74d42a10d945e5fab5016df1b583d021c6b6bd1c4743bf583c966b`; official handoff `ac0a1c9b42af493abad33b20413fde36ba775d333eb56ba339c386c32e6b0ae3`; and compatibility manifest `4fde0f48e9ae2195e41532a3798ff4d830a7325ef85f59a7b9ce7d0880509557`. The generated wire schema remains protocol `3.1.0`. The accepted lock and contracts were updated from these verified bytes.
+
+Runtime typecheck, lint, build and all 757 tests pass. The macOS native campaign passed all eight configured scenarios and sealed report `76ecab384ca54d36b940094f706ed99411f819d8c770332d84c5370be823fad5`, with dynamic campaign `5b5661e88c21c3bd54dd8a341bb7115654e6df836a2a59ae271e7d4ff37ba35c`. Host resource verification and source freshness pass; the four staged Runtime process smoke tests pass, including both shared child Shell approval variants and process restart/resume. Windows/Linux retain pending native-validation claims bound to the new artifact.
+
+The [local merge and verification receipt](../../../MyAgents-dsh-release-work/upg-20260905/main-0415-node2420-receipt.json) records the final Host commit and source/build gates. This receipt covers source integration and staged development resources. Earlier signed App receipts describe their own immutable builds and do not validate this new merge.

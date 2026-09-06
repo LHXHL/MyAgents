@@ -151,7 +151,6 @@ builtin/external各自在真实turn owner中capture完整text block，成功term
 
 Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` 区分 Claude Agent SDK 特有逻辑；其它 engine 一律走 SessionEngine 的非 builtin 配置路径。特别是 DSH 的 kind 是 `integrated`，不能再用历史判断 `engine.kind === 'external'`，否则会丢失模型、权限、reasoning 配置，甚至误入 builtin enqueue。
 
-### 2.5 Telegram Adapter
 ### 6.1 Permission request
 
 非自动授权模式下，Runtime permission request经IM event bus交给ReplyRouter。pending按request id保存Sidecar、chat、platform message与过期时间；用户通过原生卡片/按钮或受限文本fallback响应，Rust再POST到Sidecar permission endpoint。

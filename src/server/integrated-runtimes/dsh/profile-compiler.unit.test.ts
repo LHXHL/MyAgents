@@ -14,6 +14,20 @@ function preset(id: string): Provider {
 }
 
 describe("DSH ModelExecutionProfile compiler", () => {
+  it("uses each Token Dance model's supported transport without changing the saved Provider", () => {
+    const provider = preset("tokendance");
+    const saved = JSON.stringify(provider);
+    for (const [modelId, api, baseUrl] of [
+      ["deepseek-v4-pro-0813", "anthropic-messages", "https://tokendance.space/gateway"],
+      ["qwen3.8-max-0902", "openai-responses", "https://tokendance.space/gateway/v1"],
+      ["kimi-k3", "openai-completions", "https://tokendance.space/gateway/v1"],
+    ] as const) {
+      expect(compileDshModelExecutionProfile({ provider, modelId })).toMatchObject({ api, modelId, baseUrl });
+    }
+    expect(JSON.stringify(provider)).toBe(saved);
+    expect(() => compileDshModelExecutionProfile({ provider, modelId: "missing-protocol" })).toThrow("no known supported conversation protocol");
+  });
+
   it("compiles every configured model on the official DeepSeek native route", () => {
     for (const modelId of ["deepseek-v4-pro", "deepseek-v4-flash"]) {
       const profile = compileDshModelExecutionProfile({

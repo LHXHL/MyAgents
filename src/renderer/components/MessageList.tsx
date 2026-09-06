@@ -761,14 +761,13 @@ const MessageList = memo(function MessageList({
   );
 
   // ── Stable itemContent — volatile row actions arrive through Virtuoso context ──
-  // eslint-disable-next-line react/display-name
   const renderItem = useMemo(
     () =>
-      (
+      function MessageListItem(
         index: number,
         message: MessageType,
         actionContext: MessageActionContext,
-      ) => {
+      ) {
         const sm = streamingMessageRef.current;
         const isStreamingMsg = !!sm && message === sm;
         const codexOperations =

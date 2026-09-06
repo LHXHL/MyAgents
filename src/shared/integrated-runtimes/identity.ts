@@ -3,7 +3,7 @@ import managedCodexRuntimeLock from "../managed-codex-runtime.json";
 import type { RuntimeSource, RuntimeType } from "../types/runtime";
 import dshLock from "./dsh-lock.json";
 
-export const CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION = "0.3.233";
+export const CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION = "0.3.261";
 
 export const INTEGRATED_RUNTIME_IDS = ["claude-agent-sdk", "dsh"] as const;
 export type IntegratedRuntimeId = (typeof INTEGRATED_RUNTIME_IDS)[number];

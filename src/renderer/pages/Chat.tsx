@@ -1002,10 +1002,11 @@ export default function Chat({
     workspaceLayoutMetrics.contentMinWidthPx;
   // If workspace would render as an overlay at startup, keep it hidden so it
   // does not block the chat before the user explicitly opens it.
-  const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] =
-    useReducer(reduceWorkspacePanelDisclosure, undefined, () =>
-      createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),
-    );
+  const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] = useReducer(
+    reduceWorkspacePanelDisclosure,
+    undefined,
+    () => createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),
+  );
   const {
     visible: showWorkspace,
     mounted: workspacePanelMounted,
@@ -3585,8 +3586,8 @@ export default function Chat({
         toastRef.current.warning(t('shell.toasts.configPartiallySaved'));
       }
       return !result.snapshotWriteFailed;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
     [
       skipSnapshotWrite,
       currentProject?.id,
@@ -4511,8 +4512,8 @@ export default function Chat({
 
       // Suppress the deferred provider-change useEffect — we've already set the correct model
       providerInitRef.current = true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; messagesRef avoids dep on messages array
     [
       effectiveSelectedProviderId,
       selectedModel,
@@ -4594,8 +4595,8 @@ export default function Chat({
       if (nextIntent?.kind === 'runtime-backed-provider') {
         setRuntimeModel(nextIntent.model);
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; currentProvider fields cover toProviderHistoryEnv inputs
     [
       selectedModel,
       currentProviderForHistory?.id,
@@ -4797,11 +4798,7 @@ export default function Chat({
       images?: ImageAttachment[],
     ): Promise<boolean | void> => {
       // Must have content and not be in stopping state
-      if (
-        isSessionLoading ||
-        (!text && (!images || images.length === 0)) ||
-        sessionState === 'stopping'
-      ) {
+      if (isSessionLoading || (!text && (!images || images.length === 0)) || sessionState === 'stopping') {
         return false;
       }
 
@@ -4979,8 +4976,8 @@ export default function Chat({
           setSessionState('idle');
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toastRef/currentProviderRef/apiKeysRef/cronStateRef are refs (stable); scrollToBottom/setMessages/setIsLoading/setSessionState are stable
     [
       sessionState,
       isSessionLoading,
@@ -7329,9 +7326,7 @@ export default function Chat({
               aria-hidden={!showWorkspace}
               inert={!showWorkspace}
               data-chat-workspace-panel
-              data-chat-workspace-panel-motion={
-                workspacePanelMotion ?? undefined
-              }
+              data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}
             >
               <span
                 aria-hidden="true"

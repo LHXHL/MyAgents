@@ -101,9 +101,12 @@ impl fmt::Display for CliBootstrapError {
 /// Check if the given args indicate CLI mode.
 pub fn is_cli_mode(args: &[String]) -> bool {
     args.first().is_some_and(|arg| arg == CLI_BOOTSTRAP_ARG)
-        || args
-            .iter()
-            .any(|arg| CLI_COMMANDS.contains(&arg.as_str()) || arg == "--help" || arg == "-h" || arg == "--version")
+        || args.iter().any(|arg| {
+            CLI_COMMANDS.contains(&arg.as_str())
+                || arg == "--help"
+                || arg == "-h"
+                || arg == "--version"
+        })
 }
 
 fn forwarded_cli_args(args: &[String]) -> &[String] {
@@ -178,7 +181,10 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-fn should_inject_global_port(inherited_port: Option<&str>, inherited_session: Option<&str>) -> bool {
+fn should_inject_global_port(
+    inherited_port: Option<&str>,
+    inherited_session: Option<&str>,
+) -> bool {
     inherited_session.is_none()
         && !matches!(inherited_port, Some(value) if !value.trim().is_empty())
 }
@@ -806,7 +812,10 @@ mod tests {
         assert!(should_inject_global_port(None, None));
         assert!(!should_inject_global_port(None, Some("session-a")));
         assert!(!should_inject_global_port(Some(""), Some("session-a")));
-        assert!(!should_inject_global_port(Some("invalid"), Some("session-a")));
+        assert!(!should_inject_global_port(
+            Some("invalid"),
+            Some("session-a")
+        ));
         assert!(!should_inject_global_port(None, Some("")));
     }
 

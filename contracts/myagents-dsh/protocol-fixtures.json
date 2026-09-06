@@ -65,7 +65,7 @@
         "host": {
           "arch": "fixture",
           "name": "standard-test-host",
-          "nodeVersion": "v24.14.0",
+          "nodeVersion": "v24.20.0",
           "platform": "fixture",
           "version": "0.1.0"
         },
@@ -162,7 +162,7 @@
         "host": {
           "arch": "fixture",
           "name": "standard-test-host",
-          "nodeVersion": "v24.14.0",
+          "nodeVersion": "v24.20.0",
           "platform": "fixture",
           "version": "0.1.0"
         },
@@ -1286,7 +1286,7 @@
           "host": {
             "arch": "fixture",
             "name": "standard-test-host",
-            "nodeVersion": "v24.14.0",
+            "nodeVersion": "v24.20.0",
             "platform": "fixture",
             "version": "0.1.0"
           },

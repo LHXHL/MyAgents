@@ -2,6 +2,7 @@ import type { MethodParams } from "./protocol-types";
 import { createHash } from "node:crypto";
 
 import type { Provider } from "../../../shared/config-types";
+import { resolveProviderForModel } from "../../../shared/tokendance";
 import { SDK_DEFAULT_CONTEXT_WINDOW } from "../../../shared/contextUsage";
 import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
 import {
@@ -217,9 +218,10 @@ export function compileDshModelExecutionProfile(args: {
   modelId: string;
   reasoningEffort?: DshReasoningEffortSelection | null;
 }): DshModelExecutionProfile {
-  const providerId = boundedIdentity(args.provider.id, "Provider id");
+  const provider = resolveProviderForModel(args.provider, args.modelId);
+  const providerId = boundedIdentity(provider.id, "Provider id");
   const modelId = boundedIdentity(args.modelId, "Model id");
-  if (args.provider.enabled === false) {
+  if (provider.enabled === false) {
     throw new DshProfileCompilerError(
       "provider-disabled",
       providerId,
@@ -230,10 +232,10 @@ export function compileDshModelExecutionProfile(args: {
 
   let constraint: ReturnType<typeof getProviderExecutionConstraint>;
   try {
-    constraint = getProviderExecutionConstraint(args.provider);
+    constraint = getProviderExecutionConstraint(provider);
   } catch (error) {
     throw new DshProfileCompilerError(
-      args.provider.type === "api"
+      provider.type === "api"
         ? "provider-api-family-unsupported"
         : "provider-execution-owner-unsupported",
       providerId,
@@ -241,7 +243,7 @@ export function compileDshModelExecutionProfile(args: {
       error instanceof Error ? error.message : `Provider ${providerId} cannot execute in DSH`,
     );
   }
-  if (constraint.kind !== "portable" || args.provider.type !== "api") {
+  if (constraint.kind !== "portable" || provider.type !== "api") {
     throw new DshProfileCompilerError(
       "provider-execution-owner-unsupported",
       providerId,
@@ -252,7 +254,7 @@ export function compileDshModelExecutionProfile(args: {
 
   let baseUrl: string;
   try {
-    baseUrl = canonicalHttpUrl(args.provider.config.baseUrl);
+    baseUrl = canonicalHttpUrl(provider.config.baseUrl);
   } catch (error) {
     throw new DshProfileCompilerError(
       "provider-endpoint-invalid",
@@ -261,8 +263,8 @@ export function compileDshModelExecutionProfile(args: {
       error instanceof Error ? error.message : `Provider ${providerId} has an invalid endpoint`,
     );
   }
-  const capabilities = modelCapabilities(args.provider, modelId);
-  const nativeDeepSeek = isOfficialDeepSeekDshRoute(args.provider);
+  const capabilities = modelCapabilities(provider, modelId);
+  const nativeDeepSeek = isOfficialDeepSeekDshRoute(provider);
   const base: Omit<DshModelExecutionProfile, "revision"> = nativeDeepSeek
     ? {
         providerRouteId: "deepseek-official",
@@ -290,7 +292,7 @@ export function compileDshModelExecutionProfile(args: {
         contextWindow: capabilities.contextWindow,
         maxTokens: capabilities.maxTokens,
         inputModalities: capabilities.inputModalities,
-        compatibility: genericCompatibility(args.provider, constraint.apiFamily),
+        compatibility: genericCompatibility(provider, constraint.apiFamily),
       };
   const selected = applyReasoningSelection(
     base,

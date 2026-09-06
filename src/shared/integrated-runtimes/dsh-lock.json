@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "artifactId": "myagents-dsh",
   "handoff": {
-    "manifestSha256": "b864f8d8fb386ee8ad9ddd68b5dec091cc84f902948d4cc87fdbd84567bde3ef",
-    "sourceCommit": "1046856d1fdf6a5762067ef91e9eab55d4a90c07",
-    "runtimeManifestSha256": "645296b4efbdf9edab9784443a4c1511e4a7f4c6ab0b9df9d1862edafd3ede91",
-    "compatibilitySha256": "0413843e1fe76df07e2fc2e7f50254546e9b08697ec0862c27c931c2c9ab0d2d",
+    "manifestSha256": "ac0a1c9b42af493abad33b20413fde36ba775d333eb56ba339c386c32e6b0ae3",
+    "sourceCommit": "67c899a6164d3030c366028bd6e62f741c4dfaa6",
+    "runtimeManifestSha256": "08b0b651eb74d42a10d945e5fab5016df1b583d021c6b6bd1c4743bf583c966b",
+    "compatibilitySha256": "4fde0f48e9ae2195e41532a3798ff4d830a7325ef85f59a7b9ce7d0880509557",
     "generatedClientSha256": "ff12744817bbcf3d9b596ddef35651620abe51db26af9bbe7cdb03c212b13fa8",
     "noticesSha256": "f1fc3467ff1dced99421549cd1f25a29b13cff486defb6756ffe9647af47fde9"
   },
@@ -13,7 +13,7 @@
     "version": "0.0.0",
     "entrypoint": "runtime-server-process.artifact.mjs",
     "sessionFormat": "dsh-session-events-v1",
-    "requiredNodeVersion": "24.14.0"
+    "requiredNodeVersion": "24.20.0"
   },
   "protocol": {
     "version": "3.1.0",
@@ -24,12 +24,12 @@
   },
   "profile": {
     "id": "myagents-dsh-batch-1-candidate-v1",
-    "digest": "fa833609a6785b9b71a9d8788cc37ace5d4a70f936f5499d5dd662b0cd64c0d7"
+    "digest": "8884bd10c5575ed6621c9785a6509e1dd07ac8dbca7a4946b032d8dc85690eca"
   },
   "dsh": {
     "version": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
     "sourceCommit": "a66e4702047846cdaa10c66c9d3df3951f5ea70d",
-    "artifactManifestSha256": "246236a8afd45f51367df69d43422d739ba4fed2208503179613066ff3adebd4",
+    "artifactManifestSha256": "5ba6a2f5dcf8437c176c0c806c918c526d5a2c8da895501bc3dfcd9c6c669081",
     "patchSeriesSha256": "3fff39022bbded09c619ffa042330fe34b90fd264adc7c016f35e502c6449b4c"
   },
   "platforms": [
@@ -37,26 +37,26 @@
       "target": "darwin-arm64",
       "claim": "verified",
       "evidenceSha256": [
-        "3b8a65c5f8f9a3bb91a9fd24268483466694a38f85d7389c4e7f401016678321"
+        "76ecab384ca54d36b940094f706ed99411f819d8c770332d84c5370be823fad5"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "4dfb9f28a141137d87e525fb81689de3ded6a532b749fe4914a02644dc3ee095"
+        "eea9c40190c5e9ded2b0262f5985db6e400640f437f289effb06de844d230068"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "66bf365fd784d922de2354e5bdc04e4e0864d9c6d96517c76c31c1d573fe0c14"
+        "f93f3f27defc0e763cddd492f6d23630185031e1e55f549fffcda7f391c80a3c"
       ]
     }
   ],
   "bundledNpm": {
-    "version": "11.15.0",
+    "version": "11.19.0",
     "authority": "myagents-product-resource"
   },
   "resourcePath": "integrated-runtimes/dsh"

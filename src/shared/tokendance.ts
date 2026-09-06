@@ -96,10 +96,10 @@ export const TOKENDANCE_MODELS: ModelEntity[] = presetRows.map(
 );
 
 /** Resolve an immutable execution projection. Never mutate a shared Provider. */
-export function resolveProviderForModel(
-  provider: Provider,
+export function resolveProviderForModel<T extends Pick<Provider, 'id' | 'models' | 'config' | 'maxOutputTokens'>>(
+  provider: T,
   model: string,
-): Provider {
+): T {
   if (provider.id !== TOKENDANCE_PROVIDER_ID) return provider;
   const protocols = parseSupportedProtocols(
     provider.models.find((m) => m.model === model)?.supportedProtocols,

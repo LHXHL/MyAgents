@@ -5736,8 +5736,8 @@ export default function TabProvider({
 
       // Return true immediately — input clears without waiting for HTTP response
       return true;
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     [tabId, sessionId, claimSessionOpeningTransition],
   );
 
@@ -6106,8 +6106,8 @@ export default function TabProvider({
           activeRestoreRequestRef.current = null;
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable
     [
       tabId,
       clearInteractiveState,
@@ -6193,8 +6193,8 @@ export default function TabProvider({
       } finally {
         loadingOlderRef.current = false;
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson is stable
     [tabId],
   );
 
@@ -6566,8 +6566,8 @@ export default function TabProvider({
         );
         return null;
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     [tabId],
   );
 
@@ -6605,8 +6605,8 @@ export default function TabProvider({
       } finally {
         releaseSendTransition?.();
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     [tabId, sessionId, claimSessionOpeningTransition],
   );
 

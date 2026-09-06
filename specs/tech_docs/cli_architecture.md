@@ -567,6 +567,7 @@ PATH 优先级（agent-session.ts::buildClaudeSessionEnv）：
 | `MyAgents <new-group>` 进了 GUI | app-binary 直调只兼容已发布 group；canonical `myagents <new-group>` 不受 Rust group 名单约束 |
 
 DSH Session 路由下，`myagents skill list` 的 JSON 保留安装字段，并增加 `runtimeAvailability`（准入状态、effective/desired revision、组件调用开关与原因）。文本输出使用同一回执。没有回执显示 unknown，不用 enabled 推断模型可调用；模型可调用不代表已经授予执行权限。
+
 ### 已移除内置 MCP 的旧定义
 
 旧 Cuse MCP 已退出内置 MCP 目录，其专用可执行文件不再打包；旧配置或 Session snapshot 中的 `__bundled_cuse__` 启动标记由共享 `isRetiredBundledMcpServer` 在目录及 SDK/Codex 启动投影排除，不跨 owner 改写持久化数据。自定义真实命令（即使 ID 为 `cuse`）仍按普通 MCP 处理。历史工具结果沿用公共媒体展示。

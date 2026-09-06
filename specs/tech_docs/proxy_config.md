@@ -79,7 +79,6 @@ Node generic HTTP 必须走 `fetchWithGeneralProxy()`；需要 cancellation/dead
 
 Integrated DSH canonical Web 是另一条显式路径：`WebFetch` 使用 general 代理决策，Provider utility/WebSearch 使用 Provider scope 决策。直连时 Host 校验并 pin 全部 public DNS answer，首个地址连接失败后继续尝试其余地址；用户显式选择代理时仍执行 URL/hostname/literal-IP policy，但远端 DNS 交给该代理。这与 Claude Code/普通 CLI 的显式代理语义一致，也允许在本地 DNS 被代理软件接管或不可直达时工作。
 
-### Owner 分类与不透明进程边界
 Plugin Bridge 是受控例外：社区插件无法被强制改用 helper，所以 Bridge 在加载插件前安装同一 general dispatcher 为 process-global fetch/dispatcher，并在 Channel lifecycle replacement 时重建。
 
 ## Provider 路径

@@ -254,8 +254,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   );
   const resourceScripts = [
     "scripts/download_nodejs.sh",
-    "setup_windows.ps1",
-    "build_windows.ps1",
+    "scripts/download_nodejs.ps1",
   ].map((path) => readFileSync(resolve(repoRoot, path), "utf8"));
 
   assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
@@ -273,9 +272,15 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   assert.match(packageJson.scripts["tauri:dev"], /verify:dsh-runtime/);
   assert.equal(tauriConfig.build.beforeBundleCommand, undefined);
 
+  const distribution = JSON.parse(
+    readFileSync(resolve(repoRoot, "scripts/node-runtime.json"), "utf8"),
+  );
+  assert.equal(distribution.node, lock.runtime.requiredNodeVersion);
+  assert.equal(distribution.npm, lock.bundledNpm.version);
+  assert.equal(packageJson.engines.node, distribution.node);
+  assert.equal(packageJson.engines.npm, distribution.npm);
   for (const script of resourceScripts) {
-    assert.match(script, /24\.14\.0/);
-    assert.match(script, /11\.15\.0/);
+    assert.match(script, /node-runtime\.json/);
     assert.doesNotMatch(script, /registry\.npmjs\.org\/npm\/latest/);
   }
 

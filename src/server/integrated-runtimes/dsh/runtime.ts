@@ -1,3 +1,4 @@
+import { resolveProviderForModel } from '../../../shared/tokendance';
 import type { MethodParams } from './protocol-types';
 import type { RuntimeAgentWorkControl } from '../../../shared/types/subagent-lifecycle';
 import { createHash, randomUUID } from 'node:crypto';
@@ -434,11 +435,11 @@ function providerForSession(options: SessionStartOptions, requestedOverride?: st
   const provider = findEffectiveProvider(providerId, config) as Provider | null;
   if (!provider) throw new Error(`DSH Provider ${providerId} is unavailable`);
   const modelId = requestedModel || provider.primaryModel;
-  const resolved = resolveProviderEnv(providerId, config);
+  const resolved = resolveProviderEnv(providerId, config, modelId);
   if (!resolved?.apiKey) {
     throw new Error(`DSH Provider ${providerId} has no Host-owned API credential`);
   }
-  return { provider, modelId, apiKey: resolved.apiKey };
+  return { provider: resolveProviderForModel(provider, modelId), modelId, apiKey: resolved.apiKey };
 }
 
 function compileConfiguration(
@@ -456,9 +457,9 @@ function compileConfiguration(
   const config = loadConfig();
   const collaborative = compileDshCollaboration({ profile, apiKey: selected.apiKey, authType: selected.provider.authType ?? 'both' }, config.dshCollaboration, ref => {
     const provider = findEffectiveProvider(ref.providerId, config) as Provider | null;
-    const credential = resolveProviderEnv(ref.providerId, config);
+    const credential = resolveProviderEnv(ref.providerId, config, ref.modelId);
     if (!provider || !credential?.apiKey) throw new Error(`DSH collaboration Provider ${ref.providerId} is unavailable`);
-    return { provider, apiKey: credential.apiKey };
+    return { provider: resolveProviderForModel(provider, ref.modelId), apiKey: credential.apiKey };
   });
   const dshMode = dshPermissionMode(productMode);
   return Object.freeze({
