@@ -1205,3 +1205,5 @@ DSH delivery admission binds the committed outer/Runtime/compatibility identitie
 `verified` or `implementation-complete_pending-native-validation` platform claims. The official
 verifier checks the native evidence required by `verified`; the [DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md)
 records the exact current delivery and remaining native/user acceptance boundaries.
+
+MyAgents-dsh Runtime/Host boundary updates (UPG-W11) are documented in [the integrated Runtime guide](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-06-runtimehost-boundary-correction-upg-w11): Host ordinary environment construction, Runtime admission, generated protocol types, structured permission review through existing attachment/ref routes, and one combined installation verification report. Runtime continues to own execution/settlement; Renderer owns review and retry presentation.

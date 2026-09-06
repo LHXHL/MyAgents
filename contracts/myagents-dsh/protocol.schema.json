@@ -6143,6 +6143,286 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
             "type": "string"
           },
+          "review": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "additionalProperties": false,
+                "properties": {
+                  "agentId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "origin": {
+                    "anyOf": [
+                      {
+                        "const": "root",
+                        "type": "string"
+                      },
+                      {
+                        "const": "foreground_child",
+                        "type": "string"
+                      },
+                      {
+                        "const": "background_child",
+                        "type": "string"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "agentId",
+                  "origin"
+                ],
+                "type": "object"
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "type": "string"
+                      },
+                      "cwd": {
+                        "maxLength": 8192,
+                        "minLength": 1,
+                        "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\(?:\\?\\\\|[^\\\\/]+[\\\\/][^\\\\/]+))[^\\u0000-\\u001F\\u007F]*$",
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "dialect": {
+                        "anyOf": [
+                          {
+                            "const": "bash",
+                            "type": "string"
+                          },
+                          {
+                            "const": "pwsh",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "kind": {
+                        "const": "command",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dialect",
+                      "command",
+                      "cwd"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "allowedDomains": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "blockedDomains": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "const": "web_search",
+                        "type": "string"
+                      },
+                      "provider": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "type": "string"
+                      },
+                      "query": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "query",
+                      "provider"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "web_fetch",
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "url",
+                      "prompt"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "action": {
+                        "anyOf": [
+                          {
+                            "const": "create",
+                            "type": "string"
+                          },
+                          {
+                            "const": "write",
+                            "type": "string"
+                          },
+                          {
+                            "const": "edit",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "after": {
+                        "type": "string"
+                      },
+                      "before": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "file_change",
+                        "type": "string"
+                      },
+                      "path": {
+                        "maxLength": 8192,
+                        "minLength": 1,
+                        "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\(?:\\?\\\\|[^\\\\/]+[\\\\/][^\\\\/]+))[^\\u0000-\\u001F\\u007F]*$",
+                        "type": "string"
+                      },
+                      "replacements": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "path",
+                      "action",
+                      "after"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "action": {
+                        "type": "string"
+                      },
+                      "arguments": {},
+                      "kind": {
+                        "const": "generic",
+                        "type": "string"
+                      },
+                      "target": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "action",
+                      "target"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "scope": {
+                "additionalProperties": false,
+                "properties": {
+                  "lifetimeMs": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "owner": {
+                    "const": "session_tree",
+                    "type": "string"
+                  },
+                  "permissionClass": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "tool": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tool",
+                  "permissionClass",
+                  "target",
+                  "lifetimeMs",
+                  "owner"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "operation",
+              "actor",
+              "scope"
+            ],
+            "type": "object"
+          },
+          "reviewRef": {
+            "additionalProperties": false,
+            "properties": {
+              "attachmentId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "mimeType": {
+                "const": "application/json",
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              "sizeBytes": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attachmentId",
+              "mimeType",
+              "sizeBytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "scenario": {
             "maxLength": 256,
             "minLength": 1,
@@ -6464,13 +6744,7 @@
                   }
                 },
                 "required": [
-                  "mode",
-                  "version",
-                  "policyRevision",
-                  "trackedTools",
-                  "tracksShell",
-                  "tracksChildAgents",
-                  "tracksExternalChanges"
+                  "policyRevision"
                 ],
                 "type": "object"
               },
@@ -6499,9 +6773,8 @@
                       "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                       "type": "string"
                     },
-                    "maxItems": 256,
-                    "type": "array",
-                    "uniqueItems": true
+                    "maxItems": 0,
+                    "type": "array"
                   },
                   "secretValues": {
                     "const": "reverse-port-only",
@@ -6509,9 +6782,7 @@
                   }
                 },
                 "required": [
-                  "allowedKeys",
-                  "inheritedKeys",
-                  "secretValues"
+                  "allowedKeys"
                 ],
                 "type": "object"
               },
@@ -6569,8 +6840,7 @@
                   "shellRef",
                   "ripgrepRef",
                   "shellDialect",
-                  "allowedCommandRefs",
-                  "pathPolicy"
+                  "allowedCommandRefs"
                 ],
                 "type": "object"
               },
@@ -6644,8 +6914,7 @@
                 },
                 "required": [
                   "backgroundRetention",
-                  "maxChildren",
-                  "killTreeOnAbort"
+                  "maxChildren"
                 ],
                 "type": "object"
               },
@@ -6965,7 +7234,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "3.0.0",
+            "const": "3.1.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -7144,6 +7413,79 @@
                   "systemPrompt",
                   "mcp",
                   "agents"
+                ],
+                "type": "object"
+              },
+              "executionEnvironment": {
+                "additionalProperties": false,
+                "properties": {
+                  "checkpoint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "mode": {
+                        "const": "managed-file-tools",
+                        "type": "string"
+                      },
+                      "trackedTools": {
+                        "additionalItems": false,
+                        "items": [
+                          {
+                            "const": "Write",
+                            "type": "string"
+                          },
+                          {
+                            "const": "Edit",
+                            "type": "string"
+                          }
+                        ],
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "tracksChildAgents": {
+                        "const": false,
+                        "type": "boolean"
+                      },
+                      "tracksExternalChanges": {
+                        "const": false,
+                        "type": "boolean"
+                      },
+                      "tracksShell": {
+                        "const": false,
+                        "type": "boolean"
+                      },
+                      "version": {
+                        "const": 1,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "mode",
+                      "version",
+                      "trackedTools",
+                      "tracksShell",
+                      "tracksChildAgents",
+                      "tracksExternalChanges"
+                    ],
+                    "type": "object"
+                  },
+                  "killTreeOnAbort": {
+                    "const": true,
+                    "type": "boolean"
+                  },
+                  "pathPolicy": {
+                    "const": "sealed",
+                    "type": "string"
+                  },
+                  "secretValues": {
+                    "const": "reverse-port-only",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "pathPolicy",
+                  "secretValues",
+                  "killTreeOnAbort",
+                  "checkpoint"
                 ],
                 "type": "object"
               },
@@ -7755,6 +8097,7 @@
             },
             "required": [
               "profile",
+              "executionEnvironment",
               "sessions",
               "turns",
               "interaction",
@@ -22055,6 +22398,6 @@
       }
     }
   },
-  "protocolVersion": "3.0.0",
+  "protocolVersion": "3.1.0",
   "title": "MyAgents DSH native RPC"
 }

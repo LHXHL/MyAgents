@@ -14,7 +14,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 const acceptedHandoffs = new Map<string, Promise<void>>();
-const acceptedSelfChecks = new Map<string, Promise<void>>();
 
 export type DshRuntimeInstallation = Readonly<{
   resourceRoot: string;
@@ -131,6 +130,7 @@ async function runDshHandoffVerification(
   ) {
     throw new Error("DSH handoff verifier report differs from the lock");
   }
+  assertDshSelfCheckReport(report.selfCheck);
 }
 
 /** Verify the complete outer handoff once per Sidecar process. */
@@ -149,29 +149,6 @@ export function assertDshHandoffVerification(
   );
   acceptedHandoffs.set(key, check);
   return check;
-}
-
-export async function assertDshBundledNodeVersion(
-  installation: DshRuntimeInstallation,
-  childEnvironment: DshChildEnvironment,
-): Promise<void> {
-  const { stdout } = await execFileAsync(
-    installation.nodeExecutablePath,
-    ["--version"],
-    {
-      cwd: installation.runtimeArtifactRoot,
-      env: childEnvironment.env,
-      encoding: "utf8",
-      timeout: 5_000,
-      windowsHide: true,
-    },
-  );
-  const version = stdout.trim();
-  if (version !== `v${dshLock.runtime.requiredNodeVersion}`) {
-    throw new Error(
-      `DSH bundled Node mismatch: expected v${dshLock.runtime.requiredNodeVersion}, received ${version || "empty output"}`,
-    );
-  }
 }
 
 function reportObject(
@@ -199,28 +176,7 @@ function sameStringSet(value: unknown, expected: readonly string[]): boolean {
   );
 }
 
-async function runDshRuntimeSelfCheck(
-  installation: DshRuntimeInstallation,
-  childEnvironment: DshChildEnvironment,
-): Promise<void> {
-  const { stdout } = await execFileAsync(
-    installation.nodeExecutablePath,
-    [installation.runtimeEntrypointPath, "--self-check"],
-    {
-      cwd: installation.runtimeArtifactRoot,
-      env: childEnvironment.env,
-      encoding: "utf8",
-      timeout: 30_000,
-      maxBuffer: 2 * 1_048_576,
-      windowsHide: true,
-    },
-  );
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    throw new Error("DSH Runtime self-check did not return canonical JSON");
-  }
+function assertDshSelfCheckReport(parsed: unknown): void {
   const report = reportObject(parsed, "DSH Runtime self-check report");
   const runtime = reportObject(
     report.runtime,
@@ -260,22 +216,4 @@ async function runDshRuntimeSelfCheck(
   ) {
     throw new Error("DSH Runtime self-check report differs from the lock");
   }
-}
-
-/** Verify the complete installed artifact once per Sidecar process. */
-export function assertDshRuntimeSelfCheck(
-  installation: DshRuntimeInstallation,
-  childEnvironment: DshChildEnvironment,
-): Promise<void> {
-  const key = `${installation.nodeExecutablePath}\u0000${installation.runtimeEntrypointPath}`;
-  const existing = acceptedSelfChecks.get(key);
-  if (existing) return existing;
-  const check = runDshRuntimeSelfCheck(installation, childEnvironment).catch(
-    (error) => {
-      acceptedSelfChecks.delete(key);
-      throw error;
-    },
-  );
-  acceptedSelfChecks.set(key, check);
-  return check;
 }

@@ -169,7 +169,7 @@ describe('DSH declarative extension compiler', () => {
         materialSlot: 'env',
       }),
     ]));
-    expect(plane.snapshot.mcpLaunchPolicy.profiles).toEqual([
+    expect(plane.snapshot.mcpLaunchPolicy!.profiles).toEqual([
       expect.objectContaining({
         argv: expect.arrayContaining(['node']),
         cwd: root,
@@ -281,7 +281,7 @@ describe('DSH declarative extension compiler', () => {
 
     expect(plane.snapshot.skillSourcePolicy.roots).toHaveLength(128);
     expect(plane.expectedSkillNames).toHaveLength(128);
-    expect(plane.snapshot.mcpLaunchPolicy.profiles).toHaveLength(128);
+    expect(plane.snapshot.mcpLaunchPolicy!.profiles).toHaveLength(128);
     expect(plane.credentialBindings.filter(binding => binding.materialSlot === 'env')).toHaveLength(128);
     expect(plane.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'skill-128', state: 'unsupported', code: 'dsh_skill_source_root_limit' }),

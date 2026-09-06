@@ -4,7 +4,7 @@ import { access, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'no
 import { join, resolve, sep } from 'node:path';
 
 import type { ResolvedImagePayload } from '../../runtimes/types';
-import type { DshRpcObject } from './protocol-types';
+import type { DshRpcObject, MethodParams } from './protocol-types';
 
 type StoredAttachment = Readonly<{
   attachmentId: string;
@@ -67,9 +67,9 @@ export class DshAttachmentRegistry {
     };
   }
 
-  async registerImages(images: readonly ResolvedImagePayload[] | undefined): Promise<DshRpcObject[]> {
+  async registerImages(images: readonly ResolvedImagePayload[] | undefined): Promise<Extract<MethodParams<'turn/start'>['input']['parts'][number], { kind: 'image_ref' }>[]> {
     if (!images?.length) return [];
-    const parts: DshRpcObject[] = [];
+    const parts: Extract<MethodParams<'turn/start'>['input']['parts'][number], { kind: 'image_ref' }>[] = [];
     for (const image of images) {
       const bytes = Buffer.from(image.data, 'base64');
       if (bytes.byteLength < 1 || bytes.byteLength > 5 * 1_024 * 1_024) {
@@ -83,7 +83,7 @@ export class DshAttachmentRegistry {
         kind: 'image_ref',
         attachmentId: stored.attachmentId,
         name: image.name,
-        mimeType: stored.mimeType,
+        mimeType: image.mimeType as Extract<MethodParams<'turn/start'>['input']['parts'][number], { kind: 'image_ref' }>['mimeType'],
         sizeBytes: stored.sizeBytes,
         sha256: stored.sha256,
       });
@@ -155,6 +155,12 @@ export class DshAttachmentRegistry {
       sizeBytes: details.size,
       sha256,
     };
+  }
+
+  async readJson(reference: { attachmentId: string; mimeType: string; sizeBytes: number; sha256: string }): Promise<unknown> {
+    const lease = await this.acquire({ attachmentId: reference.attachmentId, expectedMimeType: reference.mimeType, expectedSizeBytes: reference.sizeBytes, expectedSha256: reference.sha256 });
+    try { return JSON.parse(await readFile(lease.readOnlyPath as string, 'utf8')) as unknown; }
+    finally { this.release({ leaseId: lease.leaseId }); }
   }
 
   release(params: DshRpcObject): DshRpcObject {

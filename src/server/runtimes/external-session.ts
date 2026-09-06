@@ -1246,6 +1246,7 @@ function broadcastExternalInteractiveExpired(
   requestId: string,
   entry: ExternalPendingInteractiveRequest | undefined,
   reason: 'stop' | 'error' | 'reset' | 'resolved',
+  status?: 'applied' | 'already_settled' | 'expired' | 'cancelled',
 ): void {
   if (!entry) return;
   const sessionId = entry.data.sessionId || getCurrentBoundSessionId() || undefined;
@@ -1262,7 +1263,7 @@ function broadcastExternalInteractiveExpired(
   }
   if (entry.type === 'permission:request') {
     try {
-      broadcast('permission:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
+      broadcast('permission:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason, status: status ?? (reason === 'resolved' ? 'applied' : 'cancelled') });
     } catch (e) {
       console.warn(`[external-session] broadcast permission:expired for ${requestId} failed:`, e);
     }
@@ -8131,7 +8132,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         sessionId: getCurrentBoundSessionId() || undefined,
         toolName: event.toolName,
         toolUseId: event.toolUseId,
-        input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
+        input: event.review || event.reviewRef ? '' : (typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500)),
+        ...(event.review === undefined ? {} : { review: event.review }),
+        ...(event.reviewRef === undefined ? {} : { reviewRef: event.reviewRef }),
+        ...(event.rootToolUseId === undefined ? {} : { rootToolUseId: event.rootToolUseId }),
         ...(event.display === undefined ? {} : { display: event.display }),
       };
       setExternalInteractiveRequest(event.requestId, {
@@ -8143,6 +8147,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         requestId: event.requestId,
         toolName: event.toolName,
         input: event.input,
+        ...(event.review === undefined ? {} : { review: event.review }),
+        ...(event.reviewRef === undefined ? {} : { reviewRef: event.reviewRef }),
       }));
       break;
     }
@@ -8152,7 +8158,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       deleteExternalAskUserQuestion(event.requestId);
       deleteExternalInteractiveRequest(event.requestId);
       consumeExternalPermissionSuggestions(event.requestId);
-      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved');
+      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved', event.status);
       recordRuntimeActivity();
       break;
     }

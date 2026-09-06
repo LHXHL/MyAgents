@@ -11,7 +11,7 @@ import type { SubagentLifecycle, SubagentLifecycleStatus } from '../../shared/ty
 import type { LargeValueRef } from '../utils/large-value-store';
 import type { ManagedCodexExtensionSnapshot } from './managed-codex/extensions/contracts';
 import type { DshProductExtensionSource } from '../integrated-runtimes/dsh/extension-compiler';
-import type { PermissionOperationDisplay } from '../../shared/types/runtime';
+import type { PermissionOperationDisplay, PermissionReview } from '../../shared/types/runtime';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
@@ -322,6 +322,9 @@ export type UnifiedEvent =
     toolUseId: string;
     input: Record<string, unknown>;
     display?: PermissionOperationDisplay;
+    review?: PermissionReview;
+    reviewRef?: LargeValueRef;
+    rootToolUseId?: string;
     /** CC's suggested permission rules for "always allow" (echoed back as updatedPermissions) */
     suggestions?: unknown[];
     /** Preserve the Runtime interaction presentation instead of inferring it from a tool name. */
@@ -330,6 +333,7 @@ export type UnifiedEvent =
   | {
     kind: 'interactive_request_resolved';
     requestId: string;
+    status?: 'applied' | 'already_settled' | 'expired' | 'cancelled';
   }
 
   // === Session lifecycle ===

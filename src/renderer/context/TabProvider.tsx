@@ -3550,6 +3550,10 @@ export default function TabProvider({
                         sessionId: payload.sessionId,
                         toolName: payload.toolName,
                         input: payload.input || '',
+                        toolUseId: payload.toolUseId,
+                        rootToolUseId: payload.rootToolUseId,
+                        review: payload.review,
+                        reviewRef: payload.reviewRef,
                         ...(payload.display === undefined ? {} : { display: payload.display }),
                     }));
                     // Send system notification if user is not focused on the app
@@ -3562,7 +3566,7 @@ export default function TabProvider({
             }
 
             case 'permission:expired': {
-                const payload = data as { requestId?: string; sessionId?: string | null; reason?: string } | null;
+                const payload = data as { requestId?: string; sessionId?: string | null; reason?: string; status?: string } | null;
                 if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     console.log(`[TabProvider] permission:expired received for ${payload.requestId} (${payload.reason ?? 'unknown'})`);
                     setPendingPermissions(prev => removePermissionRequest(prev, payload.requestId));

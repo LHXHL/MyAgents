@@ -2007,6 +2007,29 @@ describe('external SessionEngine with fake runtime', () => {
     });
   });
 
+  it('retains structured permission review and call correlation through live delivery and reconnect replay', async () => {
+    const harness = await createHarness([], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-permission-review';
+    const workspacePath = join(harness.home, 'workspace');
+    await restorePersistedDshSession(harness, sessionId, workspacePath);
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    const review = {
+      operation: { kind: 'web_search' as const, query: 'example '.repeat(200), provider: 'fixture-search', blockedDomains: ['excluded.example'] },
+      actor: { agentId: 'child-search', origin: 'foreground_child' as const },
+      scope: { tool: 'WebSearch', permissionClass: 'network.search', target: 'provider:fixture-search', lifetimeMs: 60_000, owner: 'session_tree' as const },
+    };
+    harness.runtime.emitForTest({
+      kind: 'permission_request', requestId: 'permission-display', toolName: 'WebSearch', toolUseId: 'search-call', rootToolUseId: 'search-root-call',
+      input: { tool: 'Bash', permissionClass: 'process.execute', target: workspacePath, origin: 'root' },
+      review,
+    });
+    await waitFor(() => broadcastEvents.some(event => event.event === 'permission:request'), 'serialized permission delivery');
+    expect(broadcastEvents).toContainEqual({ event: 'permission:request', data: expect.objectContaining({ review, toolUseId: 'search-call', rootToolUseId: 'search-root-call', input: '' }) });
+    expect(harness.engine.getStreamReplaySnapshot().pendingInteractiveRequests).toContainEqual({
+      type: 'permission:request', data: expect.objectContaining({ review, toolUseId: 'search-call', rootToolUseId: 'search-root-call', input: '' }),
+    });
+  });
+
   it('keeps DSH context, TaskGraph, Plan, and Plan review projections distinct', async () => {
     const harness = await createHarness([], { runtimeType: 'dsh' });
     const sessionId = 'session-dsh-status-projections';

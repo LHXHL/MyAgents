@@ -1,3 +1,4 @@
+import { GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 
@@ -60,8 +61,6 @@ function validateExecutionEnvironment(
   workspace: { path: string; identity: string },
   runtimeHome: string,
 ): void {
-  const forbiddenKey =
-    /(api.?key|authorization|credential|password|secret|token|cookie|proxy)/i;
   if (
     !isAbsolute(workspace.path) ||
     !isAbsolute(runtimeHome) ||
@@ -69,12 +68,7 @@ function validateExecutionEnvironment(
     !isAbsolute(environment.attachmentStagingRoot) ||
     environment.workspace.identity !== workspace.identity ||
     normalize(environment.workspace.canonicalRoot) !==
-      normalize(workspace.path) ||
-    environment.environment.secretValues !== "reverse-port-only" ||
-    [
-      ...environment.environment.allowedKeys,
-      ...environment.environment.inheritedKeys,
-    ].some((key) => forbiddenKey.test(key))
+      normalize(workspace.path)
   ) {
     throw new Error("DSH execution environment authority is invalid");
   }
@@ -103,8 +97,8 @@ export function createDshInitializeParams(options: {
     .digest("hex");
   return deepFreeze({
     protocol: {
-      minVersion: "3.0.0",
-      maxVersion: "3.0.0",
+      minVersion: GENERATED_PROTOCOL_VERSION,
+      maxVersion: GENERATED_PROTOCOL_VERSION,
     },
     host: {
       name: "MyAgents",

@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, X, Check, CheckCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { PermissionOperationDisplay } from '../../shared/types/runtime';
+import type { PermissionOperationDisplay, PermissionReview } from '../../shared/types/runtime';
+
+import type { LargeValueRef } from '../../shared/types/large-value';
+import { getSessionPort } from '../api/tauriClient';
+import { fetchJsonLargeValueRef } from '../api/largeValueRef';
+import { PermissionReviewDetails } from './PermissionReviewDetails';
 
 export interface PermissionRequest {
     requestId: string;
     sessionId?: string | null;
     toolName: string;
     input: string;
+    toolUseId?: string;
+    rootToolUseId?: string;
+    review?: PermissionReview;
+    reviewRef?: LargeValueRef;
     display?: PermissionOperationDisplay;
     queuePosition?: number;
     queueTotal?: number;
@@ -26,9 +35,33 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     const { t } = useTranslation('chat');
     const [isResponding, setIsResponding] = useState(false);
     const [responded, setResponded] = useState(false);
+    const [responseError, setResponseError] = useState<string | null>(null);
+    const [fetchedDetails, setFetchedDetails] = useState<{ key: string; review?: PermissionReview; error?: string }>();
+    const [detailsAttempt, setDetailsAttempt] = useState(0);
+    const { sessionId } = request;
+    const reviewRefId = request.reviewRef?.id;
+    const reviewRefMime = request.reviewRef?.mimetype;
+    const detailsKey = JSON.stringify([request.requestId, sessionId, reviewRefId, reviewRefMime, detailsAttempt]);
+    const currentDetails = fetchedDetails?.key === detailsKey ? fetchedDetails : undefined;
+    const loadedReview = reviewRefId ? currentDetails?.review : request.review;
+    const detailsError = currentDetails?.error;
+    useEffect(() => {
+        let cancelled = false;
+        if (reviewRefId) {
+            void (async () => {
+                if (!sessionId) throw new Error('Permission details have no Session route');
+                const port = await getSessionPort(sessionId);
+                if (port === null) throw new Error('Permission Session is unavailable');
+                const value = await fetchJsonLargeValueRef(`http://127.0.0.1:${port}`, { kind: 'ref', id: reviewRefId, mimetype: reviewRefMime });
+                if (!cancelled) setFetchedDetails({ key: detailsKey, review: value as PermissionReview });
+            })().catch((error: unknown) => { if (!cancelled) setFetchedDetails({ key: detailsKey, error: error instanceof Error ? error.message : String(error) }); });
+        }
+        return () => { cancelled = true; };
+    }, [detailsKey, reviewRefId, reviewRefMime, sessionId]);
     const mountedRef = useRef(true);
 
     useEffect(() => {
+        mountedRef.current = true;
         return () => {
             mountedRef.current = false;
         };
@@ -38,6 +71,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
         if (isResponding) return;
         const requestId = request.requestId;
         setIsResponding(true);
+        setResponseError(null);
         try {
             await onDecision(requestId, decision);
             if (mountedRef.current) {
@@ -47,6 +81,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
             console.error('[PermissionPrompt] Permission response failed:', error);
             if (mountedRef.current) {
                 setIsResponding(false);
+                setResponseError(error instanceof Error ? error.message : String(error));
             }
         }
     };
@@ -83,14 +118,16 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
         return null;
     }
 
-    const formattedInput = request.display?.command ?? formatInput(request.input);
+    const hasReview = !!(request.review || request.reviewRef);
+    const awaitingDetails = hasReview && !loadedReview;
+    const formattedInput = hasReview ? '' : request.display?.command ?? formatInput(request.input);
     const queuePosition = request.queuePosition ?? 1;
     const queueTotal = request.queueTotal ?? 1;
     const showQueueProgress = queueTotal > 1;
     const progressPercent = Math.min(100, Math.max(0, (queuePosition / queueTotal) * 100));
 
     return (
-        <div className="animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="animate-in fade-in slide-in-from-bottom-2 duration-200" data-tool-use-id={request.toolUseId} data-root-tool-use-id={request.rootToolUseId}>
             {/* 反相版（PRD 0.2.34）：中性白卡 + 淡琥珀「命令盒」承载焦点内容，
                 颜色当重点而非整卡底色。权限语义＝warning 琥珀（对齐 DESIGN.md §10.6）。 */}
             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 shadow-sm">
@@ -127,6 +164,10 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                     <span className="mb-1.5 inline-block rounded-md bg-[var(--warning)]/15 px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">
                         {formatToolName(request.toolName)}
                     </span>
+                    {loadedReview && <PermissionReviewDetails review={loadedReview} />}
+                    {awaitingDetails && <div className="mt-2 text-xs text-[var(--ink-muted)]">
+                        {detailsError ? <><p role="alert">{t('shell.permissionPrompt.detailsFailed')}: {detailsError}</p><button type="button" className="mt-1 underline" onClick={() => setDetailsAttempt(value => value + 1)}>{t('shell.permissionPrompt.retry')}</button></> : t('shell.permissionPrompt.loadingDetails')}
+                    </div>}
                     {request.display?.description && (
                         <p className="mb-2 text-xs text-[var(--ink-secondary)]">{request.display.description}</p>
                     )}
@@ -149,6 +190,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
                     </p>
                 )}
 
+                {responseError && <p role="alert" className="mt-2 text-xs text-[var(--error)]">{t('shell.permissionPrompt.responseFailed')}: {responseError}</p>}
                 {/* Actions — 主操作（允许）实心琥珀靠右 */}
                 <div className="mt-3 flex items-center gap-2">
                     <button
@@ -166,7 +208,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
 
                     <button
                         onClick={() => handleDecision('always_allow')}
-                        disabled={isResponding}
+                        disabled={isResponding || awaitingDetails}
                         className="flex items-center gap-1.5 rounded-lg border border-[var(--warning)]/20 bg-[var(--warning)]/10 px-3 py-1.5 text-xs font-medium
                             text-[var(--warning)] transition-colors hover:bg-[var(--warning)]/15 disabled:opacity-50"
                     >
@@ -176,7 +218,7 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
 
                     <button
                         onClick={() => handleDecision('allow_once')}
-                        disabled={isResponding}
+                        disabled={isResponding || awaitingDetails}
                         className="flex items-center gap-1.5 rounded-lg bg-[var(--warning)] px-3 py-1.5 text-xs font-medium
                             text-[var(--on-warning)] transition-colors hover:brightness-110 disabled:opacity-50"
                     >

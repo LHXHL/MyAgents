@@ -1,3 +1,4 @@
+import type { MethodParams } from './protocol-types';
 import type { RuntimeAgentWorkControl } from '../../../shared/types/subagent-lifecycle';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, realpath } from 'node:fs/promises';
@@ -63,7 +64,8 @@ import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation } from './installation';
 import { reconcileExpiredDshInteractionResponse } from './interaction-response';
-import { dshPermissionDisplay } from './permission-display';
+import { dshPermissionReview } from './permission-display';
+import { releaseLargeValueRef } from '../../utils/large-value-store';
 import { DshMutationController } from './mutations';
 import {
   parseDshPermissionRuleMutation,
@@ -98,6 +100,7 @@ type DshPermissionMode = 'acceptEdits' | 'bypassPermissions';
 
 type PendingInteraction = Readonly<{
   kind: 'permission' | 'ask_user' | 'plan_approval';
+  reviewRefId?: string;
   desiredPolicyRevision: string;
   schema: DshRpcObject;
 }>;
@@ -307,7 +310,7 @@ function systemContextFingerprint(options: SessionStartOptions): string {
     : JSON.stringify(options.systemContext);
 }
 
-function systemContextParams(options: SessionStartOptions): DshRpcObject {
+function systemContextParams(options: SessionStartOptions): Pick<MethodParams<'session/create'>, 'systemPrompt' | 'systemContext'> {
   return options.systemContext === undefined
     ? { systemPrompt: options.systemPromptAppend ?? '' }
     : { systemPrompt: '', systemContext: options.systemContext };
@@ -369,7 +372,7 @@ function scenarioCapability(options: SessionStartOptions): 'interactive' | 'dete
   return options.scenario.type === 'desktop' ? 'interactive' : 'deterministic-headless';
 }
 
-function turnOrigin(options: SessionStartOptions): DshRpcObject {
+function turnOrigin(options: SessionStartOptions): MethodParams<'turn/start'>['origin'] {
   return options.scenario.type === 'desktop'
     ? { kind: 'desktop' }
     : { kind: 'headless', scenario: options.scenario.type };
@@ -522,27 +525,17 @@ function executionEnvironment(
       ripgrepRef: 'bundled-ripgrep',
       shellDialect: windows ? 'pwsh' : 'bash',
       allowedCommandRefs: ['runtime-shell', 'bundled-node', 'bundled-ripgrep'],
-      pathPolicy: 'sealed',
     },
     environment: {
       allowedKeys: [...allowedEnvironmentKeys],
-      inheritedKeys: [],
-      secretValues: 'reverse-port-only',
     },
     network: { mode: 'host-policy', policyRef: DSH_CANONICAL_WEB_POLICY_REF },
     process: {
       backgroundRetention: 'allow',
       maxChildren: 16,
-      killTreeOnAbort: true,
     },
     checkpoint: {
-      mode: 'managed-file-tools',
-      version: 1,
       policyRevision: DSH_CHECKPOINT_POLICY_REVISION,
-      trackedTools: ['Write', 'Edit'],
-      tracksShell: false,
-      tracksChildAgents: false,
-      tracksExternalChanges: false,
     },
     attachmentStagingRoot: attachmentRoot,
   };
@@ -679,6 +672,8 @@ class DshProcess implements RuntimeProcess {
   closeOwnedResources(reason: string): void {
     if (this.resourcesClosed) return;
     this.resourcesClosed = true;
+    for (const pending of this.pendingInteractions.values()) if (pending.reviewRefId) void releaseLargeValueRef(pending.reviewRefId);
+    this.pendingInteractions.clear();
     this.attachments.close();
     void this.canonicalWeb.close().catch((error: unknown) => {
       console.warn(
@@ -937,33 +932,38 @@ export class DshRuntime implements AgentRuntime {
           material: { apiKey: active.apiKey },
         };
       },
-      'host/interaction/request': (params) => {
+      'host/interaction/request': async (params, context) => {
         const interactionId = string(params.interactionId, 'DSH interaction id');
         const kind = string(params.kind, 'DSH interaction kind') as PendingInteraction['kind'];
         if (kind !== 'permission' && kind !== 'ask_user' && kind !== 'plan_approval') {
           throw new Error('DSH interaction kind is unsupported');
         }
         const schema = object(params.schema, 'DSH interaction schema');
-        pendingInteractions.set(interactionId, {
-          kind,
-          desiredPolicyRevision: string(params.desiredPolicyRevision, 'DSH interaction revision'),
-          schema,
-        });
         const authority = object(params.authority, 'DSH interaction authority');
         const toolName = kind === 'permission'
           ? (typeof schema.tool === 'string' ? schema.tool : 'DSHTool')
           : kind === 'plan_approval' ? 'ExitPlanMode' : 'AskUserQuestion';
-        const display = kind === 'permission' ? dshPermissionDisplay(schema) : undefined;
-        // Keep full operation details out of the legacy, truncated input summary.
-        const permissionInput = { ...schema };
-        delete permissionInput.display;
+        const details = kind === 'permission'
+          ? await dshPermissionReview(params as MethodParams<'host/interaction/request'>, attachments, options.sessionId)
+          : {};
+        if (context.signal.aborted) {
+          if (details.reviewRef) await releaseLargeValueRef(details.reviewRef.id);
+          throw context.signal.reason;
+        }
+        pendingInteractions.set(interactionId, {
+          kind,
+          desiredPolicyRevision: string(params.desiredPolicyRevision, 'DSH interaction revision'),
+          schema,
+          ...(details.reviewRef === undefined ? {} : { reviewRefId: details.reviewRef.id }),
+        });
         emitProductEvent({
           kind: 'permission_request',
           requestId: interactionId,
           toolName,
           toolUseId: typeof authority.callId === 'string' ? authority.callId : interactionId,
-          input: kind === 'permission' ? permissionInput : schema,
-          ...(display === undefined ? {} : { display }),
+          ...(typeof authority.rootCallId === 'string' ? { rootToolUseId: authority.rootCallId } : {}),
+          input: schema,
+          ...details,
           interactionKind: kind,
         });
         emitProductEvent({ kind: 'status_change', state: 'waiting_permission' });
@@ -995,8 +995,10 @@ export class DshRuntime implements AgentRuntime {
       },
       'host/interaction/cancel': params => {
         const interactionId = string(params.interactionId, 'DSH cancelled interaction id');
+        const pending = pendingInteractions.get(interactionId);
         pendingInteractions.delete(interactionId);
-        emitProductEvent({ kind: 'interactive_request_resolved', requestId: interactionId });
+        if (pending?.reviewRefId) void releaseLargeValueRef(pending.reviewRefId);
+        emitProductEvent({ kind: 'interactive_request_resolved', requestId: interactionId, status: 'cancelled' });
       },
     });
     const host = new DshRuntimeProcessHost({
@@ -1081,7 +1083,7 @@ export class DshRuntime implements AgentRuntime {
       });
       const extensionResult = await host.request(
         'extension/replace',
-        extension as unknown as DshRpcObject,
+        extension,
       );
       const componentReceipts = extensionComponentReceipts(extensionResult);
       const componentIssues = componentReceipts.filter(component => (
@@ -1130,11 +1132,11 @@ export class DshRuntime implements AgentRuntime {
             OFFICIAL_INTERACTION_REVISION,
             systemContextFingerprint(options),
           )}`;
-      const bindingParams: DshRpcObject = {
+      const bindingParams: MethodParams<'session/create'> = {
         clientOperationId: `session-bind-${randomUUID()}`,
         persistenceRef: `product-session-${hash(options.sessionId)}`,
-        provider: configuration.profile as unknown as DshRpcObject,
-        collaboration: configuration.collaboration as unknown as DshRpcObject,
+        provider: configuration.profile,
+        collaboration: configuration.collaboration,
         configRevision: bindingConfigRevision,
         extensionDigest,
         ...systemContextParams(options),
@@ -1279,11 +1281,11 @@ export class DshRuntime implements AgentRuntime {
     process: DshProcess,
     message: string,
     images: readonly ResolvedImagePayload[] | undefined,
-  ): Promise<DshRpcObject> {
+  ): Promise<MethodParams<'turn/start'>['input']> {
     const text = message.trim();
     const imageParts = await process.attachments.registerImages(images);
-    const parts: DshRpcObject[] = [
-      ...(text ? [{ kind: 'text', text }] : []),
+    const parts: MethodParams<'turn/start'>['input']['parts'] = [
+      ...(text ? [{ kind: 'text' as const, text }] : []),
       ...imageParts,
     ];
     if (parts.length === 0) throw new Error('DSH turn input is empty');
@@ -1594,7 +1596,7 @@ export class DshRuntime implements AgentRuntime {
       // process teardown.
       const result = await process.host.request(
         'extension/replace',
-        plane.snapshot as unknown as DshRpcObject,
+        plane.snapshot,
       );
       if (previousDesired && previousDesired !== plane && previousDesired !== process.extensionPlane) {
         process.releaseExtensionPlane(previousDesired, 'dsh_extension_candidate_replaced');
@@ -1750,6 +1752,7 @@ export class DshRuntime implements AgentRuntime {
         requestId,
         interactionId => {
           process.pendingInteractions.delete(interactionId);
+          if (pending.reviewRefId) void releaseLargeValueRef(pending.reviewRefId);
         },
         process.onEvent,
       )
@@ -1772,8 +1775,9 @@ export class DshRuntime implements AgentRuntime {
       }
     }
     process.pendingInteractions.delete(requestId);
-    process.onEvent({ kind: 'interactive_request_resolved', requestId });
-    process.onEvent({ kind: 'status_change', state: 'running' });
+    if (pending.reviewRefId) await releaseLargeValueRef(pending.reviewRefId);
+    process.onEvent({ kind: 'interactive_request_resolved', requestId, status: result.state });
+    process.onEvent({ kind: 'status_change', state: process.pendingInteractions.size > 0 ? 'waiting_permission' : process.activeOperationId ? 'running' : 'idle' });
   }
 
   async interruptTurn(runtimeProcess: RuntimeProcess): Promise<void> {
@@ -1813,8 +1817,8 @@ export class DshRuntime implements AgentRuntime {
     try {
       result = await process.host.request('config/apply', {
       revision: configuration.revision,
-      provider: configuration.profile as unknown as DshRpcObject,
-      collaboration: configuration.collaboration as unknown as DshRpcObject,
+      provider: configuration.profile,
+      collaboration: configuration.collaboration,
       permissionMode: configuration.dshPermissionMode,
       interactionScenario: OFFICIAL_INTERACTION_REVISION,
       ...systemContextParams(process.options),

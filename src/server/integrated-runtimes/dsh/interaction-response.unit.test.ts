@@ -19,6 +19,7 @@ describe('DSH interaction response reconciliation', () => {
     expect(onEvent).toHaveBeenCalledWith({
       kind: 'interactive_request_resolved',
       requestId: 'permission-expired',
+      status: 'expired',
     });
   });
 

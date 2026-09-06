@@ -9,6 +9,6 @@ export function reconcileExpiredDshInteractionResponse(
   if (responseState !== 'expired') return false;
 
   deletePendingInteraction(requestId);
-  onEvent({ kind: 'interactive_request_resolved', requestId });
+  onEvent({ kind: 'interactive_request_resolved', requestId, status: 'expired' });
   return true;
 }

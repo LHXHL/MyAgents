@@ -1,3 +1,4 @@
+import { GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import { describe, expect, it } from "vitest";
 
 import type { DshExecutionEnvironment } from "./protocol-types";
@@ -67,8 +68,8 @@ describe("DSH initialize authority compiler", () => {
       second.executionEnvironment.digest,
     );
     expect(first.protocol).toEqual({
-      minVersion: "3.0.0",
-      maxVersion: "3.0.0",
+      minVersion: GENERATED_PROTOCOL_VERSION,
+      maxVersion: GENERATED_PROTOCOL_VERSION,
     });
     expect(first.host.nodeVersion).toBe("v24.14.0");
     expect(Object.isFrozen(first.executionEnvironment.workspace)).toBe(true);
@@ -86,7 +87,7 @@ describe("DSH initialize authority compiler", () => {
     );
   });
 
-  it("rejects secret-bearing keys and workspace drift", () => {
+  it("preserves declarations for Runtime admission and rejects Host workspace drift", () => {
     const original = executionEnvironment();
     const secret = {
       ...original,
@@ -95,7 +96,7 @@ describe("DSH initialize authority compiler", () => {
         allowedKeys: ["ANTHROPIC_API_KEY"],
       },
     };
-    expect(() => create(secret)).toThrow(/authority/);
+    expect(create(secret).executionEnvironment.environment.allowedKeys).toEqual(secret.environment.allowedKeys);
 
     const drifted = {
       ...original,

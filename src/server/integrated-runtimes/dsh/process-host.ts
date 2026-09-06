@@ -1,9 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
+import { RUNTIME_CAPABILITIES } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import {
   spawn as spawnChild,
   type ChildProcessWithoutNullStreams,
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
-import { isAbsolute, normalize } from "node:path";
 
 import dshLock from "../../../shared/integrated-runtimes/dsh-lock.json";
 import {
@@ -19,9 +20,7 @@ import {
   createFencedDshNotificationHandlers,
 } from "./host-ports";
 import {
-  assertDshBundledNodeVersion,
   assertDshHandoffVerification,
-  assertDshRuntimeSelfCheck,
   type DshRuntimeInstallation,
 } from "./installation";
 import {
@@ -31,9 +30,9 @@ import {
   type DshHostRequestHandlers,
   type DshInitializeParams,
   type DshInitializeResult,
-  type DshRpcObject,
   type DshRuntimeNotificationHandlers,
   type DshRuntimeStatus,
+  type MethodParams, type MethodResult,
 } from "./protocol-types";
 
 export type DshRuntimeProcessHostState =
@@ -82,42 +81,12 @@ export type DshRuntimeProcessHostOptions = Readonly<{
   loadProtocolRuntime?: (
     runtimeArtifactRoot: string,
   ) => Promise<LoadedDshProtocolRuntime>;
-  assertNodeVersion?: (
-    installation: DshRuntimeInstallation,
-    childEnvironment: DshChildEnvironment,
-  ) => Promise<void>;
-  assertRuntimeSelfCheck?: (
-    installation: DshRuntimeInstallation,
-    childEnvironment: DshChildEnvironment,
-  ) => Promise<void>;
   assertHandoffVerification?: (
     installation: DshRuntimeInstallation,
     childEnvironment: DshChildEnvironment,
   ) => Promise<void>;
   spawnRuntime?: DshSpawnRuntime;
 }>;
-
-function object(value: unknown, description: string): DshRpcObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${description} must be an object`);
-  }
-  return value as DshRpcObject;
-}
-
-function exactCapability(
-  parent: DshRpcObject,
-  section: string,
-  expected: Readonly<Record<string, unknown>>,
-): void {
-  const actual = object(parent[section], `DSH capability ${section}`);
-  for (const [key, value] of Object.entries(expected)) {
-    if (actual[key] !== value) {
-      throw new Error(
-        `DSH Runtime capability ${section}.${key} is incompatible`,
-      );
-    }
-  }
-}
 
 function assertInitializeResult(result: DshInitializeResult): void {
   if (
@@ -134,62 +103,14 @@ function assertInitializeResult(result: DshInitializeResult): void {
   ) {
     throw new Error("DSH Runtime initialize identity differs from the lock");
   }
-  const capabilities = object(
-    result.runtimeCapabilities,
-    "DSH Runtime capabilities",
-  );
-  if (capabilities.profile !== dshLock.profile.id) {
-    throw new Error("DSH Runtime capability profile differs from the lock");
+  if (!isDeepStrictEqual(result.runtimeCapabilities, RUNTIME_CAPABILITIES)) {
+    throw new Error('DSH Runtime capabilities differ from the installed contract');
   }
-  exactCapability(capabilities, "hostPorts", {
-    credentials: "request-connection-scoped",
-    interaction: "registration-ack-plus-explicit-response",
-    tools: "reverse-request-v1",
-    hooks: "reverse-request-v1",
-    attachments: "generation-leases-v1",
-  });
-  exactCapability(capabilities, "security", {
-    execution: "trusted-local-user-process",
-    osSandbox: false,
-    secrets: "reverse-port-only",
-    checkpoint: "root-write-edit-only-v1",
-  });
-  exactCapability(capabilities, "tools", {
-    pipeline: "dsh-ctx-tools-only",
-    hostTools: "reverse-request",
-    hooks: "governed-pre-post",
-  });
-  exactCapability(capabilities, "interaction", {
-    settlement: "register-then-respond",
-  });
-  exactCapability(capabilities, "sessions", {
-    resume: "dsh-native",
-  });
 }
 
-function assertInitializeParams(params: DshInitializeParams): void {
-  const secretKey =
-    /(api.?key|authorization|credential|password|secret|token|cookie|proxy)/i;
-  if (
-    params.protocol.minVersion !== dshLock.protocol.version ||
-    params.protocol.maxVersion !== dshLock.protocol.version ||
-    params.host.nodeVersion !== `v${dshLock.runtime.requiredNodeVersion}` ||
-    !params.productSessionId ||
-    !isAbsolute(params.runtimeHome) ||
-    !isAbsolute(params.workspace.path) ||
-    params.workspace.identity !==
-      params.executionEnvironment.workspace.identity ||
-    normalize(params.workspace.path) !==
-      normalize(params.executionEnvironment.workspace.canonicalRoot) ||
-    !/^[a-f0-9]{64}$/.test(params.executionEnvironment.digest) ||
-    params.executionEnvironment.environment.secretValues !==
-      "reverse-port-only" ||
-    [
-      ...params.executionEnvironment.environment.allowedKeys,
-      ...params.executionEnvironment.environment.inheritedKeys,
-    ].some((key) => secretKey.test(key))
-  ) {
-    throw new Error("DSH initialize authority is invalid or secret-bearing");
+function assertHostProtocolSelection(params: DshInitializeParams): void {
+  if (params.protocol.minVersion !== dshLock.protocol.version || params.protocol.maxVersion !== dshLock.protocol.version) {
+    throw new Error('DSH Host protocol selection differs from the installed contract');
   }
 }
 
@@ -273,7 +194,7 @@ export class DshRuntimeProcessHost {
   private stderrBuffer = "";
 
   constructor(private readonly options: DshRuntimeProcessHostOptions) {
-    assertInitializeParams(options.initialize);
+    assertHostProtocolSelection(options.initialize);
     if (
       (options.onStderrLine === undefined) !==
       (options.redactStderrLine === undefined)
@@ -332,19 +253,11 @@ export class DshRuntimeProcessHost {
       30_000,
     );
     try {
-      const assertNode =
-        this.options.assertNodeVersion ?? assertDshBundledNodeVersion;
       const loadProtocol =
         this.options.loadProtocolRuntime ?? loadDshProtocolRuntime;
-      await assertNode(this.options.installation, this.childEnvironment);
-      this.assertStartStillAdmitted();
       const assertHandoff =
         this.options.assertHandoffVerification ?? assertDshHandoffVerification;
       await assertHandoff(this.options.installation, this.childEnvironment);
-      this.assertStartStillAdmitted();
-      const assertRuntime =
-        this.options.assertRuntimeSelfCheck ?? assertDshRuntimeSelfCheck;
-      await assertRuntime(this.options.installation, this.childEnvironment);
       this.assertStartStillAdmitted();
       const protocolRuntime = await loadProtocol(
         this.options.installation.runtimeArtifactRoot,
@@ -479,16 +392,18 @@ export class DshRuntimeProcessHost {
     });
   }
 
-  async request(
-    method: Exclude<DshHostMethodName, "initialize" | "runtime/shutdown">,
-    params: DshRpcObject,
+  async request<Name extends Exclude<DshHostMethodName, "initialize" | "runtime/shutdown">>(
+    method: Name,
+    params: MethodParams<Name>,
     options?: { signal?: AbortSignal },
-  ): Promise<DshRpcObject> {
+  ): Promise<MethodResult<Name>> {
     if (this.stateValue !== "protocol-ready" || !this.client) {
       throw new Error("DSH Runtime protocol is not ready");
     }
     const clientMethod = DSH_CLIENT_METHOD_BY_PROTOCOL[method];
-    return await this.client[clientMethod](params, options);
+    // TypeScript cannot retain the mapped key relation through a generic indexed access.
+    const call = this.client[clientMethod] as (input: MethodParams<Name>, options?: { signal?: AbortSignal }) => Promise<MethodResult<Name>>;
+    return await call.call(this.client, params, options);
   }
 
   stop(reason = "host_shutdown"): Promise<void> {

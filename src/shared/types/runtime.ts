@@ -1,3 +1,4 @@
+export type { PermissionReview, PermissionOperation } from '../../../contracts/myagents-dsh/public-contract.generated';
 // Multi-Agent Runtime types (v0.1.59)
 // Defines runtime types and metadata for external CLI agent integration
 

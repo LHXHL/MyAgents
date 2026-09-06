@@ -1,4 +1,10 @@
-import { createHash } from "node:crypto";
+import { GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
+import { createServer } from "node:http";
+import { DshAttachmentRegistry } from "./attachments";
+import type { PermissionReview } from "../../../shared/types/runtime";
+import { buildDshChildEnvironment } from "./child-environment";
+import type { MethodParams } from "./protocol-types";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -62,7 +68,7 @@ async function currentOpenFileDescriptorCount(): Promise<number | undefined> {
   return (await readdir("/dev/fd")).length;
 }
 
-async function createNativeHostFixture(label: string) {
+async function createNativeHostFixture(label: string, route?: { productSessionId: string; sidecarPort: number }) {
   const temporaryRoot = await realpath(
     await mkdtemp(join(tmpdir(), `myagents-dsh-process-host-${label}-`)),
   );
@@ -76,6 +82,10 @@ async function createNativeHostFixture(label: string) {
   const installation = await resolveDshRuntimeInstallation({
     resourceRoot,
     nodeExecutablePath: join(resourceRoot, "nodejs/bin/node"),
+  });
+  const childEnvironment = buildDshChildEnvironment({
+    nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
+    ...(route === undefined ? {} : { sessionRoute: route }),
   });
   const executionEnvironment: Omit<DshExecutionEnvironment, "digest"> = {
     revision: "native-smoke-execution-v1",
@@ -94,7 +104,7 @@ async function createNativeHostFixture(label: string) {
       pathPolicy: "sealed",
     },
     environment: {
-      allowedKeys: [],
+      allowedKeys: childEnvironment.allowedKeys,
       inheritedKeys: [],
       secretValues: "reverse-port-only",
     },
@@ -135,11 +145,11 @@ async function createNativeHostFixture(label: string) {
     "host/interaction/cancel": async () => undefined,
   };
   const stderr: string[] = [];
-  const createHost = () =>
+  const createHost = (requests = hostHandlers, notifications = notificationHandlers) =>
     new DshRuntimeProcessHost({
       installation,
       initialize: createDshInitializeParams({
-        productSessionId: `native-${label}-product-session`,
+        productSessionId: route?.productSessionId ?? `native-${label}-product-session`,
         productVersion: "0.4.11",
         runtimeHome,
         workspace: {
@@ -150,8 +160,9 @@ async function createNativeHostFixture(label: string) {
         interaction: "deterministic-headless",
         webSearchAdapters: [DSH_CANONICAL_WEB_ADAPTER_ID],
       }),
-      hostHandlers,
-      notificationHandlers,
+      hostHandlers: requests,
+      notificationHandlers: notifications,
+      childEnvironment,
       commandDirectories: ["/bin"],
       handshakeTimeoutMs: 60_000,
       shutdownGraceMs: 10_000,
@@ -161,6 +172,7 @@ async function createNativeHostFixture(label: string) {
   const host = createHost();
   return {
     createHost,
+    hostHandlers,
     executionEnvironment,
     host,
     runtimeHome,
@@ -173,6 +185,89 @@ async function createNativeHostFixture(label: string) {
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
+    it.runIf(process.platform !== 'win32').each([false, true])('executes the official Shell after approval with production CLI route environment (large review: %s)', async largeReview => {
+      const productSessionId = randomUUID();
+      const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"' + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
+      let requests = 0;
+      const server = createServer(async (request, response) => {
+        for await (const _chunk of request) { /* Drain the synthetic model request. */ }
+        const tool = requests++ === 0;
+        const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        emit('message_start', { type: 'message_start', message: { id: `fixture-message-${requests}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: tool ? { type: 'tool_use', id: 'fixture-shell-call', name: 'bash', input: {} } : { type: 'text', text: '' } });
+        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: tool ? { type: 'input_json_delta', partial_json: JSON.stringify({ command, workdir: 'child', description: 'Read the current CLI route' }) } : { type: 'text_delta', text: 'Fixture complete.' } });
+        emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+        emit('message_delta', { type: 'message_delta', delta: { stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
+        emit('message_stop', { type: 'message_stop' });
+        response.end();
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Fixture server did not bind');
+      const fixture = await createNativeHostFixture('shell-review', { productSessionId, sidecarPort: address.port }).catch(async error => {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        throw error;
+      });
+      const attachments = new DshAttachmentRegistry(fixture.executionEnvironment.attachmentStagingRoot);
+      await attachments.initialize();
+      const reviews: PermissionReview[] = [];
+      const approvals: MethodParams<'host/interaction/request'>[] = [];
+      const events: Record<string, unknown>[] = [];
+      const host = fixture.createHost({
+        ...fixture.hostHandlers,
+        'host/credential/resolve': params => params.purpose === 'availability'
+          ? { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision }
+          : { kind: 'material', authoritativeCredentialRevision: params.profileRevision, material: { apiKey: 'synthetic-native-model-key' } },
+        'host/hook/execute': () => ({ state: 'continue' }),
+        'host/attachment/put': params => attachments.put(params),
+        'host/attachment/acquire': params => attachments.acquire(params),
+        'host/attachment/release': params => attachments.release(params),
+        'host/interaction/request': async params => {
+          const approval = params as MethodParams<'host/interaction/request'>;
+          reviews.push(approval.reviewRef ? await attachments.readJson(approval.reviewRef) as PermissionReview : approval.review!);
+          approvals.push(approval);
+          return { registered: true };
+        },
+      }, { 'runtime/event': params => { events.push(params); }, 'host/interaction/cancel': () => undefined });
+      try {
+        await mkdir(join(fixture.workspace, 'child'));
+        await host.start();
+        const extension = compileDshProductExtensionPlane({ revision: 'native-shell-review-extensions', skills: [], commands: [], agents: [], mcpServers: [], dynamicTools: [] }).snapshot;
+        await host.request('extension/replace', extension);
+        const catalog = await host.request('extension/catalog', {});
+        const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'));
+        if (!provider) throw new Error('Fixture Provider is missing');
+        provider.config.baseUrl = `http://127.0.0.1:${address.port}`;
+        const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
+        const binding = await host.request('session/create', { clientOperationId: 'native-shell-review-bind', persistenceRef: 'native-shell-review', provider: profile, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
+        expect(binding.state).toBe('ready');
+        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route from the child directory.' }] }, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest, limits: { maxTurns: 4 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
+        await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(1);
+        const approval = approvals[0]!;
+        expect(approval.authority).toMatchObject({ callId: 'fixture-shell-call', rootCallId: 'fixture-shell-call' });
+        expect(approval.reviewRef !== undefined).toBe(largeReview);
+        expect(reviews[0]?.operation).toEqual({ kind: 'command', dialect: 'bash', command, cwd: join(fixture.workspace, 'child'), description: 'Read the current CLI route' });
+        expect(reviews[0]?.actor.origin).toBe('root');
+        expect(events.some(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end')).toBe(false);
+        const receipt = await host.request('interaction/respond', { interactionId: approval.interactionId, expectedRevision: approval.desiredPolicyRevision, decision: 'allow_once' });
+        expect(receipt.state).toBe('applied');
+        await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal !== undefined, { timeout: 20_000 }).toBe(true);
+        const toolResult = events.find(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
+        expect(toolResult).toBeDefined();
+        expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
+        expect(JSON.stringify(toolResult)).not.toContain('not sealed');
+        expect(requests).toBe(2);
+      } finally {
+        await host.stop();
+        attachments.close();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it("handshakes with and shuts down the exact staged Runtime", async () => {
       const fixture = await createNativeHostFixture("smoke");
       const {
@@ -192,7 +287,7 @@ describe.runIf(nativeSmokeEnabled)(
         });
         expect(identity).toMatchObject({
           runtimeGeneration: "artifact-process-generation",
-          protocolVersion: "3.0.0",
+          protocolVersion: GENERATED_PROTOCOL_VERSION,
           sessionFormat: "dsh-session-events-v1",
         });
         expect(host.state).toBe("protocol-ready");
@@ -256,7 +351,7 @@ describe.runIf(nativeSmokeEnabled)(
         const extension = extensionPlane.snapshot;
         const extensionResult = await host.request(
           "extension/replace",
-          extension as unknown as Record<string, unknown>,
+          extension,
         );
         if (extensionResult.state !== "applied") {
           throw new Error(
@@ -289,7 +384,7 @@ describe.runIf(nativeSmokeEnabled)(
         const binding = await host.request("session/create", {
           clientOperationId: "native-smoke-session-create",
           persistenceRef: "native-smoke-persistence",
-          provider: profile as unknown as Record<string, unknown>,
+          provider: profile,
           configRevision: "native-smoke-config-v1",
           extensionDigest: String(extensionCatalog.digest),
           systemPrompt: "",
@@ -297,12 +392,13 @@ describe.runIf(nativeSmokeEnabled)(
           interactionScenario: "host-interaction-v1",
         });
         expect(binding).toMatchObject({ state: "ready" });
+        if (binding.state !== "ready") throw new Error("Native Session was not admitted");
         expect(binding.toolCatalog).toMatchObject({
           effectiveTools: expect.arrayContaining(["WebFetch", "WebSearch"]),
         });
         const applied = await host.request("config/apply", {
           revision: "native-smoke-config-v2",
-          provider: profile as unknown as Record<string, unknown>,
+          provider: profile,
           permissionMode: "acceptEdits",
           interactionScenario: "host-interaction-v1",
           systemPrompt: "",
@@ -341,6 +437,7 @@ describe.runIf(nativeSmokeEnabled)(
           target: "echo native-smoke",
         });
         expect(granted).toMatchObject({ state: "applied" });
+        if (granted.state !== "applied") throw new Error("Native permission rule was not applied");
         expect(granted.rule).toMatchObject({
           tool: "bash",
           permissionClass: "process.execute",
@@ -374,7 +471,7 @@ describe.runIf(nativeSmokeEnabled)(
         });
         const replacementResult = await host.request(
           "extension/replace",
-          liveReplacement.snapshot as unknown as Record<string, unknown>,
+          liveReplacement.snapshot,
         );
         expect(replacementResult).toMatchObject({
           state: "applied",
@@ -432,7 +529,7 @@ describe.runIf(nativeSmokeEnabled)(
         await fixture.host.start();
         const extensionResult = await fixture.host.request(
           "extension/replace",
-          extension as unknown as Record<string, unknown>,
+          extension,
         );
         expect(extensionResult).toMatchObject({
           state: "applied",
@@ -442,7 +539,7 @@ describe.runIf(nativeSmokeEnabled)(
         const created = await fixture.host.request("session/create", {
           clientOperationId: "native-resume-create",
           persistenceRef: "native-resume-persistence",
-          provider: profile as unknown as Record<string, unknown>,
+          provider: profile,
           configRevision: "native-resume-config-v1",
           extensionDigest: String(catalog.digest),
           systemPrompt: "",
@@ -453,7 +550,7 @@ describe.runIf(nativeSmokeEnabled)(
         const runtimeSessionId = String(created.runtimeSessionId);
         await fixture.host.request("config/apply", {
           revision: "native-resume-config-v2",
-          provider: profile as unknown as Record<string, unknown>,
+          provider: profile,
           permissionMode: "acceptEdits",
           interactionScenario: "host-interaction-v1",
           systemPrompt: "",
@@ -476,13 +573,13 @@ describe.runIf(nativeSmokeEnabled)(
         await resumedHost.start();
         await resumedHost.request(
           "extension/replace",
-          extension as unknown as Record<string, unknown>,
+          extension,
         );
         const resumed = await resumedHost.request("session/resume", {
           clientOperationId: "native-resume-bind",
           runtimeSessionId,
           persistenceRef: "native-resume-persistence",
-          provider: profile as unknown as Record<string, unknown>,
+          provider: profile,
           configRevision: "native-resume-config-v2",
           extensionDigest: String(catalog.digest),
           systemPrompt: "",
@@ -519,7 +616,7 @@ describe.runIf(nativeSoakEnabled)(
         try {
           const identity = await fixture.host.start();
           expect(identity).toMatchObject({
-            protocolVersion: "3.0.0",
+            protocolVersion: GENERATED_PROTOCOL_VERSION,
             sessionFormat: "dsh-session-events-v1",
           });
           runtimePid = fixture.host.pid;

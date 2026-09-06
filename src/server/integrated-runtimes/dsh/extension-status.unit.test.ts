@@ -4,8 +4,8 @@ import { projectDshExtensionStatus } from './runtime';
 
 const emptyPlane = compileDshProductExtensionPlane({ revision: 'fixture-v1', skills: [], commands: [], agents: [], mcpServers: [], dynamicTools: [] });
 const plane = { ...emptyPlane, snapshot: { ...emptyPlane.snapshot, components: [
-  { kind: 'skill' as const, id: 'manual', enabled: true, descriptor: { invocation: { modelInvocable: false, userInvocable: true } } },
-  { kind: 'agent' as const, id: 'helper', enabled: true, descriptor: {} },
+  { kind: 'skill' as const, id: 'manual', enabled: true, descriptor: { resourceId: "fixture-skill", description: "Fixture", rank: 1, invocation: { modelInvocable: false, userInvocable: true } } },
+  { kind: 'agent' as const, id: 'helper', enabled: true, descriptor: { description: 'Fixture', prompt: 'Fixture', tools: [] } },
 ] }, diagnostics: [{ component: 'skill', id: 'unsupported', state: 'unsupported' as const, code: 'unsupported_context' }] };
 
 describe('Runtime extension admission receipts', () => {

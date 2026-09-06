@@ -155,6 +155,7 @@ describe('external interactive owner integration', () => {
     expect(mocks.broadcast).toHaveBeenCalledWith('permission:expired', {
       requestId,
       reason: 'resolved',
+      status: 'applied',
     });
     expect(getExternalInteractiveRequest(requestId)).toBeUndefined();
   });

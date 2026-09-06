@@ -16,7 +16,7 @@ import type {
 } from '../../runtimes/product-extensions/contracts';
 import { buildMcpSubprocessEnv } from '../../session-core/mcp-env-policy';
 import { resolveStdioMcpLaunch } from '../../runtimes/managed-codex/extensions/mcp-launch-projection';
-import type { DshRpcObject } from './protocol-types';
+import type { DshRpcObject, MethodParams } from './protocol-types';
 
 const MAX_RESOURCE_CHARACTERS = 1_000_000;
 const DECLARATIVE_REFERENCE = /^[A-Za-z][A-Za-z0-9._:-]*$/u;
@@ -31,21 +31,11 @@ const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u;
 const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
 const MCP_ENV_REVISION_KEY = randomBytes(32);
 
-export type DshExtensionSnapshot = Readonly<{
-  formatVersion: 1;
-  revision: string;
-  digest: string;
-  components: readonly DshRpcObject[];
-  resources: readonly DshRpcObject[];
-  skillSourcePolicy: Readonly<{
-    revision: string;
-    roots: readonly DshRpcObject[];
-  }>;
-  mcpLaunchPolicy: Readonly<{
-    revision: string;
-    profiles: readonly DshRpcObject[];
-  }>;
-}>;
+export type DshExtensionSnapshot = MethodParams<'extension/replace'>;
+type DshComponent = DshExtensionSnapshot['components'][number];
+type DshResource = DshExtensionSnapshot['resources'][number];
+type DshSkillRoot = DshExtensionSnapshot['skillSourcePolicy']['roots'][number];
+type DshMcpLaunchProfile = NonNullable<DshExtensionSnapshot['mcpLaunchPolicy']>['profiles'][number];
 
 export type DshProductExtensionSource = Readonly<{
   revision: string;
@@ -232,8 +222,9 @@ function normalizeSchemaNode(
   }
 }
 
-export function normalizeDshHostToolInputSchema(value: unknown): DshRpcObject {
-  return normalizeSchemaNode(value, 'DSH Host tool input schema', true, new Set());
+export function normalizeDshHostToolInputSchema(value: unknown): Extract<DshComponent, { kind: 'host_tool' }>['descriptor']['inputSchema'] {
+  // The recursive normalizer admits the canonical declarative subset and fixes the root type to object.
+  return normalizeSchemaNode(value, 'DSH Host tool input schema', true, new Set()) as Extract<DshComponent, { kind: 'host_tool' }>['descriptor']['inputSchema'];
 }
 
 function createSnapshot(authority: Omit<DshExtensionSnapshot, 'digest'>): DshExtensionSnapshot {
@@ -243,10 +234,10 @@ function createSnapshot(authority: Omit<DshExtensionSnapshot, 'digest'>): DshExt
 
 export function compileDshExtensionSnapshot(input?: {
   revision?: string;
-  components?: readonly DshRpcObject[];
-  resources?: readonly DshRpcObject[];
-  skillRoots?: readonly DshRpcObject[];
-  mcpLaunchProfiles?: readonly DshRpcObject[];
+  components?: readonly DshComponent[];
+  resources?: readonly DshResource[];
+  skillRoots?: readonly DshSkillRoot[];
+  mcpLaunchProfiles?: readonly DshMcpLaunchProfile[];
 }): DshExtensionSnapshot {
   const revision = input?.revision ?? 'myagents-dsh-extensions-v1:empty';
   return createSnapshot({
@@ -276,7 +267,7 @@ function exactSkillContent(skill: ProductSkillSpec): string {
 function workspaceSkillRoot(
   source: DshProductExtensionSource,
   skill: ProductSkillSpec,
-): DshRpcObject | undefined {
+): DshSkillRoot | undefined {
   if (skill.scope !== 'project' || !source.workspacePath || basename(skill.path) !== 'SKILL.md') {
     return undefined;
   }
@@ -305,7 +296,7 @@ function stdioMcpComponent(
   server: McpServerDefinition,
   diagnostics: RuntimeExtensionComponentStatus[],
   credentialBindings: DshMcpCredentialBinding[],
-): Readonly<{ component: DshRpcObject; launchProfile: DshRpcObject }> | null {
+): Readonly<{ component: Extract<DshComponent, { kind: 'mcp' }>; launchProfile: DshMcpLaunchProfile }> | null {
   if (!MCP_NAME.test(server.id)) {
     diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_mcp_name_invalid'));
     return null;
@@ -373,7 +364,7 @@ function remoteMcpComponent(
   server: McpServerDefinition,
   diagnostics: RuntimeExtensionComponentStatus[],
   credentialBindings: DshMcpCredentialBinding[],
-): DshRpcObject | null {
+): Extract<DshComponent, { kind: 'mcp' }> | null {
   if (!MCP_NAME.test(server.id)) {
     diagnostics.push(componentStatus('mcp', server.id, 'failed', 'dsh_mcp_name_invalid'));
     return null;
@@ -405,7 +396,8 @@ function remoteMcpComponent(
     return null;
   }
   const headers = server.headers ?? {};
-  const descriptor: Record<string, unknown> = {
+  if (server.type !== 'http' && server.type !== 'sse') return null;
+  let descriptor: Extract<Extract<DshComponent, { kind: 'mcp' }>['descriptor'], { transport: 'http' | 'sse' }> = {
     transport: server.type,
     url: endpoint.toString(),
   };
@@ -427,11 +419,11 @@ function remoteMcpComponent(
       return null;
     }
     const credentialRef = safeReference('mcp-credential', server.id);
-    descriptor.credential = {
+    descriptor = { ...descriptor, credential: {
       credentialRef,
       credentialRevision: server.runtimeConfigRevision,
       materialSlot: 'header',
-    };
+    } };
     credentialBindings.push(Object.freeze({
       componentId: server.id,
       credentialRef,
@@ -463,10 +455,10 @@ export function compileDshProductExtensionPlane(
   if (!source.revision || source.revision.length > 220) {
     throw new Error('Product extension revision is outside the DSH protocol bound');
   }
-  const components: DshRpcObject[] = [];
-  const resources: DshRpcObject[] = [];
-  const skillRoots: DshRpcObject[] = [];
-  const mcpLaunchProfiles: DshRpcObject[] = [];
+  const components: DshComponent[] = [];
+  const resources: DshResource[] = [];
+  const skillRoots: DshSkillRoot[] = [];
+  const mcpLaunchProfiles: DshMcpLaunchProfile[] = [];
   const credentialBindings: DshMcpCredentialBinding[] = [];
   const hostToolBindings: DshHostToolBinding[] = [];
   const diagnostics: RuntimeExtensionComponentStatus[] = [...(source.components ?? [])];
@@ -491,14 +483,14 @@ export function compileDshProductExtensionPlane(
           'Tool guidance is retained in the Skill. Every tool still requires the current catalog and permission policy; no permission grant is created.'));
       }
       const resourceId = safeReference('skill-document', `${skill.sourceId}:${skill.name}:${skill.contentSha256}`);
-      const resource: DshRpcObject = {
+      const resource: DshResource = {
         id: resourceId,
         kind: 'skill_document',
         sha256: skill.contentSha256,
         mediaType: 'text/markdown',
         content,
       };
-      const component: DshRpcObject = {
+      const component: DshComponent = {
         id: skill.name,
         enabled: true,
         kind: 'skill',
@@ -558,14 +550,14 @@ export function compileDshProductExtensionPlane(
     try {
       const body = boundedText(command.body, MAX_RESOURCE_CHARACTERS, `DSH command ${command.name}`);
       const resourceId = safeReference('command-template', `${command.sourceId}:${command.name}:${digest(body)}`);
-      const resource: DshRpcObject = {
+      const resource: DshResource = {
         id: resourceId,
         kind: 'command_template',
         sha256: digest(body),
         mediaType: 'text/markdown',
         content: body,
       };
-      const component: DshRpcObject = {
+      const component: DshComponent = {
         id: command.name,
         enabled: true,
         kind: 'command',

@@ -1,3 +1,4 @@
+import { RUNTIME_CAPABILITIES, DSH_ENGINE_VERSION, GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -119,7 +120,7 @@ function initializeResult(
   overrides: Partial<DshInitializeResult> = {},
 ): DshInitializeResult {
   return {
-    protocolVersion: "3.0.0",
+    protocolVersion: GENERATED_PROTOCOL_VERSION,
     schemaSha256: dshLock.protocol.schemaSha256,
     runtimeVersion: "0.0.0",
     runtimeGeneration: "artifact-process-generation",
@@ -134,33 +135,11 @@ function initializeResult(
     },
     runtimeEngine: {
       name: "deepseek-harness",
-      version: dshLock.dsh.version,
+      version: DSH_ENGINE_VERSION,
       distribution: "myagents-dsh",
       distributionVersion: "0.0.0",
     },
-    runtimeCapabilities: {
-      profile: "myagents-dsh-batch-1-candidate-v1",
-      hostPorts: {
-        credentials: "request-connection-scoped",
-        interaction: "registration-ack-plus-explicit-response",
-        tools: "reverse-request-v1",
-        hooks: "reverse-request-v1",
-        attachments: "generation-leases-v1",
-      },
-      security: {
-        execution: "trusted-local-user-process",
-        osSandbox: false,
-        secrets: "reverse-port-only",
-        checkpoint: "root-write-edit-only-v1",
-      },
-      tools: {
-        pipeline: "dsh-ctx-tools-only",
-        hostTools: "reverse-request",
-        hooks: "governed-pre-post",
-      },
-      interaction: { settlement: "register-then-respond" },
-      sessions: { resume: "dsh-native" },
-    },
+    runtimeCapabilities: RUNTIME_CAPABILITIES,
     ...overrides,
   };
 }
@@ -253,12 +232,6 @@ function harness(result = initializeResult()) {
       ANTHROPIC_API_KEY: "credential-canary",
       NODE_OPTIONS: "--require=/tmp/inject.js",
     },
-    assertNodeVersion: async () => {
-      order.push("assert-node");
-    },
-    assertRuntimeSelfCheck: async () => {
-      order.push("assert-runtime");
-    },
     assertHandoffVerification: async () => {
       order.push("assert-handoff");
     },
@@ -298,14 +271,12 @@ describe("DSH RuntimeProcessHost", () => {
     expect(identity).toMatchObject({
       productSessionId: "product-session-1",
       runtimeGeneration: "artifact-process-generation",
-      protocolVersion: "3.0.0",
+      protocolVersion: GENERATED_PROTOCOL_VERSION,
       sessionFormat: "dsh-session-events-v1",
     });
     expect(test.host.state).toBe("protocol-ready");
     expect(test.order).toEqual([
-      "assert-node",
       "assert-handoff",
-      "assert-runtime",
       "load-protocol",
       "spawn-runtime",
       "initialize",
@@ -356,6 +327,6 @@ describe("DSH RuntimeProcessHost", () => {
     await expect(starting).rejects.toThrow(/cancelled/);
     await stopping;
     expect(test.host.state).toBe("stopped");
-    expect(test.order).toEqual(["assert-node"]);
+    expect(test.order).toEqual(["assert-handoff"]);
   });
 });

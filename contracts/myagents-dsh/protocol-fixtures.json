@@ -87,8 +87,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "3.0.0",
-          "minVersion": "3.0.0"
+          "maxVersion": "3.1.0",
+          "minVersion": "3.1.0"
         },
         "runtimeHome": "/fixture/runtime-home",
         "unexpected": true,
@@ -184,8 +184,8 @@
         },
         "productSessionId": "product-session-1",
         "protocol": {
-          "maxVersion": "3.0.0",
-          "minVersion": "3.0.0"
+          "maxVersion": "3.1.0",
+          "minVersion": "3.1.0"
         },
         "runtimeHome": "relative/runtime-home",
         "workspace": {
@@ -210,7 +210,7 @@
         },
         "piVersion": "0.50.3",
         "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "protocolVersion": "3.0.0",
+        "protocolVersion": "3.1.0",
         "runtimeCapabilities": {
           "configuration": {
             "agents": "next-turn",
@@ -221,6 +221,22 @@
             "provider": "next-turn",
             "reasoningEffort": "next-turn",
             "systemPrompt": "next-turn"
+          },
+          "executionEnvironment": {
+            "checkpoint": {
+              "mode": "managed-file-tools",
+              "trackedTools": [
+                "Write",
+                "Edit"
+              ],
+              "tracksChildAgents": false,
+              "tracksExternalChanges": false,
+              "tracksShell": false,
+              "version": 1
+            },
+            "killTreeOnAbort": true,
+            "pathPolicy": "sealed",
+            "secretValues": "reverse-port-only"
           },
           "extensions": {
             "arbitraryJavascript": "unsupported",
@@ -293,7 +309,7 @@
         },
         "runtimeGeneration": "generation-1",
         "runtimeVersion": "0.0.0",
-        "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
+        "schemaSha256": "e497c124048dd308ce3bb3603dcfb4fe1646cb68bd0da71fb2812bbdc2bce93b",
         "sessionFormat": "dsh-session-events-v1"
       }
     },
@@ -1204,8 +1220,8 @@
       }
     }
   ],
-  "protocolVersion": "3.0.0",
-  "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
+  "protocolVersion": "3.1.0",
+  "schemaSha256": "e497c124048dd308ce3bb3603dcfb4fe1646cb68bd0da71fb2812bbdc2bce93b",
   "valid": [
     {
       "frame": {
@@ -1292,8 +1308,8 @@
           },
           "productSessionId": "product-session-1",
           "protocol": {
-            "maxVersion": "3.0.0",
-            "minVersion": "3.0.0"
+            "maxVersion": "3.1.0",
+            "minVersion": "3.1.0"
           },
           "runtimeHome": "/fixture/runtime-home",
           "workspace": {
@@ -1321,7 +1337,7 @@
             "maxPendingRequests": 128
           },
           "profileDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "protocolVersion": "3.0.0",
+          "protocolVersion": "3.1.0",
           "runtimeCapabilities": {
             "configuration": {
               "agents": "next-turn",
@@ -1332,6 +1348,22 @@
               "provider": "next-turn",
               "reasoningEffort": "next-turn",
               "systemPrompt": "next-turn"
+            },
+            "executionEnvironment": {
+              "checkpoint": {
+                "mode": "managed-file-tools",
+                "trackedTools": [
+                  "Write",
+                  "Edit"
+                ],
+                "tracksChildAgents": false,
+                "tracksExternalChanges": false,
+                "tracksShell": false,
+                "version": 1
+              },
+              "killTreeOnAbort": true,
+              "pathPolicy": "sealed",
+              "secretValues": "reverse-port-only"
             },
             "extensions": {
               "arbitraryJavascript": "unsupported",
@@ -1404,7 +1436,7 @@
           },
           "runtimeGeneration": "generation-1",
           "runtimeVersion": "0.0.0",
-          "schemaSha256": "bff123fccdf15c1eb1434a7872cefafaccfb8957a370c1ae36b7fd35bcf7f6cc",
+          "schemaSha256": "e497c124048dd308ce3bb3603dcfb4fe1646cb68bd0da71fb2812bbdc2bce93b",
           "sessionFormat": "dsh-session-events-v1"
         }
       },

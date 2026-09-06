@@ -1,3 +1,4 @@
+import type { MethodParams } from "./protocol-types";
 import { createHash } from "node:crypto";
 
 import type { Provider } from "../../../shared/config-types";
@@ -11,41 +12,9 @@ import {
 export type DshInputModality = "text" | "image";
 export type DshReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export type DshProviderWireCompatibilityV1 = Readonly<{
-  maxTokensField?: "max_tokens" | "max_completion_tokens";
-}>;
-
-export type DshProviderCompatibilityProfile = Readonly<{
-  version: 1;
-  family: "anthropic-messages" | "openai-completions" | "openai-responses";
-  credentialMode: "pi-ai-api-key";
-  wireCompat?: DshProviderWireCompatibilityV1;
-}>;
-
-export type DshModelExecutionProfile = Readonly<{
-  revision: string;
-  providerRouteId: string;
-  api: "anthropic-messages" | "openai-completions" | "openai-responses";
-  provider: string;
-  modelId: string;
-  baseUrl?: string;
-  credentialRef: string;
-  contextWindow: number;
-  maxTokens: number;
-  inputModalities?: readonly DshInputModality[];
-  pricing?: Readonly<{
-    inputUsdPerMillionTokens: number;
-    outputUsdPerMillionTokens: number;
-    cacheReadUsdPerMillionTokens: number;
-    cacheWriteUsdPerMillionTokens: number;
-  }>;
-  reasoning?: boolean;
-  effort?: DshReasoningEffort;
-  reasoningEffortMap?: Readonly<
-    Partial<Record<"off", null>> & Partial<Record<DshReasoningEffort, string>>
-  >;
-  compatibility?: DshProviderCompatibilityProfile;
-}>;
+export type DshModelExecutionProfile = MethodParams<'session/create'>['provider'];
+export type DshProviderCompatibilityProfile = NonNullable<DshModelExecutionProfile['compatibility']>;
+export type DshProviderWireCompatibilityV1 = NonNullable<DshProviderCompatibilityProfile['wireCompat']>;
 
 export type DshProfileCompilerErrorCode =
   | "provider-disabled"
