@@ -185,18 +185,41 @@ async function createNativeHostFixture(label: string, route?: { productSessionId
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
-    it.runIf(process.platform !== 'win32').each([false, true])('executes the official Shell after approval with production CLI route environment (large review: %s)', async largeReview => {
+    it.runIf(process.platform !== 'win32').each([false, true])('continues all permissioned tools after Always Allow in Auto (large review: %s)', async largeReview => {
       const productSessionId = randomUUID();
       const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"' + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
+      const calls = [
+        { id: 'fixture-shell-call', name: 'bash', input: { command, workdir: 'child', description: 'Read the current CLI route' } },
+        { id: 'fixture-create-call', name: 'TaskCreate', input: { subject: 'Verify approval progress', description: 'Synthetic native regression' } },
+        { id: 'fixture-update-call', name: 'TaskUpdate', input: { taskId: 'task-1', status: 'completed' } },
+        { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
+        { id: 'fixture-agent-call', name: 'Agent', input: { subagent_type: 'permission-helper', description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.', run_in_background: false } },
+        undefined, // The foreground child completes before the root continues.
+        { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [{ header: 'Review', question: 'Continue the synthetic plan check?', options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }], multiSelect: false }] } },
+        { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
+        { id: 'fixture-plan-write-call', name: 'Write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
+        { id: 'fixture-exit-plan-call', name: 'ExitPlanMode', input: {} },
+      ];
       let requests = 0;
       const server = createServer(async (request, response) => {
-        for await (const _chunk of request) { /* Drain the synthetic model request. */ }
-        const tool = requests++ === 0;
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[] };
+        const tool = calls[requests++];
+        let input: Record<string, unknown> | undefined = tool?.input;
+        if (tool?.name === 'Write') {
+          const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
+            .find(block => block.type === 'tool_result' && block.tool_use_id === 'fixture-enter-plan-call');
+          const content = planResult?.content;
+          const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
+          const plan = JSON.parse(text) as { planPath: string };
+          input = { ...tool.input, file_path: plan.planPath };
+        }
         const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         emit('message_start', { type: 'message_start', message: { id: `fixture-message-${requests}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
-        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: tool ? { type: 'tool_use', id: 'fixture-shell-call', name: 'bash', input: {} } : { type: 'text', text: '' } });
-        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: tool ? { type: 'input_json_delta', partial_json: JSON.stringify({ command, workdir: 'child', description: 'Read the current CLI route' }) } : { type: 'text_delta', text: 'Fixture complete.' } });
+        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: tool ? { type: 'tool_use', id: tool.id, name: tool.name, input: {} } : { type: 'text', text: '' } });
+        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: tool ? { type: 'input_json_delta', partial_json: JSON.stringify(input) } : { type: 'text_delta', text: 'Fixture complete.' } });
         emit('content_block_stop', { type: 'content_block_stop', index: 0 });
         emit('message_delta', { type: 'message_delta', delta: { stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
         emit('message_stop', { type: 'message_stop' });
@@ -226,7 +249,7 @@ describe.runIf(nativeSmokeEnabled)(
         'host/attachment/release': params => attachments.release(params),
         'host/interaction/request': async params => {
           const approval = params as MethodParams<'host/interaction/request'>;
-          reviews.push(approval.reviewRef ? await attachments.readJson(approval.reviewRef) as PermissionReview : approval.review!);
+          if (approval.kind === 'permission') reviews.push(approval.reviewRef ? await attachments.readJson(approval.reviewRef) as PermissionReview : approval.review!);
           approvals.push(approval);
           return { registered: true };
         },
@@ -234,7 +257,14 @@ describe.runIf(nativeSmokeEnabled)(
       try {
         await mkdir(join(fixture.workspace, 'child'));
         await host.start();
-        const extension = compileDshProductExtensionPlane({ revision: 'native-shell-review-extensions', skills: [], commands: [], agents: [], mcpServers: [], dynamicTools: [] }).snapshot;
+        const skillPath = join(fixture.workspace, 'SKILL.md');
+        const skillContent = '---\nname: permission-review\ndescription: Verify approval continuity\n---\n\nContinue the synthetic fixture.\n';
+        await writeFile(skillPath, skillContent);
+        const extension = compileDshProductExtensionPlane({
+          revision: 'native-shell-review-extensions',
+          skills: [{ name: 'permission-review', description: 'Verify approval continuity', contentSha256: createHash('sha256').update(skillContent).digest('hex'), path: skillPath, scope: 'project', sourceId: 'native-permission-regression' }],
+          commands: [], agents: [{ name: 'permission-helper', description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.', skills: [], scope: 'project', sourceId: 'native-permission-regression' }], mcpServers: [], dynamicTools: [],
+        }).snapshot;
         await host.request('extension/replace', extension);
         const catalog = await host.request('extension/catalog', {});
         const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'));
@@ -243,7 +273,10 @@ describe.runIf(nativeSmokeEnabled)(
         const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
         const binding = await host.request('session/create', { clientOperationId: 'native-shell-review-bind', persistenceRef: 'native-shell-review', provider: profile, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
         expect(binding.state).toBe('ready');
-        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route from the child directory.' }] }, configRevision: 'native-shell-review-config', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest, limits: { maxTurns: 4 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
+        const environmentDigest = createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
+        const configured = await host.request('config/apply', { revision: 'native-shell-review-auto', provider: profile, permissionMode: 'acceptEdits', interactionScenario: 'host-interaction-v1', systemPrompt: '', executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest });
+        expect(configured.state).toBe('applied');
+        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route from the child directory.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 12 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
         await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(1);
         const approval = approvals[0]!;
         expect(approval.authority).toMatchObject({ callId: 'fixture-shell-call', rootCallId: 'fixture-shell-call' });
@@ -251,14 +284,47 @@ describe.runIf(nativeSmokeEnabled)(
         expect(reviews[0]?.operation).toEqual({ kind: 'command', dialect: 'bash', command, cwd: join(fixture.workspace, 'child'), description: 'Read the current CLI route' });
         expect(reviews[0]?.actor.origin).toBe('root');
         expect(events.some(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end')).toBe(false);
-        const receipt = await host.request('interaction/respond', { interactionId: approval.interactionId, expectedRevision: approval.desiredPolicyRevision, decision: 'allow_once' });
+        const receipt = await host.request('interaction/respond', { interactionId: approval.interactionId, expectedRevision: approval.desiredPolicyRevision, decision: 'always_allow' });
         expect(receipt.state).toBe('applied');
+        let approvalIndex = 1;
+        let expectedRevision = receipt.state === 'applied' ? receipt.effectivePolicyRevision : '';
+        const approveTool = async (toolName: string, decision: 'always_allow' | 'allow_once' = 'allow_once') => {
+          await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
+          const next = approvals[approvalIndex++]!;
+          const call = calls.find(candidate => candidate?.name === toolName)!;
+          expect(next.kind).toBe('permission');
+          expect((next.schema as Record<string, unknown>).tool).toBe(toolName);
+          expect(next.authority).toMatchObject({ callId: call.id, rootCallId: call.id });
+          expect(next.desiredPolicyRevision).toBe(expectedRevision);
+          expect(events.some(value => value.toolCallId === call.id && (value.event as Record<string, unknown>).phase === 'end')).toBe(false);
+          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision });
+          expect(result.state).toBe('applied');
+          if (result.state === 'applied') expectedRevision = result.effectivePolicyRevision;
+        };
+        const answerQuestions = async (kind: 'ask_user' | 'plan_approval') => {
+          await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
+          const next = approvals[approvalIndex++]!;
+          expect(next.kind).toBe(kind);
+          const schema = next.schema as { questions: { id: string; options: { label: string }[]; intent?: { approve: string } }[] };
+          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: [question.intent?.approve ?? question.options[0]!.label] })) } });
+          expect(result.state).toBe('applied');
+        };
+        await approveTool('TaskCreate', 'always_allow');
+        for (const tool of ['TaskUpdate', 'Skill', 'Agent', 'AskUserQuestion']) await approveTool(tool);
+        await answerQuestions('ask_user');
+        await approveTool('ExitPlanMode');
+        await answerQuestions('plan_approval');
         await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal !== undefined, { timeout: 20_000 }).toBe(true);
         const toolResult = events.find(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
         expect(toolResult).toBeDefined();
         expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
         expect(JSON.stringify(toolResult)).not.toContain('not sealed');
-        expect(requests).toBe(2);
+        const toolResults = events.filter(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
+        expect(toolResults).toHaveLength(calls.filter(Boolean).length);
+        for (const result of toolResults) expect((result.event as Record<string, unknown>).result).toMatchObject({ isError: false });
+        expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
+        expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
+        expect(requests).toBe(calls.length + 1);
       } finally {
         await host.stop();
         attachments.close();
@@ -266,7 +332,7 @@ describe.runIf(nativeSmokeEnabled)(
         await new Promise<void>(resolve => server.close(() => resolve()));
         await rm(fixture.temporaryRoot, { recursive: true, force: true });
       }
-    }, 60_000);
+    }, 120_000);
 
     it("handshakes with and shuts down the exact staged Runtime", async () => {
       const fixture = await createNativeHostFixture("smoke");

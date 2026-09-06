@@ -1207,3 +1207,5 @@ verifier checks the native evidence required by `verified`; the [DSH integration
 records the exact current delivery and remaining native/user acceptance boundaries.
 
 MyAgents-dsh Runtime/Host boundary updates (UPG-W11) are documented in [the integrated Runtime guide](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-06-runtimehost-boundary-correction-upg-w11): Host ordinary environment construction, Runtime admission, generated protocol types, structured permission review through existing attachment/ref routes, and one combined installation verification report. Runtime continues to own execution/settlement; Renderer owns review and retry presentation.
+
+Same-operation Always Allow progression is owned by the Runtime permission service; the Host bridge forwards its validated current revision rather than comparing against the operation's initial revision. Missing interaction transport is distinct from a user denial. The regression and delivery record are maintained in [UPG-W12](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-07-inline-approval-progression-upg-w12), including Host WebFetch HTTP and classified connection error reporting.

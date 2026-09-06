@@ -198,7 +198,7 @@ export class DshCanonicalWebHost {
       signal,
     });
     if (fetched.statusCode < 200 || fetched.statusCode > 299) {
-      throw new DshCanonicalWebError('unsupported_content', 'WebFetch response status is unsupported');
+      throw new DshCanonicalWebError('unsupported_content', `WebFetch failed: HTTP ${fetched.statusCode}`);
     }
     const converted = await convertDshWebContent({
       bytes: fetched.bytes,

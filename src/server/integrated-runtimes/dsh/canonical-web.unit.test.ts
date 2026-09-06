@@ -73,7 +73,7 @@ function provider(): DshCanonicalWebProviderPort & Readonly<{
   };
 }
 
-function host(webProvider = provider()): DshCanonicalWebHost {
+function host(webProvider = provider(), statusCode = 200): DshCanonicalWebHost {
   return new DshCanonicalWebHost({
     activeConfiguration: () => ({
       profile,
@@ -87,7 +87,7 @@ function host(webProvider = provider()): DshCanonicalWebHost {
       lookup: vi.fn(async () => [{ address: '93.184.216.34', family: 4 as const }]),
       transport: {
         dispatch: vi.fn(async () => ({
-          statusCode: 200,
+          statusCode,
           headers: { 'content-type': 'text/html' },
           bytes: Buffer.from('<html><body><h1>Hello</h1><script>ignore()</script><p>World</p></body></html>'),
         })),
@@ -97,6 +97,14 @@ function host(webProvider = provider()): DshCanonicalWebHost {
 }
 
 describe('DshCanonicalWebHost', () => {
+  it('reports the actual HTTP failure without calling the utility model', async () => {
+    const webProvider = provider();
+    const result = await host(webProvider, 404).execute({
+      tool: 'WebFetch', input: { url: 'https://example.com/missing', prompt: 'Summarize it' }, authority: authority('WebFetch'),
+    }, context());
+    expect(result).toMatchObject({ state: 'failed', code: 'unsupported_content', content: [{ type: 'text', text: 'WebFetch failed: HTTP 404' }] });
+    expect(webProvider.runUtility).not.toHaveBeenCalled();
+  });
   it('retains the retrieval query but returns query-free page provenance', async () => {
     const webProvider = provider();
     const result = await host(webProvider).execute({

@@ -121,9 +121,6 @@ export function dshCanonicalWebTransportError(
   if (phase === 'response_body') {
     return new DshCanonicalWebError('web_request_failed', 'Web response body could not be read', metadata);
   }
-  return new DshCanonicalWebError(
-    'web_connect_failed',
-    route === 'proxy' ? 'Web request through the configured proxy failed' : 'Web connection failed',
-    metadata,
-  );
+  const message = route === 'proxy' ? 'Web request through the configured proxy failed' : 'Web connection failed';
+  return new DshCanonicalWebError('web_connect_failed', code ? `${message} (${code})` : message, metadata);
 }
