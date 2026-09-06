@@ -1324,19 +1324,24 @@ function isCurrentAgentIdentity(
     && workspacePathsEqual(identity.workspacePath, currentWorkspacePath);
 }
 
+function filterAgentIdentities(
+  identities: readonly PersistedAgentWorkspaceProjection[],
+  lifecycle: 'all' | 'active' | 'archived' = 'active',
+): PersistedAgentWorkspaceProjection[] {
+  return identities
+    .filter(identity => !identity.project || isProjectVisibleToUser(identity.project))
+    .filter(identity => {
+      const archived = identity.project ? isProjectArchived(identity.project) : false;
+      return lifecycle === 'all' || (lifecycle === 'archived' ? archived : !archived);
+    });
+}
+
 export async function handleAgentList(payload: { lifecycle?: string } = {}): Promise<AdminResponse> {
   try {
     const registry = await resolvePersistedAgentWorkspaceRegistry();
     const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
     const currentWorkspacePath = getCurrentWorkspacePath();
-    const agents = registry.agentProjections
-      .filter(identity => !identity.project || isProjectVisibleToUser(identity.project))
-      .filter(identity => {
-        const archived = identity.project ? isProjectArchived(identity.project) : false;
-        if (lifecycle === 'active') return !archived;
-        if (lifecycle === 'archived') return archived;
-        return true;
-      })
+    const agents = filterAgentIdentities(registry.agentProjections, lifecycle)
       .map(identity => {
         const { agent, project, workspacePath } = identity;
         return ({
@@ -2068,7 +2073,13 @@ export async function handleConfigSet(payload: { key: string; value: unknown; dr
 // Status & Reload
 // ---------------------------------------------------------------------------
 
-export function handleStatus(): AdminResponse {
+export async function handleStatus(): Promise<AdminResponse> {
+  let registry: Awaited<ReturnType<typeof resolvePersistedAgentWorkspaceRegistry>>;
+  try {
+    registry = await resolvePersistedAgentWorkspaceRegistry();
+  } catch (error) {
+    return agentWorkspaceIdentityFailure(error);
+  }
   const config = loadConfig();
   const allServers = getAllMcpServers(config);
   const enabledIds = getEnabledMcpServerIds(config);
@@ -2080,7 +2091,7 @@ export function handleStatus(): AdminResponse {
       mcpServers: { total: allServers.length, enabled: enabledIds.length },
       activeMcpInSession: currentMcp ? currentMcp.length : 0,
       defaultProvider: config.defaultProviderId ?? 'not set',
-      agents: (config.agents ?? []).length,
+      agents: filterAgentIdentities(registry.agentProjections).length,
     },
   };
 }
@@ -3591,6 +3602,10 @@ Project.agentId. Historical extra/orphan Agents remain addressable by exact ID.
 The Agent owns execution defaults; Project.path owns the current workspace.
 enabled=false pauses Heartbeat, Memory Update, and Memory Evo. Channels remain
 independently controlled by channel.enabled.
+The default status Agent count uses the same visible, non-archived set as agent list.
+DSH Task owner=root means the main Agent in that conversation, even when this
+Workspace Agent has a different display name. Other DSH Task owner values are
+Runtime child agentIds; they are not Workspace Agent IDs for these CLI commands.
 
 Discovery:
   list [--active|--archived]      Find Agent IDs; marks this CLI caller's Agent

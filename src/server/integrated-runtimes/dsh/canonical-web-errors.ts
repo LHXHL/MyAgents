@@ -118,6 +118,15 @@ export function dshCanonicalWebTransportError(
       phase: 'tls',
     });
   }
+  if (code === 'UND_ERR_SOCKET' || code === 'ECONNRESET' || code === 'EPIPE' || code === 'ECONNREFUSED') {
+    const connection = route === 'proxy' ? 'Web connection through the configured proxy' : 'Web connection';
+    const failure = code === 'ECONNREFUSED' ? 'was refused' : 'closed before the response completed';
+    return new DshCanonicalWebError(
+      phase === 'response_body' ? 'web_request_failed' : 'web_connect_failed',
+      `${connection} ${failure} (${code}). Check the destination${route === 'proxy' ? ' and proxy' : ''} availability, then retry.`,
+      metadata,
+    );
+  }
   if (phase === 'response_body') {
     return new DshCanonicalWebError('web_request_failed', 'Web response body could not be read', metadata);
   }

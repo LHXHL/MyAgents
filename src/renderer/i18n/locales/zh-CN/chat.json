@@ -779,6 +779,8 @@
         "imBridgeTools": "插件工具"
       },
       "taskOp": {
+        "rootOwner": "负责人：主 Agent（root）",
+        "agentOwner": "负责人：Agent（{{owner}}）",
         "loadingList": "加载任务列表...",
         "emptyList": "暂无任务",
         "create": "创建任务",

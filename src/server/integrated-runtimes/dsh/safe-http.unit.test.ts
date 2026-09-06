@@ -268,7 +268,7 @@ describe('DshSafeHttpClient', () => {
       signal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: 'web_connect_failed',
-      message: 'Web request through the configured proxy failed (ECONNREFUSED)',
+      message: 'Web connection through the configured proxy was refused (ECONNREFUSED). Check the destination and proxy availability, then retry.',
       phase: 'proxy_connect',
       systemErrorClass: 'ECONNREFUSED',
     });

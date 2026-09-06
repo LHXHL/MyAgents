@@ -1211,3 +1211,8 @@ MyAgents-dsh Runtime/Host boundary updates (UPG-W11) are documented in [the inte
 Same-operation Always Allow progression is owned by the Runtime permission service; the Host bridge forwards its validated current revision rather than comparing against the operation's initial revision. Missing interaction transport is distinct from a user denial. The regression and delivery record are maintained in [UPG-W12](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-07-inline-approval-progression-upg-w12), including Host WebFetch HTTP and classified connection error reporting.
 
 Action defaults and child Shell approval are owned by the same Runtime permission service. The Host preserves its existing mode/config identity and interaction UI; Skill, task management and collaboration no longer add permission cards in Action, while Shell and external tools retain approval. Actual questions and plan approval remain interactive. [UPG-W13](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-07-action-permissions-and-session-review-upg-w13) records the exact integration and Session-tree grant coverage.
+
+[UPG-W14](./tech_docs/myagents_dsh_integrated_runtime.md#2026-09-07-self-test-convergence-upg-w14)
+keeps filesystem execution and checkpoints in Runtime, complete stale-history recovery in its
+consumers, and visible Agent counts/owner labels/network explanations in Host. No new state owner
+or protocol method is introduced; stable IDs and mutation replay semantics remain unchanged.

@@ -65,6 +65,11 @@ src-tauri/src/cli.rs                       ├── npm-global/       (AI 自�
 
 ## CLI 脚本设计
 
+`status.agents` 与默认 `agent list` 共用持久化 Agent/workspace registry 的用户可见、
+非归档过滤；禁用但可见的 Agent 与历史 orphan 仍计入，internal Agent 不计入。
+DSH TaskGraph 的 `owner=root` 是当前对话主 Agent，其他 owner 为 Runtime child ID；
+CLI help 解释其与 Host Workspace Agent ID/可变显示名的区别，不重写持久化身份。
+
 ### 执行方式
 
 CLI 脚本只有一条执行 authority：`cli.rs` 使用当前安装包的 bundled Node.js 执行当前安装包的 `resources/cli/myagents.cjs`。`.cjs` 是产物自描述契约：即使开发 `.app` 位于上层声明 `type: module` 的源码目录，Node 也必须按 CommonJS 加载。AI Bash 与用户终端的 `myagents` 先经过薄启动器回到当前 app executable；兼容的 `MyAgents <known-group>` 直调则直接进入同一个 Rust CLI mode。两条入口最终执行同一 bundle，不依赖系统 Node 或 HOME 中的业务脚本。

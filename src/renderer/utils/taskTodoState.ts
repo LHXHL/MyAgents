@@ -25,6 +25,7 @@ export interface DerivedTaskTodo {
   content: string;
   status: TaskTodoStatus;
   activeForm: string;
+  owner?: string;
 }
 
 const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList']);
@@ -73,6 +74,7 @@ export function parseTaskUpdateSuccess(result: string | undefined): boolean | un
 }
 
 interface TaskListResultTask {
+  owner?: string;
   id: string;
   subject: string;
   status: TaskTodoStatus;
@@ -93,6 +95,7 @@ export function parseTaskListResult(result: string | undefined): TaskListResultT
         id: obj.id,
         subject: typeof obj.subject === 'string' ? obj.subject : '',
         status: normalizeStatus(obj.status),
+        ...(typeof obj.owner === 'string' && obj.owner ? { owner: obj.owner } : {}),
       });
     }
     return out;
@@ -227,5 +230,16 @@ export function getTaskListSnapshot(
 ): DerivedTaskTodo[] | undefined {
   const tasks = parseTaskListResult(tool.result);
   if (!tasks) return undefined;
-  return tasks.map(t => ({ id: t.id, content: t.subject, status: t.status, activeForm: t.subject }));
+  return tasks.map(t => ({ id: t.id, content: t.subject, status: t.status, activeForm: t.subject, ...(t.owner ? { owner: t.owner } : {}) }));
+}
+
+/** Only a settled result identifies the owner; input alone is a requested transfer. */
+export function getTaskResultOwner(tool: Pick<ToolUseSimple, 'result' | 'isError'>): string | undefined {
+  if (tool.isError || !tool.result) return undefined;
+  try {
+    const task = asObject(asObject(JSON.parse(tool.result))?.task);
+    return typeof task?.owner === 'string' && task.owner ? task.owner : undefined;
+  } catch {
+    return undefined;
+  }
 }

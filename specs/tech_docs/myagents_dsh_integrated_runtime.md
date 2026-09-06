@@ -1216,3 +1216,42 @@ Main accepts the fresh external Tester's eight-scenario rerun, native report `8e
 UPG-W13 W13-1–W13-4 have accepted local macOS implementation and delivery evidence. Official ingestion and source freshness, Host typecheck/lint and 32 build-script checks pass. All five native Host tests pass against both staging and the signed Debug App: nine root tool results are verified from Product events, and the two child Shell results are verified from the actual child model requests. This keeps child conversation ownership separate from root projection. The App passes deep/strict signature verification and its bundled Node verifies the exact accepted handoff. Its twelve-generation soak exits every Runtime PID, retains descriptors at 14 → 14, and records RSS growth of 360,448 bytes. Web, Sidecar, Bridge and CLI bundles were rebuilt through the official Tauri build.
 
 The [trusted external receipt](../../../MyAgents-dsh-release-work/upg-20260905/boundary-13-release-receipt.json) binds these gates, the reviewed failed campaign, final Host source and App bytes. This is the Runtime PRD's delegated post-source-freeze acceptance record. The local signed Debug App is not notarized; desktop acceptance remains with the user. Fully quit the old App and start this build before retesting. No user Session, report, configuration or workspace was modified. Reviewed parallel Edit, Runtime identity presentation and diagnostic pagination improvements are not included in the permission-fix completion claim.
+
+### 2026-09-07 self-test convergence (UPG-W14)
+
+User-selected items 1/2/3/6/7/8 only. Runtime normalizes file aliases through the existing Provider,
+rechecks the original input after authorization, preserves retained-output misses versus errors,
+and recomputes independent Edits under the file lock with actual checkpoint preimages/version CAS.
+Host history recovery discards the complete assembler on explicitly retryable cursor_stale or
+session_read_unstable, with three attempts and 1,024 pages per attempt; malformed data and other
+errors propagate. The dynamic driver uses the public protocol snapshot reader with the same policy.
+
+Host status and Agent list share the same visible/active registry projection. Task cards and CLI help
+explain stable root/Agent owner IDs; names do not replace IDs. Known socket/refused failures retain
+route, phase and system code with actionable text, without asserting a DNS cause. ls distinguishes
+entry and byte truncation. Runtime/model/depth state queries remain outside this workstream.
+
+Runtime and staged Host acceptance is complete. The official builder/ingester bind Runtime source
+`1046856d1fdf6a5762067ef91e9eab55d4a90c07`, Runtime manifest
+`645296b4efbdf9edab9784443a4c1511e4a7f4c6ab0b9df9d1862edafd3ede91`, handoff
+`b864f8d8fb386ee8ad9ddd68b5dec091cc84f902948d4cc87fdbd84567bde3ef` and compatibility
+`0413843e1fe76df07e2fc2e7f50254546e9b08697ec0862c27c931c2c9ab0d2d`. Protocol remains 3.1.0;
+DSH revision and patches are unchanged. Pre-artifact report
+`7c8afdf427f5b12379cd16496f86386bce6e804fb14ccafffbb1b2ac14b78256` passed all ten phases.
+Fresh external native testing passed all eight scenarios; report
+`3b8a65c5f8f9a3bb91a9fd24268483466694a38f85d7389c4e7f401016678321` and dynamic campaign
+`446946afd32ee1b050f7f6b6459635e84366e551f9adcb9735eb49fec9868825` bind these exact bytes.
+
+Source gates passed: Runtime 757 tests, typecheck/lint/build; Host 4,047 unit + 1,124 DOM + 500
+integration tests (8 explicit skips), 32 build-script tests, typecheck/lint. New staged Runtime
+passed all five real-process tests, including Action/shared child Shell grants, cold resume and a
+12-generation soak (14→14 descriptors, RSS growth 425,984 bytes). Freshness verifies the frozen HEAD.
+The first ingestion command used the Host shell's Node 24.15.0 and was correctly rejected before
+copying; its premature staged check saw the old resources. Both logs are retained separately. The
+accepted ingestion and process tests use the required Node 24.14.0; no verifier rule was changed.
+
+The signed App build and final packaged-process acceptance are owned by the immutable external
+[W14 delivery receipt](/Users/ethan/Projects/MyAgents-dsh-release-work/upg-20260905/boundary-14-release-receipt.json),
+created only after their checks pass, so recording those results does not invalidate this source
+freeze. macOS is verified; Windows/Linux remain implementation-complete_pending-native-validation.
+User desktop acceptance remains the final product acceptance step.
