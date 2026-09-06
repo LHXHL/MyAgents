@@ -75,8 +75,8 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 - `userCliToolsEnabled`：是否读取用户 CLI 工具注册表，受实验开关控制。
 - `enabledOfficialToolIds`：当前 Session 实际启用的官方 CLI 工具。
 
-模板直接内联在 TypeScript 中，不从运行时文件系统加载。原因是打包后的 Bun
-`__dirname` 不能稳定定位模板资源；内联内容同时让生产包与源码使用同一个事实来源。
+模板直接内联在 TypeScript 中，不从运行时文件系统加载。单文件 bundle 不能依赖源码
+目录中的模板路径；内联内容让生产包与源码使用同一个事实来源。
 
 受管「浏览器」的登录态保存不属于 Prompt 契约。应用级 Browser Host 会在成功工具调用和 Context teardown 边界自动 checkpoint Cookie；模型无需、也不应被提示主动调用存储工具来维持产品正确性。该 headed Context 不使用 Playwright `storageState()`，避免身份维护创建用户可见的临时页面；localStorage 与 IndexedDB 不跨 Product Session 恢复。标准 `playwright` 仍遵循上游 MCP 的 argv/storage-state 语义，MyAgents 不用隐藏 Prompt 改写它。
 
@@ -97,15 +97,14 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 
 ### 组装层次
 
-早期实现称为“三层 Prompt”；当前代码已经包含独立的 CLI capability appendix，可按
-四类内容理解：
+当前产品级 append 分为四类内容：
 
 | 层                | 职责                                                                           | 组合方式             |
 | ----------------- | ------------------------------------------------------------------------------ | -------------------- |
 | L1 基础身份       | MyAgents 身份、当前 Runtime、全局目录、时间判断约束                            | 始终包含             |
 | L2 交互渠道       | 桌面，或具体 IM/Agent Channel 与私聊/群聊信息                                  | 互斥选一             |
 | L3 场景与产品交互 | Task、Heartbeat、Registered Agent、浮球、Widget、Session 协作                  | 按条件叠加           |
-| L4 CLI 能力发现   | Task、Goal、Thought、IM 媒体、Vision、用户注册工具                             | 按场景与能力开关叠加 |
+| L4 CLI 能力发现   | Task、Goal、Record、IM 媒体、Vision、用户注册工具                              | 按场景与能力开关叠加 |
 
 ### 当前预设片段矩阵
 
@@ -125,12 +124,12 @@ Workspace 指令可能由 Runtime 原生加载，Codex 的 MyAgents append 则�
 | `myagents-cli-goal`                      | Goal Mode 只在用户明确要求时创建                        | `desktop`，以及私聊 `im` / `agent-channel`         |
 | `myagents-cli-task-exit`                 | 目标完成时用 CLI 提前结束 Task                          | `cron && aiCanExit`                                |
 | `myagents-cli-im-media`                  | 向当前聊天发送文件、图片、PDF 等                        | `im`、`agent-channel`                              |
-| `myagents-cli-thought`                   | 仅在用户明确要求“记一下”时写 Thought                    | `desktop`、`im`、`agent-channel`                   |
+| `myagents-cli-record`                    | 仅在用户明确要求“记一下”时创建文字 Record               | `desktop`、`im`、`agent-channel`                   |
 | `myagents-cli-vision`                    | 当前模型不能读图时调用图片理解 helper                   | Session 启用 image-understanding 官方工具          |
 | `myagents-user-tools`                    | 用户注册 CLI 工具的名称、description 与发现方法         | 实验开关开启且注册表存在 enabled 工具              |
 
 `cron` 与 `registeredAgent` 使用 desktop-style shell I/O 的 channel block，但不因此成为
-桌面交互场景；它们不会获得 Widget、Thought 或 Goal 的桌面能力提示。
+桌面交互场景；它们不会获得 Widget、Record 或 Goal 的桌面能力提示。
 
 ### 渐进披露与工具边界
 
@@ -207,8 +206,9 @@ systemPrompt = { type: preset, preset: claude_code, append: MyAgentsPrompt }
   `--append-system-prompt-file`；保留 Claude Code 默认 preset 和 OAuth/Keychain 行为。
 - Codex：使用 `developerInstructions`，新建与 resume thread 都走同一字段。
 - Gemini：`GEMINI_SYSTEM_MD` 会整体替换内置 Prompt，因此先导出并缓存当前 Gemini
-  版本的 base prompt，再生成“ MyAgents + Workspace + Gemini base”的 per-session
-  合并文件；结束时清理 session 文件，base 版本缓存保留。
+  版本的 base prompt，再生成“MyAgents + Workspace + Gemini base”的 deterministic
+  per-session 文件。Windows `.cmd` grandchild 可能晚于父进程读取该文件，所以进程退出时
+  不立即删除；只由 age-based GC 清理 stale 文件。base 版本缓存独立保留。
 
 ### Integrated DSH
 
@@ -284,7 +284,7 @@ payload，而 UI 只展示 envelope 后的 visible tail 或 badge。它适合 Tu
 Plugin 或工具的数据仍需结构化标记、转义并声明为 untrusted context，不能因为被隐藏就
 当成系统指令。
 
-Task 智能讨论采用“薄动态 reminder + product-owned Skill”分工：`TASK_DISCUSSION` 只携带 discussion/workspace/可选 Thought identity 和原始 visible tail，`InitialMessage.requiredSystemSkill` 要求 app-owned `myagents-task-alignment` exact source/hash/inventory revision。澄清方法、完整 `task.md` 写作和确认协议留在 Skill；Task 参数事实由 `myagents-task-automation` 与 CLI leaf help 按需披露。不得在 App handler 再复制问卷、参数矩阵或四文档模板，也不得仅靠 slash 文本猜 Skill 已加载。
+Task 智能讨论采用“薄动态 reminder + product-owned Skill”分工：`TASK_DISCUSSION` 只携带 discussion/workspace/可选 Record identity 和原始 visible tail，`InitialMessage.requiredSystemSkill` 要求 app-owned `myagents-task-alignment` exact source/hash/inventory revision。澄清方法、完整 `task.md` 写作和确认协议留在 Skill；Task 参数事实由 `myagents-task-automation` 与 CLI leaf help 按需披露。不得在 App handler 再复制问卷、参数矩阵或四文档模板，也不得仅靠 slash 文本猜 Skill 已加载。
 
 ## 其它独立 Prompt
 

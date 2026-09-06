@@ -15,7 +15,6 @@ license does not automatically license them.
 | Anthropic Claude Agent SDK and native binaries | Applicable Anthropic legal agreements; see the `LICENSE.md` distributed with the SDK |
 | Node.js and npm | Their respective licenses and the licenses of included third-party components |
 | OpenClaw Plugin SDK-derived shim | MIT License; Copyright © 2026 OpenClaw Foundation |
-| Cuse binary | Apache License 2.0 |
 | OpenAI Codex runtime | Apache License 2.0 |
 | Playwright MCP, Playwright, and optional Chromium downloaded directly from the official Chrome for Testing / Playwright distribution | Apache License 2.0 for Playwright; Chromium and bundled third-party components retain the notices shipped in the official archive |
 | sharp | Apache License 2.0 |
@@ -24,6 +23,7 @@ license does not automatically license them.
 | AnyDoc, pdf-inspector, and office-crypto document parsers | MIT License |
 | PP-OCRv6 Small ONNX models and PaddleOCR dictionary | Apache License 2.0 |
 | ONNX Runtime CPU | MIT License |
+| Opus audio codec (bundled through `libopus_sys`) | 3-clause BSD-style license; Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, and other contributors identified in the bundled `COPYING` file |
 | PDFium and its Chromium third-party components | BSD-style and the licenses identified by the accompanying PDFium/Chromium notices |
 | Tauri, React, and other npm or Cargo dependencies | Licenses declared by the respective packages |
 | User-installed Skills, plugins, MCP servers, and external runtimes | Licenses or service terms specified by their respective publishers |
@@ -64,7 +64,6 @@ MyAgents 包含、分发或集成第三方软件、SDK、运行时、Skills、�
 | Anthropic Claude Agent SDK 及原生二进制文件 | Anthropic 适用的法律协议；参见随 SDK 分发的 `LICENSE.md` |
 | Node.js 与 npm | 各自的许可及所含第三方组件的许可 |
 | 派生自 OpenClaw Plugin SDK 的 shim | MIT License；Copyright © 2026 OpenClaw Foundation |
-| Cuse binary | Apache License 2.0 |
 | OpenAI Codex runtime | Apache License 2.0 |
 | Playwright MCP、Playwright，以及从 Chrome for Testing / Playwright 官方分发按需下载的 Chromium | Playwright 使用 Apache License 2.0；Chromium 及其第三方组件保留官方归档随附的许可与声明 |
 | sharp | Apache License 2.0 |
@@ -73,6 +72,7 @@ MyAgents 包含、分发或集成第三方软件、SDK、运行时、Skills、�
 | AnyDoc、pdf-inspector 与 office-crypto 文档解析器 | MIT License |
 | PP-OCRv6 Small ONNX 模型与 PaddleOCR 字典 | Apache License 2.0 |
 | ONNX Runtime CPU | MIT License |
+| Opus 音频编解码器（通过 `libopus_sys` 内置） | 三条款 BSD-style 许可；Copyright 2001-2023 Xiph.Org、Skype Limited、Octasic 及内置 `COPYING` 文件列明的其他贡献者 |
 | PDFium 及其 Chromium 第三方组件 | BSD-style 及随附 PDFium/Chromium 声明中列明的许可 |
 | Tauri、React 及其他 npm 或 Cargo 依赖 | 各软件包声明的许可 |
 | 用户安装的 Skills、插件、MCP servers 及外部运行时 | 各发布者声明的许可或服务条款 |

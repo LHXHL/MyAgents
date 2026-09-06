@@ -6,18 +6,21 @@
 
 ## 目录
 
-**Rust 层（早期 v0.1.x）**
+**Rust 层**
 - [`local_http`](#local_http) — 防系统代理拦截 localhost
 - [`process_cmd`](#process_cmd) — 防 Windows 控制台窗口弹出
 - [`proxy_config`](#proxy_config) — 子进程 NO_PROXY 注入
 - [`system_binary`](#system_binary) — 系统工具查找（Finder PATH 缺失）
 - [`normalize_external_path`](#normalize_external_path) — Windows `\\?\` 长路径前缀剥离
+- [`filesystem_capacity::available_space`](#filesystem_capacity) — 查询目标路径所属文件系统的可用容量
+- [`durable_fs`](#durable-fs) — 跨平台目录持久化与 no-replace rename
 - [`tauri::async_runtime::spawn`](#async_runtime) — 防 macOS startup-abort
 - [Session watcher](#session-watcher) — 文件系统观察索引
 
-**v0.2.0 结构性重构**
+**跨进程与持久化 helper**
 - [`withConfigLock` / `with_config_lock`](#withconfiglock) — config.json 跨进程串行写入
 - [`withFileLock` / `with_file_lock`](#withfilelock) — 单写者文件原子性
+- [`DurableRecordJournal`](#durable-record-journal) — Record append-only 事实的 typed JSONL durability
 - [`copyPlainText`](#renderer-clipboard) — WebView 普通文本复制 fallback + 真实成功语义
 - [`killWithEscalation`](#killwithescalation) — 子进程 stop 升级链
 - [`withAbortSignal` / `cancellableFetch`](#cancellation) — 统一 cancel 协议
@@ -103,13 +106,13 @@
 
 **Problem.** Windows 上 GUI 应用（Tauri）直接启动子进程（node.exe Sidecar / Plugin Bridge / npm install）会弹出黑色控制台窗口。长生命周期 Node 进程还会创建 SDK / MCP 后代；如果所有者只保存直接 `Child`，正常退出时只能按 argv 猜测哪些后代属于 MyAgents，既可能漏掉后代，也可能误杀同机的外部进程。在 Windows 上先启动再调用 `taskkill /T`，还会留下 wrapper 提前退出、Job Object 尚未绑定的竞态窗口。
 
-**Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`。
+**Surface.** `crate::process_cmd::new(program)` 返回已注入 Windows `CREATE_NO_WINDOW` 的 `Command`；`crate::process_cmd::spawn_tree(&mut command)` 为会创建后代的长生命周期进程返回 `ChildTree`；`ChildTree::kill_and_wait()` force-stop exact tree 并最多等待 10 秒确认退出；`crate::process_cmd::settle_tree(child, natural_grace)` 先允许调用方定义的 cooperative / natural grace，再统一落到同一个 bounded force-stop。
 
 **Invariants enforced.** `ChildTree` 在子进程执行用户代码前建立进程树边界：Unix child 进入独立 process group；Windows child 以 suspended 状态创建，绑定 kill-on-close Job Object 后再恢复运行。所有者必须保留 `ChildTree`，显式 stop 与 Drop 只终止这棵精确进程树。应用退出先禁止新的资源创建，等待已经获准的创建流程完成登记或释放，再释放 Sidecar / Plugin Bridge owner；Unix 还要等待有上限的 SIGTERM→SIGKILL 清理任务结束。Windows GUI child 没有可靠的 console signal，stop 直接终止已保留的 Job Object。Task command Detector 同样属于受管进程树：timeout、stdout 超限、Stop、delete 与 App shutdown 都必须通过 retained `ChildTree` 收敛，读取 stdout/stderr 的线程也要 join 后再判断最终上限状态。进程树边界建立失败时必须终止 child 并返回错误，不能降级为未受管理的进程。
 
 **Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
-`myagents-document-worker` 同样走 `process_cmd::new()` + `spawn_tree()`，但它是一 job 一进程的 App-owned 隔离边界，不属于 Sidecar。Manager 必须同时保留 `ChildTree`、stdin 和 active `(jobId, generation)`；4-byte big-endian length + JSON frame 上限 1 MiB，clean EOF 与截断 prefix/payload 必须分开处理，terminal identity 不匹配一律按协议失败。密码不进入 argv/env：只在 start frame 中出现，序列化/接收 buffer 写完即 zeroize；取消先发 exact generation frame，2 秒后仍存活才 kill retained tree。完整协议见 `document_processing.md`。
+`myagents-document-worker` 同样走 `process_cmd::new()` + `spawn_tree()`，但它是一 job 一进程的 App-owned 隔离边界，不属于 Sidecar。Manager 必须同时保留 `ChildTree`、stdin 和 active `(jobId, generation)`；4-byte big-endian length + JSON frame 上限 1 MiB，clean EOF 与截断 prefix/payload 必须分开处理，terminal identity 不匹配一律按协议失败。密码不进入 argv/env：只在 start frame 中出现，序列化/接收 buffer 写完即 zeroize。取消先发 exact generation frame，给 Worker 15 秒 cooperative settlement；App shutdown 使用 10 秒 cooperative settlement；超时后 force-stop retained tree，并最多再等 10 秒确认 exact tree 已退出。完整协议见 `document_processing.md`。
 
 **例外（已内联处理或不适用）：**
 - `#[cfg(windows)]` 守卫内的系统工具命令（taskkill / powershell）
@@ -158,7 +161,7 @@
 - npm / Bun / 子进程的 cwd 或 arg → 部分版本静默挂起或路径解析失败
 - 拼成日志 / 配置时人眼难读
 
-v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_runtime_loader` 的结果直接用来生成 Node `--import file:///...` URL，前缀没剥导致 Plugin Bridge 启动即 crash，30 次 health check 全过不去。
+该 trap 会让 Plugin Bridge 启动即 crash：`find_tsx_runtime_loader` 的结果若未经归一化就生成 Node `--import file:///...` URL，Windows 长路径前缀会形成非法 URL。
 
 **Surface.** `crate::sidecar::normalize_external_path(path: PathBuf) -> PathBuf` —— Windows 上 strip `\\?\` 前缀，其他平台 no-op。
 
@@ -171,6 +174,30 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 口诀：**路径"出 Rust"的那一刻 normalize**，不是路径产生时也不是消费时——明确的边界规则比"防御性 normalize"更经得起未来扩展。
 
 **Don't.** 把 `resource_dir()` / `current_exe()` / `canonicalize()` 的结果直接喂给 Node / npm / URL / 子进程 arg。也不要在每个 call site 重新发明 `s.strip_prefix("\\\\?\\")`——`path_to_file_url` 之类纯格式化函数应保持纯净，由调用方在边界 normalize。
+
+---
+
+<a id="filesystem_capacity"></a>
+## `filesystem_capacity::available_space` (`src-tauri/src/filesystem_capacity.rs`)
+
+**Problem.** 文件系统容量是“这个现存目标路径属于哪个文件系统”的 OS 事实。枚举 mount 后用 `Path::starts_with()` 推断，在 Windows canonical `\\?\C:\...` 与 `C:\` 表示不一致时会找不到目标盘，也会把无关的未就绪卷带入裁决。
+
+**Surface.** `crate::filesystem_capacity::available_space(path: &Path) -> io::Result<u64>`——直接查询现存路径所属文件系统。调用方继续拥有容量预算、业务错误和 lifecycle。
+
+**Don't.** 不要枚举卷、比较路径字符串、剥掉 `\\?\` 后继续做前缀匹配，也不要为容量查询增加 mount cache、坏盘表或扫描重试。`normalize_external_path` 只用于路径离开 Rust 的边界，不用于修补 Rust 内 filesystem query。
+
+---
+
+<a id="durable-fs"></a>
+## `durable_fs` (`src-tauri/src/durable_fs.rs`)
+
+**Problem.** 原子写入与目录发布只有在“文件内容同步 → rename → 父目录元数据同步”全部成功后才能报告 durable。Unix 可用只读目录 handle 执行 `fsync`；Windows 的 `FlushFileBuffers` 则要求 handle 具备 `GENERIC_WRITE`。仅加 `FILE_FLAG_BACKUP_SEMANTICS` 后以只读方式打开目录虽然成功，但 `File::sync_all()` 会稳定返回 `ERROR_ACCESS_DENIED`，使 Record 迁移、文档发布和语音模型安装把可写目录误判为存储失败。
+
+**Surface.** `crate::durable_fs::sync_directory(path)` 同步已存在的普通目录；`crate::durable_fs::rename_directory_noreplace(source, destination)` 执行不覆盖既有目标的目录发布。调用方仍拥有业务错误、rollback 和“rename 已可见但 durability 未确认”的生命周期裁决。
+
+**Invariants enforced.** Windows 目录 handle 使用 `FILE_FLAG_BACKUP_SEMANTICS + GENERIC_WRITE` 后再执行 `FlushFileBuffers`；Unix 继续对目录执行 `fsync`。Windows no-replace 发布使用 `MoveFileExW(MOVEFILE_WRITE_THROUGH)`，Linux/macOS 使用各自的原子 no-replace primitive。真实同步失败必须向调用方返回，不能伪装成成功；调用方应先同步新文件，再发布目录或指针，最后同步对应父目录。
+
+**Don't.** 不要在各业务模块复制平台分支；不要把 Windows 目录同步改成无条件 no-op；不要吞掉 `AccessDenied`；也不要用只读 Windows 目录 handle 调用 `sync_all()`。用户可写性、磁盘容量与 durability barrier 是不同事实，错误投影必须在 owner 边界区分。
 
 ---
 
@@ -205,7 +232,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 ---
 
 <a id="withconfiglock"></a>
-## `withConfigLock` / `with_config_lock` (Pattern 1, v0.2.0)
+## `withConfigLock` / `with_config_lock`
 
 **Problem.** `~/.myagents/config.json` 被三方独立写者（renderer plugin-fs / Node admin API / Rust IM commands）read-modify-write，无任何协调；并发写 rename 上"最后一名 wins"，用户密钥/设置静默丢失。
 
@@ -228,7 +255,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 ---
 
 <a id="withfilelock"></a>
-## `withFileLock` / `with_file_lock` (Pattern 2, v0.2.0)
+## `withFileLock` / `with_file_lock`
 
 **Problem.** 单写者文件（`tasks.jsonl` / `session_goals.json` / `sessions/*.jsonl` / `mcp-oauth state`）裸 append 或 read-modify-write，应用内多 owner 并发触发 race；之前用 `Atomics.wait` 同步 busy-wait 阻塞 event loop。
 
@@ -254,6 +281,26 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 ---
 
+<a id="durable-record-journal"></a>
+## `DurableRecordJournal` (`src-tauri/src/durable_journal.rs`)
+
+**Problem.** Record lifecycle 与 transcript revision 都是 append-only 事实。如果各自实现 JSONL append/recovery，很容易在 torn tail、identity、sequence、checksum、单行上限或 fsync 上漂移；直接套通用数据库/事件框架又会为两个局部日志引入额外进程、schema owner 和迁移面。
+
+**Surface.**
+- `DurableRecordJournal<Event>::open(path, record_id, schema_version, max_line_bytes)`：验证配置、恢复合法前缀并取得 next sequence
+- `append(wall_time_ms, media_ms, event)`：写 typed event，flush + `sync_data` 后才返回已提交 entry
+- `recover_and_read<Event>(...)`：只返回通过 identity/schema/sequence/checksum 校验的 durable entry
+
+**Invariants enforced.**
+- 目标只能是普通文件或不存在；拒绝 symlink/special file
+- 每行固定绑定 `recordId + schemaVersion + seq + eventId`，checksum 覆盖 body；sequence 必须从 1 连续递增
+- 尾部 partial/畸形/超限行只在最后合法字节边界修复；identity/schema mismatch fail closed，不能把其它 Record 的内容截成“可用”日志
+- caller 必须给出领域 event enum 与 projection；helper 不拥有 recording/transcript 状态机，也不扩张成通用 event bus、数据库或跨进程队列
+
+**Don't.** Record-owned append-only 事实不得再裸写 JSONL，或复制一套 checksum/torn-tail repair。普通可原子替换的 snapshot、TaskStore 和 speech job metadata 不应为了“统一”迁入该 journal。
+
+---
+
 <a id="renderer-clipboard"></a>
 ## `copyPlainText`（Renderer clipboard）
 
@@ -266,7 +313,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ---
 
 <a id="killwithescalation"></a>
-## `killWithEscalation` (Pattern 3, v0.2.0)
+## `killWithEscalation`
 
 **Problem.** 三个外部 runtime adapter（claude-code / codex / gemini）之前共用反模式：SIGTERM + 短 wait + 无界 `waitForExit()`。子进程拒收 SIGTERM 时 sidecar 永久卡死，每条 stop 路径都中招（用户停止、模型切换、权限切换、runtime 切换）。
 
@@ -285,7 +332,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ---
 
 <a id="cancellation"></a>
-## `withAbortSignal` / `cancellableFetch` / `withBoundedTimeout` / `anySignal` (Pattern 4, v0.2.0)
+## `withAbortSignal` / `cancellableFetch` / `withBoundedTimeout` / `anySignal`
 
 **Problem.** 工具 / bridge 大量裸 `fetch()` 无 AbortSignal，下游卡住 → tool turn 永久 hang；OpenAI bridge 的 `AbortController` 只覆盖 headers 阶段；SSE proxy 有"客户端断开但 SDK 仍在烧 token"的孤儿态。
 
@@ -309,7 +356,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ---
 
 <a id="maybespill"></a>
-## `maybeSpill` + `/refs/:id` + SSE 优先级队列 (Pattern 5, v0.2.0)
+## `maybeSpill` + `/refs/:id` + SSE 优先级队列
 
 **Problem.** 大 payload（图片、长 tool result、巨型 HTTP 响应）直接走 SSE/IPC JSON channel，OOM、UI 线程被 base64 阻塞、慢 client 无界排队拖死 sidecar。
 
@@ -346,17 +393,17 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ---
 
 <a id="withlogcontext"></a>
-## `withLogContext` + AsyncLocalStorage logger pipeline (Pattern 6, v0.2.0)
+## `withLogContext` + AsyncLocalStorage logger pipeline
 
 **Problem.** 日志按 sessionId/tabId/turnId/runtime 关联缺失；为补 correlation 改 932 个 `console.*` 调用是 cost-prohibitive；同时 `appendFileSync` 同步落盘阻塞 event loop。
 
 **Surface.**
-- `withLogContext({ sessionId, tabId, turnId, runtime, requestId, ownerId }, fn)` (`src/server/utils/logger-context.ts`) —— 进入 ALS frame
+- `withLogContext({ sessionId, tabId, turnId, runtime, requestId, ownerId }, fn)` (`src/server/logger-context.ts`) —— 进入 ALS frame
 - HTTP 中间件从 `X-MyAgents-Tab-Id` / `X-MyAgents-Session-Id` 头自动起 frame；renderer `proxyFetch` 自动盖头
 - SDK turn 用 module-level 的 ambient TLS（`Map<sessionId|ownerId, LogContext>`，**不是** singleton）—— 因为 persistent `messageGenerator` 会 yield 出 ALS frame
 - Runtime adapter 在事件处理路径外层包 `withLogContext({ runtime })`
 - `LogEntry` schema 增 6 个可选 correlation 字段；`console.*` capture 自动注入
-- `UnifiedLogger` (`src/server/utils/UnifiedLogger.ts`) in-memory bounded queue（1000）+ 100ms async flusher + 50MB per-file rotation + 500MB per-dir cap + drop counter + 进程退出 hooks 同步 flush
+- `UnifiedLogger` (`src/server/UnifiedLogger.ts`) in-memory bounded queue（1000）+ 100ms async flusher + 50MB per-file rotation + 500MB per-dir cap + drop counter + 进程退出 hooks 同步 flush
 - Rust 端 `ulog_*!` macro 增 kv-pair arms，932 个 legacy 调用零迁移；底层换成 tokio task + bounded mpsc(1024) + 200ms flush tick
 
 **Invariants enforced.**
@@ -374,7 +421,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ---
 
 <a id="deferredinitstate"></a>
-## `DeferredInitState` + readiness endpoints (Pattern 7, v0.2.0)
+## `DeferredInitState` + readiness endpoints
 
 **Problem.** 单一 `healthy` 信号让 renderer 在 sidecar deferred init 还在跑时就以为可用——首次发消息卡住、route 用 `await __myagentsDeferredInit` 无限等。
 
@@ -409,7 +456,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Surface.** `ensureDirSync` / `ensureDir` / `isDirEntry`
 
-**断链 symlink 探针（v0.2.5 事故，CLAUDE.md 红线）.** `existsSync` / `Path::exists()` 跟随 symlink——**断链 symlink 返回 false**，代码以为"路径为空"，紧接着的写操作踩雷：Node v24 **sync `cpSync({recursive:true})`** 走进 `std::filesystem::equivalent` 抛未捕获 C++ 异常（`libc++abi: filesystem error: in equivalent: Operation not supported`），JS try/catch 接不住 → 整个 sidecar abort → Tauri 健康检查重启 → 死循环。v0.2.5 实战：`~/.myagents/skills/docx` 是断链，全局 sidecar 起不来。注意 async `fs.cp` 不崩，**只有 sync `cpSync` 崩**。
+**断链 symlink 探针.** `existsSync` / `Path::exists()` 跟随 symlink——**断链 symlink 返回 false**，代码会误以为“路径为空”。紧接着的 Node v24 sync `cpSync({recursive:true})` 可能在 `std::filesystem::equivalent` 抛出 JS 无法捕获的 C++ 异常，使 Sidecar abort 并进入健康检查重启循环。async `fs.cp` 的行为不同，不能用它的结果推断 sync 路径安全。
 
 在跑写操作（`cpSync` / `fs::create_dir_all` / `fs::remove_dir_all`）之前 MUST 用**不跟随 symlink** 的 API 探测：
 
@@ -443,14 +490,14 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - `fileResponse(p, { contentType })` — 用 `createReadStream + Readable.toWeb` 生成流式 Web Response
 - `sniffMime(path)` — ext→MIME 映射
 
-**CORS / CSP（渲染器直连 sidecar HTTP 的接口，#109）.** 绝大部分 sidecar 接口走 Tauri invoke proxy，不涉及浏览器同源策略；但渲染器**原生 `fetch('http://127.0.0.1:<port>/...')` 直连**的接口（`>1MB` 溢出回 ref-url 的 `/refs/:id`、附件 `/attachment/*`）如果不带 `Access-Control-Allow-Origin`，WebKit 拿到 opaque 响应拒绝可读，JS 侧报 `TypeError: Load failed`（#109 实战）。这类接口必须返回 `Access-Control-Allow-Origin: '*'`，惯例：`fileResponse(path, { headers: { 'Access-Control-Allow-Origin': '*' } })`。CSP 同步：渲染器直连的 `http(s)://...` 端口要列进 `connect-src`（管 fetch/XHR/WS 的标准指令就是 `connect-src`；曾经配过非标准 `fetch-src`，引擎一律忽略，已移除，别再加回来）。
+**CORS / CSP（Renderer 直连 Sidecar HTTP）.** 绝大部分 Sidecar 接口走 Tauri invoke proxy；只有明确登记的大载荷端点由 Renderer 原生 `fetch('http://127.0.0.1:<port>/...')`。这些端点必须返回 `Access-Control-Allow-Origin: '*'`，并把允许的地址列进 CSP `connect-src`。非标准 `fetch-src` 不生效，不能替代 `connect-src`。
 
 ---
 
 <a id="context-window-suffix"></a>
 ## Context-window suffix helpers (`src/server/utils/model-capabilities.ts`)
 
-**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 90%（约 180K）就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
+**Problem.** SDK 对不认识的 model id 按默认上下文窗口 fallback。更大窗口的模型若不经过 provider-scoped capability lookup，会错误显示、提前 auto-compact，并按错误窗口截断附件。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能下调阈值，不能修正这类上限。
 
 **Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值；builtin 的自动压缩阈值统一为 `90% × min(1M, registry)`。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
 
@@ -463,17 +510,17 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - **反向同样是红线**：bridge `modelOverride`、`*_MODEL_NAME` env、cron / persisted state、所有用户可见处必须用**未 wrap** 的原始 model id。
 
 **Don't.**
-- 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
-- registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
-- LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal（大小写归一后）裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max 选一个——相同 tail 在不同 Provider 上可能是 8K 与 10M，取 max 会让真实小窗口端点在自动压缩前先溢出（#516）。
-- 模态能力必须保留 `supported / unsupported / unknown` 三态和逐字段来源。LiteLLM 的 `supports_vision`、`supports_audio_input`、`supports_video_input` 是不完整证据，字段缺失不能转成 `false`；`supported_modalities` 才可作为完整列表。tail alias 同样逐模态取共识，冲突就保持 unknown。图片理解模型选择以 Provider offering row 为 authority：显式 `inputModalities` 无 `image` 才拒绝；缺失时 LiteLLM 只可提供正向 “inferred” 提示，负向或缺失不得跨 Provider veto，完全 unknown 由用户保存选择完成确认（#538）。
+- 不能只凭模型营销名称声明超长窗口；需要 beta header、账户等级或付费开关的能力必须由实际 provider offering 表达，默认配置保持 wire-default。
+- registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip；不完整 capability 条目要 per-field merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽已知字段。
+- LiteLLM 的 `provider/model` 只能生成安全的 tail fallback：有不带 provider 的 literal 时按 literal裁决；没有 literal 时只暴露候选一致的字段。禁止按目录顺序或取 max；相同 tail在不同 Provider 上可能代表完全不同能力。
+- 模态能力保留 `supported / unsupported / unknown` 三态和逐字段来源。不完整证据的字段缺失不能转成 `false`；tail alias逐模态取共识，冲突保持 unknown。图片理解模型选择以 Provider offering row为 authority，推断信息只能提供正向提示，不能跨 Provider veto。
 
 ---
 
 <a id="sync-tauri-command"></a>
 ## 同步 Tauri 命令与 WebView 主线程冻结
 
-**Problem.** 同步 `#[tauri::command] pub fn` 跑在主线程——macOS 上这就是 WKWebView 的 UI 线程。命令执行期间整个 WebView 冻结、画不出任何东西：React 提交了 DOM 也绘制不出。0.2.31 实战：`cmd_ensure_session_sidecar` 同步等 sidecar 冷启动 ~800ms → 点工作区后整个 UI 卡死 ~800ms 才翻页；所有前端补丁（flushSync / deferred-mount）全部无效，因为冻结发生在 Rust 主线程（935fc344 修复）。
+**Problem.** 同步 `#[tauri::command] pub fn` 跑在主线程；macOS 上这也是 WKWebView UI线程。命令等待Sidecar冷启动或文件IO时，React即使提交DOM也无法绘制，前端调度补丁不能修复Rust主线程冻结。
 
 **排查信号.** 点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 探针量**真实绘制时刻**（不是 commit 时刻）；若绘制时刻 ≈ 某同步命令返回时刻，即是它。注意 unified 日志只显 commit 不显 paint，容易被误导去改前端。
 
@@ -529,14 +576,14 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 **Don't.** 用一个布尔参数分派两种语义。
 
-详见 PRD（本地）`prd_0.1.69_session_config_snapshot.md`。
+Session snapshot 的完整 authority 与写入方向见 [`session_architecture.md`](session_architecture.md)。
 
 ---
 
 <a id="legacy-cron-migration"></a>
 ## Legacy Cron Startup Migration (`legacy_upgrade.rs`)
 
-**Problem.** 0.3.0 前 `cron_tasks.json` 同时承载裸 Cron、Task projection、managed job 与 Loop。新架构只有 Task scheduler；如果 renderer 或多个 Sidecar 各自迁移，会产生重复 Task、启动顺序竞态或双 scheduler。
+**Problem.** legacy `cron_tasks.json` 同时包含裸 Cron、Task projection、managed job 与 Loop。当前只有 Task scheduler；如果 Renderer 或多个 Sidecar 各自迁移，会产生重复 Task、启动顺序竞态或双 scheduler。
 
 **Surface.** Rust app setup 中的 `migrate_legacy_crons_on_startup()`，在唯一 `TaskStore` 初始化后、`TaskSchedulerController.initialize()` 前运行。legacy manager 只保存一次性 validated snapshot，不写旧文件。
 
@@ -555,7 +602,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 ## `workspace_files` 路径解析双轨 (`src-tauri/src/workspace_files/path_safety.rs`)
 
 **Problem.** 工作区文件操作（读/写/CRUD/搜索/watcher）涉及 14 个 Tauri command，每个都要做 path traversal 防护、blacklist 校验、symlink 安全。如果每个 cmd 自己写 `Path::join + canonicalize` 或 `Path::exists`，会出现两类持续踩坑：
-1. **写侧**：`Path::exists()` 跟随 symlink → 断链 symlink 误报为空 → 紧接着 `fs::create_dir_all` / `fs::copy` 失败或写穿 symlink target（CLAUDE.md v0.2.5 红线案例：`~/.myagents/skills/docx` 断链让全局 sidecar 起不来）。
+1. **写侧**：`Path::exists()` 跟随 symlink → 断链 symlink 误报为空 → 紧接着 `fs::create_dir_all` / `fs::copy` 失败或写穿 symlink target。
 2. **读侧**：`fs::read_to_string` 默认跟随 symlink → 含 `evil_link → /etc/passwd` 的恶意 repo 被克隆后，AI 工具调 `cmd_workspace_read_preview({path:'evil_link'})` → 内容外泄。
 
 **Surface.**
@@ -568,7 +615,7 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 | `reject_managed_global_skill_mutation(root, target)` | **mutation-only**：逐组件检查 canonical target、junction/symlink payload 与最近存在祖先，拒绝写入 `.claude/skills/*` 中指向 `~/.myagents/skills` 的链接叶子或后代（含目标尚不存在、断链） | `save_file`、`crud`、`delete`、`transfer` destination、`files_b64` destination |
 | `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
 | `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |
-| `validate_external_read_path(abs)` | 绝对路径外部读校验（drag-drop / launcher 工作区根）：lexical blacklist；路径**存在**时再 `fs::canonicalize` 复查一遍 blacklist（0.2.33 cross-review：中间 symlink 组件 `lure → ~/.ssh` 可穿透纯 lexical 检查）；不存在时仅 lexical 放行（slash.rs 要校验尚未创建的新工作区根）。返回 **lexical** 路径，保住调用方的 leaf-symlink 拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
+| `validate_external_read_path(abs)` | 绝对路径外部读校验：先做 lexical blacklist；路径存在时再 `fs::canonicalize` 复查，阻断中间 symlink组件逃逸；不存在时仅lexical放行。返回lexical路径以保留调用方的leaf-symlink拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
 | `validate_item_name(name)` | 文件名校验：禁止空 / 路径分隔符 / 控制符 / Windows 保留名（含 trailing dot/space）| `crud::new_file/folder/rename` |
 | `sanitize_filename(name)` | 修复型清洗：把非法字符替换为 `_`，用于"用户上传文件名带 `<`/`?`"等 | `files_b64::write_unique_file` |
 
@@ -591,14 +638,16 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 - 在单个 mutation command 里自行判断 `.claude/skills` 字符串前缀——Windows junction、大小写与断链会绕过。MUST 调用共享 mutation guard；普通项目 Skill 物理目录不应被误伤。
 - watcher 用 path-derived key 做 stop 索引——重命名/删除/symlink swap 后 stop 失效。MUST 用 `watch_start` 返回的 opaque token；`watch_stop({token})` 索引；进程 nonce 防跨重启 token 碰撞。
 
-**Phase E（PRD 0.2.7）状态**：18 个 sidecar HTTP workspace IO endpoint 已全部下线，renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁了被删 endpoint 的字符串字面量。
+应用内 rename/move 提交成功后，由 Rust mutation owner 在既有 `workspace:files-changed:<eventKey>` 通道立即发出 `{moves: [{oldPath, newPath}]}`，多项 move 只包含成功项。`useWorkspaceChangeSignal` 先交付映射再触发重读，打开的预览按路径组件映射文件及目录后代；同文档搬迁保留编辑缓冲与已保存基线，普通文件切换仍重置。保存、rename、move 通过 `acquire_edit_mutation` 复用按 canonical workspace identity 的 `KeyedLifecycleRegistry`，使已有文件校验与原子保存不会跨越应用内搬迁、重建旧路径。预览关闭及视图转换复用同一个保存流程，失败不卸载草稿。OS watcher 仍只发粗粒度刷新；外部路径失效显示提示，不推测新路径、不承诺外部进程事务或强制退出时的草稿恢复。
+
+Sidecar HTTP workspace IO endpoint 已全部下线，Renderer 唯一入口是 `useWorkspaceFileService(workspacePath)`。eslint `no-restricted-syntax` 规则封禁已删除 endpoint 的字符串字面量。
 
 ---
 
 <a id="workspace-path-identity"></a>
 ## `workspacePath` 工作区路径标识比较 (`src/shared/workspacePath.ts`)
 
-**Problem.** 同一工作区在不同存储里写法不同：`projects.json` 存 Windows 原生对话框路径（`C:\Users\…`，反斜杠），而 cron / task / session 的 `workspacePath`·`agentDir` 存 POSIX 式（`C:/Users/…`，正斜杠）。用 raw `===`（或只 `.replace(/\\/g,'/')` 的半吊子归一化）比较，在 Windows 上**永不相等**，且静默：#320 让所有定时任务"升级为新版任务"报"找不到工作区"，并连带让 task 卡片掉工作区名、Recent 会话空白、工作区过滤全"(已失效)"。Rust `cron_task/validation.rs::normalize_path` 早就按规范分组 cron，但渲染层没有统一比较器，~25 处各自 `===`——典型"每个调用点都要记得归一 → 必然有人忘"。
+**Problem.** 同一工作区在不同存储里可能使用Windows反斜杠或POSIX正斜杠。raw `===`（或只替换斜杠的局部归一化）会让 Task、Recent Session和工作区过滤静默失配；每个调用点自行实现比较也必然漂移。
 
 **Surface.**
 - `workspacePathsEqual(a, b)` — `.find` / `.some` 谓词用（接受 nullish）
@@ -658,10 +707,10 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 <a id="system-skill-sync"></a>
 ## System-skill 同步完整性门控 (`cmd_sync_system_skills` + `seedBundledSkills`)
 
-**Problem.** 把内置 system skill 同步/seed 到 `~/.myagents/skills/` 时，若**先清/替换目标再校验源**，一个打包不全的 bundle（#321：Windows 资源树某些 system-skill 目录缺 `SKILL.md`）会把用户的好副本换成空目录；再写 `.system-skills-version` 版本戳 → **永久冻结坏状态**（面板不可见、版本戳挡住下次重 seed）。
+**Problem.** 把内置 system skill同步到`~/.myagents/skills/`时，若**先清/替换目标再校验源**，打包不完整的bundle会把可用副本换成空目录；如果随后写入版本戳，坏状态会被永久视为已完成。
 
 **Surface / Invariants enforced.**
-- "完整 skill" = 含顶层 `SKILL.md`。源不完整 → **保留现有副本** + `ulog_warn`，**不**清目标。
+- 普通 "完整 skill" = 含顶层 `SKILL.md`；Cuse 携带 native CLI，还必须通过 metadata/完整文件清单与执行权限校验，并在版本 fast path 比较 App 源实际 payload（签名后的字节为准，见 [Cuse bundle](cuse_bundle.md)）。源不完整 → **保留现有副本** + `ulog_warn`，**不**清目标。
 - 版本戳 `complete = missing.is_empty() && incomplete.is_empty()` 时才写；任一缺/不完整 → 不写戳 → 下次启动重试。平台跳过的 skill 是有意的、不算缺陷、不阻塞。
 - Rust `cmd_sync_system_skills` 与 Node `seedBundledSkills` 两条 seed 路径**同款逻辑**。
 - `SYSTEM_SKILLS` 是版本化安装集合；`src/shared/systemSkills.ts::REQUIRED_SYSTEM_SKILLS` 是其中始终启用的 canonical 产品契约子集，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定。读取/写回 `skills-config.json` 都会移除 Required 的 stale disabled 项，list 投影固定为 `required:true, enabled:true`，disable API fail closed；普通系统/用户 Skill 仍保留可禁用语义。

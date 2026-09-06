@@ -17,6 +17,7 @@ import {
 import {
   resetConfigForTest,
   setFrozenSdkMcpFingerprint,
+  setCurrentMcpServers,
   snapshotConfig,
 } from '../builtin-session/config';
 import {
@@ -39,6 +40,21 @@ describe('live Query MCP mutation ownership', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('omits retired bundled definitions when rebuilding a restored SDK MCP map', async () => {
+    setCurrentMcpServers([
+      { id: 'legacy-cuse', name: 'Legacy', isBuiltin: true, type: 'stdio', command: '__bundled_cuse__' },
+      { id: 'custom-remote', name: 'Custom', isBuiltin: false, type: 'http', url: 'https://example.invalid/mcp' },
+    ]);
+    const setMcpServers = vi.fn(async () => ({ added: ['custom-remote'], removed: [], errors: {} }));
+    setQuerySession({ setMcpServers, interrupt: vi.fn(), close: vi.fn() } as never);
+    setFrozenSdkMcpFingerprint('old-map');
+    await expect(ensureSdkMcpInSync()).resolves.toBe(true);
+    expect(setMcpServers).toHaveBeenCalledWith({
+      'custom-remote': expect.objectContaining({ type: 'http', url: 'https://example.invalid/mcp' }),
+    });
+    expect(snapshotConfig().mcpServers?.map(server => server.id)).toEqual(['legacy-cuse', 'custom-remote']);
   });
 
   it('single-flights overlapping ensures and makes later callers recompute', async () => {
@@ -74,6 +90,19 @@ describe('live Query MCP mutation ownership', () => {
     // fingerprint and observed that the installed map was already current.
     expect(setMcpServers).toHaveBeenCalledTimes(1);
     expect(getQueryMcpMutation()).toBeNull();
+  });
+
+  it('does not treat an added-but-failed SDK 0.3.257+ server as a successful mutation', async () => {
+    const query = {
+      setMcpServers: vi.fn(async () => ({ added: ['failed-server'], removed: [], errors: { 'failed-server': 'connection failed' } })),
+      interrupt: vi.fn(async () => undefined),
+      close: vi.fn(),
+    } as never;
+    setQuerySession(query);
+    setFrozenSdkMcpFingerprint('stale-owner');
+    await expect(ensureSdkMcpInSync()).resolves.toBe(false);
+    expect(isAbortRequested()).toBe(true);
+    expect(getQueryMcpPrewarmOwner()).toBeNull();
   });
 
   it('bounds a wedged SDK control request and invalidates the unsafe Query', async () => {

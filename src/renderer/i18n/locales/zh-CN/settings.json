@@ -180,7 +180,153 @@
     }
   },
   "providers": {
+    "tokendance": {
+      "partner": "官方",
+      "intro": "一键注册使用各类模型，最低折扣至50%",
+      "account": "词元跳动账户",
+      "details": "供应商详情",
+      "manageAccount": "账号管理",
+      "manageOnWebsite": "管理网页授权",
+      "website": "前往词元跳动官网，了解更多",
+      "quota": "当前授权额度已用完 · 管理授权",
+      "done": "完成",
+      "retry": "重试",
+      "balance": {
+        "loginRequired": "登录后可查看余额并充值。",
+        "label": "账户余额",
+        "previous": "上次余额",
+        "empty": "充值后即可使用模型",
+        "refreshing": "刷新中",
+        "loading": "查询中",
+        "refreshFailed": "刷新失败",
+        "unavailable": "暂时无法获取",
+        "refresh": "刷新余额",
+        "updatedAt": "上次更新：{{time}}"
+      },
+      "models": {
+        "protocolUnavailable": "无法确认此模型支持的协议，请刷新模型目录后重试。",
+        "title": "支持的模型",
+        "summary": "已启用 {{count}} 个 · 首选 {{model}}",
+        "manage": "管理可用模型",
+        "empty": "暂无可用模型",
+        "catalogFailed": "暂时无法获取目录，当前显示已配置模型。"
+      },
+      "auth": {
+        "title": "连接 词元跳动 Token Dance",
+        "connect": "连接",
+        "reconnect": "重新连接",
+        "progress": "查看进度",
+        "retrySave": "重试保存",
+        "guide": "请在已打开的网页中登录并完成授权",
+        "fallback": "若网页未打开，可点击“打开网页”，或复制下方链接到浏览器中打开。",
+        "preparingLink": "正在准备授权链接…",
+        "copy": "复制链接",
+        "copied": "已复制",
+        "copyFailed": "复制失败，请重试或点击打开网页。",
+        "open": "打开网页",
+        "openFailed": "网页未能打开，请重试或复制链接到浏览器中打开。",
+        "status": {
+          "idle": "未登录",
+          "preparing": "准备登录",
+          "waiting": "等待授权",
+          "exchanging": "完成中",
+          "saving": "完成中",
+          "save-failed": "保存失败",
+          "failed": "登录未完成",
+          "expired": "授权超时",
+          "connected": "已登录",
+          "invalid": "登录失效"
+        },
+        "result": {
+          "idle": "准备连接账户",
+          "preparing": "正在准备登录",
+          "waiting": "正在等待授权结果",
+          "exchanging": "已收到授权，正在完成连接",
+          "saving": "正在保存账户",
+          "save-failed": "账户尚未保存",
+          "failed": "本次登录未完成",
+          "expired": "本次授权已超时",
+          "connected": "登录成功"
+        },
+        "hint": {
+          "idle": "打开网页后完成登录和授权。",
+          "preparing": "即将打开登录网页。",
+          "waiting": "完成网页登录和授权后，这里会自动继续。",
+          "exchanging": "请稍候，完成后面板会自动关闭。",
+          "saving": "保存完成后面板会自动关闭。",
+          "save-failed": "请重试保存，无需重复网页登录。",
+          "failed": "请重新连接后完成网页登录和授权。",
+          "expired": "请重新连接，打开新的授权网页。",
+          "connected": "账户已保存。"
+        },
+        "step": {
+          "open": "打开网页",
+          "authorize": "登录与授权",
+          "complete": "完成连接"
+        }
+      },
+      "error": {
+        "network_error": "暂时无法连接词元跳动，请检查网络后重试。",
+        "request_failed": "本次请求未完成，请重试。",
+        "exchange_failed": "未能完成授权，请重新连接。",
+        "invalid_response": "暂时无法读取返回的信息，请重试。",
+        "config_unavailable": "暂时无法读取本机配置，请重试。",
+        "listener_failed": "暂时无法启动网页登录，请重试。",
+        "save_failed": "未能保存到账户配置，请重试保存。",
+        "account_changed": "绑定账号已变更，请重新连接。",
+        "rate_limited": "请求过于频繁，请稍后重试。",
+        "authorization_inactive": "这次授权已结束，请重新连接。"
+      },
+      "payment": {
+        "recovery": {"reauthorize_api_key":"登录已失效，请关闭面板后重新连接账户。","api_key_quota":"当前授权额度已用完，请前往官网管理授权。","top_up_balance":"账户余额不足，请前往官网查看账户状态后重试。"},
+        "action": "充值",
+        "title": "账户充值",
+        "subtitle": "充值到当前绑定的词元跳动账户。",
+        "scan": "使用微信或支付宝扫码支付",
+        "choose": "选择充值金额",
+        "custom": "自定义金额（元）",
+        "range": "支持 1–100,000 元整数金额。",
+        "generate": "生成充值二维码",
+        "creating": "正在生成…",
+        "again": "重新充值",
+        "recipient": "充值到词元跳动账户",
+        "qrAlt": "充值二维码",
+        "qrFailed": "二维码生成失败，请关闭后重新充值。",
+        "countdown": "二维码剩余有效时间 {{time}}",
+        "queryFailed": "暂时无法查询付款结果，正在重试。",
+        "createUnknown": "未能取得充值二维码。若已付款，请先刷新账户余额确认到账，再重新充值。",
+        "status": {
+          "pending": "待支付",
+          "paid": "已到账",
+          "expired": "二维码已过期",
+          "failed": "充值失败",
+          "closed": "订单已关闭",
+          "refunded": "已退款"
+        },
+        "result": {
+          "pending": "正在等待付款结果",
+          "paid": "充值已到账",
+          "expired": "二维码已过期",
+          "failed": "这笔充值未完成",
+          "closed": "这笔充值已关闭",
+          "refunded": "这笔充值已退款"
+        },
+        "hint": {
+          "pending": "到账后自动更新，无需手动确认付款。",
+          "paid": "账户余额会自动刷新。",
+          "expired": "可以重新充值。若已付款，请先刷新余额确认到账。",
+          "failed": "可以重新选择金额并充值。",
+          "closed": "可以重新选择金额并充值。",
+          "refunded": "以词元跳动的退款结果为准，账户余额会重新查询。"
+        }
+      }
+    },
     "title": "模型供应商",
+    "cardTitles": {
+      "claudeSubscription": "Claude (订阅)",
+      "claudeApi": "Claude (API)",
+      "chatgptSubscription": "ChatGPT (订阅)"
+    },
     "description": "配置 API 密钥以使用不同的模型供应商",
     "enableAndSort": "启用和排序",
     "addProvider": "添加供应商",
@@ -336,6 +482,7 @@
       "deleteMessage": "确定要删除「{{name}}」吗？此操作无法撤销。"
     },
     "order": {
+      "fixedFirst": "固定首位",
       "drag": "拖拽排序",
       "dragProvider": "拖拽排序 {{name}}",
       "moveUp": "上移",
@@ -355,6 +502,7 @@
       "save": "保存"
     },
     "models": {
+      "removeModel": "移除模型 {{model}}",
       "title": "管理可用模型",
       "activeTitle": "可用模型",
       "emptyActive": "暂无模型，请在下方发现或手动添加",
@@ -1490,6 +1638,68 @@
         "install_failed": "浏览器资源安装失败",
         "update_failed": "浏览器资源更新失败",
         "unsupported": "当前平台暂不支持"
+      }
+    },
+    "speechResource": {
+      "capabilities": "语音识别能力",
+      "diarization": "说话人区分",
+      "loading": "正在读取本地模型状态…",
+      "install": "安装模型",
+      "installingAction": "安装中",
+      "update": "更新模型",
+      "retry": "重试安装",
+      "reinstall": "重新安装",
+      "retryRemove": "重试移除",
+      "removingAction": "移除中",
+      "remove": "移除",
+      "downloadProgress": "已下载 {{downloaded}} / {{total}}",
+      "size": "下载 {{download}} · 安装后 {{installed}}",
+      "authorizationHint": "上方开关只控制 Agent 是否可调用；本地录音始终可使用已安装的语音能力。",
+      "operationFailed": "语音模型安装失败，未完整校验的资源不会生效。",
+      "removeFailed": "语音模型暂时无法移除，可能仍有任务正在使用。",
+      "activationWarning": "模型已安装，但系统未能确认目录同步完成；本次可用，异常断电后可能需要重装。",
+      "states": {
+        "checking": "正在核验官方模型清单",
+        "not_installed": "尚未安装本地模型",
+        "downloading": "正在下载本地模型",
+        "verifying": "正在校验本地模型",
+        "installing": "正在加载并激活本地模型",
+        "removing": "正在移除本地模型",
+        "ready": "本地模型已就绪",
+        "update_available": "本地模型有可用更新",
+        "error": "本地模型操作失败"
+      },
+      "progress": {
+        "checking": "正在验证清单与签名…",
+        "verifying": "正在安全解包并校验文件…",
+        "installing": "正在加载模型并原子激活…",
+        "removing": "正在移除模型…"
+      },
+      "errors": {
+        "default": "本地语音资源暂时不可用，请检查网络、磁盘空间或稍后重试。",
+        "SPEECH_RESOURCE_NETWORK": "无法连接官方模型清单或固定上游资源，请检查网络或代理后重试。",
+        "SPEECH_RESOURCE_MANIFEST_INVALID": "官方模型清单与当前版本不一致，未安装任何资源。",
+        "SPEECH_RESOURCE_SIGNATURE_INVALID": "官方模型清单签名校验失败，未安装任何不可信资源。",
+        "SPEECH_RESOURCE_DOWNLOAD_INVALID": "模型下载不完整或校验失败，未安装损坏的资源。",
+        "SPEECH_RESOURCE_ARCHIVE_INVALID": "模型压缩包不符合安全清单，未安装其中内容。",
+        "SPEECH_RESOURCE_PACK_INVALID": "解包后的模型文件不完整或校验失败，未激活该资源。",
+        "SPEECH_RESOURCE_STORE_WRITE_FAILED": "无法安全写入模型资源，请检查磁盘空间和目录权限后重试。",
+        "SPEECH_RESOURCE_ACTIVATION_FAILED": "模型已校验，但无法安全激活，请检查磁盘空间和目录权限后重试。",
+        "SPEECH_NATIVE_RUNTIME_UNAVAILABLE": "当前安装包缺少本地语音运行时，暂时无法安装模型。",
+        "SPEECH_MODEL_PACK_UNAVAILABLE": "模型包清单与当前语音引擎不兼容，未激活该资源。",
+        "SPEECH_ASR_MODEL_LOAD_FAILED": "语音识别模型加载失败，未激活该资源。",
+        "SPEECH_VAD_MODEL_LOAD_FAILED": "语音活动检测模型加载失败，未激活该资源。",
+        "SPEECH_DIARIZATION_MODEL_LOAD_FAILED": "说话人识别模型加载失败，未激活该资源。",
+        "SPEECH_MODEL_LOAD_FAILED": "模型加载自检未通过，未激活该资源。",
+        "SPEECH_MODEL_LOAD_TIMEOUT": "模型加载自检超时，未激活该资源，请稍后重试。",
+        "SPEECH_WORKER_START_FAILED": "内置语音引擎无法启动，请重启 MyAgents 后重试。",
+        "SPEECH_WORKER_PROTOCOL_ERROR": "内置语音引擎响应异常，请重启或更新 MyAgents 后重试。",
+        "SPEECH_PATH_ENCODING_UNSUPPORTED": "当前应用或数据目录路径无法用于本地语音引擎，请移到常规 Unicode 路径后重试。",
+        "SPEECH_RESOURCE_INSTALL_INTERRUPTED": "模型安装已中断，未完整校验的资源不会生效。",
+        "SPEECH_RESOURCE_CHANGED": "本地模型状态已发生变化，请刷新后重试移除。",
+        "SPEECH_RESOURCE_REMOVE_FAILED": "无法安全移除本地模型，请检查目录权限后重试。",
+        "SPEECH_RESOURCE_CORRUPT": "已安装模型不完整或已损坏，请重新安装。",
+        "SPEECH_RESOURCE_BUSY": "语音资源正在被任务使用，请稍后再试。"
       }
     },
     "dialogs": {

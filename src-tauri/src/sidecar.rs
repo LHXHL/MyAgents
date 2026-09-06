@@ -71,11 +71,11 @@ pub use legacy::{
 };
 #[allow(unused_imports)]
 pub use manager::create_sidecar_manager;
-pub(crate) use manager::FrontendSidecarBinding;
 pub use manager::{
     create_sidecar_state, LegacySidecarConfig, ManagedSidecar, ManagedSidecarManager,
     SidecarManager, SidecarStatus,
 };
+pub(crate) use manager::{FrontendSidecarBinding, SessionProcessSource};
 #[allow(unused_imports)]
 pub use proxy::cmd_propagate_proxy;
 #[allow(unused_imports)]
@@ -99,7 +99,8 @@ pub(crate) use session_lifecycle::{
     ensure_session_sidecar_with_runtime_identity_override_lifecycle,
     ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
     finish_runtime_drift_transition, finish_session_owner_release, has_persisted_session_owner,
-    release_session_sidecar_from_blocking_thread, SessionLifecycleGuard,
+    release_session_owner_everywhere, release_session_sidecar_from_blocking_thread,
+    SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{

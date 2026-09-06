@@ -1,6 +1,6 @@
 # 本地文档转换与端侧 OCR 架构
 
-本文是 `myagents anydoc` 当前实现的模块规范。产品范围与验收目标见 PRD 0.4.9；本文件只维护 owner、状态机、协议、资源、限制、安全不变量和排查路径。若数值或字段与代码冲突，以 `src-tauri/src/document_processing.rs`、`src-tauri/document-worker/`、CLI exact help 和测试为准，并同步修正文档。
+本文是 `myagents anydoc` 当前实现的模块规范，只维护 owner、状态机、协议、资源、限制、安全不变量和排查路径。若数值或字段与代码冲突，以 `src-tauri/src/document_processing.rs`、`src-tauri/document-worker/`、CLI exact help 和测试为准，并同步修正文档。
 
 ## 定位与边界
 
@@ -76,27 +76,29 @@ queued/running/cancelling --App restart/shutdown--> interrupted
 - admission 打开 source 的 no-follow regular-file handle；queued job 持有该 handle，避免 path 后续被替换成别的文件。
 - running 首先把 held source 分块复制到私有 `input/source.bin` 并计算 SHA-256；每块检查 cancellation/deadline，实际字节数以及复制前后的 size、mtime/ctime（Windows 为 last-write time）必须与 admission metadata 一致。即使同一 inode 被等长改写也 fail closed 为 `DOCUMENT_SOURCE_CHANGED`。
 - Worker 使用 `process_cmd::new()` + `spawn_tree()`；环境清空，stdin/stdout 仅承载私有协议，stderr 不进入用户错误。
-- job deadline 从 source admission copy 开始计 30 分钟。cancel 先持久化 `cancelling`，再发送 exact `(jobId,generation)` frame，2 秒仍运行才 kill retained `ChildTree`；cancel、timeout 与成功发布在同一 Manager lock 内裁决，发布 IO 后、写入成功终态前再次以 monotonic deadline 确定逻辑 commit time，超时不能因 watchdog 等锁而赢得成功。
-- App shutdown 先关闭 admission，把所有非终态持久化为 `interrupted`，释放 queued handle，随后取消/终止 retained Worker tree。
+- job deadline 从 source admission copy 开始计 30 分钟。cancel 先持久化 `cancelling`，再发送 exact `(jobId,generation)` frame，给 Worker 15 秒 cooperative settlement，之后 force-stop 并最多再等 10 秒确认 exact tree 已退出；cancel、timeout 与成功发布在同一 Manager lock 内裁决，发布 IO 后、写入成功终态前再次以 monotonic deadline 确定逻辑 commit time，超时不能因 watchdog 等锁而赢得成功。
+- App shutdown 先关闭 admission，把所有非终态持久化为 `interrupted`，释放 queued handle，随后发送 cancel 并给 retained Worker tree 10 秒 cooperative settlement；force-stop 后最多再等 10 秒。Worker 已发合法 terminal 时允许最多 30 秒自然退出，terminal 后挂起也必须由同一 `ChildTree` deadline 收敛。
 - Worker crash 不自动重试；当前 job 失败为 `DOCUMENT_WORKER_CRASHED`，用户显式重试会创建新 ID。
+- 结构化解析、native PDF 文本提取和渲染不占本地推理名额。Worker 只有在确认图片或具体 PDF 页需要 PP-OCR 时才发送 exact-generation `ocr_lease_requested`；Manager 从 App-global `LocalComputeCoordinator` 取得 `DocumentOcr` lease 后才回复 `grant_ocr_lease`，Worker 在此之前不能加载 OCR session 或执行 tensor inference。
+- Record live ASR 到达时，lease 的只读 yield signal 立即触发 exact OCR Worker generation cancel；15 秒仍未退出才 force-stop，并最多再等 10 秒。Document job 保持原 ID，authenticated staging 中的未发布内容被清空，私有输入重新准备后回到 FIFO；该过程不写 failed terminal、不发布 partial artifact。非 live workload 只影响下一次 admission，不抢占已运行 OCR。用户 cancel / App shutdown 与 yield 竞态时仍由 Document Manager 当前状态裁决，用户 cancel 优先。
 
 ## 私有 framed protocol
 
-Manager 与 Worker 使用 4-byte big-endian payload length + UTF-8 JSON；单 frame 最大 1 MiB。第一帧必须为 `start`，后续 Manager 只能发 `cancel`。Worker 必须依次发送一个 `ready`、零到多个 `progress`，以及恰好一个 `completed` 或 `failed`，之后 clean EOF。
+Manager 与 Worker 使用 4-byte big-endian payload length + UTF-8 JSON；单 frame 最大 1 MiB。第一帧必须为 `start`，后续 Manager 只可发 exact-generation `cancel`，或在收到唯一一次 `ocr_lease_requested` 后发 `grant_ocr_lease`。Worker 必须依次发送一个 `ready`、零到多个 `progress`、按需唯一一次 `ocr_lease_requested`，以及恰好一个 `completed` 或 `failed`，之后 clean EOF。`pagesOcr > 0` 与 lease request 必须严格对应；无 OCR 的 fast path 不得请求 lease。
 
 每帧都有 `protocolVersion`，所有响应都有 `jobId` 与 `workerGeneration`。Manager 只接受 exact identity 和固定 stage；`current/total/unit` 要么同时存在且是有效真实单位，要么全部省略，不传假百分比。旧 generation、畸形 JSON、空/超限 frame、截断 prefix/payload、ready 前 progress、重复 ready、重复终态、终态后消息或字段 shape 错误都返回 `DOCUMENT_WORKER_PROTOCOL_ERROR`；Worker 未给合法终态即退出才返回 `DOCUMENT_WORKER_CRASHED`。clean EOF 只有在一个 prefix byte 都没读到时成立。
 
-密码不进入 Worker argv、环境变量、job store、日志或 recovery command。它只出现在 CLI argv（用户已接受其 shell history/process-list 风险）、Sidecar/Rust 请求内存和 start frame；Rust secret wrapper Drop zeroize，Manager 写完 IPC 立即清除自己的副本，发送与接收 JSON buffer 写完/解析完立即 zeroize。恢复命令只使用 `<password>` 占位符。
+密码不进入 Worker argv、环境变量、job store、日志或 recovery command。它只出现在 CLI argv（用户已接受其 shell history/process-list 风险）、Sidecar/Rust 请求内存和 start frame；Rust secret wrapper Drop zeroize，发送与接收 JSON buffer 写完/解析完立即 zeroize。Manager 只在当前 admitted job 内存中保留一份 secret 到 terminal，以便 OCR 被 live ASR 抢占时重启同一 job 而不再次询问用户；job 结束、取消或失败时随 `PendingJob` Drop 清零。恢复命令只使用 `<password>` 占位符。
 
 ## 转换 pipeline
 
 ### 结构化文档 fast path
 
-AnyDoc 0.1.9 源码以精确上游版本 vendored，MyAgents patch 只增加 typed recovery diagnostic 与 opt-in asset serialization：parser 生成 `Document` 后，由 caller 给安全 asset 分配相对路径，renderer 才写 `![alt](assets/...)`。Worker 对资产做 MIME + magic sniff，只发布 PNG/JPEG/WebP passive raster；SVG、HTML、OLE、executable、外部 payload、未引用资产均不写出并产生 warning。被省略的内嵌资产会在原文位置留下 `**[Embedded asset omitted]**`，同时在顶部 warning summary 汇总。
+AnyDoc 使用资源锁固定的 vendored 上游源码；MyAgents patch 只增加 typed recovery diagnostic 与 opt-in asset serialization。parser 生成 `Document` 后，由 caller 给安全 asset 分配相对路径，renderer 才写 `![alt](assets/...)`。Worker 对资产做 MIME + magic sniff，只发布 PNG/JPEG/WebP passive raster；SVG、HTML、OLE、executable、外部 payload、未引用资产均不写出并产生 warning。被省略的内嵌资产会在原文位置留下 `**[Embedded asset omitted]**`，同时在顶部 warning summary 汇总。
 
 AnyDoc 的 recoverable 分支直接产生 typed `{code, message, location}` diagnostic；日志只供本地排查，不作为产品 warning 数据源。能定位的恢复项还必须占据原内容位置，例如不可读 PPTX slide 在对应 slide 顺序插入可见 warning placeholder；Worker 再于文首汇总同一 typed diagnostics。CSV 等结构化格式不加载 OCR native runtime。
 
-加密 OOXML/legacy Office 由精确 vendored 的 `office-crypto 0.3.0` 在 Worker 内解密；MyAgents 的窄 patch 只把 legacy DOC verifier 的密码校验失败提升为独立 `InvalidPassword`，其余 `InvalidStructure` 继续映射 `DOCUMENT_MALFORMED`。解密 bytes 只存在内存；缺密码、错误密码和不支持 scheme 分别返回稳定错误，损坏文件不得默认映射成密码错误。
+加密 OOXML/legacy Office 由资源锁固定的 `office-crypto` 在 Worker 内解密；MyAgents 的窄 patch 只把 legacy DOC verifier 的密码校验失败提升为独立 `InvalidPassword`，其余 `InvalidStructure` 继续映射 `DOCUMENT_MALFORMED`。解密 bytes 只存在内存；缺密码、错误密码和不支持 scheme 分别返回稳定错误，损坏文件不得默认映射成密码错误。
 
 ### PDF 逐页 routing
 
@@ -108,15 +110,9 @@ PDF 始终先由 `pdf-inspector` 区分损坏与加密；传入密码不会把�
 
 图片按内容 sniff 解码 PNG/JPEG/WebP，扩展不一致产生 warning；JPEG EXIF orientation 在 OCR 前归一。单图/单 PDF render 超过像素上限即失败。
 
-OCR 固定为 PP-OCRv6 Small detector + recognizer，CPU-only ONNX Runtime 1.28：
+OCR 使用资源锁固定的 PP-OCRv6 Small detector、recognizer 与 dictionary，并通过随 App 发布的 CPU-only ONNX Runtime 执行。revision、digest、字典规模和 native runtime 版本只在 `resource-lock.json` 与 manifest 维护。
 
-| 资源 | 固定 revision / digest |
-|---|---|
-| detector | HF `28fe5895c24fd108c19eb3e8479f4ab385fbfc62`; SHA-256 `d73e0058...c9410e` |
-| recognizer | HF `b8f84f0b80c529de40b4fbb3544b84fa7233a513`; SHA-256 `5435fd74...24634` |
-| PP-OCRv6 dictionary | PaddleOCR `b03f46425e8ff4442b268ce449e3eef758146cd4`; 18,708 行；SHA-256 `b5f2bfe2...01c5d` |
-
-Adapter 负责 detector resize/normalize、DB bitmap/box filtering、crop/order、recognizer dynamic width/normalize、CTC collapse、space class 与 confidence。任何模型 shape/class mismatch fail closed。正式发布必须用相同 revision 的官方 PaddleOCR pipeline 作为 oracle 跑 golden corpus；模型能加载不等于 OCR 正确。
+Adapter 负责 detector resize/normalize、DB bitmap/box filtering、crop/order、recognizer dynamic width/normalize、CTC collapse、space class 与 confidence。任何模型 shape/class mismatch fail closed。质量验证必须用相同 revision 的官方 PaddleOCR pipeline 作为 oracle 跑 golden corpus；模型能加载不等于 OCR 正确。
 
 ## 固定资源限制
 
@@ -139,6 +135,8 @@ Adapter 负责 detector resize/normalize、DB bitmap/box filtering、crop/order�
 
 AnyDoc 自身 package entry、展开与 asset hard cap 继续生效。上限不是设置项或环境变量；修改必须有压力/性能证据并同步代码、help、测试和本文。
 
+两次容量 admission 都通过 Rust OS boundary 的 `filesystem_capacity::available_space(existing_path)` 查询目标路径所属文件系统，不枚举 mount、比较路径前缀或受其它未就绪卷影响。Manager 仍分别拥有 output/private 预算和 `DOCUMENT_INSUFFICIENT_DISK_SPACE` / `DOCUMENT_DISK_SPACE_UNAVAILABLE` 映射；共享 helper 不拥有业务错误或状态。
+
 ## 路径与 artifact 安全
 
 - CLI 仅做 cwd-relative lexical absolute resolution；Rust 才是 regular-file、链接、大小、权限、identity 与持久化 authority。
@@ -151,13 +149,13 @@ AnyDoc 自身 package entry、展开与 asset hard cap 继续生效。上限不�
 
 ## 随包资源与构建
 
-权威供应链锁为 `src-tauri/document-worker/resource-lock.json`，唯一 prepare owner 为 `scripts/prepare-document-processing.mjs`。`setup.sh`、`setup_windows.ps1`、macOS/Windows dev build、三平台 release build 与 `npm run tauri:dev` 都只能调用该 owner，不得各自实现下载、展开、Worker 构建或签名逻辑。
+权威供应链锁为 `src-tauri/document-worker/resource-lock.json`，App 原生推理资源的唯一顶层 prepare owner 为 `scripts/prepare-native-inference.mjs`。`setup.sh`、`setup_windows.ps1`、macOS/Windows dev build、三平台 release build 与 `npm run tauri:dev` 都只能调用该 owner，不得各自实现下载、展开、Worker 构建或签名逻辑。顶层 owner 在同一把仓库级锁下依次调用 document 与 speech capability preparer；`prepare-document-processing.mjs`、`prepare-speech-inference.mjs` 是内部能力构建器，不是新的 build 入口。二者通过 `document-processing-resource-cache.mjs` 共用 content-addressed 下载和 App-owned ORT authority。
 
 prepare owner 把生命周期分成三层：
 
 - `src-tauri/resources/document-processing-cache/downloads/` 是按锁定 digest 内容寻址的原始下载缓存；每次命中仍校验 regular file、size 与 SHA，损坏文件不得命中。旧版 `src-tauri/target/document-processing-cache` 中的有效原始文件仅作为一次性迁移源。
-- `.../prepared/<target>/<build-fingerprint>/` 是完整的已验证 bundle 缓存。fingerprint 覆盖 App 版本、target、resource lock、prepare/helper 源码、Worker/AnyDoc/office-crypto 源码与 Cargo lock、固定 Rust toolchain identity 和签名 identity/配置；只有这些输入完全相同时才能复用，因此版本发布或任一构建输入变化都会生成新 bundle，完全相同版本的 warm build 才不重复下载、展开、Worker build 或签名。
-- `src-tauri/resources/document-processing/v1` 只是当前 Tauri build 要快照的投影，不是缓存 authority。prepare 在仓库级跨进程锁内使用唯一 work/staging，完整校验 manifest 与所有 artifact 后才切换投影；切换失败会恢复上一份有效投影。
+- `.../prepared/<target>/<build-fingerprint>/` 与 `.../prepared-speech/<target>/<build-fingerprint>/` 是 document/speech 各自完整的已验证 bundle 缓存。fingerprint 覆盖 App 版本、target、resource lock、prepare/helper 源码、对应 Worker/adapter 源码与 Cargo lock、固定 Rust toolchain identity 和签名 identity/配置；只有这些输入完全相同时才能复用，因此版本发布或任一构建输入变化都会生成新 bundle，完全相同版本的 warm build 才不重复下载、展开、Worker build 或签名。
+- `src-tauri/resources/document-processing/v1` 与 `src-tauri/resources/speech-inference/v1` 只是当前 Tauri build 要快照的 capability 投影，不是缓存 authority。顶层 owner 只解析一次 target，并在仓库级跨进程锁内让 document builder 先返回 exact prepared bundle 的 immutable ORT descriptor；speech builder 直接消费该 descriptor，不读取 document projection。两个 capability 各自使用 work/staging，完整校验 manifest 与 artifact 后原子切换自己的投影；speech 失败会中止顶层命令和随后的 Tauri build，但保留已验证 document cache。speech manifest 记录同一 ORT 的 revision、size 与 hash，不复制 ORT；其 Worker、sherpa adapter、sherpa C API 与 legal inventory 的 target-specific 安装增量硬上限为 80 MiB。
 
 持久缓存不入 Git，也不在 `npm run clean`/Cargo `target` 生命周期内；这是刻意的 repo-local derived cache，不读取用户级模型 cache，也不会随 App 打包。可用 `--offline` 验证全离线路径，缓存缺项时 fail closed；`--force` 只用于显式重建当前 fingerprint。构建 Worker 使用 `cargo build --locked --release --target ...`。macOS 有 signing identity 时先 codesign native 文件和 Worker；Windows 同时提供 `WINDOWS_SIGNTOOL_PATH` 与 `WINDOWS_CERTIFICATE_SHA1` 时先做 Authenticode 签名与验证。manifest 最后按签名后的实际 bytes 生成，并记录 fingerprint、每个 artifact 的来源及 signing kind/identity。
 
@@ -169,9 +167,13 @@ prepare owner 把生命周期分成三层：
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 
-ONNX Runtime 官方 1.28 release 未提供 macOS x64 binary，因此该 target 从精确 commit `da9b5e364c465de65c49d91e696cd6485270757f`、固定 recipe 构建 x86_64 shared library；其余 target 使用锁定官方 archive。该源码路径由 prepare owner 在 cache miss 后、任何文档资源网络/源码 mutation 前统一检查 Git、Python 3.8+、CMake 3.28+ 与 Apple Clang；`--check-prerequisites` 提供给平台 build 做早期只读预检。已有有效 prepared bundle 时不要求源码工具，脚本也不自动安装系统包。PDFium 全部使用 `chromium/7999` 锁定 archive。安装资源同时包含 AnyDoc/Paddle/ORT/PDFium license 与 PDFium 第三方 license tree；顶层 `THIRD_PARTY_NOTICES.md` 保留组件分类。
+ONNX Runtime 官方 1.28 macOS arm64 archive 的最低系统版本是 macOS 14，且没有 macOS x64 binary；MyAgents 最低支持 macOS 13，因此两个 macOS target 都从精确 commit `da9b5e364c465de65c49d91e696cd6485270757f`、固定 recipe 与 deployment target 13.0 构建 shared library，其余 target 使用锁定官方 archive。该源码路径由 prepare owner 在 cache miss 后、任何资源网络/源码 mutation 前统一检查 Git、Python 3.10+、CMake 3.28+ 与 Apple Clang；Python 下限来自锁定 recipe 的 mandatory driver syntax 与 shared-library CMake `find_package`，不能沿用其执行顺序之后才运行的陈旧 3.8 自检。setup 与各平台 build 都在固定 Rust toolchain 就绪后、各自首个耗时下载/安装/清理/编译动作前调用同一 `--check-prerequisites` 只读预检，不复制工具规则。preflight 只以 exact target prepared cache 决定是否需要工具，不读取当前投影；已有对应 fingerprint 的有效 prepared bundle 时不要求源码工具，prepare owner 也不自动安装原生构建工具。PDFium 全部使用 `chromium/7999` 锁定 archive。安装资源同时包含 AnyDoc/Paddle/ORT/PDFium license 与 PDFium 第三方 license tree；顶层 `THIRD_PARTY_NOTICES.md` 保留组件分类。speech 使用锁定 sherpa-onnx/codec 源码及其 legal tree，构建时只从上游 archive 展开根 `CMakeLists.txt`、`LICENSE`、`cmake/` 与 `sherpa-onnx/`，显式关闭 CoreML 和 C API examples，并通过要求 CMake 3.28+ 的 App-owned native adapter 链接上述同一 CPU ORT。
 
-App 启动时 Manager 校验 manifest target/pipeline、Worker 可执行位和 Worker/native/model/dictionary 的 size + SHA；资源问题只让 document admission fail closed，不阻止 MyAgents UI 启动。Worker 启动后再次校验它实际要加载的五个资源。运行时不得下载、访问 Hugging Face 或使用用户 cache。
+macOS ORT source cache 是可中断状态机：仅存在 `.git` 不代表已有可用 checkout。prepare owner 必须校准锁定 repository 的 `origin`，把 unborn/missing/wrong `HEAD` 视为 cache miss 并 fetch + detached checkout 锁定 commit；只有验证到该 commit 的 `HEAD` 才能直接复用。该恢复只适用于 App 管理的 derived source cache，不得推广到用户仓库。
+
+App 启动同步路径只解析 manifest，并校验 target/pipeline、路径、regular-file、size 与 Worker 可执行位，不读取 ORT、PDFium、OCR 模型或字典的完整正文。App ready 后先等 10 秒安静窗口，再由最低优先级 `BackgroundResourceValidation` lease 分块校验：共享 ORT 只由 `LocalInferenceRuntimeRegistry` 校验一次，Document Manager 校验 Worker/PDFium/OCR 模型/字典；Record live 到来时 chunk-level yield，稍后重新等待安静窗口再试。后台失败会阻止新的对应 admission，但不阻止 MyAgents UI 启动；Worker 启动后仍再次完整校验它实际要加载的五个资源并 fail closed。运行时不得下载、访问 Hugging Face 或使用用户 cache。
+
+speech 的用户可移除模型权重不属于本节的 build cache，也不进入 Tauri resource projection。它们由 `SpeechRecognitionManager` 在用户显式操作后写入 App data 下的版本目录；安装前仍复用本节同一 App-owned ORT identity，但下载/签名、模型最小加载、`active.json` 切换与 busy removal 由 speech domain owner 裁决。两者只共享受信任 runtime 和 compute lease，不共享 job store 或模型 activation authority。详见 [`recording_and_speech_recognition.md`](./recording_and_speech_recognition.md)。
 
 ## Skill 与 help 防漂移
 
@@ -181,11 +183,11 @@ App 启动时 Manager 校验 manifest target/pipeline、Worker 可执行位和 W
 - `system-prompt-cli-tools.ts` 不增加 AnyDoc section/hint。
 - exact group/leaf help 是当前 CLI 参数、输出、exit 和 recovery authority；没有 `readme` route。
 
-## 验证与发布门槛
+## 验证
 
 本地确定性检查至少包括 CLI/Admin/help/Skill parity、Manager path/protocol/state helper、Worker protocol/manifest/AnyDoc asset、OCR pre/postprocess、resource-lock/build staging、Rust fmt/clippy/test、TypeScript typecheck/lint 和 CLI/Tauri build。
 
-发布前还必须在五个真实 target 的签名/安装包中完成：解包 manifest/hash/notices、断网启动、无系统 native runtime fallback、PDFium load/password/render、ONNX Runtime + PP-OCRv6 最小推理、混合 PDF coverage、真实 process-tree cancel、资源增量和 cold/warm 性能/RSS。OCR golden corpus需覆盖中英混排、表格/小字、旋转/透视、低清扫描、长图、EXIF、空白页和 adversarial input。未取得这些证据时只能称“本地实现/本机 smoke 通过”，不能称 0.4.9 可发布。
+正式安装包验证必须覆盖所有支持 target 的 manifest/hash/notices、断网启动、无系统 native runtime fallback、PDFium load/password/render、ONNX Runtime + PP-OCRv6 最小推理、混合 PDF routing、真实 process-tree cancel、资源增量和 cold/warm 性能/RSS。OCR golden corpus 覆盖中英混排、表格/小字、旋转/透视、低清扫描、长图、EXIF、空白页和 adversarial input；单机 smoke 不能替代跨 target 证据。
 
 ## 排查
 

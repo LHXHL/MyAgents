@@ -58,7 +58,12 @@ interface Props {
    *  immediately. Firing the same intent twice in a row (user clicks the
    *  Launcher search icon twice) requires the `nonce` to change — it's
    *  the dependency `useEffect` watches. */
-  pendingIntent?: { autofocusSearch?: boolean; nonce: number } | null;
+  pendingIntent?: {
+    autofocusSearch?: boolean;
+    nonce: number;
+    consumed?: boolean;
+  } | null;
+  onSearchIntentConsumed?: (generation: number) => void;
   pendingRoute?: PendingAppRoute | null;
   onRouteConsumed?: (generation: number) => void;
 }
@@ -88,6 +93,7 @@ export function TaskListPanel({
   highlightTaskId,
   refreshKey,
   pendingIntent,
+  onSearchIntentConsumed,
   pendingRoute,
   onRouteConsumed,
   onCreateTask,
@@ -221,13 +227,16 @@ export function TaskListPanel({
   // tick silently drops when the element isn't yet attached.
   const intentNonce = pendingIntent?.nonce ?? 0;
   const intentAutofocus = pendingIntent?.autofocusSearch ?? false;
+  const intentConsumed = pendingIntent?.consumed ?? false;
   useEffect(() => {
-    if (!intentAutofocus || intentNonce === 0) return;
+    if (!intentAutofocus || intentNonce === 0 || intentConsumed) return;
     const raf = requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
+      if (!searchInputRef.current) return;
+      searchInputRef.current.focus();
+      onSearchIntentConsumed?.(intentNonce);
     });
     return () => cancelAnimationFrame(raf);
-  }, [intentAutofocus, intentNonce]);
+  }, [intentAutofocus, intentConsumed, intentNonce, onSearchIntentConsumed]);
 
 
   // Lifecycle projections are transient, so every Task mutation event refetches
@@ -530,7 +539,7 @@ export function TaskListPanel({
   return (
     <div className="@container/task-panel flex h-full min-w-0 flex-col">
       {/* Section header — label + persistent search pill + view toggle.
-          h-12 per DESIGN.md §7.4 (aligns with TaskCenter page header).
+          h-12 to align with the Task Center page header.
           v0.1.69 polish: bottom hairline removed; breathing room
           below replaces it as the separator, so the right column
           reads as a single continuous surface from header → buckets. */}

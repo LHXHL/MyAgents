@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { isRetiredBundledMcpServer } from '../shared/mcpConfig';
 import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
 import {
   decideBackgroundAgentPermission,
@@ -113,6 +114,7 @@ import {
 } from '../shared/toolDisplay/filePatch';
 import { parsePartialJson } from '../shared/parsePartialJson';
 import { deriveSessionTitle } from '../shared/sessionTitle';
+import { TOKENDANCE_APP_URL, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
 import { createLiveUserMessageReplay } from '../shared/chatMessageReplay';
 import { isPendingSessionId } from '../shared/constants';
 import { MANAGED_BROWSER_MCP_ID } from '../shared/browserTools';
@@ -233,7 +235,7 @@ import {
   appendOmittedImageNote,
   classifyToolAttachmentPresentation,
   extractToolResultRenderParts,
-  normalizeSdkToolUseResult,
+  extractSdkToolResultRenderParts,
   type ExtractedToolResultAttachment,
 } from './utils/tool-result-attachments';
 import type { ToolAttachment } from '../shared/types/tool-attachment';
@@ -840,7 +842,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.220 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.261 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -858,7 +860,7 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.220. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.261. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
@@ -3937,6 +3939,7 @@ async function buildSdkMcpServers(
   // "Invalid MCP configuration: X is a reserved MCP name." → exit code 1
   const allServers: McpServerDefinition[] = configState.currentMcpServers ?? [];
   const servers = allServers.filter(s => {
+    if (isRetiredBundledMcpServer(s)) return false;
     const normalized = s.id.replace(/[^a-zA-Z0-9_-]/g, '_');
     if (SDK_RESERVED_MCP_NAMES.includes(normalized)) {
       console.warn(`[agent] MCP "${s.id}" skipped: conflicts with SDK reserved name. Rename to avoid this.`);
@@ -4029,22 +4032,6 @@ async function buildSdkMcpServers(
       let command = server.command;
       // Defensive: args may be non-array (e.g. boolean `true`) due to CLI parsing bugs or manual config edits
       let args = [...(Array.isArray(server.args) ? server.args : [])];
-
-      // Sentinel: bundled cuse (computer-use) binary — resolve to the
-      // platform-specific path shipped in the app bundle. If the binary is
-      // missing (unsupported platform, or a dev build without the binary
-      // downloaded yet), skip the MCP with a warning rather than crashing
-      // the session.
-      if (command === '__bundled_cuse__') {
-        const { getBundledCusePath } = await import('./utils/runtime');
-        const cusePath = getBundledCusePath();
-        if (!cusePath) {
-          console.warn(`[agent] MCP ${server.id}: bundled cuse binary not found (platform=${process.platform}); skipping. Run scripts/download_cuse.sh to install.`);
-          continue;
-        }
-        command = cusePath;
-        console.log(`[agent] MCP ${server.id}: resolved to bundled cuse at ${cusePath}`);
-      }
 
       // For npx commands: prefer system npx → bundled Node.js npx → bun x
       // System Node.js is maintained by the user's package manager, more reliable than our bundled npm.
@@ -6031,6 +6018,16 @@ export function buildClaudeSessionEnv(
       ? getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID
       : (!effectiveProviderEnv?.baseUrl && !effectiveProviderEnv?.apiKey ? SUBSCRIPTION_PROVIDER_ID : ''));
 
+  // The host owns TokenDance attribution, including imported/shared keys.
+  // Replace case-insensitive duplicates without changing other custom headers
+  // or process.env; each SDK subprocess keeps its own provider identity.
+  if (effectiveProviderId === TOKENDANCE_PROVIDER_ID) {
+    const headers = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split(/\r?\n/)
+      .filter(line => line.trim() && line.split(':', 1)[0].trim().toLowerCase() !== 'x-app-url');
+    headers.push(`X-App-URL: ${TOKENDANCE_APP_URL}`);
+    env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
+  }
+
   // Declare MyAgents as the inference-routing host for non-subscription
   // providers. This tells CC's `managedEnv` layer (see claude-code
   // src/utils/managedEnv.ts withoutHostManagedProviderVars) to strip the
@@ -6078,6 +6075,9 @@ export function buildClaudeSessionEnv(
   // Always write the resolved path OR empty string — empty is treated as
   // "not set" and lets the SDK fall back to PATH lookup.
   if (isWindows) {
+    // Own local tool availability instead of depending on the SDK's rollout,
+    // which our nonessential-traffic policy disables. Git Bash remains available.
+    env.CLAUDE_CODE_USE_POWERSHELL_TOOL = '1';
     const inheritedGitBash = process.env.CLAUDE_CODE_GIT_BASH_PATH;
     let resolvedGitBash = '';
     if (inheritedGitBash && existsSync(inheritedGitBash)) {
@@ -9837,7 +9837,7 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
     // Step 3: If interrupt "succeeded" (SDK ACKed), verify the turn actually completed.
     // interrupt() resolving only means the SDK received the signal — it does NOT guarantee
-    // the subprocess stopped processing. If an MCP tool is hung (e.g., cuse Read on a large
+    // the subprocess stopped processing. If an MCP tool is hung (e.g., reading a large
     // screenshot), the SDK subprocess remains blocked on client.callTool() with a ~28-hour
     // timeout. The for-await loop gets no more events, stdin transcriptState.messages are swallowed, and
     // the user sees "no response" until the 10-minute watchdog fires.
@@ -10673,6 +10673,21 @@ export async function forkSession(assistantMessageId: string): Promise<{
   }
 }
 
+/**
+ * Exact MyAgents Record CLI forms that may bypass a second desktop approval.
+ * This stays Record-specific: it is a safety policy for one bounded product
+ * surface, not a general shell parser or command allowlist framework.
+ */
+export function isAutoAllowedRecordCliCommand(command: string): boolean {
+  const cmd = command.trim();
+  return (
+    /^myagents[ \t]+record[ \t]+list(?:[ \t]+(?:--kind[ \t]+(?:text|audio)|--tag[ \t]+[a-z0-9][a-z0-9-]{0,31}|--limit[ \t]+\d{1,4}|--json))*[ \t]*$/.test(cmd)
+    || /^myagents[ \t]+thought[ \t]+list(?:[ \t]+(?:--tag[ \t]+[a-z0-9][a-z0-9-]{0,31}|--limit[ \t]+\d{1,4}|--json))*[ \t]*$/.test(cmd)
+    || /^myagents[ \t]+(?:record|thought)[ \t]+create[ \t]+(?:--content[ \t]+)?'[^']*'[ \t]*$/.test(cmd)
+    || /^myagents[ \t]+(?:record|thought)[ \t]+create[ \t]+--content-file[ \t]+[^ \t\n\r;|&<>$`'"]+[ \t]*$/.test(cmd)
+  );
+}
+
 async function startStreamingSession(preWarm = false): Promise<void> {
   const sessionMutationBarrier = getSessionMutationBarrier();
   if (sessionMutationBarrier) await sessionMutationBarrier;
@@ -11277,7 +11292,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // already filters to entries that exist on disk as valid plugin roots.
       // Field omitted entirely when no plugins are enabled so empty-array
       // noise doesn't show up in SDK debug output.
-      ...(enabledPluginConfigs.length > 0 ? { plugins: enabledPluginConfigs } : {}),
+      ...(enabledPluginConfigs.length > 0 ? {
+        plugins: enabledPluginConfigs,
+        // SDK/native 0.3.261 delivers paths over stdin, avoiding Windows'
+        // command-line limit without changing the enabled plugin inventory.
+        pluginDelivery: 'initialize' as const,
+      } : {}),
       // (v0.2.12) Enable --replay-user-messages so CLI emits SDKUserMessageReplay
       // (isReplay=true) when it drains a mid-turn queued_command attachment from
       // its commandQueue into the model's context. We use this signal to know
@@ -11416,23 +11436,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             };
           }
 
-          // 4. Thought inbox browse: `myagents thought list [--tag <slug>] [--limit N] [--json]`.
+          // 4. Record browse: canonical `myagents record list`; published
+          //    `myagents thought list` remains accepted as a compatibility alias.
           //    --query is intentionally NOT in the allowlist — it carries arbitrary
           //    user text (the search string) which can hold shell metachars. That
           //    form falls through to the normal user-confirm / IM fast-path.
-          if (/^myagents[ \t]+thought[ \t]+list(?:[ \t]+(?:--tag[ \t]+[a-z0-9][a-z0-9-]{0,31}|--limit[ \t]+\d{1,4}|--json))*[ \t]*$/.test(cmd)) {
-            console.log(`[permission] myagents thought list auto-allowed: ${cmd}`);
-            return {
-              behavior: 'allow' as const,
-              updatedInput: input as Record<string, unknown>
-            };
-          }
-
-          // 5. Thought capture: `myagents thought create '<content>'`
+          // 5. Text Record capture: canonical `myagents record create '<content>'`;
+          //    `thought create` remains accepted as a compatibility alias.
           //    Mutating, but the side effect is bounded — append-only into the
-          //    user's thought inbox, no filesystem / network surface, fully
-          //    reversible from the inbox UI. Filing was already gated by the
-          //    SECTION_THOUGHT prompt which only fires on explicit "记一下 /
+          //    user's Record list, no filesystem / network surface, fully
+          //    reversible from the Record UI. Filing was already gated by the
+          //    SECTION_RECORD prompt which only fires on explicit "记一下 /
           //    note this down" intent, so by the time we see this command the
           //    user has *asked* for capture; making them click "Allow" again
           //    is friction that defeats the inbox-capture promise.
@@ -11442,25 +11456,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           //      quotes don't interpolate `$(…)`, backticks, or `\`, so the
           //      content is a literal argv string. Double-quoted forms FAIL
           //      the regex and fall through to user-confirm — a defense in
-          //      depth in case the AI ignores SECTION_THOUGHT's "use single
+          //      depth in case the AI ignores SECTION_RECORD's "use single
           //      quotes" rule and a prompt-injected user payload tries to
           //      smuggle `$(rm -rf /)` (Codex review concern).
           //    - `[^']` excludes embedded `'` (bash single-quoted strings
           //      can't contain a literal `'` anyway, so any extra `'` would
           //      end the literal early — refuse the form rather than misread).
           //    - `--tag` is intentionally not in the allowlist: the CLI's
-          //      `thought create` doesn't accept `--tag` (tags are derived
+          //      text Record create doesn't accept `--tag` (tags are derived
           //      from inline `#xxx` in the content), and the prompt no
           //      longer advertises it after issue-148-followup review.
-          if (/^myagents[ \t]+thought[ \t]+create[ \t]+'[^']*'[ \t]*$/.test(cmd)) {
-            console.log(`[permission] myagents thought create auto-allowed: ${cmd}`);
-            return {
-              behavior: 'allow' as const,
-              updatedInput: input as Record<string, unknown>
-            };
-          }
-
-          // 6. Thought capture via file: `myagents thought create --content-file <path>`
+          // 6. Text Record capture via file: `myagents record create --content-file <path>`
           //    Path is shell-quote-free (a single token without metachars), so
           //    the regex constraint here is the path-token character class
           //    `[^ \t;|&<>$\`'"]` — explicitly forbid every shell metachar
@@ -11468,8 +11474,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           //    The path doesn't have to exist or be safe content-wise; the
           //    CLI validates size, NUL bytes, and read errors before sending
           //    anything to the management API. Issue #149 follow-up.
-          if (/^myagents[ \t]+thought[ \t]+create[ \t]+--content-file[ \t]+[^ \t\n\r;|&<>$`'"]+[ \t]*$/.test(cmd)) {
-            console.log(`[permission] myagents thought create --content-file auto-allowed: ${cmd}`);
+          if (isAutoAllowedRecordCliCommand(cmd)) {
+            console.log(`[permission] myagents Record CLI auto-allowed: ${cmd}`);
             return {
               behavior: 'allow' as const,
               updatedInput: input as Record<string, unknown>
@@ -12993,7 +12999,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
           // Check for structured tool_use_result data (e.g., WebSearch results)
           const toolUseResultData = (sdkMessage as { tool_use_result?: unknown }).tool_use_result;
-          const normalizedToolUseResult = normalizeSdkToolUseResult(toolUseResultData);
 
           // Only iterate if content is an array (tool_result blocks)
           if (Array.isArray(messageContent)) {
@@ -13015,22 +13020,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // below; the remaining text has every base64-ish payload redacted to
               // `[N bytes omitted]`. Session JSONL / SSE only ever carry path refs —
               // the SDK's own transcript (what the model sees) is untouched.
-              const renderParts = extractToolResultRenderParts(
-                normalizedToolUseResult.isMetadataEnvelope
-                  ? normalizedToolUseResult.content
-                  : toolResultBlock.content,
-              );
-
-              // For WebSearch/WebFetch, prefer structured tool_use_result data if available
-              // This contains query, results array with titles/urls, etc.
-              // Otherwise use renderParts.text: passes plain strings / JSON through
-              // verbatim, joins non-image blocks, and (finding 2) yields '' for a bare
-              // data-URL string whose bytes were extracted — so base64 never persists.
-              const contentStr = normalizedToolUseResult.isMetadataEnvelope
-                ? renderParts.text
-                : (toolUseResultData && typeof toolUseResultData === 'object')
-                ? JSON.stringify(toolUseResultData)
-                : renderParts.text;
+              const renderParts = extractSdkToolResultRenderParts(toolResultBlock.content, toolUseResultData);
+              const contentStr = renderParts.text;
 
               const parentToolUseId =
                 childToolToParent.get(toolResultBlock.tool_use_id) ?? sdkMessage.parent_tool_use_id;
@@ -14214,7 +14205,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);
 
-    console.log(`[messageGenerator] Yielding message, wasQueued=${item.wasQueued}, queueId=${item.id}, requestId=${item.requestId ?? '-'}`);
+    console.log(`[messageGenerator] Yielding message, wasQueued=${item.wasQueued}, queueId=${item.id}, requestId=${item.requestId ?? '-'} summary=${JSON.stringify(summarizeSensitiveSdkMessage({ type: 'user', message: yieldedMessage }))}`);
     yield {
       type: 'user' as const,
       message: yieldedMessage,

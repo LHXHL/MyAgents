@@ -18,6 +18,9 @@ import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
 import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import type { Provider } from '../shared/config-types';
+import { resolveProviderForModel, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
+import { findEffectiveProvider, loadConfig as loadProviderConfig } from './utils/admin-config';
 import {
   classifySubscriptionVerifyFailureKind,
   type SubscriptionStatus,
@@ -129,7 +132,13 @@ async function verifyViaSdk(
     /** Managed subscription activation requires the SDK's terminal success. */
     requireTerminalResult?: boolean;
   },
-): Promise<{ success: boolean; error?: string; detail?: string; failureKind?: SubscriptionVerifyFailureKind }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  detail?: string;
+  failureKind?: SubscriptionVerifyFailureKind;
+  retryable?: boolean;
+}> {
   const TIMEOUT_MS = 30000;
   const startTime = Date.now();
   const stderrMessages: string[] = [];
@@ -271,7 +280,7 @@ async function verifyViaSdk(
         // diagnostic, baseUrl/model/elapsed/stderr). See buildTimeoutLikeFailure.
         if (firstAuthError) {
           console.log(`[${logPrefix}] timeout but have auth error collected, using it`);
-          resolve({ success: false, error: firstAuthError.error, detail: firstAuthError.detail });
+          resolve({ success: false, ...firstAuthError });
           return;
         }
         void (async () => {
@@ -287,7 +296,12 @@ async function verifyViaSdk(
       try { testQuery.return(undefined as never); } catch { /* already terminated */ }
     };
 
-    const verifyPromise = (async (): Promise<{ success: boolean; error?: string; detail?: string }> => {
+    const verifyPromise = (async (): Promise<{
+      success: boolean;
+      error?: string;
+      detail?: string;
+      retryable?: boolean;
+    }> => {
       for await (const message of testQuery) {
         if (message.type === 'system') continue;
 
@@ -348,7 +362,12 @@ async function verifyViaSdk(
           const stderrHint = stderrMessages.length > 0
             ? ` (详情: ${stderrMessages.join('; ').slice(0, 100)})`
             : '';
-          return { success: false, error: parsed.error + stderrHint, detail: parsed.detail };
+          return {
+            success: false,
+            error: parsed.error + stderrHint,
+            detail: parsed.detail,
+            retryable: parsed.retryable,
+          };
         }
       }
 
@@ -378,7 +397,12 @@ async function verifyViaSdk(
     const stderrHint = stderrMessages.length > 0
       ? ` (详情: ${stderrMessages.join('; ').slice(0, 200)})`
       : '';
-    return { success: false, error: parsed.error + stderrHint, detail: parsed.detail };
+    return {
+      success: false,
+      error: parsed.error + stderrHint,
+      detail: parsed.detail,
+      retryable: parsed.retryable,
+    };
   }
 }
 
@@ -398,7 +422,24 @@ export async function verifyProviderViaSdk(
   upstreamFormat?: 'chat_completions' | 'responses',
   credentialSource?: import('../shared/config-types').ManagedProviderCredential,
   managedVerification?: { expectedLineage: string },
-): Promise<{ success: boolean; error?: string; detail?: string }> {
+): Promise<{ success: boolean; error?: string; detail?: string; retryable?: boolean }> {
+  if (providerId === TOKENDANCE_PROVIDER_ID) {
+    try {
+      const config = loadProviderConfig();
+      const registered = findEffectiveProvider(providerId, config) as unknown as Provider | null;
+      if (!registered) return { success: false, error: 'TokenDance provider is unavailable.' };
+      model ??= (config.providerPrimaryModels as Record<string, string> | undefined)?.[providerId] ?? registered.primaryModel;
+      const effective = resolveProviderForModel(registered, model);
+      baseUrl = effective.config.baseUrl!;
+      authType = effective.authType!;
+      apiProtocol = effective.apiProtocol;
+      upstreamFormat = effective.upstreamFormat;
+      maxOutputTokens = effective.maxOutputTokens;
+      maxOutputTokensParamName = effective.maxOutputTokensParamName;
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   console.log(`[provider/verify] Starting SDK verification for ${baseUrl}, model=${model ?? 'default'}, authType=${authType}, apiProtocol=${apiProtocol ?? 'anthropic'}, maxOutputTokens=${maxOutputTokens ?? 'none'}`);
   // PRD #124: register a per-call bridge token so the verify subprocess
   // routes to ITS upstream via /bridge/<token>/v1/messages, completely
@@ -445,7 +486,7 @@ export async function verifyProviderViaSdk(
       && classifyOpenAiProbeStatus(probe.status) === 'definite-fail';
     if (shortCircuit) {
       const text = probe.body || `HTTP ${probe.status}`;
-      const parsed = parseProviderError(text.toLowerCase(), text);
+      const parsed = parseProviderError(text.toLowerCase(), text, probe.status);
       const detail = composeVerifyFailureDetail({
         baseUrl,
         model,
@@ -453,7 +494,7 @@ export async function verifyProviderViaSdk(
         diagnostic: summarizeProbeOutcome(probe),
       });
       console.log(`[provider/verify] OpenAI Layer-1 short-circuit: HTTP ${probe.status} → ${parsed.error}`);
-      return { success: false, error: parsed.error, detail };
+      return { success: false, error: parsed.error, detail, retryable: parsed.retryable };
     }
     console.log(`[provider/verify] OpenAI Layer-1 inconclusive (${summarizeProbeOutcome(probe) ?? 'no response'}) → SDK verify`);
   }

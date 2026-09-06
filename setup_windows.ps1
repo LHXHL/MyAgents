@@ -183,131 +183,8 @@ try {
         Write-Host "OK - Git installer ready" -ForegroundColor Green
     }
 
-    function Install-BundledNpm {
-        param(
-            [string]$NodeDir,
-            [string]$NodeExe,
-            [string]$NodeVersion
-        )
-
-        $BundledNpmVersion = "11.15.0"
-        $npmDir = Join-Path $NodeDir "node_modules\npm"
-        $npmCli = Join-Path $npmDir "bin\npm-cli.js"
-        if (-not (Test-Path $npmCli)) {
-            throw "bundled npm is missing: $npmCli"
-        }
-
-        $currentVersion = & $NodeExe $npmCli --version 2>&1
-        if ("$currentVersion" -ne $BundledNpmVersion) {
-            Write-Host "  安装固定 npm v$BundledNpmVersion (当前 v$currentVersion)..." -ForegroundColor Yellow
-            $npmTmpDir = Join-Path $env:TEMP "npm_upgrade_$(Get-Random)"
-            try {
-                New-Item -ItemType Directory -Path $npmTmpDir -Force | Out-Null
-                $tarballUrl = "https://registry.npmjs.org/npm/-/npm-$BundledNpmVersion.tgz"
-                $tgzPath = Join-Path $npmTmpDir "npm.tgz"
-                Invoke-WebRequest -Uri $tarballUrl -OutFile $tgzPath -TimeoutSec 60
-                tar -xzf $tgzPath -C $npmTmpDir 2>&1 | Out-Null
-                $extractedPkg = Join-Path $npmTmpDir "package"
-                if (-not (Test-Path $extractedPkg)) {
-                    throw "npm tarball is missing package/"
-                }
-                Remove-Item -Recurse -Force $npmDir
-                Move-Item -Path $extractedPkg -Destination $npmDir
-            } finally {
-                Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
-            }
-        }
-
-        $installedVersion = & $NodeExe (Join-Path $npmDir "bin\npm-cli.js") --version 2>&1
-        if ("$installedVersion" -ne $BundledNpmVersion) {
-            throw "bundled npm version mismatch: expected $BundledNpmVersion, got $installedVersion"
-        }
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-version") -Value $NodeVersion -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-npm-version") -Value $BundledNpmVersion -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-platform") -Value "win" -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-arch") -Value "x64" -NoNewline
-        Write-Host "  npm v$installedVersion ✓" -ForegroundColor Green
-    }
-
     function Get-NodeJSBinary {
-        $NodeVersion = "24.14.0"
-        $NodeDir = Join-Path $ProjectDir "src-tauri\resources\nodejs"
-        if (-not (Test-Path $NodeDir)) {
-            New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
-        }
-
-        Write-Host "下载 Node.js 运行时 (v$NodeVersion)..." -ForegroundColor Blue
-
-        $NodeExe = Join-Path $NodeDir "node.exe"
-        if (Test-Path $NodeExe) {
-            # Check version
-            $existingVer = & $NodeExe --version 2>$null
-            if ($existingVer -eq "v$NodeVersion") {
-                Write-Host "  OK - Node.js v$NodeVersion (already exists)" -ForegroundColor Green
-                Install-BundledNpm -NodeDir $NodeDir -NodeExe $NodeExe -NodeVersion $NodeVersion
-                Write-Host "OK - Node.js runtime ready" -ForegroundColor Green
-                return
-            }
-            Write-Host "  版本不匹配 ($existingVer), 重新下载..." -ForegroundColor Yellow
-        }
-
-        Write-Host "  下载 Windows x64 版本..." -ForegroundColor Cyan
-        $ZipName = "node-v$NodeVersion-win-x64.zip"
-        $DownloadUrl = "https://nodejs.org/dist/v$NodeVersion/$ZipName"
-        $TempZip = Join-Path $env:TEMP "node-windows.zip"
-        $TempDir = Join-Path $env:TEMP "node-windows-extract"
-
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip -UseBasicParsing -TimeoutSec 300
-
-            if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
-            Expand-Archive -Path $TempZip -DestinationPath $TempDir -Force
-
-            $ExtractedDir = Join-Path $TempDir "node-v$NodeVersion-win-x64"
-
-            # Clean and copy full distribution (node.exe + npm + npx)
-            if (Test-Path $NodeDir) { Remove-Item -Recurse -Force $NodeDir }
-            New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
-
-            # Copy top-level files
-            Copy-Item -Path (Join-Path $ExtractedDir "node.exe") -Destination $NodeDir -Force
-            Copy-Item -Path (Join-Path $ExtractedDir "npm.cmd") -Destination $NodeDir -Force
-            Copy-Item -Path (Join-Path $ExtractedDir "npx.cmd") -Destination $NodeDir -Force
-            Copy-Item -Path (Join-Path $ExtractedDir "npm") -Destination $NodeDir -Force
-            Copy-Item -Path (Join-Path $ExtractedDir "npx") -Destination $NodeDir -Force
-            # Use robocopy for node_modules to handle deep paths beyond MAX_PATH (260 chars).
-            # PowerShell's Copy-Item -Recurse silently skips files with long paths, corrupting
-            # npm's internal dependencies (minizlib/minipass → "Class extends undefined" error).
-            $SrcModules = Join-Path $ExtractedDir "node_modules"
-            $DstModules = Join-Path $NodeDir "node_modules"
-            if (Test-Path $SrcModules) {
-                & robocopy $SrcModules $DstModules /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
-                # robocopy returns 0-7 for success, 8+ for errors
-                if ($LASTEXITCODE -ge 8) {
-                    throw "robocopy failed with exit code $LASTEXITCODE"
-                }
-            }
-
-            # Remove corepack (not needed)
-            $corepackCmd = Join-Path $NodeDir "corepack.cmd"
-            $corepackDir = Join-Path $NodeDir "node_modules\corepack"
-            if (Test-Path $corepackCmd) { Remove-Item -Force $corepackCmd }
-            if (Test-Path $corepackDir) { Remove-Item -Recurse -Force $corepackDir }
-
-            Install-BundledNpm -NodeDir $NodeDir -NodeExe (Join-Path $NodeDir "node.exe") -NodeVersion $NodeVersion
-
-            Write-Host "  OK - Windows x64" -ForegroundColor Green
-        } catch {
-            Write-Host "  下载失败: $_" -ForegroundColor Red
-            Write-Host "  请手动下载: $DownloadUrl" -ForegroundColor Yellow
-            throw "Node.js download failed"
-        } finally {
-            if (Test-Path $TempZip) { Remove-Item -Force $TempZip }
-            if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
-        }
-
-        Write-Host "OK - Node.js runtime ready" -ForegroundColor Green
+        & "$ProjectDir\scripts\download_nodejs.ps1"
     }
 
     function Get-VCRuntime {
@@ -318,7 +195,7 @@ try {
 
         Write-Host "提取 VC++ Runtime DLL (app-local deployment)..." -ForegroundColor Blue
 
-        # Native binaries (SDK Claude, cuse, etc.) on Windows may require VCRUNTIME140.dll.
+        # Native binaries (SDK Claude, etc.) on Windows may require VCRUNTIME140.dll.
         # App-local deployment: copy DLLs into resources/ so end users don't need to install
         # VC++ Redistributable separately.
         $dlls = @("vcruntime140.dll", "vcruntime140_1.dll")
@@ -345,64 +222,8 @@ try {
         Write-Host "OK - VC++ Runtime ready" -ForegroundColor Green
     }
 
-    function Test-MSVC {
-        Write-Host "  检查 MSVC Build Tools... " -NoNewline
-
-        # Method 1: cl.exe in PATH (Developer Command Prompt)
-        $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
-        if ($cl) {
-            Write-Host "OK" -ForegroundColor Green
-            return $true
-        }
-
-        # Method 2: vswhere (standard VS installer location)
-        $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
-        $vsWhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path $vsWhere) {
-            $vsPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-            if ($vsPath) {
-                Write-Host "OK" -ForegroundColor Green
-                return $true
-            }
-            # Fallback: any VS/BuildTools installation
-            $vsPath = & $vsWhere -latest -products * -property installationPath 2>$null
-            if ($vsPath) {
-                Write-Host "OK (found VS installation)" -ForegroundColor Green
-                return $true
-            }
-        }
-
-        # Method 3: check common BuildTools paths directly
-        $btPaths = @(
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools",
-            "${env:ProgramFiles}\Microsoft Visual Studio\2022\BuildTools",
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Community",
-            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community"
-        )
-        foreach ($p in $btPaths) {
-            if (Test-Path $p) {
-                Write-Host "OK" -ForegroundColor Green
-                return $true
-            }
-        }
-
-        # Method 4: winget list check
-        try {
-            $wingetList = winget list --id Microsoft.VisualStudio.2022.BuildTools 2>$null
-            if ($LASTEXITCODE -eq 0 -and $wingetList -match "BuildTools") {
-                Write-Host "OK (winget)" -ForegroundColor Green
-                return $true
-            }
-        } catch { }
-
-        Write-Host "MISSING" -ForegroundColor Red
-        return $false
-    }
-
     # Main
-    Write-Host "Step 1/8: 检查并安装依赖" -ForegroundColor Blue
-    # Eight numbered steps remain: the Mino template now ships with the repo,
-    # so setup no longer owns a separate clone/preparation step.
+    Write-Host "Step 1/7: 检查并安装依赖" -ForegroundColor Blue
 
     # Check winget availability for auto-install
     $HasWinget = $false
@@ -427,39 +248,15 @@ try {
         Write-Host "    请安装: https://rustup.rs" -ForegroundColor Yellow
     }
 
-    # MSVC Build Tools (required by Rust on Windows)
-    if (-not (Test-MSVC)) {
-        if ($HasWinget) {
-            Write-Host "  自动安装 Visual Studio Build Tools (C++ 工作负载)..." -ForegroundColor Cyan
-            winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) {
-                Write-Host "  MSVC 安装失败，请手动安装 Visual Studio Build Tools" -ForegroundColor Red
-            } else {
-                Write-Host "  MSVC Build Tools 安装完成" -ForegroundColor Green
-            }
-            Refresh-ProcessPath
-        } else {
-            Write-Host "    请安装 Visual Studio Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Yellow
-        }
-    }
-
     # Pre-toolchain check: rustc/cargo are installed by ensure_rust_toolchain.ps1.
     $Missing = $false
     if (-not (Test-Dependency "Node.js" "node --version" "")) { $Missing = $true }
     if (-not (Test-Dependency "Rustup" "rustup --version" "")) { $Missing = $true }
-    if (-not (Test-MSVC)) { $Missing = $true }
 
     if ($Missing) {
         Write-Host "`n仍有缺失依赖，请手动安装后重新运行" -ForegroundColor Red
         Write-Host "按回车键退出..." -ForegroundColor Yellow
         Read-Host
-        exit 1
-    }
-
-    $ActualNodeVersion = (& node --version).Trim()
-    $ActualNpmVersion = (& npm --version).Trim()
-    if ($ActualNodeVersion -ne "v24.14.0" -or $ActualNpmVersion -ne "11.15.0") {
-        Write-Host "`n开发工具链版本不匹配：需要 Node v24.14.0 / npm 11.15.0，当前为 Node $ActualNodeVersion / npm $ActualNpmVersion" -ForegroundColor Red
         exit 1
     }
 
@@ -484,35 +281,28 @@ try {
         exit 1
     }
 
-    Write-Host "`nStep 2/8: 下载 Node.js 运行时 (Sidecar + MCP Server + 社区工具统一 runtime)" -ForegroundColor Blue
+    # Keep target/cache/tool policy in the native prepare owner. Run its
+    # read-only preflight before runtime downloads, npm install, or cargo fetch.
+    Write-Host "`nStep 1.75/8: 检查原生推理构建依赖" -ForegroundColor Blue
+    & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc" --check-prerequisites
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  原生推理构建依赖不完整，请按上方提示安装后重新运行" -ForegroundColor Red
+        Write-Host "`n按回车键退出..." -ForegroundColor Yellow
+        Read-Host
+        exit 1
+    }
+    Write-Host "OK - 原生推理构建依赖检查完成" -ForegroundColor Green
+
+    Write-Host "`nStep 2/7: 下载 Node.js 运行时 (Sidecar + MCP Server + 社区工具统一 runtime)" -ForegroundColor Blue
     Get-NodeJSBinary
 
-    # cuse (computer-use MCP) 二进制 — 与 build_windows.ps1 同一脚本，dev 模式
-    # 通过 src/server/utils/runtime.ts::getBundledCusePath() 在 src-tauri/binaries/
-    # 下找。download_cuse.ps1 自带版本短路（latest.json + .cuse-version + PE
-    # header 烟雾测试），重跑是 noop。网络失败按软失败处理：dev 下 cuse
-    # 缺失会被 getBundledCusePath() 返回 null，MCP 优雅 skip + warn，不应阻断
-    # 整个 setup。
-    Write-Host "`nStep 3/8: 下载 cuse computer-use 二进制" -ForegroundColor Blue
-    try {
-        & "$ProjectDir\scripts\download_cuse.ps1"
-        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-            throw "download_cuse.ps1 exit $LASTEXITCODE"
-        }
-        Write-Host "OK - cuse ready" -ForegroundColor Green
-    } catch {
-        Write-Host "  cuse 下载失败: $_" -ForegroundColor Yellow
-        Write-Host "  ⚠ computer-use 功能在 dev 模式下将不可用，网络恢复后可重跑：" -ForegroundColor Yellow
-        Write-Host "    .\scripts\download_cuse.ps1" -ForegroundColor Yellow
-    }
-
-    Write-Host "`nStep 4/8: 下载 Git 安装包 (用于 NSIS 打包)" -ForegroundColor Blue
+    Write-Host "`nStep 3/7: 下载 Git 安装包 (用于 NSIS 打包)" -ForegroundColor Blue
     Get-GitInstaller
 
-    Write-Host "`nStep 5/8: 提取 VC++ Runtime DLL" -ForegroundColor Blue
+    Write-Host "`nStep 4/7: 提取 VC++ Runtime DLL" -ForegroundColor Blue
     Get-VCRuntime
 
-    Write-Host "`nStep 6/8: 安装前端/后端依赖" -ForegroundColor Blue
+    Write-Host "`nStep 5/7: 安装前端/后端依赖" -ForegroundColor Blue
     & npm install
     if ($LASTEXITCODE -ne 0) {
         Write-Host "依赖安装失败" -ForegroundColor Red
@@ -530,7 +320,7 @@ try {
         exit 1
     }
 
-    Write-Host "`nStep 7/8: 下载 Rust 依赖" -ForegroundColor Blue
+    Write-Host "`nStep 6/7: 下载 Rust 依赖" -ForegroundColor Blue
     Write-Host "  正在下载 Rust 依赖包，请稍候..." -ForegroundColor Cyan
     Push-Location (Join-Path $ProjectDir "src-tauri")
     & cargo fetch
@@ -544,17 +334,17 @@ try {
     Pop-Location
     Write-Host "OK - Rust 依赖下载完成" -ForegroundColor Green
 
-    Write-Host "`nStep 7.5/8: 准备离线文档转换资源" -ForegroundColor Blue
-    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
+    Write-Host "`nStep 7.5/8: 准备离线文档与语音推理资源" -ForegroundColor Blue
+    & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  文档转换资源准备失败" -ForegroundColor Red
+        Write-Host "  原生推理资源准备失败" -ForegroundColor Red
         Write-Host "`n按回车键退出..." -ForegroundColor Yellow
         Read-Host
         exit 1
     }
-    Write-Host "OK - 文档转换资源 ready" -ForegroundColor Green
+    Write-Host "OK - 原生推理资源 ready" -ForegroundColor Green
 
-    Write-Host "`nStep 8/8: 初始化完成!" -ForegroundColor Blue
+    Write-Host "`nStep 7/7: 初始化完成!" -ForegroundColor Blue
     Write-Host "`n=========================================" -ForegroundColor Green
     Write-Host "  开发环境准备就绪!" -ForegroundColor Green
     Write-Host "=========================================`n" -ForegroundColor Green

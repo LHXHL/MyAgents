@@ -258,8 +258,8 @@ test("repository lock, generated contracts, resources, and toolchain authorities
     "build_windows.ps1",
   ].map((path) => readFileSync(resolve(repoRoot, path), "utf8"));
 
-  assert.equal(lock.runtime.requiredNodeVersion, "24.14.0");
-  assert.equal(lock.bundledNpm.version, "11.15.0");
+  assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
+  assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
   assert.equal(lock.protocol.version, "3.1.0");
   assert.equal(lock.protocol.hostMethodCount, 44);

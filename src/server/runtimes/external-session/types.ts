@@ -141,6 +141,8 @@ export interface ExternalUserMessageProjectionState {
 
 export interface ExternalMessageOperation {
   kind: 'message';
+  /** Monotonic order assigned when this user intent first enters the queue owner. */
+  admissionOrder: number;
   queueId: string;
   text: string;
   images?: ImagePayload[];
@@ -154,12 +156,15 @@ export interface ExternalMessageOperation {
 }
 
 export interface ExternalQueuedMessageOperation extends ExternalMessageOperation {
+  /** Explicit user force-ahead overrides ordinary first-admission FIFO. */
+  forcePriority?: true;
   dispatchAcceptance: Promise<ExternalSendResult>;
   settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }
 
 export interface ExternalQueuedConfigOperation {
   kind: 'config';
+  admissionOrder: number;
   opId: string;
   patch: ExternalRuntimeConfigPatch;
   source: ExternalConfigSource;

@@ -52,6 +52,7 @@ npm-debug.log*
 # Tauri / Rust
 src-tauri/target/
 src-tauri/document-worker/target/
+src-tauri/media-worker/target/
 src-tauri/binaries/
 src-tauri/resources/server-dist.js
 src-tauri/resources/server-dist.js.map
@@ -64,6 +65,8 @@ src-tauri/resources/cli/myagents.cmd
 src-tauri/resources/sharp-runtime
 src-tauri/resources/document-processing/*
 !src-tauri/resources/document-processing/.gitkeep
+src-tauri/resources/speech-inference/*
+!src-tauri/resources/speech-inference/.gitkeep
 src-tauri/resources/document-processing-cache/
 src-tauri/resources/tsx-runtime
 src-tauri/resources/playwright-control
@@ -111,3 +114,7 @@ myagents_files/
 
 # Agent long-term memory (raw daily notes & topic files, per .claude/rules/04-MEMORY.md)
 /memory/
+
+# Complete Cuse Skill+CLI fetched for the current build target
+/bundled-skills/cuse/
+/bundled-skills/.cuse-prepare-*/

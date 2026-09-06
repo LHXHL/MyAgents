@@ -1,218 +1,135 @@
 # Bundled Node.js 运行时架构
 
-> v0.2.0 之前是 Bun — `bundled_bun.md`（已并入此文）。Bun 迁移到 Node.js v24 的决策与链路见 `specs/prd/prd_0.2.0_node_runtime_migration.md`（gitignore，本地文件）。
+MyAgents 随应用提供单一 Node.js v24，用于 Sidecar、Plugin Bridge、MCP Server 和 `myagents` CLI。用户不需要安装系统 Node 才能运行产品功能；Node/npm 的精确组合以 `scripts/node-runtime.json` 为唯一构建权威，下载脚本和前端版本展示共同读取。开发用的 `package.json#packageManager` 不代表应用内置 npm。
 
-## 概述
+## 获取、缓存与打包
 
-MyAgents 将精确 Node.js `24.14.0` 运行时打包到应用内，实现**单一 runtime、零外部依赖**分发。用户无需安装 Node.js 即可运行所有功能（Sidecar、DSH Runtime、Plugin Bridge、MCP Server、社区 npm 包、`myagents` CLI）。
+Node 下载脚本从 nodejs.org 取得官方 target artifact，并维护两层目录：
 
-## 二进制获取方式
+- `src-tauri/resources/nodejs-cache/<platform>-<arch>-v<version>/`：按平台、架构和版本隔离的本地 cache；
+- `src-tauri/resources/nodejs/`：当前 Tauri target 的 staging projection。
 
-Node.js v24 官方二进制通过 `scripts/download_nodejs.sh` / `.ps1` 从 nodejs.org 下载：
+macOS/Linux 构建脚本在每个 target build 前从正确 cache 重建 staging，并验证版本、平台与架构。`resources/nodejs/` 不是跨 target 的权威缓存；双架构或交叉构建不能复用上一个 target 遗留的 staging。
 
-```bash
-./setup.sh  # 首次 clone 自动调用；build_dev.sh / build_macos.sh / build_windows.ps1 / build_linux.sh 也会幂等调用
-```
+Windows setup、dev build 和 release build 共用 `scripts/download_nodejs.ps1`，直接核验 staging 中 Node 的版本/平台/架构与 npm/npx 版本；不匹配则重新下载官方 ZIP 并用 robocopy 复制深层依赖。
 
-- **版本变量**：`NODE_VERSION=24.14.0` 与产品侧 `NPM_VERSION=11.15.0` 在 `scripts/download_nodejs.sh` 顶部定义；Windows setup/release 入口使用相同精确值
-- **npm 边界**：资源下载使用 `npm-11.15.0.tgz`，不解析 `npm/latest`；开发包管理器、产品 bundled npm 与 DSH 构建 provenance 仍是三个独立权威，但当前统一固定为 `npm@11.15.0`
-- **打包位置**：`src-tauri/resources/nodejs/`（Tauri staging 目录，已加入 `.gitignore`）
-- **缓存位置**：`src-tauri/resources/nodejs-cache/<platform>-<arch>-v<version>/`（按平台 / 架构 / 版本隔离，已加入 `.gitignore`）
-- **ABI 保护**：脚本先检查对应架构缓存；`resources/nodejs/` 只在构建某个 target 前从缓存同步。`build_dev.sh` 启动时用 `file(1)` 验证 binary 架构匹配 host，避免 macOS 双架构 release 构建后留下 x64 staging 影响 arm64 dev 构建
-- **版本证明**：每个 cache/staging 同时记录 `.myagents-nodejs-version` 与 `.myagents-npm-version`；DSH 资源 verifier 在构建前既检查元数据也执行目标 `node`/`npm-cli.js`，任何漂移都在进程创建前失败
+npm 随官方 Node 发行包整组获取，禁止通过 `npm/latest` 或独立升级覆盖它。缓存复用和 staging 校验必须读取 npm 自身的 `package.json` 并检查 npm/npx 入口，不能仅凭 Node 版本命中缓存。需要调整组合时修改 manifest，且所选官方发行包必须自带声明的 npm；不匹配即准备失败。
 
-### 支持的平台
+打包后的主路径为：
 
-| 平台 | Node.js 二进制路径（打包后） |
-|---|---|
-| macOS ARM (M1/M2/...) | `MyAgents.app/Contents/Resources/nodejs/bin/node` |
-| macOS Intel | 同上（区分 triple 由 DMG target 决定） |
-| Windows x86_64 | `resources\nodejs\node.exe` |
-| Linux x86_64 (glibc) | AppImage / deb 里的 `resources/nodejs/bin/node` |
+| 平台 | Runtime |
+| --- | --- |
+| macOS / Linux | `Resources/nodejs/bin/node` |
+| Windows | `resources/nodejs/node.exe` |
 
-### Claude Agent SDK native binary（独立进程，非我们的 Node）
+构建产物还包含 `server-dist.js`、`plugin-bridge-dist.mjs` 和 `cli/myagents.cjs`。这些业务 bundle 与 Node 一起由当前安装目录拥有，不投影到用户 HOME。
 
-SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK team 内嵌 Bun runtime，约 213 MB）。我们不共享 SDK 子进程的 Bun runtime 或 MyAgents Node 进程内状态，只通过 stdio NDJSON 通信。例外是 Claude Code 自己的外部状态：builtin `anthropic-sub` 会按 native 默认规则读取本机官方 OAuth credential store（macOS Keychain / `~/.claude/.credentials.json`），MyAgents 不通过 `CLAUDE_CONFIG_DIR` 改写这套位置，也不接管 OAuth token 生命周期。
+## Integrated DSH
 
-| 文件 | 平台 | 来源 |
-|---|---|---|
-| `resources/claude-agent-sdk/claude` | macOS / Linux | `@anthropic-ai/claude-agent-sdk-<triple>/claude` |
-| `resources/claude-agent-sdk/claude.exe` | Windows | 同上 |
+DSH Runtime 使用同一个 bundled Node，不增加第二份 Node，也不回退到系统 Node。`scripts/node-runtime.json` 拥有产品内置 Node/npm 组合；`package.json` 拥有开发工具链约束；DSH handoff 的 Runtime manifest 拥有构建 provenance 和所需 Node 版本。当前目标统一为 Node `24.20.0` / npm `11.19.0`，三个权威必须经过实际构建与验证后相符，不能只改旧制品的版本字段。
 
-构建脚本按 `per-target` loop 从 `node_modules/@anthropic-ai/claude-agent-sdk-<triple>/` 拷贝并 codesign（macOS）。
+`src-tauri/resources/integrated-runtimes/dsh/` 保存完整不可变交付。`ingest:dsh-runtime` 在临时副本内设置可打包权限并验证后原子接纳；`verify:dsh-runtime` 校验交付、契约、Node 元数据及实际 Node/npm executable。npm 版本读取官方发行包自己的 `package.json`，不另建版本标记权威；开发 freshness 检查还对照配置的 Runtime 仓库 HEAD。构建不从兄弟仓库或网络临时获取 DSH。
 
-### SDK native child 确定性启动拒绝
+## Claude Agent SDK native child
 
-`EPERM`、`EACCES`、`ENOEXEC` 表示操作系统在 executable launch 边界拒绝 SDK native child；它们不同于 Provider、网络或模型错误。所有生产 builtin `query()` 必须经 `src/server/utils/sdk-child-launch-guard.ts::createGuardedSdkQuery()`：
+Builtin Claude Agent SDK 自带 target-specific native executable；它是独立进程，不复用 MyAgents Node 的进程内状态。MyAgents 只通过 SDK transport 与它通信。
 
-- Tauri `runtime_launch_guard.rs` 按 executable canonical path + metadata hash 持有应用级 circuit；一个 Sidecar 的拒绝对所有 Global / Session Sidecar 生效，external runtime 不进入该 circuit。
-- 首次拒绝后每分钟最多放行一个 half-open probe。probe 是 Rust-owned lease，即使 Sidecar 退出或 settlement 丢失也会自动到期。
-- admission epoch 随 settlement 返回；旧 `ready` 不得清除更新的 failure epoch。只有 `initializationResult()` 成功才算 control plane ready。
-- executable identity 在应用更新/重装后变化，旧 circuit 自动失效。普通 Provider / network failure 只释放本次 admission，不打开 circuit。
-- circuit 是 best-effort 重试保护，不拥有 SDK 启动权。只有 Rust 显式返回携带 `EPERM` / `EACCES` / `ENOEXEC` 的 circuit denial 才能阻止本次启动；Sidecar identity 缺失/过期、Management transport 异常或响应畸形都必须跳过 circuit 并继续调用 SDK。Session 业务 ID 重绑时保留进程出生时注入的不可变 management identity。
-- Desktop 与 IM 显示可操作的更新/重装提示；内部 epoch/circuit 标记不得泄漏到用户错误文本。
+构建脚本从已安装的 `@anthropic-ai/claude-agent-sdk-<triple>` package 复制对应 binary，macOS release 还必须 codesign。路径、package 版本和 artifact 大小以 lockfile、安装包与构建脚本为准。
 
-## 应用结构
+所有生产 builtin `query()` 经过 `src/server/utils/sdk-child-launch-guard.ts::createGuardedSdkQuery()`：
 
-```
-MyAgents.app/
-└── Contents/
-    ├── MacOS/
-    │   └── app                        # Rust 主程序
-    └── Resources/
-        ├── nodejs/bin/node            # 内置 Node.js v24 (mac/linux)
-        ├── nodejs/bin/npm             # bundled npm
-        ├── nodejs/bin/npx             # bundled npx
-        ├── server-dist.js             # Sidecar 打包产物（esbuild bundle）
-        ├── plugin-bridge-dist.mjs     # Plugin Bridge 打包产物
-        ├── plugin-bridge-sdk-shim/    # OpenClaw SDK shim（ESM, v2026.4.24+）
-        ├── claude-agent-sdk/          # SDK native binary（独立运行时）
-        ├── integrated-runtimes/dsh/   # 完整、锁定并验证过的 DSH handoff
-        └── cli/myagents.cjs           # myagents CLI（esbuild CommonJS bundle）
+- `EPERM`、`EACCES`、`ENOEXEC` 属于 executable launch rejection，不得伪装成 Provider 或网络错误；
+- Rust 按 executable identity 维护跨 Sidecar circuit 与有界 half-open probe；
+- 只有 Rust 明确返回的 launch denial 能阻止本次启动；管理通道不可用时跳过 circuit，不能误杀可运行的 SDK；
+- executable identity 随更新或重装变化，旧 circuit 自动失效；
+- external runtime 不进入 builtin SDK circuit。
 
-~/.myagents/bin/{myagents,myagents.cmd} 只是一对由 Rust 生成的薄启动器：它们回到当前
-MyAgents executable，再由 `src-tauri/src/cli.rs` 同时定位上面的 bundled Node 与 CLI bundle。
-HOME 不保存 CLI 业务脚本，也不使用系统 Node fallback；bundle 资源缺失会在 Sidecar
-admission 前 fail closed。
+Builtin `anthropic-sub` 的 OAuth credential 仍由 Claude Code native credential store 拥有。MyAgents 不用 `CLAUDE_CONFIG_DIR` 重定向它，也不接管 token 生命周期。
 
-```
+## Runtime locator 与 PATH
 
-## 运行时路径工具 (`src/server/utils/runtime.ts`)
+`src/server/utils/runtime.ts` 是 Node/npm/npx 定位入口。产品自身的可执行链与交互 shell 的 PATH 有意不同。
 
-统一的运行时路径检测工具，确保所有功能都能使用内置 Node.js，无需外部依赖。
+### MyAgents-owned 入口
 
-### 核心函数
+- Rust 启动 Sidecar、Plugin Bridge 时优先使用安装目录中 bundled Node 的绝对路径：先查 resource root，再查 executable-relative layout，最后调用 `system_binary::find()` 查找 Node。最后一步虽注释为开发回退，代码没有仅 debug 生效的限制；不能宣称生产环境绝不回退系统 Node。
+- `~/.myagents/bin/{myagents,myagents.cmd}` 是 Rust 原子生成的薄启动器，只回到当前 MyAgents executable 并透明转发 argv。
+- `src-tauri/src/cli.rs` 从当前 executable 的受信 resource root 定位 Node 与 `myagents.cjs`；资源缺失或路径逃逸时 fail closed，不回退系统 Node 或 HOME 里的旧业务脚本。
 
-```typescript
-// 运行时脚本目录（运行时计算，避开 esbuild 编译时硬编码）
-getScriptDir(): string
+### SDK shell
 
-// bundled Node.js 二进制（resources/nodejs/bin/node[.exe]）
-getBundledNodePath(): string | null
-getBundledNodeDir(): string | null   // 含 node / npm / npx 的目录
+AI 的 Bash 工具需要尊重用户开发环境，因此 `buildClaudeSessionEnv()` 构造的 PATH 顺序是：
 
-// 包管理器 — 一律返回 npm
-getPackageManagerPath(): { command, installArgs, type: 'npm' }
+1. `~/.myagents/bin`，保证产品保留命令不被 shadow；
+2. 用户系统 Node 目录；
+3. bundled Node 目录；
+4. MyAgents-localized npm global bin；
+5. inherited PATH。
 
-// 系统 Node.js 目录（用户安装的 node/npm，优先级高于 bundled）
-getSystemNodeDirs(): string[]
-```
+SDK shell 不设置全局 `npm_config_prefix` 等会干扰 nvm 的变量。需要固定 npm 安装目录时，在单条命令上显式设置。
 
-### PATH 注入（`buildClaudeSessionEnv`）
+这里的“系统 Node 目录”是 `getSystemNodeDirs()` 枚举的常见位置，并不等于原终端 PATH 的完整优先级。macOS/Linux 按 Homebrew、`/usr/local/bin`、`/usr/bin`、Volta、nvm/current、fnm/current 排序；只存在于 inherited PATH 的自定义版本目录在 bundled 之后。Shell 初始化、版本管理器或命令显式修改 PATH/指定绝对路径后，实际选择可以改变。此处没有版本兼容性探测，也不会因系统 Node 较旧或命令失败就自动再试 bundled Node。
 
-SDK 子进程（AI Bash 工具）看到的 PATH 优先级：
-1. `~/.myagents/bin`（官方 `myagents` launcher + Tool Registry shims）
-2. 用户系统安装的 Node.js 目录（`getSystemNodeDirs()`）—— 用户自己维护，npm 更可靠
-3. bundled Node.js 目录（`resources/nodejs/bin`）—— fallback
-4. `~/.myagents/npm-global/bin`（MyAgents-localized npm installs / legacy AI-installed CLIs）
-5. 系统 PATH
+### 外部 Runtime 与应用内终端
 
-规则：产品保留的 `myagents` 必须先命中官方 launcher；Node 的内部选择策略仍是**系统优先，bundled 兜底**，需要确定 bundled Node 的 MyAgents 自身入口继续使用绝对 locator，不靠 PATH。也就是说，CLI shadow 修复不改变系统 Node / bundled Node 的相对策略。
-
-注意：SDK shell env **不设置** `npm_config_prefix` / `NPM_CONFIG_PREFIX` / `PREFIX`。
-nvm 会在 shell 初始化时检测这些变量并输出兼容性警告。需要固定 npm 全局安装落点的
-skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_PREFIX" npm install -g ...`）。
+- Claude Code / Codex 等外部 Runtime 的进程环境走 `runtimes/env-utils.ts → getShellEnv()`，不是 `buildClaudeSessionEnv()`。它以 `shell.ts` 的平台目录表开头，再追加 inherited PATH 和异步检测到的用户 Shell PATH；常见系统目录在 bundled 前，但部分版本管理器目录在 bundled 后。外部 Runtime 内部 Shell 的最终环境仍由相应 Runtime 决定。
+- 应用内 PTY 终端由 `src-tauri/src/terminal.rs::inject_terminal_env()` 注入：`~/.myagents/bin`、应用可执行资源目录、bundled Node、inherited PATH。因此它的初始优先级与内置 AI 的 Shell 不同；终端 Shell 加载用户配置后还可能重排。
+- `myagents tool add` 注册的用户工具也不等同于官方 CLI：POSIX 启动器使用 `#!/usr/bin/env node`，随后沿用该 Node；Windows shim 优先使用写入时的 bundled Node 绝对路径，失效后才回退 PATH 上的 Node。
 
 ### Task command Detector
 
-Activation Trigger 的 command Detector 是 Rust Task harness 启动的受管子进程，不是 SDK Bash。为保证 AI 生成的 JavaScript 感知器零外部依赖，Detector 的 bare `node` / `node.exe` **固定**解析到 MyAgents bundled Node.js v24；这与上面 AI shell 的“系统优先、bundled 兜底”是两个不同入口。其他 bare executable 走 `system_binary::find()`，绝对路径直接校验；结构化 args 原样传递，不经 shell 拼接。
+Activation Trigger 的 command Detector 不是交互 shell。bare `node` / `node.exe` 使用 Sidecar 的 Node locator，优先 bundled，缺失时也有上述系统查找回退；其它 bare executable 走 `system_binary::find()`。它使用结构化 executable、args 与 cwd，不经 shell 字符串重拼。
 
-Detector 在 `env_clear()` 后只恢复本地命令所需的 OS home/user/temp/system 基线、证书、通用代理变量和增强后的 `PATH`，并固定设置 UTF-8 locale、`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`。它不继承 Provider API key、Session credential、`MYAGENTS_*` 控制端口或任意启动 shell 变量；需要业务 credential 的脚本必须自己从明确的外部安全来源读取，不能依赖 MyAgents 进程环境的偶然泄漏。
+Detector 在 `env_clear()` 后只恢复 OS、证书、general proxy、PATH 和 UTF-8 基线，不继承 Provider credential、Session 控制端口或启动 shell 的任意变量。
 
-## MCP / 社区 npm 包的执行
+## npm / npx 与 MCP
 
-### 外部 stdio MCP（用户装 `@notionhq/notion-mcp-server` 等）
+`src/server/utils/mcp-command.ts::resolveNpxMcpInvocation()` 是 stdio MCP 的 npx 解释入口，Builtin Claude、Managed Codex 和 MCP warmup 共用：
 
-`utils/mcp-command.ts::resolveNpxMcpInvocation()` 是 npx MCP 启动命令的唯一解释器，由 builtin Claude、managed Codex 和 MCP enable warmup 共用：
-- `command: 'npx'` → 解析为 **系统 npx** → bundled npx → runtime sibling npx（fallback），始终补 `-y`；macOS/Linux 输出绝对 npx 路径，Windows 输出同一完整 Node distribution 的绝对 `node.exe`，并把绝对 `node_modules/npm/bin/npx-cli.js` 放在 argv 首位，禁止把 `.cmd` shim 交给 Codex 原生 spawn
-- MyAgents-owned preset 使用 `shared/mcpPackages.ts` 的精确 package spec；旧配置里的已知 `@latest` 在 runtime boundary 归一化，避免每次进程启动重新查询 registry
-- `mcpServerArgs[id]` 只存用户附加参数，必须追加到 preset/package 基础参数之后，不能替换整段 argv
-- 通过 `process_cmd::new()` spawn（Windows 自动 `CREATE_NO_WINDOW`）
-- 环境变量通过 `proxy_config::apply_to_subprocess` 注入 `NO_PROXY` 保护 localhost
+- 优先系统 npx，再用 bundled npx 和 runtime sibling fallback；
+- Windows 不把 `.cmd` shim 直接交给不支持它的原生 spawn，而是解析为同一 Node distribution 的 `node.exe + npx-cli.js`；
+- product preset 使用 `src/shared/mcpPackages.ts` 的精确 package spec；
+- 用户附加参数只追加，不覆盖 preset 的 package / 基础参数；
+- localhost 保护和 proxy env 由对应进程 owner 注入。
 
-标准 `playwright` preset 继续走这条通用 stdio 路径：锁定 package spec，但保留上游 argv 与浏览器资源语义；仅在用户从未保存 args 时默认追加 `--isolated`。它与新增的 `myagents-browser` /「浏览器」不是同一个工具。
+“系统 npx 优先”特指常见目录中的 npx 入口选择。Windows 显式配对同一 distribution 的 Node 与 npx；POSIX 直接执行 npx 文件，若入口使用 `#!/usr/bin/env node`，最终 Node 还取决于子进程 PATH，不保证与该 npx 来自同一发行包。自定义 MCP 的绝对命令路径和显式 env 另行生效；不能将 npx 特判扩展为所有 MCP 都固定使用 bundled Node。
 
-「浏览器」使用 App 生产依赖中锁定的 `@playwright/mcp` 控制代码，并把保留 sentinel 投影为 Global Sidecar Browser Host 的认证 HTTP transport。Playwright 三个控制包保持上游目录结构随 Tauri 进入 `Resources/node_modules`，由 ESM `server-dist.js` 在 Browser Host 懒加载边界作为 external package 动态加载；不要把依赖 package-local `__dirname` / data file 的代码重新 bundle 进单文件。`prepare-playwright-control-runtime.mjs` 每次构建都从锁定依赖重建 staging，并移除无关的 `fsevents` 原生模块、拒绝其它 native library 与 browser artifact。它不调用 `npx`，也不从 bundled Node、系统 Chrome 或用户 Playwright cache 寻找浏览器。Rust resource owner 只在用户首次明确安装后，按 App 内锁定的官方 Playwright artifact URL、size 与 SHA-256 下载并解析精确 Chromium executable path；Chromium 资源不属于 bundled Node，也不进入 Tauri resources。
+### OpenClaw 插件安装
 
-### 内置 in-process MCP（懒加载）
+`src-tauri/src/im/bridge.rs` 将运行 Bridge 与安装插件分开处理。安装先通过 `system_binary::find("npm")` 查找 npm，失败或不可用时显式使用 bundled Node + `npm-cli.js`，并将其 Node 目录前置供安装脚本使用；后续依赖修复也显式使用 bundled 组合。
 
-当前 user-toggleable `gemini-image` / `edge-tts` 通过 `src/server/tools/builtin-mcp-meta.ts` 的 META 登记 + `createXxxServer()` 工厂懒加载，**不在** Sidecar 冷启动时创建；历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI。runtime-dynamic `im-bridge-tools` 由独立的 context-injected surface owner 懒初始化，不进入 META registry。见 `pit_of_success.md §Builtin MCP 懒加载架构`。
+这里第一步的 locator 搜索顺序是 inherited PATH → 应用目录 → 平台补充目录和检测出的 Shell PATH。即使变量和日志称为 “system npm”，实际也可能命中 bundled npm，不能按名称推断来源。`runtime.ts::getPackageManagerPath()` 虽定义 bundled 优先策略，目前没有生产调用方，不能用它代表插件安装的实际路径。
 
-## 生产构建流程
+标准 `playwright` preset 仍是上游 stdio MCP。应用自有「浏览器」由 Global Sidecar Browser Host 和 Rust resource owner 管理，不通过 npx，也不从 bundled Node、系统 Chrome 或用户 Playwright cache 猜浏览器。Chromium artifact 不是 Node bundle 的一部分。
 
-`build_macos.sh` / `build_windows.ps1` / `build_linux.sh` 自动执行：
+## In-process builtin MCP
 
-1. **TypeScript 类型检查**：`npm run typecheck`
-2. **服务端打包**：esbuild bundle `src/server/index.ts` → `server-dist.js`
-3. **Plugin Bridge 打包**：esbuild bundle `src/server/plugin-bridge/index.ts` → `plugin-bridge-dist.mjs`
-4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.cjs`；扩展名固定 CommonJS 语义，不受安装目录上层 `package.json` 影响
-5. **SDK native binary**：按 target triple 拷贝 + codesign
-6. **DSH 资源验证**：`npm run verify:dsh-runtime` 重验 handoff/Runtime inventory、契约快照和目标 Node/npm；它不从网络或兄弟仓库取 Runtime
-7. **Tauri 构建**：`npm run tauri:build -- --target <triple>`；该命令不下载、不 staging 也不打包 Chromium/Headless Shell/FFmpeg
+User-toggleable builtin MCP 通过 `src/server/tools/builtin-mcp-meta.ts` 登记轻量 metadata，再由 `getBuiltinMcpInstance()` 按需加载工具模块和构建 schema。禁止在 metadata 模块顶层导入 SDK 或 Zod，否则每个 Sidecar 冷启动都会支付全部 schema 初始化成本。
 
-「浏览器」不建立 MyAgents 自有的 Chromium 镜像或 runtime publisher。版本升级时，维护者显式核对锁定 `playwright-core` 的 Chromium descriptor，为五个平台更新 `managed-browser-runtime.json` 中的官方 source/final URL、size、SHA-256 与 executable layout；该核对不属于 `tauri:dev`、`tauri:build` 或桌面 release build，任何 App 构建入口都不下载浏览器。
+动态 Channel 工具由自己的 context owner 注入，不进入静态 metadata registry。Task、Goal 和 IM media 等产品能力由 `myagents` CLI surface 拥有，不应重新复制成一套 builtin MCP。
 
-`src-tauri/resources/` 是当前构建的 staging，不是跨构建缓存。构建脚本必须在
-Tauri 读取前完整替换自己负责的目录：macOS release 在每个 target loop 内分别
-生成 Node、Sharp、TSX 和 Claude 资源，其中 Sharp / Claude 的 Mach-O 会显式
-校验为目标架构；
-`build_dev.sh` 则清空 production-only 的 Sharp / TSX，仅留下 bundler 占位符，
-同时按 host 架构重新生成 Node 与 Claude。目录存在或 `.dev-placeholder` 都不能
-代表目录内容属于当前构建。
+详见 [`sdk_custom_tools_guide.md`](sdk_custom_tools_guide.md)。
 
-v0.2.0 之前这些步骤用 `bun build` + `bun install` — 完全切到 Node.js 生态后，lockfile 从 `bun.lock` 迁到 `package-lock.json`。
+## 构建不变量
 
-## 运行时检测
+正式构建必须：
 
-### Rust 侧 (`sidecar/spawn.rs` / `sidecar/session_lifecycle.rs` / `im/bridge.rs`)
+1. 为当前 target staging 正确的 Node、SDK native child 和业务 bundle；
+2. 用 CommonJS 语义发布 `cli/myagents.cjs`；
+3. 保持依赖 package-local 文件结构的 runtime package 为 external resource，不能错误地压进单文件 bundle；
+4. 检查 release resource 中没有跨架构或旧 target 残留；
+5. 让 Rust owner 对 resource path 做 no-follow / root containment 校验。
 
-`sidecar.rs` 是 facade；Node 定位与路径 normalize 在 `src-tauri/src/sidecar/spawn.rs`，session/global sidecar spawn owner 在 `sidecar/session_lifecycle.rs` / `sidecar/instances.rs`，Plugin Bridge spawn 在 `src-tauri/src/im/bridge.rs`。这些路径按 platform triple 定位 bundled Node.js；spawn `.ts` 脚本时自动注入 `--import tsx/esm`。
+构建命令、签名和平台依赖由 `specs/guides/` 中的对应指南维护。
 
-详见 `specs/ARCHITECTURE.md §Node.js v24 打包策略`。
+## Windows Git Bash
 
-### TypeScript 侧 (`runtime.ts`)
+Builtin Claude 的 shell 工具在 Windows 需要 Git Bash。安装器与启动环境负责提供或定位它，SDK 使用 `CLAUDE_CODE_GIT_BASH_PATH` 或受控 PATH。缺失时应呈现明确的 runtime dependency 错误；不要把 Git Bash 当成 Node fallback，也不要通过 `cmd /c` 模拟 Bash。
 
-`getBundledNodePath()` + `getScriptDir()` 组合：
-- 生产：`.../Contents/Resources/nodejs/bin/node`
-- 开发：`<project>/src-tauri/resources/nodejs/bin/node`
+## 验证
 
-## 调试
-
-**开发模式**：
-```bash
-./build_dev.sh                 # 构建 debug app（带 DevTools）
-./start_dev.sh                 # 浏览器 + 本地 Node Sidecar
-```
-
-**统一日志标签**：
-- `[NODE]` / `[node-out]` / `[node-err]` — Node.js Sidecar 输出（v0.2.0 后）
-- 历史上 `[bun-out]` / `[bun-err]` 标签在少量 Rust 日志宏里保留（向后兼容），新日志统一 `[NODE]`
-
-## 常见问题
-
-| 问题 | 原因 | 解决方案 |
-|---|---|---|
-| `ERR_DLOPEN_FAILED` (better-sqlite3) | native addon 按不同 Node ABI 编译 | `setup.sh` / `build_dev.sh` 用 bundled Node 的 PATH 跑 `npm rebuild`（已自动做） |
-| Sidecar 立即退出 (exit code 1) | 依赖解析失败 | 检查 `server-dist.js` 打包是否成功 |
-| 120s 超时 | health check 失败 | 查看 `[NODE]` 日志定位根因 |
-| MCP 安装失败 | 包管理器未找到 | 确认 `getPackageManagerPath()` 返回 npm（固定 npm） |
-| `Claude Code process exited with code 1` (Windows) | 缺少 Git for Windows | NSIS 安装程序内置 Git；或设 `CLAUDE_CODE_GIT_BASH_PATH` 环境变量 |
-| `Claude Code process exited with code 3221226505` / `0xC0000409` (Windows) | SDK 自带 `claude.exe` 是 native binary；可能受系统组件、DLL 环境或上游 binary 兼容性影响 | 提示 `Claude Agent SDK 启动失败（exit code ...），请检查运行环境。` |
-| npm v11.9.0 minizlib CJS bug (Windows) | Node 官方包自带的旧 npm 在该环境不可用 | `setup_windows.ps1` / `build_windows.ps1` 直接安装并验证精确 npm `11.15.0` |
-
-### Windows Git 依赖说明
-
-Claude Agent SDK 在 Windows 上需要 Git Bash 执行 shell 命令。
-
-- **自动安装**：NSIS 安装程序内置 Git for Windows 2.52.0
-- **手动安装**：https://git-scm.com/downloads/win
-- **环境变量**：`CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe`
-- **构建**：Git 安装包需放置在 `src-tauri/nsis/Git-Installer.exe`
-
-## 注意事项
-
-1. **开发者首次 clone** → 运行 `./setup.sh`（自动下载 Node.js + `npm install` + `npm rebuild` 本机 native addons）
-2. **最终用户** → 零依赖（Node.js v24 已内置）
-3. **CI/CD** → 构建前运行 `setup.sh`，或缓存 `src-tauri/resources/nodejs-cache/`；`src-tauri/resources/nodejs/` 只是当前 target 的 staging 目录
-4. **生产构建** → 必须 `./build_macos.sh` / `./build_windows.ps1` / `./build_linux.sh`，裸 `cargo tauri build` 会漏掉 esbuild 步骤（但 `tauri.conf.json::beforeBuildCommand` 已兜底链上 `npm run build:server && build:bridge && build:cli`）
-5. **MCP 功能** → 完全使用内置 Node.js 生态，用户无需安装任何依赖
+- locator 测试覆盖 dev/release layout、Windows wrapper 和 resource 缺失；
+- cache/staging 测试或构建检查覆盖 target、arch、version；
+- CLI launcher 测试覆盖空格、Unicode、`%`、argv 透明转发与旧 payload 替换；
+- MCP invocation 测试覆盖系统/bundled npx 及 Windows `.cmd`；
+- release smoke 在无系统 Node 的环境验证 Sidecar、Plugin Bridge、CLI 和 builtin MCP。

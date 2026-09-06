@@ -1,9 +1,29 @@
-import { appendFileSync, cpSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync , rmSync, renameSync } from 'fs';
-import { copyFile as copyFileAsync, readdir as readdirAsync, rm, stat } from 'fs/promises';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  rmSync,
+  renameSync,
+} from 'fs';
+import {
+  copyFile as copyFileAsync,
+  readdir as readdirAsync,
+  rm,
+  stat,
+} from 'fs/promises';
 import { spawn as subprocessSpawn } from './utils/subprocess';
 import { fileResponse, sniffMime } from './utils/file-response';
 import { lookupExternalAttachment } from './runtimes/tool-attachments';
-import { getToolAttachmentRoot, validateExternalReadPathNode } from './utils/path-safety';
+import {
+  getToolAttachmentRoot,
+  validateExternalReadPathNode,
+} from './utils/path-safety';
 import { serve as honoServe } from '@hono/node-server';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
@@ -52,17 +72,33 @@ function rejectIfOversizedUpload(request: Request): Response | null {
  * On error mid-pipeline, the partially-written destination is removed so
  * callers don't observe half-files on disk.
  */
-async function streamUploadToFile(file: File, destination: string): Promise<void> {
+async function streamUploadToFile(
+  file: File,
+  destination: string,
+): Promise<void> {
   const webStream = file.stream() as unknown as ReadableStream<Uint8Array>;
-  const nodeReadable = Readable.fromWeb(webStream as unknown as import('node:stream/web').ReadableStream<Uint8Array>);
+  const nodeReadable = Readable.fromWeb(
+    webStream as unknown as import('node:stream/web').ReadableStream<Uint8Array>,
+  );
   try {
     await pipeline(nodeReadable, createWriteStream(destination));
   } catch (err) {
-    await rm(destination, { force: true }).catch(() => { /* best-effort cleanup */ });
+    await rm(destination, { force: true }).catch(() => {
+      /* best-effort cleanup */
+    });
     throw err;
   }
 }
-import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } from 'path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  extname,
+  sep,
+} from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
@@ -80,6 +116,7 @@ import {
   buildSessionDetailedUsageStats,
 } from './utils/usage-stats';
 import { toClientSessionMetadata } from './utils/session-metadata-wire';
+import { shouldBumpSessionRecency } from './session-core/session-metadata-patch-policy';
 // adm-zip lazy-loaded at its one call site below (/api/skill/upload with zip
 // content) — saves ~30ms of module-init cost when users never upload skills.
 import {
@@ -90,7 +127,7 @@ import {
   serializeSkillContent,
   serializeCommandContent,
   type SkillFrontmatter,
-  type CommandFrontmatter
+  type CommandFrontmatter,
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
 import {
@@ -99,7 +136,10 @@ import {
   type ProductSystemSkillRequirement,
   withoutRequiredSystemSkills,
 } from '../shared/systemSkills';
-import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
+import {
+  resolveSkillUrl,
+  type ResolvedSkillSource,
+} from './skills/url-resolver';
 import { fetchSkillZip, TarballFetchError } from './skills/tarball-fetcher';
 import { loadSkillTree, SkillSourceLoadError } from './skills/source-loader';
 import {
@@ -196,14 +236,22 @@ async function writeSpaceSkillExportPackages(
 ): Promise<SpaceSkillExportPackage[]> {
   const { default: AdmZip } = await import('adm-zip');
   const exportId = randomUUID();
-  const exportDir = join(homedir(), '.myagents', 'tmp', 'skill-url-export', exportId);
+  const exportDir = join(
+    homedir(),
+    '.myagents',
+    'tmp',
+    'skill-url-export',
+    exportId,
+  );
   ensureDirSync(exportDir);
 
   const usedFileNames = new Map<string, number>();
   const packages: SpaceSkillExportPackage[] = [];
 
   for (const [index, cand] of candidates.entries()) {
-    const files = buildInstallPayload(tree, [cand]).get(cand.suggestedFolderName);
+    const files = buildInstallPayload(tree, [cand]).get(
+      cand.suggestedFolderName,
+    );
     if (!files || files.size === 0) continue;
 
     const baseName = sanitizeFolderName(cand.suggestedFolderName);
@@ -213,7 +261,9 @@ async function writeSpaceSkillExportPackages(
     const filePath = join(exportDir, `${fileStem}.zip`);
 
     const zip = new AdmZip();
-    for (const [relativePath, buf] of [...files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    for (const [relativePath, buf] of [...files.entries()].sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
       zip.addFile(relativePath.replace(/\\/g, '/'), Buffer.from(buf));
     }
     zip.writeZip(filePath);
@@ -246,15 +296,34 @@ async function schedulePluginRestartLazy(): Promise<void> {
     const mod = await import('./agent-session');
     mod.schedulePluginDeferredRestart();
   } catch (err) {
-    console.warn('[plugins] schedulePluginRestartLazy failed (non-fatal):', err);
+    console.warn(
+      '[plugins] schedulePluginRestartLazy failed (non-fatal):',
+      err,
+    );
   }
 }
 import type { SessionSource, TurnAnalyticsSource } from './types/session';
 import { isPendingSessionId } from '../shared/constants';
 import { MANAGED_BROWSER_MCP_ID } from '../shared/browserTools';
-import { parseAgentFrontmatter, parseFullAgentContent, serializeAgentContent } from '../shared/agentCommands';
-import { scanAgents, readWorkspaceConfig, writeWorkspaceConfig, loadEnabledAgents, readAgentMeta, writeAgentMeta, findAgent } from './agents/agent-loader';
-import type { AgentFrontmatter, AgentMeta, AgentWorkspaceConfig } from '../shared/agentTypes';
+import {
+  parseAgentFrontmatter,
+  parseFullAgentContent,
+  serializeAgentContent,
+} from '../shared/agentCommands';
+import {
+  scanAgents,
+  readWorkspaceConfig,
+  writeWorkspaceConfig,
+  loadEnabledAgents,
+  readAgentMeta,
+  writeAgentMeta,
+  findAgent,
+} from './agents/agent-loader';
+import type {
+  AgentFrontmatter,
+  AgentMeta,
+  AgentWorkspaceConfig,
+} from '../shared/agentTypes';
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
@@ -275,10 +344,14 @@ import { setImCronContext } from './tools/im-cron-tool';
 // start. All handlers are only used inside routeAdminApi() below.
 type AdminApiModule = typeof import('./admin-api');
 let _adminApi: Promise<AdminApiModule> | null = null;
-const getAdminApi = (): Promise<AdminApiModule> => (_adminApi ??= import('./admin-api'));
+const getAdminApi = (): Promise<AdminApiModule> =>
+  (_adminApi ??= import('./admin-api'));
 import { setImMediaContext } from './tools/im-media-tool';
 import { ensureImBridgeToolSurface } from './tools/im-bridge-tools';
-import { normalizeHostInteractionCapability, resolveImGroupToolsDeny } from './host-interaction';
+import {
+  normalizeHostInteractionCapability,
+  resolveImGroupToolsDeny,
+} from './host-interaction';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // NOTE: builtin MCP META is auto-registered when agent-session.ts side-effect-imports
 // './tools/builtin-mcp-meta'. No duplicate import needed here.
@@ -289,7 +362,7 @@ import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // writer enforces its process-local file cap and rotation. The always-present
 // Tauri process owns application-wide retention and upgrade backlog cleanup.
 const crashDiagnostics = new CrashDiagnostics({
-  getRecentLines: limit => getRecentLogLines(limit),
+  getRecentLines: (limit) => getRecentLogLines(limit),
 });
 
 function crashLog(prefix: string, ...args: unknown[]): void {
@@ -301,7 +374,11 @@ function dumpCrashContext(reason: string, error?: unknown): void {
 }
 
 // Top-level beacon: fires BEFORE main(), proves JS module loading succeeded
-try { process.stderr.write(`[startup] module loaded, pid=${process.pid}\n`); } catch { /* ignore */ }
+try {
+  process.stderr.write(`[startup] module loaded, pid=${process.pid}\n`);
+} catch {
+  /* ignore */
+}
 
 // PRD #132 — silence stdio EPIPE before it can become an uncaughtException.
 //
@@ -322,7 +399,12 @@ try { process.stderr.write(`[startup] module loaded, pid=${process.pid}\n`); } c
 // stops attempting to write to it — defense in depth against any code path
 // that bypasses our listener.
 let stdioBroken = false;
-const STDIO_BENIGN_CLOSE_CODES = new Set(['EPIPE', 'EBADF', 'ENOTCONN', 'ECONNRESET']);
+const STDIO_BENIGN_CLOSE_CODES = new Set([
+  'EPIPE',
+  'EBADF',
+  'ENOTCONN',
+  'ECONNRESET',
+]);
 function onStdioError(stream: 'stdout' | 'stderr') {
   return (err: NodeJS.ErrnoException) => {
     if (STDIO_BENIGN_CLOSE_CODES.has(err.code ?? '')) {
@@ -331,19 +413,43 @@ function onStdioError(stream: 'stdout' | 'stderr') {
         // Best-effort note in crash log; this MUST NOT call console.* (which
         // would re-enter the same broken pipe and re-trigger the loop).
         try {
-          crashLog('STDIO_CLOSED', `${stream} ${err.code ?? 'unknown'} — disabling future stdio writes for this sidecar`);
-        } catch { /* ignore */ }
+          crashLog(
+            'STDIO_CLOSED',
+            `${stream} ${err.code ?? 'unknown'} — disabling future stdio writes for this sidecar`,
+          );
+        } catch {
+          /* ignore */
+        }
       }
       return; // swallow
     }
     // Non-pipe-closure error — record once, do not propagate.
-    try { crashLog('STDIO_ERROR', `${stream} ${err.code ?? ''} ${err.message ?? ''}`); } catch { /* ignore */ }
+    try {
+      crashLog(
+        'STDIO_ERROR',
+        `${stream} ${err.code ?? ''} ${err.message ?? ''}`,
+      );
+    } catch {
+      /* ignore */
+    }
   };
 }
-try { process.stdout.on('error', onStdioError('stdout')); } catch { /* ignore */ }
-try { process.stderr.on('error', onStdioError('stderr')); } catch { /* ignore */ }
-export function isStdioBroken(): boolean { return stdioBroken; }
-export function markStdioBroken(): void { stdioBroken = true; }
+try {
+  process.stdout.on('error', onStdioError('stdout'));
+} catch {
+  /* ignore */
+}
+try {
+  process.stderr.on('error', onStdioError('stderr'));
+} catch {
+  /* ignore */
+}
+export function isStdioBroken(): boolean {
+  return stdioBroken;
+}
+export function markStdioBroken(): void {
+  stdioBroken = true;
+}
 
 // PRD #132 — uncaughtException re-entry guard + EPIPE-aware short circuit.
 //
@@ -384,7 +490,11 @@ process.on('uncaughtException', (err) => {
     crashLog('UNCAUGHT_EXCEPTION', err);
     dumpCrashContext('uncaughtException', err);
     if (!stdioBroken) {
-      try { console.error('[process] uncaughtException:', err); } catch { /* ignore */ }
+      try {
+        console.error('[process] uncaughtException:', err);
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     inUncaughtHandler = false;
@@ -403,7 +513,11 @@ process.on('unhandledRejection', (reason) => {
     crashLog('UNHANDLED_REJECTION', reason);
     dumpCrashContext('unhandledRejection', reason);
     if (!stdioBroken) {
-      try { console.error('[process] unhandledRejection:', reason); } catch { /* ignore */ }
+      try {
+        console.error('[process] unhandledRejection:', reason);
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     inUncaughtHandler = false;
@@ -442,16 +556,24 @@ async function shutdownProcess(signal: 'SIGTERM' | 'SIGINT'): Promise<void> {
   if (processShutdownStarted) return;
   processShutdownStarted = true;
   if (!stdioBroken) {
-    try { console.log(`[process] ${signal} received, shutting down...`); } catch { /* ignore */ }
+    try {
+      console.log(`[process] ${signal} received, shutting down...`);
+    } catch {
+      /* ignore */
+    }
   }
   try {
     await shutdownOwnedResources();
   } catch (error) {
     if (!stdioBroken) {
-      try { console.error('[process] graceful resource shutdown failed:', error); } catch { /* ignore */ }
+      try {
+        console.error('[process] graceful resource shutdown failed:', error);
+      } catch {
+        /* ignore */
+      }
     }
   }
-  process.exit(0);  // Trigger SDK's process.on('exit') handler → terminate CLI subprocess
+  process.exit(0); // Trigger SDK's process.on('exit') handler → terminate CLI subprocess
 }
 
 process.on('SIGTERM', () => {
@@ -491,11 +613,21 @@ import {
   getSessionMetadata,
   getSessionsByAgentDir,
   isHistoryVisibleSession,
+  listSessionUserTags,
+  mutateGlobalSessionUserTag,
+  mutateSessionUserTag,
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
 import { deleteProductSessionWithRuntime } from './session-engine/dsh-delete';
-import { findProjectAgentByWorkspacePath, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
+import { sessionUserTagFailureStatus } from './session-user-tag-http';
+import {
+  findProjectAgentByWorkspacePath,
+  loadConfig,
+  resolveImProviderRouting,
+  resolveProviderEnv,
+  resolveWorkspaceConfig,
+} from './utils/admin-config';
 import {
   projectCapabilitySnapshotForWire,
   resolveEffectiveProjectCapabilities,
@@ -516,8 +648,17 @@ import {
 } from './utils/session-message-preview';
 import type { AgentConfig } from '../shared/types/agent';
 import type { SessionMetadata } from './types/session';
-import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../shared/providerRoute';
-import { initLogger, getLoggerDiagnostics, withLogContext, setStdioBrokenProbe } from './logger';
+import {
+  createConcreteProviderRoute,
+  isConcreteProviderRoute,
+  type ProviderRoute,
+} from '../shared/providerRoute';
+import {
+  initLogger,
+  getLoggerDiagnostics,
+  withLogContext,
+  setStdioBrokenProbe,
+} from './logger';
 // `isStdioBroken` / `markStdioBroken` are defined above (in the crash-
 // diagnostics block) and consumed by `setStdioBrokenProbe` below to wire
 // the logger's safe-write wrapper to the stdio-state bit.
@@ -527,7 +668,11 @@ import {
   runDeferredInit,
   setDeferredInitPhase,
 } from './readiness-state';
-import { appendUnifiedLogBatch, getRecentLogLines, getActiveUnifiedLogPath } from './UnifiedLogger';
+import {
+  appendUnifiedLogBatch,
+  getRecentLogLines,
+  getActiveUnifiedLogPath,
+} from './UnifiedLogger';
 import { getActiveSessionLogPath } from './AgentLogger';
 import { runLogRetentionSweep, startPeriodicSweep } from './log-retention';
 import { broadcast, createSseClient, getClients } from './sse';
@@ -535,8 +680,17 @@ import { imEventBus } from './utils/im-event-bus';
 import { buildImCancelledPayload } from './utils/im-terminal-payload';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { raceWithAbortSignal } from './utils/cancellation';
-import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
-import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
+import {
+  checkAnthropicSubscription,
+  verifyProviderViaSdk,
+  verifySubscription,
+} from './provider-verify';
+import {
+  cancelSubscriptionLogin,
+  getSubscriptionLoginState,
+  startSubscriptionLogin,
+  submitSubscriptionLoginCode,
+} from './subscription-auth';
 // openai-bridge is lazy-loaded via ensureBridgeHandler() below — only users on
 // OpenAI-protocol providers (DeepSeek/Moonshot/etc.) ever hit /v1/messages, so
 // most sessions never need to pay the 2.6k-line module's init cost.
@@ -587,23 +741,32 @@ import {
 } from '../shared/types/runtime';
 import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
 import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
-import {
-  coerceRuntimeBirthReasoningEffort,
-} from '../shared/runtimeBirthFields';
-import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/runtime';
+import { coerceRuntimeBirthReasoningEffort } from '../shared/runtimeBirthFields';
+import type {
+  RuntimeConfig,
+  RuntimeSource,
+  RuntimeType,
+} from '../shared/types/runtime';
 import {
   isPermissionModeForRuntimeIdentity,
   projectManagedCodexPermissionToRuntime,
   type RuntimeBackedProviderIdentity,
 } from '../shared/providerExecution';
-import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
-import type { SessionOrigin } from '../shared/session-origin';
-import { CLI_SESSION_HEADER, cliSessionScopeError } from '../shared/cli-session-scope';
 import {
-  isSystemMaintenanceSession,
-} from '../shared/managedScheduledJob';
+  normalizeSessionOrigin,
+  originFromTurnAttribution,
+} from '../shared/session-origin';
+import type { SessionOrigin } from '../shared/session-origin';
+import {
+  CLI_SESSION_HEADER,
+  cliSessionScopeError,
+} from '../shared/cli-session-scope';
+import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
-import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
+import {
+  buildCronEventRelayMessage,
+  neutralizeSystemReminderStructuralTags,
+} from './utils/cron-event-relay';
 import { stripHeartbeatToken } from './utils/heartbeat-response';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
@@ -612,7 +775,9 @@ function getRuntimeSessionIdForRequest(): string {
   return getSessionEngine().getRuntimeIdentity().sessionId;
 }
 
-function resolveExternalPrewarmSessionId(requestedSessionId: string | undefined): string {
+function resolveExternalPrewarmSessionId(
+  requestedSessionId: string | undefined,
+): string {
   if (requestedSessionId && !isPendingSessionId(requestedSessionId)) {
     return requestedSessionId;
   }
@@ -623,20 +788,23 @@ function resolveExternalPrewarmSessionId(requestedSessionId: string | undefined)
  * Runtime download URLs for common MCP commands
  */
 const RUNTIME_DOWNLOAD_URLS: Record<string, { name: string; url: string }> = {
-  'node': { name: 'Node.js', url: 'https://nodejs.org/' },
-  'npx': { name: 'Node.js', url: 'https://nodejs.org/' },
-  'npm': { name: 'Node.js', url: 'https://nodejs.org/' },
-  'python': { name: 'Python', url: 'https://www.python.org/downloads/' },
-  'python3': { name: 'Python', url: 'https://www.python.org/downloads/' },
-  'deno': { name: 'Deno', url: 'https://deno.land/' },
-  'uv': { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
-  'uvx': { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
+  node: { name: 'Node.js', url: 'https://nodejs.org/' },
+  npx: { name: 'Node.js', url: 'https://nodejs.org/' },
+  npm: { name: 'Node.js', url: 'https://nodejs.org/' },
+  python: { name: 'Python', url: 'https://www.python.org/downloads/' },
+  python3: { name: 'Python', url: 'https://www.python.org/downloads/' },
+  deno: { name: 'Deno', url: 'https://deno.land/' },
+  uv: { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
+  uvx: { name: 'uv (Python 包管理器)', url: 'https://docs.astral.sh/uv/' },
 };
 
 /**
  * Get download info for a command
  */
-function getCommandDownloadInfo(command: string): { runtimeName?: string; downloadUrl?: string } {
+function getCommandDownloadInfo(command: string): {
+  runtimeName?: string;
+  downloadUrl?: string;
+} {
   const info = RUNTIME_DOWNLOAD_URLS[command];
   if (info) {
     return { runtimeName: info.name, downloadUrl: info.url };
@@ -668,18 +836,32 @@ type SendMessagePayload = {
   // 'subscription' = explicit switch to Anthropic subscription (from desktop)
   // undefined/missing = "keep current provider" (safe default for IM/Task callers)
   // object = use this specific third-party provider
-  providerEnv?: {
-    providerId?: string;
-    providerName?: string;
-    baseUrl?: string;
-    apiKey?: string;
-    authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
-    apiProtocol?: 'anthropic' | 'openai';
-    maxOutputTokens?: number;
-    maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
-    upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
-  } | 'subscription';
+  providerEnv?:
+    | {
+        providerId?: string;
+        providerName?: string;
+        baseUrl?: string;
+        apiKey?: string;
+        authType?:
+          | 'auth_token'
+          | 'api_key'
+          | 'both'
+          | 'auth_token_clear_api_key';
+        apiProtocol?: 'anthropic' | 'openai';
+        maxOutputTokens?: number;
+        maxOutputTokensParamName?:
+          | 'max_tokens'
+          | 'max_completion_tokens'
+          | 'max_output_tokens';
+        upstreamFormat?: 'chat_completions' | 'responses';
+        modelAliases?: {
+          fable?: string;
+          sonnet?: string;
+          opus?: string;
+          haiku?: string;
+        };
+      }
+    | 'subscription';
 };
 
 function desktopScenarioForAnalyticsSource(
@@ -718,7 +900,9 @@ function getRuntimeConfigPermissionMode(
   runtime: RuntimeType = getActiveRuntimeType(),
 ): string | undefined {
   const permissionMode = runtimeConfig?.permissionMode?.trim();
-  return permissionMode ? projectPermissionModeForRuntime(permissionMode, runtime) : undefined;
+  return permissionMode
+    ? projectPermissionModeForRuntime(permissionMode, runtime)
+    : undefined;
 }
 
 function usesProductProviderConfiguration(runtime: RuntimeType): boolean {
@@ -732,11 +916,11 @@ function runtimeBackedProviderIdentityFromSnapshot(
   const identity = value as Record<string, unknown>;
   const model = typeof identity.model === 'string' ? identity.model.trim() : '';
   if (
-    identity.kind !== 'runtime-backed-provider'
-    || identity.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID
-    || identity.runtime !== 'codex'
-    || identity.runtimeSource !== 'managed-provider'
-    || !model
+    identity.kind !== 'runtime-backed-provider' ||
+    identity.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID ||
+    identity.runtime !== 'codex' ||
+    identity.runtimeSource !== 'managed-provider' ||
+    !model
   ) {
     return undefined;
   }
@@ -756,24 +940,32 @@ function buildSnapshotRuntimeConfig(resolved: {
 }): RuntimeConfig {
   return {
     ...(resolved.model !== undefined ? { model: resolved.model } : {}),
-    ...(resolved.permissionMode !== undefined ? { permissionMode: resolved.permissionMode } : {}),
-    ...(resolved.reasoningEffort !== undefined ? { reasoningEffort: resolved.reasoningEffort } : {}),
+    ...(resolved.permissionMode !== undefined
+      ? { permissionMode: resolved.permissionMode }
+      : {}),
+    ...(resolved.reasoningEffort !== undefined
+      ? { reasoningEffort: resolved.reasoningEffort }
+      : {}),
   };
 }
 
-function cloneProviderEnvForImContext(env: ProviderEnv | undefined): ProviderEnv | undefined {
-  return env ? {
-    providerId: env.providerId,
-    providerName: env.providerName,
-    baseUrl: env.baseUrl,
-    apiKey: env.apiKey,
-    authType: env.authType,
-    apiProtocol: env.apiProtocol,
-    maxOutputTokens: env.maxOutputTokens,
-    maxOutputTokensParamName: env.maxOutputTokensParamName,
-    upstreamFormat: env.upstreamFormat,
-    modelAliases: env.modelAliases,
-  } : undefined;
+function cloneProviderEnvForImContext(
+  env: ProviderEnv | undefined,
+): ProviderEnv | undefined {
+  return env
+    ? {
+        providerId: env.providerId,
+        providerName: env.providerName,
+        baseUrl: env.baseUrl,
+        apiKey: env.apiKey,
+        authType: env.authType,
+        apiProtocol: env.apiProtocol,
+        maxOutputTokens: env.maxOutputTokens,
+        maxOutputTokensParamName: env.maxOutputTokensParamName,
+        upstreamFormat: env.upstreamFormat,
+        modelAliases: env.modelAliases,
+      }
+    : undefined;
 }
 
 /**
@@ -787,7 +979,10 @@ function cloneProviderEnvForImContext(env: ProviderEnv | undefined): ProviderEnv
 function applyBackgroundAgentPermissionModeFromDisk(): void {
   try {
     const cfg = loadConfig();
-    const mode = cfg.backgroundAgentPermissionMode === 'fullAgency' ? 'fullAgency' : 'inherit';
+    const mode =
+      cfg.backgroundAgentPermissionMode === 'fullAgency'
+        ? 'fullAgency'
+        : 'inherit';
     setBackgroundAgentPermissionMode(mode);
   } catch {
     setBackgroundAgentPermissionMode('inherit');
@@ -879,7 +1074,7 @@ async function ensureAgentDir(dir: string): Promise<string> {
 interface SkillsConfig {
   seeded: string[];
   disabled: string[];
-  generation: number;  // Monotonic counter — incremented on every skill CRUD operation
+  generation: number; // Monotonic counter — incremented on every skill CRUD operation
 }
 
 function getSkillsConfigPath(): string {
@@ -978,6 +1173,8 @@ function resolveBundledSkillsDir(): string | null {
  * genuine user skill named identically.
  */
 const SYSTEM_SKILLS: readonly string[] = [
+  // Optional native desktop Skill; Rust owns complete bundle updates.
+  'cuse',
   'myagents-task-alignment',
   // v10: ultra-research removed — not generic enough.
   'download-anything',
@@ -988,6 +1185,8 @@ const SYSTEM_SKILLS: readonly string[] = [
   'myagents-cli',
   // v49: progressive instructions for the bundled offline document converter.
   'myagents-anydoc',
+  // v54: progressive instructions for Session-scoped local attachment ASR.
+  'myagents-speech-recognition',
   // v44: one Agent workflow for scheduled, future and conditional Task
   // automation; command Detector protocol is progressively disclosed inside.
   'myagents-task-automation',
@@ -1045,8 +1244,8 @@ function seedBundledSkills(): void {
     ensureDirSync(userSkillsDir);
 
     const bundledFolders = readdirSync(bundledDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
 
     let changed = false;
     for (const folder of bundledFolders) {
@@ -1079,9 +1278,14 @@ function seedBundledSkills(): void {
       if (isBrokenSymlink) {
         try {
           unlinkSync(dst);
-          console.warn(`[seed] Removed broken symlink at ${dst} so the bundled skill can seed`);
+          console.warn(
+            `[seed] Removed broken symlink at ${dst} so the bundled skill can seed`,
+          );
         } catch (err) {
-          console.warn(`[seed] Failed to remove broken symlink ${dst}, skipping:`, err);
+          console.warn(
+            `[seed] Failed to remove broken symlink ${dst}, skipping:`,
+            err,
+          );
           continue;
         }
       }
@@ -1098,7 +1302,9 @@ function seedBundledSkills(): void {
       // marking it `seeded` would freeze that broken state so a corrected
       // bundle never re-seeds. Skip without marking seeded → retries next launch.
       if (!existsSync(join(src, 'SKILL.md'))) {
-        console.warn(`[seed] Bundled skill incomplete (no SKILL.md), skipping: ${folder}`);
+        console.warn(
+          `[seed] Bundled skill incomplete (no SKILL.md), skipping: ${folder}`,
+        );
         continue;
       }
       // Skip if destination already exists (don't overwrite user's custom content)
@@ -1143,7 +1349,9 @@ function ensurePluginsDirs(): void {
   try {
     const homeDir = getHomeDirOrNull();
     if (!homeDir) {
-      console.warn('[plugins] HOME not resolvable — skipping ensurePluginsDirs');
+      console.warn(
+        '[plugins] HOME not resolvable — skipping ensurePluginsDirs',
+      );
       return;
     }
     const root = join(homeDir, '.myagents', 'plugins');
@@ -1174,11 +1382,20 @@ function isValidAgentDir(dir: string): { valid: boolean; reason?: string } {
   // Forbidden system directories (deny-list approach)
   const forbiddenPaths = [
     // Unix system directories
-    '/etc', '/var', '/usr', '/bin', '/sbin', '/boot', '/root', '/sys', '/proc', '/dev',
+    '/etc',
+    '/var',
+    '/usr',
+    '/bin',
+    '/sbin',
+    '/boot',
+    '/root',
+    '/sys',
+    '/proc',
+    '/dev',
     // User sensitive directories
     join(homeDir, '.ssh'),
     join(homeDir, '.gnupg'),
-    join(homeDir, '.config/op'),  // 1Password
+    join(homeDir, '.config/op'), // 1Password
     join(homeDir, 'Library/Keychains'),
     // Windows system directories
     'C:\\Windows',
@@ -1189,7 +1406,10 @@ function isValidAgentDir(dir: string): { valid: boolean; reason?: string } {
   const normalizedResolved = resolved.replace(/\\/g, '/').toLowerCase();
   for (const forbidden of forbiddenPaths) {
     const normalizedForbidden = forbidden.replace(/\\/g, '/').toLowerCase();
-    if (normalizedResolved === normalizedForbidden || normalizedResolved.startsWith(normalizedForbidden + '/')) {
+    if (
+      normalizedResolved === normalizedForbidden ||
+      normalizedResolved.startsWith(normalizedForbidden + '/')
+    ) {
       return { valid: false, reason: `Access to ${forbidden} is not allowed` };
     }
   }
@@ -1222,14 +1442,15 @@ function resolveAgentPath(root: string, relativePath: string): string | null {
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 
 async function handleGoalExecuteSync(request: Request): Promise<Response> {
   return handleGoalExecuteSyncRoute(request, {
     getEngine: getSessionEngine,
-    getWorkspacePath: () => getSessionEngine().getCurrentSessionContext().workspacePath ?? '',
+    getWorkspacePath: () =>
+      getSessionEngine().getCurrentSessionContext().workspacePath ?? '',
   });
 }
 
@@ -1277,206 +1498,562 @@ async function routeAdminApi(
 
   // MCP commands
   if (route === 'mcp/list') return api.handleMcpList();
-  if (route === 'mcp/show') return await api.handleMcpShow(payload as Parameters<typeof api.handleMcpShow>[0]);
-  if (route === 'mcp/add') return api.handleMcpAdd(payload as Parameters<typeof api.handleMcpAdd>[0]);
-  if (route === 'mcp/remove') return api.handleMcpRemove(payload as Parameters<typeof api.handleMcpRemove>[0]);
-  if (route === 'mcp/enable') return api.handleMcpEnable(payload as Parameters<typeof api.handleMcpEnable>[0]);
-  if (route === 'mcp/disable') return api.handleMcpDisable(payload as Parameters<typeof api.handleMcpDisable>[0]);
-  if (route === 'mcp/env') return api.handleMcpEnv(payload as Parameters<typeof api.handleMcpEnv>[0]);
-  if (route === 'mcp/test') return await api.handleMcpTest(payload as Parameters<typeof api.handleMcpTest>[0]);
-  if (route === 'mcp/oauth/discover') return await api.handleMcpOAuthDiscover(payload as Parameters<typeof api.handleMcpOAuthDiscover>[0]);
-  if (route === 'mcp/oauth/start') return await api.handleMcpOAuthStart(payload as Parameters<typeof api.handleMcpOAuthStart>[0]);
-  if (route === 'mcp/oauth/status') return await api.handleMcpOAuthStatus(payload as Parameters<typeof api.handleMcpOAuthStatus>[0]);
-  if (route === 'mcp/oauth/revoke') return await api.handleMcpOAuthRevoke(payload as Parameters<typeof api.handleMcpOAuthRevoke>[0]);
+  if (route === 'mcp/show')
+    return await api.handleMcpShow(
+      payload as Parameters<typeof api.handleMcpShow>[0],
+    );
+  if (route === 'mcp/add')
+    return api.handleMcpAdd(payload as Parameters<typeof api.handleMcpAdd>[0]);
+  if (route === 'mcp/remove')
+    return api.handleMcpRemove(
+      payload as Parameters<typeof api.handleMcpRemove>[0],
+    );
+  if (route === 'mcp/enable')
+    return api.handleMcpEnable(
+      payload as Parameters<typeof api.handleMcpEnable>[0],
+    );
+  if (route === 'mcp/disable')
+    return api.handleMcpDisable(
+      payload as Parameters<typeof api.handleMcpDisable>[0],
+    );
+  if (route === 'mcp/env')
+    return api.handleMcpEnv(payload as Parameters<typeof api.handleMcpEnv>[0]);
+  if (route === 'mcp/test')
+    return await api.handleMcpTest(
+      payload as Parameters<typeof api.handleMcpTest>[0],
+    );
+  if (route === 'mcp/oauth/discover')
+    return await api.handleMcpOAuthDiscover(
+      payload as Parameters<typeof api.handleMcpOAuthDiscover>[0],
+    );
+  if (route === 'mcp/oauth/start')
+    return await api.handleMcpOAuthStart(
+      payload as Parameters<typeof api.handleMcpOAuthStart>[0],
+    );
+  if (route === 'mcp/oauth/status')
+    return await api.handleMcpOAuthStatus(
+      payload as Parameters<typeof api.handleMcpOAuthStatus>[0],
+    );
+  if (route === 'mcp/oauth/revoke')
+    return await api.handleMcpOAuthRevoke(
+      payload as Parameters<typeof api.handleMcpOAuthRevoke>[0],
+    );
 
   // CLI tool registry commands (PRD 0.2.36)
   if (route === 'tool/list') return api.handleToolList();
-  if (route === 'tool/info') return api.handleToolInfo(payload as Parameters<typeof api.handleToolInfo>[0]);
-  if (route === 'tool/add') return await api.handleToolAdd(payload as Parameters<typeof api.handleToolAdd>[0]);
-  if (route === 'tool/remove') return await api.handleToolRemove(payload as Parameters<typeof api.handleToolRemove>[0]);
-  if (route === 'tool/enable') return await api.handleToolEnable(payload as Parameters<typeof api.handleToolEnable>[0]);
-  if (route === 'tool/disable') return await api.handleToolDisable(payload as Parameters<typeof api.handleToolDisable>[0]);
-  if (route === 'tool/readme') return await api.handleToolReadme(payload as Parameters<typeof api.handleToolReadme>[0]);
-  if (route === 'tool/env') return await api.handleToolEnv(payload as Parameters<typeof api.handleToolEnv>[0]);
+  if (route === 'tool/info')
+    return api.handleToolInfo(
+      payload as Parameters<typeof api.handleToolInfo>[0],
+    );
+  if (route === 'tool/add')
+    return await api.handleToolAdd(
+      payload as Parameters<typeof api.handleToolAdd>[0],
+    );
+  if (route === 'tool/remove')
+    return await api.handleToolRemove(
+      payload as Parameters<typeof api.handleToolRemove>[0],
+    );
+  if (route === 'tool/enable')
+    return await api.handleToolEnable(
+      payload as Parameters<typeof api.handleToolEnable>[0],
+    );
+  if (route === 'tool/disable')
+    return await api.handleToolDisable(
+      payload as Parameters<typeof api.handleToolDisable>[0],
+    );
+  if (route === 'tool/readme')
+    return await api.handleToolReadme(
+      payload as Parameters<typeof api.handleToolReadme>[0],
+    );
+  if (route === 'tool/env')
+    return await api.handleToolEnv(
+      payload as Parameters<typeof api.handleToolEnv>[0],
+    );
 
   // Official MyAgents CLI tools
-  if (route === 'anydoc/convert') return await api.handleAnydocConvert(payload as Parameters<typeof api.handleAnydocConvert>[0]);
-  if (route === 'anydoc/status') return await api.handleAnydocStatus(payload as Parameters<typeof api.handleAnydocStatus>[0]);
-  if (route === 'anydoc/cancel') return await api.handleAnydocCancel(payload as Parameters<typeof api.handleAnydocCancel>[0]);
-  if (route === 'anydoc/list') return await api.handleAnydocList(payload as Parameters<typeof api.handleAnydocList>[0]);
+  if (route === 'anydoc/convert')
+    return await api.handleAnydocConvert(
+      payload as Parameters<typeof api.handleAnydocConvert>[0],
+    );
+  if (route === 'anydoc/status')
+    return await api.handleAnydocStatus(
+      payload as Parameters<typeof api.handleAnydocStatus>[0],
+    );
+  if (route === 'anydoc/cancel')
+    return await api.handleAnydocCancel(
+      payload as Parameters<typeof api.handleAnydocCancel>[0],
+    );
+  if (route === 'anydoc/list')
+    return await api.handleAnydocList(
+      payload as Parameters<typeof api.handleAnydocList>[0],
+    );
+  if (route === 'speech/transcribe')
+    return await api.handleSpeechTranscribe(
+      payload as Parameters<typeof api.handleSpeechTranscribe>[0],
+    );
+  if (route === 'speech/status')
+    return await api.handleSpeechStatus(
+      payload as Parameters<typeof api.handleSpeechStatus>[0],
+    );
+  if (route === 'speech/cancel')
+    return await api.handleSpeechCancel(
+      payload as Parameters<typeof api.handleSpeechCancel>[0],
+    );
+  if (route === 'speech/list')
+    return await api.handleSpeechList(
+      payload as Parameters<typeof api.handleSpeechList>[0],
+    );
   if (route === 'vision/readme') return await api.handleVisionReadme();
   if (route === 'vision/models') return api.handleVisionModels();
-  if (route === 'vision/analyze') return await api.handleVisionAnalyze(payload as Parameters<typeof api.handleVisionAnalyze>[0]);
+  if (route === 'vision/analyze')
+    return await api.handleVisionAnalyze(
+      payload as Parameters<typeof api.handleVisionAnalyze>[0],
+    );
 
   // Model commands
   if (route === 'model/list') return api.handleModelList();
-  if (route === 'model/add') return api.handleModelAdd(payload as Parameters<typeof api.handleModelAdd>[0]);
-  if (route === 'model/remove') return api.handleModelRemove(payload as Parameters<typeof api.handleModelRemove>[0]);
-  if (route === 'model/set-key') return api.handleModelSetKey(payload as Parameters<typeof api.handleModelSetKey>[0]);
-  if (route === 'model/set-default') return api.handleModelSetDefault(payload as Parameters<typeof api.handleModelSetDefault>[0]);
-  if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
+  if (route === 'model/add')
+    return api.handleModelAdd(
+      payload as Parameters<typeof api.handleModelAdd>[0],
+    );
+  if (route === 'model/remove')
+    return api.handleModelRemove(
+      payload as Parameters<typeof api.handleModelRemove>[0],
+    );
+  if (route === 'model/set-key')
+    return api.handleModelSetKey(
+      payload as Parameters<typeof api.handleModelSetKey>[0],
+    );
+  if (route === 'model/set-default')
+    return api.handleModelSetDefault(
+      payload as Parameters<typeof api.handleModelSetDefault>[0],
+    );
+  if (route === 'model/verify')
+    return await api.handleModelVerify(
+      payload as Parameters<typeof api.handleModelVerify>[0],
+    );
 
   // Agent commands
-  if (route === 'agent/list') return await api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
+  if (route === 'agent/list')
+    return await api.handleAgentList(
+      payload as Parameters<typeof api.handleAgentList>[0],
+    );
   if (route === 'agent/current') return await api.handleAgentCurrent();
-  if (route === 'agent/show') return await api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
-  if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
-  if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
-  if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
-  if (route === 'agent/unarchive') return api.handleAgentUnarchive(payload as Parameters<typeof api.handleAgentUnarchive>[0]);
-  if (route === 'agent/set') return api.handleAgentSet(payload as Parameters<typeof api.handleAgentSet>[0]);
-  if (route === 'agent/channel/list') return api.handleAgentChannelList(payload as Parameters<typeof api.handleAgentChannelList>[0]);
-  if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);
-  if (route === 'agent/channel/remove') return api.handleAgentChannelRemove(payload as Parameters<typeof api.handleAgentChannelRemove>[0]);
+  if (route === 'agent/show')
+    return await api.handleAgentShow(
+      payload as Parameters<typeof api.handleAgentShow>[0],
+    );
+  if (route === 'agent/enable')
+    return api.handleAgentEnable(
+      payload as Parameters<typeof api.handleAgentEnable>[0],
+    );
+  if (route === 'agent/disable')
+    return api.handleAgentDisable(
+      payload as Parameters<typeof api.handleAgentDisable>[0],
+    );
+  if (route === 'agent/archive')
+    return api.handleAgentArchive(
+      payload as Parameters<typeof api.handleAgentArchive>[0],
+    );
+  if (route === 'agent/unarchive')
+    return api.handleAgentUnarchive(
+      payload as Parameters<typeof api.handleAgentUnarchive>[0],
+    );
+  if (route === 'agent/set')
+    return api.handleAgentSet(
+      payload as Parameters<typeof api.handleAgentSet>[0],
+    );
+  if (route === 'agent/channel/list')
+    return api.handleAgentChannelList(
+      payload as Parameters<typeof api.handleAgentChannelList>[0],
+    );
+  if (route === 'agent/channel/add')
+    return api.handleAgentChannelAdd(
+      payload as Parameters<typeof api.handleAgentChannelAdd>[0],
+    );
+  if (route === 'agent/channel/remove')
+    return api.handleAgentChannelRemove(
+      payload as Parameters<typeof api.handleAgentChannelRemove>[0],
+    );
   if (route === 'runtime/list') return await api.handleRuntimeList();
-  if (route === 'runtime/describe') return await api.handleRuntimeDescribe(payload as Parameters<typeof api.handleRuntimeDescribe>[0], signal);
-  if (route === 'runtime/diagnose') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
-  if (route === 'diagnose/runtime') return await api.handleRuntimeDiagnose(payload as Parameters<typeof api.handleRuntimeDiagnose>[0]);
+  if (route === 'runtime/describe')
+    return await api.handleRuntimeDescribe(
+      payload as Parameters<typeof api.handleRuntimeDescribe>[0],
+      signal,
+    );
+  if (route === 'runtime/diagnose')
+    return await api.handleRuntimeDiagnose(
+      payload as Parameters<typeof api.handleRuntimeDiagnose>[0],
+    );
+  if (route === 'diagnose/runtime')
+    return await api.handleRuntimeDiagnose(
+      payload as Parameters<typeof api.handleRuntimeDiagnose>[0],
+    );
 
   // Agent runtime status
-  if (route === 'agent/runtime-status') return await api.handleAgentRuntimeStatus();
+  if (route === 'agent/runtime-status')
+    return await api.handleAgentRuntimeStatus();
 
   // Cron task commands
-  if (route === 'cron/list') return await api.handleCronList(payload as Parameters<typeof api.handleCronList>[0]);
+  if (route === 'cron/list')
+    return await api.handleCronList(
+      payload as Parameters<typeof api.handleCronList>[0],
+    );
   if (route === 'cron/add') return await api.handleCronCreate(payload);
-  if (route === 'cron/start') return await api.handleCronStart(payload as Parameters<typeof api.handleCronStart>[0]);
-  if (route === 'cron/run-now') return await api.handleCronRunNow(payload as Parameters<typeof api.handleCronRunNow>[0]);
-  if (route === 'cron/stop') return await api.handleCronStop(payload as Parameters<typeof api.handleCronStop>[0]);
-  if (route === 'cron/remove') return await api.handleCronDelete(payload as Parameters<typeof api.handleCronDelete>[0]);
-  if (route === 'cron/update') return await api.handleCronUpdate(payload as Parameters<typeof api.handleCronUpdate>[0]);
-  if (route === 'cron/runs') return await api.handleCronRuns(payload as Parameters<typeof api.handleCronRuns>[0]);
-  if (route === 'cron/status') return await api.handleCronStatus(payload as Parameters<typeof api.handleCronStatus>[0]);
-  if (route === 'cron/exit') return api.handleCronExit(payload as Parameters<typeof api.handleCronExit>[0]);
+  if (route === 'cron/start')
+    return await api.handleCronStart(
+      payload as Parameters<typeof api.handleCronStart>[0],
+    );
+  if (route === 'cron/run-now')
+    return await api.handleCronRunNow(
+      payload as Parameters<typeof api.handleCronRunNow>[0],
+    );
+  if (route === 'cron/stop')
+    return await api.handleCronStop(
+      payload as Parameters<typeof api.handleCronStop>[0],
+    );
+  if (route === 'cron/remove')
+    return await api.handleCronDelete(
+      payload as Parameters<typeof api.handleCronDelete>[0],
+    );
+  if (route === 'cron/update')
+    return await api.handleCronUpdate(
+      payload as Parameters<typeof api.handleCronUpdate>[0],
+    );
+  if (route === 'cron/runs')
+    return await api.handleCronRuns(
+      payload as Parameters<typeof api.handleCronRuns>[0],
+    );
+  if (route === 'cron/status')
+    return await api.handleCronStatus(
+      payload as Parameters<typeof api.handleCronStatus>[0],
+    );
+  if (route === 'cron/exit')
+    return api.handleCronExit(
+      payload as Parameters<typeof api.handleCronExit>[0],
+    );
 
   // Goal Mode commands
   if (route === 'goal/get') return await api.handleGoalGet();
-  if (route === 'goal/create') return await api.handleGoalCreate(payload as Parameters<typeof api.handleGoalCreate>[0]);
-  if (route === 'goal/update') return await api.handleGoalUpdate(payload as Parameters<typeof api.handleGoalUpdate>[0]);
+  if (route === 'goal/create')
+    return await api.handleGoalCreate(
+      payload as Parameters<typeof api.handleGoalCreate>[0],
+    );
+  if (route === 'goal/update')
+    return await api.handleGoalUpdate(
+      payload as Parameters<typeof api.handleGoalUpdate>[0],
+    );
 
   // IM runtime commands. send-media + wake are session-scoped (require an
   // IM Bot / Agent Channel context — handlers reject otherwise). channels is
   // not session-scoped: it discovers all configured IM bots and works in any
   // session, including desktop, so the AI can reference targets when creating
   // cron tasks that deliver to IM.
-  if (route === 'im/send-media') return await api.handleImSendMedia(payload as Parameters<typeof api.handleImSendMedia>[0]);
-  if (route === 'im/wake') return await api.handleImWake(payload as Parameters<typeof api.handleImWake>[0]);
+  if (route === 'im/send-media')
+    return await api.handleImSendMedia(
+      payload as Parameters<typeof api.handleImSendMedia>[0],
+    );
+  if (route === 'im/wake')
+    return await api.handleImWake(
+      payload as Parameters<typeof api.handleImWake>[0],
+    );
   if (route === 'im/channels') return await api.handleImChannels();
 
   // Tool readme — progressive-disclosure helpers for external runtimes
-  if (route === 'readme/task' || route === 'readme/cron' || route === 'readme/im' || route === 'readme/widget' || route === 'readme/thought') {
+  if (
+    route === 'readme/task' ||
+    route === 'readme/cron' ||
+    route === 'readme/im' ||
+    route === 'readme/widget' ||
+    route === 'readme/thought'
+  ) {
     const topic = route.split('/')[1];
     return api.handleReadme({
       topic,
-      modules: Array.isArray(payload.modules) ? (payload.modules as string[]) : undefined,
+      modules: Array.isArray(payload.modules)
+        ? (payload.modules as string[])
+        : undefined,
     });
   }
 
   // OpenClaw Channel Plugin commands (npm-packaged IM channel adapters)
   if (route === 'plugin/list') return await api.handlePluginList();
-  if (route === 'plugin/install') return await api.handlePluginInstall(payload as Parameters<typeof api.handlePluginInstall>[0]);
-  if (route === 'plugin/remove') return await api.handlePluginUninstall(payload as Parameters<typeof api.handlePluginUninstall>[0]);
+  if (route === 'plugin/install')
+    return await api.handlePluginInstall(
+      payload as Parameters<typeof api.handlePluginInstall>[0],
+    );
+  if (route === 'plugin/remove')
+    return await api.handlePluginUninstall(
+      payload as Parameters<typeof api.handlePluginUninstall>[0],
+    );
 
   // Claude Plugin commands (PRD 0.2.17) — Anthropic-spec plugin directories
   // containing skills/agents/MCP/hooks. Different concept from the OpenClaw
   // channel plugins above; namespaced as `cc-plugin` to avoid collision.
   if (route === 'cc-plugin/list') return await api.handleCcPluginList();
-  if (route === 'cc-plugin/show') return await api.handleCcPluginShow(payload as Parameters<typeof api.handleCcPluginShow>[0]);
-  if (route === 'cc-plugin/install') return await api.handleCcPluginInstall(payload as Parameters<typeof api.handleCcPluginInstall>[0]);
-  if (route === 'cc-plugin/uninstall') return await api.handleCcPluginUninstall(payload as Parameters<typeof api.handleCcPluginUninstall>[0]);
-  if (route === 'cc-plugin/enable') return await api.handleCcPluginToggle({
-    id: payload.id as string | undefined,
-    name: payload.name as string | undefined,
-    enabled: true,
-  });
-  if (route === 'cc-plugin/disable') return await api.handleCcPluginToggle({
-    id: payload.id as string | undefined,
-    name: payload.name as string | undefined,
-    enabled: false,
-  });
+  if (route === 'cc-plugin/show')
+    return await api.handleCcPluginShow(
+      payload as Parameters<typeof api.handleCcPluginShow>[0],
+    );
+  if (route === 'cc-plugin/install')
+    return await api.handleCcPluginInstall(
+      payload as Parameters<typeof api.handleCcPluginInstall>[0],
+    );
+  if (route === 'cc-plugin/uninstall')
+    return await api.handleCcPluginUninstall(
+      payload as Parameters<typeof api.handleCcPluginUninstall>[0],
+    );
+  if (route === 'cc-plugin/enable')
+    return await api.handleCcPluginToggle({
+      id: payload.id as string | undefined,
+      name: payload.name as string | undefined,
+      enabled: true,
+    });
+  if (route === 'cc-plugin/disable')
+    return await api.handleCcPluginToggle({
+      id: payload.id as string | undefined,
+      name: payload.name as string | undefined,
+      enabled: false,
+    });
 
   // Skill commands
   if (route === 'skill/list') return await api.handleSkillList();
-  if (route === 'skill/info') return await api.handleSkillInfo(payload as Parameters<typeof api.handleSkillInfo>[0]);
-  if (route === 'skill/add') return await api.handleSkillAdd(payload as Parameters<typeof api.handleSkillAdd>[0]);
-  if (route === 'skill/remove') return await api.handleSkillRemove(payload as Parameters<typeof api.handleSkillRemove>[0]);
-  if (route === 'skill/enable') return await api.handleSkillToggle({ name: String(payload.name ?? ''), enabled: true });
-  if (route === 'skill/disable') return await api.handleSkillToggle({ name: String(payload.name ?? ''), enabled: false });
+  if (route === 'skill/info')
+    return await api.handleSkillInfo(
+      payload as Parameters<typeof api.handleSkillInfo>[0],
+    );
+  if (route === 'skill/add')
+    return await api.handleSkillAdd(
+      payload as Parameters<typeof api.handleSkillAdd>[0],
+    );
+  if (route === 'skill/remove')
+    return await api.handleSkillRemove(
+      payload as Parameters<typeof api.handleSkillRemove>[0],
+    );
+  if (route === 'skill/enable')
+    return await api.handleSkillToggle({
+      name: String(payload.name ?? ''),
+      enabled: true,
+    });
+  if (route === 'skill/disable')
+    return await api.handleSkillToggle({
+      name: String(payload.name ?? ''),
+      enabled: false,
+    });
   if (route === 'skill/sync') return await api.handleSkillSync();
 
   // Config commands
-  if (route === 'config/get') return api.handleConfigGet(payload as Parameters<typeof api.handleConfigGet>[0]);
-  if (route === 'config/set') return api.handleConfigSet(payload as Parameters<typeof api.handleConfigSet>[0]);
+  if (route === 'config/get')
+    return api.handleConfigGet(
+      payload as Parameters<typeof api.handleConfigGet>[0],
+    );
+  if (route === 'config/set')
+    return api.handleConfigSet(
+      payload as Parameters<typeof api.handleConfigSet>[0],
+    );
 
   // Task Center — thoughts + tasks (v0.1.69)
-  if (route === 'task/list') return await api.handleTaskList(payload as Parameters<typeof api.handleTaskList>[0]);
-  if (route === 'task/get') return await api.handleTaskGet(payload as Parameters<typeof api.handleTaskGet>[0]);
-  if (route === 'task/comments') return await api.handleTaskComments(payload as Parameters<typeof api.handleTaskComments>[0]);
-  if (route === 'task/comment') return await api.handleTaskComment(payload as Parameters<typeof api.handleTaskComment>[0]);
-  if (route === 'task/create-direct') return await api.handleTaskCreateDirect(payload);
-  if (route === 'task/create-attached') return await api.handleTaskCreateAttached(payload);
-  if (route === 'task/run') return await api.handleTaskRun(payload as Parameters<typeof api.handleTaskRun>[0]);
-  if (route === 'task/run-now') return await api.handleTaskRunNow(payload as Parameters<typeof api.handleTaskRunNow>[0]);
-  if (route === 'task/rerun') return await api.handleTaskRerun(payload as Parameters<typeof api.handleTaskRerun>[0]);
-  if (route === 'task/trigger/validate') return await api.handleTaskTriggerValidate(payload as Parameters<typeof api.handleTaskTriggerValidate>[0]);
-  if (route === 'task/trigger/test') return await api.handleTaskTriggerTest(payload);
-  if (route === 'task/check-now') return await api.handleTaskCheckNow(payload as Parameters<typeof api.handleTaskCheckNow>[0]);
-  if (route === 'task/reset-checkpoint') return await api.handleTaskResetCheckpoint(payload as Parameters<typeof api.handleTaskResetCheckpoint>[0]);
+  if (route === 'task/list')
+    return await api.handleTaskList(
+      payload as Parameters<typeof api.handleTaskList>[0],
+    );
+  if (route === 'task/get')
+    return await api.handleTaskGet(
+      payload as Parameters<typeof api.handleTaskGet>[0],
+    );
+  if (route === 'task/comments')
+    return await api.handleTaskComments(
+      payload as Parameters<typeof api.handleTaskComments>[0],
+    );
+  if (route === 'task/comment')
+    return await api.handleTaskComment(
+      payload as Parameters<typeof api.handleTaskComment>[0],
+    );
+  if (route === 'task/create-direct')
+    return await api.handleTaskCreateDirect(payload);
+  if (route === 'task/create-attached')
+    return await api.handleTaskCreateAttached(payload);
+  if (route === 'task/run')
+    return await api.handleTaskRun(
+      payload as Parameters<typeof api.handleTaskRun>[0],
+    );
+  if (route === 'task/run-now')
+    return await api.handleTaskRunNow(
+      payload as Parameters<typeof api.handleTaskRunNow>[0],
+    );
+  if (route === 'task/rerun')
+    return await api.handleTaskRerun(
+      payload as Parameters<typeof api.handleTaskRerun>[0],
+    );
+  if (route === 'task/trigger/validate')
+    return await api.handleTaskTriggerValidate(
+      payload as Parameters<typeof api.handleTaskTriggerValidate>[0],
+    );
+  if (route === 'task/trigger/test')
+    return await api.handleTaskTriggerTest(payload);
+  if (route === 'task/check-now')
+    return await api.handleTaskCheckNow(
+      payload as Parameters<typeof api.handleTaskCheckNow>[0],
+    );
+  if (route === 'task/reset-checkpoint')
+    return await api.handleTaskResetCheckpoint(
+      payload as Parameters<typeof api.handleTaskResetCheckpoint>[0],
+    );
   if (route === 'task/update') return await api.handleTaskUpdate(payload);
-  if (route === 'task/update-status') return await api.handleTaskUpdateStatus(payload);
-  if (route === 'task/append-session') return await api.handleTaskAppendSession(payload as Parameters<typeof api.handleTaskAppendSession>[0]);
-  if (route === 'task/archive') return await api.handleTaskArchive(payload as Parameters<typeof api.handleTaskArchive>[0]);
-  if (route === 'task/delete') return await api.handleTaskDelete(payload as Parameters<typeof api.handleTaskDelete>[0]);
-  if (route === 'task/read-doc') return await api.handleTaskReadDoc(payload as Parameters<typeof api.handleTaskReadDoc>[0]);
-  if (route === 'task/write-doc') return await api.handleTaskWriteDoc(payload as Parameters<typeof api.handleTaskWriteDoc>[0]);
-  if (route === 'thought/list') return await api.handleThoughtList(payload as Parameters<typeof api.handleThoughtList>[0]);
-  if (route === 'thought/create') return await api.handleThoughtCreate(payload as Parameters<typeof api.handleThoughtCreate>[0]);
+  if (route === 'task/update-status')
+    return await api.handleTaskUpdateStatus(payload);
+  if (route === 'task/append-session')
+    return await api.handleTaskAppendSession(
+      payload as Parameters<typeof api.handleTaskAppendSession>[0],
+    );
+  if (route === 'task/archive')
+    return await api.handleTaskArchive(
+      payload as Parameters<typeof api.handleTaskArchive>[0],
+    );
+  if (route === 'task/delete')
+    return await api.handleTaskDelete(
+      payload as Parameters<typeof api.handleTaskDelete>[0],
+    );
+  if (route === 'task/read-doc')
+    return await api.handleTaskReadDoc(
+      payload as Parameters<typeof api.handleTaskReadDoc>[0],
+    );
+  if (route === 'task/write-doc')
+    return await api.handleTaskWriteDoc(
+      payload as Parameters<typeof api.handleTaskWriteDoc>[0],
+    );
+  if (route === 'thought/list')
+    return await api.handleThoughtList(
+      payload as Parameters<typeof api.handleThoughtList>[0],
+    );
+  if (route === 'thought/create')
+    return await api.handleThoughtCreate(
+      payload as Parameters<typeof api.handleThoughtCreate>[0],
+    );
+  if (route === 'record/list')
+    return await api.handleRecordList(
+      payload as Parameters<typeof api.handleRecordList>[0],
+    );
+  if (route === 'record/create')
+    return await api.handleRecordCreate(
+      payload as Parameters<typeof api.handleRecordCreate>[0],
+    );
 
   // MyAgents Cloud Space — Registered Agent CLI bridge.
   if (route === 'space/list') return await api.handleSpaceList();
-  if (route === 'space/whoami') return await api.handleSpaceWhoami(payload as Parameters<typeof api.handleSpaceWhoami>[0]);
-  if (route === 'space/assignee-list') return await api.handleSpaceAssigneeList(payload as Parameters<typeof api.handleSpaceAssigneeList>[0]);
-  if (route === 'space/goal-list') return await api.handleSpaceGoalList(payload as Parameters<typeof api.handleSpaceGoalList>[0]);
-  if (route === 'space/issue-create') return await api.handleSpaceIssueCreate(payload as Parameters<typeof api.handleSpaceIssueCreate>[0]);
-  if (route === 'space/issue-update') return await api.handleSpaceIssueUpdate(payload as Parameters<typeof api.handleSpaceIssueUpdate>[0]);
-  if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
-  if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
-  if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
-  if (route === 'space/issue-comments') return await api.handleSpaceIssueComments(payload as Parameters<typeof api.handleSpaceIssueComments>[0]);
-  if (route === 'space/issue-comment-get') return await api.handleSpaceIssueCommentGet(payload as Parameters<typeof api.handleSpaceIssueCommentGet>[0]);
-  if (route === 'space/issue-status') return await api.handleSpaceIssueStatus(payload as Parameters<typeof api.handleSpaceIssueStatus>[0]);
-  if (route === 'space/issue-claim') return await api.handleSpaceIssueClaim(payload as Parameters<typeof api.handleSpaceIssueClaim>[0]);
-  if (route === 'space/issue-close') return await api.handleSpaceIssueClose(payload as Parameters<typeof api.handleSpaceIssueClose>[0]);
-  if (route === 'space/issue-complete') return await api.handleSpaceIssueComplete(payload as Parameters<typeof api.handleSpaceIssueComplete>[0]);
-  if (route === 'space/issue-cancel-claim') return await api.handleSpaceIssueCancelClaim(payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0]);
-  if (route === 'space/claim-local-task') return await api.handleSpaceClaimLocalTask(payload as Parameters<typeof api.handleSpaceClaimLocalTask>[0]);
-  if (route === 'space/attachment-download') return await api.handleSpaceAttachmentDownload(payload as Parameters<typeof api.handleSpaceAttachmentDownload>[0]);
-  if (route === 'space/attachment-add') return await api.handleSpaceAttachmentAdd(payload as Parameters<typeof api.handleSpaceAttachmentAdd>[0]);
-  if (route === 'space/attachment-inspect') return await api.handleSpaceAttachmentInspect(payload as Parameters<typeof api.handleSpaceAttachmentInspect>[0]);
+  if (route === 'space/whoami')
+    return await api.handleSpaceWhoami(
+      payload as Parameters<typeof api.handleSpaceWhoami>[0],
+    );
+  if (route === 'space/assignee-list')
+    return await api.handleSpaceAssigneeList(
+      payload as Parameters<typeof api.handleSpaceAssigneeList>[0],
+    );
+  if (route === 'space/goal-list')
+    return await api.handleSpaceGoalList(
+      payload as Parameters<typeof api.handleSpaceGoalList>[0],
+    );
+  if (route === 'space/issue-create')
+    return await api.handleSpaceIssueCreate(
+      payload as Parameters<typeof api.handleSpaceIssueCreate>[0],
+    );
+  if (route === 'space/issue-update')
+    return await api.handleSpaceIssueUpdate(
+      payload as Parameters<typeof api.handleSpaceIssueUpdate>[0],
+    );
+  if (route === 'space/issue-list')
+    return await api.handleSpaceIssueList(
+      payload as Parameters<typeof api.handleSpaceIssueList>[0],
+    );
+  if (route === 'space/issue-get')
+    return await api.handleSpaceIssueGet(
+      payload as Parameters<typeof api.handleSpaceIssueGet>[0],
+    );
+  if (route === 'space/issue-comment')
+    return await api.handleSpaceIssueComment(
+      payload as Parameters<typeof api.handleSpaceIssueComment>[0],
+    );
+  if (route === 'space/issue-comments')
+    return await api.handleSpaceIssueComments(
+      payload as Parameters<typeof api.handleSpaceIssueComments>[0],
+    );
+  if (route === 'space/issue-comment-get')
+    return await api.handleSpaceIssueCommentGet(
+      payload as Parameters<typeof api.handleSpaceIssueCommentGet>[0],
+    );
+  if (route === 'space/issue-status')
+    return await api.handleSpaceIssueStatus(
+      payload as Parameters<typeof api.handleSpaceIssueStatus>[0],
+    );
+  if (route === 'space/issue-claim')
+    return await api.handleSpaceIssueClaim(
+      payload as Parameters<typeof api.handleSpaceIssueClaim>[0],
+    );
+  if (route === 'space/issue-close')
+    return await api.handleSpaceIssueClose(
+      payload as Parameters<typeof api.handleSpaceIssueClose>[0],
+    );
+  if (route === 'space/issue-complete')
+    return await api.handleSpaceIssueComplete(
+      payload as Parameters<typeof api.handleSpaceIssueComplete>[0],
+    );
+  if (route === 'space/issue-cancel-claim')
+    return await api.handleSpaceIssueCancelClaim(
+      payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0],
+    );
+  if (route === 'space/claim-local-task')
+    return await api.handleSpaceClaimLocalTask(
+      payload as Parameters<typeof api.handleSpaceClaimLocalTask>[0],
+    );
+  if (route === 'space/attachment-download')
+    return await api.handleSpaceAttachmentDownload(
+      payload as Parameters<typeof api.handleSpaceAttachmentDownload>[0],
+    );
+  if (route === 'space/attachment-add')
+    return await api.handleSpaceAttachmentAdd(
+      payload as Parameters<typeof api.handleSpaceAttachmentAdd>[0],
+    );
+  if (route === 'space/attachment-inspect')
+    return await api.handleSpaceAttachmentInspect(
+      payload as Parameters<typeof api.handleSpaceAttachmentInspect>[0],
+    );
 
   // Session Inbox (PRD 0.2.18) — `myagents session send`
   if (route === 'session/list') {
-    return await api.handleSessionList(payload as Parameters<typeof api.handleSessionList>[0]);
+    return await api.handleSessionList(
+      payload as Parameters<typeof api.handleSessionList>[0],
+    );
   }
   if (route === 'session/start') {
-    const { handleAdminSessionStart } = await import('./inbox/start-admin-handler');
-    const result = await handleAdminSessionStart(getRuntimeSessionIdForRequest(), payload);
+    const { handleAdminSessionStart } = await import(
+      './inbox/start-admin-handler'
+    );
+    const result = await handleAdminSessionStart(
+      getRuntimeSessionIdForRequest(),
+      payload,
+    );
     return result.status >= 200 && result.status < 300
       ? { success: true, ...(result.response as Record<string, unknown>) }
       : {
           ...(result.response as Record<string, unknown>),
           success: false,
-          error: result.response.error?.message ?? 'fresh Session admission failed',
+          error:
+            result.response.error?.message ?? 'fresh Session admission failed',
           code: result.response.error?.code,
         };
   }
   if (route === 'session/send') {
     const { handleAdminInbox } = await import('./inbox/admin-handler');
     const sessionRequest = {
-      toSessionId: typeof payload.toSessionId === 'string' ? payload.toSessionId : '',
+      toSessionId:
+        typeof payload.toSessionId === 'string' ? payload.toSessionId : '',
       prompt: typeof payload.prompt === 'string' ? payload.prompt : '',
       replyBack: payload.replyBack !== false,
     };
-    const result = await handleAdminInbox(getRuntimeSessionIdForRequest(), sessionRequest);
+    const result = await handleAdminInbox(
+      getRuntimeSessionIdForRequest(),
+      sessionRequest,
+    );
     // PRD 0.2.18 cross-review CC HIGH #4 — the previous shape spread
     // `result.response` AFTER `error: string`, so the nested `error: { code,
     // message }` object overwrote the string. CLI printResult then rendered
@@ -1485,7 +2062,10 @@ async function routeAdminApi(
     // in cli/myagents.ts:1627-1633 can read it without destructuring the
     // nested error object.
     return result.status >= 200 && result.status < 300
-      ? { success: true, ...(result.response as unknown as Record<string, unknown>) }
+      ? {
+          success: true,
+          ...(result.response as unknown as Record<string, unknown>),
+        }
       : {
           ...(result.response as unknown as Record<string, unknown>),
           success: false,
@@ -1495,11 +2075,20 @@ async function routeAdminApi(
   }
   if (route === 'session/watch') {
     const { handleAdminSessionWatch } = await import('./inbox/watch-handler');
-    const result = await handleAdminSessionWatch(getRuntimeSessionIdForRequest(), {
-      targetSessionId: typeof payload.targetSessionId === 'string' ? payload.targetSessionId : '',
-    });
+    const result = await handleAdminSessionWatch(
+      getRuntimeSessionIdForRequest(),
+      {
+        targetSessionId:
+          typeof payload.targetSessionId === 'string'
+            ? payload.targetSessionId
+            : '',
+      },
+    );
     return result.status >= 200 && result.status < 300
-      ? { success: true, ...(result.response as unknown as Record<string, unknown>) }
+      ? {
+          success: true,
+          ...(result.response as unknown as Record<string, unknown>),
+        }
       : {
           ...(result.response as unknown as Record<string, unknown>),
           success: false,
@@ -1510,9 +2099,11 @@ async function routeAdminApi(
 
   // System commands
   if (route === 'status') return api.handleStatus();
-  if (route === 'reload') return api.handleReload(payload.workspacePath as string | undefined);
+  if (route === 'reload')
+    return api.handleReload(payload.workspacePath as string | undefined);
   if (route === 'version') return api.handleVersion();
-  if (route === 'help') return api.handleHelp(payload as Parameters<typeof api.handleHelp>[0]);
+  if (route === 'help')
+    return api.handleHelp(payload as Parameters<typeof api.handleHelp>[0]);
 
   return { success: false, error: `Unknown admin route: ${pathname}` };
 }
@@ -1540,7 +2131,11 @@ function stripYamlFrontmatter(content: string): string {
  *
  * Security: Skips symbolic links to prevent following links to sensitive locations.
  */
-async function copyDirRecursive(src: string, dest: string, logPrefix = '[copyDir]'): Promise<void> {
+async function copyDirRecursive(
+  src: string,
+  dest: string,
+  logPrefix = '[copyDir]',
+): Promise<void> {
   await ensureDir(dest);
   const entries = await readdirAsync(src, { withFileTypes: true });
   for (const entry of entries) {
@@ -1564,7 +2159,12 @@ async function copyDirRecursive(src: string, dest: string, logPrefix = '[copyDir
  * Validate folder name for security (no path traversal)
  */
 function isValidFolderName(name: string): boolean {
-  return !name.includes('..') && !name.includes('/') && !name.includes('\\') && name.length > 0;
+  return (
+    !name.includes('..') &&
+    !name.includes('/') &&
+    !name.includes('\\') &&
+    name.length > 0
+  );
 }
 
 async function serveStatic(pathname: string): Promise<Response | null> {
@@ -1575,11 +2175,15 @@ async function serveStatic(pathname: string): Promise<Response | null> {
   if (!filePath.startsWith(distRoot + sep)) {
     return null;
   }
-  const fileResp = await fileResponse(filePath, { contentType: sniffMime(filePath) });
+  const fileResp = await fileResponse(filePath, {
+    contentType: sniffMime(filePath),
+  });
   if (fileResp) return fileResp;
 
   const indexPath = join(distRoot, 'index.html');
-  const indexResp = await fileResponse(indexPath, { contentType: sniffMime(indexPath) });
+  const indexResp = await fileResponse(indexPath, {
+    contentType: sniffMime(indexPath),
+  });
   if (indexResp) return indexResp;
 
   return null;
@@ -1593,18 +2197,36 @@ interface SwitchPayload {
 // System event queue for heartbeat relay (cron completion, etc.)
 // Capped to prevent unbounded memory growth if heartbeat consumer is absent
 const SYSTEM_EVENT_QUEUE_MAX = 500;
-const systemEventQueue: Array<{ event: string; content: string; timestamp: number; taskId?: string }> = [];
+const systemEventQueue: Array<{
+  event: string;
+  content: string;
+  timestamp: number;
+  taskId?: string;
+}> = [];
 
 /** Push a system event, evicting oldest if at capacity */
-function pushSystemEvent(event: { event: string; content: string; timestamp: number; taskId?: string }) {
+function pushSystemEvent(event: {
+  event: string;
+  content: string;
+  timestamp: number;
+  taskId?: string;
+}) {
   if (systemEventQueue.length >= SYSTEM_EVENT_QUEUE_MAX) {
-    systemEventQueue.splice(0, systemEventQueue.length - SYSTEM_EVENT_QUEUE_MAX + 1);
+    systemEventQueue.splice(
+      0,
+      systemEventQueue.length - SYSTEM_EVENT_QUEUE_MAX + 1,
+    );
   }
   systemEventQueue.push(event);
 }
 
 /** Drain all pending system events (used by heartbeat endpoint) */
-export function drainSystemEvents(): Array<{ event: string; content: string; timestamp: number; taskId?: string }> {
+export function drainSystemEvents(): Array<{
+  event: string;
+  content: string;
+  timestamp: number;
+  taskId?: string;
+}> {
   return systemEventQueue.splice(0);
 }
 
@@ -1615,7 +2237,11 @@ export function drainSystemEvents(): Array<{ event: string; content: string; tim
  */
 function startupBeacon(step: string): void {
   // Write to stderr — captured by Rust drain thread → unified log
-  try { process.stderr.write(`[startup] ${step}\n`); } catch { /* ignore */ }
+  try {
+    process.stderr.write(`[startup] ${step}\n`);
+  } catch {
+    /* ignore */
+  }
   // Also write directly to unified log file.
   // NOTE: 内联时间戳格式而非 import localTimestamp()，因为此函数在 initLogger() 之前运行，
   // 需保持零依赖以诊断 Windows 上 initLogger 未到达的 hang 问题。
@@ -1633,11 +2259,15 @@ function startupBeacon(step: string): void {
     const ms = String(now.getMilliseconds()).padStart(3, '0');
     const ts = `${y}-${m}-${d} ${h}:${mi}:${s}.${ms}`;
     appendFileSync(filePath, `${ts} [NODE ] [INFO ] [startup] ${step}\n`);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 async function main() {
-  startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
+  startupBeacon(
+    `main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`,
+  );
 
   const {
     agentDir,
@@ -1648,12 +2278,18 @@ async function main() {
     sidecarComposition,
   } = parseArgs(process.argv);
   const sidecarRole = sidecarComposition.role;
-  const sidecarRoleLabel = sidecarComposition.mode === 'development-union'
-    ? 'development-union'
-    : sidecarRole;
+  const sidecarRoleLabel =
+    sidecarComposition.mode === 'development-union'
+      ? 'development-union'
+      : sidecarRole;
   process.env.MYAGENTS_SIDECAR_ROLE = sidecarRoleLabel;
-  const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, role=${sidecarRoleLabel}, agentDir=${dirDisplay}`);
+  const dirDisplay =
+    agentDir.length > 50
+      ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44)
+      : agentDir;
+  startupBeacon(
+    `args parsed, port=${port}, role=${sidecarRoleLabel}, agentDir=${dirDisplay}`,
+  );
 
   let currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
@@ -1694,7 +2330,9 @@ async function main() {
   function extractBridgeTokenFromUrl(rawUrl: string): string | null {
     try {
       const u = new URL(rawUrl);
-      const m = u.pathname.match(/^\/bridge\/([^/]+)\/v1\/messages(?:\/count_tokens)?$/);
+      const m = u.pathname.match(
+        /^\/bridge\/([^/]+)\/v1\/messages(?:\/count_tokens)?$/,
+      );
       return m ? m[1] : null;
     } catch {
       return null;
@@ -1717,71 +2355,92 @@ async function main() {
   const ensureBridgeHandler = (): Promise<BridgeHandler> => {
     if (bridgeHandlerPromise) return bridgeHandlerPromise;
     bridgeHandlerPromise = (async () => {
-      const [{ createBridgeHandler }, {
-        lookupBridge,
-        arePromptCacheBreakpointsDisabled,
-        disablePromptCacheBreakpoints,
-        disablePromptCacheKey,
-        isPromptCacheKeyDisabled,
-      }] = await Promise.all([
+      const [
+        { createBridgeHandler },
+        {
+          lookupBridge,
+          arePromptCacheBreakpointsDisabled,
+          disablePromptCacheBreakpoints,
+          disablePromptCacheKey,
+          isPromptCacheKeyDisabled,
+        },
+      ] = await Promise.all([
         import('./openai-bridge'),
         import('./openai-bridge/bridge-registry'),
       ]);
       const handler = createBridgeHandler({
-          workspacePath: agentDir || undefined,
-          getUpstreamConfig: async (request) => {
-            const token = extractBridgeTokenFromUrl(request.url);
-            if (!token) {
-              throw new Error('Bridge request missing token in URL path');
-            }
-            const cfg = await lookupBridge(token, request);
-            if (!cfg) {
-              throw new Error(`Unknown bridge token: ${token}`);
-            }
-            // Per-request modelMapping bound to THIS token's aliases —
-            // ensures concurrent bridges with different sub-agent rules
-            // don't cross-pollinate (the original #124 bug class).
-            const aliases = cfg.modelAliases;
-            const modelMapping = aliases
-              ? (requestModel: string): string | undefined => {
-                  if (requestModel.startsWith('claude') && requestModel.includes('sonnet') && aliases.sonnet) return aliases.sonnet;
-                  if (requestModel.startsWith('claude') && requestModel.includes('opus') && aliases.opus) return aliases.opus;
-                  if (requestModel.startsWith('claude') && requestModel.includes('haiku') && aliases.haiku) return aliases.haiku;
-                  // Last-resort: claude-* with no specific alias → use the
-                  // bridge's own active model (per-token, no global leakage).
-                  if (requestModel.startsWith('claude-')) return cfg.model || undefined;
-                  return undefined;
+        workspacePath: agentDir || undefined,
+        getUpstreamConfig: async (request) => {
+          const token = extractBridgeTokenFromUrl(request.url);
+          if (!token) {
+            throw new Error('Bridge request missing token in URL path');
+          }
+          const cfg = await lookupBridge(token, request);
+          if (!cfg) {
+            throw new Error(`Unknown bridge token: ${token}`);
+          }
+          // Per-request modelMapping bound to THIS token's aliases —
+          // ensures concurrent bridges with different sub-agent rules
+          // don't cross-pollinate (the original #124 bug class).
+          const aliases = cfg.modelAliases;
+          const modelMapping = aliases
+            ? (requestModel: string): string | undefined => {
+                if (
+                  requestModel.startsWith('claude') &&
+                  requestModel.includes('sonnet') &&
+                  aliases.sonnet
+                )
+                  return aliases.sonnet;
+                if (
+                  requestModel.startsWith('claude') &&
+                  requestModel.includes('opus') &&
+                  aliases.opus
+                )
+                  return aliases.opus;
+                if (
+                  requestModel.startsWith('claude') &&
+                  requestModel.includes('haiku') &&
+                  aliases.haiku
+                )
+                  return aliases.haiku;
+                // Last-resort: claude-* with no specific alias → use the
+                // bridge's own active model (per-token, no global leakage).
+                if (requestModel.startsWith('claude-'))
+                  return cfg.model || undefined;
+                return undefined;
+              }
+            : undefined;
+          return {
+            providerId: cfg.providerId,
+            baseUrl: cfg.baseUrl,
+            apiKey: cfg.apiKey,
+            credentialVersion: cfg.credentialVersion,
+            recoverAuth: cfg.recoverAuth,
+            rejectCredential: cfg.rejectCredential,
+            reportOutcome: cfg.reportOutcome,
+            model: cfg.model,
+            maxOutputTokens: cfg.maxOutputTokens,
+            maxOutputTokensParamName: cfg.maxOutputTokensParamName,
+            upstreamFormat: cfg.upstreamFormat,
+            modelMapping,
+            // #324 — per-token live value (session bridges resolve it from
+            // currentReasoningEffort on every request).
+            reasoningEffort: cfg.reasoningEffort,
+            cacheAffinity: cfg.cacheAffinity
+              ? {
+                  ...cfg.cacheAffinity,
+                  promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
+                  disablePromptCacheKey: () => disablePromptCacheKey(token),
+                  promptCacheBreakpointsDisabled:
+                    arePromptCacheBreakpointsDisabled(token),
+                  disablePromptCacheBreakpoints: () =>
+                    disablePromptCacheBreakpoints(token),
                 }
-              : undefined;
-            return {
-              providerId: cfg.providerId,
-              baseUrl: cfg.baseUrl,
-              apiKey: cfg.apiKey,
-              credentialVersion: cfg.credentialVersion,
-              recoverAuth: cfg.recoverAuth,
-              rejectCredential: cfg.rejectCredential,
-              reportOutcome: cfg.reportOutcome,
-              model: cfg.model,
-              maxOutputTokens: cfg.maxOutputTokens,
-              maxOutputTokensParamName: cfg.maxOutputTokensParamName,
-              upstreamFormat: cfg.upstreamFormat,
-              modelMapping,
-              // #324 — per-token live value (session bridges resolve it from
-              // currentReasoningEffort on every request).
-              reasoningEffort: cfg.reasoningEffort,
-              cacheAffinity: cfg.cacheAffinity
-                ? {
-                    ...cfg.cacheAffinity,
-                    promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
-                    disablePromptCacheKey: () => disablePromptCacheKey(token),
-                    promptCacheBreakpointsDisabled: arePromptCacheBreakpointsDisabled(token),
-                    disablePromptCacheBreakpoints: () => disablePromptCacheBreakpoints(token),
-                  }
-                : undefined,
-            };
-          },
-          logger: (msg) => console.log(msg),
-        });
+              : undefined,
+          };
+        },
+        logger: (msg) => console.log(msg),
+      });
       // Register seed callback now that the handler exists. bridge-cache
       // flushes any entries buffered during pre-registration.
       registerBridgeSeedFn((entries) => handler.seedThoughtSignatures(entries));
@@ -1792,13 +2451,20 @@ async function main() {
 
   console.log(`[startup] HTTP server binding to 127.0.0.1:${port}...`);
 
-  const dispatchRequest = composeSidecarRequestHandler(sidecarComposition, handleRequest);
-  let browserHostPromise: Promise<import('./browser-host').PlaywrightBrowserHost> | null = null;
-  const ensureBrowserHost = async (): Promise<import('./browser-host').PlaywrightBrowserHost> => {
+  const dispatchRequest = composeSidecarRequestHandler(
+    sidecarComposition,
+    handleRequest,
+  );
+  let browserHostPromise: Promise<
+    import('./browser-host').PlaywrightBrowserHost
+  > | null = null;
+  const ensureBrowserHost = async (): Promise<
+    import('./browser-host').PlaywrightBrowserHost
+  > => {
     if (!browserHostPromise) {
-      browserHostPromise = import('./browser-host').then(({ PlaywrightBrowserHost }) => (
-        new PlaywrightBrowserHost(port)
-      ));
+      browserHostPromise = import('./browser-host').then(
+        ({ PlaywrightBrowserHost }) => new PlaywrightBrowserHost(port),
+      );
     }
     return browserHostPromise;
   };
@@ -1819,11 +2485,15 @@ async function main() {
       // X-MyAgents-Session-Id / X-MyAgents-Tab-Id; the server generates a
       // fresh requestId (or honours an inbound `X-MyAgents-Request-Id` from
       // the Rust proxy if it pre-populated one).
-      const incomingRequestId = request.headers.get('x-myagents-request-id') ?? undefined;
+      const incomingRequestId =
+        request.headers.get('x-myagents-request-id') ?? undefined;
       const requestId = incomingRequestId ?? randomUUIDv4Short();
-      const sessionId = request.headers.get('x-myagents-session-id') ?? undefined;
+      const sessionId =
+        request.headers.get('x-myagents-session-id') ?? undefined;
       const tabId = request.headers.get('x-myagents-tab-id') ?? undefined;
-      return withLogContext({ requestId, sessionId, tabId }, () => dispatchRequest(request));
+      return withLogContext({ requestId, sessionId, tabId }, () =>
+        dispatchRequest(request),
+      );
     },
   } as Parameters<typeof honoServe>[0]);
 
@@ -1898,7 +2568,7 @@ async function main() {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-          }
+          },
         });
       }
 
@@ -1916,7 +2586,10 @@ async function main() {
       // All four bypass the deferred-init gate below — they MUST respond
       // immediately, otherwise probes can't distinguish "still warming up"
       // from "wedged".
-      if ((pathname === '/health' || pathname === '/health/live') && request.method === 'GET') {
+      if (
+        (pathname === '/health' || pathname === '/health/live') &&
+        request.method === 'GET'
+      ) {
         return jsonResponse({ status: 'ok', timestamp: Date.now() });
       }
       if (pathname === '/health/ready' && request.method === 'GET') {
@@ -1934,41 +2607,73 @@ async function main() {
       // Global Sidecar checkpoint Browser identity before Windows closes its
       // Job Object; the generation header prevents a stale retirement from
       // shutting down a replacement process that reused the same port.
-      if (pathname === '/api/process/graceful-shutdown' && request.method === 'POST') {
-        const expectedGeneration = process.env.MYAGENTS_SIDECAR_GENERATION?.trim();
-        const requestedGeneration = request.headers.get('x-myagents-sidecar-generation')?.trim();
+      if (
+        pathname === '/api/process/graceful-shutdown' &&
+        request.method === 'POST'
+      ) {
+        const expectedGeneration =
+          process.env.MYAGENTS_SIDECAR_GENERATION?.trim();
+        const requestedGeneration = request.headers
+          .get('x-myagents-sidecar-generation')
+          ?.trim();
         if (!expectedGeneration || requestedGeneration !== expectedGeneration) {
-          return jsonResponse({ success: false, error: 'stale sidecar generation' }, 409);
+          return jsonResponse(
+            { success: false, error: 'stale sidecar generation' },
+            409,
+          );
         }
         try {
           await shutdownOwnedResources();
           return jsonResponse({ success: true });
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            500,
+          );
         }
       }
-      if (pathname === '/api/browser/session/retire' && request.method === 'POST') {
-        const expectedGeneration = process.env.MYAGENTS_SIDECAR_GENERATION?.trim();
-        const requestedGeneration = request.headers.get('x-myagents-sidecar-generation')?.trim();
+      if (
+        pathname === '/api/browser/session/retire' &&
+        request.method === 'POST'
+      ) {
+        const expectedGeneration =
+          process.env.MYAGENTS_SIDECAR_GENERATION?.trim();
+        const requestedGeneration = request.headers
+          .get('x-myagents-sidecar-generation')
+          ?.trim();
         if (!expectedGeneration || requestedGeneration !== expectedGeneration) {
-          return jsonResponse({ success: false, error: 'stale sidecar generation' }, 409);
+          return jsonResponse(
+            { success: false, error: 'stale sidecar generation' },
+            409,
+          );
         }
-        const body = await request.json().catch(() => null) as { productSessionId?: unknown } | null;
-        if (typeof body?.productSessionId !== 'string' || !body.productSessionId.trim()) {
-          return jsonResponse({ success: false, error: 'productSessionId is required' }, 400);
+        const body = (await request.json().catch(() => null)) as {
+          productSessionId?: unknown;
+        } | null;
+        if (
+          typeof body?.productSessionId !== 'string' ||
+          !body.productSessionId.trim()
+        ) {
+          return jsonResponse(
+            { success: false, error: 'productSessionId is required' },
+            400,
+          );
         }
         try {
           const browserHost = await ensureBrowserHost();
           await browserHost.retireProductSession(body.productSessionId.trim());
           return jsonResponse({ success: true });
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            500,
+          );
         }
       }
       // (removed) `POST /health/ready/retry` — pre-0.2.0 endpoint that reset
@@ -2044,11 +2749,16 @@ async function main() {
       // gate is a no-op (sub-µs) for steady-state requests.
       const gate = buildGateResponseBody();
       if (gate) {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
         if (gate.body.state === 'pending' || gate.body.state === 'phase') {
           headers['Retry-After'] = '1';
         }
-        return new Response(JSON.stringify(gate.body), { status: gate.status, headers });
+        return new Response(JSON.stringify(gate.body), {
+          status: gate.status,
+          headers,
+        });
       }
 
       // Tool attachment endpoint (PRD 0.2.15) — rich-media tool outputs (image/audio/pdf/file).
@@ -2063,13 +2773,18 @@ async function main() {
       // Security: the registry only holds paths registered by saveToolAttachment, which
       // pre-validated them via validateExternalReadPathNode (system/credential blacklist).
       // The trusted-root fallback is by construction inside the MyAgents-owned tree.
-      if (pathname.startsWith('/api/attachment/tool/') && request.method === 'GET') {
+      if (
+        pathname.startsWith('/api/attachment/tool/') &&
+        request.method === 'GET'
+      ) {
         // Codex review EP1: decodeURIComponent throws URIError on malformed
         // %xx escapes — wrap explicitly so we return 400 (with CORS) instead
         // of crashing the request and leaving the renderer with an opaque error.
         let rest: string;
         try {
-          rest = decodeURIComponent(pathname.slice('/api/attachment/tool/'.length));
+          rest = decodeURIComponent(
+            pathname.slice('/api/attachment/tool/'.length),
+          );
         } catch {
           return new Response('Bad Request', {
             status: 400,
@@ -2121,10 +2836,13 @@ async function main() {
             'Access-Control-Allow-Origin': '*',
           },
         });
-        return fileResp ?? new Response('Not Found', {
-          status: 404,
-          headers: { 'Access-Control-Allow-Origin': '*' },
-        });
+        return (
+          fileResp ??
+          new Response('Not Found', {
+            status: 404,
+            headers: { 'Access-Control-Allow-Origin': '*' },
+          })
+        );
       }
 
       // Browser dev-mode fallback for attachment files.
@@ -2135,7 +2853,9 @@ async function main() {
       // via a plain HTTP GET. fileResponse() streams via createReadStream to
       // avoid buffering large attachments.
       if (pathname.startsWith('/api/attachment/') && request.method === 'GET') {
-        const rel = decodeURIComponent(pathname.replace('/api/attachment/', ''));
+        const rel = decodeURIComponent(
+          pathname.replace('/api/attachment/', ''),
+        );
         // Reject path traversal: no `..` segments and no absolute paths.
         if (rel.includes('..') || rel.startsWith('/')) {
           return new Response('Forbidden', { status: 403 });
@@ -2151,7 +2871,11 @@ async function main() {
         return fileResp ?? new Response('Not Found', { status: 404 });
       }
 
-      const sessionReadRouteResponse = await handleSessionReadRoute(pathname, request, url);
+      const sessionReadRouteResponse = await handleSessionReadRoute(
+        pathname,
+        request,
+        url,
+      );
       if (sessionReadRouteResponse) {
         return sessionReadRouteResponse;
       }
@@ -2161,20 +2885,42 @@ async function main() {
       if (pathname === '/api/session/messages' && request.method === 'GET') {
         const sdkSessionId = url.searchParams.get('sdkSessionId');
         if (!sdkSessionId) {
-          return jsonResponse({ success: false, error: 'sdkSessionId is required' }, 400);
+          return jsonResponse(
+            { success: false, error: 'sdkSessionId is required' },
+            400,
+          );
         }
         const dir = url.searchParams.get('dir') || undefined;
         const rawLimit = url.searchParams.get('limit');
         const rawOffset = url.searchParams.get('offset');
-        const limit = rawLimit ? (Number.isFinite(+rawLimit) && +rawLimit >= 0 ? Math.floor(+rawLimit) : undefined) : undefined;
-        const offset = rawOffset ? (Number.isFinite(+rawOffset) && +rawOffset >= 0 ? Math.floor(+rawOffset) : undefined) : undefined;
+        const limit = rawLimit
+          ? Number.isFinite(+rawLimit) && +rawLimit >= 0
+            ? Math.floor(+rawLimit)
+            : undefined
+          : undefined;
+        const offset = rawOffset
+          ? Number.isFinite(+rawOffset) && +rawOffset >= 0
+            ? Math.floor(+rawOffset)
+            : undefined
+          : undefined;
         try {
-          const messages = await getHistoricalSessionMessages(sdkSessionId, dir, limit, offset);
+          const messages = await getHistoricalSessionMessages(
+            sdkSessionId,
+            dir,
+            limit,
+            offset,
+          );
           return jsonResponse({ success: true, messages });
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to read session messages' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to read session messages',
+            },
+            500,
           );
         }
       }
@@ -2183,17 +2929,24 @@ async function main() {
       if (pathname === '/debug/logger' && request.method === 'GET') {
         const diagnostics = getLoggerDiagnostics();
         const clientsCount = getClients().length;
-        return jsonResponse({
-          ...diagnostics,
-          currentClientsCount: clientsCount,
-          timestamp: new Date().toISOString(),
-        }, 200);
+        return jsonResponse(
+          {
+            ...diagnostics,
+            currentClientsCount: clientsCount,
+            timestamp: new Date().toISOString(),
+          },
+          200,
+        );
       }
 
-      const chatStreamRouteResponse = await handleChatStreamRoute(pathname, request, {
-        createSseClient,
-        getLogLines,
-      });
+      const chatStreamRouteResponse = await handleChatStreamRoute(
+        pathname,
+        request,
+        {
+          createSseClient,
+          getLogLines,
+        },
+      );
       if (chatStreamRouteResponse) {
         return chatStreamRouteResponse;
       }
@@ -2203,14 +2956,26 @@ async function main() {
         try {
           payload = (await request.json()) as SendMessagePayload;
         } catch {
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid JSON payload.' },
+            400,
+          );
         }
         const text = payload?.text?.trim() ?? '';
         let images = payload?.images ?? [];
-        const clientSessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
+        const clientSessionId =
+          typeof payload?.sessionId === 'string'
+            ? payload.sessionId
+            : undefined;
         const runtimeSessionId = getRuntimeSessionIdForRequest();
-        if (payload.permissionMode !== undefined && typeof payload.permissionMode !== 'string') {
-          return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+        if (
+          payload.permissionMode !== undefined &&
+          typeof payload.permissionMode !== 'string'
+        ) {
+          return jsonResponse(
+            { success: false, error: 'permissionMode must be a string.' },
+            400,
+          );
         }
         const requestedPermissionMode = payload.permissionMode?.trim();
         const permissionMeta = getSessionMetadata(runtimeSessionId);
@@ -2224,36 +2989,53 @@ async function main() {
         if (!permissionMeta && payload.permissionMode !== undefined) {
           const birthPermissionMode = payload.permissionMode.trim();
           const runtimeIdentity = engine.getRuntimeIdentity();
-          if (!isPermissionModeForRuntimeIdentity(
-            birthPermissionMode,
-            runtimeIdentity.runtime,
-            runtimeIdentity.runtimeSource,
-          )) {
-            return jsonResponse({
-              success: false,
-              error: `Invalid permissionMode '${payload.permissionMode}' for ${runtimeIdentity.runtimeSource ?? runtimeIdentity.runtime}.`,
-            }, 400);
+          if (
+            !isPermissionModeForRuntimeIdentity(
+              birthPermissionMode,
+              runtimeIdentity.runtime,
+              runtimeIdentity.runtimeSource,
+            )
+          ) {
+            return jsonResponse(
+              {
+                success: false,
+                error: `Invalid permissionMode '${payload.permissionMode}' for ${runtimeIdentity.runtimeSource ?? runtimeIdentity.runtime}.`,
+              },
+              400,
+            );
           }
           permissionMode = birthPermissionMode;
         }
         const model = payload?.model;
         const providerRoute = payload?.providerRoute;
         const providerEnv = payload?.providerEnv;
-        const reasoningEffort = typeof payload?.reasoningEffort === 'string' ? payload.reasoningEffort : undefined;
+        const reasoningEffort =
+          typeof payload?.reasoningEffort === 'string'
+            ? payload.reasoningEffort
+            : undefined;
         const analyticsSource: TurnAnalyticsSource | undefined =
-          payload?.analyticsSource === 'floating_ball' ? 'floating_ball' : undefined;
-        const interactionScenario = desktopScenarioForAnalyticsSource(analyticsSource);
-        const birthOrigin = payload.birthOrigin === undefined
-          ? undefined
-          : normalizeSessionOrigin(payload.birthOrigin);
+          payload?.analyticsSource === 'floating_ball'
+            ? 'floating_ball'
+            : undefined;
+        const interactionScenario =
+          desktopScenarioForAnalyticsSource(analyticsSource);
+        const birthOrigin =
+          payload.birthOrigin === undefined
+            ? undefined
+            : normalizeSessionOrigin(payload.birthOrigin);
         if (payload.birthOrigin !== undefined && !birthOrigin) {
-          return jsonResponse({ success: false, error: 'Invalid session birth origin.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid session birth origin.' },
+            400,
+          );
         }
-        const analyticsOrigin = birthOrigin ?? originFromTurnAttribution({
-          source: analyticsSource ?? 'desktop',
-          scenarioType: interactionScenario.type,
-          desktopSurface: interactionScenario.surface,
-        });
+        const analyticsOrigin =
+          birthOrigin ??
+          originFromTurnAttribution({
+            source: analyticsSource ?? 'desktop',
+            scenarioType: interactionScenario.type,
+            desktopSurface: interactionScenario.surface,
+          });
         let requiredSystemSkill: ProductSystemSkillRequirement | undefined;
         if (payload.requiredSystemSkill !== undefined) {
           try {
@@ -2261,33 +3043,51 @@ async function main() {
               payload.requiredSystemSkill,
             );
           } catch (error) {
-            return jsonResponse({
-              success: false,
-              error: error instanceof Error ? error.message : String(error),
-            }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              400,
+            );
           }
         }
 
         // Allow sending with just images or just text
         if (!text && images.length === 0) {
-          return jsonResponse({ success: false, error: 'Message must have text or images.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Message must have text or images.' },
+            400,
+          );
         }
         try {
-          images = rehomeImagePayloadsForSession(clientSessionId, runtimeSessionId, images) ?? images;
+          images =
+            rehomeImagePayloadsForSession(
+              clientSessionId,
+              runtimeSessionId,
+              images,
+            ) ?? images;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           return jsonResponse({ success: false, error: message }, 400);
         }
 
         try {
-          const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
+          const providerLabel =
+            typeof providerEnv === 'object'
+              ? (providerEnv?.baseUrl ?? 'anthropic')
+              : (providerEnv ?? 'anthropic');
           const runtimeLabel = engine.getRuntimeIdentity().runtime;
-          console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
+          console.log(
+            `[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`,
+          );
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
             images,
             permissionMode,
-            backgroundAgentPermissionMode: payload?.backgroundAgentPermissionMode,
+            backgroundAgentPermissionMode:
+              payload?.backgroundAgentPermissionMode,
             model: model ?? undefined,
             providerRoute,
             providerEnv,
@@ -2301,21 +3101,35 @@ async function main() {
             requiredSystemSkill,
           });
           if (result.error) {
-            return jsonResponse({ success: false, error: result.error }, result.status ?? 500);
+            return jsonResponse(
+              { success: false, error: result.error },
+              result.status ?? 500,
+            );
           }
           return jsonResponse({
             success: true,
             queued: result.queued,
             ...(result.queueId ? { queueId: result.queueId } : {}),
-            ...(result.isInFlight !== undefined ? { isInFlight: result.isInFlight } : {}),
-            ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
-            ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
-            ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
+            ...(result.isInFlight !== undefined
+              ? { isInFlight: result.isInFlight }
+              : {}),
+            ...(result.deliveryMode
+              ? { deliveryMode: result.deliveryMode }
+              : {}),
+            ...(result.canCancel !== undefined
+              ? { canCancel: result.canCancel }
+              : {}),
+            ...(result.canForceExecute !== undefined
+              ? { canForceExecute: result.canForceExecute }
+              : {}),
           });
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            500,
           );
         }
       }
@@ -2326,19 +3140,28 @@ async function main() {
           return jsonResponse(await stopActiveTurn());
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            500,
           );
         }
       }
 
       if (pathname === '/goal/stop' && request.method === 'POST') {
         try {
-          const payload = (await request.json()) as { goalId?: string; queueId?: string };
+          const payload = (await request.json()) as {
+            goalId?: string;
+            queueId?: string;
+          };
           const goalId = payload.goalId?.trim() ?? '';
           const queueId = payload.queueId?.trim() ?? '';
           if (!goalId) {
-            return jsonResponse({ success: false, error: 'goalId is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'goalId is required' },
+              400,
+            );
           }
           const owner = { kind: 'goal' as const, id: goalId };
           // A claimed turn always carries queueId and must stop exactly.
@@ -2350,53 +3173,99 @@ async function main() {
             : await stopOwnedTurn(owner);
           return jsonResponse(result, result.success ? 200 : 500);
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to stop Goal turn',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to stop Goal turn',
+            },
+            500,
+          );
         }
       }
 
       if (pathname === '/task/stop' && request.method === 'POST') {
         try {
-          const payload = (await request.json()) as { taskId?: string; queueId?: string };
+          const payload = (await request.json()) as {
+            taskId?: string;
+            queueId?: string;
+          };
           const taskId = payload.taskId?.trim() ?? '';
           const queueId = payload.queueId?.trim() ?? '';
           if (!taskId || !queueId) {
-            return jsonResponse({ success: false, error: 'taskId and queueId are required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'taskId and queueId are required' },
+              400,
+            );
           }
-          const result = await stopOwnedTurnByQueueId({ kind: 'task', id: taskId }, queueId);
+          const result = await stopOwnedTurnByQueueId(
+            { kind: 'task', id: taskId },
+            queueId,
+          );
           return jsonResponse(result, result.success ? 200 : 500);
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to stop Task turn',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to stop Task turn',
+            },
+            500,
+          );
         }
       }
 
       if (pathname === '/api/goal/objective' && request.method === 'POST') {
         try {
-          const payload = (await request.json()) as { objective?: string; sessionId?: string };
+          const payload = (await request.json()) as {
+            objective?: string;
+            sessionId?: string;
+          };
           const objective = payload.objective?.trim() ?? '';
           if (!objective) {
-            return jsonResponse({ success: false, error: 'Goal objective is required.' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Goal objective is required.' },
+              400,
+            );
           }
           const runtimeSessionId = getRuntimeSessionIdForRequest();
           if (payload.sessionId && payload.sessionId !== runtimeSessionId) {
-            return jsonResponse({ success: false, error: 'Goal session does not match the active Sidecar session.' }, 409);
+            return jsonResponse(
+              {
+                success: false,
+                error:
+                  'Goal session does not match the active Sidecar session.',
+              },
+              409,
+            );
           }
-          const result = await goalOrchestrator.updateObjective(getSessionEngine(), {
-            sessionId: runtimeSessionId,
-            workspacePath: agentDir,
-            objective,
-          });
-          return jsonResponse(result, result.success ? 200 : (result.status ?? 500));
+          const result = await goalOrchestrator.updateObjective(
+            getSessionEngine(),
+            {
+              sessionId: runtimeSessionId,
+              workspacePath: agentDir,
+              objective,
+            },
+          );
+          return jsonResponse(
+            result,
+            result.success ? 200 : (result.status ?? 500),
+          );
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to update Goal objective',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update Goal objective',
+            },
+            500,
+          );
         }
       }
 
@@ -2408,41 +3277,64 @@ async function main() {
 
       if (pathname === '/api/runtime/models' && request.method === 'GET') {
         const type = url.searchParams.get('type');
-        if (!type) return jsonResponse({ error: 'Missing type parameter' }, 400);
+        if (!type)
+          return jsonResponse({ error: 'Missing type parameter' }, 400);
         const sourceParam = url.searchParams.get('source');
         const runtimeSource: RuntimeSource | undefined =
-          sourceParam === 'integrated' || sourceParam === 'managed-provider' || sourceParam === 'system-cli'
+          sourceParam === 'integrated' ||
+          sourceParam === 'managed-provider' ||
+          sourceParam === 'system-cli'
             ? sourceParam
             : undefined;
         try {
-          const models = await queryRuntimeModels(type as import('../shared/types/runtime').RuntimeType, {
-            runtimeSource,
-            signal: request.signal,
-          });
+          const models = await queryRuntimeModels(
+            type as import('../shared/types/runtime').RuntimeType,
+            {
+              runtimeSource,
+              signal: request.signal,
+            },
+          );
           return jsonResponse({ models });
         } catch (error) {
-          return jsonResponse({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
+          return jsonResponse(
+            { error: error instanceof Error ? error.message : 'Unknown error' },
+            500,
+          );
         }
       }
 
-      if (pathname === '/api/runtime/permission-modes' && request.method === 'GET') {
+      if (
+        pathname === '/api/runtime/permission-modes' &&
+        request.method === 'GET'
+      ) {
         const type = url.searchParams.get('type');
-        if (!type) return jsonResponse({ error: 'Missing type parameter' }, 400);
-        const modes = getRuntimePermissionModes(type as import('../shared/types/runtime').RuntimeType);
+        if (!type)
+          return jsonResponse({ error: 'Missing type parameter' }, 400);
+        const modes = getRuntimePermissionModes(
+          type as import('../shared/types/runtime').RuntimeType,
+        );
         return jsonResponse({ modes });
       }
 
-      const runtimeRouteResponse = await handleSessionEngineRuntimeRoute(pathname, request, {
-        workspacePath: currentAgentDir,
-        resolvePrewarmSessionId: resolveExternalPrewarmSessionId,
-      });
+      const runtimeRouteResponse = await handleSessionEngineRuntimeRoute(
+        pathname,
+        request,
+        {
+          workspacePath: currentAgentDir,
+          resolvePrewarmSessionId: resolveExternalPrewarmSessionId,
+        },
+      );
       if (runtimeRouteResponse) {
         return runtimeRouteResponse;
       }
 
-      const sessionOperationRouteResponse = await handleSessionOperationRoute(pathname, request, {
-        workspacePath: currentAgentDir,
-      });
+      const sessionOperationRouteResponse = await handleSessionOperationRoute(
+        pathname,
+        request,
+        {
+          workspacePath: currentAgentDir,
+        },
+      );
       if (sessionOperationRouteResponse) {
         return sessionOperationRouteResponse;
       }
@@ -2453,11 +3345,18 @@ async function main() {
       if (pathname === '/hook/session-start' && request.method === 'POST') {
         try {
           const hookData = (await request.json()) as Record<string, unknown>;
-          const ccSessionId = (hookData.session_id as string) || (hookData.sessionId as string) || '';
+          const ccSessionId =
+            (hookData.session_id as string) ||
+            (hookData.sessionId as string) ||
+            '';
           if (ccSessionId) {
-            console.log(`[hook] CC SessionStart: session_id=${ccSessionId}, source=${hookData.source}`);
+            console.log(
+              `[hook] CC SessionStart: session_id=${ccSessionId}, source=${hookData.source}`,
+            );
             // Import and update the external session's CC session ID
-            const { setRuntimeSessionId } = await import('./runtimes/external-session');
+            const { setRuntimeSessionId } = await import(
+              './runtimes/external-session'
+            );
             setRuntimeSessionId(ccSessionId);
           }
           return jsonResponse({ ok: true });
@@ -2466,33 +3365,54 @@ async function main() {
         }
       }
 
-      const sessionEngineQueueRoute = await handleSessionEngineQueueRoute(pathname, request);
+      const sessionEngineQueueRoute = await handleSessionEngineQueueRoute(
+        pathname,
+        request,
+      );
       if (sessionEngineQueueRoute) {
         return sessionEngineQueueRoute;
       }
 
       // Poll background task output file for live stats
-      if (pathname === '/api/task/poll-background' && request.method === 'POST') {
+      if (
+        pathname === '/api/task/poll-background' &&
+        request.method === 'POST'
+      ) {
         try {
-          const body = await request.json() as { outputFile?: string; offset?: number };
+          const body = (await request.json()) as {
+            outputFile?: string;
+            offset?: number;
+          };
           const { outputFile, offset = 0 } = body;
 
           // Validate outputFile path: resolve to canonical path then verify it falls
           // under the user's home directory and matches expected suffix.
           // This prevents path traversal attacks (e.g., "/../../../etc/passwd.output").
           if (!outputFile || typeof outputFile !== 'string') {
-            return jsonResponse({ success: false, error: 'Invalid outputFile path' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid outputFile path' },
+              400,
+            );
           }
           const resolvedOutputFile = resolve(outputFile);
           const homeDir = getHomeDirOrNull() || '';
-          const isUnderHome = homeDir && resolvedOutputFile.startsWith(homeDir + sep);
+          const isUnderHome =
+            homeDir && resolvedOutputFile.startsWith(homeDir + sep);
           if (!isUnderHome || !resolvedOutputFile.endsWith('.output')) {
-            return jsonResponse({ success: false, error: 'Invalid outputFile path' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid outputFile path' },
+              400,
+            );
           }
 
           // Check file existence
           if (!existsSync(resolvedOutputFile)) {
-            return jsonResponse({ success: true, stats: null, newOffset: 0, isComplete: false });
+            return jsonResponse({
+              success: true,
+              stats: null,
+              newOffset: 0,
+              isComplete: false,
+            });
           }
 
           const fileStat = statSync(resolvedOutputFile);
@@ -2500,7 +3420,12 @@ async function main() {
 
           // No new data
           if (offset >= fileSize) {
-            return jsonResponse({ success: true, stats: null, newOffset: offset, isComplete: false });
+            return jsonResponse({
+              success: true,
+              stats: null,
+              newOffset: offset,
+              isComplete: false,
+            });
           }
 
           // Read incremental data (cap at 1MB)
@@ -2534,7 +3459,9 @@ async function main() {
             if (!trimmed) continue;
             try {
               const parsed = JSON.parse(trimmed);
-              const ts = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
+              const ts = parsed.timestamp
+                ? new Date(parsed.timestamp).getTime()
+                : 0;
               if (ts && !firstTimestamp) firstTimestamp = ts;
               if (ts) lastTimestamp = ts;
 
@@ -2563,21 +3490,34 @@ async function main() {
             }
           }
 
-          const elapsed = firstTimestamp && lastTimestamp ? lastTimestamp - firstTimestamp : 0;
+          const elapsed =
+            firstTimestamp && lastTimestamp
+              ? lastTimestamp - firstTimestamp
+              : 0;
 
           // Detect completion: last line is assistant with only text (no tool_use)
-          const isComplete = lastLineType === 'assistant' && !lastLineHasToolUse;
+          const isComplete =
+            lastLineType === 'assistant' && !lastLineHasToolUse;
 
           return jsonResponse({
             success: true,
-            stats: { toolCount, assistantCount, userCount, progressCount, elapsed },
+            stats: {
+              toolCount,
+              assistantCount,
+              userCount,
+              progressCount,
+              elapsed,
+            },
             newOffset: readEnd,
-            isComplete
+            isComplete,
           });
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            500,
           );
         }
       }
@@ -2592,7 +3532,9 @@ async function main() {
       if (pathname === '/cron/execute-sync' && request.method === 'POST') {
         return handleTaskExecuteSyncRoute(request, {
           getEngine: getSessionEngine,
-          getWorkspacePath: () => getSessionEngine().getCurrentSessionContext().workspacePath ?? currentAgentDir,
+          getWorkspacePath: () =>
+            getSessionEngine().getCurrentSessionContext().workspacePath ??
+            currentAgentDir,
         });
       }
 
@@ -2603,7 +3545,10 @@ async function main() {
         try {
           const range = url.searchParams.get('range') || '30d';
           if (!['7d', '30d', '60d'].includes(range)) {
-            return jsonResponse({ success: false, error: 'Invalid range. Use 7d, 30d, or 60d.' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid range. Use 7d, 30d, or 60d.' },
+              400,
+            );
           }
 
           const allSessions = getAllSessionMetadata();
@@ -2623,14 +3568,181 @@ async function main() {
           });
         } catch (error) {
           console.error('[global-stats] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            500,
+          );
         }
       }
 
       // ============= SESSION API =============
+
+      // Global Session user Tag projection + intent mutations.
+      if (pathname === '/api/session-tags' && request.method === 'GET') {
+        return jsonResponse({ success: true, tags: listSessionUserTags() });
+      }
+
+      if (
+        pathname === '/api/session-tags/assign' &&
+        request.method === 'POST'
+      ) {
+        let payload: {
+          sessionId?: unknown;
+          operation?: unknown;
+          name?: unknown;
+        };
+        try {
+          payload = (await request.json()) as typeof payload;
+        } catch {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-name',
+              error: 'Invalid JSON payload.',
+            },
+            400,
+          );
+        }
+        if (
+          typeof payload.sessionId !== 'string' ||
+          !/^[A-Za-z0-9-]{1,99}$/.test(payload.sessionId)
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'session-not-found',
+              error: 'Invalid Session ID.',
+            },
+            400,
+          );
+        }
+        if (
+          (payload.operation !== 'add' && payload.operation !== 'remove') ||
+          typeof payload.name !== 'string'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-name',
+              error: 'Invalid Tag assignment operation.',
+            },
+            400,
+          );
+        }
+        const result = await mutateSessionUserTag(payload.sessionId, {
+          kind: payload.operation,
+          name: payload.name,
+        });
+        if (!result.ok) {
+          const status = sessionUserTagFailureStatus(result.reason);
+          return jsonResponse({ success: false, ...result }, status);
+        }
+        if (!result.session) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'io-error',
+              error: 'Tag mutation returned no Session.',
+            },
+            500,
+          );
+        }
+        return jsonResponse({
+          success: true,
+          ...result,
+          session: toClientSessionMetadata(result.session),
+        });
+      }
+
+      if (
+        pathname === '/api/session-tags/manage' &&
+        request.method === 'POST'
+      ) {
+        let payload: {
+          operation?: unknown;
+          name?: unknown;
+          newName?: unknown;
+          merge?: unknown;
+          focusSessionId?: unknown;
+        };
+        try {
+          payload = (await request.json()) as typeof payload;
+        } catch {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-name',
+              error: 'Invalid JSON payload.',
+            },
+            400,
+          );
+        }
+        if (
+          (payload.operation !== 'rename' && payload.operation !== 'delete') ||
+          typeof payload.name !== 'string'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-name',
+              error: 'Invalid global Tag operation.',
+            },
+            400,
+          );
+        }
+        if (
+          payload.operation === 'rename' &&
+          typeof payload.newName !== 'string'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-name',
+              error: 'A new Tag name is required.',
+            },
+            400,
+          );
+        }
+        if (
+          payload.focusSessionId !== undefined &&
+          (typeof payload.focusSessionId !== 'string' ||
+            !/^[A-Za-z0-9-]{1,99}$/.test(payload.focusSessionId))
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'session-not-found',
+              error: 'Invalid focus Session ID.',
+            },
+            400,
+          );
+        }
+        const result = await mutateGlobalSessionUserTag(
+          payload.operation === 'rename'
+            ? {
+                kind: 'rename',
+                name: payload.name,
+                newName: payload.newName as string,
+                merge: payload.merge === true,
+              }
+            : { kind: 'delete', name: payload.name },
+          payload.focusSessionId as string | undefined,
+        );
+        if (!result.ok) {
+          const status = sessionUserTagFailureStatus(result.reason);
+          return jsonResponse({ success: false, ...result }, status);
+        }
+        return jsonResponse({
+          success: true,
+          ...result,
+          ...(result.session
+            ? { session: toClientSessionMetadata(result.session) }
+            : {}),
+        });
+      }
 
       // GET /sessions - List all sessions or filter by agentDir
       if (pathname === '/sessions' && request.method === 'GET') {
@@ -2647,10 +3759,16 @@ async function main() {
           return jsonResponse({ success: true, sessions: safeSessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error in SessionStore'
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Unknown error in SessionStore',
+            },
+            500,
+          );
         }
       }
 
@@ -2677,81 +3795,130 @@ async function main() {
         try {
           payload = (await request.json()) as CreateSessionPayload;
         } catch {
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid JSON payload.' },
+            400,
+          );
         }
 
         const agentDirValue = payload?.agentDir?.trim();
         if (!agentDirValue) {
-          return jsonResponse({ success: false, error: 'agentDir is required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'agentDir is required.' },
+            400,
+          );
         }
 
         // Use the shared VALID_RUNTIMES constant — same list that drives
         // admin-api validation and HELP_TEXTS. A local literal here used to
         // silently drift when new runtimes landed.
-        const runtimeValue = (VALID_RUNTIMES as readonly string[]).includes(payload?.runtime as string)
+        const runtimeValue = (VALID_RUNTIMES as readonly string[]).includes(
+          payload?.runtime as string,
+        )
           ? (payload.runtime as import('../shared/types/runtime').RuntimeType)
           : undefined;
         const runtimeSourceValue: RuntimeSource | undefined =
-          payload.runtimeSource === 'integrated'
-            || payload.runtimeSource === 'managed-provider'
-            || payload.runtimeSource === 'system-cli'
+          payload.runtimeSource === 'integrated' ||
+          payload.runtimeSource === 'managed-provider' ||
+          payload.runtimeSource === 'system-cli'
             ? payload.runtimeSource
             : undefined;
         if (runtimeSourceValue === 'integrated' && runtimeValue !== 'dsh') {
-          return jsonResponse({
-            success: false,
-            error: 'runtimeSource=integrated requires runtime=dsh.',
-          }, 400);
+          return jsonResponse(
+            {
+              success: false,
+              error: 'runtimeSource=integrated requires runtime=dsh.',
+            },
+            400,
+          );
         }
-        if (runtimeValue === 'dsh' && runtimeSourceValue && runtimeSourceValue !== 'integrated') {
-          return jsonResponse({
-            success: false,
-            error: 'runtime=dsh requires runtimeSource=integrated.',
-          }, 400);
+        if (
+          runtimeValue === 'dsh' &&
+          runtimeSourceValue &&
+          runtimeSourceValue !== 'integrated'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error: 'runtime=dsh requires runtimeSource=integrated.',
+            },
+            400,
+          );
         }
-        const payloadOrigin = payload.origin === undefined
-          ? undefined
-          : normalizeSessionOrigin(payload.origin);
+        const payloadOrigin =
+          payload.origin === undefined
+            ? undefined
+            : normalizeSessionOrigin(payload.origin);
         if (payload.origin !== undefined && !payloadOrigin) {
-          return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid session origin.' },
+            400,
+          );
         }
-        const payloadProviderExecutionIdentity = payload.providerExecutionIdentity === undefined
-          ? undefined
-          : runtimeBackedProviderIdentityFromSnapshot(payload.providerExecutionIdentity);
-        if (payload.providerExecutionIdentity !== undefined && !payloadProviderExecutionIdentity) {
-          return jsonResponse({ success: false, error: 'Invalid providerExecutionIdentity.' }, 400);
+        const payloadProviderExecutionIdentity =
+          payload.providerExecutionIdentity === undefined
+            ? undefined
+            : runtimeBackedProviderIdentityFromSnapshot(
+                payload.providerExecutionIdentity,
+              );
+        if (
+          payload.providerExecutionIdentity !== undefined &&
+          !payloadProviderExecutionIdentity
+        ) {
+          return jsonResponse(
+            { success: false, error: 'Invalid providerExecutionIdentity.' },
+            400,
+          );
         }
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
         if (
-          runtimeSourceValue === 'managed-provider'
-          || payloadProviderExecutionIdentity?.runtimeSource === 'managed-provider'
-          || payload.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+          runtimeSourceValue === 'managed-provider' ||
+          payloadProviderExecutionIdentity?.runtimeSource ===
+            'managed-provider' ||
+          payload.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
         ) {
           if (!managedCodexReady) {
-            return jsonResponse({
-              success: false,
-              error: managedCodexNotReadyMessage('session creation'),
-            }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: managedCodexNotReadyMessage('session creation'),
+              },
+              400,
+            );
           }
-          if (runtimeSourceValue === 'managed-provider' && !payloadProviderExecutionIdentity) {
-            return jsonResponse({
-              success: false,
-              error: 'Managed Codex session creation requires providerExecutionIdentity.',
-            }, 400);
+          if (
+            runtimeSourceValue === 'managed-provider' &&
+            !payloadProviderExecutionIdentity
+          ) {
+            return jsonResponse(
+              {
+                success: false,
+                error:
+                  'Managed Codex session creation requires providerExecutionIdentity.',
+              },
+              400,
+            );
           }
         }
         // v0.1.69 Desktop session = owned snapshot. Capture model/permission/mcp/provider
         // from AgentConfig so the session is self-contained from creation onward.
         // The frontend's runtime override (payload.runtime) wins over agent.runtime — Tab UI
         // can pin a session to a specific runtime independent of the Agent's default.
-        const agent = findProjectAgentByWorkspacePath(agentDirValue) as AgentConfig | undefined;
+        const agent = findProjectAgentByWorkspacePath(agentDirValue) as
+          | AgentConfig
+          | undefined;
         const baseSnapshot: Partial<SessionMetadata> = agent
           ? snapshotForOwnedSession(agent, {
               runtimeOverride: runtimeValue,
               managedCodexProviderReady: managedCodexReady,
             })
-          : (runtimeValue ? { runtime: runtimeValue } : {});
-        baseSnapshot.origin = payloadOrigin ?? { kind: 'desktop', surface: 'unknown' };
+          : runtimeValue
+            ? { runtime: runtimeValue }
+            : {};
+        baseSnapshot.origin = payloadOrigin ?? {
+          kind: 'desktop',
+          surface: 'unknown',
+        };
         // PRD 0.2.34 §14 D14/D15 — 桌面渠道（悬浮球）创建 owned session 时把权限
         // 种成该 runtime 的「最宽松」档（发完就走渠道默认无脑执行）。原子地在快照
         // 构造期种入（复用既有 getMaxPermissionForRuntime），而非"创建后再 PATCH"
@@ -2762,13 +3929,18 @@ async function main() {
             (baseSnapshot.runtime ?? 'builtin') as RuntimeType,
           );
         }
-        if (runtimeSourceValue && (baseSnapshot.runtime ?? runtimeValue) !== 'builtin') {
+        if (
+          runtimeSourceValue &&
+          (baseSnapshot.runtime ?? runtimeValue) !== 'builtin'
+        ) {
           baseSnapshot.runtimeSource = runtimeSourceValue;
         }
         if (payloadProviderExecutionIdentity) {
           baseSnapshot.runtime = payloadProviderExecutionIdentity.runtime;
-          baseSnapshot.runtimeSource = payloadProviderExecutionIdentity.runtimeSource;
-          baseSnapshot.providerExecutionIdentity = payloadProviderExecutionIdentity;
+          baseSnapshot.runtimeSource =
+            payloadProviderExecutionIdentity.runtimeSource;
+          baseSnapshot.providerExecutionIdentity =
+            payloadProviderExecutionIdentity;
           baseSnapshot.providerId = payloadProviderExecutionIdentity.providerId;
           baseSnapshot.model = payloadProviderExecutionIdentity.model;
           baseSnapshot.providerRoute = undefined;
@@ -2786,9 +3958,9 @@ async function main() {
             baseSnapshot.model = payload.model;
           }
           if (
-            (baseSnapshot.runtime ?? runtimeValue ?? 'builtin') === 'builtin'
-            && baseSnapshot.providerId
-            && baseSnapshot.model
+            (baseSnapshot.runtime ?? runtimeValue ?? 'builtin') === 'builtin' &&
+            baseSnapshot.providerId &&
+            baseSnapshot.model
           ) {
             baseSnapshot.providerRoute = createConcreteProviderRoute(
               baseSnapshot.providerId,
@@ -2796,24 +3968,35 @@ async function main() {
             );
           }
         }
-        const snapshotRuntime = (baseSnapshot.runtime ?? runtimeValue ?? 'builtin') as RuntimeType;
+        const snapshotRuntime = (baseSnapshot.runtime ??
+          runtimeValue ??
+          'builtin') as RuntimeType;
         if (payload.permissionMode !== undefined) {
           if (typeof payload.permissionMode !== 'string') {
-            return jsonResponse({ success: false, error: 'permissionMode must be a string.' }, 400);
+            return jsonResponse(
+              { success: false, error: 'permissionMode must be a string.' },
+              400,
+            );
           }
           const payloadPermissionMode = payload.permissionMode.trim();
-          const snapshotRuntimeSource = baseSnapshot.runtimeSource
-            ?? payloadProviderExecutionIdentity?.runtimeSource
-            ?? runtimeSourceValue;
-          if (!isPermissionModeForRuntimeIdentity(
-            payloadPermissionMode,
-            snapshotRuntime,
-            snapshotRuntimeSource,
-          )) {
-            return jsonResponse({
-              success: false,
-              error: `Invalid permissionMode '${payload.permissionMode}' for ${snapshotRuntimeSource ?? snapshotRuntime}.`,
-            }, 400);
+          const snapshotRuntimeSource =
+            baseSnapshot.runtimeSource ??
+            payloadProviderExecutionIdentity?.runtimeSource ??
+            runtimeSourceValue;
+          if (
+            !isPermissionModeForRuntimeIdentity(
+              payloadPermissionMode,
+              snapshotRuntime,
+              snapshotRuntimeSource,
+            )
+          ) {
+            return jsonResponse(
+              {
+                success: false,
+                error: `Invalid permissionMode '${payload.permissionMode}' for ${snapshotRuntimeSource ?? snapshotRuntime}.`,
+              },
+              400,
+            );
           }
           baseSnapshot.permissionMode = payloadPermissionMode;
         }
@@ -2821,31 +4004,47 @@ async function main() {
           payload.reasoningEffort,
           snapshotRuntime,
         );
-        if (payloadReasoningEffort !== undefined) baseSnapshot.reasoningEffort = payloadReasoningEffort;
-        if (payload.mcpEnabledServers !== undefined) baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
-        if (payload.enabledPluginIds !== undefined) baseSnapshot.enabledPluginIds = payload.enabledPluginIds;
-        if (payload.enabledOfficialToolIds !== undefined) baseSnapshot.enabledOfficialToolIds = payload.enabledOfficialToolIds;
+        if (payloadReasoningEffort !== undefined)
+          baseSnapshot.reasoningEffort = payloadReasoningEffort;
+        if (payload.mcpEnabledServers !== undefined)
+          baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
+        if (payload.enabledPluginIds !== undefined)
+          baseSnapshot.enabledPluginIds = payload.enabledPluginIds;
+        if (payload.enabledOfficialToolIds !== undefined)
+          baseSnapshot.enabledOfficialToolIds = payload.enabledOfficialToolIds;
         if (payload.prepareForFirstUserMessage === true) {
           if (baseSnapshot.origin?.kind !== 'desktop') {
-            return jsonResponse({
-              success: false,
-              error: 'Prepared session birth is only supported for desktop sessions.',
-            }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error:
+                  'Prepared session birth is only supported for desktop sessions.',
+              },
+              400,
+            );
           }
           if (!baseSnapshot.providerExecutionIdentity) {
-            return jsonResponse({
-              success: false,
-              error: 'Prepared session birth requires providerExecutionIdentity.',
-            }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error:
+                  'Prepared session birth requires providerExecutionIdentity.',
+              },
+              400,
+            );
           }
           baseSnapshot.materializationState = 'prepared';
-          baseSnapshot.materializationSourceSessionId = typeof payload.materializationSourceSessionId === 'string'
-            && payload.materializationSourceSessionId.trim()
-            ? payload.materializationSourceSessionId.trim()
-            : undefined;
+          baseSnapshot.materializationSourceSessionId =
+            typeof payload.materializationSourceSessionId === 'string' &&
+            payload.materializationSourceSessionId.trim()
+              ? payload.materializationSourceSessionId.trim()
+              : undefined;
         }
         const session = await createSession(agentDirValue, baseSnapshot);
-        return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
+        return jsonResponse({
+          success: true,
+          session: toClientSessionMetadata(session),
+        });
       }
 
       // GET /sessions/:id/since/:lastMessageId - Incremental tail fetch
@@ -2855,7 +4054,10 @@ async function main() {
       // task completes: the old full-reload path bundled P0+P1 penalties
       // (base64 attachments + Virtuoso remount) into a single freeze spike.
       // Must be BEFORE the generic /sessions/:id route.
-      if (pathname.match(/^\/sessions\/[^/]+\/since\/[^/]+$/) && request.method === 'GET') {
+      if (
+        pathname.match(/^\/sessions\/[^/]+\/since\/[^/]+$/) &&
+        request.method === 'GET'
+      ) {
         const match = pathname.match(/^\/sessions\/([^/]+)\/since\/([^/]+)$/);
         if (!match) {
           return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
@@ -2865,20 +4067,28 @@ async function main() {
 
         const session = getSessionData(sessionId);
         if (!session) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Session not found.' },
+            404,
+          );
         }
         if (!isHistoryVisibleSession(session)) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Session not found.' },
+            404,
+          );
         }
 
-        const idx = session.messages.findIndex(m => m.id === lastMessageId);
+        const idx = session.messages.findIndex((m) => m.id === lastMessageId);
         // idx === -1 signals "caller's baseline is gone" (session was rewound,
         // compacted, or otherwise rewritten). Caller falls back to full reload.
         if (idx === -1) {
           return jsonResponse({ success: true, fromIndex: -1, messages: [] });
         }
 
-        const tail = shrinkSessionMessagesForClient(session.messages.slice(idx + 1));
+        const tail = shrinkSessionMessagesForClient(
+          session.messages.slice(idx + 1),
+        );
         // Same metadata-only shape as GET /sessions/:id (P0) — previews are
         // resolved via the myagents:// custom protocol on the client.
         return jsonResponse({ success: true, fromIndex: idx, messages: tail });
@@ -2887,18 +4097,32 @@ async function main() {
       // GET /sessions/:id/stats - Get detailed session statistics
       // The generic GET /sessions/:id handler lives in routes/session-read.ts and
       // only matches one path segment, so stats/since subroutes remain owned here.
-      if (pathname.match(/^\/sessions\/[^/]+\/stats$/) && request.method === 'GET') {
-        const sessionId = pathname.replace('/sessions/', '').replace('/stats', '');
+      if (
+        pathname.match(/^\/sessions\/[^/]+\/stats$/) &&
+        request.method === 'GET'
+      ) {
+        const sessionId = pathname
+          .replace('/sessions/', '')
+          .replace('/stats', '');
         if (!sessionId) {
-          return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Session ID required.' },
+            400,
+          );
         }
 
         const session = getSessionData(sessionId);
         if (!session) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Session not found.' },
+            404,
+          );
         }
         if (!isHistoryVisibleSession(session)) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Session not found.' },
+            404,
+          );
         }
 
         return jsonResponse({
@@ -2911,23 +4135,60 @@ async function main() {
       if (pathname.startsWith('/sessions/') && request.method === 'DELETE') {
         const sessionId = pathname.replace('/sessions/', '');
         if (!/^[A-Za-z0-9-]{1,99}$/.test(sessionId)) {
-          return jsonResponse({ success: false, reason: 'invalid-session-id', error: 'Invalid session ID.' }, 400);
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'invalid-session-id',
+              error: 'Invalid session ID.',
+            },
+            400,
+          );
         }
         const expectedAuthority = process.env.MYAGENTS_SESSION_DELETE_AUTHORITY;
-        const providedAuthority = request.headers.get('X-MyAgents-Session-Delete-Authority');
+        const providedAuthority = request.headers.get(
+          'X-MyAgents-Session-Delete-Authority',
+        );
         if (!expectedAuthority || providedAuthority !== expectedAuthority) {
-          return jsonResponse({ success: false, reason: 'missing-authority', error: 'Session deletion requires the Rust lifecycle authority.' }, 403);
+          return jsonResponse(
+            {
+              success: false,
+              reason: 'missing-authority',
+              error: 'Session deletion requires the Rust lifecycle authority.',
+            },
+            403,
+          );
         }
 
         const deletion = await deleteProductSessionWithRuntime(sessionId);
         if (!deletion.deleted) {
           if (deletion.reason === 'protected-session') {
-            return jsonResponse({ success: false, reason: deletion.reason, error: 'System maintenance session is not user-editable.' }, 403);
+            return jsonResponse(
+              {
+                success: false,
+                reason: deletion.reason,
+                error: 'System maintenance session is not user-editable.',
+              },
+              403,
+            );
           }
           if (deletion.reason === 'io-error') {
-            return jsonResponse({ success: false, reason: deletion.reason, error: 'Failed to delete session.' }, 500);
+            return jsonResponse(
+              {
+                success: false,
+                reason: deletion.reason,
+                error: 'Failed to delete session.',
+              },
+              500,
+            );
           }
-          return jsonResponse({ success: false, reason: deletion.reason, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            {
+              success: false,
+              reason: deletion.reason,
+              error: 'Session not found.',
+            },
+            404,
+          );
         }
 
         return jsonResponse({ success: true });
@@ -2937,7 +4198,10 @@ async function main() {
       if (pathname.startsWith('/sessions/') && request.method === 'PATCH') {
         const sessionId = pathname.replace('/sessions/', '');
         if (!sessionId) {
-          return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Session ID required.' },
+            400,
+          );
         }
 
         // Snapshot fields (v0.1.69): send `null` to clear (revert to agent fallback);
@@ -2950,13 +4214,17 @@ async function main() {
            *  freshly toggled-off session matches "never favorited" exactly
            *  on disk. */
           favorite?: boolean;
+          /** Pin/unpin inside the owning workspace's sidebar Session list. */
+          pinned?: boolean;
           model?: string | null;
           /** #324 — reasoning effort snapshot ('default' | level); null clears. */
           reasoningEffort?: string | null;
           permissionMode?: string | null;
           mcpEnabledServers?: string[] | null;
           enabledPluginIds?: string[] | null;
-          enabledOfficialToolIds?: import('../shared/official-tools').OfficialToolId[] | null;
+          enabledOfficialToolIds?:
+            | import('../shared/official-tools').OfficialToolId[]
+            | null;
           providerId?: string | null;
           providerRoute?: ProviderRoute | null;
           providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
@@ -2968,35 +4236,56 @@ async function main() {
         try {
           payload = (await request.json()) as PatchPayload;
         } catch {
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid JSON payload.' },
+            400,
+          );
         }
-        if (payload.permissionMode !== undefined && payload.permissionMode !== null
-            && typeof payload.permissionMode !== 'string') {
-          return jsonResponse({ success: false, error: 'permissionMode must be a string or null.' }, 400);
+        if (
+          payload.permissionMode !== undefined &&
+          payload.permissionMode !== null &&
+          typeof payload.permissionMode !== 'string'
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error: 'permissionMode must be a string or null.',
+            },
+            400,
+          );
+        }
+        if (payload.title !== undefined) {
+          if (typeof payload.title !== 'string') {
+            return jsonResponse(
+              { success: false, error: 'title must be a string.' },
+              400,
+            );
+          }
+          payload.title = payload.title.trim();
+          if (!payload.title) {
+            return jsonResponse(
+              { success: false, error: 'title must not be empty.' },
+              400,
+            );
+          }
+        }
+        if (
+          payload.pinned !== undefined &&
+          typeof payload.pinned !== 'boolean'
+        ) {
+          return jsonResponse(
+            { success: false, error: 'pinned must be a boolean.' },
+            400,
+          );
         }
 
         // `lastActiveAt` is the recency signal that drives history sort
         // order. Bumping it on EVERY PATCH means a pure-UI flag change
         // (favorite toggle) makes an old session jump to the top of the
         // dropdown — confusing UX (Codex round-4 caught). Only the fields
-        // that genuinely represent "session was used" should refresh it.
-        const RECENCY_BUMP_FIELDS = new Set([
-          'title',           // user-edited title implies engagement
-          'titleSource',
-          'model',
-          'reasoningEffort',
-          'permissionMode',
-          'mcpEnabledServers',
-          'enabledPluginIds',
-          'enabledOfficialToolIds',
-          'providerId',
-          'providerRoute',
-          'providerExecutionIdentity',
-          'providerEnvJson',
-        ]);
-        const touchedRecencyField = (Object.keys(payload) as Array<keyof PatchPayload>)
-          .filter((k) => payload[k] !== undefined)
-          .some((k) => RECENCY_BUMP_FIELDS.has(k));
+        // that genuinely represent "session was used" should refresh it. Title
+        // edits and pinning are organizational actions, so neither affects recency.
+        const touchedRecencyField = shouldBumpSessionRecency(payload);
 
         let updated: SessionMetadata | null = null;
         let sawExistingSession = false;
@@ -3006,12 +4295,21 @@ async function main() {
           const existingMeta = getSessionMetadata(sessionId);
           if (!existingMeta) {
             if (!sawExistingSession) {
-              return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+              return jsonResponse(
+                { success: false, error: 'Session not found.' },
+                404,
+              );
             }
             break;
           }
           if (isSystemMaintenanceSession(existingMeta)) {
-            return jsonResponse({ success: false, error: 'System maintenance session is not user-editable.' }, 403);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'System maintenance session is not user-editable.',
+              },
+              403,
+            );
           }
           sawExistingSession = true;
           const nowIso = new Date().toISOString();
@@ -3019,20 +4317,26 @@ async function main() {
           const updates: Record<string, unknown> = touchedRecencyField
             ? { lastActiveAt: nowIso }
             : {};
-          if (payload.title !== undefined) updates.title = String(payload.title).slice(0, 100);
-          if (payload.titleSource !== undefined) updates.titleSource = payload.titleSource;
+          if (payload.title !== undefined)
+            updates.title = payload.title.slice(0, 100);
+          if (payload.titleSource !== undefined)
+            updates.titleSource = payload.titleSource;
           if (payload.favorite !== undefined) {
             // Convert false → undefined so the on-disk shape stays minimal
             // (the JSON serializer drops undefined keys).
             updates.favorite = payload.favorite === true ? true : undefined;
           }
+          if (payload.pinned !== undefined) updates.pinned = payload.pinned;
           if (payload.origin !== undefined) {
             if (payload.origin === null) {
               updates.origin = undefined;
             } else {
               const nextOrigin = normalizeSessionOrigin(payload.origin);
               if (!nextOrigin) {
-                return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
+                return jsonResponse(
+                  { success: false, error: 'Invalid session origin.' },
+                  400,
+                );
               }
               updates.origin = nextOrigin;
             }
@@ -3048,38 +4352,54 @@ async function main() {
           const baseSnapshot = existingMeta.configSnapshotAt
             ? undefined
             : (() => {
-              const agent = findProjectAgentByWorkspacePath(existingMeta.agentDir) as AgentConfig | undefined;
-              return agent
-                ? snapshotForOwnedSession(agent, {
-                    runtimeOverride: existingMeta.runtime as RuntimeType | undefined,
-                    managedCodexProviderReady: isManagedCodexProviderReady(loadConfig()),
-                  })
-                : undefined;
-            })();
+                const agent = findProjectAgentByWorkspacePath(
+                  existingMeta.agentDir,
+                ) as AgentConfig | undefined;
+                return agent
+                  ? snapshotForOwnedSession(agent, {
+                      runtimeOverride: existingMeta.runtime as
+                        | RuntimeType
+                        | undefined,
+                      managedCodexProviderReady:
+                        isManagedCodexProviderReady(loadConfig()),
+                    })
+                  : undefined;
+              })();
           if (typeof payload.permissionMode === 'string') {
             const requestedPermissionMode = payload.permissionMode.trim();
-            const permissionRuntime = (existingMeta.runtime ?? baseSnapshot?.runtime ?? 'builtin') as RuntimeType;
-            const permissionRuntimeSource = existingMeta.runtimeSource
-              ?? existingMeta.providerExecutionIdentity?.runtimeSource
-              ?? baseSnapshot?.runtimeSource;
-            if (!isPermissionModeForRuntimeIdentity(
-              requestedPermissionMode,
-              permissionRuntime,
-              permissionRuntimeSource,
-            )) {
-              return jsonResponse({
-                success: false,
-                error: `Invalid permissionMode '${payload.permissionMode}' for ${permissionRuntimeSource ?? permissionRuntime}.`,
-              }, 400);
+            const permissionRuntime = (existingMeta.runtime ??
+              baseSnapshot?.runtime ??
+              'builtin') as RuntimeType;
+            const permissionRuntimeSource =
+              existingMeta.runtimeSource ??
+              existingMeta.providerExecutionIdentity?.runtimeSource ??
+              baseSnapshot?.runtimeSource;
+            if (
+              !isPermissionModeForRuntimeIdentity(
+                requestedPermissionMode,
+                permissionRuntime,
+                permissionRuntimeSource,
+              )
+            ) {
+              return jsonResponse(
+                {
+                  success: false,
+                  error: `Invalid permissionMode '${payload.permissionMode}' for ${permissionRuntimeSource ?? permissionRuntime}.`,
+                },
+                400,
+              );
             }
             payload.permissionMode = requestedPermissionMode;
           }
-          Object.assign(updates, buildSessionSnapshotPatchUpdates({
-            existing: existingMeta,
-            payload,
-            baseSnapshot,
-            nowIso,
-          }));
+          Object.assign(
+            updates,
+            buildSessionSnapshotPatchUpdates({
+              existing: existingMeta,
+              payload,
+              baseSnapshot,
+              nowIso,
+            }),
+          );
 
           const expectedConfigSnapshotAt = existingMeta.configSnapshotAt;
           updated = await updateSessionMetadata(
@@ -3091,31 +4411,44 @@ async function main() {
 
           const latest = getSessionMetadata(sessionId);
           if (!latest) break;
-          sawSnapshotCasChange = latest.configSnapshotAt !== expectedConfigSnapshotAt;
+          sawSnapshotCasChange =
+            latest.configSnapshotAt !== expectedConfigSnapshotAt;
           if (!sawSnapshotCasChange) break;
         }
 
         if (!updated) {
           if (!getSessionMetadata(sessionId)) {
-            return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Session not found.' },
+              404,
+            );
           }
-          return jsonResponse({
-            success: false,
-            error: sawSnapshotCasChange
-              ? 'Session config changed while applying metadata patch; please retry.'
-              : 'Failed to update session metadata.',
-          }, sawSnapshotCasChange ? 409 : 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: sawSnapshotCasChange
+                ? 'Session config changed while applying metadata patch; please retry.'
+                : 'Failed to update session metadata.',
+            },
+            sawSnapshotCasChange ? 409 : 500,
+          );
         }
 
         // Zero-trust: redact credential-bearing fields from the echo payload.
         // The client already owns what it sent; no need to round-trip secrets.
-        return jsonResponse({ success: true, session: toClientSessionMetadata(updated) });
+        return jsonResponse({
+          success: true,
+          session: toClientSessionMetadata(updated),
+        });
       }
 
       // POST /api/generate-session-title - AI-generate a short session title
       // Accepts `rounds` array (3+ QA rounds) for rich context.
       // Also accepts legacy `userMessage`/`assistantReply` for backward compatibility.
-      if (pathname === '/api/generate-session-title' && request.method === 'POST') {
+      if (
+        pathname === '/api/generate-session-title' &&
+        request.method === 'POST'
+      ) {
         let payload: {
           sessionId: string;
           rounds?: Array<{ user: string; assistant: string }>;
@@ -3128,34 +4461,59 @@ async function main() {
         try {
           payload = (await request.json()) as typeof payload;
         } catch {
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid JSON payload.' },
+            400,
+          );
         }
 
         if (!payload.sessionId) {
-          return jsonResponse({ success: false, error: 'sessionId is required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'sessionId is required.' },
+            400,
+          );
         }
 
         // Build rounds from payload — prefer `rounds` array, fall back to legacy fields
         let rounds: Array<{ user: string; assistant: string }>;
-        if (payload.rounds && Array.isArray(payload.rounds) && payload.rounds.length > 0) {
+        if (
+          payload.rounds &&
+          Array.isArray(payload.rounds) &&
+          payload.rounds.length > 0
+        ) {
           // Cap to 10 rounds max, validate shape, enforce length limits
-          rounds = payload.rounds.slice(0, 10)
-            .filter((r: unknown): r is Record<string, unknown> => r !== null && typeof r === 'object')
-            .map(r => ({
+          rounds = payload.rounds
+            .slice(0, 10)
+            .filter(
+              (r: unknown): r is Record<string, unknown> =>
+                r !== null && typeof r === 'object',
+            )
+            .map((r) => ({
               user: (typeof r.user === 'string' ? r.user : '').slice(0, 500),
-              assistant: (typeof r.assistant === 'string' ? r.assistant : '').slice(0, 500),
+              assistant: (typeof r.assistant === 'string'
+                ? r.assistant
+                : ''
+              ).slice(0, 500),
             }));
           if (rounds.length === 0) {
-            return jsonResponse({ success: false, error: 'rounds must contain valid entries.' }, 400);
+            return jsonResponse(
+              { success: false, error: 'rounds must contain valid entries.' },
+              400,
+            );
           }
         } else if (payload.userMessage) {
           // Legacy single-round format
-          rounds = [{
-            user: payload.userMessage.slice(0, 1000),
-            assistant: (payload.assistantReply || '').slice(0, 1000),
-          }];
+          rounds = [
+            {
+              user: payload.userMessage.slice(0, 1000),
+              assistant: (payload.assistantReply || '').slice(0, 1000),
+            },
+          ];
         } else {
-          return jsonResponse({ success: false, error: 'rounds or userMessage is required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'rounds or userMessage is required.' },
+            400,
+          );
         }
 
         payload.model = (payload.model || '').slice(0, 200);
@@ -3163,7 +4521,10 @@ async function main() {
         // Skip if session not found or user has manually renamed
         const meta = getSessionMetadata(payload.sessionId);
         if (!meta) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+          return jsonResponse(
+            { success: false, error: 'Session not found.' },
+            404,
+          );
         }
         if (meta.titleSource === 'user') {
           return jsonResponse({ success: false, skipped: true });
@@ -3176,7 +4537,9 @@ async function main() {
         // External runtimes ignore providerEnv (CLI-owned auth) and take agentDir
         // as workspace so Gemini/Codex inherit project context.
         const activeRuntime = getActiveRuntimeType();
-        const { generateAndApplyTitle } = await import('./session-title-service');
+        const { generateAndApplyTitle } = await import(
+          './session-title-service'
+        );
         const title = await generateAndApplyTitle(
           payload.sessionId,
           rounds,
@@ -3185,7 +4548,9 @@ async function main() {
           payload.providerEnv,
           meta.agentDir,
         );
-        return title ? jsonResponse({ success: true, title }) : jsonResponse({ success: false });
+        return title
+          ? jsonResponse({ success: true, title })
+          : jsonResponse({ success: false });
       }
 
       // ============= END SESSION API =============
@@ -3196,22 +4561,33 @@ async function main() {
         try {
           payload = (await request.json()) as SwitchPayload;
         } catch {
-          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'Invalid JSON payload.' },
+            400,
+          );
         }
 
         const newDir = payload?.agentDir?.trim();
         if (!newDir) {
-          return jsonResponse({ success: false, error: 'agentDir is required.' }, 400);
+          return jsonResponse(
+            { success: false, error: 'agentDir is required.' },
+            400,
+          );
         }
 
         // Security: validate the path before allowing access
         const validation = isValidAgentDir(newDir);
         if (!validation.valid) {
-          console.warn(`[agent] blocked switch to "${newDir}": ${validation.reason}`);
-          return jsonResponse({
-            success: false,
-            error: validation.reason || 'Invalid directory path'
-          }, 403);
+          console.warn(
+            `[agent] blocked switch to "${newDir}": ${validation.reason}`,
+          );
+          return jsonResponse(
+            {
+              success: false,
+              error: validation.reason || 'Invalid directory path',
+            },
+            403,
+          );
         }
 
         try {
@@ -3220,27 +4596,24 @@ async function main() {
           await initializeAgent(currentAgentDir, payload.initialPrompt);
           return jsonResponse({
             success: true,
-            agentDir: currentAgentDir
+            agentDir: currentAgentDir,
           });
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            500,
           );
         }
       }
 
-
-
-
-
-
-
-
       if (pathname === '/agent/upload' && request.method === 'POST') {
         const targetParam = url.searchParams.get('path') ?? '';
-        const resolvedTarget =
-          targetParam ? resolveAgentPath(currentAgentDir, targetParam) : currentAgentDir;
+        const resolvedTarget = targetParam
+          ? resolveAgentPath(currentAgentDir, targetParam)
+          : currentAgentDir;
         if (!resolvedTarget) {
           return jsonResponse({ error: 'Invalid path.' }, 400);
         }
@@ -3249,7 +4622,7 @@ async function main() {
           if (oversized) return oversized;
           const formData = await request.formData();
           const files = Array.from(formData.values()).filter(
-            (value) => typeof value !== 'string'
+            (value) => typeof value !== 'string',
           ) as File[];
           if (files.length === 0) {
             return jsonResponse({ error: 'No files provided.' }, 400);
@@ -3266,67 +4639,83 @@ async function main() {
         } catch (error) {
           return jsonResponse(
             { error: error instanceof Error ? error.message : 'Unknown error' },
-            500
+            500,
           );
         }
       }
 
-
-
-
-
-
-
-
-
-
       // ============= FILE MANAGEMENT API =============
-
-
-
-
 
       // GET /api/image?path=... - Serve generated images (for browser dev mode)
       if (pathname === '/api/image' && request.method === 'GET') {
         try {
           const imagePath = url.searchParams.get('path');
           if (!imagePath) {
-            return jsonResponse({ success: false, error: 'Missing path parameter' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing path parameter' },
+              400,
+            );
           }
 
           // Security: allow reading from workspace/myagents_files/{generated_images,temp}/ or legacy paths
           const resolvedPath = resolve(imagePath);
           const legacyDir = join(homedir(), '.myagents', 'generated');
-          const legacyDirSep = legacyDir.endsWith(sep) ? legacyDir : legacyDir + sep;
+          const legacyDirSep = legacyDir.endsWith(sep)
+            ? legacyDir
+            : legacyDir + sep;
           // New unified paths + backward compat with myagents-generated/images/
-          const allowedDirs = currentAgentDir ? [
-            join(currentAgentDir, 'myagents_files', 'generated_images'),
-            join(currentAgentDir, 'myagents_files', 'temp'),
-            join(currentAgentDir, 'myagents-generated', 'images'), // backward compat
-          ] : [];
-          const allowed = resolvedPath.startsWith(legacyDirSep)
-            || allowedDirs.some(d => resolvedPath.startsWith(d.endsWith(sep) ? d : d + sep));
+          const allowedDirs = currentAgentDir
+            ? [
+                join(currentAgentDir, 'myagents_files', 'generated_images'),
+                join(currentAgentDir, 'myagents_files', 'temp'),
+                join(currentAgentDir, 'myagents-generated', 'images'), // backward compat
+              ]
+            : [];
+          const allowed =
+            resolvedPath.startsWith(legacyDirSep) ||
+            allowedDirs.some((d) =>
+              resolvedPath.startsWith(d.endsWith(sep) ? d : d + sep),
+            );
           if (!allowed) {
-            return jsonResponse({ success: false, error: 'Access denied: path must be within generated directory' }, 403);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Access denied: path must be within generated directory',
+              },
+              403,
+            );
           }
 
           if (!existsSync(resolvedPath)) {
-            return jsonResponse({ success: false, error: 'Image not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Image not found' },
+              404,
+            );
           }
 
           const ext = resolvedPath.split('.').pop()?.toLowerCase();
-          const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+          const mimeType =
+            ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
 
           const resp = await fileResponse(resolvedPath, {
             contentType: mimeType,
             headers: { 'Cache-Control': 'public, max-age=86400' },
           });
-          return resp ?? jsonResponse({ success: false, error: 'Image not found' }, 404);
+          return (
+            resp ??
+            jsonResponse({ success: false, error: 'Image not found' }, 404)
+          );
         } catch (error) {
           console.error('[api/image] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to serve image' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to serve image',
+            },
+            500,
           );
         }
       }
@@ -3336,26 +4725,50 @@ async function main() {
         try {
           const audioPath = url.searchParams.get('path');
           if (!audioPath) {
-            return jsonResponse({ success: false, error: 'Missing path parameter' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing path parameter' },
+              400,
+            );
           }
 
           // Security: allow reading from workspace/myagents_files/generated_audio/ or legacy paths
           const resolvedPath = resolve(audioPath);
-          const legacyAudioDir = join(homedir(), '.myagents', 'generated_audio');
-          const legacyAudioDirSep = legacyAudioDir.endsWith(sep) ? legacyAudioDir : legacyAudioDir + sep;
+          const legacyAudioDir = join(
+            homedir(),
+            '.myagents',
+            'generated_audio',
+          );
+          const legacyAudioDirSep = legacyAudioDir.endsWith(sep)
+            ? legacyAudioDir
+            : legacyAudioDir + sep;
           // New unified path + backward compat with myagents-generated/audio/
-          const allowedAudioDirs = currentAgentDir ? [
-            join(currentAgentDir, 'myagents_files', 'generated_audio'),
-            join(currentAgentDir, 'myagents-generated', 'audio'), // backward compat
-          ] : [];
-          const audioAllowed = resolvedPath.startsWith(legacyAudioDirSep)
-            || allowedAudioDirs.some(d => resolvedPath.startsWith(d.endsWith(sep) ? d : d + sep));
+          const allowedAudioDirs = currentAgentDir
+            ? [
+                join(currentAgentDir, 'myagents_files', 'generated_audio'),
+                join(currentAgentDir, 'myagents-generated', 'audio'), // backward compat
+              ]
+            : [];
+          const audioAllowed =
+            resolvedPath.startsWith(legacyAudioDirSep) ||
+            allowedAudioDirs.some((d) =>
+              resolvedPath.startsWith(d.endsWith(sep) ? d : d + sep),
+            );
           if (!audioAllowed) {
-            return jsonResponse({ success: false, error: 'Access denied: path must be within generated_audio directory' }, 403);
+            return jsonResponse(
+              {
+                success: false,
+                error:
+                  'Access denied: path must be within generated_audio directory',
+              },
+              403,
+            );
           }
 
           if (!existsSync(resolvedPath)) {
-            return jsonResponse({ success: false, error: 'Audio not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Audio not found' },
+              404,
+            );
           }
 
           const ext = resolvedPath.split('.').pop()?.toLowerCase();
@@ -3374,12 +4787,21 @@ async function main() {
             contentType: mimeType,
             headers: { 'Cache-Control': 'public, max-age=86400' },
           });
-          return resp ?? jsonResponse({ success: false, error: 'Audio not found' }, 404);
+          return (
+            resp ??
+            jsonResponse({ success: false, error: 'Audio not found' }, 404)
+          );
         } catch (error) {
           console.error('[api/audio] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to serve audio' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to serve audio',
+            },
+            500,
           );
         }
       }
@@ -3387,7 +4809,7 @@ async function main() {
       // POST /api/edge-tts/preview - Preview TTS from Settings (independent of MCP server state)
       if (pathname === '/api/edge-tts/preview' && request.method === 'POST') {
         try {
-          const body = await request.json() as {
+          const body = (await request.json()) as {
             text?: string;
             voice?: string;
             rate?: string;
@@ -3397,12 +4819,21 @@ async function main() {
           };
 
           if (!body.text?.trim()) {
-            return jsonResponse({ success: false, error: 'Missing text parameter' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing text parameter' },
+              400,
+            );
           }
 
           // Apply same text length limit as the MCP tool
           if (body.text.length > 10000) {
-            return jsonResponse({ success: false, error: `Text too long (${body.text.length} chars). Maximum is 10000.` }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: `Text too long (${body.text.length} chars). Maximum is 10000.`,
+              },
+              400,
+            );
           }
 
           const { synthesizePreview } = await import('./tools/edge-tts-tool');
@@ -3412,15 +4843,19 @@ async function main() {
             rate: body.rate || '0%',
             volume: body.volume || '0%',
             pitch: body.pitch || '+0Hz',
-            outputFormat: body.outputFormat || 'audio-24khz-48kbitrate-mono-mp3',
+            outputFormat:
+              body.outputFormat || 'audio-24khz-48kbitrate-mono-mp3',
           });
 
           return jsonResponse(result);
         } catch (error) {
           console.error('[api/edge-tts/preview] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Preview failed' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Preview failed',
+            },
+            500,
           );
         }
       }
@@ -3432,7 +4867,7 @@ async function main() {
       // POST /api/unified-log - Receive frontend logs for persistence
       if (pathname === '/api/unified-log' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             entries?: Array<{
               source: 'react' | 'bun' | 'rust';
               level: 'info' | 'warn' | 'error' | 'debug';
@@ -3447,10 +4882,13 @@ async function main() {
 
           return jsonResponse({ success: true });
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to log'
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to log',
+            },
+            500,
+          );
         }
       }
 
@@ -3466,16 +4904,23 @@ async function main() {
           const now = Date.now();
           const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
           const files = readdirSync(logsDir)
-            .filter(f => f.startsWith('unified-') && f.endsWith('.log'))
-            .filter(f => {
+            .filter((f) => f.startsWith('unified-') && f.endsWith('.log'))
+            .filter((f) => {
               try {
-                return now - statSync(joinPath(logsDir, f)).mtimeMs < threeDaysMs;
-              } catch { return false; }
+                return (
+                  now - statSync(joinPath(logsDir, f)).mtimeMs < threeDaysMs
+                );
+              } catch {
+                return false;
+              }
             })
             .sort();
 
           if (files.length === 0) {
-            return jsonResponse({ success: false, error: '没有找到近3天的运行日志' }, 404);
+            return jsonResponse(
+              { success: false, error: '没有找到近3天的运行日志' },
+              404,
+            );
           }
 
           // Output to Desktop
@@ -3486,7 +4931,7 @@ async function main() {
 
           // Create zip using platform-appropriate command
           const isWin = process.platform === 'win32';
-          const filePaths = files.map(f => joinPath(logsDir, f));
+          const filePaths = files.map((f) => joinPath(logsDir, f));
 
           // stdout/stderr must be ignored — zip/Compress-Archive emit per-file progress
           // that can exceed the 64KB pipe buffer on large log sets and deadlock the
@@ -3509,10 +4954,16 @@ async function main() {
 
           return jsonResponse({ success: true, path: zipPath });
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to export logs'
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to export logs',
+            },
+            500,
+          );
         }
       }
 
@@ -3521,7 +4972,7 @@ async function main() {
       // POST /api/provider/verify - Verify API key via SDK (same path as normal chat)
       if (pathname === '/api/provider/verify' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             providerId?: string;
             baseUrl?: string;
             apiKey?: string;
@@ -3533,30 +4984,56 @@ async function main() {
             upstreamFormat?: string;
           };
 
-          const { providerId, baseUrl, apiKey, model, authType, apiProtocol, maxOutputTokens, maxOutputTokensParamName, upstreamFormat } = payload;
+          const {
+            providerId,
+            baseUrl,
+            apiKey,
+            model,
+            authType,
+            apiProtocol,
+            maxOutputTokens,
+            maxOutputTokensParamName,
+            upstreamFormat,
+          } = payload;
 
           if (!providerId || !baseUrl || !apiKey) {
-            return jsonResponse({ success: false, error: 'providerId, baseUrl and apiKey are required.' }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'providerId, baseUrl and apiKey are required.',
+              },
+              400,
+            );
           }
 
           console.log(`[api/provider/verify] =========================`);
           console.log(`[api/provider/verify] providerId: ${providerId}`);
           console.log(`[api/provider/verify] baseUrl: ${baseUrl}`);
-          console.log(`[api/provider/verify] apiKey: ${apiKey.slice(0, 10)}...`);
           console.log(`[api/provider/verify] model: ${model ?? 'default'}`);
           console.log(`[api/provider/verify] authType: ${authType ?? 'both'}`);
-          console.log(`[api/provider/verify] apiProtocol: ${apiProtocol ?? 'anthropic'}`);
-          console.log(`[api/provider/verify] maxOutputTokens: ${maxOutputTokens ?? 'none'}`);
+          console.log(
+            `[api/provider/verify] apiProtocol: ${apiProtocol ?? 'anthropic'}`,
+          );
+          console.log(
+            `[api/provider/verify] maxOutputTokens: ${maxOutputTokens ?? 'none'}`,
+          );
 
           // Unified SDK verification for all protocols (Anthropic + OpenAI)
           // For OpenAI protocol: SDK → CLI → bridge loopback → upstream (end-to-end)
           // For Anthropic protocol: SDK → CLI → upstream (same as before)
           const result = await verifyProviderViaSdk(
             providerId,
-            baseUrl, apiKey, authType ?? 'both', model || undefined,
+            baseUrl,
+            apiKey,
+            authType ?? 'both',
+            model || undefined,
             apiProtocol === 'openai' ? 'openai' : undefined,
             maxOutputTokens,
-            maxOutputTokensParamName as 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens' | undefined,
+            maxOutputTokensParamName as
+              | 'max_tokens'
+              | 'max_completion_tokens'
+              | 'max_output_tokens'
+              | undefined,
             upstreamFormat === 'responses' ? 'responses' : undefined,
           );
 
@@ -3567,8 +5044,12 @@ async function main() {
         } catch (error) {
           console.error('[api/provider/verify] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Verification failed' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Verification failed',
+            },
+            500,
           );
         }
       }
@@ -3577,15 +5058,32 @@ async function main() {
       // normal chat, with a non-secret managed OAuth ProviderEnv.
       if (pathname === '/api/grok/verify' && request.method === 'POST') {
         try {
-          const payload = await request.json() as { model?: string; verificationLineage?: string };
-          const providerEnv = resolveProviderEnv(XAI_SUBSCRIPTION_PROVIDER_ID) as ProviderEnv | undefined;
+          const payload = (await request.json()) as {
+            model?: string;
+            verificationLineage?: string;
+          };
+          const providerEnv = resolveProviderEnv(
+            XAI_SUBSCRIPTION_PROVIDER_ID,
+          ) as ProviderEnv | undefined;
           if (!providerEnv?.credentialSource || !providerEnv.baseUrl) {
-            return jsonResponse({ success: false, error: 'Grok subscription provider is unavailable.' }, 409);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Grok subscription provider is unavailable.',
+              },
+              409,
+            );
           }
           const model = payload.model?.trim() || 'grok-4.5';
           const verificationLineage = payload.verificationLineage?.trim();
           if (!verificationLineage) {
-            return jsonResponse({ success: false, error: 'Grok verification lineage is required.' }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Grok verification lineage is required.',
+              },
+              400,
+            );
           }
           const result = await verifyProviderViaSdk(
             XAI_SUBSCRIPTION_PROVIDER_ID,
@@ -3602,10 +5100,16 @@ async function main() {
           );
           return jsonResponse(result);
         } catch (error) {
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Grok verification failed',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Grok verification failed',
+            },
+            500,
+          );
         }
       }
 
@@ -3617,98 +5121,149 @@ async function main() {
         } catch (error) {
           console.error('[api/subscription/status] Error:', error);
           return jsonResponse(
-            { available: false, error: error instanceof Error ? error.message : 'Check failed' },
-            500
+            {
+              available: false,
+              error: error instanceof Error ? error.message : 'Check failed',
+            },
+            500,
           );
         }
       }
 
       // POST /api/subscription/verify - Verify Anthropic subscription by sending test request via SDK
-      if (pathname === '/api/subscription/verify' && request.method === 'POST') {
+      if (
+        pathname === '/api/subscription/verify' &&
+        request.method === 'POST'
+      ) {
         try {
           console.log('[api/subscription/verify] Starting verification...');
           const result = await verifySubscription();
-          console.log('[api/subscription/verify] Result:', JSON.stringify(result));
+          console.log(
+            '[api/subscription/verify] Result:',
+            JSON.stringify(result),
+          );
           return jsonResponse(result);
         } catch (error) {
           console.error('[api/subscription/verify] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Verification failed' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Verification failed',
+            },
+            500,
           );
         }
       }
 
       // POST /api/subscription/login/start - Start Anthropic Claude OAuth login via AgentSDK
-      if (pathname === '/api/subscription/login/start' && request.method === 'POST') {
+      if (
+        pathname === '/api/subscription/login/start' &&
+        request.method === 'POST'
+      ) {
         try {
-          console.log('[api/subscription/login/start] Starting Claude OAuth login...');
+          console.log(
+            '[api/subscription/login/start] Starting Claude OAuth login...',
+          );
           const state = await startSubscriptionLogin();
           return jsonResponse(state);
         } catch (error) {
           console.error('[api/subscription/login/start] Error:', error);
           return jsonResponse(
-            { status: 'error', error: error instanceof Error ? error.message : 'Login failed' },
-            500
+            {
+              status: 'error',
+              error: error instanceof Error ? error.message : 'Login failed',
+            },
+            500,
           );
         }
       }
 
       // GET /api/subscription/login/status - Poll Anthropic Claude OAuth login state
-      if (pathname === '/api/subscription/login/status' && request.method === 'GET') {
+      if (
+        pathname === '/api/subscription/login/status' &&
+        request.method === 'GET'
+      ) {
         try {
           return jsonResponse(getSubscriptionLoginState());
         } catch (error) {
           console.error('[api/subscription/login/status] Error:', error);
           return jsonResponse(
-            { status: 'error', error: error instanceof Error ? error.message : 'Status check failed' },
-            500
+            {
+              status: 'error',
+              error:
+                error instanceof Error ? error.message : 'Status check failed',
+            },
+            500,
           );
         }
       }
 
       // POST /api/subscription/login/submit - Complete Anthropic Claude OAuth login with a pasted code/callback URL
-      if (pathname === '/api/subscription/login/submit' && request.method === 'POST') {
+      if (
+        pathname === '/api/subscription/login/submit' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json().catch(() => ({})) as { code?: unknown; codeOrUrl?: unknown };
-          const codeOrUrl = typeof payload.codeOrUrl === 'string'
-            ? payload.codeOrUrl
-            : typeof payload.code === 'string'
-              ? payload.code
-              : '';
+          const payload = (await request.json().catch(() => ({}))) as {
+            code?: unknown;
+            codeOrUrl?: unknown;
+          };
+          const codeOrUrl =
+            typeof payload.codeOrUrl === 'string'
+              ? payload.codeOrUrl
+              : typeof payload.code === 'string'
+                ? payload.code
+                : '';
           const state = await submitSubscriptionLoginCode(codeOrUrl);
           return jsonResponse(state);
         } catch (error) {
           console.error('[api/subscription/login/submit] Error:', error);
           return jsonResponse(
-            { status: 'error', error: error instanceof Error ? error.message : 'Submit failed' },
-            500
+            {
+              status: 'error',
+              error: error instanceof Error ? error.message : 'Submit failed',
+            },
+            500,
           );
         }
       }
 
       // POST /api/subscription/login/cancel - Stop an active Anthropic Claude OAuth login attempt
-      if (pathname === '/api/subscription/login/cancel' && request.method === 'POST') {
+      if (
+        pathname === '/api/subscription/login/cancel' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json().catch(() => ({})) as { startedAt?: string | null };
+          const payload = (await request.json().catch(() => ({}))) as {
+            startedAt?: string | null;
+          };
           const state = cancelSubscriptionLogin(payload.startedAt);
           return jsonResponse(state);
         } catch (error) {
           console.error('[api/subscription/login/cancel] Error:', error);
           return jsonResponse(
-            { status: 'error', error: error instanceof Error ? error.message : 'Cancel failed' },
-            500
+            {
+              status: 'error',
+              error: error instanceof Error ? error.message : 'Cancel failed',
+            },
+            500,
           );
         }
       }
 
-
-      const qrCodeAssetResponse = await handleQrCodeAssetRoute(pathname, request);
+      const qrCodeAssetResponse = await handleQrCodeAssetRoute(
+        pathname,
+        request,
+      );
       if (qrCodeAssetResponse) return qrCodeAssetResponse;
 
       // ============= END PROVIDER VERIFICATION API =============
 
-      const sessionConfigRouteResponse = await handleSessionConfigRoute(pathname, request);
+      const sessionConfigRouteResponse = await handleSessionConfigRoute(
+        pathname,
+        request,
+      );
       if (sessionConfigRouteResponse) {
         return sessionConfigRouteResponse;
       }
@@ -3724,8 +5279,14 @@ async function main() {
         } catch (error) {
           console.error('[api/proxy/set] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to set proxy config' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to set proxy config',
+            },
+            500,
           );
         }
       }
@@ -3740,8 +5301,14 @@ async function main() {
         } catch (error) {
           console.error('[api/mcp] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to get MCP servers' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to get MCP servers',
+            },
+            500,
           );
         }
       }
@@ -3751,24 +5318,30 @@ async function main() {
       // For custom MCP: check if command exists
       if (pathname === '/api/mcp/enable' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             server: McpServerDefinition;
           };
 
           const server = payload.server;
           if (!server) {
-            return jsonResponse({ success: false, error: 'Missing server' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing server' },
+              400,
+            );
           }
 
           // Resolve sentinel commands to display names for logs, so
-          // __bundled_cuse__ / __builtin__ never leak into unified logs or
+          // internal command markers never leak into unified logs or
           // user-facing error surfaces.
-          const displayCommand = server.command === '__builtin__'
-            ? '(builtin)'
-            : server.command === '__bundled_cuse__'
-              ? 'cuse'
-              : server.command === '__browser_host__' ? '(browser-host)' : server.command;
-          console.log(`[api/mcp/enable] Enabling MCP: ${server.id}, type: ${server.type}, command: ${displayCommand}`);
+          const displayCommand =
+            server.command === '__builtin__'
+              ? '(builtin)'
+              : server.command === '__browser_host__'
+                ? '(browser-host)'
+                : server.command;
+          console.log(
+            `[api/mcp/enable] Enabling MCP: ${server.id}, type: ${server.type}, command: ${displayCommand}`,
+          );
 
           // Built-in MCP (in-process) — delegate validation to registry.
           // getBuiltinMcpInstance() force-loads the tool module (SDK+zod) on
@@ -3784,34 +5357,19 @@ async function main() {
                 }
               }
             }
-            console.log(`[api/mcp/enable] Built-in MCP: ${server.id} — enabled`);
+            console.log(
+              `[api/mcp/enable] Built-in MCP: ${server.id} — enabled`,
+            );
             return jsonResponse({ success: true });
           }
 
-          if (server.id === MANAGED_BROWSER_MCP_ID && server.command === '__browser_host__') {
-            console.log('[api/mcp/enable] Browser uses the application Browser Host');
-            return jsonResponse({ success: true });
-          }
-
-          // Bundled cuse (computer-use) binary — resolve the sentinel to
-          // the real path via runtime helper. This is the primary enable
-          // path hit by the Settings UI toggle, so it MUST short-circuit
-          // the generic `which` preflight below (which would fail with a
-          // sentinel-leaking "命令 __bundled_cuse__ 未找到" error).
-          if (server.command === '__bundled_cuse__') {
-            const { getBundledCusePath } = await import('./utils/runtime');
-            const cusePath = getBundledCusePath();
-            if (!cusePath) {
-              return jsonResponse({
-                success: false,
-                error: {
-                  type: 'command_not_found',
-                  command: 'cuse',
-                  message: `Cuse 二进制未安装 (platform=${process.platform})。仅支持 macOS 与 Windows。`,
-                },
-              });
-            }
-            console.log(`[api/mcp/enable] Bundled cuse: ${server.id} — resolved to ${cusePath}`);
+          if (
+            server.id === MANAGED_BROWSER_MCP_ID &&
+            server.command === '__browser_host__'
+          ) {
+            console.log(
+              '[api/mcp/enable] Browser uses the application Browser Host',
+            );
             return jsonResponse({ success: true });
           }
 
@@ -3820,19 +5378,24 @@ async function main() {
             if (!server.url) {
               return jsonResponse({
                 success: false,
-                error: { type: 'connection_failed', message: '缺少服务器 URL' }
+                error: { type: 'connection_failed', message: '缺少服务器 URL' },
               });
             }
 
             try {
-              const { resolveRemoteMcpTransportConfig } = await import('./session-core/mcp-template-resolution');
+              const { resolveRemoteMcpTransportConfig } = await import(
+                './session-core/mcp-template-resolution'
+              );
               const remote = resolveRemoteMcpTransportConfig(server);
               const controller = new AbortController();
               const timeout = setTimeout(() => controller.abort(), 15000);
 
               const headers: Record<string, string> = {
                 // Streamable HTTP 规范要求同时声明两种格式；SSE 只需 event-stream
-                'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
+                Accept:
+                  server.type === 'sse'
+                    ? 'text/event-stream'
+                    : 'application/json, text/event-stream',
                 // Request uncompressed response to avoid ZlibError.
                 // Some servers (e.g., behind WAF/CDN like Huawei Cloud) return
                 // content-encoding: gzip with a non-compressed body, causing Bun's
@@ -3873,7 +5436,13 @@ async function main() {
 
               // Helper: abort the underlying connection to prevent resource leaks
               // (especially important for SSE — the response is an infinite stream).
-              const cleanup = () => { try { controller.abort(); } catch { /* ignore abort errors */ } };
+              const cleanup = () => {
+                try {
+                  controller.abort();
+                } catch {
+                  /* ignore abort errors */
+                }
+              };
 
               // Check HTTP status
               if (response.status === 401 || response.status === 403) {
@@ -3883,7 +5452,7 @@ async function main() {
                   error: {
                     type: 'connection_failed',
                     message: `认证失败 (HTTP ${response.status})，请检查 Headers 配置`,
-                  }
+                  },
                 });
               }
 
@@ -3894,22 +5463,23 @@ async function main() {
                   error: {
                     type: 'connection_failed',
                     message: `端点不存在 (HTTP 404)，请检查 URL 是否正确`,
-                  }
+                  },
                 });
               }
 
               if (response.status === 405) {
                 // 405 Method Not Allowed: protocol mismatch
                 cleanup();
-                const hint = server.type === 'sse'
-                  ? '。该端点不支持 GET，可能是 Streamable HTTP 端点，请尝试切换传输协议'
-                  : '。该端点不支持 POST，可能是 SSE 端点，请尝试切换传输协议';
+                const hint =
+                  server.type === 'sse'
+                    ? '。该端点不支持 GET，可能是 Streamable HTTP 端点，请尝试切换传输协议'
+                    : '。该端点不支持 POST，可能是 SSE 端点，请尝试切换传输协议';
                 return jsonResponse({
                   success: false,
                   error: {
                     type: 'connection_failed',
                     message: `请求方法不被允许 (HTTP 405)${hint}`,
-                  }
+                  },
                 });
               }
 
@@ -3917,17 +5487,24 @@ async function main() {
                 // 尝试读取 response body 以获取更具体的错误信息
                 let detail = '';
                 try {
-                  const body = await response.json() as Record<string, unknown>;
-                  const raw = String(body.message || body.msg || body.error || '');
+                  const body = (await response.json()) as Record<
+                    string,
+                    unknown
+                  >;
+                  const raw = String(
+                    body.message || body.msg || body.error || '',
+                  );
                   detail = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
-                } catch { /* body 不是 JSON，忽略 */ }
+                } catch {
+                  /* body 不是 JSON，忽略 */
+                }
                 cleanup();
                 return jsonResponse({
                   success: false,
                   error: {
                     type: 'connection_failed',
                     message: `服务器返回错误 (HTTP ${response.status})${detail ? '：' + detail : ''}`,
-                  }
+                  },
                 });
               }
 
@@ -3941,15 +5518,17 @@ async function main() {
                 // SSE endpoint should return text/event-stream
                 if (!contentType.includes('text/event-stream')) {
                   // If the URL returns JSON, it's likely a Streamable HTTP endpoint
-                  const hint = contentType.includes('application/json') || contentType.includes('text/html')
-                    ? '。该 URL 可能是 Streamable HTTP 端点，请尝试切换传输协议为 "Streamable HTTP"'
-                    : '';
+                  const hint =
+                    contentType.includes('application/json') ||
+                    contentType.includes('text/html')
+                      ? '。该 URL 可能是 Streamable HTTP 端点，请尝试切换传输协议为 "Streamable HTTP"'
+                      : '';
                   return jsonResponse({
                     success: false,
                     error: {
                       type: 'connection_failed',
                       message: `服务器返回的内容类型不是 SSE (${contentType || 'unknown'})${hint}`,
-                    }
+                    },
                   });
                 }
               } else {
@@ -3961,7 +5540,9 @@ async function main() {
                   try {
                     const text = await response.text();
                     cleanup();
-                    const dataLine = text.split('\n').find(l => l.startsWith('data:'));
+                    const dataLine = text
+                      .split('\n')
+                      .find((l) => l.startsWith('data:'));
                     if (dataLine) {
                       const body = JSON.parse(dataLine.slice(5));
                       if (!body.jsonrpc && !body.result && !body.error) {
@@ -3969,8 +5550,9 @@ async function main() {
                           success: false,
                           error: {
                             type: 'connection_failed',
-                            message: '服务器 SSE 响应中的数据不是有效的 JSON-RPC 格式',
-                          }
+                            message:
+                              '服务器 SSE 响应中的数据不是有效的 JSON-RPC 格式',
+                          },
                         });
                       }
                     }
@@ -3981,8 +5563,9 @@ async function main() {
                       success: false,
                       error: {
                         type: 'connection_failed',
-                        message: '无法解析服务器的 SSE 响应，请检查 URL 和传输协议',
-                      }
+                        message:
+                          '无法解析服务器的 SSE 响应，请检查 URL 和传输协议',
+                      },
                     });
                   }
                 } else {
@@ -3995,8 +5578,9 @@ async function main() {
                         success: false,
                         error: {
                           type: 'connection_failed',
-                          message: '服务器响应不是有效的 JSON-RPC 格式，请检查 URL 和传输协议',
-                        }
+                          message:
+                            '服务器响应不是有效的 JSON-RPC 格式，请检查 URL 和传输协议',
+                        },
                       });
                     }
                   } catch {
@@ -4006,34 +5590,51 @@ async function main() {
                       error: {
                         type: 'connection_failed',
                         message: `服务器响应不是有效的 JSON 格式 (${contentType || 'unknown'})`,
-                      }
+                      },
                     });
                   }
                 }
               }
 
-              console.log(`[api/mcp/enable] Remote MCP validated: ${server.id} (${server.type}) → ${server.url}`);
+              console.log(
+                `[api/mcp/enable] Remote MCP validated: ${server.id} (${server.type}) → ${server.url}`,
+              );
               return jsonResponse({ success: true });
-
             } catch (err: unknown) {
               const error = err instanceof Error ? err : new Error(String(err));
-              console.error(`[api/mcp/enable] Remote MCP validation failed: ${server.id}`, error.message);
+              console.error(
+                `[api/mcp/enable] Remote MCP validation failed: ${server.id}`,
+                error.message,
+              );
 
               let message: string;
               if (error.name === 'AbortError') {
-                message = '连接超时（15秒），请检查 URL 是否正确或服务器是否可达';
-              } else if (error.message.includes('ENOTFOUND') || error.message.includes('getaddrinfo')) {
+                message =
+                  '连接超时（15秒），请检查 URL 是否正确或服务器是否可达';
+              } else if (
+                error.message.includes('ENOTFOUND') ||
+                error.message.includes('getaddrinfo')
+              ) {
                 message = 'DNS 解析失败，请检查 URL 域名是否正确';
               } else if (error.message.includes('ECONNREFUSED')) {
                 message = '连接被拒绝，请检查服务器是否在运行';
               } else if (error.message.includes('ECONNRESET')) {
                 message = '连接被重置，请检查网络或服务器状态';
-              } else if (error.message.includes('certificate') || error.message.includes('SSL') || error.message.includes('TLS')) {
+              } else if (
+                error.message.includes('certificate') ||
+                error.message.includes('SSL') ||
+                error.message.includes('TLS')
+              ) {
                 message = 'SSL/TLS 证书错误，请检查服务器证书配置';
-              } else if (error.message.includes('Zlib') || error.message.includes('Decompression')) {
+              } else if (
+                error.message.includes('Zlib') ||
+                error.message.includes('Decompression')
+              ) {
                 // WAF/CDN may return content-encoding: gzip with non-compressed body.
                 // Bun's fetch auto-decompression crashes. Skip validation and let SDK handle it.
-                console.warn(`[api/mcp/enable] ZlibError during validation (WAF/CDN issue), allowing MCP: ${server.id}`);
+                console.warn(
+                  `[api/mcp/enable] ZlibError during validation (WAF/CDN issue), allowing MCP: ${server.id}`,
+                );
                 return jsonResponse({ success: true });
               } else {
                 message = `连接失败: ${error.message}`;
@@ -4041,7 +5642,7 @@ async function main() {
 
               return jsonResponse({
                 success: false,
-                error: { type: 'connection_failed', message }
+                error: { type: 'connection_failed', message },
               });
             }
           }
@@ -4052,7 +5653,9 @@ async function main() {
 
             // Preset MCP (isBuiltin: true) with npx → warmup to download and cache package
             if (server.isBuiltin && command === 'npx') {
-              const { resolveNpxMcpInvocation } = await import('./utils/mcp-command');
+              const { resolveNpxMcpInvocation } = await import(
+                './utils/mcp-command'
+              );
               const invocation = resolveNpxMcpInvocation(server.args || [], {
                 pinPresetPackages: true,
               });
@@ -4061,7 +5664,9 @@ async function main() {
               // The npx resolver already projects Windows to node.exe +
               // npx-cli.js because managed Codex owns its final native spawn;
               // the adapter remains the single stream/error lifecycle owner.
-              const { spawn: wrappedSpawn } = await import('./utils/subprocess');
+              const { spawn: wrappedSpawn } = await import(
+                './utils/subprocess'
+              );
               const { getShellEnv } = await import('./utils/shell');
               const baseEnv = getShellEnv();
 
@@ -4073,7 +5678,9 @@ async function main() {
               if (!(baseEnv[pathKey] || '').split(sep).includes(npxDir)) {
                 baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
               }
-              console.log(`[api/mcp/enable] Warming up via ${invocation.source} npx: ${warmupArgs.join(' ')}`);
+              console.log(
+                `[api/mcp/enable] Warming up via ${invocation.source} npx: ${warmupArgs.join(' ')}`,
+              );
 
               const handle = wrappedSpawn([warmupCmd, ...warmupArgs], {
                 env: baseEnv,
@@ -4096,8 +5703,9 @@ async function main() {
                     if (done) break;
                     stderr += decoder.decode(value, { stream: true });
                   }
-                } catch { /* ignore — process exit will settle handle.exited */ }
-                finally {
+                } catch {
+                  /* ignore — process exit will settle handle.exited */
+                } finally {
                   reader.releaseLock();
                 }
               })();
@@ -4108,7 +5716,11 @@ async function main() {
               let timedOut = false;
               const timer = setTimeout(() => {
                 timedOut = true;
-                try { handle.kill('SIGTERM'); } catch { /* ignore */ }
+                try {
+                  handle.kill('SIGTERM');
+                } catch {
+                  /* ignore */
+                }
               }, 120000);
 
               const code = await handle.exited;
@@ -4144,23 +5756,27 @@ async function main() {
               // Check stderr for real errors (package not found, network issues, etc.)
               const stderrLower = stderr.toLowerCase();
               const networkKeywords = [
-                'enotfound',     // DNS resolution failed
-                'etimedout',     // Connection timeout
-                'econnrefused',  // Connection refused
-                'econnreset',    // Connection reset
-                'proxy error',   // Proxy failures
+                'enotfound', // DNS resolution failed
+                'etimedout', // Connection timeout
+                'econnrefused', // Connection refused
+                'econnreset', // Connection reset
+                'proxy error', // Proxy failures
                 'proxy authentication', // Proxy auth required
-                'bad gateway',   // Proxy 502
-                'socket hang up',// Connection dropped
+                'bad gateway', // Proxy 502
+                'socket hang up', // Connection dropped
               ];
               const packageKeywords = [
-                '404',                // HTTP 404 not found
-                'package not found',  // npm/npx package resolution
-                'module not found',   // Module resolution failure
-                'err!',               // npm error indicator
+                '404', // HTTP 404 not found
+                'package not found', // npm/npx package resolution
+                'module not found', // Module resolution failure
+                'err!', // npm error indicator
               ];
-              const isNetworkError = networkKeywords.some(kw => stderrLower.includes(kw));
-              const isPackageError = packageKeywords.some(kw => stderrLower.includes(kw));
+              const isNetworkError = networkKeywords.some((kw) =>
+                stderrLower.includes(kw),
+              );
+              const isPackageError = packageKeywords.some((kw) =>
+                stderrLower.includes(kw),
+              );
 
               if (isNetworkError) {
                 return jsonResponse({
@@ -4198,33 +5814,40 @@ async function main() {
             const checkCmd = process.platform === 'win32' ? 'where' : 'which';
 
             return new Promise<Response>((resolve) => {
-              const proc = spawn(checkCmd, [command], { stdio: 'ignore', env: getShellEnv() });
-
-              proc.on('error', () => {
-                resolve(jsonResponse({
-                  success: false,
-                  error: {
-                    type: 'command_not_found',
-                    command,
-                    message: `命令 "${command}" 未找到`,
-                    ...getCommandDownloadInfo(command),
-                  }
-                }));
+              const proc = spawn(checkCmd, [command], {
+                stdio: 'ignore',
+                env: getShellEnv(),
               });
 
-              proc.on('close', (code) => {
-                if (code === 0) {
-                  resolve(jsonResponse({ success: true }));
-                } else {
-                  resolve(jsonResponse({
+              proc.on('error', () => {
+                resolve(
+                  jsonResponse({
                     success: false,
                     error: {
                       type: 'command_not_found',
                       command,
                       message: `命令 "${command}" 未找到`,
                       ...getCommandDownloadInfo(command),
-                    }
-                  }));
+                    },
+                  }),
+                );
+              });
+
+              proc.on('close', (code) => {
+                if (code === 0) {
+                  resolve(jsonResponse({ success: true }));
+                } else {
+                  resolve(
+                    jsonResponse({
+                      success: false,
+                      error: {
+                        type: 'command_not_found',
+                        command,
+                        message: `命令 "${command}" 未找到`,
+                        ...getCommandDownloadInfo(command),
+                      },
+                    }),
+                  );
                 }
               });
             });
@@ -4234,13 +5857,16 @@ async function main() {
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/mcp/enable] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: {
-              type: 'unknown',
-              message: error instanceof Error ? error.message : '启用失败',
-            }
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error: {
+                type: 'unknown',
+                message: error instanceof Error ? error.message : '启用失败',
+              },
+            },
+            500,
+          );
         }
       }
 
@@ -4248,12 +5874,15 @@ async function main() {
       // Auto-routes to external runtime (CC/Codex) when active, otherwise uses builtin SDK handler.
       if (pathname === '/api/permission/respond' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             requestId: string;
             decision: 'deny' | 'allow_once' | 'always_allow';
           };
 
-          const success = await getPermissionResponseEngine().respondPermission(payload.requestId, payload.decision);
+          const success = await getPermissionResponseEngine().respondPermission(
+            payload.requestId,
+            payload.decision,
+          );
 
           return jsonResponse({ success });
         } catch (error) {
@@ -4265,11 +5894,14 @@ async function main() {
       // POST /api/ask-user-question/respond - Handle user's answers to AskUserQuestion
       // Auto-routes to external runtime (CC) when the request was originated there, otherwise
       // uses builtin SDK handler. External-runtime tracking lives in external-session.ts.
-      if (pathname === '/api/ask-user-question/respond' && request.method === 'POST') {
+      if (
+        pathname === '/api/ask-user-question/respond' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             requestId: string;
-            answers: Record<string, string> | null;  // null means user cancelled
+            answers: Record<string, string> | null; // null means user cancelled
           };
 
           // Route by pending-request ownership, NOT live session state
@@ -4278,8 +5910,9 @@ async function main() {
           // the builtin handler would return "unknown request" and silently
           // lose the user's input. External handler returns false + logs on
           // process-gone, surfacing the failure to the UI.
-          const success = await getAskUserQuestionResponseEngine(payload.requestId)
-            .respondAskUserQuestion(payload.requestId, payload.answers);
+          const success = await getAskUserQuestionResponseEngine(
+            payload.requestId,
+          ).respondAskUserQuestion(payload.requestId, payload.answers);
 
           return jsonResponse({ success });
         } catch (error) {
@@ -4290,18 +5923,32 @@ async function main() {
       // POST /api/exit-plan-mode/respond - Handle user's approval/rejection of ExitPlanMode.
       // `feedback` (optional, issue #182): user's modification comment used as
       // deny.message when rejecting, so the AI revises the plan in the same turn.
-      if (pathname === '/api/exit-plan-mode/respond' && request.method === 'POST') {
+      if (
+        pathname === '/api/exit-plan-mode/respond' &&
+        request.method === 'POST'
+      ) {
         try {
-          const raw = await request.json() as Record<string, unknown>;
+          const raw = (await request.json()) as Record<string, unknown>;
           // Runtime validation — typed `as ExitPlanModeResponse` cast accepts
           // truthy strings like `approved: "false"` which would silently
           // approve the plan (review-by-codex finding). Validate explicitly.
-          if (typeof raw?.requestId !== 'string' || typeof raw?.approved !== 'boolean'
-              || (raw.feedback !== undefined && typeof raw.feedback !== 'string')) {
-            return jsonResponse({ success: false, error: 'invalid payload' }, 400);
+          if (
+            typeof raw?.requestId !== 'string' ||
+            typeof raw?.approved !== 'boolean' ||
+            (raw.feedback !== undefined && typeof raw.feedback !== 'string')
+          ) {
+            return jsonResponse(
+              { success: false, error: 'invalid payload' },
+              400,
+            );
           }
-          const success = await getPlanApprovalResponseEngine(raw.requestId)
-            .respondPlanApproval(raw.requestId, raw.approved, raw.feedback as string | undefined);
+          const success = await getPlanApprovalResponseEngine(
+            raw.requestId,
+          ).respondPlanApproval(
+            raw.requestId,
+            raw.approved,
+            raw.feedback as string | undefined,
+          );
           return jsonResponse({ success });
         } catch (error) {
           console.error('[api/exit-plan-mode] Error:', error);
@@ -4310,19 +5957,33 @@ async function main() {
       }
 
       // POST /api/enter-plan-mode/respond - Handle user's approval/rejection of EnterPlanMode
-      if (pathname === '/api/enter-plan-mode/respond' && request.method === 'POST') {
+      if (
+        pathname === '/api/enter-plan-mode/respond' &&
+        request.method === 'POST'
+      ) {
         try {
-          const raw = await request.json() as Record<string, unknown>;
+          const raw = (await request.json()) as Record<string, unknown>;
           // Runtime validation — match the exit-plan-mode endpoint's defense
           // (review-by-cc finding: parallel endpoint had unsafe cast). A
           // payload like `{requestId:"x", approved:"false"}` would otherwise
           // pass the cast and `approved` would be the truthy string,
           // silently entering plan mode against user intent.
-          if (typeof raw?.requestId !== 'string' || typeof raw?.approved !== 'boolean') {
-            return jsonResponse({ success: false, error: 'invalid payload' }, 400);
+          if (
+            typeof raw?.requestId !== 'string' ||
+            typeof raw?.approved !== 'boolean'
+          ) {
+            return jsonResponse(
+              { success: false, error: 'invalid payload' },
+              400,
+            );
           }
-          const { handleEnterPlanModeResponse } = await import('./agent-session');
-          const success = handleEnterPlanModeResponse(raw.requestId, raw.approved);
+          const { handleEnterPlanModeResponse } = await import(
+            './agent-session'
+          );
+          const success = handleEnterPlanModeResponse(
+            raw.requestId,
+            raw.approved,
+          );
           return jsonResponse({ success });
         } catch (error) {
           console.error('[api/enter-plan-mode] Error:', error);
@@ -4335,23 +5996,41 @@ async function main() {
       // POST /api/mcp/oauth/discover - Probe MCP server for OAuth requirements
       if (pathname === '/api/mcp/oauth/discover' && request.method === 'POST') {
         try {
-          const payload = await request.json() as { serverId: string; mcpUrl: string; forceRefresh?: boolean };
+          const payload = (await request.json()) as {
+            serverId: string;
+            mcpUrl: string;
+            forceRefresh?: boolean;
+          };
           if (!payload.serverId || !payload.mcpUrl) {
-            return jsonResponse({ success: false, error: 'Missing serverId or mcpUrl' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing serverId or mcpUrl' },
+              400,
+            );
           }
           const { probeOAuthRequirement } = await import('./mcp-oauth');
-          const result = await probeOAuthRequirement(payload.serverId, payload.mcpUrl, payload.forceRefresh);
+          const result = await probeOAuthRequirement(
+            payload.serverId,
+            payload.mcpUrl,
+            payload.forceRefresh,
+          );
           return jsonResponse({ success: true, ...result });
         } catch (error) {
           console.error('[api/mcp/oauth/discover] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Discovery failed' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Discovery failed',
+            },
+            500,
+          );
         }
       }
 
       // POST /api/mcp/oauth/start - Start OAuth flow (auto or manual mode)
       if (pathname === '/api/mcp/oauth/start' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             serverId: string;
             serverUrl: string;
             // Manual mode fields (all optional — omit for auto mode)
@@ -4364,18 +6043,23 @@ async function main() {
           };
 
           if (!payload.serverId || !payload.serverUrl) {
-            return jsonResponse({ success: false, error: 'Missing serverId or serverUrl' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing serverId or serverUrl' },
+              400,
+            );
           }
 
           const { authorizeServer } = await import('./mcp-oauth');
-          const manualConfig = payload.clientId ? {
-            clientId: payload.clientId,
-            clientSecret: payload.clientSecret,
-            scopes: payload.scopes,
-            callbackPort: payload.callbackPort,
-            authorizationUrl: payload.authorizationUrl,
-            tokenUrl: payload.tokenUrl,
-          } : undefined;
+          const manualConfig = payload.clientId
+            ? {
+                clientId: payload.clientId,
+                clientSecret: payload.clientSecret,
+                scopes: payload.scopes,
+                callbackPort: payload.callbackPort,
+                authorizationUrl: payload.authorizationUrl,
+                tokenUrl: payload.tokenUrl,
+              }
+            : undefined;
 
           const { authUrl, waitForCompletion } = await authorizeServer(
             payload.serverId,
@@ -4386,9 +6070,13 @@ async function main() {
           // Don't await completion — return the auth URL immediately
           waitForCompletion.then((success) => {
             if (success) {
-              console.log(`[api/mcp/oauth] Authorization completed for ${payload.serverId}`);
+              console.log(
+                `[api/mcp/oauth] Authorization completed for ${payload.serverId}`,
+              );
             } else {
-              console.warn(`[api/mcp/oauth] Authorization failed or cancelled for ${payload.serverId}`);
+              console.warn(
+                `[api/mcp/oauth] Authorization failed or cancelled for ${payload.serverId}`,
+              );
             }
           });
 
@@ -4396,22 +6084,34 @@ async function main() {
         } catch (error) {
           console.error('[api/mcp/oauth/start] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to start OAuth flow' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to start OAuth flow',
+            },
+            500,
           );
         }
       }
 
       // GET /api/mcp/oauth/status/:serverId - Get OAuth status
-      if (pathname.startsWith('/api/mcp/oauth/status/') && request.method === 'GET') {
+      if (
+        pathname.startsWith('/api/mcp/oauth/status/') &&
+        request.method === 'GET'
+      ) {
         try {
-          const serverId = decodeURIComponent(pathname.slice('/api/mcp/oauth/status/'.length));
+          const serverId = decodeURIComponent(
+            pathname.slice('/api/mcp/oauth/status/'.length),
+          );
           const { getOAuthStatus } = await import('./mcp-oauth');
           const result = getOAuthStatus(serverId);
           return jsonResponse({
             success: true,
             status: result.status,
-            hasToken: result.status === 'connected' || result.status === 'expired',
+            hasToken:
+              result.status === 'connected' || result.status === 'expired',
             expiresAt: result.expiresAt,
             scope: result.scope,
           });
@@ -4424,7 +6124,7 @@ async function main() {
       // POST /api/mcp/oauth/refresh - Manually refresh OAuth token
       if (pathname === '/api/mcp/oauth/refresh' && request.method === 'POST') {
         try {
-          const payload = await request.json() as { serverId: string };
+          const payload = (await request.json()) as { serverId: string };
           const { manualRefreshToken } = await import('./mcp-oauth');
           const refreshed = await manualRefreshToken(payload.serverId);
           return jsonResponse({ success: refreshed, refreshed });
@@ -4437,7 +6137,7 @@ async function main() {
       // DELETE /api/mcp/oauth/token - Revoke OAuth authorization
       if (pathname === '/api/mcp/oauth/token' && request.method === 'DELETE') {
         try {
-          const payload = await request.json() as { serverId: string };
+          const payload = (await request.json()) as { serverId: string };
           const { revokeAuthorization } = await import('./mcp-oauth');
           await revokeAuthorization(payload.serverId);
           return jsonResponse({ success: true });
@@ -4459,17 +6159,24 @@ async function main() {
             getSessionEngine().getCurrentSessionContext().sessionId,
           );
           if (scopeError) return jsonResponse(scopeError, 409);
-          const payload = pathname === '/api/admin/status'
-            ? {}
-            : await request.json().catch(() => ({})) as Record<string, unknown>;
+          const payload =
+            pathname === '/api/admin/status'
+              ? {}
+              : ((await request.json().catch(() => ({}))) as Record<
+                  string,
+                  unknown
+                >);
 
           const result = await routeAdminApi(pathname, payload, request.signal);
           return jsonResponse(result, result.success ? 200 : 400);
         } catch (error) {
           console.error(`[admin] ${pathname} error:`, error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Admin API error' },
-            500
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Admin API error',
+            },
+            500,
           );
         }
       }
@@ -4478,7 +6185,6 @@ async function main() {
       // ============= SLASH COMMANDS API =============
 
       // ============= CLAUDE.md API =============
-
 
       // Security: Validate item names to prevent path traversal attacks
       // Supports Unicode (Chinese, Japanese, etc.) while maintaining security
@@ -4522,7 +6228,10 @@ async function main() {
         try {
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
@@ -4530,14 +6239,18 @@ async function main() {
             return jsonResponse({ success: true, files: [] });
           }
           const files = readdirSync(rulesDir)
-            .filter(f => f.endsWith('.md'))
+            .filter((f) => f.endsWith('.md'))
             .sort();
           return jsonResponse({ success: true, files });
         } catch (error) {
           console.error('[api/rules] Error listing:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to list rules' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Failed to list rules',
+            },
+            500,
           );
         }
       }
@@ -4545,9 +6258,15 @@ async function main() {
       // POST /api/rules - Create a new rule file
       if (pathname === '/api/rules' && request.method === 'POST') {
         try {
-          const payload = await request.json() as { name: string; content?: string };
+          const payload = (await request.json()) as {
+            name: string;
+            content?: string;
+          };
           if (!payload.name || !payload.name.trim()) {
-            return jsonResponse({ success: false, error: 'Name is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Name is required' },
+              400,
+            );
           }
           // Ensure .md suffix
           let filename = payload.name.trim();
@@ -4556,44 +6275,74 @@ async function main() {
           }
           const nameWithoutExt = filename.replace(/\.md$/, '');
           if (!isValidItemName(nameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid file name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid file name' },
+              400,
+            );
           }
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
           ensureDirSync(rulesDir);
           const filePath = join(rulesDir, filename);
           if (existsSync(filePath)) {
-            return jsonResponse({ success: false, error: 'File already exists' }, 409);
+            return jsonResponse(
+              { success: false, error: 'File already exists' },
+              409,
+            );
           }
           writeFileSync(filePath, payload.content || '', 'utf-8');
           return jsonResponse({ success: true, filename });
         } catch (error) {
           console.error('[api/rules] Error creating:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to create rule file' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to create rule file',
+            },
+            500,
           );
         }
       }
 
       // PUT /api/rules/:filename/rename - Rename a rule file
-      if (pathname.startsWith('/api/rules/') && pathname.endsWith('/rename') && request.method === 'PUT') {
+      if (
+        pathname.startsWith('/api/rules/') &&
+        pathname.endsWith('/rename') &&
+        request.method === 'PUT'
+      ) {
         try {
-          const filename = decodeURIComponent(pathname.slice('/api/rules/'.length, -'/rename'.length));
+          const filename = decodeURIComponent(
+            pathname.slice('/api/rules/'.length, -'/rename'.length),
+          );
           if (!filename || !filename.endsWith('.md')) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const oldNameWithoutExt = filename.replace(/\.md$/, '');
           if (!isValidItemName(oldNameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
-          const payload = await request.json() as { newName: string };
+          const payload = (await request.json()) as { newName: string };
           if (!payload.newName || !payload.newName.trim()) {
-            return jsonResponse({ success: false, error: 'New name is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'New name is required' },
+              400,
+            );
           }
           let newFilename = payload.newName.trim();
           if (!newFilename.endsWith('.md')) {
@@ -4601,29 +6350,47 @@ async function main() {
           }
           const newNameWithoutExt = newFilename.replace(/\.md$/, '');
           if (!isValidItemName(newNameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid new file name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid new file name' },
+              400,
+            );
           }
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
           const oldPath = join(rulesDir, filename);
           const newPath = join(rulesDir, newFilename);
           if (!existsSync(oldPath)) {
-            return jsonResponse({ success: false, error: 'File not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'File not found' },
+              404,
+            );
           }
           if (existsSync(newPath)) {
-            return jsonResponse({ success: false, error: 'Target filename already exists' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Target filename already exists' },
+              409,
+            );
           }
           renameSync(oldPath, newPath);
           return jsonResponse({ success: true, filename: newFilename });
         } catch (error) {
           console.error('[api/rules] Error renaming:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to rename rule file' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to rename rule file',
+            },
+            500,
           );
         }
       }
@@ -4631,17 +6398,28 @@ async function main() {
       // GET /api/rules/:filename - Read a rule file
       if (pathname.startsWith('/api/rules/') && request.method === 'GET') {
         try {
-          const filename = decodeURIComponent(pathname.slice('/api/rules/'.length));
+          const filename = decodeURIComponent(
+            pathname.slice('/api/rules/'.length),
+          );
           if (!filename || !filename.endsWith('.md')) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const nameWithoutExt = filename.replace(/\.md$/, '');
           if (!isValidItemName(nameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
@@ -4654,8 +6432,14 @@ async function main() {
         } catch (error) {
           console.error('[api/rules] Error reading:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to read rule file' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to read rule file',
+            },
+            500,
           );
         }
       }
@@ -4663,21 +6447,35 @@ async function main() {
       // PUT /api/rules/:filename - Update a rule file
       if (pathname.startsWith('/api/rules/') && request.method === 'PUT') {
         try {
-          const filename = decodeURIComponent(pathname.slice('/api/rules/'.length));
+          const filename = decodeURIComponent(
+            pathname.slice('/api/rules/'.length),
+          );
           if (!filename || !filename.endsWith('.md')) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const nameWithoutExt = filename.replace(/\.md$/, '');
           if (!isValidItemName(nameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
-          const payload = await request.json() as { content: string };
+          const payload = (await request.json()) as { content: string };
           if (typeof payload.content !== 'string') {
-            return jsonResponse({ success: false, error: 'Content must be a string' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Content must be a string' },
+              400,
+            );
           }
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
@@ -4688,8 +6486,14 @@ async function main() {
         } catch (error) {
           console.error('[api/rules] Error updating:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to update rule file' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update rule file',
+            },
+            500,
           );
         }
       }
@@ -4697,31 +6501,51 @@ async function main() {
       // DELETE /api/rules/:filename - Delete a rule file
       if (pathname.startsWith('/api/rules/') && request.method === 'DELETE') {
         try {
-          const filename = decodeURIComponent(pathname.slice('/api/rules/'.length));
+          const filename = decodeURIComponent(
+            pathname.slice('/api/rules/'.length),
+          );
           if (!filename || !filename.endsWith('.md')) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const nameWithoutExt = filename.replace(/\.md$/, '');
           if (!isValidItemName(nameWithoutExt)) {
-            return jsonResponse({ success: false, error: 'Invalid filename' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid filename' },
+              400,
+            );
           }
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agentDir' },
+              400,
+            );
           }
           const targetDir = queryAgentDir || currentAgentDir;
           const rulesDir = join(targetDir, '.claude', 'rules');
           const filePath = join(rulesDir, filename);
           if (!existsSync(filePath)) {
-            return jsonResponse({ success: false, error: 'File not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'File not found' },
+              404,
+            );
           }
           unlinkSync(filePath);
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/rules] Error deleting:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to delete rule file' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to delete rule file',
+            },
+            500,
           );
         }
       }
@@ -4739,72 +6563,115 @@ async function main() {
         // If explicit agentDir provided, validate it first
         if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
           // Invalid agentDir, fall back to currentAgentDir
-          console.warn(`[getProjectBaseDirs] Invalid agentDir rejected: ${queryAgentDir}`);
+          console.warn(
+            `[getProjectBaseDirs] Invalid agentDir rejected: ${queryAgentDir}`,
+          );
           queryAgentDir = null;
         }
         // Use validated agentDir if provided, otherwise fall back to currentAgentDir
         const effectiveAgentDir = queryAgentDir || currentAgentDir;
         const hasValidDir = effectiveAgentDir && existsSync(effectiveAgentDir);
         return {
-          skillsDir: hasValidDir ? join(effectiveAgentDir, '.claude', 'skills') : '',
-          commandsDir: hasValidDir ? join(effectiveAgentDir, '.claude', 'commands') : '',
+          skillsDir: hasValidDir
+            ? join(effectiveAgentDir, '.claude', 'skills')
+            : '',
+          commandsDir: hasValidDir
+            ? join(effectiveAgentDir, '.claude', 'commands')
+            : '',
         };
       };
 
       // Default project paths (using currentAgentDir)
       const hasValidAgentDir = currentAgentDir && existsSync(currentAgentDir);
-      const projectSkillsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'skills') : '';
-      const projectCommandsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'commands') : '';
+      const projectSkillsBaseDir = hasValidAgentDir
+        ? join(currentAgentDir, '.claude', 'skills')
+        : '';
+      const projectCommandsBaseDir = hasValidAgentDir
+        ? join(currentAgentDir, '.claude', 'commands')
+        : '';
 
       // GET /api/project-capabilities - authoritative candidate + effective set
       // for the current workspace. Unlike the legacy per-directory endpoints,
       // this resolves MyAgents-managed symlinks back to their global origin,
       // applies project-over-global winner semantics, and keeps disabled cards.
-      if (pathname === '/api/project-capabilities' && request.method === 'GET') {
+      if (
+        pathname === '/api/project-capabilities' &&
+        request.method === 'GET'
+      ) {
         try {
           const queryAgentDir = url.searchParams.get('agentDir');
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid workspace path' },
+              400,
+            );
           }
           const workspacePath = queryAgentDir || currentAgentDir;
           if (!workspacePath) {
-            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Workspace is unavailable' },
+              409,
+            );
           }
           const globalSkillInventory = createGlobalSkillInventorySnapshot();
-          return jsonResponse(projectCapabilitySnapshotForWire(
-            resolveEffectiveProjectCapabilities(workspacePath, {
-              globalSkillInventory,
-            }),
-          ));
+          return jsonResponse(
+            projectCapabilitySnapshotForWire(
+              resolveEffectiveProjectCapabilities(workspacePath, {
+                globalSkillInventory,
+              }),
+            ),
+          );
         } catch (error) {
           console.error('[api/project-capabilities] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to resolve project capabilities',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to resolve project capabilities',
+            },
+            500,
+          );
         }
       }
 
       // POST /api/project-capability/toggle - persist one disabled override on
       // the exact AgentConfig selected by Project.agentId. Runtime replacement
       // intentionally waits for each Session's next turn.
-      if (pathname === '/api/project-capability/toggle' && request.method === 'POST') {
+      if (
+        pathname === '/api/project-capability/toggle' &&
+        request.method === 'POST'
+      ) {
         try {
-          const body = await request.json() as {
+          const body = (await request.json()) as {
             capabilityId?: unknown;
             enabled?: unknown;
             agentDir?: unknown;
           };
-          if (typeof body.capabilityId !== 'string' || typeof body.enabled !== 'boolean') {
-            return jsonResponse({ success: false, error: 'Invalid capability toggle request' }, 400);
+          if (
+            typeof body.capabilityId !== 'string' ||
+            typeof body.enabled !== 'boolean'
+          ) {
+            return jsonResponse(
+              { success: false, error: 'Invalid capability toggle request' },
+              400,
+            );
           }
-          const queryAgentDir = typeof body.agentDir === 'string' ? body.agentDir : null;
+          const queryAgentDir =
+            typeof body.agentDir === 'string' ? body.agentDir : null;
           if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
-            return jsonResponse({ success: false, error: 'Invalid workspace path' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid workspace path' },
+              400,
+            );
           }
           const workspacePath = queryAgentDir || currentAgentDir;
           if (!workspacePath) {
-            return jsonResponse({ success: false, error: 'Workspace is unavailable' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Workspace is unavailable' },
+              409,
+            );
           }
           const snapshot = await setProjectCapabilityEnabled({
             workspacePath,
@@ -4820,16 +6687,31 @@ async function main() {
           // disk authority again at its own turn admission, so a renderer fanout
           // outage must not turn a committed save into a false rollback.
           if (process.env.MYAGENTS_MANAGEMENT_PORT) {
-            void managementApi('/api/app/config-changed', 'POST', {}, { timeoutMs: 2_000 })
-              .catch(error => console.warn('[api/project-capability/toggle] app refresh failed:', error));
+            void managementApi(
+              '/api/app/config-changed',
+              'POST',
+              {},
+              { timeoutMs: 2_000 },
+            ).catch((error) =>
+              console.warn(
+                '[api/project-capability/toggle] app refresh failed:',
+                error,
+              ),
+            );
           }
           return jsonResponse(projectCapabilitySnapshotForWire(snapshot));
         } catch (error) {
           console.error('[api/project-capability/toggle] Error:', error);
-          return jsonResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to save project capability',
-          }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to save project capability',
+            },
+            500,
+          );
         }
       }
 
@@ -4839,11 +6721,15 @@ async function main() {
         try {
           const scope = url.searchParams.get('scope') || 'all';
           const queryAgentDir = url.searchParams.get('agentDir');
-          const { skillsDir: effectiveSkillsDir } = getProjectBaseDirs(queryAgentDir);
+          const { skillsDir: effectiveSkillsDir } =
+            getProjectBaseDirs(queryAgentDir);
           const skillsConfigForList = readSkillsConfig();
-          const globalSkillInventory = (scope === 'all' || scope === 'user')
-            ? createGlobalSkillInventorySnapshot({ rootPath: userSkillsBaseDir })
-            : null;
+          const globalSkillInventory =
+            scope === 'all' || scope === 'user'
+              ? createGlobalSkillInventorySnapshot({
+                  rootPath: userSkillsBaseDir,
+                })
+              : null;
           const skills: Array<{
             name: string;
             description: string;
@@ -4862,7 +6748,10 @@ async function main() {
               const folders = readdirSync(dir, { withFileTypes: true });
               for (const folder of folders) {
                 const folderPath = join(dir, folder.name);
-                if (scopeType === 'project' && isManagedSymlink(folderPath, userSkillsBaseDir)) {
+                if (
+                  scopeType === 'project' &&
+                  isManagedSymlink(folderPath, userSkillsBaseDir)
+                ) {
                   continue;
                 }
                 // isDirEntry follows symlinks + Windows junctions (issue #104).
@@ -4871,9 +6760,12 @@ async function main() {
                 if (!existsSync(skillMdPath)) continue;
 
                 const content = readFileSync(skillMdPath, 'utf-8');
-                const { name, description, author } = parseSkillFrontmatter(content);
-                const systemOwned = scopeType === 'user' && isSystemSkillName(folder.name);
-                const required = scopeType === 'user' && isRequiredSystemSkill(folder.name);
+                const { name, description, author } =
+                  parseSkillFrontmatter(content);
+                const systemOwned =
+                  scopeType === 'user' && isSystemSkillName(folder.name);
+                const required =
+                  scopeType === 'user' && isRequiredSystemSkill(folder.name);
                 skills.push({
                   name: name || folder.name,
                   description: description || '',
@@ -4883,18 +6775,26 @@ async function main() {
                   author,
                   systemOwned,
                   required,
-                  enabled: scopeType === 'project'
-                    || required
-                    || !skillsConfigForList.disabled.includes(folder.name),
+                  enabled:
+                    scopeType === 'project' ||
+                    required ||
+                    !skillsConfigForList.disabled.includes(folder.name),
                 });
               }
             } catch (scanError) {
-              console.warn(`[api/skills] Error scanning ${scopeType} skills:`, scanError);
+              console.warn(
+                `[api/skills] Error scanning ${scopeType} skills:`,
+                scanError,
+              );
             }
           };
 
-          const resolvedProjectSkillsDir = effectiveSkillsDir || projectSkillsBaseDir;
-          if ((scope === 'all' || scope === 'project') && resolvedProjectSkillsDir) {
+          const resolvedProjectSkillsDir =
+            effectiveSkillsDir || projectSkillsBaseDir;
+          if (
+            (scope === 'all' || scope === 'project') &&
+            resolvedProjectSkillsDir
+          ) {
             scanSkills(resolvedProjectSkillsDir, 'project');
           }
           if (scope === 'all' || scope === 'user') {
@@ -4924,45 +6824,75 @@ async function main() {
         } catch (error) {
           console.error('[api/skills] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to list skills' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to list skills',
+            },
+            500,
           );
         }
       }
 
       // POST /api/skill/toggle-enable - Enable/disable a user-level skill
       // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
-      if (pathname === '/api/skill/toggle-enable' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/toggle-enable' &&
+        request.method === 'POST'
+      ) {
         try {
-          const { folderName, enabled } = await request.json() as { folderName: string; enabled: boolean };
+          const { folderName, enabled } = (await request.json()) as {
+            folderName: string;
+            enabled: boolean;
+          };
           if (!folderName || typeof folderName !== 'string') {
-            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid folderName' },
+              400,
+            );
           }
           if (typeof enabled !== 'boolean') {
-            return jsonResponse({ success: false, error: 'Invalid enabled state' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid enabled state' },
+              400,
+            );
           }
           if (!enabled && isRequiredSystemSkill(folderName)) {
-            return jsonResponse({
-              success: false,
-              error: `${folderName} is a required MyAgents system skill and cannot be disabled`,
-            }, 409);
+            return jsonResponse(
+              {
+                success: false,
+                error: `${folderName} is a required MyAgents system skill and cannot be disabled`,
+              },
+              409,
+            );
           }
           const config = readSkillsConfig();
           if (enabled) {
-            config.disabled = config.disabled.filter(n => n !== folderName);
+            config.disabled = config.disabled.filter((n) => n !== folderName);
           } else {
-            if (!config.disabled.includes(folderName)) config.disabled.push(folderName);
+            if (!config.disabled.includes(folderName))
+              config.disabled.push(folderName);
           }
           writeSkillsConfig(config);
           // Re-sync project skill symlinks if this sidecar has an agentDir
           // (Global Sidecar has no agentDir; Tab Sidecars will sync on next /api/commands or /api/skills)
-          if (agentDir) { syncProjectUserConfig(agentDir); }
+          if (agentDir) {
+            syncProjectUserConfig(agentDir);
+          }
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/skill/toggle-enable] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to toggle skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to toggle skill',
+            },
+            500,
           );
         }
       }
@@ -4982,9 +6912,13 @@ async function main() {
           // Users sometimes mount their skills hub into ~/.claude/skills/ via
           // junction too; bare `isDirectory()` would miss them asymmetrically
           // with the myagentsFolders side.
-          const claudeFolders = readdirSync(claudeSkillsDir, { withFileTypes: true })
-            .filter(entry => isDirEntry(entry, join(claudeSkillsDir, entry.name)))
-            .map(entry => entry.name);
+          const claudeFolders = readdirSync(claudeSkillsDir, {
+            withFileTypes: true,
+          })
+            .filter((entry) =>
+              isDirEntry(entry, join(claudeSkillsDir, entry.name)),
+            )
+            .map((entry) => entry.name);
 
           if (claudeFolders.length === 0) {
             return jsonResponse({ canSync: false, count: 0, folders: [] });
@@ -4995,7 +6929,9 @@ async function main() {
           // as existing, preventing sync-from-claude from overwriting them.
           const myagentsFolders = new Set<string>();
           if (existsSync(userSkillsBaseDir)) {
-            const entries = readdirSync(userSkillsBaseDir, { withFileTypes: true });
+            const entries = readdirSync(userSkillsBaseDir, {
+              withFileTypes: true,
+            });
             for (const entry of entries) {
               if (isDirEntry(entry, join(userSkillsBaseDir, entry.name))) {
                 myagentsFolders.add(entry.name);
@@ -5004,40 +6940,67 @@ async function main() {
           }
 
           // Find folders that can be synced (exist in Claude but not in MyAgents)
-          const syncableFolders = claudeFolders.filter(folder => !myagentsFolders.has(folder));
+          const syncableFolders = claudeFolders.filter(
+            (folder) => !myagentsFolders.has(folder),
+          );
 
           return jsonResponse({
             canSync: syncableFolders.length > 0,
             count: syncableFolders.length,
-            folders: syncableFolders
+            folders: syncableFolders,
           });
         } catch (error) {
           console.error('[api/skill/sync-check] Error:', error);
           return jsonResponse(
-            { canSync: false, count: 0, folders: [], error: error instanceof Error ? error.message : 'Check failed' },
-            500
+            {
+              canSync: false,
+              count: 0,
+              folders: [],
+              error: error instanceof Error ? error.message : 'Check failed',
+            },
+            500,
           );
         }
       }
 
       // POST /api/skill/sync-from-claude - Sync skills from Claude Code to MyAgents
       // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
-      if (pathname === '/api/skill/sync-from-claude' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/sync-from-claude' &&
+        request.method === 'POST'
+      ) {
         try {
           const claudeSkillsDir = join(homeDir, '.claude', 'skills');
 
           // Check if Claude Code skills directory exists
           if (!existsSync(claudeSkillsDir)) {
-            return jsonResponse({ success: false, synced: 0, failed: 0, error: 'Claude Code skills directory not found' }, 404);
+            return jsonResponse(
+              {
+                success: false,
+                synced: 0,
+                failed: 0,
+                error: 'Claude Code skills directory not found',
+              },
+              404,
+            );
           }
 
           // Get folders in Claude Code skills directory (follow junctions — issue #104)
-          const claudeFolders = readdirSync(claudeSkillsDir, { withFileTypes: true })
-            .filter(entry => isDirEntry(entry, join(claudeSkillsDir, entry.name)))
-            .map(entry => entry.name);
+          const claudeFolders = readdirSync(claudeSkillsDir, {
+            withFileTypes: true,
+          })
+            .filter((entry) =>
+              isDirEntry(entry, join(claudeSkillsDir, entry.name)),
+            )
+            .map((entry) => entry.name);
 
           if (claudeFolders.length === 0) {
-            return jsonResponse({ success: true, synced: 0, failed: 0, message: 'No skills to sync' });
+            return jsonResponse({
+              success: true,
+              synced: 0,
+              failed: 0,
+              message: 'No skills to sync',
+            });
           }
 
           // Ensure MyAgents skills directory exists
@@ -5047,7 +7010,9 @@ async function main() {
 
           // Get existing folders in MyAgents skills directory (follow junctions — issue #104)
           const myagentsFolders = new Set<string>();
-          const entries = readdirSync(userSkillsBaseDir, { withFileTypes: true });
+          const entries = readdirSync(userSkillsBaseDir, {
+            withFileTypes: true,
+          });
           for (const entry of entries) {
             if (isDirEntry(entry, join(userSkillsBaseDir, entry.name))) {
               myagentsFolders.add(entry.name);
@@ -5055,12 +7020,18 @@ async function main() {
           }
 
           // Find folders that can be synced (filter out invalid folder names for security)
-          const syncableFolders = claudeFolders.filter(folder =>
-            !myagentsFolders.has(folder) && isValidFolderName(folder)
+          const syncableFolders = claudeFolders.filter(
+            (folder) =>
+              !myagentsFolders.has(folder) && isValidFolderName(folder),
           );
 
           if (syncableFolders.length === 0) {
-            return jsonResponse({ success: true, synced: 0, failed: 0, message: 'All skills already exist' });
+            return jsonResponse({
+              success: true,
+              synced: 0,
+              failed: 0,
+              message: 'All skills already exist',
+            });
           }
 
           // Copy each syncable folder
@@ -5077,15 +7048,23 @@ async function main() {
             const destDir = join(userSkillsBaseDir, folder);
 
             try {
-              await copyDirRecursive(srcDir, destDir, '[api/skill/sync-from-claude]');
+              await copyDirRecursive(
+                srcDir,
+                destDir,
+                '[api/skill/sync-from-claude]',
+              );
 
               // Ensure SKILL.md exists — Claude Code may use different file names
               const skillMdPath = join(destDir, 'SKILL.md');
               if (!existsSync(skillMdPath)) {
                 // Sanitize folder name for YAML frontmatter (escape quotes and backslashes)
-                const safeName = folder.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                const safeName = folder
+                  .replace(/\\/g, '\\\\')
+                  .replace(/"/g, '\\"');
                 // Look for any .md file to use as the skill definition
-                const mdFiles = readdirSync(destDir).filter(f => f.endsWith('.md') && f !== 'SKILL.md');
+                const mdFiles = readdirSync(destDir).filter(
+                  (f) => f.endsWith('.md') && f !== 'SKILL.md',
+                );
                 if (mdFiles.length > 0) {
                   // Use the first .md file as SKILL.md source
                   const srcMd = join(destDir, mdFiles[0]);
@@ -5097,43 +7076,62 @@ async function main() {
                     const skillContent = `---\nname: "${safeName}"\ndescription: "Imported from Claude Code"\n---\n\n${mdContent}`;
                     writeFileSync(skillMdPath, skillContent, 'utf-8');
                   }
-                  console.log(`[api/skill/sync-from-claude] Created SKILL.md from ${mdFiles[0]} for "${folder}"`);
+                  console.log(
+                    `[api/skill/sync-from-claude] Created SKILL.md from ${mdFiles[0]} for "${folder}"`,
+                  );
                 } else {
                   // No .md files — create minimal SKILL.md
                   const minimalContent = `---\nname: "${safeName}"\ndescription: "Imported from Claude Code"\n---\n\nSkill imported from Claude Code.\n`;
                   writeFileSync(skillMdPath, minimalContent, 'utf-8');
-                  console.log(`[api/skill/sync-from-claude] Created minimal SKILL.md for "${folder}"`);
+                  console.log(
+                    `[api/skill/sync-from-claude] Created minimal SKILL.md for "${folder}"`,
+                  );
                 }
               }
 
               synced++;
               if (process.env.DEBUG === '1') {
-                console.log(`[api/skill/sync-from-claude] Synced skill "${folder}"`);
+                console.log(
+                  `[api/skill/sync-from-claude] Synced skill "${folder}"`,
+                );
               }
             } catch (copyError) {
               failed++;
-              const errorMsg = copyError instanceof Error ? copyError.message : 'Unknown error';
+              const errorMsg =
+                copyError instanceof Error
+                  ? copyError.message
+                  : 'Unknown error';
               errors.push(`${folder}: ${errorMsg}`);
-              console.error(`[api/skill/sync-from-claude] Failed to copy "${folder}":`, copyError);
+              console.error(
+                `[api/skill/sync-from-claude] Failed to copy "${folder}":`,
+                copyError,
+              );
             }
           }
 
           // Imported user skills — bump generation + sync symlinks into project
           if (synced > 0) {
             bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
+            if (agentDir) {
+              syncProjectUserConfig(agentDir);
+            }
           }
           return jsonResponse({
             success: true,
             synced,
             failed,
-            errors: errors.length > 0 ? errors : undefined
+            errors: errors.length > 0 ? errors : undefined,
           });
         } catch (error) {
           console.error('[api/skill/sync-from-claude] Error:', error);
           return jsonResponse(
-            { success: false, synced: 0, failed: 0, error: error instanceof Error ? error.message : 'Sync failed' },
-            500
+            {
+              success: false,
+              synced: 0,
+              failed: 0,
+              error: error instanceof Error ? error.message : 'Sync failed',
+            },
+            500,
           );
         }
       }
@@ -5141,9 +7139,14 @@ async function main() {
       // GET /api/skill/:name - Get skill detail
       if (pathname.startsWith('/api/skill/') && request.method === 'GET') {
         try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
+          const skillName = decodeURIComponent(
+            pathname.replace('/api/skill/', ''),
+          );
           if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid skill name' },
+              400,
+            );
           }
           const scope = url.searchParams.get('scope') || 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
@@ -5154,13 +7157,17 @@ async function main() {
           const skillPath = join(baseDir, skillName, 'SKILL.md');
 
           if (!existsSync(skillPath)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Skill not found' },
+              404,
+            );
           }
 
           const content = readFileSync(skillPath, 'utf-8');
           const { frontmatter, body } = parseFullSkillContent(content);
           const systemOwned = scope === 'user' && isSystemSkillName(skillName);
-          const required = scope === 'user' && isRequiredSystemSkill(skillName.toLowerCase());
+          const required =
+            scope === 'user' && isRequiredSystemSkill(skillName.toLowerCase());
 
           return jsonResponse({
             success: true,
@@ -5173,13 +7180,17 @@ async function main() {
               required,
               frontmatter,
               body,
-            }
+            },
           });
         } catch (error) {
           console.error('[api/skill] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to get skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Failed to get skill',
+            },
+            500,
           );
         }
       }
@@ -5187,11 +7198,16 @@ async function main() {
       // PUT /api/skill/:name - Update skill (with optional folder rename)
       if (pathname.startsWith('/api/skill/') && request.method === 'PUT') {
         try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
+          const skillName = decodeURIComponent(
+            pathname.replace('/api/skill/', ''),
+          );
           if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid skill name' },
+              400,
+            );
           }
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             scope: 'user' | 'project';
             frontmatter: Partial<SkillFrontmatter>;
             body: string;
@@ -5201,41 +7217,63 @@ async function main() {
 
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
+          const baseDir =
+            payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
           let currentFolderName = skillName;
           let skillDir = join(baseDir, currentFolderName);
           let skillPath = join(skillDir, 'SKILL.md');
 
           if (payload.scope === 'user' && isSystemSkillName(skillName)) {
-            return jsonResponse({
-              success: false,
-              code: 'SYSTEM_SKILL_READ_ONLY',
-              error: 'System Skill is read-only',
-            }, 409);
+            return jsonResponse(
+              {
+                success: false,
+                code: 'SYSTEM_SKILL_READ_ONLY',
+                error: 'System Skill is read-only',
+              },
+              409,
+            );
           }
           if (!existsSync(skillPath)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Skill not found' },
+              404,
+            );
           }
 
           // Handle folder rename if newFolderName is provided and different
-          if (payload.newFolderName && payload.newFolderName !== currentFolderName) {
+          if (
+            payload.newFolderName &&
+            payload.newFolderName !== currentFolderName
+          ) {
             const newFolderName = payload.newFolderName;
 
             // Validate new folder name
             if (!isValidItemName(newFolderName)) {
-              return jsonResponse({ success: false, error: 'Invalid new folder name' }, 400);
+              return jsonResponse(
+                { success: false, error: 'Invalid new folder name' },
+                400,
+              );
             }
 
             const newSkillDir = join(baseDir, newFolderName);
 
             // Check for conflict
             if (existsSync(newSkillDir)) {
-              return jsonResponse({ success: false, error: `技能文件夹 "${newFolderName}" 已存在，请使用其他名称` }, 409);
+              return jsonResponse(
+                {
+                  success: false,
+                  error: `技能文件夹 "${newFolderName}" 已存在，请使用其他名称`,
+                },
+                409,
+              );
             }
 
             // Atomic-like operation: prepare content first, then rename
             // If rename fails, nothing is lost. If write fails after rename, folder is renamed but content unchanged.
-            const content = serializeSkillContent(payload.frontmatter, payload.body);
+            const content = serializeSkillContent(
+              payload.frontmatter,
+              payload.body,
+            );
 
             // Rename the folder
             renameSync(skillDir, newSkillDir);
@@ -5249,31 +7287,42 @@ async function main() {
             // User skill renamed — bump generation + re-sync to fix old dangling symlink + create new one
             if (payload.scope === 'user') {
               bumpSkillsGeneration();
-              if (agentDir) { syncProjectUserConfig(agentDir); }
+              if (agentDir) {
+                syncProjectUserConfig(agentDir);
+              }
             }
             return jsonResponse({
               success: true,
               path: skillPath,
               folderName: currentFolderName,
-              fullPath: skillDir
+              fullPath: skillDir,
             });
           }
 
           // No rename, just update content
-          const content = serializeSkillContent(payload.frontmatter, payload.body);
+          const content = serializeSkillContent(
+            payload.frontmatter,
+            payload.body,
+          );
           writeFileSync(skillPath, content, 'utf-8');
 
           return jsonResponse({
             success: true,
             path: skillPath,
             folderName: currentFolderName,
-            fullPath: skillDir
+            fullPath: skillDir,
           });
         } catch (error) {
           console.error('[api/skill] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to update skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update skill',
+            },
+            500,
           );
         }
       }
@@ -5281,9 +7330,14 @@ async function main() {
       // DELETE /api/skill/:name - Delete skill
       if (pathname.startsWith('/api/skill/') && request.method === 'DELETE') {
         try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
+          const skillName = decodeURIComponent(
+            pathname.replace('/api/skill/', ''),
+          );
           if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid skill name' },
+              400,
+            );
           }
           const scope = url.searchParams.get('scope') || 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
@@ -5294,60 +7348,98 @@ async function main() {
           const skillDir = join(baseDir, skillName);
 
           if (scope === 'user' && isSystemSkillName(skillName)) {
-            return jsonResponse({
-              success: false,
-              code: 'SYSTEM_SKILL_READ_ONLY',
-              error: 'System Skill is read-only',
-            }, 409);
+            return jsonResponse(
+              {
+                success: false,
+                code: 'SYSTEM_SKILL_READ_ONLY',
+                error: 'System Skill is read-only',
+              },
+              409,
+            );
           }
           if (!existsSync(skillDir)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Skill not found' },
+              404,
+            );
           }
 
           rmSync(skillDir, { recursive: true, force: true });
           // User skill deleted — bump generation + re-sync to remove dangling symlinks
           if (scope === 'user') {
             bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
+            if (agentDir) {
+              syncProjectUserConfig(agentDir);
+            }
           }
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/skill] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to delete skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to delete skill',
+            },
+            500,
           );
         }
       }
 
       // POST /api/skill/copy-to-global - Copy a project skill to global (~/.myagents/skills/)
       // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
-      if (pathname === '/api/skill/copy-to-global' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/copy-to-global' &&
+        request.method === 'POST'
+      ) {
         try {
-          const { folderName } = await request.json() as { folderName: string };
-          if (!folderName || typeof folderName !== 'string' || !isValidItemName(folderName)) {
-            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
+          const { folderName } = (await request.json()) as {
+            folderName: string;
+          };
+          if (
+            !folderName ||
+            typeof folderName !== 'string' ||
+            !isValidItemName(folderName)
+          ) {
+            return jsonResponse(
+              { success: false, error: 'Invalid folderName' },
+              400,
+            );
           }
 
           // Validate project skills directory
           if (!projectSkillsBaseDir) {
-            return jsonResponse({ success: false, error: '当前没有项目工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '当前没有项目工作目录' },
+              400,
+            );
           }
 
           const srcDir = join(projectSkillsBaseDir, folderName);
           if (!existsSync(srcDir)) {
-            return jsonResponse({ success: false, error: '项目技能不存在' }, 404);
+            return jsonResponse(
+              { success: false, error: '项目技能不存在' },
+              404,
+            );
           }
 
           // Check SKILL.md exists in source
           if (!existsSync(join(srcDir, 'SKILL.md'))) {
-            return jsonResponse({ success: false, error: '项目技能缺少 SKILL.md' }, 400);
+            return jsonResponse(
+              { success: false, error: '项目技能缺少 SKILL.md' },
+              400,
+            );
           }
 
           // Check if already exists in global
           const destDir = join(userSkillsBaseDir, folderName);
           if (existsSync(destDir)) {
-            return jsonResponse({ success: false, error: '全局技能中已存在同名技能' }, 409);
+            return jsonResponse(
+              { success: false, error: '全局技能中已存在同名技能' },
+              409,
+            );
           }
 
           // Ensure global skills directory exists
@@ -5359,14 +7451,22 @@ async function main() {
 
           // Bump generation + sync symlinks into project
           bumpSkillsGeneration();
-          if (currentAgentDir) { syncProjectUserConfig(currentAgentDir); }
+          if (currentAgentDir) {
+            syncProjectUserConfig(currentAgentDir);
+          }
 
           return jsonResponse({ success: true, folderName });
         } catch (error) {
           console.error('[api/skill/copy-to-global] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to copy skill to global' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to copy skill to global',
+            },
+            500,
           );
         }
       }
@@ -5374,7 +7474,7 @@ async function main() {
       // POST /api/skill/create - Create new skill
       if (pathname === '/api/skill/create' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             name: string;
             scope: 'user' | 'project';
             description?: string;
@@ -5382,18 +7482,25 @@ async function main() {
           };
 
           if (!payload.name) {
-            return jsonResponse({ success: false, error: 'Name is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Name is required' },
+              400,
+            );
           }
 
           // Sanitize name for folder (supports Unicode)
           const folderName = sanitizeFolderName(payload.name);
           // Use explicit agentDir if provided for project scope
           const { skillsDir } = getProjectBaseDirs(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
+          const baseDir =
+            payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
           const skillDir = join(baseDir, folderName);
 
           if (existsSync(skillDir)) {
-            return jsonResponse({ success: false, error: 'Skill already exists' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Skill already exists' },
+              409,
+            );
           }
 
           // Create directory structure
@@ -5402,7 +7509,8 @@ async function main() {
           // Create SKILL.md with default content
           const frontmatter: Partial<SkillFrontmatter> = {
             name: payload.name,
-            description: payload.description || `Description for ${payload.name}`,
+            description:
+              payload.description || `Description for ${payload.name}`,
           };
           const body = `# ${payload.name}\n\nDescribe your skill instructions here.`;
           const content = serializeSkillContent(frontmatter, body);
@@ -5413,14 +7521,22 @@ async function main() {
           // New user skill — bump generation so Tab Sidecars re-sync symlinks
           if (payload.scope === 'user') {
             bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
+            if (agentDir) {
+              syncProjectUserConfig(agentDir);
+            }
           }
           return jsonResponse({ success: true, path: skillPath, folderName });
         } catch (error) {
           console.error('[api/skill/create] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to create skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to create skill',
+            },
+            500,
           );
         }
       }
@@ -5428,7 +7544,7 @@ async function main() {
       // POST /api/skill/upload - Upload skill from file (.zip, .skill, .md)
       if (pathname === '/api/skill/upload' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             filename: string;
             content: string; // Base64 encoded file content
             scope: 'user' | 'project';
@@ -5441,15 +7557,22 @@ async function main() {
           };
 
           if (!payload.filename || !payload.content) {
-            return jsonResponse({ success: false, error: 'Filename and content are required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Filename and content are required' },
+              400,
+            );
           }
 
           const ext = extname(payload.filename).toLowerCase();
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
+          const baseDir =
+            payload.scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
 
           // Validate target directory is available
           if (!baseDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '请先设置工作目录' },
+              400,
+            );
           }
 
           // Decode base64 content to buffer
@@ -5488,7 +7611,8 @@ async function main() {
           // folder — it identifies the file's role, not the skill's identity.
           // Using its stem as a folder-name fallback collapses every distinct
           // upload onto the same directory (issue #96).
-          const isReservedSkillStem = (stem: string): boolean => /^skill$/i.test(stem);
+          const isReservedSkillStem = (stem: string): boolean =>
+            /^skill$/i.test(stem);
 
           if (ext === '.zip' || ext === '.skill') {
             // Handle zip/skill files - extract to skills directory
@@ -5532,7 +7656,10 @@ async function main() {
               const skillDir = join(baseDir, folderName);
 
               if (existsSync(skillDir)) {
-                return jsonResponse({ success: false, error: `技能 "${folderName}" 已存在` }, 409);
+                return jsonResponse(
+                  { success: false, error: `技能 "${folderName}" 已存在` },
+                  409,
+                );
               }
 
               // Create skill directory
@@ -5541,7 +7668,8 @@ async function main() {
               // Extract files, handling nested structure
               for (const entry of entries) {
                 // Skip __MACOSX folder and directory entries
-                if (entry.entryName.startsWith('__MACOSX') || entry.isDirectory) continue;
+                if (entry.entryName.startsWith('__MACOSX') || entry.isDirectory)
+                  continue;
 
                 // Calculate target path - if zip has root folder, strip it
                 let targetPath = entry.entryName;
@@ -5555,8 +7683,13 @@ async function main() {
 
                 const fullPath = resolve(join(skillDir, targetPath));
                 // Zip-Slip protection: resolved path must stay within skillDir
-                if (!fullPath.startsWith(skillDir + sep) && fullPath !== skillDir) {
-                  console.warn(`[api/skill/upload] Blocked Zip-Slip path: ${entry.entryName}`);
+                if (
+                  !fullPath.startsWith(skillDir + sep) &&
+                  fullPath !== skillDir
+                ) {
+                  console.warn(
+                    `[api/skill/upload] Blocked Zip-Slip path: ${entry.entryName}`,
+                  );
                   continue;
                 }
                 const dir = dirname(fullPath);
@@ -5572,23 +7705,29 @@ async function main() {
 
               if (payload.scope === 'user') {
                 bumpSkillsGeneration();
-                if (agentDir) { syncProjectUserConfig(agentDir); }
+                if (agentDir) {
+                  syncProjectUserConfig(agentDir);
+                }
               }
               return jsonResponse({
                 success: true,
                 folderName,
                 path: skillDir,
-                message: `已成功导入技能 "${folderName}"`
+                message: `已成功导入技能 "${folderName}"`,
               });
-
             } catch (zipError) {
-              console.error('[api/skill/upload] Zip extraction error:', zipError);
+              console.error(
+                '[api/skill/upload] Zip extraction error:',
+                zipError,
+              );
               return jsonResponse(
-                { success: false, error: '无法解压文件，请确保是有效的 zip 文件' },
-                400
+                {
+                  success: false,
+                  error: '无法解压文件，请确保是有效的 zip 文件',
+                },
+                400,
               );
             }
-
           } else if (ext === '.md') {
             // Handle .md files - parse content and create folder
             const mdContent = fileBuffer.toString('utf-8');
@@ -5598,8 +7737,11 @@ async function main() {
             // (or first `# heading`) → filename stem, but NEVER the reserved stem
             // "SKILL" (the convention filename for every skill's definition file).
             const nameFromContent = extractNameForMdUpload(mdContent);
-            const fallbackFromFilename = isReservedSkillStem(mdFilename) ? null : mdFilename;
-            const rawFolderName = payload.folderName || nameFromContent || fallbackFromFilename;
+            const fallbackFromFilename = isReservedSkillStem(mdFilename)
+              ? null
+              : mdFilename;
+            const rawFolderName =
+              payload.folderName || nameFromContent || fallbackFromFilename;
 
             if (!rawFolderName) {
               return jsonResponse(
@@ -5616,7 +7758,10 @@ async function main() {
             const skillDir = join(baseDir, folderName);
 
             if (existsSync(skillDir)) {
-              return jsonResponse({ success: false, error: `技能 "${folderName}" 已存在` }, 409);
+              return jsonResponse(
+                { success: false, error: `技能 "${folderName}" 已存在` },
+                409,
+              );
             }
 
             // Create skill directory
@@ -5628,70 +7773,101 @@ async function main() {
 
             if (payload.scope === 'user') {
               bumpSkillsGeneration();
-              if (agentDir) { syncProjectUserConfig(agentDir); }
+              if (agentDir) {
+                syncProjectUserConfig(agentDir);
+              }
             }
             return jsonResponse({
               success: true,
               folderName,
               path: skillPath,
-              message: `已成功导入技能 "${folderName}"`
+              message: `已成功导入技能 "${folderName}"`,
             });
-
           } else {
             return jsonResponse(
-              { success: false, error: '不支持的文件类型，请上传 .zip、.skill 或 .md 文件' },
-              400
+              {
+                success: false,
+                error: '不支持的文件类型，请上传 .zip、.skill 或 .md 文件',
+              },
+              400,
             );
           }
-
         } catch (error) {
           console.error('[api/skill/upload] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to upload skill' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to upload skill',
+            },
+            500,
           );
         }
       }
 
       // POST /api/skill/import-folder - Import skill from a local folder path (Tauri only)
-      if (pathname === '/api/skill/import-folder' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/import-folder' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             folderPath: string;
             scope: 'user' | 'project';
           };
 
           if (!payload.folderPath) {
-            return jsonResponse({ success: false, error: 'Folder path is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Folder path is required' },
+              400,
+            );
           }
 
           const sourcePath = payload.folderPath;
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
+          const baseDir =
+            payload.scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
 
           // Validate target directory is available
           if (!baseDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '请先设置工作目录' },
+              400,
+            );
           }
 
           // Validate source folder exists
           if (!existsSync(sourcePath)) {
-            return jsonResponse({ success: false, error: '指定的文件夹不存在' }, 400);
+            return jsonResponse(
+              { success: false, error: '指定的文件夹不存在' },
+              400,
+            );
           }
 
           // Check if it's a directory
           try {
             const stats = statSync(sourcePath);
             if (!stats.isDirectory()) {
-              return jsonResponse({ success: false, error: '指定的路径不是文件夹' }, 400);
+              return jsonResponse(
+                { success: false, error: '指定的路径不是文件夹' },
+                400,
+              );
             }
           } catch {
-            return jsonResponse({ success: false, error: '无法读取文件夹信息' }, 400);
+            return jsonResponse(
+              { success: false, error: '无法读取文件夹信息' },
+              400,
+            );
           }
 
           // Check for SKILL.md at root
           const skillMdPath = join(sourcePath, 'SKILL.md');
           if (!existsSync(skillMdPath)) {
-            return jsonResponse({ success: false, error: '文件夹中未找到 SKILL.md 文件' }, 400);
+            return jsonResponse(
+              { success: false, error: '文件夹中未找到 SKILL.md 文件' },
+              400,
+            );
           }
 
           // Read SKILL.md to get the skill name
@@ -5714,20 +7890,29 @@ async function main() {
 
           // Check if skill already exists
           if (existsSync(targetDir)) {
-            return jsonResponse({ success: false, error: `技能 "${folderName}" 已存在` }, 409);
+            return jsonResponse(
+              { success: false, error: `技能 "${folderName}" 已存在` },
+              409,
+            );
           }
 
           // Copy folder recursively — async so the sidecar's /health probe
           // stays responsive during large imports (see copyDirRecursive doc).
           // Keeps the hidden-file / __MACOSX filter that distinguishes this
           // path from the bulk-sync variant.
-          const copyImportedSkillDir = async (src: string, dest: string): Promise<void> => {
+          const copyImportedSkillDir = async (
+            src: string,
+            dest: string,
+          ): Promise<void> => {
             await ensureDir(dest);
             const entries = await readdirAsync(src, { withFileTypes: true });
             for (const entry of entries) {
-              if (entry.name.startsWith('.') || entry.name === '__MACOSX') continue;
+              if (entry.name.startsWith('.') || entry.name === '__MACOSX')
+                continue;
               if (entry.isSymbolicLink()) {
-                console.warn(`[api/skill/import-folder] Skipping symlink: ${join(src, entry.name)}`);
+                console.warn(
+                  `[api/skill/import-folder] Skipping symlink: ${join(src, entry.name)}`,
+                );
                 continue;
               }
               const srcPath = join(src, entry.name);
@@ -5744,20 +7929,27 @@ async function main() {
 
           if (payload.scope === 'user') {
             bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
+            if (agentDir) {
+              syncProjectUserConfig(agentDir);
+            }
           }
           return jsonResponse({
             success: true,
             folderName,
             path: targetDir,
-            message: `已成功导入技能 "${folderName}"`
+            message: `已成功导入技能 "${folderName}"`,
           });
-
         } catch (error) {
           console.error('[api/skill/import-folder] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to import skill folder' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to import skill folder',
+            },
+            500,
           );
         }
       }
@@ -5768,9 +7960,12 @@ async function main() {
       // This deliberately does not write to ~/.myagents/skills or a workspace.
       // The renderer still hands the staged zip path to the Rust Space command,
       // so Space auth and cloud mutations remain owned by Tauri.
-      if (pathname === '/api/skill/export-from-url' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/export-from-url' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             url: string;
             confirmedSelection?: {
               pluginName?: string;
@@ -5787,7 +7982,10 @@ async function main() {
             resolved = resolveSkillUrl(payload.url);
           } catch (err) {
             return jsonResponse(
-              { success: false, error: err instanceof Error ? err.message : '链接解析失败' },
+              {
+                success: false,
+                error: err instanceof Error ? err.message : '链接解析失败',
+              },
               400,
             );
           }
@@ -5795,54 +7993,88 @@ async function main() {
           let tree;
           if (resolved.kind === 'local') {
             return jsonResponse(
-              { success: false, error: '本地 Skill 来源只支持安装，不能直接作为 Space 发布来源' },
+              {
+                success: false,
+                error: '本地 Skill 来源只支持安装，不能直接作为 Space 发布来源',
+              },
               400,
             );
           }
           try {
             tree = await fetchSkillZip(resolved);
           } catch (err) {
-            const statusCode = err instanceof TarballFetchError ? err.statusCode : 500;
+            const statusCode =
+              err instanceof TarballFetchError ? err.statusCode : 500;
             return jsonResponse(
-              { success: false, error: err instanceof Error ? err.message : '下载失败' },
+              {
+                success: false,
+                error: err instanceof Error ? err.message : '下载失败',
+              },
               statusCode,
             );
           }
 
           const analysis = analyseTree(tree, resolved);
           if (analysis.mode === 'empty') {
-            return jsonResponse({ success: false, error: analysis.reason }, 422);
+            return jsonResponse(
+              { success: false, error: analysis.reason },
+              422,
+            );
           }
 
           if (payload.confirmedSelection) {
             let chosen: SkillCandidate[];
             if (analysis.mode === 'marketplace') {
-              const plugin = analysis.plugins.find(p => p.name === payload.confirmedSelection!.pluginName);
+              const plugin = analysis.plugins.find(
+                (p) => p.name === payload.confirmedSelection!.pluginName,
+              );
               if (!plugin) {
-                return jsonResponse({ success: false, error: '指定的插件不存在' }, 400);
+                return jsonResponse(
+                  { success: false, error: '指定的插件不存在' },
+                  400,
+                );
               }
               const wanted = new Set(
-                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+                (payload.confirmedSelection.folderNames ?? []).map((n) =>
+                  sanitizeFolderName(n),
+                ),
               );
-              chosen = wanted.size > 0
-                ? plugin.skills.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)))
-                : plugin.skills;
+              chosen =
+                wanted.size > 0
+                  ? plugin.skills.filter((s) =>
+                      wanted.has(sanitizeFolderName(s.suggestedFolderName)),
+                    )
+                  : plugin.skills;
             } else if (analysis.mode === 'multi') {
               const wanted = new Set(
-                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+                (payload.confirmedSelection.folderNames ?? []).map((n) =>
+                  sanitizeFolderName(n),
+                ),
               );
-              chosen = analysis.candidates.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)));
+              chosen = analysis.candidates.filter((s) =>
+                wanted.has(sanitizeFolderName(s.suggestedFolderName)),
+              );
             } else {
               chosen = [analysis.skill];
             }
 
             if (chosen.length === 0) {
-              return jsonResponse({ success: false, error: '未选择任何 skill' }, 400);
+              return jsonResponse(
+                { success: false, error: '未选择任何 skill' },
+                400,
+              );
             }
 
-            const packages = await writeSpaceSkillExportPackages(tree, resolved, chosen);
+            const packages = await writeSpaceSkillExportPackages(
+              tree,
+              resolved,
+              chosen,
+            );
             if (packages.length === 0) {
-              return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+              return jsonResponse(
+                { success: false, error: '未找到可发布的文件' },
+                500,
+              );
             }
 
             return jsonResponse({
@@ -5861,11 +8093,13 @@ async function main() {
               preview: {
                 marketplaceName: analysis.marketplaceName,
                 marketplaceDescription: analysis.marketplaceDescription,
-                plugins: analysis.plugins.map(p => ({
+                plugins: analysis.plugins.map((p) => ({
                   name: p.name,
                   description: p.description,
-                  skills: p.skills.map(s => ({
-                    suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                  skills: p.skills.map((s) => ({
+                    suggestedFolderName: sanitizeFolderName(
+                      s.suggestedFolderName,
+                    ),
                     name: s.name,
                     description: s.description,
                     hasDangerousTools: s.hasDangerousTools,
@@ -5883,8 +8117,10 @@ async function main() {
               success: true,
               mode: 'multi',
               preview: {
-                candidates: analysis.candidates.map(s => ({
-                  suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                candidates: analysis.candidates.map((s) => ({
+                  suggestedFolderName: sanitizeFolderName(
+                    s.suggestedFolderName,
+                  ),
                   name: s.name,
                   description: s.description,
                   hasDangerousTools: s.hasDangerousTools,
@@ -5896,9 +8132,14 @@ async function main() {
             });
           }
 
-          const packages = await writeSpaceSkillExportPackages(tree, resolved, [analysis.skill]);
+          const packages = await writeSpaceSkillExportPackages(tree, resolved, [
+            analysis.skill,
+          ]);
           if (packages.length === 0) {
-            return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+            return jsonResponse(
+              { success: false, error: '未找到可发布的文件' },
+              500,
+            );
           }
 
           return jsonResponse({
@@ -5911,7 +8152,10 @@ async function main() {
         } catch (error) {
           console.error('[api/skill/export-from-url] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Export failed' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Export failed',
+            },
             500,
           );
         }
@@ -5920,9 +8164,12 @@ async function main() {
       // POST /api/skill/install-from-url - Install from GitHub, HTTPS zip, or a local source.
       // Two-step flow: first call analyses and may return a preview for the user to confirm;
       // second call (with confirmedSelection) re-fetches and writes the chosen skills.
-      if (pathname === '/api/skill/install-from-url' && request.method === 'POST') {
+      if (
+        pathname === '/api/skill/install-from-url' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             url: string;
             scope: 'user' | 'project';
             /** Analyse only. Never publish even for an unambiguous single Skill. */
@@ -5939,9 +8186,13 @@ async function main() {
             return jsonResponse({ success: false, error: 'url 参数必填' }, 400);
           }
           const scope = payload.scope === 'project' ? 'project' : 'user';
-          const baseDir = scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
+          const baseDir =
+            scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
           if (!baseDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '请先设置工作目录' },
+              400,
+            );
           }
 
           // 1. Resolve URL
@@ -5950,7 +8201,10 @@ async function main() {
             resolved = resolveSkillUrl(payload.url);
           } catch (err) {
             return jsonResponse(
-              { success: false, error: err instanceof Error ? err.message : '链接解析失败' },
+              {
+                success: false,
+                error: err instanceof Error ? err.message : '链接解析失败',
+              },
               400,
             );
           }
@@ -5960,9 +8214,14 @@ async function main() {
           try {
             tree = await loadSkillTree(resolved);
           } catch (err) {
-            const statusCode = err instanceof SkillSourceLoadError ? err.statusCode : 500;
+            const statusCode =
+              err instanceof SkillSourceLoadError ? err.statusCode : 500;
             return jsonResponse(
-              { success: false, error: err instanceof Error ? err.message : '读取 Skill 来源失败' },
+              {
+                success: false,
+                error:
+                  err instanceof Error ? err.message : '读取 Skill 来源失败',
+              },
               statusCode,
             );
           }
@@ -5971,23 +8230,35 @@ async function main() {
           const analysis = analyseTree(tree, resolved);
 
           if (analysis.mode === 'empty') {
-            return jsonResponse({ success: false, error: analysis.reason }, 422);
+            return jsonResponse(
+              { success: false, error: analysis.reason },
+              422,
+            );
           }
 
           if (payload.previewOnly && payload.confirmedSelection) {
             return jsonResponse(
-              { success: false, error: 'previewOnly 不能与 confirmedSelection 同时使用' },
+              {
+                success: false,
+                error: 'previewOnly 不能与 confirmedSelection 同时使用',
+              },
               400,
             );
           }
 
           // 4. Compute existing folder conflicts for a given candidate list
           const checkConflicts = (candidates: SkillCandidate[]) => {
-            const conflicts: Array<{ suggestedFolderName: string; name: string }> = [];
+            const conflicts: Array<{
+              suggestedFolderName: string;
+              name: string;
+            }> = [];
             for (const cand of candidates) {
               const folder = sanitizeFolderName(cand.suggestedFolderName);
               if (pathEntryExistsNoFollow(join(baseDir, folder))) {
-                conflicts.push({ suggestedFolderName: folder, name: cand.name });
+                conflicts.push({
+                  suggestedFolderName: folder,
+                  name: cand.name,
+                });
               }
             }
             return conflicts;
@@ -5996,32 +8267,49 @@ async function main() {
           // ---------- Step B: confirmedSelection provided — write to disk ----------
           if (payload.confirmedSelection) {
             const overwrite = new Set(
-              (payload.confirmedSelection.overwrite ?? []).map(name => sanitizeFolderName(name)),
+              (payload.confirmedSelection.overwrite ?? []).map((name) =>
+                sanitizeFolderName(name),
+              ),
             );
             const renames = payload.confirmedSelection.renames ?? {};
 
             // Determine which candidates were chosen
             let chosen: SkillCandidate[];
             if (analysis.mode === 'marketplace') {
-              const plugin = analysis.plugins.find(p => p.name === payload.confirmedSelection!.pluginName);
+              const plugin = analysis.plugins.find(
+                (p) => p.name === payload.confirmedSelection!.pluginName,
+              );
               if (!plugin) {
-                return jsonResponse({ success: false, error: '指定的插件不存在' }, 400);
+                return jsonResponse(
+                  { success: false, error: '指定的插件不存在' },
+                  400,
+                );
               }
               const wanted = new Set(
-                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+                (payload.confirmedSelection.folderNames ?? []).map((n) =>
+                  sanitizeFolderName(n),
+                ),
               );
-              chosen = wanted.size > 0
-                ? plugin.skills.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)))
-                : plugin.skills;
+              chosen =
+                wanted.size > 0
+                  ? plugin.skills.filter((s) =>
+                      wanted.has(sanitizeFolderName(s.suggestedFolderName)),
+                    )
+                  : plugin.skills;
             } else if (analysis.mode === 'multi') {
               const wanted = new Set(
-                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+                (payload.confirmedSelection.folderNames ?? []).map((n) =>
+                  sanitizeFolderName(n),
+                ),
               );
-              chosen = analysis.candidates.filter(
-                s => wanted.has(sanitizeFolderName(s.suggestedFolderName)),
+              chosen = analysis.candidates.filter((s) =>
+                wanted.has(sanitizeFolderName(s.suggestedFolderName)),
               );
               if (chosen.length === 0) {
-                return jsonResponse({ success: false, error: '未选择任何 skill' }, 400);
+                return jsonResponse(
+                  { success: false, error: '未选择任何 skill' },
+                  400,
+                );
               }
             } else {
               chosen = [analysis.skill];
@@ -6036,12 +8324,19 @@ async function main() {
             //   (3) rename targets that collide with existing folders.
             // The publisher repeats conflict checks under the cross-process
             // lock; this pass exists for precise request-level diagnostics.
-            const plan: Array<{ cand: SkillCandidate; folderName: string; overwrite: boolean }> = [];
+            const plan: Array<{
+              cand: SkillCandidate;
+              folderName: string;
+              overwrite: boolean;
+            }> = [];
             const seenTargets = new Set<string>();
             for (const cand of chosen) {
               const originalName = sanitizeFolderName(cand.suggestedFolderName);
-              const renameTo = renames[originalName] ?? renames[cand.suggestedFolderName];
-              const folderName = renameTo ? sanitizeFolderName(renameTo) : originalName;
+              const renameTo =
+                renames[originalName] ?? renames[cand.suggestedFolderName];
+              const folderName = renameTo
+                ? sanitizeFolderName(renameTo)
+                : originalName;
 
               const collisionKey = skillTargetCollisionKey(folderName);
               if (seenTargets.has(collisionKey)) {
@@ -6060,7 +8355,10 @@ async function main() {
               // If renamed, the rename target must not already exist on disk
               // (the user's original `overwrite` set was keyed on the original
               // name, not the rename target).
-              if (renameTo && pathEntryExistsNoFollow(join(baseDir, folderName))) {
+              if (
+                renameTo &&
+                pathEntryExistsNoFollow(join(baseDir, folderName))
+              ) {
                 return jsonResponse(
                   {
                     success: false,
@@ -6074,9 +8372,9 @@ async function main() {
 
               // Non-renamed conflict must be covered by `overwrite`
               if (
-                !renameTo
-                && pathEntryExistsNoFollow(join(baseDir, folderName))
-                && !overwrite.has(folderName)
+                !renameTo &&
+                pathEntryExistsNoFollow(join(baseDir, folderName)) &&
+                !overwrite.has(folderName)
               ) {
                 return jsonResponse(
                   {
@@ -6089,7 +8387,11 @@ async function main() {
                 );
               }
 
-              plan.push({ cand, folderName, overwrite: !renameTo && overwrite.has(folderName) });
+              plan.push({
+                cand,
+                folderName,
+                overwrite: !renameTo && overwrite.has(folderName),
+              });
             }
 
             // ---------- Publish phase: stage complete dirs, then lock + rename ----------
@@ -6105,12 +8407,17 @@ async function main() {
             );
 
             if (installed.length === 0) {
-              return jsonResponse({ success: false, error: '没有任何 skill 被安装' }, 500);
+              return jsonResponse(
+                { success: false, error: '没有任何 skill 被安装' },
+                500,
+              );
             }
 
             if (scope === 'user') {
               bumpSkillsGeneration();
-              if (agentDir) { syncProjectUserConfig(agentDir); }
+              if (agentDir) {
+                syncProjectUserConfig(agentDir);
+              }
             }
 
             return jsonResponse({
@@ -6130,15 +8437,19 @@ async function main() {
               preview: {
                 marketplaceName: analysis.marketplaceName,
                 marketplaceDescription: analysis.marketplaceDescription,
-                plugins: analysis.plugins.map(p => ({
+                plugins: analysis.plugins.map((p) => ({
                   name: p.name,
                   description: p.description,
-                  skills: p.skills.map(s => ({
-                    suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                  skills: p.skills.map((s) => ({
+                    suggestedFolderName: sanitizeFolderName(
+                      s.suggestedFolderName,
+                    ),
                     name: s.name,
                     description: s.description,
                     hasDangerousTools: s.hasDangerousTools,
-                    conflict: pathEntryExistsNoFollow(join(baseDir, sanitizeFolderName(s.suggestedFolderName))),
+                    conflict: pathEntryExistsNoFollow(
+                      join(baseDir, sanitizeFolderName(s.suggestedFolderName)),
+                    ),
                   })),
                 })),
               },
@@ -6152,13 +8463,17 @@ async function main() {
               success: true,
               mode: 'multi',
               preview: {
-                candidates: analysis.candidates.map(s => ({
-                  suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                candidates: analysis.candidates.map((s) => ({
+                  suggestedFolderName: sanitizeFolderName(
+                    s.suggestedFolderName,
+                  ),
                   name: s.name,
                   description: s.description,
                   hasDangerousTools: s.hasDangerousTools,
                   rootPath: s.rootPath,
-                  conflict: pathEntryExistsNoFollow(join(baseDir, sanitizeFolderName(s.suggestedFolderName))),
+                  conflict: pathEntryExistsNoFollow(
+                    join(baseDir, sanitizeFolderName(s.suggestedFolderName)),
+                  ),
                 })),
               },
               sourceUrl: tree.sourceUrl,
@@ -6208,17 +8523,21 @@ async function main() {
           }
 
           // Auto-install the single unambiguous skill
-          const installed = await publishSkillInstallPlan(baseDir, [{
-            folderName,
-            files: buildInstallPayloadForCandidate(tree, cand),
-            name: cand.name,
-            description: cand.description,
-            overwrite: false,
-          }]);
+          const installed = await publishSkillInstallPlan(baseDir, [
+            {
+              folderName,
+              files: buildInstallPayloadForCandidate(tree, cand),
+              name: cand.name,
+              description: cand.description,
+              overwrite: false,
+            },
+          ]);
 
           if (scope === 'user') {
             bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
+            if (agentDir) {
+              syncProjectUserConfig(agentDir);
+            }
           }
 
           return jsonResponse({
@@ -6231,7 +8550,10 @@ async function main() {
         } catch (error) {
           console.error('[api/skill/install-from-url] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Install failed' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Install failed',
+            },
             error instanceof SkillInstallError ? error.statusCode : 500,
           );
         }
@@ -6253,7 +8575,10 @@ async function main() {
         } catch (error) {
           console.error('[api/plugin/list] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'List failed' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'List failed',
+            },
             500,
           );
         }
@@ -6262,15 +8587,20 @@ async function main() {
       // GET /api/plugin/detail?id=<plugin-id> - full manifest + component inventory
       if (pathname === '/api/cc-plugin/detail' && request.method === 'GET') {
         const id = url.searchParams.get('id');
-        if (!id) return jsonResponse({ success: false, error: 'id 参数必填' }, 400);
+        if (!id)
+          return jsonResponse({ success: false, error: 'id 参数必填' }, 400);
         try {
           const item = getPluginDetail(id);
-          if (!item) return jsonResponse({ success: false, error: '插件未安装' }, 404);
+          if (!item)
+            return jsonResponse({ success: false, error: '插件未安装' }, 404);
           return jsonResponse({ success: true, plugin: item });
         } catch (error) {
           console.error('[api/plugin/detail] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Detail failed' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Detail failed',
+            },
             500,
           );
         }
@@ -6285,14 +8615,23 @@ async function main() {
         try {
           const body = (await request.json()) as { sourceUrl?: string };
           if (!body.sourceUrl || typeof body.sourceUrl !== 'string') {
-            return jsonResponse({ success: false, error: 'sourceUrl 参数必填' }, 400);
+            return jsonResponse(
+              { success: false, error: 'sourceUrl 参数必填' },
+              400,
+            );
           }
           const { inspectPluginSource } = await import('./plugins/store');
           const analysis = await inspectPluginSource(body.sourceUrl);
-          return jsonResponse({ success: true, sourceUrl: body.sourceUrl, analysis });
+          return jsonResponse({
+            success: true,
+            sourceUrl: body.sourceUrl,
+            analysis,
+          });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Inspect failed';
-          const status = error instanceof PluginStoreError ? error.statusCode : 500;
+          const message =
+            error instanceof Error ? error.message : 'Inspect failed';
+          const status =
+            error instanceof PluginStoreError ? error.statusCode : 500;
           if (status >= 500) {
             console.error('[api/cc-plugin/inspect] Error:', error);
           }
@@ -6312,7 +8651,10 @@ async function main() {
             subPath?: string;
           };
           if (!body.sourceUrl || typeof body.sourceUrl !== 'string') {
-            return jsonResponse({ success: false, error: 'sourceUrl 参数必填' }, 400);
+            return jsonResponse(
+              { success: false, error: 'sourceUrl 参数必填' },
+              400,
+            );
           }
           installId = body.installId || crypto.randomUUID();
           const finalId = installId;
@@ -6323,19 +8665,35 @@ async function main() {
           });
           const { entry } = await installPlugin(body.sourceUrl, {
             onProgress: (phase, message) => {
-              broadcast('plugin:install-progress', { installId: finalId, phase, message });
+              broadcast('plugin:install-progress', {
+                installId: finalId,
+                phase,
+                message,
+              });
             },
-            subPath: typeof body.subPath === 'string' && body.subPath ? body.subPath : undefined,
+            subPath:
+              typeof body.subPath === 'string' && body.subPath
+                ? body.subPath
+                : undefined,
           });
-          broadcast('plugin:install-progress', { installId: finalId, phase: 'done' });
+          broadcast('plugin:install-progress', {
+            installId: finalId,
+            phase: 'done',
+          });
           broadcast('plugins:changed', { reason: 'install' });
           await schedulePluginRestartLazy();
           return jsonResponse({ success: true, entry, installId: finalId });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Install failed';
-          const status = error instanceof PluginStoreError ? error.statusCode : 500;
+          const message =
+            error instanceof Error ? error.message : 'Install failed';
+          const status =
+            error instanceof PluginStoreError ? error.statusCode : 500;
           if (installId) {
-            broadcast('plugin:install-progress', { installId, phase: 'failed', error: message });
+            broadcast('plugin:install-progress', {
+              installId,
+              phase: 'failed',
+              error: message,
+            });
           }
           if (status >= 500) {
             console.error('[api/plugin/install] Error:', error);
@@ -6345,19 +8703,33 @@ async function main() {
       }
 
       // POST /api/plugin/uninstall - body { id, purgeData? }
-      if (pathname === '/api/cc-plugin/uninstall' && request.method === 'POST') {
+      if (
+        pathname === '/api/cc-plugin/uninstall' &&
+        request.method === 'POST'
+      ) {
         try {
-          const body = (await request.json()) as { id?: string; purgeData?: boolean };
+          const body = (await request.json()) as {
+            id?: string;
+            purgeData?: boolean;
+          };
           if (!body.id || typeof body.id !== 'string') {
             return jsonResponse({ success: false, error: 'id 参数必填' }, 400);
           }
-          const { removed, warning } = await uninstallPlugin(body.id, { purgeData: !!body.purgeData });
+          const { removed, warning } = await uninstallPlugin(body.id, {
+            purgeData: !!body.purgeData,
+          });
           broadcast('plugins:changed', { reason: 'uninstall' });
           await schedulePluginRestartLazy();
-          return jsonResponse({ success: true, removed, ...(warning ? { warning } : {}) });
+          return jsonResponse({
+            success: true,
+            removed,
+            ...(warning ? { warning } : {}),
+          });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Uninstall failed';
-          const status = error instanceof PluginStoreError ? error.statusCode : 500;
+          const message =
+            error instanceof Error ? error.message : 'Uninstall failed';
+          const status =
+            error instanceof PluginStoreError ? error.statusCode : 500;
           console.error('[api/plugin/uninstall] Error:', error);
           return jsonResponse({ success: false, error: message }, status);
         }
@@ -6366,12 +8738,18 @@ async function main() {
       // POST /api/plugin/toggle - body { id, enabled }
       if (pathname === '/api/cc-plugin/toggle' && request.method === 'POST') {
         try {
-          const body = (await request.json()) as { id?: string; enabled?: boolean };
+          const body = (await request.json()) as {
+            id?: string;
+            enabled?: boolean;
+          };
           if (!body.id || typeof body.id !== 'string') {
             return jsonResponse({ success: false, error: 'id 参数必填' }, 400);
           }
           if (typeof body.enabled !== 'boolean') {
-            return jsonResponse({ success: false, error: 'enabled 参数必填 (boolean)' }, 400);
+            return jsonResponse(
+              { success: false, error: 'enabled 参数必填 (boolean)' },
+              400,
+            );
           }
           // NOTE: this endpoint toggles the GLOBAL VISIBILITY gate
           // (AppConfig.enabledPlugins). It does NOT activate the plugin in
@@ -6386,8 +8764,10 @@ async function main() {
           await schedulePluginRestartLazy();
           return jsonResponse({ success: true, entry, enabled });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Toggle failed';
-          const status = error instanceof PluginStoreError ? error.statusCode : 500;
+          const message =
+            error instanceof Error ? error.message : 'Toggle failed';
+          const status =
+            error instanceof PluginStoreError ? error.statusCode : 500;
           if (status >= 500) {
             console.error('[api/cc-plugin/toggle] Error:', error);
           }
@@ -6400,23 +8780,44 @@ async function main() {
       // Single source of truth shared by the Agent settings panel and the chat
       // input "插件" submenu — both UIs call this, then push to the active
       // sidecar via /api/cc-plugin/session-enable to take immediate effect.
-      if (pathname === '/api/cc-plugin/workspace-enable' && request.method === 'POST') {
+      if (
+        pathname === '/api/cc-plugin/workspace-enable' &&
+        request.method === 'POST'
+      ) {
         try {
-          const body = (await request.json()) as { workspacePath?: string; enabledIds?: string[] };
+          const body = (await request.json()) as {
+            workspacePath?: string;
+            enabledIds?: string[];
+          };
           if (!body.workspacePath || typeof body.workspacePath !== 'string') {
-            return jsonResponse({ success: false, error: 'workspacePath 参数必填' }, 400);
+            return jsonResponse(
+              { success: false, error: 'workspacePath 参数必填' },
+              400,
+            );
           }
           if (!Array.isArray(body.enabledIds)) {
-            return jsonResponse({ success: false, error: 'enabledIds 必须是 string[]' }, 400);
+            return jsonResponse(
+              { success: false, error: 'enabledIds 必须是 string[]' },
+              400,
+            );
           }
-          const ids = body.enabledIds.filter((s): s is string => typeof s === 'string');
-          const { setWorkspaceEnabledPlugins } = await import('./plugins/store');
-          const result = await setWorkspaceEnabledPlugins(body.workspacePath, ids);
+          const ids = body.enabledIds.filter(
+            (s): s is string => typeof s === 'string',
+          );
+          const { setWorkspaceEnabledPlugins } = await import(
+            './plugins/store'
+          );
+          const result = await setWorkspaceEnabledPlugins(
+            body.workspacePath,
+            ids,
+          );
           broadcast('plugins:changed', { reason: 'workspace-enable' });
           return jsonResponse({ success: true, ...result });
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Workspace enable failed';
-          const status = error instanceof PluginStoreError ? error.statusCode : 500;
+          const message =
+            error instanceof Error ? error.message : 'Workspace enable failed';
+          const status =
+            error instanceof PluginStoreError ? error.statusCode : 500;
           console.error('[api/cc-plugin/workspace-enable] Error:', error);
           return jsonResponse({ success: false, error: message }, status);
         }
@@ -6429,7 +8830,8 @@ async function main() {
         try {
           const scope = url.searchParams.get('scope') || 'all';
           const queryAgentDir = url.searchParams.get('agentDir');
-          const { commandsDir: effectiveCommandsDir } = getProjectBaseDirs(queryAgentDir);
+          const { commandsDir: effectiveCommandsDir } =
+            getProjectBaseDirs(queryAgentDir);
           const commandItems: Array<{
             name: string;
             fileName: string;
@@ -6450,8 +8852,8 @@ async function main() {
                 const { frontmatter } = parseFullCommandContent(content);
                 const fileName = extractCommandName(file);
                 commandItems.push({
-                  name: frontmatter.name || fileName,  // Prefer frontmatter name
-                  fileName,  // Always include actual file name for reference
+                  name: frontmatter.name || fileName, // Prefer frontmatter name
+                  fileName, // Always include actual file name for reference
                   description: frontmatter.description || '',
                   scope: scopeType,
                   path: filePath,
@@ -6459,12 +8861,19 @@ async function main() {
                 });
               }
             } catch (scanError) {
-              console.warn(`[api/command-items] Error scanning ${scopeType} commands:`, scanError);
+              console.warn(
+                `[api/command-items] Error scanning ${scopeType} commands:`,
+                scanError,
+              );
             }
           };
 
-          const resolvedProjectCommandsDir = effectiveCommandsDir || projectCommandsBaseDir;
-          if ((scope === 'all' || scope === 'project') && resolvedProjectCommandsDir) {
+          const resolvedProjectCommandsDir =
+            effectiveCommandsDir || projectCommandsBaseDir;
+          if (
+            (scope === 'all' || scope === 'project') &&
+            resolvedProjectCommandsDir
+          ) {
             scanCommands(resolvedProjectCommandsDir, 'project');
           }
           if (scope === 'all' || scope === 'user') {
@@ -6475,18 +8884,32 @@ async function main() {
         } catch (error) {
           console.error('[api/command-items] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to list commands' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to list commands',
+            },
+            500,
           );
         }
       }
 
       // GET /api/command-item/:name - Get command detail
-      if (pathname.startsWith('/api/command-item/') && request.method === 'GET') {
+      if (
+        pathname.startsWith('/api/command-item/') &&
+        request.method === 'GET'
+      ) {
         try {
-          const cmdName = decodeURIComponent(pathname.replace('/api/command-item/', ''));
+          const cmdName = decodeURIComponent(
+            pathname.replace('/api/command-item/', ''),
+          );
           if (!isValidItemName(cmdName)) {
-            return jsonResponse({ success: false, error: 'Invalid command name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid command name' },
+              400,
+            );
           }
           const scope = url.searchParams.get('scope') || 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
@@ -6497,7 +8920,10 @@ async function main() {
           const cmdPath = join(baseDir, `${cmdName}.md`);
 
           if (!existsSync(cmdPath)) {
-            return jsonResponse({ success: false, error: 'Command not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Command not found' },
+              404,
+            );
           }
 
           const content = readFileSync(cmdPath, 'utf-8');
@@ -6506,31 +8932,45 @@ async function main() {
           return jsonResponse({
             success: true,
             command: {
-              name: frontmatter.name || cmdName,  // Prefer frontmatter name over file name
-              fileName: cmdName,  // Always return the actual file name for reference
+              name: frontmatter.name || cmdName, // Prefer frontmatter name over file name
+              fileName: cmdName, // Always return the actual file name for reference
               path: cmdPath,
               scope,
               frontmatter,
               body,
-            }
+            },
           });
         } catch (error) {
           console.error('[api/command-item] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to get command' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to get command',
+            },
+            500,
           );
         }
       }
 
       // PUT /api/command-item/:name - Update command
-      if (pathname.startsWith('/api/command-item/') && request.method === 'PUT') {
+      if (
+        pathname.startsWith('/api/command-item/') &&
+        request.method === 'PUT'
+      ) {
         try {
-          const cmdName = decodeURIComponent(pathname.replace('/api/command-item/', ''));
+          const cmdName = decodeURIComponent(
+            pathname.replace('/api/command-item/', ''),
+          );
           if (!isValidItemName(cmdName)) {
-            return jsonResponse({ success: false, error: 'Invalid command name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid command name' },
+              400,
+            );
           }
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             scope: 'user' | 'project';
             frontmatter: Partial<CommandFrontmatter>;
             body: string;
@@ -6540,12 +8980,16 @@ async function main() {
 
           // Use explicit agentDir if provided for project scope
           const { commandsDir } = getProjectBaseDirs(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userCommandsBaseDir : commandsDir;
+          const baseDir =
+            payload.scope === 'user' ? userCommandsBaseDir : commandsDir;
           let currentFileName = cmdName;
           let cmdPath = join(baseDir, `${currentFileName}.md`);
 
           if (!existsSync(cmdPath)) {
-            return jsonResponse({ success: false, error: 'Command not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Command not found' },
+              404,
+            );
           }
 
           // Handle file rename if newFileName is provided and different
@@ -6554,19 +8998,31 @@ async function main() {
 
             // Validate new file name
             if (!isValidItemName(newFileName)) {
-              return jsonResponse({ success: false, error: 'Invalid new file name' }, 400);
+              return jsonResponse(
+                { success: false, error: 'Invalid new file name' },
+                400,
+              );
             }
 
             const newCmdPath = join(baseDir, `${newFileName}.md`);
 
             // Check for conflict
             if (existsSync(newCmdPath)) {
-              return jsonResponse({ success: false, error: `指令文件 "${newFileName}.md" 已存在，请使用其他名称` }, 409);
+              return jsonResponse(
+                {
+                  success: false,
+                  error: `指令文件 "${newFileName}.md" 已存在，请使用其他名称`,
+                },
+                409,
+              );
             }
 
             // Atomic-like operation: prepare content first, then rename
             // If rename fails, nothing is lost. If write fails after rename, file is renamed but content unchanged.
-            const content = serializeCommandContent(payload.frontmatter, payload.body);
+            const content = serializeCommandContent(
+              payload.frontmatter,
+              payload.body,
+            );
 
             // Rename the file
             renameSync(cmdPath, newCmdPath);
@@ -6577,38 +9033,56 @@ async function main() {
             writeFileSync(cmdPath, content, 'utf-8');
 
             // User command renamed — re-sync to fix old dangling symlink + create new one
-            if (payload.scope === 'user' && agentDir) syncProjectUserConfig(agentDir);
+            if (payload.scope === 'user' && agentDir)
+              syncProjectUserConfig(agentDir);
             return jsonResponse({
               success: true,
               path: cmdPath,
-              fileName: currentFileName
+              fileName: currentFileName,
             });
           }
 
           // No rename, just update content
-          const content = serializeCommandContent(payload.frontmatter, payload.body);
+          const content = serializeCommandContent(
+            payload.frontmatter,
+            payload.body,
+          );
           writeFileSync(cmdPath, content, 'utf-8');
 
           return jsonResponse({
             success: true,
             path: cmdPath,
-            fileName: currentFileName
+            fileName: currentFileName,
           });
         } catch (error) {
           console.error('[api/command-item] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to update command' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update command',
+            },
+            500,
           );
         }
       }
 
       // DELETE /api/command-item/:name - Delete command
-      if (pathname.startsWith('/api/command-item/') && request.method === 'DELETE') {
+      if (
+        pathname.startsWith('/api/command-item/') &&
+        request.method === 'DELETE'
+      ) {
         try {
-          const cmdName = decodeURIComponent(pathname.replace('/api/command-item/', ''));
+          const cmdName = decodeURIComponent(
+            pathname.replace('/api/command-item/', ''),
+          );
           if (!isValidItemName(cmdName)) {
-            return jsonResponse({ success: false, error: 'Invalid command name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid command name' },
+              400,
+            );
           }
           const scope = url.searchParams.get('scope') || 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
@@ -6619,7 +9093,10 @@ async function main() {
           const cmdPath = join(baseDir, `${cmdName}.md`);
 
           if (!existsSync(cmdPath)) {
-            return jsonResponse({ success: false, error: 'Command not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Command not found' },
+              404,
+            );
           }
 
           rmSync(cmdPath);
@@ -6629,28 +9106,43 @@ async function main() {
         } catch (error) {
           console.error('[api/command-item] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to delete command' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to delete command',
+            },
+            500,
           );
         }
       }
 
       // POST /api/command-item/create - Create new command
-      if (pathname === '/api/command-item/create' && request.method === 'POST') {
+      if (
+        pathname === '/api/command-item/create' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             name: string;
             scope: 'user' | 'project';
             description?: string;
           };
 
           if (!payload.name) {
-            return jsonResponse({ success: false, error: 'Name is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Name is required' },
+              400,
+            );
           }
 
           // Sanitize name for filename (supports Unicode characters like Chinese)
           const fileName = sanitizeFolderName(payload.name);
-          const baseDir = payload.scope === 'user' ? userCommandsBaseDir : projectCommandsBaseDir;
+          const baseDir =
+            payload.scope === 'user'
+              ? userCommandsBaseDir
+              : projectCommandsBaseDir;
 
           // Ensure directory exists
           if (!existsSync(baseDir)) {
@@ -6660,7 +9152,10 @@ async function main() {
           const cmdPath = join(baseDir, `${fileName}.md`);
 
           if (existsSync(cmdPath)) {
-            return jsonResponse({ success: false, error: 'Command already exists' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Command already exists' },
+              409,
+            );
           }
 
           // Create command file with default content
@@ -6674,13 +9169,20 @@ async function main() {
           writeFileSync(cmdPath, content, 'utf-8');
 
           // New user command — sync symlink into project so SDK can discover it
-          if (payload.scope === 'user' && agentDir) syncProjectUserConfig(agentDir);
+          if (payload.scope === 'user' && agentDir)
+            syncProjectUserConfig(agentDir);
           return jsonResponse({ success: true, path: cmdPath, name: fileName });
         } catch (error) {
           console.error('[api/command-item/create] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to create command' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to create command',
+            },
+            500,
           );
         }
       }
@@ -6728,7 +9230,13 @@ async function main() {
           const queryAgentDir = url.searchParams.get('agentDir');
           const projAgentsDir = getProjectAgentsDir(queryAgentDir);
 
-          let agents: Array<{ name: string; description: string; scope: 'user' | 'project'; path: string; folderName: string }> = [];
+          let agents: Array<{
+            name: string;
+            description: string;
+            scope: 'user' | 'project';
+            path: string;
+            folderName: string;
+          }> = [];
 
           if ((scope === 'all' || scope === 'project') && projAgentsDir) {
             agents = agents.concat(scanAgents(projAgentsDir, 'project'));
@@ -6741,8 +9249,14 @@ async function main() {
         } catch (error) {
           console.error('[api/agents] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to list agents' },
-            500
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to list agents',
+            },
+            500,
           );
         }
       }
@@ -6773,16 +9287,20 @@ async function main() {
           }
 
           const myagentsAgents = scanAgents(userAgentsBaseDir, 'user');
-          const myagentsSet = new Set(myagentsAgents.map(a => a.folderName));
+          const myagentsSet = new Set(myagentsAgents.map((a) => a.folderName));
 
           // folderName is the canonical agent identity (e.g. "code-reviewer"
           // for flat, "team/reviewer" for nested, "novels" for folder). The
           // client passes these back to sync-from-claude, and we re-validate
           // them against scanAgents output at that time — no raw filesystem
           // name is trusted across the request boundary.
-          const allFolders = claudeAgents.map(a => a.folderName);
-          const newFolders = claudeAgents.filter(a => !myagentsSet.has(a.folderName)).map(a => a.folderName);
-          const conflictFolders = claudeAgents.filter(a => myagentsSet.has(a.folderName)).map(a => a.folderName);
+          const allFolders = claudeAgents.map((a) => a.folderName);
+          const newFolders = claudeAgents
+            .filter((a) => !myagentsSet.has(a.folderName))
+            .map((a) => a.folderName);
+          const conflictFolders = claudeAgents
+            .filter((a) => myagentsSet.has(a.folderName))
+            .map((a) => a.folderName);
 
           return jsonResponse({
             canSync: allFolders.length > 0,
@@ -6793,7 +9311,15 @@ async function main() {
           });
         } catch (error) {
           console.error('[api/agent/sync-check] Error:', error);
-          return jsonResponse({ canSync: false, count: 0, folders: [], error: error instanceof Error ? error.message : 'Check failed' }, 500);
+          return jsonResponse(
+            {
+              canSync: false,
+              count: 0,
+              folders: [],
+              error: error instanceof Error ? error.message : 'Check failed',
+            },
+            500,
+          );
         }
       }
 
@@ -6811,29 +9337,54 @@ async function main() {
       // flattened — "team/reviewer" and just "reviewer" would collide. Keeping
       // the source layout is lossless + matches Claude Code's own storage
       // convention. `scanAgents()` (loader side) already reads all three.
-      if (pathname === '/api/agent/sync-from-claude' && request.method === 'POST') {
+      if (
+        pathname === '/api/agent/sync-from-claude' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json().catch(() => ({})) as { mode?: 'skip' | 'overwrite'; folders?: string[] };
+          const payload = (await request.json().catch(() => ({}))) as {
+            mode?: 'skip' | 'overwrite';
+            folders?: string[];
+          };
           const conflictMode = payload.mode || 'skip';
           const selectedFolders = payload.folders; // Optional: sync only these specific folderNames
 
           const claudeAgentsDir = join(homeDir, '.claude', 'agents');
           if (!existsSync(claudeAgentsDir)) {
-            return jsonResponse({ success: false, synced: 0, failed: 0, skipped: 0, overwritten: 0, error: 'Claude Code agents directory not found' }, 404);
+            return jsonResponse(
+              {
+                success: false,
+                synced: 0,
+                failed: 0,
+                skipped: 0,
+                overwritten: 0,
+                error: 'Claude Code agents directory not found',
+              },
+              404,
+            );
           }
 
           // Enumerate via the same protocol-aligned scanner that sync-check uses.
           // Index by folderName so selectedFolders can only reach agents the
           // scanner actually saw — no raw-path injection across the boundary.
           const claudeAgents = scanAgents(claudeAgentsDir, 'user');
-          const claudeByName = new Map(claudeAgents.map(a => [a.folderName, a]));
+          const claudeByName = new Map(
+            claudeAgents.map((a) => [a.folderName, a]),
+          );
 
           const foldersToSync = selectedFolders
-            ? selectedFolders.filter(f => claudeByName.has(f))
+            ? selectedFolders.filter((f) => claudeByName.has(f))
             : Array.from(claudeByName.keys());
 
           if (foldersToSync.length === 0) {
-            return jsonResponse({ success: true, synced: 0, failed: 0, skipped: 0, overwritten: 0, message: 'No agents to sync' });
+            return jsonResponse({
+              success: true,
+              synced: 0,
+              failed: 0,
+              skipped: 0,
+              overwritten: 0,
+              message: 'No agents to sync',
+            });
           }
 
           if (!existsSync(userAgentsBaseDir)) {
@@ -6849,7 +9400,7 @@ async function main() {
 
           for (const folderName of foldersToSync) {
             const src = claudeByName.get(folderName);
-            if (!src) continue;  // defensive, already filtered above
+            if (!src) continue; // defensive, already filtered above
 
             try {
               // Conflict probe via the SAME scanner used for sync-check, so the
@@ -6867,9 +9418,10 @@ async function main() {
                 // force })` handles both file (flat/nested .md) and directory
                 // (folder layout) targets. For folder layout we strip back to
                 // the folder itself to avoid leaving a ghost _meta.json.
-                const existingTarget = existing.layout === 'folder'
-                  ? dirname(existing.path)  // the <folderName>/ directory
-                  : existing.path;          // the .md file itself
+                const existingTarget =
+                  existing.layout === 'folder'
+                    ? dirname(existing.path) // the <folderName>/ directory
+                    : existing.path; // the .md file itself
                 await rm(existingTarget, { recursive: true, force: true });
                 overwritten++;
               }
@@ -6881,7 +9433,11 @@ async function main() {
               if (src.layout === 'folder') {
                 const srcDir = dirname(src.path);
                 const destDir = join(userAgentsBaseDir, folderName);
-                await copyDirRecursive(srcDir, destDir, '[api/agent/sync-from-claude]');
+                await copyDirRecursive(
+                  srcDir,
+                  destDir,
+                  '[api/agent/sync-from-claude]',
+                );
 
                 // Write _meta.json (only folder layout has a stable home for it).
                 // Auto-generated from frontmatter.name so the UI shows a friendly
@@ -6899,8 +9455,14 @@ async function main() {
                       createdAt: new Date().toISOString(),
                       updatedAt: new Date().toISOString(),
                     };
-                    writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
-                  } catch { /* _meta.json generation is optional */ }
+                    writeFileSync(
+                      metaPath,
+                      JSON.stringify(meta, null, 2),
+                      'utf-8',
+                    );
+                  } catch {
+                    /* _meta.json generation is optional */
+                  }
                 }
               } else {
                 // flat or nested: single-file copy. For nested we need to
@@ -6920,8 +9482,13 @@ async function main() {
               synced++;
             } catch (copyError) {
               failed++;
-              errors.push(`${folderName}: ${copyError instanceof Error ? copyError.message : 'Unknown error'}`);
-              console.error(`[api/agent/sync-from-claude] Failed to sync "${folderName}":`, copyError);
+              errors.push(
+                `${folderName}: ${copyError instanceof Error ? copyError.message : 'Unknown error'}`,
+              );
+              console.error(
+                `[api/agent/sync-from-claude] Failed to sync "${folderName}":`,
+                copyError,
+              );
             }
           }
 
@@ -6936,7 +9503,15 @@ async function main() {
           });
         } catch (error) {
           console.error('[api/agent/sync-from-claude] Error:', error);
-          return jsonResponse({ success: false, synced: 0, failed: 0, error: error instanceof Error ? error.message : 'Sync failed' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              synced: 0,
+              failed: 0,
+              error: error instanceof Error ? error.message : 'Sync failed',
+            },
+            500,
+          );
         }
       }
 
@@ -6944,7 +9519,7 @@ async function main() {
       // NOTE: Must be before /api/agent/:name to avoid wildcard capture
       if (pathname === '/api/agent/create' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             name: string;
             scope: 'user' | 'project';
             description?: string;
@@ -6952,27 +9527,38 @@ async function main() {
           };
 
           if (!payload.name) {
-            return jsonResponse({ success: false, error: 'Name is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Name is required' },
+              400,
+            );
           }
 
           const folderName = sanitizeFolderName(payload.name);
           const agentsDir = getProjectAgentsDir(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userAgentsBaseDir : agentsDir;
+          const baseDir =
+            payload.scope === 'user' ? userAgentsBaseDir : agentsDir;
 
           if (!baseDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '请先设置工作目录' },
+              400,
+            );
           }
 
           const agentFolderDir = join(baseDir, folderName);
           if (existsSync(agentFolderDir)) {
-            return jsonResponse({ success: false, error: 'Agent already exists' }, 409);
+            return jsonResponse(
+              { success: false, error: 'Agent already exists' },
+              409,
+            );
           }
 
           ensureDirSync(agentFolderDir);
 
           const frontmatter: Partial<AgentFrontmatter> = {
             name: payload.name,
-            description: payload.description || `Description for ${payload.name}`,
+            description:
+              payload.description || `Description for ${payload.name}`,
           };
           const body = `# ${payload.name}\n\nDescribe your agent instructions here.`;
           const content = serializeAgentContent(frontmatter, body);
@@ -6990,39 +9576,87 @@ async function main() {
           return jsonResponse({ success: true, path: agentPath, folderName });
         } catch (error) {
           console.error('[api/agent/create] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to create agent' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to create agent',
+            },
+            500,
+          );
         }
       }
 
       // GET /api/agents/workspace-config - Read workspace agent config
-      if (pathname === '/api/agents/workspace-config' && request.method === 'GET') {
+      if (
+        pathname === '/api/agents/workspace-config' &&
+        request.method === 'GET'
+      ) {
         try {
           const queryAgentDir = url.searchParams.get('agentDir');
-          const effectiveDir = (queryAgentDir && isValidAgentDir(queryAgentDir).valid ? queryAgentDir : currentAgentDir) || '';
+          const effectiveDir =
+            (queryAgentDir && isValidAgentDir(queryAgentDir).valid
+              ? queryAgentDir
+              : currentAgentDir) || '';
           if (!effectiveDir) {
-            return jsonResponse({ success: true, config: { local: {}, global_refs: {} } });
+            return jsonResponse({
+              success: true,
+              config: { local: {}, global_refs: {} },
+            });
           }
           const config = readWorkspaceConfig(effectiveDir);
           return jsonResponse({ success: true, config });
         } catch (error) {
           console.error('[api/agents/workspace-config] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to read config' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to read config',
+            },
+            500,
+          );
         }
       }
 
       // PUT /api/agents/workspace-config - Update workspace agent config
-      if (pathname === '/api/agents/workspace-config' && request.method === 'PUT') {
+      if (
+        pathname === '/api/agents/workspace-config' &&
+        request.method === 'PUT'
+      ) {
         try {
-          const payload = await request.json() as { config: AgentWorkspaceConfig; agentDir?: string };
-          const effectiveDir = (payload.agentDir && isValidAgentDir(payload.agentDir).valid ? payload.agentDir : currentAgentDir) || '';
+          const payload = (await request.json()) as {
+            config: AgentWorkspaceConfig;
+            agentDir?: string;
+          };
+          const effectiveDir =
+            (payload.agentDir && isValidAgentDir(payload.agentDir).valid
+              ? payload.agentDir
+              : currentAgentDir) || '';
           if (!effectiveDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
+            return jsonResponse(
+              { success: false, error: '请先设置工作目录' },
+              400,
+            );
           }
           writeWorkspaceConfig(effectiveDir, payload.config);
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/agents/workspace-config] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to update config' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update config',
+            },
+            500,
+          );
         }
       }
 
@@ -7030,13 +9664,27 @@ async function main() {
       if (pathname === '/api/agents/enabled' && request.method === 'GET') {
         try {
           const queryAgentDir = url.searchParams.get('agentDir');
-          const effectiveDir = (queryAgentDir && isValidAgentDir(queryAgentDir).valid ? queryAgentDir : currentAgentDir) || '';
-          const projAgentsDir = effectiveDir ? join(effectiveDir, '.claude', 'agents') : '';
+          const effectiveDir =
+            (queryAgentDir && isValidAgentDir(queryAgentDir).valid
+              ? queryAgentDir
+              : currentAgentDir) || '';
+          const projAgentsDir = effectiveDir
+            ? join(effectiveDir, '.claude', 'agents')
+            : '';
           const agents = loadEnabledAgents(projAgentsDir, userAgentsBaseDir);
           return jsonResponse({ success: true, agents });
         } catch (error) {
           console.error('[api/agents/enabled] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to load agents' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to load agents',
+            },
+            500,
+          );
         }
       }
 
@@ -7049,7 +9697,11 @@ async function main() {
           return jsonResponse({ models });
         } catch (error) {
           console.error('[api/supported-models] Error:', error);
-          return jsonResponse({ models: [], error: error instanceof Error ? error.message : 'Failed to get models' });
+          return jsonResponse({
+            models: [],
+            error:
+              error instanceof Error ? error.message : 'Failed to get models',
+          });
         }
       }
 
@@ -7060,15 +9712,30 @@ async function main() {
           // by the desktop model picker. It marks this as a channel/agent config
           // sync that must defer to a session snapshot (snapshot wins). Desktop
           // pushes omit it and stay authoritative. See setSessionModel.
-          const payload = await request.json() as { model?: string; imConfigSync?: boolean };
+          const payload = (await request.json()) as {
+            model?: string;
+            imConfigSync?: boolean;
+          };
           if (!payload?.model) {
-            return jsonResponse({ success: false, error: 'model is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'model is required' },
+              400,
+            );
           }
-          const result = await getSessionEngine().updateModel(payload.model, { imConfigSync: payload.imConfigSync === true });
+          const result = await getSessionEngine().updateModel(payload.model, {
+            imConfigSync: payload.imConfigSync === true,
+          });
           return jsonResponse(result, result.success ? 200 : 500);
         } catch (error) {
           console.error('[api/model/set] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to set model' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Failed to set model',
+            },
+            500,
+          );
         }
       }
 
@@ -7078,17 +9745,34 @@ async function main() {
       // setting string ('default' | level); 'default' restores pre-#324
       // behavior. Branches to the external-runtime handler per the
       // config-sync routing red line (CLAUDE.md Multi-Agent Runtime).
-      if (pathname === '/api/reasoning-effort/set' && request.method === 'POST') {
+      if (
+        pathname === '/api/reasoning-effort/set' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as { effort?: string };
+          const payload = (await request.json()) as { effort?: string };
           if (typeof payload?.effort !== 'string' || !payload.effort.trim()) {
-            return jsonResponse({ success: false, error: 'effort is required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'effort is required' },
+              400,
+            );
           }
-          const result = await getSessionEngine().updateReasoningEffort(payload.effort);
+          const result = await getSessionEngine().updateReasoningEffort(
+            payload.effort,
+          );
           return jsonResponse(result, result.success ? 200 : 500);
         } catch (error) {
           console.error('[api/reasoning-effort/set] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to set reasoning effort' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to set reasoning effort',
+            },
+            500,
+          );
         }
       }
 
@@ -7118,13 +9802,19 @@ async function main() {
       // not when Rust composed the payload.
       if (pathname === '/api/session/freeze' && request.method === 'POST') {
         try {
-          const raw = await request.json() as Record<string, unknown>;
+          const raw = (await request.json()) as Record<string, unknown>;
           if (typeof raw?.sessionId !== 'string' || !raw.sessionId) {
-            return jsonResponse({ success: false, error: 'sessionId required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'sessionId required' },
+              400,
+            );
           }
           const snapshot = raw.snapshot as Record<string, unknown> | undefined;
           if (!snapshot || typeof snapshot !== 'object') {
-            return jsonResponse({ success: false, error: 'snapshot required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'snapshot required' },
+              400,
+            );
           }
 
           // Build a typed patch with ONLY the fields that are present AND
@@ -7134,20 +9824,21 @@ async function main() {
           const patch: FreezePatch = {
             configSnapshotAt: new Date().toISOString(),
           };
-          if (typeof snapshot.runtime === 'string' && snapshot.runtime.length > 0) {
+          if (
+            typeof snapshot.runtime === 'string' &&
+            snapshot.runtime.length > 0
+          ) {
             patch.runtime = snapshot.runtime as FreezePatch['runtime'];
           }
           if (
-            patch.runtime
-            && (
-              (snapshot.runtimeSource === 'integrated' && patch.runtime === 'dsh')
-              || (snapshot.runtimeSource === 'managed-provider' && patch.runtime === 'codex')
-              || (
-                snapshot.runtimeSource === 'system-cli'
-                && patch.runtime !== 'builtin'
-                && patch.runtime !== 'dsh'
-              )
-            )
+            patch.runtime &&
+            ((snapshot.runtimeSource === 'integrated' &&
+              patch.runtime === 'dsh') ||
+              (snapshot.runtimeSource === 'managed-provider' &&
+                patch.runtime === 'codex') ||
+              (snapshot.runtimeSource === 'system-cli' &&
+                patch.runtime !== 'builtin' &&
+                patch.runtime !== 'dsh'))
           ) {
             patch.runtimeSource = snapshot.runtimeSource;
           }
@@ -7175,20 +9866,31 @@ async function main() {
             patch.enabledPluginIds = ids;
           }
           if (Array.isArray(snapshot.enabledOfficialToolIds)) {
-            const { normalizeOfficialToolIds } = await import('../shared/official-tools');
-            patch.enabledOfficialToolIds = normalizeOfficialToolIds(snapshot.enabledOfficialToolIds);
+            const { normalizeOfficialToolIds } = await import(
+              '../shared/official-tools'
+            );
+            patch.enabledOfficialToolIds = normalizeOfficialToolIds(
+              snapshot.enabledOfficialToolIds,
+            );
           }
           if (typeof snapshot.providerId === 'string') {
             patch.providerId = snapshot.providerId;
           }
           const route = snapshot.providerRoute;
-          if (isConcreteProviderRoute(route as ProviderRoute | null | undefined)) {
+          if (
+            isConcreteProviderRoute(route as ProviderRoute | null | undefined)
+          ) {
             patch.providerRoute = route as ProviderRoute;
           }
-          if (!patch.providerRoute && typeof snapshot.providerEnvJson === 'string') {
+          if (
+            !patch.providerRoute &&
+            typeof snapshot.providerEnvJson === 'string'
+          ) {
             patch.providerEnvJson = snapshot.providerEnvJson;
           }
-          const identity = runtimeBackedProviderIdentityFromSnapshot(snapshot.providerExecutionIdentity);
+          const identity = runtimeBackedProviderIdentityFromSnapshot(
+            snapshot.providerExecutionIdentity,
+          );
           if (identity) {
             patch.providerExecutionIdentity = identity;
             patch.providerId = identity.providerId;
@@ -7201,13 +9903,27 @@ async function main() {
 
           const updated = await updateSessionMetadata(raw.sessionId, patch);
           if (!updated) {
-            return jsonResponse({ success: false, error: 'session not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'session not found' },
+              404,
+            );
           }
-          console.log(`[api/session/freeze] frozen sessionId=${raw.sessionId.slice(0, 8)} runtime=${updated.runtime ?? 'builtin'}`);
+          console.log(
+            `[api/session/freeze] frozen sessionId=${raw.sessionId.slice(0, 8)} runtime=${updated.runtime ?? 'builtin'}`,
+          );
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/session/freeze] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to freeze session' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to freeze session',
+            },
+            500,
+          );
         }
       }
 
@@ -7216,19 +9932,34 @@ async function main() {
       // IM-bound provider/runtime forks before the channel binding moves to a
       // newly-created session: the old session must keep the held live config,
       // not the Agent defaults about to be updated for the target session.
-      if (pathname === '/api/session/freeze-current' && request.method === 'POST') {
+      if (
+        pathname === '/api/session/freeze-current' &&
+        request.method === 'POST'
+      ) {
         try {
-          const raw = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-          const freezeOptions: { metadataBirthPending: boolean; metadataIndexed?: boolean } = {
+          const raw = (await request.json().catch(() => ({}))) as Record<
+            string,
+            unknown
+          >;
+          const freezeOptions: {
+            metadataBirthPending: boolean;
+            metadataIndexed?: boolean;
+          } = {
             metadataBirthPending: raw.metadataBirthPending === true,
           };
           if (typeof raw.metadataIndexed === 'boolean') {
             freezeOptions.metadataIndexed = raw.metadataIndexed;
           }
-          const result = await getSessionEngine().freezeCurrentSessionForImDetach(freezeOptions);
+          const result =
+            await getSessionEngine().freezeCurrentSessionForImDetach(
+              freezeOptions,
+            );
           if (!result.success) {
             return jsonResponse(
-              { success: false, error: result.error ?? 'Failed to freeze current session' },
+              {
+                success: false,
+                error: result.error ?? 'Failed to freeze current session',
+              },
               result.sessionId ? 500 : 400,
             );
           }
@@ -7241,7 +9972,16 @@ async function main() {
           });
         } catch (error) {
           console.error('[api/session/freeze-current] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to freeze current session' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to freeze current session',
+            },
+            500,
+          );
         }
       }
 
@@ -7254,18 +9994,28 @@ async function main() {
       // `AgentItem.path` / `.layout` from there.
       if (pathname.startsWith('/api/agent/') && request.method === 'GET') {
         try {
-          const agentName = decodeURIComponent(pathname.replace('/api/agent/', ''));
+          const agentName = decodeURIComponent(
+            pathname.replace('/api/agent/', ''),
+          );
           if (!isValidAgentFolderName(agentName)) {
-            return jsonResponse({ success: false, error: 'Invalid agent name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agent name' },
+              400,
+            );
           }
-          const scope = (url.searchParams.get('scope') || 'project') as 'user' | 'project';
+          const scope = (url.searchParams.get('scope') || 'project') as
+            | 'user'
+            | 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
           const agentsDir = getProjectAgentsDir(queryAgentDir);
           const baseDir = scope === 'user' ? userAgentsBaseDir : agentsDir;
 
           const item = findAgent(baseDir, scope, agentName);
           if (!item) {
-            return jsonResponse({ success: false, error: 'Agent not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Agent not found' },
+              404,
+            );
           }
 
           const content = readFileSync(item.path, 'utf-8');
@@ -7282,11 +10032,18 @@ async function main() {
               frontmatter,
               body,
               ...(item.meta ? { meta: item.meta } : {}),
-            }
+            },
           });
         } catch (error) {
           console.error('[api/agent] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to get agent' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'Failed to get agent',
+            },
+            500,
+          );
         }
       }
 
@@ -7303,11 +10060,16 @@ async function main() {
       // affordance when `layout !== 'folder'`.
       if (pathname.startsWith('/api/agent/') && request.method === 'PUT') {
         try {
-          const agentName = decodeURIComponent(pathname.replace('/api/agent/', ''));
+          const agentName = decodeURIComponent(
+            pathname.replace('/api/agent/', ''),
+          );
           if (!isValidAgentFolderName(agentName)) {
-            return jsonResponse({ success: false, error: 'Invalid agent name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agent name' },
+              400,
+            );
           }
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             scope: 'user' | 'project';
             frontmatter: Partial<AgentFrontmatter>;
             body: string;
@@ -7317,11 +10079,15 @@ async function main() {
           };
 
           const agentsDir = getProjectAgentsDir(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userAgentsBaseDir : agentsDir;
+          const baseDir =
+            payload.scope === 'user' ? userAgentsBaseDir : agentsDir;
 
           const item = findAgent(baseDir, payload.scope, agentName);
           if (!item) {
-            return jsonResponse({ success: false, error: 'Agent not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Agent not found' },
+              404,
+            );
           }
 
           let currentFolderName = item.folderName;
@@ -7329,23 +10095,41 @@ async function main() {
           let agentFolderDir = dirname(item.path);
 
           // Rename is only meaningful for the 'folder' layout
-          if (payload.newFolderName && payload.newFolderName !== currentFolderName) {
+          if (
+            payload.newFolderName &&
+            payload.newFolderName !== currentFolderName
+          ) {
             if (item.layout !== 'folder') {
-              return jsonResponse({
-                success: false,
-                error: `当前 Agent 布局为 ${item.layout}，不支持重命名。请手动调整文件结构后再试。`,
-              }, 400);
+              return jsonResponse(
+                {
+                  success: false,
+                  error: `当前 Agent 布局为 ${item.layout}，不支持重命名。请手动调整文件结构后再试。`,
+                },
+                400,
+              );
             }
             const newFolderName = payload.newFolderName;
             if (!isValidItemName(newFolderName)) {
-              return jsonResponse({ success: false, error: 'Invalid new folder name' }, 400);
+              return jsonResponse(
+                { success: false, error: 'Invalid new folder name' },
+                400,
+              );
             }
             const newAgentDir = join(baseDir, newFolderName);
             if (existsSync(newAgentDir)) {
-              return jsonResponse({ success: false, error: `Agent 文件夹 "${newFolderName}" 已存在，请使用其他名称` }, 409);
+              return jsonResponse(
+                {
+                  success: false,
+                  error: `Agent 文件夹 "${newFolderName}" 已存在，请使用其他名称`,
+                },
+                409,
+              );
             }
 
-            const content = serializeAgentContent(payload.frontmatter, payload.body);
+            const content = serializeAgentContent(
+              payload.frontmatter,
+              payload.body,
+            );
             renameSync(agentFolderDir, newAgentDir);
             agentFolderDir = newAgentDir;
             currentFolderName = newFolderName;
@@ -7359,29 +10143,63 @@ async function main() {
 
             writeFileSync(agentPath, content, 'utf-8');
             const existingMeta = readAgentMeta(agentFolderDir);
-            const updatedMeta = { ...existingMeta, ...payload.meta, displayName: payload.frontmatter.name || newFolderName, updatedAt: new Date().toISOString() };
+            const updatedMeta = {
+              ...existingMeta,
+              ...payload.meta,
+              displayName: payload.frontmatter.name || newFolderName,
+              updatedAt: new Date().toISOString(),
+            };
             writeAgentMeta(agentFolderDir, updatedMeta);
-            return jsonResponse({ success: true, path: agentPath, folderName: currentFolderName });
+            return jsonResponse({
+              success: true,
+              path: agentPath,
+              folderName: currentFolderName,
+            });
           }
 
           // No rename — update content in place regardless of layout
-          const content = serializeAgentContent(payload.frontmatter, payload.body);
+          const content = serializeAgentContent(
+            payload.frontmatter,
+            payload.body,
+          );
           writeFileSync(agentPath, content, 'utf-8');
 
           // _meta.json only lives next to 'folder' layout agents. For flat /
           // nested, skip — there's no unambiguous place for it.
           if (item.layout === 'folder') {
             const existingMeta = readAgentMeta(agentFolderDir);
-            if (payload.meta || (payload.frontmatter.name && payload.frontmatter.name !== existingMeta?.displayName)) {
-              const updatedMeta = { ...existingMeta, ...payload.meta, updatedAt: new Date().toISOString() };
-              if (payload.frontmatter.name) updatedMeta.displayName = payload.frontmatter.name;
+            if (
+              payload.meta ||
+              (payload.frontmatter.name &&
+                payload.frontmatter.name !== existingMeta?.displayName)
+            ) {
+              const updatedMeta = {
+                ...existingMeta,
+                ...payload.meta,
+                updatedAt: new Date().toISOString(),
+              };
+              if (payload.frontmatter.name)
+                updatedMeta.displayName = payload.frontmatter.name;
               writeAgentMeta(agentFolderDir, updatedMeta);
             }
           }
-          return jsonResponse({ success: true, path: agentPath, folderName: currentFolderName });
+          return jsonResponse({
+            success: true,
+            path: agentPath,
+            folderName: currentFolderName,
+          });
         } catch (error) {
           console.error('[api/agent] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to update agent' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to update agent',
+            },
+            500,
+          );
         }
       }
 
@@ -7394,18 +10212,28 @@ async function main() {
       //             structure alone (it's user- or plugin-managed)
       if (pathname.startsWith('/api/agent/') && request.method === 'DELETE') {
         try {
-          const agentName = decodeURIComponent(pathname.replace('/api/agent/', ''));
+          const agentName = decodeURIComponent(
+            pathname.replace('/api/agent/', ''),
+          );
           if (!isValidAgentFolderName(agentName)) {
-            return jsonResponse({ success: false, error: 'Invalid agent name' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Invalid agent name' },
+              400,
+            );
           }
-          const scope = (url.searchParams.get('scope') || 'project') as 'user' | 'project';
+          const scope = (url.searchParams.get('scope') || 'project') as
+            | 'user'
+            | 'project';
           const queryAgentDir = url.searchParams.get('agentDir');
           const agentsDir = getProjectAgentsDir(queryAgentDir);
           const baseDir = scope === 'user' ? userAgentsBaseDir : agentsDir;
 
           const item = findAgent(baseDir, scope, agentName);
           if (!item) {
-            return jsonResponse({ success: false, error: 'Agent not found' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Agent not found' },
+              404,
+            );
           }
 
           if (item.layout === 'folder') {
@@ -7416,7 +10244,16 @@ async function main() {
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/agent] Error:', error);
-          return jsonResponse({ success: false, error: error instanceof Error ? error.message : 'Failed to delete agent' }, 500);
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to delete agent',
+            },
+            500,
+          );
         }
       }
 
@@ -7467,8 +10304,8 @@ async function main() {
             groupToolsDeny?: string[];
             replyToBody?: string;
             groupSystemPrompt?: string;
-	            isMention?: boolean;
-	            messageCount?: number;
+            isMention?: boolean;
+            messageCount?: number;
             metadataBirthPending?: boolean;
             configHeldByTab?: boolean;
             bridgePort?: number;
@@ -7481,11 +10318,22 @@ async function main() {
           };
 
           if (!payload.requestId) {
-            return jsonResponse({ success: false, error: 'Missing requestId (Pattern C requires it)' }, 400);
+            return jsonResponse(
+              {
+                success: false,
+                error: 'Missing requestId (Pattern C requires it)',
+              },
+              400,
+            );
           }
-          const hasContent = payload.message?.trim() || (payload.images && payload.images.length > 0);
+          const hasContent =
+            payload.message?.trim() ||
+            (payload.images && payload.images.length > 0);
           if (!hasContent) {
-            return jsonResponse({ success: false, error: 'Message or images required' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Message or images required' },
+              400,
+            );
           }
 
           // Register in registry up front so /api/im/cancel works even before
@@ -7499,34 +10347,52 @@ async function main() {
             payload.source,
           );
           const sidForConfigAuthority = productSessionId;
-          const snapshotMetaForConfig = sidForConfigAuthority ? getSessionMetadata(sidForConfigAuthority) : null;
-          const snapshotOwnsConfig = Boolean(snapshotMetaForConfig?.configSnapshotAt);
-          const configHeldByTab = payload.configHeldByTab === true && !snapshotOwnsConfig;
-          const heldImConfig = configHeldByTab ? engine.getHeldImConfigSnapshot() : null;
+          const snapshotMetaForConfig = sidForConfigAuthority
+            ? getSessionMetadata(sidForConfigAuthority)
+            : null;
+          const snapshotOwnsConfig = Boolean(
+            snapshotMetaForConfig?.configSnapshotAt,
+          );
+          const configHeldByTab =
+            payload.configHeldByTab === true && !snapshotOwnsConfig;
+          const heldImConfig = configHeldByTab
+            ? engine.getHeldImConfigSnapshot()
+            : null;
           const payloadRuntime = payload.runtime ?? getActiveRuntimeType();
           const payloadRuntimeConfig = payload.runtimeConfig ?? null;
-          const snapshotResolvedConfig = snapshotOwnsConfig && snapshotMetaForConfig
-            ? resolveWorkspaceConfig(agentDir, snapshotMetaForConfig, { includeMcp: false })
-            : null;
+          const snapshotResolvedConfig =
+            snapshotOwnsConfig && snapshotMetaForConfig
+              ? resolveWorkspaceConfig(agentDir, snapshotMetaForConfig, {
+                  includeMcp: false,
+                })
+              : null;
           const snapshotRuntimeConfig = snapshotResolvedConfig
             ? buildSnapshotRuntimeConfig(snapshotResolvedConfig)
             : null;
           const snapshotRuntime = snapshotMetaForConfig?.runtimeBinding
             ? runtimeTypeForBinding(snapshotMetaForConfig.runtimeBinding)
-            : snapshotMetaForConfig?.runtime
-              && (VALID_RUNTIMES as readonly string[]).includes(snapshotMetaForConfig.runtime)
-              ? snapshotMetaForConfig.runtime as RuntimeType
+            : snapshotMetaForConfig?.runtime &&
+                (VALID_RUNTIMES as readonly string[]).includes(
+                  snapshotMetaForConfig.runtime,
+                )
+              ? (snapshotMetaForConfig.runtime as RuntimeType)
               : undefined;
-          const effectiveRuntime = snapshotOwnsConfig && snapshotRuntime
-            ? snapshotRuntime
-            : payloadRuntime;
+          const effectiveRuntime =
+            snapshotOwnsConfig && snapshotRuntime
+              ? snapshotRuntime
+              : payloadRuntime;
           const activeRuntime = engine.getRuntimeIdentity().runtime;
           const activeRuntimeSource = engine.getRuntimeIdentity().runtimeSource;
-          const payloadExternalPermissionMode = typeof payload.permissionMode === 'string'
-            ? (activeRuntime === 'codex' && activeRuntimeSource === 'managed-provider'
-              ? projectManagedCodexPermissionToRuntime(payload.permissionMode)
-              : projectPermissionModeForRuntime(payload.permissionMode, activeRuntime))
-            : undefined;
+          const payloadExternalPermissionMode =
+            typeof payload.permissionMode === 'string'
+              ? activeRuntime === 'codex' &&
+                activeRuntimeSource === 'managed-provider'
+                ? projectManagedCodexPermissionToRuntime(payload.permissionMode)
+                : projectPermissionModeForRuntime(
+                    payload.permissionMode,
+                    activeRuntime,
+                  )
+              : undefined;
           if (snapshotOwnsConfig && effectiveRuntime !== activeRuntime) {
             imRequestRegistry.unregister(payload.requestId);
             return jsonResponse(
@@ -7539,378 +10405,508 @@ async function main() {
           }
 
           try {
-
-          // Set IM cron context for the im-cron tool (parity with /api/im/chat)
-          let bridgeSurfaceRequiresTurnBoundary = false;
-          if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
-            const usesProductProvider = usesProductProviderConfiguration(effectiveRuntime);
-            const imCronModel = snapshotResolvedConfig
-              ? snapshotResolvedConfig.model
-              : (usesProductProvider
-                ? (heldImConfig?.model
-                  ?? payload.model
-                  ?? (effectiveRuntime === 'builtin' ? getSessionModel() : undefined))
-                : (heldImConfig?.model ?? getRuntimeConfigModel(payloadRuntimeConfig, effectiveRuntime)));
-            // Resolve Product Provider authority for Builtin and Integrated
-            // DSH; legacy External runtimes manage their own Provider.
-            const imAgentForProvider = usesProductProvider && !snapshotOwnsConfig
-              ? findProjectAgentByWorkspacePath(agentDir)
-              : null;
-            const imProviderId = snapshotOwnsConfig
-              ? (snapshotMetaForConfig?.providerId ?? snapshotResolvedConfig?.providerEnv?.providerId)
-              : ((imAgentForProvider?.providerId as string | undefined) ?? undefined);
-            setImCronContext({
-              botId: payload.botId,
-              chatId: payload.sourceId,
-              platform: payload.source.split('_')[0],
-              workspacePath: agentDir,
-              model: imCronModel,
-              permissionMode: snapshotResolvedConfig
-                ? snapshotResolvedConfig.permissionMode
-                : (usesProductProvider
-                  ? (heldImConfig?.permissionMode ?? payload.permissionMode)
-                  : (heldImConfig?.permissionMode
-                    ?? payloadExternalPermissionMode
-                    ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime)
-                    ?? getMaxPermissionForRuntime(effectiveRuntime))),
-              // Legacy frozen env (kept for back-compat); sidecar prefers
-              // `providerId` when both are present.
-              providerEnv: usesProductProvider
-                ? cloneProviderEnvForImContext(
-                    (snapshotResolvedConfig?.providerEnv as ProviderEnv | undefined)
-                    ?? heldImConfig?.providerEnv
-                    ?? payload.providerEnv,
-                  )
-                : undefined,
-              providerId: imProviderId,
-              runtime: effectiveRuntime,
-              runtimeConfig: usesProductProvider
-                ? undefined
-                : (snapshotRuntimeConfig ?? payloadRuntimeConfig ?? undefined),
-            });
-            setImMediaContext({
-              botId: payload.botId,
-              chatId: payload.sourceId,
-              platform: payload.source.split('_')[0],
-              workspacePath: agentDir,
-            });
-            let bridgeSurfaceChanged = false;
-            if (payload.bridgePort && payload.bridgePluginId) {
-              const bridgeSourceType = payload.source?.split('_')[1] as string | undefined;
-              const imBridgeTurnContext = {
-                senderId: payload.senderId,
+            // Set IM cron context for the im-cron tool (parity with /api/im/chat)
+            let bridgeSurfaceRequiresTurnBoundary = false;
+            if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
+              const usesProductProvider =
+                usesProductProviderConfiguration(effectiveRuntime);
+              const imCronModel = snapshotResolvedConfig
+                ? snapshotResolvedConfig.model
+                : usesProductProvider
+                  ? (heldImConfig?.model ??
+                    payload.model ??
+                    (effectiveRuntime === 'builtin'
+                      ? getSessionModel()
+                      : undefined))
+                  : (heldImConfig?.model ??
+                    getRuntimeConfigModel(
+                      payloadRuntimeConfig,
+                      effectiveRuntime,
+                    ));
+              // Resolve Product Provider authority for Builtin and Integrated
+              // DSH; legacy External runtimes manage their own Provider.
+              const imAgentForProvider =
+                usesProductProvider && !snapshotOwnsConfig
+                  ? findProjectAgentByWorkspacePath(agentDir)
+                  : null;
+              const imProviderId = snapshotOwnsConfig
+                ? (snapshotMetaForConfig?.providerId ??
+                  snapshotResolvedConfig?.providerEnv?.providerId)
+                : ((imAgentForProvider?.providerId as string | undefined) ??
+                  undefined);
+              setImCronContext({
+                botId: payload.botId,
                 chatId: payload.sourceId,
-                isOwner: payload.senderIsOwner ?? false,
-                accountId: payload.accountId,
-                sourceType: bridgeSourceType,
-                hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
-              };
-              imRequestRegistry.setImBridgeTurnContext(payload.requestId, imBridgeTurnContext);
-              let surface;
-              try {
-                surface = await raceWithAbortSignal(
-                  ensureImBridgeToolSurface({
-                    bridgePort: payload.bridgePort,
-                    pluginId: payload.bridgePluginId,
-                    enabledToolGroups: payload.bridgeEnabledToolGroups || [],
-                  }, () => getSessionEngine().getActiveImBridgeTurnContext()),
-                  requestEntry.abortController.signal,
+                platform: payload.source.split('_')[0],
+                workspacePath: agentDir,
+                model: imCronModel,
+                permissionMode: snapshotResolvedConfig
+                  ? snapshotResolvedConfig.permissionMode
+                  : usesProductProvider
+                    ? (heldImConfig?.permissionMode ?? payload.permissionMode)
+                    : (heldImConfig?.permissionMode ??
+                      payloadExternalPermissionMode ??
+                      getRuntimeConfigPermissionMode(
+                        payloadRuntimeConfig,
+                        effectiveRuntime,
+                      ) ??
+                      getMaxPermissionForRuntime(effectiveRuntime)),
+                // Legacy frozen env (kept for back-compat); sidecar prefers
+                // `providerId` when both are present.
+                providerEnv: usesProductProvider
+                  ? cloneProviderEnvForImContext(
+                      (snapshotResolvedConfig?.providerEnv as
+                        | ProviderEnv
+                        | undefined) ??
+                        heldImConfig?.providerEnv ??
+                        payload.providerEnv,
+                    )
+                  : undefined,
+                providerId: imProviderId,
+                runtime: effectiveRuntime,
+                runtimeConfig: usesProductProvider
+                  ? undefined
+                  : (snapshotRuntimeConfig ??
+                    payloadRuntimeConfig ??
+                    undefined),
+              });
+              setImMediaContext({
+                botId: payload.botId,
+                chatId: payload.sourceId,
+                platform: payload.source.split('_')[0],
+                workspacePath: agentDir,
+              });
+              let bridgeSurfaceChanged = false;
+              if (payload.bridgePort && payload.bridgePluginId) {
+                const bridgeSourceType = payload.source?.split('_')[1] as
+                  | string
+                  | undefined;
+                const imBridgeTurnContext = {
+                  senderId: payload.senderId,
+                  chatId: payload.sourceId,
+                  isOwner: payload.senderIsOwner ?? false,
+                  accountId: payload.accountId,
+                  sourceType: bridgeSourceType,
+                  hostInteraction: normalizeHostInteractionCapability(
+                    payload.hostInteraction,
+                  ),
+                };
+                imRequestRegistry.setImBridgeTurnContext(
+                  payload.requestId,
+                  imBridgeTurnContext,
                 );
-              } catch (error) {
-                if (requestEntry.abortController.signal.aborted) {
-                  imRequestRegistry.unregister(payload.requestId);
-                  return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
+                let surface;
+                try {
+                  surface = await raceWithAbortSignal(
+                    ensureImBridgeToolSurface(
+                      {
+                        bridgePort: payload.bridgePort,
+                        pluginId: payload.bridgePluginId,
+                        enabledToolGroups:
+                          payload.bridgeEnabledToolGroups || [],
+                      },
+                      () => getSessionEngine().getActiveImBridgeTurnContext(),
+                    ),
+                    requestEntry.abortController.signal,
+                  );
+                } catch (error) {
+                  if (requestEntry.abortController.signal.aborted) {
+                    imRequestRegistry.unregister(payload.requestId);
+                    return jsonResponse(
+                      {
+                        success: false,
+                        error: 'IM request cancelled before dispatch',
+                      },
+                      409,
+                    );
+                  }
+                  throw error;
                 }
-                throw error;
+                bridgeSurfaceChanged = surface.changed;
               }
-              bridgeSurfaceChanged = surface.changed;
+
+              // After IM context (which gates the `im-bridge-tools` MCP) is set,
+              // sync the SDK's MCP list so it picks up the bridge server. Without
+              // this, the pre-warmed SDK (started by heartbeat before any IM
+              // message) keeps a stale mcpServers config and bridge plugin tools
+              // appear "disconnected".
+              //
+              // (v0.2.11) `im-media` was retired here — `myagents im send-media`
+              // CLI is the new path, no SDK sync needed for it. `im-bridge-tools`
+              // is the only remaining context-injected MCP this re-sync targets.
+              //
+              // Position note: called before the Runtime adapter applies the IM
+              // scenario so the pre-warm's current scenario (typically 'desktop') is
+              // preserved in the diff. Removing scenario-bound MCPs mid-session would
+              // leave the SDK's frozen systemPrompt referencing tools that no longer
+              // exist. This pass is purely additive for the IM-context tools the AI
+              // is about to need; scenario alignment is a separate concern.
+              //
+              // Builtin runtime only — external runtimes (CC/Codex) manage their own MCP set.
+              if (
+                engine.kind === 'builtin' &&
+                (bridgeSurfaceChanged ||
+                  !isCurrentImBridgeToolSurfaceInstalled())
+              ) {
+                bridgeSurfaceRequiresTurnBoundary =
+                  !(await ensureSdkMcpInSync());
+              }
             }
 
-            // After IM context (which gates the `im-bridge-tools` MCP) is set,
-            // sync the SDK's MCP list so it picks up the bridge server. Without
-            // this, the pre-warmed SDK (started by heartbeat before any IM
-            // message) keeps a stale mcpServers config and bridge plugin tools
-            // appear "disconnected".
-            //
-            // (v0.2.11) `im-media` was retired here — `myagents im send-media`
-            // CLI is the new path, no SDK sync needed for it. `im-bridge-tools`
-            // is the only remaining context-injected MCP this re-sync targets.
-            //
-            // Position note: called before the Runtime adapter applies the IM
-            // scenario so the pre-warm's current scenario (typically 'desktop') is
-            // preserved in the diff. Removing scenario-bound MCPs mid-session would
-            // leave the SDK's frozen systemPrompt referencing tools that no longer
-            // exist. This pass is purely additive for the IM-context tools the AI
-            // is about to need; scenario alignment is a separate concern.
-            //
-            // Builtin runtime only — external runtimes (CC/Codex) manage their own MCP set.
-            if (
-              engine.kind === 'builtin'
-              && (bridgeSurfaceChanged || !isCurrentImBridgeToolSurfaceInstalled())
-            ) {
-              bridgeSurfaceRequiresTurnBoundary = !(await ensureSdkMcpInSync());
-            }
-          }
+            // Build the IM interaction scenario after any Builtin-only MCP sync.
+            const [imPlatform, imSourceType] = payload.source.split('_') as [
+              'telegram' | 'feishu',
+              'private' | 'group',
+            ];
+            const hostInteraction = normalizeHostInteractionCapability(
+              payload.hostInteraction,
+            );
+            const imScenario: Extract<InteractionScenario, { type: 'im' }> = {
+              type: 'im',
+              platform: imPlatform,
+              sourceType: imSourceType,
+              botName: payload.botName,
+              hostInteraction,
+            };
+            const imTurnOrigin: SessionOrigin = {
+              kind: 'agent-channel',
+              surface: 'channel_message',
+            };
 
-          // Build the IM interaction scenario after any Builtin-only MCP sync.
-          const [imPlatform, imSourceType] = payload.source.split('_') as ['telegram' | 'feishu', 'private' | 'group'];
-          const hostInteraction = normalizeHostInteractionCapability(payload.hostInteraction);
-          const imScenario: Extract<InteractionScenario, { type: 'im' }> = {
-            type: 'im',
-            platform: imPlatform,
-            sourceType: imSourceType,
-            botName: payload.botName,
-            hostInteraction,
-          };
-          const imTurnOrigin: SessionOrigin = { kind: 'agent-channel', surface: 'channel_message' };
+            // Build final message with group context (identical to /api/im/chat)
+            let finalMessage = payload.message || '';
+            if (payload.sourceType === 'group') {
+              const parts: string[] = [];
+              const isAlways = payload.groupActivation === 'always';
+              const sanitize = (s: string) =>
+                s
+                  .replace(/[<>[\]]/g, '')
+                  .replace(/\n/g, ' ')
+                  .trim();
+              const botName = sanitize(payload.botName ?? 'AI');
+              const platformLabel = sanitize(payload.groupPlatform ?? '');
+              const messageCount = payload.messageCount ?? 0;
+              const shouldInjectFullRules =
+                payload.isFirstGroupTurn ||
+                (messageCount > 0 && messageCount % 10 === 0);
 
-          // Build final message with group context (identical to /api/im/chat)
-          let finalMessage = payload.message || '';
-          if (payload.sourceType === 'group') {
-            const parts: string[] = [];
-            const isAlways = payload.groupActivation === 'always';
-            const sanitize = (s: string) => s.replace(/[<>[\]]/g, '').replace(/\n/g, ' ').trim();
-            const botName = sanitize(payload.botName ?? 'AI');
-            const platformLabel = sanitize(payload.groupPlatform ?? '');
-            const messageCount = payload.messageCount ?? 0;
-            const shouldInjectFullRules = payload.isFirstGroupTurn || (messageCount > 0 && messageCount % 10 === 0);
-
-            if (shouldInjectFullRules) {
-              const safeGroupName = sanitize(payload.groupName ?? '未知群聊');
-              let reminder = `<system-reminder>\n[群聊信息]\n你正在「${safeGroupName}」${platformLabel}群聊中。你的名字是「${botName}」。`;
+              if (shouldInjectFullRules) {
+                const safeGroupName = sanitize(payload.groupName ?? '未知群聊');
+                let reminder = `<system-reminder>\n[群聊信息]\n你正在「${safeGroupName}」${platformLabel}群聊中。你的名字是「${botName}」。`;
+                if (isAlways) {
+                  reminder +=
+                    '\n激活模式：全部消息（你会收到群里所有消息，包括不是发给你的）。';
+                } else {
+                  reminder +=
+                    '\n激活模式：仅 @提及（只有被 @、被回复或使用 /ask 时才会收到消息）。';
+                }
+                reminder +=
+                  '\n你的回复会自动发送到群里，直接回复即可。\n群内不同人的消息会以 [from: 名字 时间] 标注发送者。';
+                if (isAlways) {
+                  const mentionExample = payload.botName
+                    ? `（即 @${botName}）`
+                    : '';
+                  reminder += `\n\n[回复规则]\n你必须非常克制，大多数消息不需要你回复。仅在以下情况回复：\n1. 消息明确 @你${mentionExample}（即使消息同时也 @了其他人，只要 @了你就必须回复）\n2. 消息回复了你之前的消息\n3. 有人直接向你提问或请求帮助\n4. 你确信能提供明确价值的信息\n\n以下情况必须保持沉默：\n- 消息没有 @你，只 @了其他人或其他机器人\n- 普通闲聊、与你无关的讨论\n- 你不确定是否该回复时\n\n判断是否 @了你：看 [本条消息 @了你] 标记，而不是看消息正文中的 @用户名。\n不需要回复时，只回复 <NO_REPLY>，不要添加任何其他内容。`;
+                }
+                if (payload.groupSystemPrompt) {
+                  reminder += `\n\n[群聊指令]\n${payload.groupSystemPrompt}`;
+                }
+                reminder += '\n</system-reminder>';
+                parts.push(reminder);
+              } else if (isAlways) {
+                parts.push(
+                  `<system-reminder>\n你是「${botName}」，当前处于群聊的全部消息模式 — 你会收到群聊内的全部信息，你需要自主判断是否需要回复消息。与自己无关的消息不要回复，没有 @你、仅 @了其他人的消息不要回复。注意：[本条消息 @了你] 标记才是判断依据，消息正文中可能同时 @了多人。当你判断不需要回复消息时，只输出字符<NO_REPLY>\n</system-reminder>`,
+                );
+              }
+              if (payload.pendingHistory) parts.push(payload.pendingHistory);
+              if (payload.replyToBody)
+                parts.push(
+                  `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}`,
+                );
+              const now = new Date();
+              const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+              let messageBlock = '';
               if (isAlways) {
-                reminder += '\n激活模式：全部消息（你会收到群里所有消息，包括不是发给你的）。';
-              } else {
-                reminder += '\n激活模式：仅 @提及（只有被 @、被回复或使用 /ask 时才会收到消息）。';
+                messageBlock += payload.isMention
+                  ? '[本条消息 @了你，你需要回复]\n'
+                  : '[本条消息未 @你]\n';
               }
-              reminder += '\n你的回复会自动发送到群里，直接回复即可。\n群内不同人的消息会以 [from: 名字 时间] 标注发送者。';
-              if (isAlways) {
-                const mentionExample = payload.botName ? `（即 @${botName}）` : '';
-                reminder += `\n\n[回复规则]\n你必须非常克制，大多数消息不需要你回复。仅在以下情况回复：\n1. 消息明确 @你${mentionExample}（即使消息同时也 @了其他人，只要 @了你就必须回复）\n2. 消息回复了你之前的消息\n3. 有人直接向你提问或请求帮助\n4. 你确信能提供明确价值的信息\n\n以下情况必须保持沉默：\n- 消息没有 @你，只 @了其他人或其他机器人\n- 普通闲聊、与你无关的讨论\n- 你不确定是否该回复时\n\n判断是否 @了你：看 [本条消息 @了你] 标记，而不是看消息正文中的 @用户名。\n不需要回复时，只回复 <NO_REPLY>，不要添加任何其他内容。`;
-              }
-              if (payload.groupSystemPrompt) {
-                reminder += `\n\n[群聊指令]\n${payload.groupSystemPrompt}`;
-              }
-              reminder += '\n</system-reminder>';
-              parts.push(reminder);
-            } else if (isAlways) {
-              parts.push(`<system-reminder>\n你是「${botName}」，当前处于群聊的全部消息模式 — 你会收到群聊内的全部信息，你需要自主判断是否需要回复消息。与自己无关的消息不要回复，没有 @你、仅 @了其他人的消息不要回复。注意：[本条消息 @了你] 标记才是判断依据，消息正文中可能同时 @了多人。当你判断不需要回复消息时，只输出字符<NO_REPLY>\n</system-reminder>`);
+              // Fall back to senderId when the plugin didn't provide a senderName
+              // (WeCom's aibot_msg_callback only carries `from.userid`, no name —
+              // unlike Feishu which enriches senderName via contacts API). The
+              // Rust group_history writer (im/mod.rs:2393/2419) already does the
+              // same fallback; without it here the live message has no [from:]
+              // tag while history entries do, breaking the system-reminder's
+              // promise that "群内不同人的消息会以 [from: 名字 时间] 标注".
+              const displaySender = payload.senderName || payload.senderId;
+              messageBlock += displaySender
+                ? `[from: ${sanitize(displaySender)} ${ts}]\n`
+                : '';
+              messageBlock += finalMessage;
+              parts.push(messageBlock);
+              finalMessage = parts.join('\n\n');
+            } else if (payload.replyToBody) {
+              finalMessage = `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}\n\n${finalMessage}`;
             }
-            if (payload.pendingHistory) parts.push(payload.pendingHistory);
-            if (payload.replyToBody) parts.push(`[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}`);
-            const now = new Date();
-            const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-            let messageBlock = '';
-            if (isAlways) {
-              messageBlock += payload.isMention ? '[本条消息 @了你，你需要回复]\n' : '[本条消息未 @你]\n';
-            }
-            // Fall back to senderId when the plugin didn't provide a senderName
-            // (WeCom's aibot_msg_callback only carries `from.userid`, no name —
-            // unlike Feishu which enriches senderName via contacts API). The
-            // Rust group_history writer (im/mod.rs:2393/2419) already does the
-            // same fallback; without it here the live message has no [from:]
-            // tag while history entries do, breaking the system-reminder's
-            // promise that "群内不同人的消息会以 [from: 名字 时间] 标注".
-            const displaySender = payload.senderName || payload.senderId;
-            messageBlock += displaySender ? `[from: ${sanitize(displaySender)} ${ts}]\n` : '';
-            messageBlock += finalMessage;
-            parts.push(messageBlock);
-            finalMessage = parts.join('\n\n');
-          } else if (payload.replyToBody) {
-            finalMessage = `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}\n\n${finalMessage}`;
-          }
 
-          if (engine.kind === 'builtin') {
-            setGroupToolsDeny(resolveImGroupToolsDeny(payload.sourceType, payload.groupToolsDeny));
-          }
-
-          const metadata = {
-            source: payload.source as SessionSource,
-            sourceId: payload.sourceId,
-            senderName: payload.senderName,
-          };
-
-          if (requestEntry.abortController.signal.aborted) {
-            imRequestRegistry.unregister(payload.requestId);
-            return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
-          }
-
-          // Dispatch to runtime through SessionEngine. The route keeps IM
-          // payload shaping; the engine owns builtin/external admission.
-          if (engine.kind !== 'builtin') {
-            const runtimeConfig = snapshotRuntimeConfig ?? payloadRuntimeConfig;
-            if (payloadRuntime !== activeRuntime) {
-              console.error(
-                `[im/enqueue] Runtime mismatch (Rust drift detection failed to catch): sidecar=${activeRuntime} payload=${payloadRuntime}.`,
+            if (engine.kind === 'builtin') {
+              setGroupToolsDeny(
+                resolveImGroupToolsDeny(
+                  payload.sourceType,
+                  payload.groupToolsDeny,
+                ),
               );
             }
-            const resolvedExternalPermissionMode = snapshotResolvedConfig?.permissionMode
-              ?? heldImConfig?.permissionMode
-              ?? payloadExternalPermissionMode
-              ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime)
-              ?? getMaxPermissionForRuntime(effectiveRuntime);
-            const resolvedExternalModel = snapshotResolvedConfig
-              ? snapshotResolvedConfig.model
-              : (heldImConfig?.model ?? getRuntimeConfigModel(runtimeConfig, effectiveRuntime));
-            const resolvedExternalReasoningEffort = snapshotResolvedConfig
-              ? snapshotResolvedConfig.reasoningEffort
-              : (heldImConfig?.reasoningEffort ?? getRuntimeConfigReasoningEffort(runtimeConfig, effectiveRuntime));
-            const result = await goalOrchestrator.enqueueImMessage(engine, {
-              message: finalMessage,
-              images: payload.images ?? undefined,
-              requestId: payload.requestId,
-              sessionId: getRuntimeSessionIdForRequest(),
-              workspacePath: agentDir,
-              scenario: {
-                type: 'agent-channel',
-                platform: imPlatform,
-                sourceType: imSourceType,
-                botName: payload.botName,
-                hostInteraction,
-              },
-              permissionMode: resolvedExternalPermissionMode,
-              model: resolvedExternalModel,
-              reasoningEffort: resolvedExternalReasoningEffort,
-              runtimeConfig,
-              metadataBirthPending: payload.metadataBirthPending === true,
-              metadata,
-              analyticsOrigin: imTurnOrigin,
-            });
-            if (!result.success) {
+
+            const metadata = {
+              source: payload.source as SessionSource,
+              sourceId: payload.sourceId,
+              senderName: payload.senderName,
+            };
+
+            if (requestEntry.abortController.signal.aborted) {
               imRequestRegistry.unregister(payload.requestId);
               return jsonResponse(
-                { success: false, error: result.error ?? 'Failed to send via external runtime' },
-                result.status ?? 503,
+                {
+                  success: false,
+                  error: 'IM request cancelled before dispatch',
+                },
+                409,
               );
             }
-          } else {
-            // PRD 0.2.14 Q4·A — handover-aware permission mode resolution.
-            // After a desktop session is handed over to this channel, the
-            // session carries a `configSnapshotAt` from its desktop creation.
-            // In that case the user's intent is "the desktop session's mode
-            // wins" (the desktop session is the authoritative state), so we
-            // ignore the live Agent values that Rust passed in payload.
-            // Pure IM-origin sessions never have a snapshot, so this branch
-            // is a no-op for them and behavior matches v0.2.13.
-            let resolvedPermissionMode: PermissionMode = (payload.permissionMode as PermissionMode) ?? 'fullAgency';
-            let resolvedModel: string | undefined = payload.model ?? undefined;
-            let resolvedReasoningEffort: string | undefined;
-            let resolvedProviderRoute: ProviderRoute | undefined;
-            // Pure IM-origin builtin sessions resolve ProviderRoute live from
-            // disk. This keeps route identity canonical (providerId + model)
-            // instead of trusting Rust's legacy providerEnv blob, and fails
-            // loud for known provider/model/key errors. Legacy fallback is kept
-            // only for unmatched historical bots where no Agent can be found.
-            let resolvedProviderEnv: ProviderEnv | undefined = payload.providerEnv ?? undefined;
-            if (!heldImConfig && !snapshotResolvedConfig) {
-              const imRoutingConfig = loadConfig();
-              const imProviderRouting = resolveImProviderRouting(agentDir, payload.botId, {
-                config: imRoutingConfig,
-                managedCodexProviderReady: isManagedCodexProviderReady(imRoutingConfig),
+
+            // Dispatch to runtime through SessionEngine. The route keeps IM
+            // payload shaping; the engine owns builtin/external admission.
+            if (engine.kind !== 'builtin') {
+              const runtimeConfig =
+                snapshotRuntimeConfig ?? payloadRuntimeConfig;
+              if (payloadRuntime !== activeRuntime) {
+                console.error(
+                  `[im/enqueue] Runtime mismatch (Rust drift detection failed to catch): sidecar=${activeRuntime} payload=${payloadRuntime}.`,
+                );
+              }
+              const resolvedExternalPermissionMode =
+                snapshotResolvedConfig?.permissionMode ??
+                heldImConfig?.permissionMode ??
+                payloadExternalPermissionMode ??
+                getRuntimeConfigPermissionMode(
+                  runtimeConfig,
+                  effectiveRuntime,
+                ) ??
+                getMaxPermissionForRuntime(effectiveRuntime);
+              const resolvedExternalModel = snapshotResolvedConfig
+                ? snapshotResolvedConfig.model
+                : (heldImConfig?.model ??
+                  getRuntimeConfigModel(runtimeConfig, effectiveRuntime));
+              const resolvedExternalReasoningEffort = snapshotResolvedConfig
+                ? snapshotResolvedConfig.reasoningEffort
+                : (heldImConfig?.reasoningEffort ??
+                  getRuntimeConfigReasoningEffort(
+                    runtimeConfig,
+                    effectiveRuntime,
+                  ));
+              const result = await goalOrchestrator.enqueueImMessage(engine, {
+                message: finalMessage,
+                images: payload.images ?? undefined,
+                requestId: payload.requestId,
+                sessionId: getRuntimeSessionIdForRequest(),
+                workspacePath: agentDir,
+                scenario: {
+                  type: 'agent-channel',
+                  platform: imPlatform,
+                  sourceType: imSourceType,
+                  botName: payload.botName,
+                  hostInteraction,
+                },
+                permissionMode: resolvedExternalPermissionMode,
+                model: resolvedExternalModel,
+                reasoningEffort: resolvedExternalReasoningEffort,
+                runtimeConfig,
+                metadataBirthPending: payload.metadataBirthPending === true,
+                metadata,
+                analyticsOrigin: imTurnOrigin,
               });
-              if (imProviderRouting.kind === 'provider-route') {
-                resolvedProviderRoute = imProviderRouting.providerRoute;
-                resolvedModel = imProviderRouting.model;
-                resolvedProviderEnv = undefined;
-              } else if (imProviderRouting.kind === 'external-runtime') {
+              if (!result.success) {
                 imRequestRegistry.unregister(payload.requestId);
                 return jsonResponse(
                   {
                     success: false,
-                    error: `IM channel now resolves to ${imProviderRouting.runtime}; current sidecar is builtin. Runtime drift recovery should create an external-runtime session before enqueue.`,
+                    error:
+                      result.error ?? 'Failed to send via external runtime',
                   },
-                  409,
+                  result.status ?? 503,
                 );
-              } else if (imProviderRouting.kind === 'error') {
+              }
+            } else {
+              // PRD 0.2.14 Q4·A — handover-aware permission mode resolution.
+              // After a desktop session is handed over to this channel, the
+              // session carries a `configSnapshotAt` from its desktop creation.
+              // In that case the user's intent is "the desktop session's mode
+              // wins" (the desktop session is the authoritative state), so we
+              // ignore the live Agent values that Rust passed in payload.
+              // Pure IM-origin sessions never have a snapshot, so this branch
+              // is a no-op for them and behavior matches v0.2.13.
+              let resolvedPermissionMode: PermissionMode =
+                (payload.permissionMode as PermissionMode) ?? 'fullAgency';
+              let resolvedModel: string | undefined =
+                payload.model ?? undefined;
+              let resolvedReasoningEffort: string | undefined;
+              let resolvedProviderRoute: ProviderRoute | undefined;
+              // Pure IM-origin builtin sessions resolve ProviderRoute live from
+              // disk. This keeps route identity canonical (providerId + model)
+              // instead of trusting Rust's legacy providerEnv blob, and fails
+              // loud for known provider/model/key errors. Legacy fallback is kept
+              // only for unmatched historical bots where no Agent can be found.
+              let resolvedProviderEnv: ProviderEnv | undefined =
+                payload.providerEnv ?? undefined;
+              if (!heldImConfig && !snapshotResolvedConfig) {
+                const imRoutingConfig = loadConfig();
+                const imProviderRouting = resolveImProviderRouting(
+                  agentDir,
+                  payload.botId,
+                  {
+                    config: imRoutingConfig,
+                    managedCodexProviderReady:
+                      isManagedCodexProviderReady(imRoutingConfig),
+                  },
+                );
+                if (imProviderRouting.kind === 'provider-route') {
+                  resolvedProviderRoute = imProviderRouting.providerRoute;
+                  resolvedModel = imProviderRouting.model;
+                  resolvedProviderEnv = undefined;
+                } else if (imProviderRouting.kind === 'external-runtime') {
+                  imRequestRegistry.unregister(payload.requestId);
+                  return jsonResponse(
+                    {
+                      success: false,
+                      error: `IM channel now resolves to ${imProviderRouting.runtime}; current sidecar is builtin. Runtime drift recovery should create an external-runtime session before enqueue.`,
+                    },
+                    409,
+                  );
+                } else if (imProviderRouting.kind === 'error') {
+                  imRequestRegistry.unregister(payload.requestId);
+                  return jsonResponse(
+                    {
+                      success: false,
+                      error: imProviderRouting.message,
+                      reason: imProviderRouting.reason,
+                    },
+                    imProviderRouting.status,
+                  );
+                }
+              }
+              if (heldImConfig) {
+                resolvedPermissionMode =
+                  (heldImConfig.permissionMode as PermissionMode | undefined) ??
+                  resolvedPermissionMode;
+                resolvedModel = heldImConfig.model ?? resolvedModel;
+                resolvedProviderRoute = undefined;
+                resolvedProviderEnv =
+                  heldImConfig.providerEnv ?? resolvedProviderEnv;
+                resolvedReasoningEffort =
+                  heldImConfig.reasoningEffort ?? resolvedReasoningEffort;
+              }
+              if (snapshotResolvedConfig) {
+                // Desktop-handover snapshots own the full config. Missing fields
+                // mean "use product/runtime default", not "fall back to live
+                // Agent/channel config".
+                resolvedPermissionMode =
+                  snapshotResolvedConfig.permissionMode as PermissionMode;
+                resolvedModel = snapshotResolvedConfig.model;
+                resolvedProviderRoute = isConcreteProviderRoute(
+                  snapshotResolvedConfig.providerRoute,
+                )
+                  ? snapshotResolvedConfig.providerRoute
+                  : undefined;
+                resolvedProviderEnv = snapshotResolvedConfig.providerEnv as
+                  | ProviderEnv
+                  | undefined;
+                resolvedReasoningEffort =
+                  snapshotResolvedConfig.reasoningEffort;
+              }
+
+              applyBackgroundAgentPermissionModeFromDisk(); // #264 — IM/Task self-resolve
+              const result = await goalOrchestrator.enqueueImMessage(engine, {
+                message: finalMessage,
+                images: payload.images,
+                requestId: payload.requestId,
+                sessionId: getRuntimeSessionIdForRequest(),
+                workspacePath: agentDir,
+                scenario: imScenario,
+                permissionMode: resolvedPermissionMode,
+                model: resolvedModel,
+                providerRoute: resolvedProviderRoute,
+                providerEnv: resolvedProviderRoute
+                  ? undefined
+                  : resolvedProviderEnv,
+                reasoningEffort: resolvedReasoningEffort,
+                metadataBirthPending: payload.metadataBirthPending === true,
+                metadata,
+                analyticsOrigin: imTurnOrigin,
+                turnBoundaryOnly: bridgeSurfaceRequiresTurnBoundary,
+              });
+              if (!result.success) {
                 imRequestRegistry.unregister(payload.requestId);
                 return jsonResponse(
-                  { success: false, error: imProviderRouting.message, reason: imProviderRouting.reason },
-                  imProviderRouting.status,
+                  { success: false, error: result.error },
+                  result.status ?? 503,
                 );
               }
             }
-            if (heldImConfig) {
-              resolvedPermissionMode = (heldImConfig.permissionMode as PermissionMode | undefined) ?? resolvedPermissionMode;
-              resolvedModel = heldImConfig.model ?? resolvedModel;
-              resolvedProviderRoute = undefined;
-              resolvedProviderEnv = heldImConfig.providerEnv ?? resolvedProviderEnv;
-              resolvedReasoningEffort = heldImConfig.reasoningEffort ?? resolvedReasoningEffort;
-            }
-            if (snapshotResolvedConfig) {
-              // Desktop-handover snapshots own the full config. Missing fields
-              // mean "use product/runtime default", not "fall back to live
-              // Agent/channel config".
-              resolvedPermissionMode = snapshotResolvedConfig.permissionMode as PermissionMode;
-              resolvedModel = snapshotResolvedConfig.model;
-              resolvedProviderRoute = isConcreteProviderRoute(snapshotResolvedConfig.providerRoute)
-                ? snapshotResolvedConfig.providerRoute
-                : undefined;
-              resolvedProviderEnv = snapshotResolvedConfig.providerEnv as ProviderEnv | undefined;
-              resolvedReasoningEffort = snapshotResolvedConfig.reasoningEffort;
-            }
 
-            applyBackgroundAgentPermissionModeFromDisk(); // #264 — IM/Task self-resolve
-            const result = await goalOrchestrator.enqueueImMessage(engine, {
-              message: finalMessage,
-              images: payload.images,
-              requestId: payload.requestId,
-              sessionId: getRuntimeSessionIdForRequest(),
-              workspacePath: agentDir,
-              scenario: imScenario,
-              permissionMode: resolvedPermissionMode,
-              model: resolvedModel,
-              providerRoute: resolvedProviderRoute,
-              providerEnv: resolvedProviderRoute ? undefined : resolvedProviderEnv,
-              reasoningEffort: resolvedReasoningEffort,
-              metadataBirthPending: payload.metadataBirthPending === true,
-              metadata,
-              analyticsOrigin: imTurnOrigin,
-              turnBoundaryOnly: bridgeSurfaceRequiresTurnBoundary,
-            });
-            if (!result.success) {
+            // Cancellation may land while runtime admission is awaiting its own
+            // config/domain work. If the queue owner now exists, cancel it
+            // precisely; if it never existed this remains a harmless no-op.
+            if (requestEntry.abortController.signal.aborted) {
+              await engine.cancelImRequest(payload.requestId, 'user');
               imRequestRegistry.unregister(payload.requestId);
-              return jsonResponse({ success: false, error: result.error }, result.status ?? 503);
+              return jsonResponse(
+                {
+                  success: false,
+                  error: 'IM request cancelled during dispatch',
+                },
+                409,
+              );
             }
-          }
+            imRequestRegistry.transferCancellationToRuntime(payload.requestId);
 
-          // Cancellation may land while runtime admission is awaiting its own
-          // config/domain work. If the queue owner now exists, cancel it
-          // precisely; if it never existed this remains a harmless no-op.
-          if (requestEntry.abortController.signal.aborted) {
-            await engine.cancelImRequest(payload.requestId, 'user');
-            imRequestRegistry.unregister(payload.requestId);
-            return jsonResponse({ success: false, error: 'IM request cancelled during dispatch' }, 409);
-          }
-          imRequestRegistry.transferCancellationToRuntime(payload.requestId);
-
-          const currentSessionId = engine.getRuntimeIdentity().sessionId;
-          if (currentSessionId) {
-            const sessionMeta = getSessionMetadata(currentSessionId);
-            if (sessionMeta && !sessionMeta.source) {
-              await updateSessionMetadata(currentSessionId, { source: payload.source as SessionSource });
+            const currentSessionId = engine.getRuntimeIdentity().sessionId;
+            if (currentSessionId) {
+              const sessionMeta = getSessionMetadata(currentSessionId);
+              if (sessionMeta && !sessionMeta.source) {
+                await updateSessionMetadata(currentSessionId, {
+                  source: payload.source as SessionSource,
+                });
+              }
             }
-          }
 
-          return jsonResponse({
-            success: true,
-            requestId: payload.requestId,
-            accepted: true,
-            sessionId: currentSessionId,
-          });
-
+            return jsonResponse({
+              success: true,
+              requestId: payload.requestId,
+              accepted: true,
+              sessionId: currentSessionId,
+            });
           } catch (innerError) {
             // Before runtime admission the route still owns cleanup. After the
             // transfer, the output-owner terminal path owns this registry entry
             // and must retain Bridge caller identity until the SDK result.
             if (requestEntry.cancellationOwner === 'admission-route') {
-              try { imRequestRegistry.unregister(payload.requestId); } catch { /* ignore */ }
+              try {
+                imRequestRegistry.unregister(payload.requestId);
+              } catch {
+                /* ignore */
+              }
             }
             throw innerError;
           }
         } catch (error) {
           console.error('[im/enqueue] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'IM enqueue error' },
+            {
+              success: false,
+              error:
+                error instanceof Error ? error.message : 'IM enqueue error',
+            },
             500,
           );
         }
@@ -7923,9 +10919,15 @@ async function main() {
       // replays ring-buffered events with seq > since before going live.
       if (pathname === '/api/im/events' && request.method === 'GET') {
         const sinceParam = url.searchParams.get('since');
-        const sinceSeq = sinceParam ? parseInt(sinceParam, 10) : imEventBus.currentSeq();
-        const safeSince = Number.isFinite(sinceSeq) && sinceSeq >= 0 ? sinceSeq : imEventBus.currentSeq();
-        const replayRequestId = url.searchParams.get('replayRequestId') || undefined;
+        const sinceSeq = sinceParam
+          ? parseInt(sinceParam, 10)
+          : imEventBus.currentSeq();
+        const safeSince =
+          Number.isFinite(sinceSeq) && sinceSeq >= 0
+            ? sinceSeq
+            : imEventBus.currentSeq();
+        const replayRequestId =
+          url.searchParams.get('replayRequestId') || undefined;
 
         const encoder = new TextEncoder();
         let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -7934,11 +10936,16 @@ async function main() {
 
         const stream = new ReadableStream({
           start(controller) {
-            controller.enqueue(encoder.encode(`: connected since=${safeSince}\n\n`));
+            controller.enqueue(
+              encoder.encode(`: connected since=${safeSince}\n\n`),
+            );
             // 15s heartbeat keep-alive
             heartbeatTimer = setInterval(() => {
-              try { if (!closed) controller.enqueue(encoder.encode(': ping\n\n')); }
-              catch { /* stream closed */ }
+              try {
+                if (!closed) controller.enqueue(encoder.encode(': ping\n\n'));
+              } catch {
+                /* stream closed */
+              }
             }, 15000);
 
             unsubscribe = imEventBus.subscribe(
@@ -7946,12 +10953,20 @@ async function main() {
               (event) => {
                 if (closed) return;
                 try {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+                  );
                 } catch {
                   // Controller closed mid-emit — schedule cleanup
                   closed = true;
-                  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
-                  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+                  if (heartbeatTimer) {
+                    clearInterval(heartbeatTimer);
+                    heartbeatTimer = null;
+                  }
+                  if (unsubscribe) {
+                    unsubscribe();
+                    unsubscribe = null;
+                  }
                 }
               },
               () => {
@@ -7962,8 +10977,15 @@ async function main() {
                 // event so events from the new session aren't silently lost.
                 if (closed) return;
                 closed = true;
-                if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
-                try { controller.close(); } catch { /* already closed */ }
+                if (heartbeatTimer) {
+                  clearInterval(heartbeatTimer);
+                  heartbeatTimer = null;
+                }
+                try {
+                  controller.close();
+                } catch {
+                  /* already closed */
+                }
                 // No need to call unsubscribe() — clear() already removed us
                 // from both the subscribers Set and the clearedCallbacks Map.
                 unsubscribe = null;
@@ -7973,16 +10995,22 @@ async function main() {
           },
           cancel() {
             closed = true;
-            if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
-            if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-          }
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer);
+              heartbeatTimer = null;
+            }
+            if (unsubscribe) {
+              unsubscribe();
+              unsubscribe = null;
+            }
+          },
         });
 
         return new Response(stream, {
           headers: {
             'Content-Type': 'text/event-stream; charset=utf-8',
             'Cache-Control': 'no-cache, no-transform',
-            'Connection': 'keep-alive',
+            Connection: 'keep-alive',
             'X-Accel-Buffering': 'no',
           },
         });
@@ -7999,14 +11027,26 @@ async function main() {
       //      closes the reply slot (UI feedback).
       if (pathname === '/api/im/cancel' && request.method === 'POST') {
         try {
-          const body = (await request.json()) as { requestId: string; reason?: string };
+          const body = (await request.json()) as {
+            requestId: string;
+            reason?: string;
+          };
           if (!body.requestId) {
-            return jsonResponse({ success: false, error: 'Missing requestId' }, 400);
+            return jsonResponse(
+              { success: false, error: 'Missing requestId' },
+              400,
+            );
           }
           const reason = body.reason ?? 'user';
-          const cancellationClaim = imRequestRegistry.claimCancellation(body.requestId, reason);
+          const cancellationClaim = imRequestRegistry.claimCancellation(
+            body.requestId,
+            reason,
+          );
           if (!cancellationClaim) {
-            return jsonResponse({ success: false, error: 'Unknown or already-aborted requestId' }, 404);
+            return jsonResponse(
+              { success: false, error: 'Unknown or already-aborted requestId' },
+              404,
+            );
           }
 
           // The registry AbortController is the atomic cancellation claim.
@@ -8016,17 +11056,24 @@ async function main() {
             return jsonResponse({
               success: true,
               requestId: body.requestId,
-              mode: cancellationClaim.owner === 'admission-route' ? 'admission' : 'running',
+              mode:
+                cancellationClaim.owner === 'admission-route'
+                  ? 'admission'
+                  : 'running',
               alreadyCancelling: true,
             });
           }
 
           // Step 1: the successful claim already aborted the registry signal,
           // covering route-owned discovery/admission waits.
-          const admissionRouteOwned = cancellationClaim.owner === 'admission-route';
+          const admissionRouteOwned =
+            cancellationClaim.owner === 'admission-route';
 
           // Step 2: actual SDK / queue cancel.
-          const cancelResult = await getSessionEngine().cancelImRequest(body.requestId, reason);
+          const cancelResult = await getSessionEngine().cancelImRequest(
+            body.requestId,
+            reason,
+          );
 
           // (v0.2.11 cross-bugfix #142 review-fix-3 medium #2)
           // Runtime `unknown` is safe only while this route still owns
@@ -8040,7 +11087,8 @@ async function main() {
                 success: false,
                 requestId: body.requestId,
                 mode: cancelResult.mode,
-                error: 'Request not in a cancellable state — message may already be in flight',
+                error:
+                  'Request not in a cancellable state — message may already be in flight',
               },
               409,
             );
@@ -8050,21 +11098,30 @@ async function main() {
           // admission or for an item removed from a runtime queue. A running
           // turn keeps terminal ownership even if its result/finalizer has not
           // unregistered the registry entry by the time Step 2 returns.
-          const routeOwnsTerminal = admissionRouteOwned || cancelResult.mode === 'queued';
+          const routeOwnsTerminal =
+            admissionRouteOwned || cancelResult.mode === 'queued';
           if (routeOwnsTerminal && imRequestRegistry.get(body.requestId)) {
-            imEventBus.emit(body.requestId, 'cancelled', buildImCancelledPayload());
+            imEventBus.emit(
+              body.requestId,
+              'cancelled',
+              buildImCancelledPayload(),
+            );
             imRequestRegistry.unregister(body.requestId);
           }
 
           return jsonResponse({
             success: true,
             requestId: body.requestId,
-            mode: cancelResult.mode === 'unknown' ? 'admission' : cancelResult.mode,
+            mode:
+              cancelResult.mode === 'unknown' ? 'admission' : cancelResult.mode,
           });
         } catch (error) {
           console.error('[im/cancel] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'IM cancel error' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'IM cancel error',
+            },
             500,
           );
         }
@@ -8075,12 +11132,22 @@ async function main() {
       // POST /api/im/heartbeat — Execute a heartbeat check (synchronous JSON response, not SSE)
       if (pathname === '/api/im/heartbeat' && request.method === 'POST') {
         // Track drained events so they can be re-queued on pre-enqueue failures
-        let drainedEvents: Array<{ event: string; content: string; timestamp: number; taskId?: string }> = [];
+        let drainedEvents: Array<{
+          event: string;
+          content: string;
+          timestamp: number;
+          taskId?: string;
+        }> = [];
         // Cron events are tracked separately because they have stricter durability —
         // the destructive drain MUST be reverted unless the heartbeat actually produced
         // deliverable content. Lifted to outer scope so the catch block + the response
         // helper below can both reach it without re-deriving from drainedEvents.
-        let cronEvents: Array<{ event: string; content: string; timestamp: number; taskId?: string }> = [];
+        let cronEvents: Array<{
+          event: string;
+          content: string;
+          timestamp: number;
+          taskId?: string;
+        }> = [];
         let messageEnqueued = false;
 
         // Cron events represent durable work that MUST reach Feishu/IM — anything
@@ -8107,7 +11174,7 @@ async function main() {
         };
 
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             prompt: string;
             source: string;
             sourceId: string;
@@ -8162,9 +11229,13 @@ description: >
 ---
 `;
               writeFileSync(heartbeatMdPath, defaultHeartbeat, 'utf-8');
-              console.log(`[im/heartbeat] Created HEARTBEAT.md with frontmatter at ${heartbeatMdPath}`);
+              console.log(
+                `[im/heartbeat] Created HEARTBEAT.md with frontmatter at ${heartbeatMdPath}`,
+              );
             } catch (writeErr) {
-              console.warn(`[im/heartbeat] Failed to create HEARTBEAT.md: ${writeErr}`);
+              console.warn(
+                `[im/heartbeat] Failed to create HEARTBEAT.md: ${writeErr}`,
+              );
             }
           }
 
@@ -8186,7 +11257,7 @@ description: >
           // taskId is NOT in the body are processed alongside as legacy work
           // and remain subject to the existing respondAfterDrain re-queue path
           // for at-least-once retry through the sidecar's own queue.
-          const bodyCronEvents = (payload.pendingCronEvents ?? []).map(e => ({
+          const bodyCronEvents = (payload.pendingCronEvents ?? []).map((e) => ({
             event: e.event,
             content: e.content,
             timestamp: e.timestamp,
@@ -8195,14 +11266,20 @@ description: >
             fromSessionId: e.fromSessionId,
             fromLabel: e.fromLabel,
           }));
-          const queueCronEventsAll = drainedEvents.filter(e => e.event === 'cron_complete');
-          const otherEvents = drainedEvents.filter(e => e.event !== 'cron_complete');
+          const queueCronEventsAll = drainedEvents.filter(
+            (e) => e.event === 'cron_complete',
+          );
+          const otherEvents = drainedEvents.filter(
+            (e) => e.event !== 'cron_complete',
+          );
 
           const bodyTaskIds = new Set(
-            bodyCronEvents.map(e => e.taskId).filter((id): id is string => !!id),
+            bodyCronEvents
+              .map((e) => e.taskId)
+              .filter((id): id is string => !!id),
           );
           const orphanQueueCron = queueCronEventsAll.filter(
-            e => !e.taskId || !bodyTaskIds.has(e.taskId),
+            (e) => !e.taskId || !bodyTaskIds.has(e.taskId),
           );
 
           // CRITICAL: process AT MOST ONE cron event per heartbeat (across body
@@ -8217,7 +11294,12 @@ description: >
           // Rust-truth and will be re-shipped on subsequent heartbeats; orphan
           // queue events that lose this round are pushed back into the
           // sidecar queue immediately so the next heartbeat picks them up.
-          let effectiveCronEvents: Array<{ event: string; content: string; timestamp: number; taskId?: string }> = [];
+          let effectiveCronEvents: Array<{
+            event: string;
+            content: string;
+            timestamp: number;
+            taskId?: string;
+          }> = [];
 
           if (bodyCronEvents.length > 0) {
             effectiveCronEvents = [bodyCronEvents[0]];
@@ -8256,12 +11338,17 @@ description: >
           // pending work, so an empty HEARTBEAT.md plus zero events on both
           // sources means there is genuinely nothing to do.
           if (
-            !heartbeatMdContent
-            && drainedEvents.length === 0
-            && bodyCronEvents.length === 0
+            !heartbeatMdContent &&
+            drainedEvents.length === 0 &&
+            bodyCronEvents.length === 0
           ) {
-            console.log('[im/heartbeat] Skipped: HEARTBEAT.md is empty and no pending events');
-            return respondAfterDrain({ status: 'silent', reason: 'empty_heartbeat_md' });
+            console.log(
+              '[im/heartbeat] Skipped: HEARTBEAT.md is empty and no pending events',
+            );
+            return respondAfterDrain({
+              status: 'silent',
+              reason: 'empty_heartbeat_md',
+            });
           }
 
           let enrichedPrompt: string;
@@ -8281,9 +11368,12 @@ description: >
             // Standard heartbeat prompt (from Rust)
             enrichedPrompt = payload.prompt;
             if (otherEvents.length > 0) {
-              const eventLines = otherEvents.map(
-                e => `[System Event: ${neutralizeSystemReminderStructuralTags(e.event)}] ${neutralizeSystemReminderStructuralTags(e.content)}`
-              ).join('\n');
+              const eventLines = otherEvents
+                .map(
+                  (e) =>
+                    `[System Event: ${neutralizeSystemReminderStructuralTags(e.event)}] ${neutralizeSystemReminderStructuralTags(e.content)}`,
+                )
+                .join('\n');
               enrichedPrompt += `\n\n${eventLines}`;
             }
           }
@@ -8314,28 +11404,39 @@ description: >
             scenario: {
               type: 'agent-channel',
               platform: payload.source?.split('_')[0] ?? 'unknown',
-              sourceType: payload.source?.includes('group') ? 'group' : 'private',
-              hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
+              sourceType: payload.source?.includes('group')
+                ? 'group'
+                : 'private',
+              hostInteraction: normalizeHostInteractionCapability(
+                payload.hostInteraction,
+              ),
             },
             metadataBirthPending: payload.metadataBirthPending === true,
-            permissionMode: engine.kind !== 'builtin'
-              ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)
-              : 'fullAgency',
-            model: engine.kind !== 'builtin'
-              ? getRuntimeConfigModel(runtimeConfig, activeRuntime)
-              : engine.kind === 'builtin'
-                ? getSessionModel() ?? undefined
+            permissionMode:
+              engine.kind !== 'builtin'
+                ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)
+                : 'fullAgency',
+            model:
+              engine.kind !== 'builtin'
+                ? getRuntimeConfigModel(runtimeConfig, activeRuntime)
+                : engine.kind === 'builtin'
+                  ? (getSessionModel() ?? undefined)
+                  : undefined,
+            providerEnv:
+              engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
+            reasoningEffort:
+              engine.kind !== 'builtin'
+                ? getRuntimeConfigReasoningEffort(runtimeConfig, activeRuntime)
                 : undefined,
-            providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
-            reasoningEffort: engine.kind !== 'builtin'
-              ? getRuntimeConfigReasoningEffort(runtimeConfig, activeRuntime)
-              : undefined,
             runtimeConfig,
             metadata: {
               source: payload.source as SessionSource,
               sourceId: payload.sourceId,
             },
-            analyticsOrigin: { kind: 'agent-channel', surface: 'channel_heartbeat' },
+            analyticsOrigin: {
+              kind: 'agent-channel',
+              surface: 'channel_heartbeat',
+            },
             assistantChannelDelivery: 'caller-owned',
             timeoutMs: 300000,
             pollMs: 500,
@@ -8344,19 +11445,31 @@ description: >
           if (!turnResult.success) {
             return respondAfterDrain({
               status: 'error',
-              text: turnResult.error
-                ?? (turnResult.status === 408 ? 'Heartbeat timeout' : 'Heartbeat failed'),
+              text:
+                turnResult.error ??
+                (turnResult.status === 408
+                  ? 'Heartbeat timeout'
+                  : 'Heartbeat failed'),
             });
           }
-          if (engine.kind === 'builtin' && turnResult.assistantMessagePresent === false) {
-            return respondAfterDrain({ status: 'silent', reason: 'no_response' });
+          if (
+            engine.kind === 'builtin' &&
+            turnResult.assistantMessagePresent === false
+          ) {
+            return respondAfterDrain({
+              status: 'silent',
+              reason: 'no_response',
+            });
           }
           text = turnResult.text ?? '';
 
           // Guard: message was enqueued but assistant response is empty → AI failed to respond
           // (SDK wraps API errors as synthetic assistant messages with empty content in messages[])
           if (!text.trim()) {
-            return respondAfterDrain({ status: 'error', text: 'AI did not respond' });
+            return respondAfterDrain({
+              status: 'error',
+              text: 'AI did not respond',
+            });
           }
 
           // Check HEARTBEAT_OK
@@ -8376,17 +11489,23 @@ description: >
           // this no-ops.
           if (cronEvents.length > 0) {
             for (const e of cronEvents) pushSystemEvent(e);
-            console.warn(`[im/heartbeat] Re-queued ${cronEvents.length} cron event(s) after exception`);
+            console.warn(
+              `[im/heartbeat] Re-queued ${cronEvents.length} cron event(s) after exception`,
+            );
             cronEvents = [];
           }
           // Non-cron events: keep existing semantics — only re-queue if exception
           // happened before enqueueUserMessage (otherwise they're already in the AI's
           // prompt and re-queuing would duplicate).
           if (!messageEnqueued) {
-            const others = drainedEvents.filter(e => e.event !== 'cron_complete');
+            const others = drainedEvents.filter(
+              (e) => e.event !== 'cron_complete',
+            );
             if (others.length > 0) {
               for (const e of others) pushSystemEvent(e);
-              console.warn(`[im/heartbeat] Re-queued ${others.length} non-cron event(s) after pre-enqueue failure`);
+              console.warn(
+                `[im/heartbeat] Re-queued ${others.length} non-cron event(s) after pre-enqueue failure`,
+              );
             }
           }
           console.error('[im/heartbeat] Error:', error);
@@ -8404,7 +11523,7 @@ description: >
       // POST /api/memory/update — Trigger memory update in current session (v0.1.43)
       if (pathname === '/api/memory/update' && request.method === 'POST') {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             source: 'auto' | 'manual';
             sessionId?: string;
             taskId?: string;
@@ -8416,7 +11535,11 @@ description: >
           const queueId = payload.queueId?.trim() ?? '';
           if (isAuto && (!managementSessionId || !taskId || !queueId)) {
             return jsonResponse(
-              { status: 'error', reason: 'Auto memory update requires sessionId, taskId, and queueId' },
+              {
+                status: 'error',
+                reason:
+                  'Auto memory update requires sessionId, taskId, and queueId',
+              },
               400,
             );
           }
@@ -8441,7 +11564,10 @@ description: >
           try {
             rawContent = readFileSync(updateMdPath, 'utf-8');
           } catch {
-            return jsonResponse({ status: 'skipped', reason: 'file_not_found' });
+            return jsonResponse({
+              status: 'skipped',
+              reason: 'file_not_found',
+            });
           }
 
           // Strip YAML frontmatter
@@ -8452,8 +11578,12 @@ description: >
           // disable the versioned myagents-memory-update system skill.
           const now = new Date().toLocaleString('en-US', {
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZoneName: 'short',
           });
 
           const completionMarker = MEMORY_UPDATE_COMPLETION_MARKER;
@@ -8488,57 +11618,84 @@ description: >
             sessionId: runtimeSessionId,
             workspacePath: currentAgentDir,
             scenario: { type: 'desktop' },
-            permissionMode: engine.kind !== 'builtin'
-              ? getMaxPermissionForRuntime(runtimeType)
-              : 'fullAgency',
-            model: engine.kind === 'builtin' ? getSessionModel() ?? undefined : undefined,
-            providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
+            permissionMode:
+              engine.kind !== 'builtin'
+                ? getMaxPermissionForRuntime(runtimeType)
+                : 'fullAgency',
+            model:
+              engine.kind === 'builtin'
+                ? (getSessionModel() ?? undefined)
+                : undefined,
+            providerEnv:
+              engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
             analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
             assistantChannelDelivery: 'none',
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
             beforeDispatch: taskDispatchGuard,
             requiredSystemSkill: 'myagents-memory-update',
-            ...(isAuto ? {
-              queueId,
-              turnOwner: { kind: 'task' as const, id: taskId },
-            } : {}),
+            ...(isAuto
+              ? {
+                  queueId,
+                  turnOwner: { kind: 'task' as const, id: taskId },
+                }
+              : {}),
           });
           if (!turnResult.success && turnResult.status === 408) {
             console.warn('[memory-update] AI memory update timed out (60 min)');
             return jsonResponse({
               status: 'timeout',
               reason: turnResult.error ?? 'AI memory update timed out',
-              ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+              ...(turnResult.terminationUnconfirmed
+                ? { terminationUnconfirmed: true }
+                : {}),
             });
           }
           if (!turnResult.success && !turnResult.enqueued) {
-            console.warn(`[memory-update] ${engine.kind} enqueue rejected: ${turnResult.error}`);
-            return jsonResponse({ status: 'error', reason: turnResult.error ?? `${engine.kind}_enqueue_failed` }, 500);
+            console.warn(
+              `[memory-update] ${engine.kind} enqueue rejected: ${turnResult.error}`,
+            );
+            return jsonResponse(
+              {
+                status: 'error',
+                reason: turnResult.error ?? `${engine.kind}_enqueue_failed`,
+              },
+              500,
+            );
           }
-          const turnOk = turnResult.success && turnResult.text?.trim() === completionMarker;
+          const turnOk =
+            turnResult.success && turnResult.text?.trim() === completionMarker;
 
           // Gate `completed` on the turn actually succeeding. Previously this reported
           // success purely from waitForSessionIdle returning, so a turn that errored out
           // (the cross-runtime resume failure above, or any SDK/API error) still logged
           // false success — and Rust recorded "Session … updated successfully".
           if (turnOk) {
-            console.log(`[memory-update] AI completed memory update (source=${payload.source}, runtime=${runtimeType})`);
+            console.log(
+              `[memory-update] AI completed memory update (source=${payload.source}, runtime=${runtimeType})`,
+            );
             return jsonResponse({ status: 'completed' });
           }
           const failureReason = turnResult.success
             ? 'completion_marker_missing'
             : 'turn_failed';
-          console.warn(`[memory-update] AI memory update turn failed (${failureReason})`);
+          console.warn(
+            `[memory-update] AI memory update turn failed (${failureReason})`,
+          );
           return jsonResponse({
             status: 'error',
             reason: failureReason,
-            ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+            ...(turnResult.terminationUnconfirmed
+              ? { terminationUnconfirmed: true }
+              : {}),
           });
         } catch (error) {
           console.error('[memory-update] Error:', error);
           return jsonResponse(
-            { status: 'error', reason: error instanceof Error ? error.message : 'Unknown error' },
+            {
+              status: 'error',
+              reason: error instanceof Error ? error.message : 'Unknown error',
+            },
             500,
           );
         }
@@ -8554,7 +11711,9 @@ description: >
           };
           // Store in queue for next heartbeat to pick up
           pushSystemEvent({ event, content, timestamp: Date.now(), taskId });
-          console.log(`[system-event] Queued: ${event} (queue size: ${systemEventQueue.length})`);
+          console.log(
+            `[system-event] Queued: ${event} (queue size: ${systemEventQueue.length})`,
+          );
           return jsonResponse({ ok: true });
         } catch (_err) {
           return jsonResponse({ error: 'Invalid request' }, 400);
@@ -8563,14 +11722,20 @@ description: >
 
       // POST /api/im/permission-response — Handle IM user's permission decision (from approval card/button)
       // Auto-routes to external runtime when active (same pattern as /api/permission/respond).
-      if (pathname === '/api/im/permission-response' && request.method === 'POST') {
+      if (
+        pathname === '/api/im/permission-response' &&
+        request.method === 'POST'
+      ) {
         try {
-          const payload = await request.json() as {
+          const payload = (await request.json()) as {
             requestId: string;
             decision: 'deny' | 'allow_once' | 'always_allow';
           };
 
-          const success = await getPermissionResponseEngine().respondPermission(payload.requestId, payload.decision);
+          const success = await getPermissionResponseEngine().respondPermission(
+            payload.requestId,
+            payload.decision,
+          );
 
           return jsonResponse({ success });
         } catch (error) {
@@ -8580,26 +11745,34 @@ description: >
       }
 
       // GET /api/im/session/:key/messages — Get messages for an IM session
-      if (pathname.startsWith('/api/im/session/') && pathname.endsWith('/messages') && request.method === 'GET') {
+      if (
+        pathname.startsWith('/api/im/session/') &&
+        pathname.endsWith('/messages') &&
+        request.method === 'GET'
+      ) {
         try {
           // Currently returns messages from the active session
           // In the future, could look up by session key
-          const allMessages = getSessionEngine().getStreamReplaySnapshot().replayMessages;
+          const allMessages =
+            getSessionEngine().getStreamReplaySnapshot().replayMessages;
           return jsonResponse({
-            messages: allMessages.map(m => ({
+            messages: allMessages.map((m) => ({
               id: m.id,
               role: m.role,
-              content: typeof m.content === 'string'
-                ? m.content
-                : Array.isArray(m.content)
+              content:
+                typeof m.content === 'string'
                   ? m.content
-                      .filter((block): block is { type: string; text?: string } => (
-                        Boolean(block) && typeof block === 'object'
-                        && (block as { type?: unknown }).type === 'text'
-                      ))
-                      .map(block => block.text ?? '')
-                      .join('\n')
-                  : '',
+                  : Array.isArray(m.content)
+                    ? m.content
+                        .filter(
+                          (block): block is { type: string; text?: string } =>
+                            Boolean(block) &&
+                            typeof block === 'object' &&
+                            (block as { type?: unknown }).type === 'text',
+                        )
+                        .map((block) => block.text ?? '')
+                        .join('\n')
+                    : '',
               timestamp: m.timestamp,
               metadata: m.metadata,
             })),
@@ -8607,7 +11780,10 @@ description: >
         } catch (error) {
           console.error('[im/session/messages] Error:', error);
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Messages error' },
+            {
+              success: false,
+              error: error instanceof Error ? error.message : 'Messages error',
+            },
             500,
           );
         }
@@ -8635,38 +11811,58 @@ description: >
             message?: unknown;
           } | null;
           const agentId = typeof body?.agentId === 'string' ? body.agentId : '';
-          const message = body?.message as import('./inbox/types').PendingInboxMessage | undefined;
+          const message = body?.message as
+            | import('./inbox/types').PendingInboxMessage
+            | undefined;
           if (!agentId || !message) {
-            return jsonResponse({ accepted: false, reason: 'invalid body' }, 400);
+            return jsonResponse(
+              { accepted: false, reason: 'invalid body' },
+              400,
+            );
           }
 
           // The target is the authority after Rust starts its Sidecar. Resolve
           // the Agent once here and verify this process owns that workspace.
-          const { resolvePersistedAgentWorkspaceRegistry } = await import('./utils/agent-workspace-identity');
+          const { resolvePersistedAgentWorkspaceRegistry } = await import(
+            './utils/agent-workspace-identity'
+          );
           const registry = await resolvePersistedAgentWorkspaceRegistry();
-          const diagnostic = registry.diagnostics.find(item => item.agentIds.includes(agentId));
-          const identity = registry.agentProjections.find(item => item.agentId === agentId);
+          const diagnostic = registry.diagnostics.find((item) =>
+            item.agentIds.includes(agentId),
+          );
+          const identity = registry.agentProjections.find(
+            (item) => item.agentId === agentId,
+          );
           if (
-            diagnostic
-            || !identity
-            || (identity.project && !isProjectVisibleToUser(identity.project))
-            || (identity.project && isProjectArchived(identity.project))
+            diagnostic ||
+            !identity ||
+            (identity.project && !isProjectVisibleToUser(identity.project)) ||
+            (identity.project && isProjectArchived(identity.project))
           ) {
-            return jsonResponse({ accepted: false, reason: 'target Agent is unavailable' }, 409);
+            return jsonResponse(
+              { accepted: false, reason: 'target Agent is unavailable' },
+              409,
+            );
           }
           const engine = getSessionEngine();
           const runtimeIdentity = engine.getRuntimeIdentity();
           const currentSessionContext = engine.getCurrentSessionContext();
-          const currentWorkspacePath = currentSessionContext.workspacePath ?? currentAgentDir;
+          const currentWorkspacePath =
+            currentSessionContext.workspacePath ?? currentAgentDir;
           if (
-            currentSessionContext.sessionId !== message.toSessionId
-            || !currentWorkspacePath
-            || !workspacePathsEqual(currentWorkspacePath, identity.workspacePath)
+            currentSessionContext.sessionId !== message.toSessionId ||
+            !currentWorkspacePath ||
+            !workspacePathsEqual(currentWorkspacePath, identity.workspacePath)
           ) {
-            return jsonResponse({ accepted: false, reason: 'target Sidecar identity mismatch' }, 409);
+            return jsonResponse(
+              { accepted: false, reason: 'target Sidecar identity mismatch' },
+              409,
+            );
           }
 
-          const { handleFreshSessionStart } = await import('./inbox/start-handler');
+          const { handleFreshSessionStart } = await import(
+            './inbox/start-handler'
+          );
           const result = await handleFreshSessionStart(
             message,
             {
@@ -8675,25 +11871,34 @@ description: >
               agent: identity.agent as unknown as AgentConfig,
               runtime: runtimeIdentity.runtime,
               runtimeSource: runtimeIdentity.runtimeSource,
-              managedCodexProviderReady: isManagedCodexProviderReady(registry.config),
+              managedCodexProviderReady: isManagedCodexProviderReady(
+                registry.config,
+              ),
             },
-            (text, options) => engine.enqueueInboxMessage({
-              text,
-              sessionId: message.toSessionId,
-              workspacePath: identity.workspacePath,
-              scenario: { type: 'desktop' },
-              inboxMeta: options.inboxMeta,
-              analyticsOrigin: { kind: 'session-inbox', surface: 'session_send' },
-              birthOrigin: { kind: 'session-inbox', surface: 'session_send' },
-              queueId: options.queueId,
-              beforeDispatch: options.beforeDispatch,
-            }),
+            (text, options) =>
+              engine.enqueueInboxMessage({
+                text,
+                sessionId: message.toSessionId,
+                workspacePath: identity.workspacePath,
+                scenario: { type: 'desktop' },
+                inboxMeta: options.inboxMeta,
+                analyticsOrigin: {
+                  kind: 'session-inbox',
+                  surface: 'session_send',
+                },
+                birthOrigin: { kind: 'session-inbox', surface: 'session_send' },
+                queueId: options.queueId,
+                beforeDispatch: options.beforeDispatch,
+              }),
           );
           return jsonResponse(result, result.accepted === false ? 409 : 200);
         } catch (error) {
           console.error('[inbox/start] Error:', error);
           return jsonResponse(
-            { accepted: false, reason: error instanceof Error ? error.message : String(error) },
+            {
+              accepted: false,
+              reason: error instanceof Error ? error.message : String(error),
+            },
             500,
           );
         }
@@ -8708,43 +11913,54 @@ description: >
             messages?: unknown[];
           } | null;
           if (!body || !Array.isArray(body.messages)) {
-            return jsonResponse({ accepted: false, reason: 'invalid body' }, 400);
+            return jsonResponse(
+              { accepted: false, reason: 'invalid body' },
+              400,
+            );
           }
           const { handleInboxDrain } = await import('./inbox/drain-handler');
           // PRD 0.2.18 cross-review fix (CC): workspacePath comes from THIS
           // sidecar's session metadata. process.cwd() is app bundle / `/`, and
           // MYAGENTS_AGENT_DIR env is not reliable for sidecar-to-sidecar inbox.
           const engine = getSessionEngine();
-          const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta, options) => {
-            const sessionId = getRuntimeSessionIdForRequest();
-            const sessionMeta = getSessionMetadata(sessionId);
-            const inboxOrigin: SessionOrigin = options?.scenario?.type === 'registeredAgent'
-              ? {
-                  kind: 'registered-agent',
-                  surface: 'space_issue_delivery',
-                  context: {
-                    spaceId: options.scenario.spaceId,
-                    registeredAgentId: options.scenario.registeredAgentId,
-                  },
+          const injector: import('./inbox/drain-handler').InboxInjector =
+            async (text, inboxMeta, options) => {
+              const sessionId = getRuntimeSessionIdForRequest();
+              const sessionMeta = getSessionMetadata(sessionId);
+              const inboxOrigin: SessionOrigin =
+                options?.scenario?.type === 'registeredAgent'
+                  ? {
+                      kind: 'registered-agent',
+                      surface: 'space_issue_delivery',
+                      context: {
+                        spaceId: options.scenario.spaceId,
+                        registeredAgentId: options.scenario.registeredAgentId,
+                      },
+                    }
+                  : { kind: 'session-inbox', surface: 'session_send' };
+              if (inboxOrigin.kind === 'registered-agent') {
+                const originBinding =
+                  await engine.ensureRegisteredAgentSessionOrigin(
+                    sessionId,
+                    inboxOrigin,
+                  );
+                if (!originBinding.success) {
+                  return { queued: false, error: originBinding.error };
                 }
-              : { kind: 'session-inbox', surface: 'session_send' };
-            if (inboxOrigin.kind === 'registered-agent') {
-              const originBinding = await engine.ensureRegisteredAgentSessionOrigin(sessionId, inboxOrigin);
-              if (!originBinding.success) {
-                return { queued: false, error: originBinding.error };
               }
-            }
-            return engine.enqueueInboxMessage({
-              text,
-              sessionId,
-              workspacePath: sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),
-              scenario: options?.scenario,
-              inboxMeta,
-              allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
-              analyticsOrigin: inboxOrigin,
-              birthOrigin: inboxOrigin,
-            });
-          };
+              return engine.enqueueInboxMessage({
+                text,
+                sessionId,
+                workspacePath:
+                  sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),
+                scenario: options?.scenario,
+                inboxMeta,
+                allowLazySessionMaterialization:
+                  options?.allowLazySessionMaterialization,
+                analyticsOrigin: inboxOrigin,
+                birthOrigin: inboxOrigin,
+              });
+            };
           const result = await handleInboxDrain(
             body.messages as import('./inbox/types').PendingInboxMessage[],
             injector,
@@ -8753,7 +11969,10 @@ description: >
         } catch (error) {
           console.error('[inbox/drain] Error:', error);
           return jsonResponse(
-            { accepted: false, reason: error instanceof Error ? error.message : String(error) },
+            {
+              accepted: false,
+              reason: error instanceof Error ? error.message : String(error),
+            },
             500,
           );
         }
@@ -8768,7 +11987,9 @@ description: >
       // the token via `bridge-registry` and routes to that subprocess's own
       // upstream — no shared global state, no cross-pollination between
       // concurrent SDK invocations.
-      const bridgeMessagesMatch = pathname.match(/^\/bridge\/([^/]+)\/v1\/messages$/);
+      const bridgeMessagesMatch = pathname.match(
+        /^\/bridge\/([^/]+)\/v1\/messages$/,
+      );
       if (bridgeMessagesMatch && request.method === 'POST') {
         const token = bridgeMessagesMatch[1];
         try {
@@ -8781,9 +12002,14 @@ description: >
           const msg = error instanceof Error ? error.message : 'Bridge error';
           const isUnknownToken = msg.startsWith('Unknown bridge token');
           if (isUnknownToken) {
-            console.warn(`[bridge] rejecting request with unknown token=${token}: ${msg}`);
+            console.warn(
+              `[bridge] rejecting request with unknown token=${token}: ${msg}`,
+            );
             return jsonResponse(
-              { type: 'error', error: { type: 'invalid_request_error', message: msg } },
+              {
+                type: 'error',
+                error: { type: 'invalid_request_error', message: msg },
+              },
               400,
             );
           }
@@ -8799,21 +12025,34 @@ description: >
       // context window management. OpenAI-compatible APIs have no equivalent,
       // so we return an estimated token count without involving the upstream.
       // We still require a valid token so untokened callers can't probe.
-      const bridgeCountMatch = pathname.match(/^\/bridge\/([^/]+)\/v1\/messages\/count_tokens$/);
+      const bridgeCountMatch = pathname.match(
+        /^\/bridge\/([^/]+)\/v1\/messages\/count_tokens$/,
+      );
       if (bridgeCountMatch && request.method === 'POST') {
         const { hasBridge } = await import('./openai-bridge/bridge-registry');
         const token = bridgeCountMatch[1];
         if (!hasBridge(token)) {
           return jsonResponse(
-            { type: 'error', error: { type: 'invalid_request_error', message: `Unknown bridge token: ${token}` } },
+            {
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: `Unknown bridge token: ${token}`,
+              },
+            },
             400,
           );
         }
         try {
-          const body = await request.json() as { messages?: unknown[]; system?: unknown; tools?: unknown[] };
-          const contentLength = JSON.stringify(body.messages ?? []).length
-            + JSON.stringify(body.system ?? '').length
-            + JSON.stringify(body.tools ?? []).length;
+          const body = (await request.json()) as {
+            messages?: unknown[];
+            system?: unknown;
+            tools?: unknown[];
+          };
+          const contentLength =
+            JSON.stringify(body.messages ?? []).length +
+            JSON.stringify(body.system ?? '').length +
+            JSON.stringify(body.tools ?? []).length;
           const estimatedTokens = Math.max(1, Math.ceil(contentLength / 4));
           return jsonResponse({ input_tokens: estimatedTokens });
         } catch {
@@ -8835,16 +12074,22 @@ description: >
   // browser dev mode (`start_dev.sh`) additionally hits the `serveStatic`
   // fallback to load the React `dist/` bundle. Naming reflects the
   // production primary role.
-  console.log(`[startup] Sidecar HTTP server ready on http://127.0.0.1:${port}`);
+  console.log(
+    `[startup] Sidecar HTTP server ready on http://127.0.0.1:${port}`,
+  );
 
   // Pattern 2 §2.3.1 — Start the periodic GC for spilled large-value refs.
   // Runs every 60s; reaps any ref past its TTL (default 1h). The timer is
   // unref'd inside startRefsGc, so it doesn't keep the event loop alive.
-  void import('./utils/large-value-store').then(({ startRefsGc }) => {
-    startRefsGc(60_000);
-  }).catch((err) => {
-    console.warn(`[refs] failed to start GC: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  void import('./utils/large-value-store')
+    .then(({ startRefsGc }) => {
+      startRefsGc(60_000);
+    })
+    .catch((err) => {
+      console.warn(
+        `[refs] failed to start GC: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
   // ── Deferred heavy init ─────────────────────────────────────────────────
   // Runs AFTER honoServe has bound the port. Rust's TCP health check now
@@ -8903,23 +12148,36 @@ description: >
             runLogRetentionSweep({ activeFilePaths: collectActivePaths() });
             startPeriodicSweep(collectActivePaths);
             try {
-              const { scrubStaleRuntimeConfig } = await import('./migrations/scrub-stale-runtime-config');
+              const { scrubStaleRuntimeConfig } = await import(
+                './migrations/scrub-stale-runtime-config'
+              );
               const result = await scrubStaleRuntimeConfig();
               if (result.scannedAgents > 0) {
-                console.log(`[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`);
+                console.log(
+                  `[migration] runtimeConfig scrub: scanned=${result.scannedAgents} scrubbed=${result.scrubbedAgents}`,
+                );
                 for (const d of result.details) {
-                  console.log(`[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`);
+                  console.log(
+                    `[migration] runtimeConfig scrub: agent=${d.agentId} runtime=${d.runtime} dropped=${JSON.stringify(d.dropped)}`,
+                  );
                 }
               }
             } catch (err) {
-              console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
+              console.warn(
+                '[migration] runtimeConfig scrub failed (non-fatal):',
+                err instanceof Error ? err.message : String(err),
+              );
             }
             // Loading the policy is a startup validation gate. Invalid product
             // policy or a failed identity migration must keep readiness closed;
             // neither is a best-effort cleanup task.
             await import('../shared/integrated-runtimes/distribution-policy');
-            const { migrateAgentRuntimePreferences } = await import('./migrations/migrate-runtime-bindings');
-            const { migrateSessionRuntimeBindings } = await import('./SessionStore');
+            const { migrateAgentRuntimePreferences } = await import(
+              './migrations/migrate-runtime-bindings'
+            );
+            const { migrateSessionRuntimeBindings } = await import(
+              './SessionStore'
+            );
             const agentResult = await migrateAgentRuntimePreferences();
             const sessionResult = await migrateSessionRuntimeBindings();
             console.log(
@@ -8974,12 +12232,22 @@ description: >
             currentInitPhase = 'sdk-init';
             setDeferredInitPhase(currentInitPhase);
             initPhaseStarted = nowMs();
-            await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
+            await initializeAgent(
+              currentAgentDir,
+              initialPrompt,
+              initialSessionId,
+              { preWarmDisabled: noPreWarm },
+            );
             console.log('[startup] initializeAgent done');
             emitDeferredPhaseDone('sdk-init');
 
             if (initialSessionId) {
-              if (await restoreInitialExternalSessionAtSelector(initialSessionId, currentAgentDir)) {
+              if (
+                await restoreInitialExternalSessionAtSelector(
+                  initialSessionId,
+                  currentAgentDir,
+                )
+              ) {
                 currentInitPhase = 'external-runtime-restore';
                 setDeferredInitPhase(currentInitPhase);
                 initPhaseStarted = nowMs();
@@ -8990,11 +12258,17 @@ description: >
             // ── Sidecar Boot Banner: single-line for AI grep ──
             const model = getSessionModel() || '?';
             const mcpList = getMcpServers();
-            const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
+            const mcpNames = mcpList
+              ? Object.keys(mcpList).join(',') || 'none'
+              : 'none';
             const bridge = hasActiveBridge() ? 'yes' : 'no';
-            const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
+            const { listBuiltinMcpIds } = await import(
+              './tools/builtin-mcp-registry'
+            );
             const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
-            console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
+            console.log(
+              `[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`,
+            );
           },
         },
       ]);
@@ -9010,7 +12284,9 @@ description: >
     () => currentInitPhase,
     (err) => {
       console.error('[startup] Deferred init failed:', err);
-      console.warn(`[health-state] Deferred init failed in phase=${currentInitPhase}: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(
+        `[health-state] Deferred init failed in phase=${currentInitPhase}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       emitPerfTrace({
         trace: 'sidecar_boot',
         phase: 'deferred_init_failed',

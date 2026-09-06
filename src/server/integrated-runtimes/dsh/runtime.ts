@@ -1638,6 +1638,11 @@ export class DshRuntime implements AgentRuntime {
     });
   }
 
+  canSteerMessage(runtimeProcess: RuntimeProcess): boolean {
+    return !runtimeProcess.exited
+      && this.getActiveRootOperation(runtimeProcess)?.realtimeSteerEligible === true;
+  }
+
   async steerMessage(
     runtimeProcess: RuntimeProcess,
     message: string,

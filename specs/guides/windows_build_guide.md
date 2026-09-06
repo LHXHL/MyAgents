@@ -48,6 +48,7 @@ myagents-releases/
 |------|------|---------|
 | **Rust** | 编译 Tauri 后端 | https://rustup.rs（必须使用 rustup；仓库 `rust-toolchain.toml` 固定实际 toolchain） |
 | **Node.js / npm** | 前端构建、Node bundle 打包、依赖安装 | https://nodejs.org |
+| **CMake 3.28+** | 构建离线 speech native 依赖 | https://cmake.org/download/ |
 | **Visual Studio Build Tools** | MSVC 编译器 | 见下方说明 |
 | **rclone** | 发布到 R2 (仅发布时需要) | https://rclone.org |
 
@@ -69,9 +70,9 @@ myagents-releases/
 ```
 
 此脚本会：
-1. 检查所有依赖是否已安装
-2. 按 `rust-toolchain.toml` 准备 Rust toolchain、`rustfmt` / `clippy`、`x86_64-pc-windows-msvc` target
-3. 下载 bundled Node.js v24 运行时、cuse、Git 安装包和 VC++ Runtime DLL
+1. 检查基础依赖，并按 `rust-toolchain.toml` 准备 Rust toolchain、`rustfmt` / `clippy`、`x86_64-pc-windows-msvc` target
+2. 根据 exact prepared cache 提前检查 CMake 3.28+/MSVC 等原生推理构建工具；缺失时在下载或安装项目依赖前给出修复命令，不自动安装原生构建工具
+3. 下载 bundled Node.js v24 运行时、Git 安装包和 VC++ Runtime DLL
 4. 安装前端/后端依赖 (`npm install`)
 5. 下载 Rust crates（`cargo fetch`）
 6. 准备 x64 离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
@@ -114,6 +115,8 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 
 `build_dev_win.ps1` 会清理 `debug/resources` 缓存、启用 `VITE_DEBUG_MODE=true`、构建 web/Sidecar/Plugin Bridge/CLI 一次，并在 Tauri build 阶段禁用重复的 `beforeBuildCommand`；这条路径用于快速测试，不替代正式发布构建。
 
+两条 Windows 构建路径都会在 Tauri snapshot 前调用 `scripts/prepare-native-inference.mjs x86_64-pc-windows-msvc`，统一准备 document/speech capability。Sherpa 的锁定源码包只展开构建所需的根 `CMakeLists.txt`、`LICENSE`、`cmake/` 与 `sherpa-onnx/`；上游仓库其它目录中的 symlink 不会在 Windows 上落盘，不需要启用 Developer Mode、管理员权限或长路径开关。正式安装器验证除既有文档转换外，还必须检查 `speech-inference/v1` 的签名 manifest、media Worker/sherpa native inventory、与 `document-processing/v1` 共享的 ONNX Runtime identity，以及无系统 ORT/ffmpeg/Python 时的 WASAPI microphone/loopback、转录与 Job Object 取消。
+
 ### build_windows.ps1
 
 **运行方式**：
@@ -132,7 +135,7 @@ src-tauri/target/x86_64-pc-windows-msvc/debug/myagents.exe
 **构建流程**（7 步）：
 
 1. **加载环境配置** - 从 `.env` 读取签名密钥
-2. **检查依赖** - 验证 Rust/rustup、npm，并按 `rust-toolchain.toml` 补齐 Rust components 与 Windows target
+2. **检查依赖与原生推理 preflight** - 验证 Rust/rustup、npm，补齐固定 Rust components/Windows target，初始化 MSVC 环境，并在下载、清理或构建前检查 CMake 3.28+/MSVC
 3. **配置生产 CSP** - 更新安全策略
 4. **TypeScript 类型检查** - 确保代码无类型错误
 5. **构建前端和服务端** - 打包服务端代码、复制 SDK 依赖、构建前端
@@ -497,3 +500,7 @@ ERROR : Failed to copy: AccessDenied
 - [macOS 构建与发布指南](./build_and_release_guide.md) - macOS 版本构建流程
 - [自动更新系统](../tech_docs/auto_update.md) - 更新机制详解
 - [Node.js Sidecar 打包](../tech_docs/bundled_node.md) - 运行时打包机制
+
+## Cuse 内置桌面操作 Skill
+
+`build_windows.ps1` 与 `build_dev_win.ps1` 在打包前调用 `prepare-cuse-bundle.mjs x86_64-pc-windows-msvc`，获取最新完整 Skill+CLI 到 `bundled-skills/cuse/`；不恢复旧 MCP sidecar。下载/校验失败终止构建，客户端更新覆盖内容并保留用户全局关闭状态。详见 [Cuse bundle](../tech_docs/cuse_bundle.md)。

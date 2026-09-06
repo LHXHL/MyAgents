@@ -44,7 +44,11 @@ vi.mock('react-virtuoso', () => ({
     startReached?: () => void;
     skipAnimationFrameInResizeObserver?: boolean;
     itemSize?: SizeFunction;
-    itemContent?: (index: number, message: MessageType, context?: unknown) => React.ReactNode;
+    itemContent?: (
+      index: number,
+      message: MessageType,
+      context?: unknown,
+    ) => React.ReactNode;
   }) => {
     recorded.push({
       data: props.data,
@@ -55,7 +59,8 @@ vi.mock('react-virtuoso', () => ({
       atBottomStateChange: props.atBottomStateChange,
       followOutput: props.followOutput,
       startReached: props.startReached,
-      skipAnimationFrameInResizeObserver: props.skipAnimationFrameInResizeObserver,
+      skipAnimationFrameInResizeObserver:
+        props.skipAnimationFrameInResizeObserver,
       itemSize: props.itemSize,
     });
     return (
@@ -71,10 +76,18 @@ vi.mock('react-virtuoso', () => ({
 }));
 
 // Heavy children — stub so jsdom doesn't pull Markdown / tool / prompt trees.
-vi.mock('@/components/Message', () => ({ default: () => <div data-testid="msg" /> }));
-vi.mock('@/components/PermissionPrompt', () => ({ PermissionPrompt: () => null }));
-vi.mock('@/components/AskUserQuestionPrompt', () => ({ AskUserQuestionPrompt: () => null }));
-vi.mock('@/components/ExitPlanModePrompt', () => ({ ExitPlanModePrompt: () => null }));
+vi.mock('@/components/Message', () => ({
+  default: () => <div data-testid="msg" />,
+}));
+vi.mock('@/components/PermissionPrompt', () => ({
+  PermissionPrompt: () => null,
+}));
+vi.mock('@/components/AskUserQuestionPrompt', () => ({
+  AskUserQuestionPrompt: () => null,
+}));
+vi.mock('@/components/ExitPlanModePrompt', () => ({
+  ExitPlanModePrompt: () => null,
+}));
 vi.mock('@/context/ChatRowLayoutContext', () => ({
   ChatRowLayoutProvider: ({
     messageId,
@@ -86,7 +99,11 @@ vi.mock('@/context/ChatRowLayoutContext', () => ({
     children: React.ReactNode;
   }) => (
     <div>
-      {['process-row-collapse', 'user-message-collapse-measured', 'process-row-expand'].map(reason => (
+      {[
+        'process-row-collapse',
+        'user-message-collapse-measured',
+        'process-row-expand',
+      ].map((reason) => (
         <button
           key={reason}
           type="button"
@@ -102,18 +119,26 @@ vi.mock('@/context/ChatRowLayoutContext', () => ({
 import MessageList from './MessageList';
 import type { MainWindowPresentation } from '@/utils/mainWindowPresentation';
 
-function msg(id: string, content: string, role: 'user' | 'assistant' = 'assistant'): MessageType {
+function msg(
+  id: string,
+  content: string,
+  role: 'user' | 'assistant' = 'assistant',
+): MessageType {
   return { id, role, content, timestamp: new Date() } as MessageType;
 }
 
 function createFollowProps(initial: boolean | 'force' = true) {
-  const followEnabledRef: React.MutableRefObject<boolean | 'force'> = { current: initial };
+  const followEnabledRef: React.MutableRefObject<boolean | 'force'> = {
+    current: initial,
+  };
   return {
     followEnabledRef,
   };
 }
 
-function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>) {
+function renderList(
+  overrides: Partial<React.ComponentProps<typeof MessageList>>,
+) {
   const props: React.ComponentProps<typeof MessageList> = {
     messages: [],
     streamingMessage: null,
@@ -131,9 +156,18 @@ function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>
 }
 
 const lastData = () => recorded[recorded.length - 1];
-const AVAILABLE_PRESENTATION: MainWindowPresentation = { surfaceAvailable: true, generation: 0 };
-const SUSPENDED_PRESENTATION: MainWindowPresentation = { surfaceAvailable: false, generation: 1 };
-const RESTORED_PRESENTATION: MainWindowPresentation = { surfaceAvailable: true, generation: 1 };
+const AVAILABLE_PRESENTATION: MainWindowPresentation = {
+  surfaceAvailable: true,
+  generation: 0,
+};
+const SUSPENDED_PRESENTATION: MainWindowPresentation = {
+  surfaceAvailable: false,
+  generation: 1,
+};
+const RESTORED_PRESENTATION: MainWindowPresentation = {
+  surfaceAvailable: true,
+  generation: 1,
+};
 const streamingText = (r: Recorded) => {
   const last = r.data[r.data.length - 1];
   return typeof last?.content === 'string' ? last.content : '';
@@ -192,11 +226,16 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     'defers Virtuoso measurement only while %s settles',
     (reason) => {
       const frames: FrameRequestCallback[] = [];
-      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-        frames.push(callback);
-        return frames.length;
+      vi.stubGlobal(
+        'requestAnimationFrame',
+        (callback: FrameRequestCallback) => {
+          frames.push(callback);
+          return frames.length;
+        },
+      );
+      renderList({
+        messages: [msg('tool-row', 'variable-height tool output')],
       });
-      renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
 
       expect(lastData().skipAnimationFrameInResizeObserver).toBe(true);
 
@@ -224,21 +263,29 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     (timing) => {
       let nextFrameId = 1;
       const frames = new Map<number, FrameRequestCallback>();
-      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-        const id = nextFrameId++;
-        frames.set(id, callback);
-        return id;
-      });
+      vi.stubGlobal(
+        'requestAnimationFrame',
+        (callback: FrameRequestCallback) => {
+          const id = nextFrameId++;
+          frames.set(id, callback);
+          return id;
+        },
+      );
       vi.stubGlobal('cancelAnimationFrame', (id: number) => {
         frames.delete(id);
       });
-      renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
+      renderList({
+        messages: [msg('tool-row', 'variable-height tool output')],
+      });
 
       fireEvent.click(screen.getByTestId('process-row-collapse-tool-row'));
       expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
 
       if (timing === 'while shrink settles') {
-        const [id, frame] = frames.entries().next().value as [number, FrameRequestCallback];
+        const [id, frame] = frames.entries().next().value as [
+          number,
+          FrameRequestCallback,
+        ];
         frames.delete(id);
         act(() => frame(1_001));
         expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
@@ -265,15 +312,23 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     renderList({ messages: [msg('tool-row', 'variable-height tool output')] });
 
     fireEvent.click(screen.getByTestId('process-row-collapse-tool-row'));
-    fireEvent.click(screen.getByTestId('user-message-collapse-measured-tool-row'));
+    fireEvent.click(
+      screen.getByTestId('user-message-collapse-measured-tool-row'),
+    );
 
     expect(frames.size).toBe(1);
     expect(lastData().skipAnimationFrameInResizeObserver).toBe(false);
 
-    const [measureId, measure] = frames.entries().next().value as [number, FrameRequestCallback];
+    const [measureId, measure] = frames.entries().next().value as [
+      number,
+      FrameRequestCallback,
+    ];
     frames.delete(measureId);
     act(() => measure(1_001));
-    const [settleId, settle] = frames.entries().next().value as [number, FrameRequestCallback];
+    const [settleId, settle] = frames.entries().next().value as [
+      number,
+      FrameRequestCallback,
+    ];
     frames.delete(settleId);
     act(() => settle(1_002));
 
@@ -319,7 +374,9 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     const hiddenItem = document.createElement('div');
     hiddenItem.dataset.knownSize = '321';
-    vi.spyOn(hiddenItem, 'getBoundingClientRect').mockReturnValue({ height: 0 } as DOMRect);
+    vi.spyOn(hiddenItem, 'getBoundingClientRect').mockReturnValue({
+      height: 0,
+    } as DOMRect);
     expect(queuedItemMeasurement?.(hiddenItem, 'offsetHeight')).toBe(321);
   });
 
@@ -329,12 +386,16 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     const transientlyZeroItem = document.createElement('div');
     transientlyZeroItem.dataset.knownSize = '321';
-    vi.spyOn(transientlyZeroItem, 'getBoundingClientRect').mockReturnValue({ height: 0 } as DOMRect);
+    vi.spyOn(transientlyZeroItem, 'getBoundingClientRect').mockReturnValue({
+      height: 0,
+    } as DOMRect);
     expect(itemMeasurement?.(transientlyZeroItem, 'offsetHeight')).toBe(321);
 
     const measurableItem = document.createElement('div');
     measurableItem.dataset.knownSize = '321';
-    vi.spyOn(measurableItem, 'getBoundingClientRect').mockReturnValue({ height: 456 } as DOMRect);
+    vi.spyOn(measurableItem, 'getBoundingClientRect').mockReturnValue({
+      height: 456,
+    } as DOMRect);
     expect(itemMeasurement?.(measurableItem, 'offsetHeight')).toBe(456);
   });
 
@@ -356,7 +417,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         messages={[...history, msg('stream', 'abc')]}
         streamingMessage={msg('stream', 'abc')}
-        isLoading isActive={false}
+        isLoading
+        isActive={false}
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
@@ -373,7 +435,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         messages={[...history, msg('stream', 'abcdef')]}
         streamingMessage={msg('stream', 'abcdef')}
-        isLoading isActive={false}
+        isLoading
+        isActive={false}
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
@@ -389,7 +452,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         messages={[...history, msg('stream', 'abcdefghi')]}
         streamingMessage={msg('stream', 'abcdefghi')}
-        isLoading isActive
+        isLoading
+        isActive
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
@@ -469,6 +533,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       ...followProps,
     });
     const focusedComponents = lastData().components;
+    const focusedContext = lastData().context;
     scrollToBottom.mockClear();
 
     rerender(
@@ -492,9 +557,12 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(unfocused.data.at(-1)?.id).toBe('assistant-final');
     expect(unfocused.firstItemIndex).toBe(999_995);
     expect(unfocused.heightEstimates).toEqual([150, 270, 900]);
-    // The list values remain live, but the Virtuoso component registry must stay
-    // identity-stable so status/footer updates cannot remount interaction cards.
     expect(unfocused.components).toBe(focusedComponents);
+    expect(unfocused.context).not.toBe(focusedContext);
+    expect(
+      (unfocused.context as { footer: { showStatus: boolean } }).footer
+        .showStatus,
+    ).toBe(false);
 
     unfocused.atBottomStateChange?.(false);
     expect(handleAtBottomChange).toHaveBeenCalledWith(false);
@@ -530,6 +598,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().firstItemIndex).toBe(999_995);
     expect(lastData().heightEstimates).toEqual([150, 270, 900]);
     expect(lastData().components).toBe(focusedComponents);
+    expect(lastData().context).not.toBe(focusedContext);
     expect(scrollToBottom).toHaveBeenCalledTimes(1);
   });
 
@@ -538,7 +607,9 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // the tab's session is switched to s2 while hidden, then user returns. The old
     // s1 "don't follow" intent must NOT disable follow for the fresh s2 — otherwise
     // s2 loads at bottom but never auto-scrolls new streaming.
-    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
+    const followRef: React.MutableRefObject<boolean | 'force'> = {
+      current: true,
+    };
     const followProps = () => ({
       followEnabledRef: followRef,
     });
@@ -549,8 +620,11 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
 
     const s1 = [msg('a1', 'x', 'user'), msg('a2', 'y')];
     const { rerender } = renderList({
-      sessionId: 's1', messages: s1, isActive: true,
-      ...followProps(), scrollToBottom,
+      sessionId: 's1',
+      messages: s1,
+      isActive: true,
+      ...followProps(),
+      scrollToBottom,
     });
 
     // User scrolls up in s1 → follow disabled.
@@ -559,10 +633,16 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // Switch tab away → inactive snapshot captures (false @ s1).
     rerender(
       <MessageList
-        sessionId="s1" messages={s1} streamingMessage={null}
-        isLoading={false} isActive={false} firstItemIndex={1_000_000}
-        virtuosoRef={{ current: null }} {...followProps()}
-        scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
+        sessionId="s1"
+        messages={s1}
+        streamingMessage={null}
+        isLoading={false}
+        isActive={false}
+        firstItemIndex={1_000_000}
+        virtuosoRef={{ current: null }}
+        {...followProps()}
+        scrollToBottom={scrollToBottom}
+        handleAtBottomChange={vi.fn()}
       />,
     );
 
@@ -570,10 +650,16 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     const s2 = [msg('b1', 'p', 'user'), msg('b2', 'q')];
     rerender(
       <MessageList
-        sessionId="s2" messages={s2} streamingMessage={null}
-        isLoading={false} isActive firstItemIndex={1_000_000}
-        virtuosoRef={{ current: null }} {...followProps()}
-        scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
+        sessionId="s2"
+        messages={s2}
+        streamingMessage={null}
+        isLoading={false}
+        isActive
+        firstItemIndex={1_000_000}
+        virtuosoRef={{ current: null }}
+        {...followProps()}
+        scrollToBottom={scrollToBottom}
+        handleAtBottomChange={vi.fn()}
       />,
     );
 
@@ -641,9 +727,16 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(streamingText(lastData())).toBe('a');
     expect(onViewportAdmissionChanged).toHaveBeenLastCalledWith(false, 1);
 
-    act(() => resizeCallback?.([
-      { contentRect: { width: 800, height: 600 } as DOMRectReadOnly } as ResizeObserverEntry,
-    ], {} as ResizeObserver));
+    act(() =>
+      resizeCallback?.(
+        [
+          {
+            contentRect: { width: 800, height: 600 } as DOMRectReadOnly,
+          } as ResizeObserverEntry,
+        ],
+        {} as ResizeObserver,
+      ),
+    );
 
     expect(streamingText(lastData())).toBe('abcdef');
     expect(onViewportAdmissionChanged).toHaveBeenLastCalledWith(true, 1);
@@ -671,11 +764,18 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().data).toEqual([]);
     expect(onViewportAdmissionChanged).toHaveBeenLastCalledWith(false, 3);
 
-    act(() => resizeCallback?.([
-      { contentRect: { width: 800, height: 600 } as DOMRectReadOnly } as ResizeObserverEntry,
-    ], {} as ResizeObserver));
+    act(() =>
+      resizeCallback?.(
+        [
+          {
+            contentRect: { width: 800, height: 600 } as DOMRectReadOnly,
+          } as ResizeObserverEntry,
+        ],
+        {} as ResizeObserver,
+      ),
+    );
 
-    expect(lastData().data.map(message => message.id)).toEqual(['m1']);
+    expect(lastData().data.map((message) => message.id)).toEqual(['m1']);
     expect(onViewportAdmissionChanged).toHaveBeenLastCalledWith(true, 3);
   });
 
@@ -693,7 +793,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         messages={history}
         streamingMessage={null}
-        isLoading={false} isActive={false}
+        isLoading={false}
+        isActive={false}
         firstItemIndex={999_995}
         sessionId="s1"
         virtuosoRef={{ current: null }}
@@ -718,7 +819,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         messages={[...history, msg('stream', 'hidden growth')]}
         streamingMessage={msg('stream', 'hidden growth')}
-        isLoading isActive={false}
+        isLoading
+        isActive={false}
         firstItemIndex={1_000_000}
         heightEstimateSeed={[120, 480, 900]}
         sessionId="s1"
@@ -746,12 +848,18 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       } as unknown as React.RefObject<VirtuosoHandle | null>,
     });
 
-    expect(scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    expect(scrollToIndex).toHaveBeenCalledWith({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'auto',
+    });
     expect(autoscrollToBottom).not.toHaveBeenCalled();
   });
 
   it('pins to bottom once when a turn completes while follow is enabled', () => {
-    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
+    const followRef: React.MutableRefObject<boolean | 'force'> = {
+      current: true,
+    };
     const scrollToBottom = vi.fn();
     const history = [msg('h1', 'hello', 'user')];
     const baseProps = {

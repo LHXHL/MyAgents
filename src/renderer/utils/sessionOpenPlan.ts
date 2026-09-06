@@ -5,16 +5,15 @@ import {
   type RuntimeSource,
   type RuntimeType,
 } from '../../shared/types/runtime';
+import type { Tab } from '@/types/tab';
 
 // Runtime normalization remains re-exported for renderer callers. Session
 // navigation itself no longer compares runtimes because existing Sessions never
 // hot-swap the current Tab's process identity.
-export { normalizeRuntime, resolveEffectiveRuntime } from '../../shared/types/runtime';
-
-export interface SessionOpenTabState {
-  id: string;
-  sessionId: string | null;
-}
+export {
+  normalizeRuntime,
+  resolveEffectiveRuntime,
+} from '../../shared/types/runtime';
 
 export interface SessionRuntimeIdentity {
   runtime: RuntimeType;
@@ -32,7 +31,7 @@ export type SessionOpenPlan =
   | { type: 'open-new-tab' };
 
 export interface SessionOpenPlanInput {
-  tabs: readonly SessionOpenTabState[];
+  tabs: readonly Tab[];
   targetSessionId: string;
 }
 
@@ -55,15 +54,22 @@ export function sessionRuntimeIdentityFromMetadataForOpen(
     };
   }
 
-  const runtime = metadata?.runtime ? normalizeRuntime(metadata.runtime) : fallbackRuntime;
+  const runtime = metadata?.runtime
+    ? normalizeRuntime(metadata.runtime)
+    : fallbackRuntime;
   return {
     runtime,
-    runtimeSource: normalizeRuntimeSourceForIdentity(runtime, metadata?.runtimeSource),
+    runtimeSource: normalizeRuntimeSourceForIdentity(
+      runtime,
+      metadata?.runtimeSource,
+    ),
   };
 }
 
 export function planSessionOpen(input: SessionOpenPlanInput): SessionOpenPlan {
-  const existingTab = input.tabs.find((tab) => tab.sessionId === input.targetSessionId);
+  const existingTab = input.tabs.find(
+    (tab) => tab.view === 'chat' && tab.sessionId === input.targetSessionId,
+  );
   if (existingTab) {
     return { type: 'jump-to-tab', tabId: existingTab.id };
   }

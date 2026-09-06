@@ -7,7 +7,7 @@
   },
   "toasts": {
     "workspaceAttachmentsCleared": "Workspace switched. Attachment drafts from the previous workspace were cleared.",
-    "thoughtSaved": "Thought saved. You can find it in Task Center.",
+    "thoughtSaved": "Record saved. You can find it in Task Center.",
     "runtimeNeedsAgent": "This workspace has no Agent configured, so Runtime cannot be changed.",
     "runtimeSwitchFailed": "Failed to switch Runtime. Please try again.",
     "runtimeUnavailable": "This Runtime artifact is unavailable or failed integrity checks. Repair or reinstall MyAgents first.",
@@ -57,6 +57,7 @@
     "deleteFailedRetry": "Delete failed. Please try again.",
     "deleteFailed": "Delete failed.",
     "favoriteFailedRetry": "Failed to update favorite. Please try again.",
+    "sessionPinFailedRetry": "Failed to update pinned state. Please try again.",
     "filterAll": "All",
     "filterFavorites": "Favorites",
     "filterTitle": "Filter chat history",
@@ -68,6 +69,13 @@
     "copySessionId": "Copy chat ID",
     "copySessionIdSuccess": "Chat ID copied",
     "copyFailed": "Copy failed",
+    "rename": "Rename",
+    "renameDialogTitle": "Rename chat",
+    "renameDialogLabel": "Chat name",
+    "renameFailedRetry": "Rename failed. Please try again.",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "pinned": "Pinned",
     "favorite": "Favorite chat",
     "unfavorite": "Remove from favorites",
     "viewStats": "View stats",
@@ -91,9 +99,9 @@
     "remove": "Remove"
   },
   "recentThoughts": {
-    "openTaskCenterTitle": "Open Task Center to view all thoughts",
+    "openTaskCenterTitle": "Open Task Center to view all records",
     "more": "More",
-    "emptyThought": "(empty thought)"
+    "emptyThought": "(empty record)"
   },
   "addWorkspaceMenu": {
     "add": "Add",

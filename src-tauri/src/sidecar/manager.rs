@@ -77,12 +77,11 @@ pub(crate) struct FrontendSidecarBinding {
     generation: u64,
 }
 
-/// Server-authoritative identity used when a live Session Sidecar asks Rust
-/// for an application Browser Host capability. The requesting process may
-/// prove its immutable birth identity, but it may not choose a different
-/// logical Session or filesystem root.
+/// Server-authoritative identity for one exact live Session Sidecar process.
+/// The requesting process may prove its immutable birth identity, but it may
+/// not choose a different logical Session or filesystem root.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BrowserCapabilitySource {
+pub(crate) struct SessionProcessSource {
     pub(crate) product_session_id: String,
     pub(crate) workspace_path: PathBuf,
     pub(crate) interactive: bool,
@@ -376,18 +375,18 @@ impl SidecarManager {
     /// Session Sidecar process generation. This follows pending -> real Session
     /// rekeys because `management_id` is immutable while `session_id` is the
     /// manager-owned current identity.
-    pub(crate) fn resolve_browser_capability_source(
+    pub(crate) fn resolve_session_process_source(
         &self,
         management_id: &str,
         generation: u64,
-    ) -> Option<BrowserCapabilitySource> {
+    ) -> Option<SessionProcessSource> {
         self.sidecars
             .iter()
             .find(|(session_id, sidecar)| {
                 sidecar.management_id == management_id
                     && self.sidecar_generations.get(*session_id).copied() == Some(generation)
             })
-            .map(|(_, sidecar)| BrowserCapabilitySource {
+            .map(|(_, sidecar)| SessionProcessSource {
                 product_session_id: sidecar.session_id.clone(),
                 workspace_path: std::fs::canonicalize(&sidecar.workspace_path)
                     .unwrap_or_else(|_| sidecar.workspace_path.clone()),
@@ -395,6 +394,14 @@ impl SidecarManager {
                     matches!(owner, SidecarOwner::Tab(_) | SidecarOwner::Companion(_))
                 }),
             })
+    }
+
+    pub(crate) fn resolve_browser_capability_source(
+        &self,
+        management_id: &str,
+        generation: u64,
+    ) -> Option<SessionProcessSource> {
+        self.resolve_session_process_source(management_id, generation)
     }
 
     /// Validate a future Runtime identity for Browser capability projection.
@@ -1800,6 +1807,34 @@ impl SidecarManager {
         }
     }
 
+    /// Atomically detach one exact owner token from every current Session key.
+    ///
+    /// Companion session rotation intentionally attaches the new Session
+    /// before releasing the old one, so an owner can temporarily exist in
+    /// multiple entries. Snapshotting ids and releasing later would race a
+    /// rekey; collecting every release under this manager lock gives feature
+    /// teardown one authoritative linearization point.
+    pub(crate) fn remove_owner_from_all_sessions(
+        &mut self,
+        owner: &SidecarOwner,
+    ) -> Vec<(String, SessionOwnerRelease)> {
+        let session_ids = self
+            .sidecars
+            .keys()
+            .chain(self.recovering_sidecars.keys())
+            .filter(|session_id| self.session_has_exact_owner(session_id, owner))
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+
+        session_ids
+            .into_iter()
+            .map(|session_id| {
+                let release = self.remove_session_owner(&session_id, owner);
+                (session_id, release)
+            })
+            .collect()
+    }
+
     pub(super) fn prepare_unowned_session_retirement(
         &mut self,
         session_id: &str,
@@ -2246,6 +2281,36 @@ mod completion_claim_tests {
     use super::*;
 
     #[test]
+    fn exact_owner_sweep_covers_temporary_multi_session_handover() {
+        let mut manager = SidecarManager::new();
+        let companion = SidecarOwner::Companion("floating-ball".to_string());
+        manager.insert_test_ready_frontend_sidecar(
+            "session-a",
+            32001,
+            SidecarOwner::Tab("tab-a".to_string()),
+        );
+        manager.insert_test_ready_frontend_sidecar(
+            "session-b",
+            32002,
+            SidecarOwner::Tab("tab-b".to_string()),
+        );
+        assert!(manager.add_session_owner("session-a", companion.clone()));
+        assert!(manager.add_session_owner("session-b", companion.clone()));
+
+        let releases = manager.remove_owner_from_all_sessions(&companion);
+
+        assert_eq!(releases.len(), 2);
+        assert!(releases
+            .iter()
+            .all(|(_, release)| release.summary() == (true, false)));
+        assert!(!manager.session_has_exact_owner("session-a", &companion));
+        assert!(!manager.session_has_exact_owner("session-b", &companion));
+        assert!(
+            manager.session_has_exact_owner("session-a", &SidecarOwner::Tab("tab-a".to_string()))
+        );
+    }
+
+    #[test]
     fn frontend_and_background_paths_consume_one_generation_claim() {
         let mut manager = SidecarManager::new();
         let frontend_owner = SidecarOwner::Tab("tab-a".to_string());
@@ -2343,7 +2408,7 @@ mod completion_claim_tests {
     }
 
     #[test]
-    fn browser_capability_source_is_manager_owned_and_follows_rekey() {
+    fn session_process_source_is_manager_owned_and_follows_rekey() {
         let mut manager = SidecarManager::new();
         manager.insert_test_ready_frontend_sidecar(
             "pending-tab-a",
@@ -2362,7 +2427,7 @@ mod completion_claim_tests {
 
         assert_eq!(
             manager
-                .resolve_browser_capability_source(&management_id, generation)
+                .resolve_session_process_source(&management_id, generation)
                 .expect("pending binding")
                 .product_session_id,
             "pending-tab-a",
@@ -2370,16 +2435,16 @@ mod completion_claim_tests {
         assert!(manager.upgrade_session_id_for_tab("pending-tab-a", "session-real", "tab-a",));
         assert_eq!(
             manager
-                .resolve_browser_capability_source(&management_id, generation)
+                .resolve_session_process_source(&management_id, generation)
                 .expect("rekeyed binding")
                 .product_session_id,
             "session-real",
         );
         assert!(manager
-            .resolve_browser_capability_source(&management_id, generation + 1)
+            .resolve_session_process_source(&management_id, generation + 1)
             .is_none());
         assert!(manager
-            .resolve_browser_capability_source("another-process", generation)
+            .resolve_session_process_source("another-process", generation)
             .is_none());
     }
 

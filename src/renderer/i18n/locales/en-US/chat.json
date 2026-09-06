@@ -74,28 +74,27 @@
     "cronEnabled": "Schedule enabled",
     "cron": "Schedule",
     "switchModel": "Switch model",
-    "imageFilteredOnSend": "{{model}} does not support images. {{count}} image(s) were filtered; only text was sent.",
     "undoFilesAdded": "Undid adding {{count}} file(s).",
     "undoFilesPartial": "Undid {{successCount}} file(s); {{failCount}} file(s) could not be deleted.",
     "undoReferenceOnly": "Reference removed, but file deletion failed.",
     "mode": {
       "chat": "Chat",
-      "thought": "Thought",
-      "switchToThought": "Press Tab to switch to Thought",
+      "record": "Records",
+      "switchToRecord": "Press Tab to switch to Records",
       "switchToChat": "Press Tab to switch to Chat"
     },
     "mention": {
       "workspaceFiles": "Workspace files",
-      "thoughts": "Thoughts",
+      "thoughts": "Records",
       "switchHint": "⌘/Ctrl + ←/→ to switch",
       "filePlaceholder": "Type a filename to search...",
       "searching": "Searching...",
       "noFiles": "No files found",
-      "emptyThoughts": "No thoughts yet. Capture one in Task Center first.",
-      "noThoughtMatchesPrefix": "No thoughts match",
+      "emptyThoughts": "No records yet. Capture one in Task Center first.",
+      "noThoughtMatchesPrefix": "No records match",
       "noThoughtMatchesSuffix": "",
-      "recentThoughts": "Recent {{count}} thoughts",
-      "matchedThoughts": "Thoughts matching \"{{query}}\" · {{count}}",
+      "recentThoughts": "Recent {{count}} records",
+      "matchedThoughts": "Records matching \"{{query}}\" · {{count}}",
       "thoughtSoftCap": "Showing the first {{count}} matches. Type a more specific keyword."
     },
     "permissionModes": {
@@ -172,7 +171,7 @@
       "previewFailed": "Failed to generate a preview URL for image \"{{name}}\".",
       "oversizedImageAsFile": "Image is over 10 MB. Use Upload file or drag it from a folder to reference it as an @file.",
       "oversizedImagesAsFile": "{{count}} images are over 10 MB. Use Upload file or drag them from a folder to reference them as @files.",
-      "imagesConvertedToFiles": "The current model does not support image input, so images were saved as workspace files for the model to read.",
+      "imageUnderstandingNotReady": "The current model does not support images. The image was added as a workspace file, but Image Understanding is not ready, so the Agent may be unable to read it. Enable and configure Image Understanding, or switch to a model that supports images.",
       "desktopRequiredForUpload": "Cannot upload files in browser dev mode. Use the desktop app.",
       "selectWorkspaceForUpload": "Select a workspace before uploading files.",
       "uploadFailed": "Upload failed",
@@ -290,6 +289,7 @@
       "trashMoved": "Moved to Trash"
     },
     "filePreview": {
+      "fileUnavailable": "File unavailable; it may have moved or been deleted. Local edits are retained.",
       "saving": "Saving",
       "saved": "Saved",
       "saveFailed": "Save failed",
@@ -309,7 +309,7 @@
       "fullscreenPreview": "Fullscreen preview",
       "toasts": {
         "externalUpdateConflict": "The file changed externally. Local edits were not overwritten.",
-        "closeAutosaveFailed": "Auto-save failed while closing",
+        "closeAutosaveFailed": "Save failed. The editor remains open with your local edits.",
         "renameFailed": "Rename failed",
         "copiedFilePath": "File path copied",
         "copyWhileLoading": "The file is still loading. Try copying again shortly.",

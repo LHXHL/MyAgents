@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "MyAgents",
-  "version": "0.4.11",
+  "version": "0.4.15",
   "identifier": "com.myagents.app",
   "build": {
     "frontendDist": "../dist",
@@ -58,6 +58,7 @@
       "../bundled-agents": "bundled-agents",
       "../src-tauri/resources/cli": "cli",
       "../src-tauri/resources/document-processing": "document-processing",
+      "../src-tauri/resources/speech-inference": "speech-inference",
       "../bundled-workspaces": "bundled-workspaces",
       "../LICENSE": "legal/LICENSE",
       "../LICENSING.md": "legal/LICENSING.md",
@@ -67,9 +68,6 @@
       "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
       "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
     },
-    "externalBin": [
-      "binaries/cuse"
-    ],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "entitlements": "Entitlements.plist",

@@ -38,11 +38,11 @@ check_install() {
     fi
 }
 
-echo -e "${BLUE}[1/7] 检查依赖${NC}"
+echo -e "${BLUE}[1/6] 检查依赖${NC}"
 MISSING=0
 
-check_install "Node.js 24.14.0" "[[ \"\$(node --version 2>/dev/null)\" == \"v24.14.0\" ]]" "精确 Node.js 24.14.0（见 .nvmrc）" || MISSING=1
-check_install "npm 11.15.0" "[[ \"\$(npm --version 2>/dev/null)\" == \"11.15.0\" ]]" "精确 npm 11.15.0" || MISSING=1
+check_install "Node.js 24.20.0" "[[ \"\$(node --version 2>/dev/null)\" == \"v24.20.0\" ]]" "精确 Node.js 24.20.0（见 .nvmrc）" || MISSING=1
+check_install "npm 11.19.0" "[[ \"\$(npm --version 2>/dev/null)\" == \"11.19.0\" ]]" "精确 npm 11.19.0" || MISSING=1
 check_install "Rust" "rustc --version" "https://rustup.rs" || MISSING=1
 check_install "Cargo" "cargo --version" "随 Rust 安装" || MISSING=1
 check_install "rustup" "rustup --version" "https://rustup.rs" || MISSING=1
@@ -54,35 +54,25 @@ if [ $MISSING -eq 1 ]; then
 fi
 
 # 固定 Rust toolchain/components，避免 rustfmt/clippy 或 IDE 使用系统 Rust 漂移。
-echo -e "${BLUE}[2/7] 准备 Rust toolchain / components${NC}"
+echo -e "${BLUE}[2/6] 准备 Rust toolchain / components${NC}"
 "${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh"
+echo ""
+
+# 原生推理 owner 按 host target 和 exact prepared cache 判断是否真的需要
+# CMake/Python/compiler；在任何大下载或依赖安装前给出权威恢复提示。
+echo -e "${BLUE}[2.5/6] 检查原生推理构建依赖${NC}"
+node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" --check-prerequisites
+echo -e "${GREEN}✓ 原生推理构建依赖检查完成${NC}"
 echo ""
 
 # 下载 Node.js 二进制（Sidecar + MCP Server + 社区工具 统一 runtime）
 echo ""
-echo -e "${BLUE}[3/7] 下载 Node.js 运行时${NC}"
+echo -e "${BLUE}[3/6] 下载 Node.js 运行时${NC}"
 "${PROJECT_DIR}/scripts/download_nodejs.sh"
 echo ""
 
-# 下载 cuse computer-use 二进制（macOS only — cuse 不出 Linux 包，
-# Windows 走 setup_windows.ps1）。download_cuse.sh 自带版本短路：
-# 已有正确版本 + Mach-O 烟雾测试通过 → exit 0，重跑也是 noop。
-# 网络失败 / R2 短暂不可用属软失败：dev 模式 getBundledCusePath() 返
-# null → MCP 优雅 skip + warn，用户事后可手动重跑 download_cuse.sh，
-# 不应阻断整个 setup（其他 99% 的功能跟 cuse 无关）。
-echo -e "${BLUE}[4/7] 下载 cuse computer-use 二进制${NC}"
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    if ! "${PROJECT_DIR}/scripts/download_cuse.sh"; then
-        echo -e "${YELLOW}⚠ cuse 下载失败（网络或 R2 不可用）— computer-use 功能在 dev 模式下将不可用${NC}"
-        echo -e "${YELLOW}  网络恢复后可重跑：./scripts/download_cuse.sh${NC}"
-    fi
-else
-    echo -e "${YELLOW}  非 macOS，跳过（cuse 当前只发 macOS / Windows 包）${NC}"
-fi
-echo ""
-
 # 安装依赖（使用 npm — v0.2.0 起不再依赖 Bun）
-echo -e "${BLUE}[5/7] 安装依赖${NC}"
+echo -e "${BLUE}[4/6] 安装依赖${NC}"
 npm install
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo -e "  ${CYAN}Validating Claude Agent SDK native package...${NC}"
@@ -100,18 +90,18 @@ echo -e "${GREEN}✓ 依赖安装完成${NC}"
 echo ""
 
 # 安装 Rust 依赖
-echo -e "${BLUE}[6/7] 检查 Rust 依赖${NC}"
+echo -e "${BLUE}[5/6] 检查 Rust 依赖${NC}"
 cd src-tauri
 cargo check --quiet 2>/dev/null || cargo fetch
 cd ..
 echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
-# 准备 host target 的离线文档转换资源。setup 完成后用户可直接运行
+# 准备 host target 的离线文档与语音推理资源。setup 完成后用户可直接运行
 # `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
-echo -e "${BLUE}[7/7] 准备离线文档转换资源${NC}"
-node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs"
-echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
+echo -e "${BLUE}[6/6] 准备离线文档与语音推理资源${NC}"
+node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs"
+echo -e "${GREEN}✓ 原生推理资源 ready${NC}"
 echo ""
 
 # 完成

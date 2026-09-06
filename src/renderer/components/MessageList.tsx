@@ -1,18 +1,35 @@
 import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
-import React, { memo, useCallback, useMemo, useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, {
+  memo,
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { ListItem, SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
 import Message from '@/components/Message';
-import { PermissionPrompt, type PermissionRequest } from '@/components/PermissionPrompt';
-import { AskUserQuestionPrompt, type AskUserQuestionRequest } from '@/components/AskUserQuestionPrompt';
+import {
+  PermissionPrompt,
+  type PermissionRequest,
+} from '@/components/PermissionPrompt';
+import {
+  AskUserQuestionPrompt,
+  type AskUserQuestionRequest,
+} from '@/components/AskUserQuestionPrompt';
 import { ExitPlanModePrompt } from '@/components/ExitPlanModePrompt';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { Message as MessageType } from '@/types/chat';
 import type { SessionState, SystemNotice } from '@/context/TabContext';
-import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/ChatRowLayoutContext';
+import {
+  ChatRowLayoutProvider,
+  type RowLayoutChangeReason,
+} from '@/context/ChatRowLayoutContext';
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
@@ -22,8 +39,10 @@ function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  if (hours > 0) return t('shell.messageList.elapsed.hms', { hours, minutes, seconds });
-  if (minutes > 0) return t('shell.messageList.elapsed.ms', { minutes, seconds });
+  if (hours > 0)
+    return t('shell.messageList.elapsed.hms', { hours, minutes, seconds });
+  if (minutes > 0)
+    return t('shell.messageList.elapsed.ms', { minutes, seconds });
   return t('shell.messageList.elapsed.seconds', { seconds });
 }
 
@@ -31,6 +50,7 @@ interface MessageListProps {
   messages: readonly MessageType[];
   streamingMessage: MessageType | null;
   isLoading: boolean;
+  getQueryElapsedSeconds?: () => number;
   sessionId?: string | null;
   /**
    * Whether this Tab is currently visible. When `false`, the host wraps this
@@ -45,7 +65,10 @@ interface MessageListProps {
   /** Native shown/not-minimized generation; focus is intentionally excluded. */
   windowPresentation?: MainWindowPresentation;
   /** Commits the single list-admission edge to the Chat scroll owner. */
-  onViewportAdmissionChanged?: (admitted: boolean, presentationGeneration: number) => void;
+  onViewportAdmissionChanged?: (
+    admitted: boolean,
+    presentationGeneration: number,
+  ) => void;
   /** Allows an event-driven pending anchor to settle once Virtuoso mounts its row. */
   onItemsRendered?: () => void;
   /** Hides only a known-wrong intermediate recovery position. */
@@ -63,11 +86,20 @@ interface MessageListProps {
   /** Drives the session-switch scroll pin — goes through the hook so grace/degrade state stays consistent. */
   scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
   handleAtBottomChange: (atBottom: boolean) => void;
-  onRowLayoutChanged?: (messageId: string, reason: RowLayoutChangeReason) => void;
+  onRowLayoutChanged?: (
+    messageId: string,
+    reason: RowLayoutChangeReason,
+  ) => void;
   pendingPermission?: PermissionRequest | null;
-  onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
+  onPermissionDecision?: (
+    requestId: string,
+    decision: 'deny' | 'allow_once' | 'always_allow',
+  ) => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void | Promise<void>;
+  onAskUserQuestionSubmit?: (
+    requestId: string,
+    answers: Record<string, string>,
+  ) => void | Promise<void>;
   onAskUserQuestionCancel?: (requestId: string) => void | Promise<void>;
   pendingExitPlanMode?: ExitPlanModeRequest | null;
   onExitPlanModeApprove?: () => void;
@@ -92,21 +124,6 @@ interface MessageListProps {
   bottomSpacerPx?: number;
 }
 
-type MessageListFooterState = Readonly<{
-  pendingPermission?: PermissionRequest | null;
-  onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
-  pendingAskUserQuestion?: AskUserQuestionRequest | null;
-  onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void | Promise<void>;
-  onAskUserQuestionCancel?: (requestId: string) => void | Promise<void>;
-  showStatus: boolean;
-  statusMessage: string;
-  waitingForInteraction: boolean;
-  systemNotice?: SystemNotice | null;
-  onDismissSystemNotice?: () => void;
-  bottomSpacerPx?: number;
-}>;
-
-const MessageListFooterContext = React.createContext<MessageListFooterState | null>(null);
 
 interface MessageActionContext {
   conversationOperations: 'builtin' | 'codex';
@@ -116,26 +133,38 @@ interface MessageActionContext {
 }
 
 const STREAMING_MESSAGE_COUNT = 20;
-const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
+const noopRowLayoutChanged = (
+  _messageId: string,
+  _reason: RowLayoutChangeReason,
+) => {};
 const STATUS_ROW_HEIGHT_PX = 30;
 const EMPTY_MESSAGE_ID_SET: ReadonlySet<string> = new Set();
 const EMPTY_MESSAGES: readonly MessageType[] = [];
+const noQueryElapsedSeconds = () => 0;
 const DEFAULT_WINDOW_PRESENTATION: MainWindowPresentation = {
   surfaceAvailable: true,
   generation: 0,
 };
-const noopViewportAdmissionChanged = (_admitted: boolean, _presentationGeneration: number) => {};
+const noopViewportAdmissionChanged = (
+  _admitted: boolean,
+  _presentationGeneration: number,
+) => {};
 const noopItemsRendered = () => {};
 
 function isLargeRowShrink(reason: RowLayoutChangeReason): boolean {
-  return reason === 'process-row-collapse' || reason === 'user-message-collapse-measured';
+  return (
+    reason === 'process-row-collapse' ||
+    reason === 'user-message-collapse-measured'
+  );
 }
 
 function isRowExpansion(reason: RowLayoutChangeReason): boolean {
-  return reason === 'process-row-expand'
-    || reason === 'user-message-expand'
-    || reason === 'block-group-expand'
-    || reason === 'expandable-container-expand';
+  return (
+    reason === 'process-row-expand' ||
+    reason === 'user-message-expand' ||
+    reason === 'block-group-expand' ||
+    reason === 'expandable-container-expand'
+  );
 }
 
 /** Resolve dynamic system status keys (e.g., api_retry:2:5 → human-readable) */
@@ -157,16 +186,23 @@ function getRandomStreamingMessage(t: TFunction<'chat'>): string {
   return t(`shell.messageList.streaming.${index}`);
 }
 
-const StatusTimer = memo(function StatusTimer({ message }: { message: string }) {
+const StatusTimer = memo(function StatusTimer({
+  message,
+  getElapsedSeconds,
+}: {
+  message: string;
+  getElapsedSeconds: () => number;
+}) {
   const { t } = useTranslation('chat');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const startTimeRef = useRef(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(() =>
+    getElapsedSeconds(),
+  );
   useEffect(() => {
-    startTimeRef.current = Date.now();
-    const id = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
+    const id = setInterval(() => setElapsedSeconds(getElapsedSeconds()), 1000);
     return () => clearInterval(id);
-  }, []);
-  const elapsedText = elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
+  }, [getElapsedSeconds]);
+  const elapsedText =
+    elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
   const displayText = elapsedText ? `${message} (${elapsedText})` : message;
   return (
     <div
@@ -181,7 +217,11 @@ const StatusTimer = memo(function StatusTimer({ message }: { message: string }) 
   );
 });
 
-const InteractionWaitingStatus = memo(function InteractionWaitingStatus({ message }: { message: string }) {
+const InteractionWaitingStatus = memo(function InteractionWaitingStatus({
+  message,
+}: {
+  message: string;
+}) {
   return (
     <div
       data-chat-status-row=""
@@ -190,7 +230,10 @@ const InteractionWaitingStatus = memo(function InteractionWaitingStatus({ messag
       style={{ height: STATUS_ROW_HEIGHT_PX }}
       title={message}
     >
-      <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden="true" />
+      <span
+        className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]"
+        aria-hidden="true"
+      />
       <span className="min-w-0 truncate">{message}</span>
     </div>
   );
@@ -208,7 +251,9 @@ const SystemNoticeRow = memo(function SystemNoticeRow({
   const Icon = isError ? AlertCircle : CheckCircle;
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
-      <Icon className={`h-3 w-3 flex-shrink-0 ${isError ? 'text-[var(--error)]' : 'text-[var(--success)]'}`} />
+      <Icon
+        className={`h-3 w-3 flex-shrink-0 ${isError ? 'text-[var(--error)]' : 'text-[var(--success)]'}`}
+      />
       <span className="flex-1">{notice.message}</span>
       {onDismiss && (
         <button
@@ -225,27 +270,57 @@ const SystemNoticeRow = memo(function SystemNoticeRow({
 });
 
 function hasExitPlanModeTool(message: MessageType): boolean {
-  if (message.role !== 'assistant' || typeof message.content === 'string') return false;
+  if (message.role !== 'assistant' || typeof message.content === 'string')
+    return false;
   return message.content.some(
-    block => (block.type === 'tool_use' || block.type === 'server_tool_use') && block.tool?.name === 'ExitPlanMode'
+    (block) =>
+      (block.type === 'tool_use' || block.type === 'server_tool_use') &&
+      block.tool?.name === 'ExitPlanMode',
   );
 }
 
-// ── Virtuoso Footer ──────────────────────────────────────────────────────────
-// Virtuoso treats a changed Footer component type as an instruction to unmount the
-// whole footer. Keep this component and the `components` object module-stable; live
-// values arrive through React context so loading/status updates cannot erase local
-// AskUserQuestion or permission-card state.
-const VirtuosoFooter = memo(function VirtuosoFooter() {
-  const state = React.useContext(MessageListFooterContext);
-  if (!state) return null;
-  const {
-    pendingPermission, onPermissionDecision,
-    pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel,
-    showStatus, statusMessage, waitingForInteraction,
-    systemNotice, onDismissSystemNotice,
-    bottomSpacerPx,
-  } = state;
+// ── Virtuoso Footer — dynamic values arrive through the existing list context ──
+// Must NOT be recreated on every render (inline arrow in `components` causes Virtuoso
+// to remount the footer, resetting StatusTimer and forcing extra remeasurement).
+type FooterProps = {
+  pendingPermission?: PermissionRequest | null;
+  onPermissionDecision?: (
+    requestId: string,
+    decision: 'deny' | 'allow_once' | 'always_allow',
+  ) => void | Promise<void>;
+  pendingAskUserQuestion?: AskUserQuestionRequest | null;
+  onAskUserQuestionSubmit?: (
+    requestId: string,
+    answers: Record<string, string>,
+  ) => void;
+  onAskUserQuestionCancel?: (requestId: string) => void;
+  showStatus: boolean;
+  waitingForInteraction: boolean;
+  statusMessage: string;
+  getQueryElapsedSeconds: () => number;
+  systemNotice?: SystemNotice | null;
+  onDismissSystemNotice?: () => void;
+  bottomSpacerPx?: number;
+};
+
+interface MessageListContext extends MessageActionContext {
+  footer: FooterProps;
+}
+
+const VirtuosoFooter = memo(function VirtuosoFooter({
+  pendingPermission,
+  onPermissionDecision,
+  pendingAskUserQuestion,
+  onAskUserQuestionSubmit,
+  onAskUserQuestionCancel,
+  showStatus,
+  waitingForInteraction,
+  statusMessage,
+  getQueryElapsedSeconds,
+  systemNotice,
+  onDismissSystemNotice,
+  bottomSpacerPx,
+}: FooterProps) {
   const spacerHeight = resolveChatBottomSpacerPx(bottomSpacerPx);
   return (
     <div className="mx-auto max-w-3xl px-3">
@@ -258,27 +333,48 @@ const VirtuosoFooter = memo(function VirtuosoFooter() {
           />
         </div>
       )}
-      {pendingAskUserQuestion && onAskUserQuestionSubmit && onAskUserQuestionCancel && (
-        <div className="py-2">
-          <AskUserQuestionPrompt key={pendingAskUserQuestion.requestId} request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
-        </div>
-      )}
-      {showStatus && (waitingForInteraction
-        ? <InteractionWaitingStatus message={statusMessage} />
-        : <StatusTimer message={statusMessage} />)}
+      {pendingAskUserQuestion &&
+        onAskUserQuestionSubmit &&
+        onAskUserQuestionCancel && (
+          <div className="py-2">
+            <AskUserQuestionPrompt
+              key={pendingAskUserQuestion.requestId}
+              request={pendingAskUserQuestion}
+              onSubmit={onAskUserQuestionSubmit}
+              onCancel={onAskUserQuestionCancel}
+            />
+          </div>
+        )}
+      {showStatus && (waitingForInteraction ? (
+        <InteractionWaitingStatus message={statusMessage} />
+      ) : (
+        <StatusTimer message={statusMessage} getElapsedSeconds={getQueryElapsedSeconds} />
+      ))}
       {!showStatus && systemNotice && (
-        <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
+        <SystemNoticeRow
+          notice={systemNotice}
+          onDismiss={onDismissSystemNotice}
+        />
       )}
       {/* Footer spacer follows the measured floating input stack. The extra
           clearance in resolveChatBottomSpacerPx keeps both the status row and
           streaming tail comfortably above the composer without moving either
           out of Virtuoso's scroll geometry. */}
-      <div data-chat-footer-spacer="" style={{ height: spacerHeight }} aria-hidden="true" />
+      <div
+        data-chat-footer-spacer=""
+        style={{ height: spacerHeight }}
+        aria-hidden="true"
+      />
     </div>
   );
 });
 
-const VIRTUOSO_COMPONENTS = Object.freeze({ Footer: VirtuosoFooter });
+// Virtuoso renders this as a component type. Dynamic footer values belong in
+// context, not in a function factory that remounts prompts and the status row.
+function MessageListFooter({ context }: { context?: MessageListContext }) {
+  return context ? <VirtuosoFooter {...context.footer} /> : null;
+}
+const VIRTUOSO_COMPONENTS = { Footer: MessageListFooter };
 
 // ── No custom Scroller/List components ──
 // Tested: custom Scroller (py-3 padding) and List (mx-auto max-w-3xl) break Virtuoso's
@@ -289,6 +385,7 @@ const MessageList = memo(function MessageList({
   messages,
   streamingMessage,
   isLoading,
+  getQueryElapsedSeconds = noQueryElapsedSeconds,
   sessionId,
   isActive = true,
   windowPresentation = DEFAULT_WINDOW_PRESENTATION,
@@ -327,15 +424,19 @@ const MessageList = memo(function MessageList({
 }: MessageListProps) {
   const { t } = useTranslation('chat');
   const viewportRootRef = useRef<HTMLDivElement>(null);
-  const [readyPresentationGeneration, setReadyPresentationGeneration] = useState<number | null>(
-    windowPresentation.surfaceAvailable && windowPresentation.generation === 0 ? 0 : null,
-  );
+  const [readyPresentationGeneration, setReadyPresentationGeneration] =
+    useState<number | null>(
+      windowPresentation.surfaceAvailable && windowPresentation.generation === 0
+        ? 0
+        : null,
+    );
   useLayoutEffect(() => {
     if (
-      !isActive
-      || !windowPresentation.surfaceAvailable
-      || readyPresentationGeneration === windowPresentation.generation
-    ) return;
+      !isActive ||
+      !windowPresentation.surfaceAvailable ||
+      readyPresentationGeneration === windowPresentation.generation
+    )
+      return;
     const viewport = viewportRootRef.current;
     if (!viewport) return;
     let disposed = false;
@@ -359,42 +460,60 @@ const MessageList = memo(function MessageList({
       observer.disconnect();
     };
   }, [isActive, readyPresentationGeneration, windowPresentation]);
-  const canLayoutVirtualList = isActive
-    && windowPresentation.surfaceAvailable
-    && readyPresentationGeneration === windowPresentation.generation;
+  const canLayoutVirtualList =
+    isActive &&
+    windowPresentation.surfaceAvailable &&
+    readyPresentationGeneration === windowPresentation.generation;
   useLayoutEffect(() => {
-    onViewportAdmissionChanged(canLayoutVirtualList, windowPresentation.generation);
-  }, [canLayoutVirtualList, onViewportAdmissionChanged, windowPresentation.generation]);
-  const liveHeightEstimateSeed = heightEstimateSeed?.length === messages.length ? heightEstimateSeed : undefined;
+    onViewportAdmissionChanged(
+      canLayoutVirtualList,
+      windowPresentation.generation,
+    );
+  }, [
+    canLayoutVirtualList,
+    onViewportAdmissionChanged,
+    windowPresentation.generation,
+  ]);
+  const liveHeightEstimateSeed =
+    heightEstimateSeed?.length === messages.length
+      ? heightEstimateSeed
+      : undefined;
 
   const streamingStatusMessage = useMemo(
     () => getRandomStreamingMessage(t),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [messages.length, t]
+    [messages.length, t],
   );
 
   // ExitPlanMode
   const exitPlanModeAnchorId = useMemo(() => {
     if (!pendingExitPlanMode) return null;
-    if (streamingMessage && hasExitPlanModeTool(streamingMessage)) return streamingMessage.id;
+    if (streamingMessage && hasExitPlanModeTool(streamingMessage))
+      return streamingMessage.id;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (hasExitPlanModeTool(messages[i])) return messages[i].id;
     }
     return null;
   }, [pendingExitPlanMode, streamingMessage, messages]);
   const exitPlanModeSlot = useMemo(() => {
-    if (!pendingExitPlanMode || !onExitPlanModeApprove || !onExitPlanModeReject) return undefined;
+    if (!pendingExitPlanMode || !onExitPlanModeApprove || !onExitPlanModeReject)
+      return undefined;
     return (
       <div className="py-2">
-        <ExitPlanModePrompt key={pendingExitPlanMode.requestId} request={pendingExitPlanMode} onApprove={onExitPlanModeApprove} onReject={onExitPlanModeReject} />
+        <ExitPlanModePrompt
+          key={pendingExitPlanMode.requestId}
+          request={pendingExitPlanMode}
+          onApprove={onExitPlanModeApprove}
+          onReject={onExitPlanModeReject}
+        />
       </div>
     );
   }, [pendingExitPlanMode, onExitPlanModeApprove, onExitPlanModeReject]);
 
   const waitingForInteraction = Boolean(
-    pendingPermission
-    || pendingAskUserQuestion
-    || (pendingExitPlanMode && pendingExitPlanMode.resolved === undefined),
+    pendingPermission ||
+      pendingAskUserQuestion ||
+      (pendingExitPlanMode && pendingExitPlanMode.resolved === undefined),
   );
   const showStatus = waitingForInteraction || isLoading || !!systemStatus;
   // (issue #174) During 'starting' the SDK subprocess is alive but hasn't
@@ -406,10 +525,10 @@ const MessageList = memo(function MessageList({
   const statusMessage = waitingForInteraction
     ? t('shell.messageList.waitingForInteraction')
     : systemStatus
-    ? resolveSystemStatus(systemStatus, t)
-    : sessionState === 'starting'
-      ? t('shell.messageList.starting')
-      : streamingStatusMessage;
+      ? resolveSystemStatus(systemStatus, t)
+      : sessionState === 'starting'
+        ? t('shell.messageList.starting')
+        : streamingStatusMessage;
 
   // Scroll to bottom after session load / switch. Runs synchronously before
   // the next paint so there's no visible top→bottom jump when the new session's
@@ -431,10 +550,13 @@ const MessageList = memo(function MessageList({
     scrollToBottom('auto');
   }, [canLayoutVirtualList, sessionId, messages.length, scrollToBottom]);
 
-  const guardedAtBottomChange = useCallback((atBottom: boolean) => {
-    if (!canLayoutVirtualList) return;
-    handleAtBottomChange(atBottom);
-  }, [canLayoutVirtualList, handleAtBottomChange]);
+  const guardedAtBottomChange = useCallback(
+    (atBottom: boolean) => {
+      if (!canLayoutVirtualList) return;
+      handleAtBottomChange(atBottom);
+    },
+    [canLayoutVirtualList, handleAtBottomChange],
+  );
 
   // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
@@ -454,7 +576,8 @@ const MessageList = memo(function MessageList({
   // must NOT keep auto-scroll alive once the turn has completed.
   const wasViewportRecoveryFencedRef = useRef(isViewportRecoveryFenced);
   useLayoutEffect(() => {
-    const justFinishedRecovery = wasViewportRecoveryFencedRef.current && !isViewportRecoveryFenced;
+    const justFinishedRecovery =
+      wasViewportRecoveryFencedRef.current && !isViewportRecoveryFenced;
     wasViewportRecoveryFencedRef.current = isViewportRecoveryFenced;
     if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
     // Skip while the internal Tab is hidden — scrolling against a
@@ -465,8 +588,19 @@ const MessageList = memo(function MessageList({
     // The controller already issued the one authoritative recovery command.
     // Fence settlement alone is not new streaming output and must not replay it.
     if (justFinishedRecovery) return;
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [streamingMessage, isLoading, canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, virtuosoRef]);
+    virtuosoRef.current?.scrollToIndex({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'auto',
+    });
+  }, [
+    streamingMessage,
+    isLoading,
+    canLayoutVirtualList,
+    isViewportRecoveryFenced,
+    followEnabledRef,
+    virtuosoRef,
+  ]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
   // At turn end the data-layer reveal drains the remaining text and the message moves to
@@ -478,10 +612,22 @@ const MessageList = memo(function MessageList({
   useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
-    if (was && !isLoading && canLayoutVirtualList && !isViewportRecoveryFenced && followEnabledRef.current) {
+    if (
+      was &&
+      !isLoading &&
+      canLayoutVirtualList &&
+      !isViewportRecoveryFenced &&
+      followEnabledRef.current
+    ) {
       scrollToBottom('auto');
     }
-  }, [isLoading, canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, scrollToBottom]);
+  }, [
+    isLoading,
+    canLayoutVirtualList,
+    isViewportRecoveryFenced,
+    followEnabledRef,
+    scrollToBottom,
+  ]);
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);
@@ -496,7 +642,9 @@ const MessageList = memo(function MessageList({
   onRetryRef.current = onRetry;
   const layoutByMessageIdRef = useRef(layoutByMessageId);
   layoutByMessageIdRef.current = layoutByMessageId;
-  const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
+  const onRowLayoutChangedRef = useRef(
+    onRowLayoutChanged ?? noopRowLayoutChanged,
+  );
   onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
   const isItemMeasurementActiveRef = useRef(canLayoutVirtualList);
   isItemMeasurementActiveRef.current = canLayoutVirtualList;
@@ -510,7 +658,8 @@ const MessageList = memo(function MessageList({
     // A mounted row always has positive layout size. Some WebViews can briefly report
     // zero while updating a long virtualized list; feeding that transient geometry into
     // Virtuoso corrupts its size model and can move the viewport far from the anchor.
-    if (measuredSize <= 0 && Number.isFinite(knownSize) && knownSize > 0) return knownSize;
+    if (measuredSize <= 0 && Number.isFinite(knownSize) && knownSize > 0)
+      return knownSize;
     return measuredSize;
   }, []);
   const [isLargeRowShrinking, setIsLargeRowShrinking] = useState(false);
@@ -526,31 +675,34 @@ const MessageList = memo(function MessageList({
       collapseSettleFrameRef.current = null;
     }
   }, []);
-  const handleRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
-    if (isLargeRowShrink(reason)) {
-      cancelPendingLargeRowShrink();
-      // Keep the normal synchronous measurement path for expansion: it prevents
-      // Virtuoso from correcting the viewport one frame after the user clicks.
-      // A large shrink is the inverse WebKit hazard, so hold the rAF-delayed path
-      // through React's commit and Virtuoso's following measurement commit, then
-      // restore the fast path. This is a bounded geometry transaction, not a retry.
-      setIsLargeRowShrinking(true);
-      collapseMeasureFrameRef.current = requestAnimationFrame(() => {
-        collapseMeasureFrameRef.current = null;
-        collapseSettleFrameRef.current = requestAnimationFrame(() => {
-          collapseSettleFrameRef.current = null;
-          setIsLargeRowShrinking(false);
+  const handleRowLayoutChanged = useCallback(
+    (messageId: string, reason: RowLayoutChangeReason) => {
+      if (isLargeRowShrink(reason)) {
+        cancelPendingLargeRowShrink();
+        // Keep the normal synchronous measurement path for expansion: it prevents
+        // Virtuoso from correcting the viewport one frame after the user clicks.
+        // A large shrink is the inverse WebKit hazard, so hold the rAF-delayed path
+        // through React's commit and Virtuoso's following measurement commit, then
+        // restore the fast path. This is a bounded geometry transaction, not a retry.
+        setIsLargeRowShrinking(true);
+        collapseMeasureFrameRef.current = requestAnimationFrame(() => {
+          collapseMeasureFrameRef.current = null;
+          collapseSettleFrameRef.current = requestAnimationFrame(() => {
+            collapseSettleFrameRef.current = null;
+            setIsLargeRowShrinking(false);
+          });
         });
-      });
-    } else if (isRowExpansion(reason)) {
-      // A rapid re-open (or another row's expand) takes precedence over a pending
-      // shrink settlement. Restore synchronous measurement in the same React
-      // batch as the expansion so the clicked content never jumps out of view.
-      cancelPendingLargeRowShrink();
-      setIsLargeRowShrinking(false);
-    }
-    onRowLayoutChangedRef.current(messageId, reason);
-  }, [cancelPendingLargeRowShrink]);
+      } else if (isRowExpansion(reason)) {
+        // A rapid re-open (or another row's expand) takes precedence over a pending
+        // shrink settlement. Restore synchronous measurement in the same React
+        // batch as the expansion so the clicked content never jumps out of view.
+        cancelPendingLargeRowShrink();
+        setIsLargeRowShrinking(false);
+      }
+      onRowLayoutChangedRef.current(messageId, reason);
+    },
+    [cancelPendingLargeRowShrink],
+  );
   useLayoutEffect(() => {
     if (canLayoutVirtualList) return;
     // A delayed ResizeObserver callback may already be queued when the host hides
@@ -574,9 +726,9 @@ const MessageList = memo(function MessageList({
       const mode = followEnabledRef.current;
       if (!mode) return false;
       if (mode === 'force') return 'smooth' as const;
-      return isAtBottom ? 'smooth' as const : false;
+      return isAtBottom ? ('smooth' as const) : false;
     },
-    [followEnabledRef, canLayoutVirtualList, isViewportRecoveryFenced]
+    [followEnabledRef, canLayoutVirtualList, isViewportRecoveryFenced],
   );
 
   // Pagination guard: don't load an older page off stale range math while hidden —
@@ -588,76 +740,125 @@ const MessageList = memo(function MessageList({
   }, [onLoadOlder, canLayoutVirtualList, isViewportRecoveryFenced]);
 
   const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
-  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
-    const next = el instanceof HTMLElement ? el : null;
-    setDebugScroller(prev => (prev === next ? prev : next));
-    onScrollerRef?.(el);
-  }, [onScrollerRef]);
+  const handleScrollerRef = useCallback(
+    (el: HTMLElement | Window | null) => {
+      const next = el instanceof HTMLElement ? el : null;
+      setDebugScroller((prev) => (prev === next ? prev : next));
+      onScrollerRef?.(el);
+    },
+    [onScrollerRef],
+  );
 
-  const messageActionContext = useMemo<MessageActionContext>(() => ({
-    conversationOperations,
-    rewindableUserMessageIds: rewindableUserMessageIds ?? EMPTY_MESSAGE_ID_SET,
-    onRewind,
-    onFork,
-  }), [conversationOperations, onFork, onRewind, rewindableUserMessageIds]);
+  const messageActionContext = useMemo<MessageActionContext>(
+    () => ({
+      conversationOperations,
+      rewindableUserMessageIds:
+        rewindableUserMessageIds ?? EMPTY_MESSAGE_ID_SET,
+      onRewind,
+      onFork,
+    }),
+    [conversationOperations, onFork, onRewind, rewindableUserMessageIds],
+  );
 
   // ── Stable itemContent — volatile row actions arrive through Virtuoso context ──
   // eslint-disable-next-line react/display-name
-  const renderItem = useMemo(() => (index: number, message: MessageType, actionContext: MessageActionContext) => {
-    const sm = streamingMessageRef.current;
-    const isStreamingMsg = !!sm && message === sm;
-    const codexOperations = actionContext.conversationOperations === 'codex';
-    const canRewind = !codexOperations || actionContext.rewindableUserMessageIds.has(message.id);
-    const canFork = !codexOperations || Boolean(message.runtimeTurnAnchor);
-    // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
-    // margins don't leak past the wrapper — that's what e6de7173 originally
-    // wanted. `overflow-hidden` did the same job but added a hard clip side
-    // effect: when Virtuoso's height estimate (`defaultItemHeight=480`) was
-    // far from actual short-item height (~80px), the post-mount measurement
-    // correction shifted scroll anchors enough that short user bubbles got
-    // visually clipped instead of merely positioned slightly off — they
-    // disappeared while neighbouring items merged. flow-root keeps the
-    // measurement fix without the clipping.
-    return (
-      <div
-        className="mx-auto max-w-3xl px-3 py-1 flow-root"
-        data-chat-search-scope=""
-        data-message-id={message.id}
-      >
-        <ChatRowLayoutProvider
-          messageId={message.id}
-          onRowLayoutChanged={handleRowLayoutChanged}
-        >
-          <Message
-            message={message}
-            isLoading={isStreamingMsg && isLoadingRef.current}
-            onRewind={canRewind ? actionContext.onRewind : undefined}
-            onRetry={onRetryRef.current}
-            onFork={canFork ? actionContext.onFork : undefined}
-            exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
-            initialUserCollapsed={layoutByMessageIdRef.current?.get(message.id)?.likelyUserCollapsed === true}
-          />
-        </ChatRowLayoutProvider>
-      </div>
-    );
-  }, [handleRowLayoutChanged]);
+  const renderItem = useMemo(
+    () =>
+      (
+        index: number,
+        message: MessageType,
+        actionContext: MessageActionContext,
+      ) => {
+        const sm = streamingMessageRef.current;
+        const isStreamingMsg = !!sm && message === sm;
+        const codexOperations =
+          actionContext.conversationOperations === 'codex';
+        const canRewind =
+          !codexOperations ||
+          actionContext.rewindableUserMessageIds.has(message.id);
+        const canFork = !codexOperations || Boolean(message.runtimeTurnAnchor);
+        // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown
+        // margins don't leak past the wrapper — that's what e6de7173 originally
+        // wanted. `overflow-hidden` did the same job but added a hard clip side
+        // effect: when Virtuoso's height estimate (`defaultItemHeight=480`) was
+        // far from actual short-item height (~80px), the post-mount measurement
+        // correction shifted scroll anchors enough that short user bubbles got
+        // visually clipped instead of merely positioned slightly off — they
+        // disappeared while neighbouring items merged. flow-root keeps the
+        // measurement fix without the clipping.
+        return (
+          <div
+            className="mx-auto max-w-3xl px-3 py-1 flow-root"
+            data-chat-search-scope=""
+            data-message-id={message.id}
+          >
+            <ChatRowLayoutProvider
+              messageId={message.id}
+              onRowLayoutChanged={handleRowLayoutChanged}
+            >
+              <Message
+                message={message}
+                isLoading={isStreamingMsg && isLoadingRef.current}
+                onRewind={canRewind ? actionContext.onRewind : undefined}
+                onRetry={onRetryRef.current}
+                onFork={canFork ? actionContext.onFork : undefined}
+                exitPlanModeSlot={
+                  message.id === exitPlanModeAnchorIdRef.current
+                    ? exitPlanModeSlotRef.current
+                    : undefined
+                }
+                initialUserCollapsed={
+                  layoutByMessageIdRef.current?.get(message.id)
+                    ?.likelyUserCollapsed === true
+                }
+              />
+            </ChatRowLayoutProvider>
+          </div>
+        );
+      },
+    [handleRowLayoutChanged],
+  );
 
   // ── Stable computeItemKey ──
-  const computeItemKey = useMemo(() => (_i: number, m: MessageType) => m.id, []);
+  const computeItemKey = useMemo(
+    () => (_i: number, m: MessageType) => m.id,
+    [],
+  );
 
-  const footerState = useMemo<MessageListFooterState>(() => ({
-    pendingPermission,
-    onPermissionDecision,
-    pendingAskUserQuestion,
-    onAskUserQuestionSubmit,
-    onAskUserQuestionCancel,
-    showStatus,
-    statusMessage,
-    waitingForInteraction,
-    systemNotice,
-    onDismissSystemNotice,
-    bottomSpacerPx,
-  }), [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, waitingForInteraction, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
+  const listContext = useMemo<MessageListContext>(
+    () => ({
+      ...messageActionContext,
+      footer: {
+        pendingPermission,
+        onPermissionDecision,
+        pendingAskUserQuestion,
+        onAskUserQuestionSubmit,
+        onAskUserQuestionCancel,
+        showStatus,
+        waitingForInteraction,
+        statusMessage,
+        getQueryElapsedSeconds,
+        systemNotice,
+        onDismissSystemNotice,
+        bottomSpacerPx,
+      },
+    }),
+    [
+      messageActionContext,
+      pendingPermission,
+      onPermissionDecision,
+      pendingAskUserQuestion,
+      onAskUserQuestionSubmit,
+      onAskUserQuestionCancel,
+      showStatus,
+      waitingForInteraction,
+      statusMessage,
+      getQueryElapsedSeconds,
+      systemNotice,
+      onDismissSystemNotice,
+      bottomSpacerPx,
+    ],
+  );
 
   // ── Freeze the data fed to Virtuoso while the internal Tab is inactive ──────
   // An inactive internal Tab is wrapped in `content-visibility: hidden`, so any
@@ -685,14 +886,14 @@ const MessageList = memo(function MessageList({
     data: readonly MessageType[];
     firstItemIndex: number | undefined;
     heightEstimateSeed?: number[];
-    footerState: MessageListFooterState;
-    messageActionContext: MessageActionContext;
+    context: MessageListContext;
   }>({
     data: canLayoutVirtualList ? messages : EMPTY_MESSAGES,
     firstItemIndex: canLayoutVirtualList ? firstItemIndex : undefined,
-    heightEstimateSeed: canLayoutVirtualList ? liveHeightEstimateSeed : undefined,
-    footerState,
-    messageActionContext,
+    heightEstimateSeed: canLayoutVirtualList
+      ? liveHeightEstimateSeed
+      : undefined,
+    context: listContext,
   });
   useLayoutEffect(() => {
     if (canLayoutVirtualList) {
@@ -700,41 +901,61 @@ const MessageList = memo(function MessageList({
         data: messages,
         firstItemIndex,
         heightEstimateSeed: liveHeightEstimateSeed,
-        footerState,
-        messageActionContext,
+        context: listContext,
       };
     }
-  }, [canLayoutVirtualList, messages, firstItemIndex, liveHeightEstimateSeed, footerState, messageActionContext]);
-  const virtuosoData = canLayoutVirtualList ? messages : frozenDataRef.current.data;
-  const virtuosoFirstItemIndex = canLayoutVirtualList ? firstItemIndex : frozenDataRef.current.firstItemIndex;
-  const virtuosoHeightEstimateSeed = canLayoutVirtualList ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
-  const virtuosoFooterState = canLayoutVirtualList ? footerState : frozenDataRef.current.footerState;
-  const virtuosoMessageActionContext = canLayoutVirtualList
-    ? messageActionContext
-    : frozenDataRef.current.messageActionContext;
+  }, [
+    canLayoutVirtualList,
+    messages,
+    firstItemIndex,
+    liveHeightEstimateSeed,
+    listContext,
+  ]);
+  const virtuosoData = canLayoutVirtualList
+    ? messages
+    : frozenDataRef.current.data;
+  const virtuosoFirstItemIndex = canLayoutVirtualList
+    ? firstItemIndex
+    : frozenDataRef.current.firstItemIndex;
+  const virtuosoHeightEstimateSeed = canLayoutVirtualList
+    ? liveHeightEstimateSeed
+    : frozenDataRef.current.heightEstimateSeed;
+  const virtuosoContext = canLayoutVirtualList
+    ? listContext
+    : frozenDataRef.current.context;
   const debugProbe = useChatScrollDebugProbe({
     sessionId,
     scroller: debugScroller,
     data: virtuosoData,
     heightEstimateSeed: virtuosoHeightEstimateSeed,
   });
-  const handleItemsRendered = useCallback((items: ListItem<MessageType>[]) => {
-    debugProbe?.handleItemsRendered(items);
-    onItemsRendered();
-  }, [debugProbe, onItemsRendered]);
+  const handleItemsRendered = useCallback(
+    (items: ListItem<MessageType>[]) => {
+      debugProbe?.handleItemsRendered(items);
+      onItemsRendered();
+    },
+    [debugProbe, onItemsRendered],
+  );
 
   return (
-    <MessageListFooterContext.Provider value={virtuosoFooterState}>
       <div
         ref={viewportRootRef}
         className="relative flex-1"
         data-streaming={isStreaming || undefined}
-        data-viewport-phase={isViewportRecoveryFenced ? 'recovering' : (canLayoutVirtualList ? 'renderable' : 'suspended')}
-        style={isViewportRecoveryFenced && windowPresentation.surfaceAvailable
-          ? { visibility: 'hidden' }
-          : undefined}
+        data-viewport-phase={
+          isViewportRecoveryFenced
+            ? 'recovering'
+            : canLayoutVirtualList
+              ? 'renderable'
+              : 'suspended'
+        }
+        style={
+          isViewportRecoveryFenced && windowPresentation.surfaceAvailable
+            ? { visibility: 'hidden' }
+            : undefined
+        }
       >
-      {/*
+        {/*
         Virtuoso stays mounted across session switches. Previously `key={sessionId}`
         forced a full remount, which dropped every cached item height, rebuilt
         every ResizeObserver, and kicked off a measure→reflow→remeasure storm on
@@ -766,7 +987,7 @@ const MessageList = memo(function MessageList({
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         data={virtuosoData}
-        context={virtuosoMessageActionContext}
+        context={virtuosoContext}
         computeItemKey={computeItemKey}
         firstItemIndex={virtuosoFirstItemIndex}
         heightEstimates={virtuosoHeightEstimateSeed}
@@ -780,14 +1001,19 @@ const MessageList = memo(function MessageList({
         defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}
         minOverscanItemCount={{ top: 3, bottom: 1 }}
-        skipAnimationFrameInResizeObserver={!canLayoutVirtualList || !isLargeRowShrinking}
+        skipAnimationFrameInResizeObserver={
+          !canLayoutVirtualList || !isLargeRowShrinking
+        }
         className="h-full"
-        style={{ overscrollBehavior: 'none', scrollbarGutter: 'stable', overflowAnchor: 'none' }}
+        style={{
+          overscrollBehavior: 'none',
+          scrollbarGutter: 'stable',
+          overflowAnchor: 'none',
+        }}
         components={VIRTUOSO_COMPONENTS}
         itemContent={renderItem}
       />
-      </div>
-    </MessageListFooterContext.Provider>
+    </div>
   );
 });
 

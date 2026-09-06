@@ -43,9 +43,8 @@ if (args["--skip-node"] !== true) {
     "--node-root",
   );
   const nodeVersionPath = resolve(nodeRoot, ".myagents-nodejs-version");
-  const npmVersionPath = resolve(nodeRoot, ".myagents-npm-version");
   const platformPath = resolve(nodeRoot, ".myagents-nodejs-platform");
-  for (const path of [nodeVersionPath, npmVersionPath, platformPath]) {
+  for (const path of [nodeVersionPath, platformPath]) {
     if (!existsSync(path) || !lstatSync(path).isFile()) {
       throw new Error(
         `[dsh-handoff] bundled toolchain metadata is missing: ${path}`,
@@ -53,8 +52,17 @@ if (args["--skip-node"] !== true) {
     }
   }
   const nodeVersion = readFileSync(nodeVersionPath, "utf8").trim();
-  const npmVersion = readFileSync(npmVersionPath, "utf8").trim();
   const platform = readFileSync(platformPath, "utf8").trim();
+  const npmPackagePath = resolve(nodeRoot, platform === "win"
+    ? "node_modules/npm/package.json" : "lib/node_modules/npm/package.json");
+  if (!existsSync(npmPackagePath) || !lstatSync(npmPackagePath).isFile()) {
+    throw new Error(`[dsh-handoff] bundled npm package is missing: ${npmPackagePath}`);
+  }
+  const npmVersion = JSON.parse(readFileSync(npmPackagePath, "utf8")).version;
+  const distribution = JSON.parse(readFileSync(resolve(repoRoot, "scripts/node-runtime.json"), "utf8"));
+  if (distribution.node !== lock.runtime.requiredNodeVersion || distribution.npm !== lock.bundledNpm.version) {
+    throw new Error("[dsh-handoff] Runtime lock differs from the official bundled Node/npm distribution");
+  }
   if (nodeVersion !== lock.runtime.requiredNodeVersion) {
     throw new Error(
       `[dsh-handoff] bundled Node mismatch: expected ${lock.runtime.requiredNodeVersion}, received ${nodeVersion}`,

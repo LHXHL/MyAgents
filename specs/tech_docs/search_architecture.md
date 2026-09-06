@@ -2,10 +2,11 @@
 
 ## 概述
 
-MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建在 [Tantivy](https://github.com/quickwit-oss/tantivy)（Rust 原生全文搜索引擎，BM25 评分）+ [tantivy-jieba](https://github.com/jiegec/tantivy-jieba)（中文分词，~37 万词词典）之上。对外暴露两类能力：
+MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建在 [Tantivy](https://github.com/quickwit-oss/tantivy)（Rust 原生全文搜索引擎，BM25 评分）+ [tantivy-jieba](https://github.com/jiegec/tantivy-jieba)（中文分词，~37 万词词典）之上。对外暴露三类能力：
 
 1. **Session 搜索** — 跨所有工作区检索会话标题与消息内容
-2. **工作区文件搜索** — 检索单个工作区内的文件名与文件内容
+2. **Record 搜索** — 检索 text/audio Record 的 title、tags、content、transcript 与 speaker projection
+3. **工作区文件搜索** — 检索单个工作区内的文件名与文件内容
 
 **仅 Tauri 可用**：搜索直接走 Tauri IPC（`invoke('cmd_search_*')`）到 Rust 层，不经 Node.js Sidecar。浏览器开发模式（`start_dev.sh`）没有 fallback — UI 入口在非 Tauri 环境下不出现。
 
@@ -18,7 +19,7 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 │                     React Frontend                              │
 │  ┌────────────────────────┐   ┌──────────────────────────────┐ │
 │  │ HistorySearchOverlay   │   │ DirectoryPanel               │ │
-│  │  (Session 搜索)         │   │  (工作区文件搜索)              │ │
+│  │  (Session / Record)     │   │  (工作区文件搜索)              │ │
 │  └──────────┬─────────────┘   └────────────┬─────────────────┘ │
 │             │                               │                   │
 │             ▼                               ▼                   │
@@ -30,8 +31,8 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 │                      Rust SearchEngine                          │
 │                                                                 │
 │   ┌──────────────────┐       ┌─────────────────────────────┐  │
-│   │ SessionIndex     │       │ FileIndexManager            │  │
-│   │  (单例, 全局)     │       │  HashMap<workspace, slot>   │  │
+│   │ SessionIndex     │       │ RecordIndex / FileIndexManager│ │
+│   │  (单例, 全局)     │       │  全局 Record + workspace slots│ │
 │   │  Arc, 无外锁      │       │  懒加载 + 磁盘 manifest       │  │
 │   │  StdMutex<Writer>│       │                             │  │
 │   └────────┬─────────┘       └──────────────┬──────────────┘  │
@@ -49,6 +50,7 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
               ▼
     ~/.myagents/search_index/
         ├── sessions/        (单一全局索引)
+        ├── records/         (单一全局派生索引)
         └── workspaces/
             ├── <fnv-hash-1>/     (.schema_version + .file_index_manifest.json)
             └── <fnv-hash-2>/
@@ -58,20 +60,22 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 
 | 文件 | 职责 |
 |------|------|
-| `mod.rs` | `SearchEngine` 单例 + 5 个 Tauri IPC 命令，无业务逻辑 |
+| `mod.rs` | `SearchEngine` 单例 + Tauri IPC facade 与后台索引启动 |
 | `schema.rs` | Tantivy Schema 定义 + `SCHEMA_VERSION` 版本号 |
 | `tokenizer.rs` | 中英混合分词器：jieba + `LowerCaser` + `RemoveLongFilter(40)` |
 | `session_indexer.rs` | Session 索引构建、reindex、delete、查询 |
+| `record_indexer.rs` | Record baseline rebuild、增量 upsert/delete、按 record_id 去重查询 |
 | `file_indexer.rs` | 工作区文件索引：懒加载 + 磁盘 manifest + 增量刷新 |
 | `watcher.rs` | `notify-debouncer-full` 文件系统观察者（5s 滑动去抖） |
-| `searcher.rs` | 序列化类型（`SessionSearchHit`/`FolderSearchHit`/`FileSearchHit`/`FileMatchLine`） |
+| `searcher.rs` | Session/Record/File 搜索的序列化结果类型 |
 | `util.rs` | UTF-8 ↔ UTF-16 offset 转换 + char boundary 安全夹紧 |
 
 ## Tauri IPC 命令 (`src-tauri/src/lib.rs`)
 
 | 命令 | 返回 | 说明 |
 |------|------|------|
-| `cmd_search_sessions(query, limit?)` | `SessionSearchResult` | 全局会话搜索（标题 + 内容） |
+| `cmd_search_sessions(query, limit?, tag?)` | `SessionSearchResult` | 全局会话搜索（标题 + 内容），可用一个用户 Tag 精确限定候选 Session |
+| `cmd_search_records(query, limit?)` | `RecordSearchResult` | 全局 Record 搜索；每个 Record 至多一个 hit |
 | `cmd_search_workspace_files(query, workspace, limit?, maxMatchesPerFile?)` | `FileSearchResult` | 工作区文件搜索 |
 | `cmd_search_index_status()` | `IndexStatus` | 索引文档数 + 存储目录（调试用） |
 | `cmd_invalidate_workspace_index(workspace)` | `()` | 硬失效一个工作区索引（下次从零重建） |
@@ -88,9 +92,15 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 
 Session `content` 只索引用户可见文本：leading `<system-reminder>...</system-reminder>` 的 hidden payload 属于模型上下文，不进入搜索；有 visible tail 时只索引 tail，纯 hidden reminder 索引为空。这个语义变化也必须 bump `SCHEMA_VERSION`，让旧索引重建。
 
+用户 Session Tag 不进入 Tantivy schema，也不参与标题/正文分词和高亮。带 `tag` 的查询在 blocking worker 上 fresh 读取 `sessions.json`，用与 metadata 投影一致的容错规则规范化 `userTags`，先构造 history-visible `session_id` 精确候选集合，再用 `TermSetQuery` 与全文 query 组合为两个 `Must` 条件，最后才应用 `TopDocs` limit。这样 Tag mutation 无需等待 5s 内容索引 watcher，且不能退化成对前 50 条结果做 Renderer 后过滤。权威 metadata 读取或解析失败必须让命令失败并由 UI 显示可恢复错误，不能伪装成零结果。
+
 ### File Schema (`schema::file_schema`)
 
 存储：`path`、`ext`。索引：`name`、`content`。
+
+### Record Schema (`schema::record_schema`)
+
+存储 `record_id`、kind、时间与用于导航/摘要的字段；索引 `title`、`tags`、`content`。`RecordStore::all_search_documents/search_documents` 负责把 text content 或 audio transcript/speaker projection 展平成派生文档。多 segment 可以形成多个 Tantivy document，但 query 必须按 `record_id` 去重后再应用产品 limit，避免一个长 transcript 把结果页占满。
 
 ### Schema 版本门控
 
@@ -134,6 +144,12 @@ Tauri setup()
 `.tantivy-writer.lock` 的路径存在不代表锁仍被占用：Tantivy 通过 OS 文件锁判定 owner，句柄关闭后锁自然释放。Session / workspace writer 创建失败时必须保留锁文件并返回真实错误，禁止在未证明无活跃 writer 时 unlink。
 
 Session index 是完全派生数据。打开、commit、reload 或 search 遇到缺失 segment / Tantivy data corruption 时，`SessionIndex` 在唯一写锁下再次确认故障，然后删除 `search_index/sessions` 并从权威会话文件重建、重试原操作。`sessions.json` 与 JSONL 永不参与回滚或补偿事务。
+
+## Record 索引策略
+
+Tauri setup 取得全局 `RecordStore` 后，`SearchEngine` 先订阅其 broadcast，再读取 `all_search_documents()` 做 baseline rebuild；先订阅可关闭 baseline 读取期间的变更窗口。baseline ready 后发既有 `record-search-index-ready` 投影，后续 create/update/delete 按 Record change identity 增量 upsert/delete。索引是完全派生数据，RecordStore 始终是 source of truth；索引失败不得回写 Record、阻塞录音或转录 terminal。
+
+Record 已有单一写 owner 和 in-process change broadcast，因此不再增加第二个 filesystem watcher、轮询器或索引 outbox。启动 baseline 提供可重建性，broadcast 提供进程内实时性；App 重启会重新对账。
 
 ## 文件系统观察者 (`watcher.rs`)
 
@@ -267,7 +283,7 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 全局侧栏搜索只把 `searchOpen` 交给 `useGlobalSidebarTaskCenterData`，由该 app-global store projection 发起一次静默 full revalidate；`HistorySearchOverlayContent` mount 时不得再发第二次全量刷新。Overlay 先消费当前 snapshot，冷模块加载期间由 App Shell 立即绘制同尺寸搜索壳，搜索按钮 hover/focus 时提前请求 lazy chunk，避免点击后出现空白间隔。Backdrop、面板 DOM、`useCloseLayer` 和入口动画的唯一 owner 是 Suspense 外层的 App Shell frame；lazy `HistorySearchOverlayContent` 只渲染面板内容。fallback → real content 的交接必须保留同一个面板节点，禁止真实内容再持有第二套 opacity-from-zero 根动画，否则首次加载会表现为“出现 → 消失 → 再出现”。
 
-空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 继续走 Tantivy，并由 `searchSessions()` 的 50 条上限保持结果集有界。
+空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/用户 Tag/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 继续走 Tantivy，并由 `searchSessions()` 的 50 条上限保持结果集有界；单选用户 Tag 作为结构化参数传给 Rust，不拼进 query string。
 
 ## 工作区文件搜索结果导航
 
@@ -324,4 +340,3 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 - 前端组件：`src/renderer/components/search/`
 - 搜索导航 helper：`src/renderer/utils/workspaceSearchNavigation.ts`
 - 文件预览跳转：`src/renderer/components/FilePreviewModal.tsx`, `MonacoEditor.tsx`
-- 产品需求：`specs/prd/prd_0.1.65_full_text_search.md`, `specs/prd/prd_0.2.31_workspace_search_result_navigation.md`, `specs/prd/prd_0.4.9_workspace-file-discovery-and-turn-edit-summary.md`

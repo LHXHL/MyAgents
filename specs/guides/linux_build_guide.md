@@ -22,6 +22,7 @@ MyAgents 在 Linux 上通过 AppImage（便携）+ deb（apt 源）分发。
 sudo apt-get update
 sudo apt-get install -y \
     build-essential \
+    cmake \
     curl \
     wget \
     file \
@@ -35,6 +36,7 @@ sudo apt-get install -y \
 ```
 
 **说明**：
+- `cmake` — speech native adapter 要求 3.28+；若发行版仓库版本较旧，需从 CMake 官方渠道安装满足要求的版本
 - `libwebkit2gtk-4.1-dev` — Tauri WebView 后端（Linux 用 WebKit2GTK；不像 macOS 的 WKWebView 或 Windows 的 WebView2）
 - `libayatana-appindicator3-dev` — 系统托盘图标库
 - `patchelf` — AppImage 打包要求的 RPATH 补丁工具
@@ -47,10 +49,11 @@ sudo apt-get install -y \
 
 `setup.sh` 在 Linux 上的行为：
 - 检查 Node.js / npm / Rust / Cargo / rustup，并按 `rust-toolchain.toml` 准备固定 toolchain 与 `rustfmt` / `clippy`
+- 根据当前 target 和 exact prepared cache 提前检查 CMake 3.28+/C++ 等原生推理构建工具；缺失时在下载或安装项目依赖前给出修复命令，不自动安装原生构建工具
 - `scripts/download_nodejs.sh` 下载 Node.js v24 Linux x64/arm64 tarball（按 `uname -m` 自动选择）
 - `npm install` 拉取依赖（包括 SDK platform optional dep `@anthropic-ai/claude-agent-sdk-linux-<arch>`）
 - Rust `cargo fetch`
-- 准备当前架构的离线文档 Worker、OCR、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
+- 准备当前架构的离线文档 Worker、media Worker、OCR、speech native、ONNX Runtime 与 PDFium；资源缓存跨 `npm run clean` 复用
 
 Mino 默认工作区模板已提交在 `bundled-workspaces/mino/`，setup 和构建不再下载外部模板仓库。
 
@@ -96,6 +99,7 @@ AppImage 和 deb 内部都包含：
 | Sidecar / Bridge / CLI | `resources/server-dist.js` / `resources/plugin-bridge-dist.mjs` / `resources/cli/myagents.cjs` |
 | Node.js v24（含 npm/npx） | `resources/nodejs/bin/node`（+ `lib/node_modules/npm`） |
 | Claude Agent SDK native binary | `resources/claude-agent-sdk/claude`（~210 MB，SDK team 静态链接） |
+| 本地文档/语音推理 | `resources/document-processing/v1/` + `resources/speech-inference/v1/`；两者共享同 target ONNX Runtime identity |
 | mino 默认工作区模板 | `resources/bundled-workspaces/mino/` |
 | bundled skills / agents / workspaces | `resources/bundled-skills/` / `resources/bundled-agents/` / `resources/bundled-workspaces/` |
 
@@ -105,6 +109,8 @@ AppImage 和 deb 内部都包含：
 - `git` — 大多数发行版默认安装；缺失时 Claude Code 工具会降级
 - `bash` / 核心 POSIX 工具 — 系统自带
 - 「浏览器」的 Chromium / Headless Shell / FFmpeg — 只在用户首次点击“安装资源”后由 Rust owner 下载 signed runtime set；普通 AppImage/deb build 不下载也不打包
+
+Linux 录音使用 `cpal` 的 PipeWire host：microphone 来自默认 input，system audio 只接受 PipeWire `default_sink` monitor input。monitor 不可用时允许以明确 warning 继续 microphone-only；PipeWire host 不可用或没有任何来源时录音 admission 失败。安装包不得通过捆绑 ffmpeg/PulseAudio bridge 或脚本 fallback 改变这一契约。x86_64/aarch64 发布都要在真实 PipeWire 环境验证 microphone；system audio 支持只在 monitor 可用的发行版/桌面组合声明。
 
 ## 常见问题
 
@@ -156,3 +162,5 @@ sudo apt-get install -y fuse libfuse2
 ---
 
 **为什么 Linux 到 v0.2.0 才一等支持**：v0.1.x 的 Bun-based Sidecar 理论能跑 Linux，但双 runtime 策略（Bun + Node.js）导致 Linux 构建 pipeline 需要分别处理两套 binary 分发；v0.2.0 统一到 Node.js 后，Linux 只需维护单一 runtime 链路，刚好是收敛这块的最佳时机。详见 [prd_0.2.0_node_runtime_migration.md](../prd/prd_0.2.0_node_runtime_migration.md)。
+
+Cuse 目前只发布 macOS/Windows Skill+CLI；Linux 构建会清除共享构建树里的 Cuse staging，启动同步跳过该 Skill。详见 [Cuse bundle](../tech_docs/cuse_bundle.md)。

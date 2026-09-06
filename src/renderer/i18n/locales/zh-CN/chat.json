@@ -74,28 +74,27 @@
     "cronEnabled": "定时已启用",
     "cron": "定时任务",
     "switchModel": "切换模型",
-    "imageFilteredOnSend": "{{model}} 不支持图片，已自动过滤 {{count}} 张图片，仅文本已送达",
     "undoFilesAdded": "已撤销 {{count}} 个文件的添加",
     "undoFilesPartial": "已撤销 {{successCount}} 个文件，{{failCount}} 个文件删除失败",
     "undoReferenceOnly": "已移除引用，但文件删除失败",
     "mode": {
       "chat": "对话",
-      "thought": "想法",
-      "switchToThought": "按 Tab 切换到「想法」",
+      "record": "记录",
+      "switchToRecord": "按 Tab 切换到「记录」",
       "switchToChat": "按 Tab 切换到「对话」"
     },
     "mention": {
       "workspaceFiles": "工作区文件",
-      "thoughts": "想法",
+      "thoughts": "记录",
       "switchHint": "⌘/Ctrl + ←/→ 切换",
       "filePlaceholder": "输入文件名搜索...",
       "searching": "搜索中...",
       "noFiles": "未找到文件",
-      "emptyThoughts": "暂无想法，先在「任务中心」记录吧",
+      "emptyThoughts": "暂无记录，先在「任务中心」保存一条吧",
       "noThoughtMatchesPrefix": "没有匹配",
-      "noThoughtMatchesSuffix": "的想法",
-      "recentThoughts": "最近 {{count}} 条想法",
-      "matchedThoughts": "匹配 \"{{query}}\" 的想法 · {{count}} 条",
+      "noThoughtMatchesSuffix": "的记录",
+      "recentThoughts": "最近 {{count}} 条记录",
+      "matchedThoughts": "匹配 \"{{query}}\" 的记录 · {{count}} 条",
       "thoughtSoftCap": "已显示前 {{count}} 条匹配，请输入更精确的关键词"
     },
     "permissionModes": {
@@ -172,7 +171,7 @@
       "previewFailed": "图片 \"{{name}}\" 预览地址生成失败",
       "oversizedImageAsFile": "图片超过 10MB，请使用“上传文件”或从文件夹拖入以作为 @文件 引用",
       "oversizedImagesAsFile": "{{count}} 张图片超过 10MB，请使用“上传文件”或从文件夹拖入以作为 @文件 引用",
-      "imagesConvertedToFiles": "当前模型不支持图片输入，已转为文件存入工作区供模型读取",
+      "imageUnderstandingNotReady": "当前模型不支持图片，图片已作为工作区文件添加；图片理解未就绪，Agent 可能无法读取。请启用并配置图片理解，或切换支持图片的模型。",
       "desktopRequiredForUpload": "无法上传文件：当前为浏览器开发模式，请使用桌面应用",
       "selectWorkspaceForUpload": "无法上传文件：请先选择工作区",
       "uploadFailed": "上传失败",
@@ -290,6 +289,7 @@
       "trashMoved": "已移至废纸篓"
     },
     "filePreview": {
+      "fileUnavailable": "文件无法读取，可能已移动或删除；本地修改仍保留",
       "saving": "保存中",
       "saved": "已保存",
       "saveFailed": "保存失败",
@@ -309,7 +309,7 @@
       "fullscreenPreview": "全屏预览",
       "toasts": {
         "externalUpdateConflict": "文件已在外部更新，未自动覆盖",
-        "closeAutosaveFailed": "关闭时自动保存失败",
+        "closeAutosaveFailed": "保存失败，编辑器未关闭；本地修改仍保留",
         "renameFailed": "重命名失败",
         "copiedFilePath": "已复制文件路径",
         "copyWhileLoading": "文件加载中，暂时无法复制",

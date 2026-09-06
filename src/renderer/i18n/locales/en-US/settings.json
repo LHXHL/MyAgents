@@ -180,7 +180,153 @@
     }
   },
   "providers": {
+    "tokendance": {
+      "partner": "Official",
+      "intro": "Register once for a range of models, with discounts up to 50%",
+      "account": "Token Dance account",
+      "details": "Provider details",
+      "manageAccount": "Manage account",
+      "manageOnWebsite": "Manage web authorization",
+      "website": "Visit Token Dance to learn more",
+      "quota": "Key quota reached · Manage authorization",
+      "done": "Done",
+      "retry": "Retry",
+      "balance": {
+        "loginRequired": "Log in to view your balance and top up.",
+        "label": "Account balance",
+        "previous": "Last balance",
+        "empty": "Top up to use models",
+        "refreshing": "Refreshing",
+        "loading": "Loading",
+        "refreshFailed": "Refresh failed",
+        "unavailable": "Temporarily unavailable",
+        "refresh": "Refresh balance",
+        "updatedAt": "Last updated: {{time}}"
+      },
+      "models": {
+        "protocolUnavailable": "Cannot confirm this model’s supported protocols. Refresh the model catalog and try again.",
+        "title": "Supported models",
+        "summary": "{{count}} enabled · Default {{model}}",
+        "manage": "Manage models",
+        "empty": "No models enabled",
+        "catalogFailed": "Catalog unavailable. Showing configured models."
+      },
+      "auth": {
+        "title": "Connect Token Dance",
+        "connect": "Connect",
+        "reconnect": "Reconnect",
+        "progress": "View progress",
+        "retrySave": "Retry saving",
+        "guide": "Log in and authorize on the webpage that opened",
+        "fallback": "If the page did not open, try “Open page” or copy the link below into your browser.",
+        "preparingLink": "Preparing authorization link…",
+        "copy": "Copy link",
+        "copied": "Copied",
+        "copyFailed": "Could not copy. Try again or open the page.",
+        "open": "Open page",
+        "openFailed": "Could not open the page. Try again or copy the link into your browser.",
+        "status": {
+          "idle": "Not logged in",
+          "preparing": "Preparing login",
+          "waiting": "Awaiting authorization",
+          "exchanging": "Connecting",
+          "saving": "Connecting",
+          "save-failed": "Save failed",
+          "failed": "Login incomplete",
+          "expired": "Authorization expired",
+          "connected": "Logged in",
+          "invalid": "Login expired"
+        },
+        "result": {
+          "idle": "Ready to connect",
+          "preparing": "Preparing login",
+          "waiting": "Waiting for authorization",
+          "exchanging": "Authorization received. Connecting…",
+          "saving": "Saving account",
+          "save-failed": "Account not saved yet",
+          "failed": "Login did not complete",
+          "expired": "This authorization expired",
+          "connected": "Logged in"
+        },
+        "hint": {
+          "idle": "Open the page to log in and authorize.",
+          "preparing": "The login page will open shortly.",
+          "waiting": "This continues automatically after you log in and authorize.",
+          "exchanging": "This panel closes automatically when connected.",
+          "saving": "This panel closes automatically after saving.",
+          "save-failed": "Retry saving without logging in again.",
+          "failed": "Reconnect to log in and authorize again.",
+          "expired": "Reconnect to open a new authorization page.",
+          "connected": "Your account has been saved."
+        },
+        "step": {
+          "open": "Open page",
+          "authorize": "Log in and authorize",
+          "complete": "Connect"
+        }
+      },
+      "error": {
+        "network_error": "Cannot reach Token Dance. Check your network and retry.",
+        "request_failed": "The request did not complete. Please retry.",
+        "exchange_failed": "Could not finish authorization. Please reconnect.",
+        "invalid_response": "Could not read the response. Please retry.",
+        "config_unavailable": "Cannot read local configuration. Please retry.",
+        "listener_failed": "Could not start web login. Please retry.",
+        "save_failed": "Could not save your account. Please retry saving.",
+        "account_changed": "The linked account changed. Please reconnect.",
+        "rate_limited": "Too many requests. Please try again shortly.",
+        "authorization_inactive": "This authorization has ended. Please reconnect."
+      },
+      "payment": {
+        "recovery": {"reauthorize_api_key":"Login expired. Close this panel and reconnect your account.","api_key_quota":"The current key quota is exhausted. Manage authorization on the website.","top_up_balance":"Insufficient balance. Check your account on the website and retry."},
+        "action": "Top up",
+        "title": "Top up account",
+        "subtitle": "Top up the currently linked Token Dance account.",
+        "scan": "Scan with WeChat or Alipay to pay",
+        "choose": "Choose an amount",
+        "custom": "Custom amount (CNY)",
+        "range": "Enter a whole amount from ¥1 to ¥100,000.",
+        "generate": "Generate payment QR code",
+        "creating": "Generating…",
+        "again": "Top up again",
+        "recipient": "Top up Token Dance account",
+        "qrAlt": "Payment QR code",
+        "qrFailed": "Could not generate the QR code. Close and try again.",
+        "countdown": "QR code expires in {{time}}",
+        "queryFailed": "Payment status unavailable. Retrying.",
+        "createUnknown": "Could not obtain a payment QR code. If you already paid, refresh your balance before trying another top-up.",
+        "status": {
+          "pending": "Awaiting payment",
+          "paid": "Paid",
+          "expired": "QR code expired",
+          "failed": "Failed",
+          "closed": "Closed",
+          "refunded": "Refunded"
+        },
+        "result": {
+          "pending": "Waiting for payment",
+          "paid": "Payment received",
+          "expired": "QR code expired",
+          "failed": "Payment did not complete",
+          "closed": "This payment is closed",
+          "refunded": "This payment was refunded"
+        },
+        "hint": {
+          "pending": "Updates automatically after payment. No manual confirmation needed.",
+          "paid": "Your account balance refreshes automatically.",
+          "expired": "You can top up again. If you already paid, refresh your balance first.",
+          "failed": "Choose an amount and try again.",
+          "closed": "Choose an amount and try again.",
+          "refunded": "Refund status is provided by Token Dance. Your balance will be checked again."
+        }
+      }
+    },
     "title": "Model Providers",
+    "cardTitles": {
+      "claudeSubscription": "Claude (Subscription)",
+      "claudeApi": "Claude (API)",
+      "chatgptSubscription": "ChatGPT (Subscription)"
+    },
     "description": "Configure API keys for different model providers",
     "enableAndSort": "Enable & Sort",
     "addProvider": "Add Provider",
@@ -336,6 +482,7 @@
       "deleteMessage": "Delete \"{{name}}\"? This cannot be undone."
     },
     "order": {
+      "fixedFirst": "Pinned first",
       "drag": "Drag to reorder",
       "dragProvider": "Drag to reorder {{name}}",
       "moveUp": "Move up",
@@ -355,6 +502,7 @@
       "save": "Save"
     },
     "models": {
+      "removeModel": "Remove model {{model}}",
       "title": "Manage Models",
       "activeTitle": "Available Models",
       "emptyActive": "No models yet. Discover models below or add one manually.",
@@ -1490,6 +1638,68 @@
         "install_failed": "Browser resource installation failed",
         "update_failed": "Browser resource update failed",
         "unsupported": "This platform is not supported"
+      }
+    },
+    "speechResource": {
+      "capabilities": "Speech recognition capabilities",
+      "diarization": "Speaker separation",
+      "loading": "Reading local model status…",
+      "install": "Install models",
+      "installingAction": "Installing",
+      "update": "Update models",
+      "retry": "Retry installation",
+      "reinstall": "Reinstall",
+      "retryRemove": "Retry removal",
+      "removingAction": "Removing",
+      "remove": "Remove",
+      "downloadProgress": "{{downloaded}} / {{total}} downloaded",
+      "size": "{{download}} download · {{installed}} installed",
+      "authorizationHint": "The switch above only controls Agent access. Local recordings can always use installed speech capabilities.",
+      "operationFailed": "Speech model installation failed. Resources that did not pass verification were not activated.",
+      "removeFailed": "The speech models could not be removed. A job may still be using them.",
+      "activationWarning": "The models are installed, but directory synchronization could not be confirmed. They are usable now and may need reinstalling after a sudden power loss.",
+      "states": {
+        "checking": "Checking the official model manifest",
+        "not_installed": "Local models are not installed",
+        "downloading": "Downloading local models",
+        "verifying": "Verifying local models",
+        "installing": "Loading and activating local models",
+        "removing": "Removing local models",
+        "ready": "Local models are ready",
+        "update_available": "A local model update is available",
+        "error": "Local model operation failed"
+      },
+      "progress": {
+        "checking": "Verifying the manifest and signature…",
+        "verifying": "Securely extracting and checking files…",
+        "installing": "Loading models and activating atomically…",
+        "removing": "Removing models…"
+      },
+      "errors": {
+        "default": "Local speech resources are unavailable. Check the network and disk space, then try again.",
+        "SPEECH_RESOURCE_NETWORK": "The official manifest or a pinned upstream resource could not be reached. Check the network or proxy and try again.",
+        "SPEECH_RESOURCE_MANIFEST_INVALID": "The official manifest does not match this app version. No resources were installed.",
+        "SPEECH_RESOURCE_SIGNATURE_INVALID": "The official manifest signature is invalid. No untrusted resources were installed.",
+        "SPEECH_RESOURCE_DOWNLOAD_INVALID": "A model download was incomplete or failed verification. Corrupted resources were not installed.",
+        "SPEECH_RESOURCE_ARCHIVE_INVALID": "A model archive did not match the safe inventory. Its contents were not installed.",
+        "SPEECH_RESOURCE_PACK_INVALID": "The extracted model files were incomplete or failed verification. The resource was not activated.",
+        "SPEECH_RESOURCE_STORE_WRITE_FAILED": "The model resource could not be written safely. Check disk space and directory permissions, then try again.",
+        "SPEECH_RESOURCE_ACTIVATION_FAILED": "The models passed verification but could not be activated safely. Check disk space and directory permissions, then try again.",
+        "SPEECH_NATIVE_RUNTIME_UNAVAILABLE": "This app build does not include the local speech runtime, so models cannot be installed.",
+        "SPEECH_MODEL_PACK_UNAVAILABLE": "The model pack manifest is incompatible with this speech engine. The resource was not activated.",
+        "SPEECH_ASR_MODEL_LOAD_FAILED": "The speech recognition model failed to load. The resource was not activated.",
+        "SPEECH_VAD_MODEL_LOAD_FAILED": "The voice activity model failed to load. The resource was not activated.",
+        "SPEECH_DIARIZATION_MODEL_LOAD_FAILED": "The speaker recognition models failed to load. The resource was not activated.",
+        "SPEECH_MODEL_LOAD_FAILED": "The model loading self-check failed. The resource was not activated.",
+        "SPEECH_MODEL_LOAD_TIMEOUT": "The model loading self-check timed out. The resource was not activated; try again later.",
+        "SPEECH_WORKER_START_FAILED": "The built-in speech engine could not start. Restart MyAgents and try again.",
+        "SPEECH_WORKER_PROTOCOL_ERROR": "The built-in speech engine returned an invalid response. Restart or update MyAgents and try again.",
+        "SPEECH_PATH_ENCODING_UNSUPPORTED": "The current app or data-directory path cannot be used by the local speech engine. Move it to a standard Unicode path and try again.",
+        "SPEECH_RESOURCE_INSTALL_INTERRUPTED": "Model installation was interrupted. Resources that did not pass full verification were not activated.",
+        "SPEECH_RESOURCE_CHANGED": "The local model state changed. Refresh and retry removal.",
+        "SPEECH_RESOURCE_REMOVE_FAILED": "The local models could not be removed safely. Check directory permissions and try again.",
+        "SPEECH_RESOURCE_CORRUPT": "The installed models are incomplete or corrupted. Install them again.",
+        "SPEECH_RESOURCE_BUSY": "Speech resources are in use by a job. Try again later."
       }
     },
     "dialogs": {

@@ -50,6 +50,23 @@ if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION
     fi
 fi
 
+# Prepare the pinned Rust identity first, then let the native inference owner
+# decide target/cache-aware source-build prerequisites before stopping the app
+# or mutating build staging.
+echo -e "${BLUE}[准备] 准备 Rust toolchain / components...${NC}"
+"${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh"
+echo -e "${GREEN}✓ Rust toolchain ready${NC}"
+echo ""
+
+DEV_NATIVE_TARGET="x86_64-apple-darwin"
+if [[ "$(uname -m)" == "arm64" || "$(uname -m)" == "aarch64" ]]; then
+    DEV_NATIVE_TARGET="aarch64-apple-darwin"
+fi
+echo -e "${BLUE}[准备] 检查原生推理构建依赖 (${DEV_NATIVE_TARGET})...${NC}"
+node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" "$DEV_NATIVE_TARGET" --check-prerequisites
+echo -e "${GREEN}✓ 原生推理构建依赖检查完成${NC}"
+echo ""
+
 # 杀死残留 MyAgents 实例（避免生产版和 debug 版同时运行互相打架）
 # 优先使用 PID lock file 精确杀——只杀 MyAgents 主进程，不误杀其他 node 进程。
 # SIGKILL(-9) 防止 macOS Automatic Termination 自动重启被杀的 .app。
@@ -125,19 +142,13 @@ rm -rf "${PROJECT_DIR}/src-tauri/target/debug/resources"
 echo -e "${GREEN}✓ 已清理并创建占位符${NC}"
 echo ""
 
-# Rust toolchain/components 与 rust-toolchain.toml、CI 和 release build 保持一致。
-echo -e "${BLUE}[准备] 准备 Rust toolchain / components...${NC}"
-"${PROJECT_DIR}/scripts/ensure_rust_toolchain.sh"
-echo -e "${GREEN}✓ Rust toolchain ready${NC}"
-echo ""
-
-DEV_DOCUMENT_TARGET="x86_64-apple-darwin"
-if [[ "$(uname -m)" == "arm64" || "$(uname -m)" == "aarch64" ]]; then
-    DEV_DOCUMENT_TARGET="aarch64-apple-darwin"
+echo -e "${BLUE}[准备] 准备离线文档与语音推理资源 (${DEV_NATIVE_TARGET})...${NC}"
+node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" "$DEV_NATIVE_TARGET"
+node "${PROJECT_DIR}/scripts/prepare-cuse-bundle.mjs" "$DEV_NATIVE_TARGET"
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+    codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "${PROJECT_DIR}/bundled-skills/cuse/scripts/cuse"
 fi
-echo -e "${BLUE}[准备] 准备离线文档转换资源 (${DEV_DOCUMENT_TARGET})...${NC}"
-node "${PROJECT_DIR}/scripts/prepare-document-processing.mjs" "$DEV_DOCUMENT_TARGET"
-echo -e "${GREEN}✓ 文档转换资源 ready${NC}"
+echo -e "${GREEN}✓ 原生推理资源 ready${NC}"
 echo ""
 
 # TypeScript 检查

@@ -195,52 +195,6 @@ try {
         return $false
     }
 
-    function Install-BundledNpm {
-        param(
-            [string]$NodeDir,
-            [string]$NodeExe,
-            [string]$NodeVersion
-        )
-
-        $BundledNpmVersion = "11.15.0"
-        $npmDir = Join-Path $NodeDir "node_modules\npm"
-        $npmCli = Join-Path $npmDir "bin\npm-cli.js"
-        if (-not (Test-Path $npmCli)) {
-            throw "bundled npm is missing: $npmCli"
-        }
-
-        $currentVersion = & $NodeExe $npmCli --version 2>&1
-        if ("$currentVersion" -ne $BundledNpmVersion) {
-            $npmTmpDir = Join-Path $env:TEMP "npm_upgrade_$(Get-Random)"
-            try {
-                Write-Host "    安装固定 npm v$BundledNpmVersion (当前 v$currentVersion)..." -ForegroundColor Yellow
-                New-Item -ItemType Directory -Path $npmTmpDir -Force | Out-Null
-                $tarballUrl = "https://registry.npmjs.org/npm/-/npm-$BundledNpmVersion.tgz"
-                $tgzPath = Join-Path $npmTmpDir "npm.tgz"
-                Invoke-WebRequest -Uri $tarballUrl -OutFile $tgzPath -TimeoutSec 60
-                tar -xzf $tgzPath -C $npmTmpDir 2>&1 | Out-Null
-                $extractedPkg = Join-Path $npmTmpDir "package"
-                if (-not (Test-Path $extractedPkg)) {
-                    throw "npm tarball is missing package/"
-                }
-                Remove-Item -Recurse -Force $npmDir
-                Move-Item -Path $extractedPkg -Destination $npmDir
-            } finally {
-                Remove-Item -Recurse -Force $npmTmpDir -ErrorAction SilentlyContinue
-            }
-        }
-
-        $installedVersion = & $NodeExe (Join-Path $npmDir "bin\npm-cli.js") --version 2>&1
-        if ("$installedVersion" -ne $BundledNpmVersion) {
-            throw "bundled npm version mismatch: expected $BundledNpmVersion, got $installedVersion"
-        }
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-version") -Value $NodeVersion -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-npm-version") -Value $BundledNpmVersion -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-platform") -Value "win" -NoNewline
-        Set-Content -Path (Join-Path $NodeDir ".myagents-nodejs-arch") -Value "x64" -NoNewline
-        Write-Host "    npm v$installedVersion ✓" -ForegroundColor Green
-    }
-
     Refresh-ProcessPath
     $depOk = $true
     if (-not (Test-Command "rustup --version" "https://rustup.rs")) { $depOk = $false }
@@ -265,82 +219,56 @@ try {
         throw "请先安装缺失的依赖"
     }
 
-    $ActualNodeVersion = (& node --version).Trim()
-    $ActualNpmVersion = (& npm --version).Trim()
-    if ($ActualNodeVersion -ne "v24.14.0" -or $ActualNpmVersion -ne "11.15.0") {
-        throw "构建工具链版本不匹配：需要 Node v24.14.0 / npm 11.15.0，当前为 Node $ActualNodeVersion / npm $ActualNpmVersion"
-    }
+    # ========================================
+    # 初始化 MSVC 编译环境 (link.exe / cl.exe)
+    # ========================================
+    if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
+        Write-Host "[准备] 初始化 MSVC 编译环境..." -ForegroundColor Blue
+        $vcFound = $false
 
-    # 每次构建都拉取最新 cuse release — 从 Cloudflare R2 拉取（公网公开），
-    # 不再依赖 gh CLI / 私有仓库访问权限。cuse 维护者负责在 GH Release 之后跑
-    # MyAgents-Cuse/publish_r2.sh 镜像产物到 R2（`download.myagents.io/cuse/...`）。
-    # 直接在当前 shell 里运行 .ps1，不走 `pwsh -File` ——
-    # 这样 Windows PowerShell 5.1（Windows 自带）和 PowerShell 7+ 都能工作，
-    # 避免用户没装 pwsh 时 preflight 直接失败。
-    Write-Host "  拉取最新 cuse 二进制..." -ForegroundColor Cyan
-    try {
-        & "$ProjectDir\scripts\download_cuse.ps1"
-        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "download_cuse.ps1 exit $LASTEXITCODE" }
-        $cuseBinaryPath = "src-tauri\binaries\cuse-x86_64-pc-windows-msvc.exe"
-        if (-not (Test-Path $cuseBinaryPath)) { throw "cuse binary not written" }
-        Write-Host "  cuse OK" -ForegroundColor Green
-    } catch {
-        Write-Host "  cuse 下载失败: $_" -ForegroundColor Red
-        Write-Host "    检查网络连通性: curl https://download.myagents.io/cuse/latest.json" -ForegroundColor Yellow
-        $depOk = $false
-    }
-
-    $nodejsPath = "src-tauri\resources\nodejs\node.exe"
-    $NodeDir = "src-tauri\resources\nodejs"
-    Write-Host "  检查 bundled Node.js... " -NoNewline
-    if (Test-Path $nodejsPath) {
-        Write-Host "OK (exists)" -ForegroundColor Green
-        $nodeExe = Join-Path $NodeDir "node.exe"
-        try {
-            Install-BundledNpm -NodeDir $NodeDir -NodeExe $nodeExe -NodeVersion "24.14.0"
-        } catch {
-            Write-Host "    bundled npm 准备失败: $_" -ForegroundColor Red
-            $depOk = $false
-        }
-    } else {
-        Write-Host "MISSING - downloading..." -ForegroundColor Yellow
-        # Auto-download Node.js if setup_windows.ps1 was not run
-        try {
-            $NodeVersion = "24.14.0"
-            $NodeDir = "src-tauri\resources\nodejs"
-            $ZipName = "node-v$NodeVersion-win-x64.zip"
-            $TempZip = Join-Path $env:TEMP "node-windows.zip"
-            $TempDir = Join-Path $env:TEMP "node-windows-extract"
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/$ZipName" -OutFile $TempZip -UseBasicParsing -TimeoutSec 300
-            if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
-            Expand-Archive -Path $TempZip -DestinationPath $TempDir -Force
-            $ExtractedDir = Join-Path $TempDir "node-v$NodeVersion-win-x64"
-            if (Test-Path $NodeDir) { Remove-Item -Recurse -Force $NodeDir }
-            New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
-            # Copy top-level files
-            Copy-Item (Join-Path $ExtractedDir "node.exe") $NodeDir -Force
-            Copy-Item (Join-Path $ExtractedDir "npm.cmd") $NodeDir -Force
-            Copy-Item (Join-Path $ExtractedDir "npx.cmd") $NodeDir -Force
-            Copy-Item (Join-Path $ExtractedDir "npm") $NodeDir -Force
-            Copy-Item (Join-Path $ExtractedDir "npx") $NodeDir -Force
-            # Use robocopy for node_modules — Copy-Item -Recurse silently skips
-            # files beyond MAX_PATH (260 chars), corrupting npm's minizlib/minipass
-            $SrcMod = Join-Path $ExtractedDir "node_modules"
-            $DstMod = Join-Path $NodeDir "node_modules"
-            if (Test-Path $SrcMod) {
-                & robocopy $SrcMod $DstMod /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
-                if ($LASTEXITCODE -ge 8) { throw "robocopy failed: exit $LASTEXITCODE" }
+        # Find vcvarsall.bat via vswhere
+        $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+        $vsWhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path $vsWhere) {
+            $vsPath = & $vsWhere -latest -products * -property installationPath 2>$null
+            if ($vsPath) {
+                $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+                if (Test-Path $vcvarsall) {
+                    Write-Host "  找到: $vcvarsall" -ForegroundColor Cyan
+                    # Import environment variables from vcvarsall into PowerShell
+                    $tempFile = [System.IO.Path]::GetTempFileName()
+                    cmd /c "`"$vcvarsall`" x64 > nul 2>&1 && set > `"$tempFile`""
+                    Get-Content $tempFile | ForEach-Object {
+                        if ($_ -match '^([^=]+)=(.*)$') {
+                            [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                        }
+                    }
+                    Remove-Item $tempFile -ErrorAction SilentlyContinue
+                    $vcFound = $true
+                    Write-Host "  OK - MSVC x64 环境已加载" -ForegroundColor Green
+                }
             }
-            if (Test-Path $TempZip) { Remove-Item -Force $TempZip }
-            if (Test-Path $TempDir) { Remove-Item -Recurse -Force $TempDir }
-            Install-BundledNpm -NodeDir $NodeDir -NodeExe (Join-Path $NodeDir "node.exe") -NodeVersion $NodeVersion
-            Write-Host "    OK - Node.js downloaded" -ForegroundColor Green
-        } catch {
-            Write-Host "    下载失败，请先运行 .\setup_windows.ps1" -ForegroundColor Red
-            $depOk = $false
         }
+
+        if (-not $vcFound) {
+            Write-Host "  未找到 vcvarsall.bat，Rust 编译可能失败" -ForegroundColor Yellow
+            Write-Host "  建议从 Developer PowerShell for VS 运行此脚本" -ForegroundColor Yellow
+        }
+        Write-Host ""
     }
+
+    # The prepare owner is the only source of target/cache-specific native
+    # prerequisites. Check before downloads, npm install, cleanup, or builds.
+    Write-Host "  检查原生推理构建依赖..." -ForegroundColor Cyan
+    & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc" --check-prerequisites
+    if ($LASTEXITCODE -ne 0) {
+        throw "原生推理构建依赖不完整，请按上方提示安装后重试"
+    }
+    Write-Host "  OK - 原生推理构建依赖检查完成" -ForegroundColor Green
+    Write-Host ""
+
+    # Setup and release builds share the same pinned runtime preparation.
+    & "$ProjectDir\scripts\download_nodejs.ps1"
 
     $gitInstallerPath = "src-tauri\nsis\Git-Installer.exe"
     Write-Host "  检查 Git installer... " -NoNewline
@@ -448,44 +376,6 @@ try {
         Write-Host "  OK - CSP 配置完整 (包含 Windows IPC 支持)" -ForegroundColor Green
     }
     Write-Host ""
-
-    # ========================================
-    # 初始化 MSVC 编译环境 (link.exe / cl.exe)
-    # ========================================
-    if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
-        Write-Host "[准备] 初始化 MSVC 编译环境..." -ForegroundColor Blue
-        $vcFound = $false
-
-        # Find vcvarsall.bat via vswhere
-        $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
-        $vsWhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path $vsWhere) {
-            $vsPath = & $vsWhere -latest -products * -property installationPath 2>$null
-            if ($vsPath) {
-                $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-                if (Test-Path $vcvarsall) {
-                    Write-Host "  找到: $vcvarsall" -ForegroundColor Cyan
-                    # Import environment variables from vcvarsall into PowerShell
-                    $tempFile = [System.IO.Path]::GetTempFileName()
-                    cmd /c "`"$vcvarsall`" x64 > nul 2>&1 && set > `"$tempFile`""
-                    Get-Content $tempFile | ForEach-Object {
-                        if ($_ -match '^([^=]+)=(.*)$') {
-                            [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-                        }
-                    }
-                    Remove-Item $tempFile -ErrorAction SilentlyContinue
-                    $vcFound = $true
-                    Write-Host "  OK - MSVC x64 环境已加载" -ForegroundColor Green
-                }
-            }
-        }
-
-        if (-not $vcFound) {
-            Write-Host "  未找到 vcvarsall.bat，Rust 编译可能失败" -ForegroundColor Yellow
-            Write-Host "  建议从 Developer PowerShell for VS 运行此脚本" -ForegroundColor Yellow
-        }
-        Write-Host ""
-    }
 
     # ========================================
     # 清理旧构建（包括缓存的 resources）
@@ -663,9 +553,11 @@ try {
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
     Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
 
-    Write-Host "  准备离线文档转换 Worker / OCR / PDFium 资源..." -ForegroundColor Cyan
-    & node "$ProjectDir\scripts\prepare-document-processing.mjs" "x86_64-pc-windows-msvc"
-    if ($LASTEXITCODE -ne 0) { throw "文档转换资源准备失败" }
+    Write-Host "  准备离线文档与语音推理资源..." -ForegroundColor Cyan
+    & node "$ProjectDir\scripts\prepare-cuse-bundle.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) { throw "Cuse Skill+CLI preparation failed" }
+    & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"
+    if ($LASTEXITCODE -ne 0) { throw "原生推理资源准备失败" }
 
     & npm run tauri:build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
     if ($LASTEXITCODE -ne 0) {

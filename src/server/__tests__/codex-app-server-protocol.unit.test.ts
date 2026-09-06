@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -24,6 +24,7 @@ import {
   configureCodexSkillExtraRoots,
   createCodexMcpStartupBarrier,
   initializeCodexRpc,
+  isCodexNoActiveTurnSteerRejection,
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
   mapCodexTurnPlanUpdatedNotification,
@@ -37,6 +38,7 @@ import {
   type PendingCodexRequest,
 } from '../runtimes/codex';
 import { projectManagedCodexMcpLaunchConfig } from '../runtimes/managed-codex/extensions/mcp-launch-projection';
+import { RuntimeSteerUnavailableError } from '../runtimes/types';
 
 describe('Codex app-server protocol helpers', () => {
   const tempRoots: string[] = [];
@@ -51,30 +53,42 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   function tempWorkspace(): string {
-    const dir = join(tmpdir(), `myagents-codex-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const dir = join(
+      tmpdir(),
+      `myagents-codex-test-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
     mkdirSync(dir, { recursive: true });
     tempRoots.push(dir);
     return dir;
   }
 
   it('materializes native Agent role prompt, model, and Skill references deterministically', () => {
-    expect(buildManagedCodexAgentRoleConfig({
-      name: 'reviewer',
-      description: 'Reviews changes',
-      prompt: 'Review carefully.\nDo not guess.',
-      model: 'gpt-5.4',
-      skills: [{ name: 'testing', path: '/workspace/.claude/skills/testing/SKILL.md' }],
-      scope: 'project',
-      sourceId: 'workspace:reviewer',
-    })).toBe([
-      'developer_instructions = "Review carefully.\\nDo not guess."',
-      'model = "gpt-5.4"',
-      '',
-      '[[skills.config]]',
-      'path = "/workspace/.claude/skills/testing/SKILL.md"',
-      'enabled = true',
-      '',
-    ].join('\n'));
+    expect(
+      buildManagedCodexAgentRoleConfig({
+        name: 'reviewer',
+        description: 'Reviews changes',
+        prompt: 'Review carefully.\nDo not guess.',
+        model: 'gpt-5.4',
+        skills: [
+          {
+            name: 'testing',
+            path: '/workspace/.claude/skills/testing/SKILL.md',
+          },
+        ],
+        scope: 'project',
+        sourceId: 'workspace:reviewer',
+      }),
+    ).toBe(
+      [
+        'developer_instructions = "Review carefully.\\nDo not guess."',
+        'model = "gpt-5.4"',
+        '',
+        '[[skills.config]]',
+        'path = "/workspace/.claude/skills/testing/SKILL.md"',
+        'enabled = true',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('materializes a long Skill name without using it as a filesystem component', () => {
@@ -88,15 +102,17 @@ describe('Codex app-server protocol helpers', () => {
       workspacePath: workspace,
       scenario: { type: 'desktop' },
       enabledPluginIds: [],
-      skills: [{
-        name: longName,
-        description: 'Long but valid native name',
-        contentSha256: 'sha',
-        path: skillPath,
-        scope: 'project',
-        sourceId: 'workspace',
-        sourceLocalId: 'skill-source',
-      }],
+      skills: [
+        {
+          name: longName,
+          description: 'Long but valid native name',
+          contentSha256: 'sha',
+          path: skillPath,
+          scope: 'project',
+          sourceId: 'workspace',
+          sourceLocalId: 'skill-source',
+        },
+      ],
       commands: [],
       agents: [],
       mcpServers: [],
@@ -105,7 +121,9 @@ describe('Codex app-server protocol helpers', () => {
     });
 
     try {
-      expect(materialized.skills.map(skill => skill.name)).toEqual([longName]);
+      expect(materialized.skills.map((skill) => skill.name)).toEqual([
+        longName,
+      ]);
       expect(materialized.skillRoots).toHaveLength(1);
       expect(existsSync(join(materialized.skillRoots[0], '000'))).toBe(true);
     } finally {
@@ -157,6 +175,60 @@ describe('Codex app-server protocol helpers', () => {
     materialized.cleanup();
   });
 
+  it('projects the complete Cuse bundle so relative executable and reference paths resolve', () => {
+    const workspace = tempWorkspace();
+    const source = join(workspace, 'cuse');
+    mkdirSync(join(source, 'scripts'), { recursive: true });
+    mkdirSync(join(source, 'references'));
+    const binary = process.platform === 'win32' ? 'cuse.exe' : 'cuse';
+    writeFileSync(join(source, 'scripts', binary), 'bundled native CLI');
+    writeFileSync(join(source, 'references', 'setup.md'), 'setup reference');
+    writeFileSync(
+      join(source, 'package.json'),
+      JSON.stringify({ entrypoint: `scripts/${binary}` }),
+    );
+    writeFileSync(join(source, 'SKILL.md'), 'Cuse');
+    const result = materializeManagedCodexExtensions({
+      revision: 'cuse',
+      workspacePath: workspace,
+      scenario: { type: 'desktop' },
+      enabledPluginIds: [],
+      commands: [],
+      agents: [],
+      mcpServers: [],
+      dynamicTools: [],
+      components: [],
+      skills: [
+        {
+          name: 'cuse',
+          description: 'desktop control',
+          contentSha256: 'sha',
+          path: join(source, 'SKILL.md'),
+          scope: 'user',
+          sourceId: 'global',
+          sourceLocalId: 'cuse',
+        },
+      ],
+    });
+    try {
+      const projected = join(result.skillRoots[0], '000');
+      const metadata = JSON.parse(
+        readFileSync(join(projected, 'package.json'), 'utf8'),
+      );
+      expect(readFileSync(join(projected, metadata.entrypoint), 'utf8')).toBe(
+        'bundled native CLI',
+      );
+      expect(
+        readFileSync(join(projected, 'references', 'setup.md'), 'utf8'),
+      ).toBe('setup reference');
+    } finally {
+      result.cleanup();
+    }
+    expect(readFileSync(join(source, 'scripts', binary), 'utf8')).toBe(
+      'bundled native CLI',
+    );
+  });
+
   it('holds Managed Codex Host tools behind the existing permission owner', async () => {
     const runtime = new CodexRuntime();
     const dispatch = vi.fn(async () => ({
@@ -176,7 +248,13 @@ describe('Codex app-server protocol helpers', () => {
       settledHostCallIds: new Set(),
       extensionSnapshot: {
         hostToolDispatcher: {
-          descriptors: [{ name: 'myagents__mcp__local__write', description: 'Write', inputSchema: { type: 'object' } }],
+          descriptors: [
+            {
+              name: 'myagents__mcp__local__write',
+              description: 'Write',
+              inputSchema: { type: 'object' },
+            },
+          ],
           dispatch,
           dispose: vi.fn(),
         },
@@ -195,39 +273,50 @@ describe('Codex app-server protocol helpers', () => {
       },
     };
     const events: unknown[] = [];
-    const handle = (runtime as unknown as {
-      handleManagedCodexHostToolCall(
-        target: typeof process,
-        rpcId: number,
-        params: Record<string, unknown>,
-        emit: (event: unknown) => void,
-      ): void;
-    }).handleManagedCodexHostToolCall.bind(runtime);
+    const handle = (
+      runtime as unknown as {
+        handleManagedCodexHostToolCall(
+          target: typeof process,
+          rpcId: number,
+          params: Record<string, unknown>,
+          emit: (event: unknown) => void,
+        ): void;
+      }
+    ).handleManagedCodexHostToolCall.bind(runtime);
 
-    handle(process, 41, {
-      threadId: 'thread-one',
-      turnId: 'turn-one',
-      callId: 'call-one',
-      tool: 'myagents__mcp__local__write',
-      arguments: { path: 'README.md' },
-    }, event => events.push(event));
+    handle(
+      process,
+      41,
+      {
+        threadId: 'thread-one',
+        turnId: 'turn-one',
+        callId: 'call-one',
+        tool: 'myagents__mcp__local__write',
+        arguments: { path: 'README.md' },
+      },
+      (event) => events.push(event),
+    );
 
     expect(dispatch).not.toHaveBeenCalled();
-    expect(events).toEqual([expect.objectContaining({
-      kind: 'permission_request',
-      requestId: '41',
-      toolName: 'myagents__mcp__local__write',
-    })]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'permission_request',
+        requestId: '41',
+        toolName: 'myagents__mcp__local__write',
+      }),
+    ]);
     await runtime.respondPermission(
       process as unknown as import('../runtimes/types').RuntimeProcess,
       '41',
       'allow_once',
     );
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(rpc.respond).toHaveBeenCalledWith(41, {
-      success: true,
-      contentItems: [{ type: 'inputText', text: 'done' }],
-    }));
+    await vi.waitFor(() =>
+      expect(rpc.respond).toHaveBeenCalledWith(41, {
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'done' }],
+      }),
+    );
   });
 
   it('rejects schema-invalid Host arguments before opening permission UI', () => {
@@ -246,41 +335,53 @@ describe('Codex app-server protocol helpers', () => {
       settledHostCallIds: new Set(),
       extensionSnapshot: {
         hostToolDispatcher: {
-          descriptors: [{
-            name: 'myagents__mcp__local__write',
-            description: 'Write',
-            inputSchema: {
-              type: 'object',
-              properties: { path: { type: 'string' } },
-              required: ['path'],
-              additionalProperties: false,
+          descriptors: [
+            {
+              name: 'myagents__mcp__local__write',
+              description: 'Write',
+              inputSchema: {
+                type: 'object',
+                properties: { path: { type: 'string' } },
+                required: ['path'],
+                additionalProperties: false,
+              },
             },
-          }],
+          ],
           dispatch: vi.fn(),
           dispose: vi.fn(),
         },
       },
     };
-    const handle = (runtime as unknown as {
-      handleManagedCodexHostToolCall(
-        target: typeof process,
-        rpcId: number,
-        params: Record<string, unknown>,
-        emit: (event: unknown) => void,
-      ): void;
-    }).handleManagedCodexHostToolCall.bind(runtime);
+    const handle = (
+      runtime as unknown as {
+        handleManagedCodexHostToolCall(
+          target: typeof process,
+          rpcId: number,
+          params: Record<string, unknown>,
+          emit: (event: unknown) => void,
+        ): void;
+      }
+    ).handleManagedCodexHostToolCall.bind(runtime);
 
-    handle(process, 42, {
-      threadId: 'thread-one',
-      turnId: 'turn-one',
-      callId: 'call-invalid',
-      tool: 'myagents__mcp__local__write',
-      arguments: { unexpected: true },
-    }, event => events.push(event));
+    handle(
+      process,
+      42,
+      {
+        threadId: 'thread-one',
+        turnId: 'turn-one',
+        callId: 'call-invalid',
+        tool: 'myagents__mcp__local__write',
+        arguments: { unexpected: true },
+      },
+      (event) => events.push(event),
+    );
 
     expect(events).toEqual([]);
     expect(process.pendingRequests.size).toBe(0);
-    expect(rpc.respond).toHaveBeenCalledWith(42, expect.objectContaining({ success: false }));
+    expect(rpc.respond).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ success: false }),
+    );
   });
 
   it('logs thread paths and developer instructions as irreversible metadata, never prefixes', () => {
@@ -367,7 +468,7 @@ describe('Codex app-server protocol helpers', () => {
     const emitted: unknown[] = [];
     classifyAndForwardCodexStderr(
       `error sending request for url (https://private.invalid/${stderrMarker})`,
-      event => emitted.push(event),
+      (event) => emitted.push(event),
     );
 
     const runtime = new CodexRuntime();
@@ -383,17 +484,21 @@ describe('Codex app-server protocol helpers', () => {
     ).parseNotification(
       { compactControl: null, threadId: '' },
       'error',
-      { error: { message: `${providerMarker} at /Users/private/provider-body` } },
+      {
+        error: { message: `${providerMarker} at /Users/private/provider-body` },
+      },
       () => {},
     );
 
-    const messages = [...emitted, parsed].map(event => (
-      event as { message: string }
-    ).message);
+    const messages = [...emitted, parsed].map(
+      (event) => (event as { message: string }).message,
+    );
     const combined = messages.join('\n');
     expect(combined).toContain('Codex HTTP request failed');
     expect(combined).toContain('Runtime error detail=');
-    expect(messages.every(message => /"hash":"[a-f0-9]{12}"/.test(message))).toBe(true);
+    expect(
+      messages.every((message) => /"hash":"[a-f0-9]{12}"/.test(message)),
+    ).toBe(true);
     expect(combined).not.toContain(stderrMarker);
     expect(combined).not.toContain(providerMarker);
     expect(combined).not.toContain('private.invalid');
@@ -408,7 +513,11 @@ describe('Codex app-server protocol helpers', () => {
 
     await initializeCodexRpc(rpc, 1234);
 
-    expect(rpc.call).toHaveBeenCalledWith('initialize', buildCodexInitializeParams(), 1234);
+    expect(rpc.call).toHaveBeenCalledWith(
+      'initialize',
+      buildCodexInitializeParams(),
+      1234,
+    );
     expect(rpc.notify).toHaveBeenCalledWith('initialized');
     expect(buildCodexInitializeParams()).toMatchObject({
       capabilities: {
@@ -459,20 +568,24 @@ describe('Codex app-server protocol helpers', () => {
 
   it('keeps system-cli Codex app-server startup free of managed provider MCP config', () => {
     const env: Record<string, string | undefined> = {};
-    expect(buildCodexAppServerArgs({
-      commandPath: '/usr/local/bin/codex',
-      runtimeSource: 'system-cli',
-      codexEnv: env,
-      mcpServers: [{
-        id: 'fs',
-        name: 'Filesystem',
-        type: 'stdio',
-        command: 'node',
-        args: ['server.js'],
-        env: { FS_TOKEN: 'secret-token' },
-        isBuiltin: false,
-      }],
-    })).toEqual([
+    expect(
+      buildCodexAppServerArgs({
+        commandPath: '/usr/local/bin/codex',
+        runtimeSource: 'system-cli',
+        codexEnv: env,
+        mcpServers: [
+          {
+            id: 'fs',
+            name: 'Filesystem',
+            type: 'stdio',
+            command: 'node',
+            args: ['server.js'],
+            env: { FS_TOKEN: 'secret-token' },
+            isBuiltin: false,
+          },
+        ],
+      }),
+    ).toEqual([
       '/usr/local/bin/codex',
       '-c',
       'project_doc_fallback_filenames=["CLAUDE.md"]',
@@ -483,11 +596,13 @@ describe('Codex app-server protocol helpers', () => {
 
   it('does not enable Codex default-mode request_user_input at app-server startup', () => {
     const env: Record<string, string | undefined> = {};
-    expect(buildCodexAppServerArgs({
-      commandPath: '/usr/local/bin/codex',
-      runtimeSource: 'managed-provider',
-      codexEnv: env,
-    })).toEqual([
+    expect(
+      buildCodexAppServerArgs({
+        commandPath: '/usr/local/bin/codex',
+        runtimeSource: 'managed-provider',
+        codexEnv: env,
+      }),
+    ).toEqual([
       '/usr/local/bin/codex',
       '-c',
       'project_doc_fallback_filenames=["CLAUDE.md"]',
@@ -506,11 +621,13 @@ describe('Codex app-server protocol helpers', () => {
       'app-server',
     ]);
 
-    expect(buildCodexAppServerArgs({
-      commandPath: '/usr/local/bin/codex',
-      runtimeSource: 'system-cli',
-      codexEnv: env,
-    })).toEqual([
+    expect(
+      buildCodexAppServerArgs({
+        commandPath: '/usr/local/bin/codex',
+        runtimeSource: 'system-cli',
+        codexEnv: env,
+      }),
+    ).toEqual([
       '/usr/local/bin/codex',
       '-c',
       'project_doc_fallback_filenames=["CLAUDE.md"]',
@@ -527,25 +644,51 @@ describe('Codex app-server protocol helpers', () => {
 
     expect(launch.modelProvider).toBe('myagents_managed_http');
     expect(launch.args).toContain('model_provider="myagents_managed_http"');
-    expect(launch.args).toContain('model_providers.myagents_managed_http.name="OpenAI"');
-    expect(launch.args).toContain('model_providers.myagents_managed_http.wire_api="responses"');
-    expect(launch.args).toContain('model_providers.myagents_managed_http.requires_openai_auth=true');
-    expect(launch.args).toContain('model_providers.myagents_managed_http.supports_websockets=false');
+    expect(launch.args).toContain(
+      'model_providers.myagents_managed_http.name="OpenAI"',
+    );
+    expect(launch.args).toContain(
+      'model_providers.myagents_managed_http.wire_api="responses"',
+    );
+    expect(launch.args).toContain(
+      'model_providers.myagents_managed_http.requires_openai_auth=true',
+    );
+    expect(launch.args).toContain(
+      'model_providers.myagents_managed_http.supports_websockets=false',
+    );
   });
 
   it('keeps persisted provider identity for model-unknown legacy resumes', () => {
-    expect(resolveCodexThreadModelProvider('myagents_managed_http', undefined, undefined))
-      .toBe('myagents_managed_http');
-    expect(resolveCodexThreadModelProvider('myagents_managed_http', 'thread-1', 'gpt-5.6-sol'))
-      .toBe('myagents_managed_http');
-    expect(resolveCodexThreadModelProvider('myagents_managed_http', 'thread-1', undefined))
-      .toBeUndefined();
-    expect(resolveCodexThreadModelProvider(undefined, undefined, 'gpt-5.6-sol'))
-      .toBeUndefined();
+    expect(
+      resolveCodexThreadModelProvider(
+        'myagents_managed_http',
+        undefined,
+        undefined,
+      ),
+    ).toBe('myagents_managed_http');
+    expect(
+      resolveCodexThreadModelProvider(
+        'myagents_managed_http',
+        'thread-1',
+        'gpt-5.6-sol',
+      ),
+    ).toBe('myagents_managed_http');
+    expect(
+      resolveCodexThreadModelProvider(
+        'myagents_managed_http',
+        'thread-1',
+        undefined,
+      ),
+    ).toBeUndefined();
+    expect(
+      resolveCodexThreadModelProvider(undefined, undefined, 'gpt-5.6-sol'),
+    ).toBeUndefined();
   });
 
   it('injects managed Codex MCP servers through app-server config args without argv secrets', () => {
-    const env: Record<string, string | undefined> = { HTTPS_PROXY: 'http://127.0.0.1:7890' };
+    const env: Record<string, string | undefined> = {
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+    };
     const args = buildCodexAppServerArgs({
       commandPath: '/managed/codex',
       runtimeSource: 'managed-provider',
@@ -575,15 +718,23 @@ describe('Codex app-server protocol helpers', () => {
     expect(args).toContain('cli_auth_credentials_store="file"');
     expect(args).toContain('mcp_servers.fs_tool.command="node"');
     expect(args).toContain('mcp_servers.fs_tool.args=["server.js"]');
-    expect(args).toContain('mcp_servers.fs_tool.env_vars=["FS_TOKEN","HTTPS_PROXY","NO_PROXY","no_proxy"]');
+    expect(args).toContain(
+      'mcp_servers.fs_tool.env_vars=["FS_TOKEN","HTTPS_PROXY","NO_PROXY","no_proxy"]',
+    );
     expect(args).toContain('mcp_servers.fs_tool.startup_timeout_sec=60');
-    expect(args).toContain('mcp_servers.remote-http.url="https://example.com/mcp"');
-    expect(args).toContain('mcp_servers.remote-http.env_http_headers={Authorization="MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION"}');
+    expect(args).toContain(
+      'mcp_servers.remote-http.url="https://example.com/mcp"',
+    );
+    expect(args).toContain(
+      'mcp_servers.remote-http.env_http_headers={Authorization="MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION"}',
+    );
     expect(args).toContain('mcp_servers.remote-http.startup_timeout_sec=60');
     expect(args.join('\n')).not.toContain('secret-token');
     expect(args.join('\n')).not.toContain('remote-secret');
     expect(env.FS_TOKEN).toBe('secret-token');
-    expect(env.MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION).toBe('Bearer remote-secret');
+    expect(env.MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION).toBe(
+      'Bearer remote-secret',
+    );
     expect(env.REMOTE_TOKEN).toBeUndefined();
     expect(env.NO_PROXY).toContain('127.0.0.1');
   });
@@ -594,18 +745,24 @@ describe('Codex app-server protocol helpers', () => {
       commandPath: '/managed/codex',
       runtimeSource: 'managed-provider',
       codexEnv: env,
-      mcpServers: [{
-        id: 'playwright',
-        name: 'Playwright',
-        type: 'stdio',
-        command: 'npx',
-        args: ['@playwright/mcp@latest', '--isolated'],
-        isBuiltin: true,
-      }],
+      mcpServers: [
+        {
+          id: 'playwright',
+          name: 'Playwright',
+          type: 'stdio',
+          command: 'npx',
+          args: ['@playwright/mcp@latest', '--isolated'],
+          isBuiltin: true,
+        },
+      ],
     });
 
-    const commandArg = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.command='));
-    const mcpArgs = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.args='));
+    const commandArg = launch.args.find((arg) =>
+      arg.startsWith('mcp_servers.playwright.command='),
+    );
+    const mcpArgs = launch.args.find((arg) =>
+      arg.startsWith('mcp_servers.playwright.args='),
+    );
     expect(commandArg).toBeDefined();
     expect(commandArg).not.toBe('mcp_servers.playwright.command="npx"');
     expect(mcpArgs).toContain('@playwright/mcp@0.0.68');
@@ -620,38 +777,54 @@ describe('Codex app-server protocol helpers', () => {
       throw new mcpCommand.NpxMcpResolutionError();
     });
 
-    const projection = projectManagedCodexMcpLaunchConfig([{
-      id: 'playwright',
-      name: 'Playwright',
-      type: 'stdio',
-      command: 'npx',
-      args: ['@playwright/mcp@0.0.68'],
-      isBuiltin: true,
-    }], {});
+    const projection = projectManagedCodexMcpLaunchConfig(
+      [
+        {
+          id: 'playwright',
+          name: 'Playwright',
+          type: 'stdio',
+          command: 'npx',
+          args: ['@playwright/mcp@0.0.68'],
+          isBuiltin: true,
+        },
+      ],
+      {},
+    );
 
     expect(projection.args).toEqual([]);
-    expect(projection.failures).toEqual([expect.objectContaining({
-      serverId: 'playwright',
-      state: 'failed',
-      code: 'mcp_projection_rejected',
-      message: expect.stringContaining(
-        'No complete Windows Node.js distribution with npm/bin/npx-cli.js was found for MCP startup',
-      ),
-    })]);
+    expect(projection.failures).toEqual([
+      expect.objectContaining({
+        serverId: 'playwright',
+        state: 'failed',
+        code: 'mcp_projection_rejected',
+        message: expect.stringContaining(
+          'No complete Windows Node.js distribution with npm/bin/npx-cli.js was found for MCP startup',
+        ),
+      }),
+    ]);
 
     resolver.mockImplementationOnce(() => {
       throw new Error('private unexpected detail');
     });
-    const unexpected = projectManagedCodexMcpLaunchConfig([{
-      id: 'unexpected',
-      name: 'Unexpected',
-      type: 'stdio',
-      command: 'npx',
-      args: ['package-name'],
-      isBuiltin: false,
-    }], {});
-    expect(unexpected.failures[0]?.message).toContain('unexpected launch projection failure');
-    expect(unexpected.failures[0]?.message).not.toContain('private unexpected detail');
+    const unexpected = projectManagedCodexMcpLaunchConfig(
+      [
+        {
+          id: 'unexpected',
+          name: 'Unexpected',
+          type: 'stdio',
+          command: 'npx',
+          args: ['package-name'],
+          isBuiltin: false,
+        },
+      ],
+      {},
+    );
+    expect(unexpected.failures[0]?.message).toContain(
+      'unexpected launch projection failure',
+    );
+    expect(unexpected.failures[0]?.message).not.toContain(
+      'private unexpected detail',
+    );
   });
 
   it('settles managed Codex MCP readiness only after every injected server is terminal', async () => {
@@ -735,9 +908,13 @@ describe('Codex app-server protocol helpers', () => {
     barrier.arm();
     const startup = barrier.wait();
 
-    barrier.fail(new Error('Codex process exited during MCP startup with code 1'));
+    barrier.fail(
+      new Error('Codex process exited during MCP startup with code 1'),
+    );
 
-    await expect(startup).rejects.toThrow('Codex process exited during MCP startup with code 1');
+    await expect(startup).rejects.toThrow(
+      'Codex process exited during MCP startup with code 1',
+    );
   });
 
   it('charges process initialization to the single absolute MCP dispatch window', async () => {
@@ -858,20 +1035,37 @@ describe('Codex app-server protocol helpers', () => {
     const env: Record<string, string | undefined> = {};
     const mcpServers: McpServerDefinition[] = [
       {
-        id: 'arg-secret', name: 'Arg Secret', type: 'stdio', command: 'node',
-        args: ['server.js', '--api-key', 'sk-test-secret-value'], isBuiltin: false,
+        id: 'arg-secret',
+        name: 'Arg Secret',
+        type: 'stdio',
+        command: 'node',
+        args: ['server.js', '--api-key', 'sk-test-secret-value'],
+        isBuiltin: false,
       },
       {
-        id: 'safe', name: 'Safe', type: 'stdio', command: 'node',
-        args: ['safe-server.js'], env: { SAFE_TOKEN: 'safe-secret' }, isBuiltin: false,
+        id: 'safe',
+        name: 'Safe',
+        type: 'stdio',
+        command: 'node',
+        args: ['safe-server.js'],
+        env: { SAFE_TOKEN: 'safe-secret' },
+        isBuiltin: false,
       },
       {
-        id: 'env-openai', name: 'OpenAI env', type: 'stdio', command: 'node',
-        args: ['server.js'], env: { OPENAI_API_KEY: 'must-not-leak' }, isBuiltin: false,
+        id: 'env-openai',
+        name: 'OpenAI env',
+        type: 'stdio',
+        command: 'node',
+        args: ['server.js'],
+        env: { OPENAI_API_KEY: 'must-not-leak' },
+        isBuiltin: false,
       },
       {
-        id: 'url-query', name: 'URL Query', type: 'http',
-        url: 'https://example.com/mcp?transport=streamable', isBuiltin: false,
+        id: 'url-query',
+        name: 'URL Query',
+        type: 'http',
+        url: 'https://example.com/mcp?transport=streamable',
+        isBuiltin: false,
       },
     ];
     const launch = buildCodexAppServerLaunchConfig({
@@ -892,26 +1086,57 @@ describe('Codex app-server protocol helpers', () => {
     expect(env.SAFE_TOKEN).toBe('safe-secret');
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(projection.failures).toEqual([
-      expect.objectContaining({ serverId: 'arg-secret', message: expect.stringMatching(/credential flag/i) }),
-      expect.objectContaining({ serverId: 'env-openai', message: expect.stringMatching(/OPENAI_API_KEY/i) }),
-      expect.objectContaining({ serverId: 'url-query', message: expect.stringMatching(/query string/i) }),
+      expect.objectContaining({
+        serverId: 'arg-secret',
+        message: expect.stringMatching(/credential flag/i),
+      }),
+      expect.objectContaining({
+        serverId: 'env-openai',
+        message: expect.stringMatching(/OPENAI_API_KEY/i),
+      }),
+      expect.objectContaining({
+        serverId: 'url-query',
+        message: expect.stringMatching(/query string/i),
+      }),
     ]);
   });
 
   it('keeps in-process MCP on the Host path and isolates conflicting native MCP env values', () => {
-    expect(() => buildCodexAppServerArgs({
-      commandPath: '/managed/codex',
-      runtimeSource: 'managed-provider',
-      codexEnv: {},
-      mcpServers: [{
-        id: 'builtin-image', name: 'Builtin image', type: 'stdio',
-        command: '__builtin__', args: [], isBuiltin: true,
-      }],
-    })).not.toThrow();
+    expect(() =>
+      buildCodexAppServerArgs({
+        commandPath: '/managed/codex',
+        runtimeSource: 'managed-provider',
+        codexEnv: {},
+        mcpServers: [
+          {
+            id: 'builtin-image',
+            name: 'Builtin image',
+            type: 'stdio',
+            command: '__builtin__',
+            args: [],
+            isBuiltin: true,
+          },
+        ],
+      }),
+    ).not.toThrow();
 
     const mcpServers: McpServerDefinition[] = [
-      { id: 'one', name: 'One', type: 'stdio', command: 'one', env: { TOKEN: 'first' }, isBuiltin: false },
-      { id: 'two', name: 'Two', type: 'stdio', command: 'two', env: { TOKEN: 'second' }, isBuiltin: false },
+      {
+        id: 'one',
+        name: 'One',
+        type: 'stdio',
+        command: 'one',
+        env: { TOKEN: 'first' },
+        isBuiltin: false,
+      },
+      {
+        id: 'two',
+        name: 'Two',
+        type: 'stdio',
+        command: 'two',
+        env: { TOKEN: 'second' },
+        isBuiltin: false,
+      },
     ];
     const launch = buildCodexAppServerLaunchConfig({
       commandPath: '/managed/codex',
@@ -922,7 +1147,10 @@ describe('Codex app-server protocol helpers', () => {
     const projection = projectManagedCodexMcpLaunchConfig(mcpServers, {});
     expect(launch.mcpServerNames).toEqual(['one']);
     expect(projection.failures).toEqual([
-      expect.objectContaining({ serverId: 'two', message: expect.stringMatching(/TOKEN.*one/i) }),
+      expect.objectContaining({
+        serverId: 'two',
+        message: expect.stringMatching(/TOKEN.*one/i),
+      }),
     ]);
   });
 
@@ -930,12 +1158,20 @@ describe('Codex app-server protocol helpers', () => {
     const env: Record<string, string | undefined> = {};
     const mcpServers: McpServerDefinition[] = [
       {
-        id: 'a', name: 'HTTP owner', type: 'http', url: 'https://example.com/mcp',
-        headers: { Authorization: 'Bearer http-secret' }, isBuiltin: false,
+        id: 'a',
+        name: 'HTTP owner',
+        type: 'http',
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer http-secret' },
+        isBuiltin: false,
       },
       {
-        id: 'b', name: 'Stdio collision', type: 'stdio', command: 'node',
-        env: { MYAGENTS_MCP_A_AUTHORIZATION: 'stdio-secret' }, isBuiltin: false,
+        id: 'b',
+        name: 'Stdio collision',
+        type: 'stdio',
+        command: 'node',
+        env: { MYAGENTS_MCP_A_AUTHORIZATION: 'stdio-secret' },
+        isBuiltin: false,
       },
     ];
     const launch = buildCodexAppServerLaunchConfig({
@@ -963,7 +1199,9 @@ describe('Codex app-server protocol helpers', () => {
     mkdirSync(projectSkillsDir, { recursive: true });
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+    await expect(
+      configureCodexSkillExtraRoots(rpc, workspace),
+    ).resolves.toEqual({
       extraRoots: [projectSkillsDir],
       loadedSkillNames: [],
     });
@@ -984,35 +1222,56 @@ describe('Codex app-server protocol helpers', () => {
   it('logs Codex Skill parser details without exposing absolute paths', async () => {
     const workspace = tempWorkspace();
     const projectSkillsDir = join(workspace, '.claude', 'skills');
-    const expectedSkillPath = join(projectSkillsDir, 'expected-skill', 'SKILL.md');
+    const expectedSkillPath = join(
+      projectSkillsDir,
+      'expected-skill',
+      'SKILL.md',
+    );
     mkdirSync(projectSkillsDir, { recursive: true });
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const rpc = {
-      call: vi.fn(async (method: string) => method === 'skills/list'
-        ? {
-            data: [{
-              skills: [{ name: 'expected-skill', enabled: true, path: expectedSkillPath }],
-              errors: [{
-                path: join(projectSkillsDir, 'broken', 'SKILL.md'),
-                message: 'invalid frontmatter SECRET_SENTINEL BODY_SENTINEL',
-              }],
-            }],
-          }
-        : {}),
+      call: vi.fn(async (method: string) =>
+        method === 'skills/list'
+          ? {
+              data: [
+                {
+                  skills: [
+                    {
+                      name: 'expected-skill',
+                      enabled: true,
+                      path: expectedSkillPath,
+                    },
+                  ],
+                  errors: [
+                    {
+                      path: join(projectSkillsDir, 'broken', 'SKILL.md'),
+                      message:
+                        'invalid frontmatter SECRET_SENTINEL BODY_SENTINEL',
+                    },
+                  ],
+                },
+              ],
+            }
+          : {},
+      ),
     };
 
-    await expect(configureCodexSkillExtraRoots(
-      rpc,
-      workspace,
-      1_234,
-      [projectSkillsDir],
-      [{ name: 'expected-skill', path: expectedSkillPath }],
-    )).resolves.toEqual({
+    await expect(
+      configureCodexSkillExtraRoots(
+        rpc,
+        workspace,
+        1_234,
+        [projectSkillsDir],
+        [{ name: 'expected-skill', path: expectedSkillPath }],
+      ),
+    ).resolves.toEqual({
       extraRoots: [projectSkillsDir],
       loadedSkillNames: ['expected-skill'],
     });
 
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('skills/list parser warning'),
+    );
     const logLine = warning.mock.calls.flat().join('\n');
     expect(logLine).toContain('<workspace>/.claude/skills/broken/SKILL.md');
     expect(logLine).toContain('message={"present":true,"chars":');
@@ -1028,27 +1287,45 @@ describe('Codex app-server protocol helpers', () => {
     mkdirSync(projectSkillsDir, { recursive: true });
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const rpc = {
-      call: vi.fn(async (method: string) => method === 'skills/list'
-        ? {
-            data: [{
-              skills: [],
-              errors: [{ path: join(projectSkillsDir, 'web-access', 'SKILL.md'), message: 'invalid YAML' }],
-            }],
-          }
-        : {}),
+      call: vi.fn(async (method: string) =>
+        method === 'skills/list'
+          ? {
+              data: [
+                {
+                  skills: [],
+                  errors: [
+                    {
+                      path: join(projectSkillsDir, 'web-access', 'SKILL.md'),
+                      message: 'invalid YAML',
+                    },
+                  ],
+                },
+              ],
+            }
+          : {},
+      ),
     };
 
-    await expect(configureCodexSkillExtraRoots(
-      rpc,
-      workspace,
-      1_234,
-      [projectSkillsDir],
-      [{ name: 'web-access', path: join(projectSkillsDir, 'web-access', 'SKILL.md') }],
-    )).resolves.toEqual({
+    await expect(
+      configureCodexSkillExtraRoots(
+        rpc,
+        workspace,
+        1_234,
+        [projectSkillsDir],
+        [
+          {
+            name: 'web-access',
+            path: join(projectSkillsDir, 'web-access', 'SKILL.md'),
+          },
+        ],
+      ),
+    ).resolves.toEqual({
       extraRoots: [projectSkillsDir],
       loadedSkillNames: [],
     });
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('skills/list parser warning'));
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('skills/list parser warning'),
+    );
     const warningLog = warning.mock.calls.flat().join('\n');
     expect(warningLog).toContain('continuing without them: web-access');
     expect(warningLog).not.toContain('invalid YAML');
@@ -1058,26 +1335,41 @@ describe('Codex app-server protocol helpers', () => {
     const workspace = tempWorkspace();
     const projectedRoot = join(workspace, 'projected-skills');
     const projectedPath = join(projectedRoot, 'skill-creator', 'SKILL.md');
-    const systemPath = join(workspace, 'system-skills', 'skill-creator', 'SKILL.md');
+    const systemPath = join(
+      workspace,
+      'system-skills',
+      'skill-creator',
+      'SKILL.md',
+    );
     mkdirSync(projectedRoot, { recursive: true });
     const rpc = {
-      call: vi.fn(async (method: string) => method === 'skills/list'
-        ? {
-            data: [{
-              skills: [{ name: 'skill-creator', enabled: true, path: systemPath }],
-              errors: [{ path: projectedPath, message: 'invalid projected Skill' }],
-            }],
-          }
-        : {}),
+      call: vi.fn(async (method: string) =>
+        method === 'skills/list'
+          ? {
+              data: [
+                {
+                  skills: [
+                    { name: 'skill-creator', enabled: true, path: systemPath },
+                  ],
+                  errors: [
+                    { path: projectedPath, message: 'invalid projected Skill' },
+                  ],
+                },
+              ],
+            }
+          : {},
+      ),
     };
 
-    await expect(configureCodexSkillExtraRoots(
-      rpc,
-      workspace,
-      1_234,
-      [projectedRoot],
-      [{ name: 'skill-creator', path: projectedPath }],
-    )).resolves.toEqual({
+    await expect(
+      configureCodexSkillExtraRoots(
+        rpc,
+        workspace,
+        1_234,
+        [projectedRoot],
+        [{ name: 'skill-creator', path: projectedPath }],
+      ),
+    ).resolves.toEqual({
       extraRoots: [projectedRoot],
       loadedSkillNames: [],
     });
@@ -1087,7 +1379,9 @@ describe('Codex app-server protocol helpers', () => {
     const workspace = tempWorkspace();
     const rpc = { call: vi.fn().mockResolvedValue({}) };
 
-    await expect(configureCodexSkillExtraRoots(rpc, workspace)).resolves.toEqual({
+    await expect(
+      configureCodexSkillExtraRoots(rpc, workspace),
+    ).resolves.toEqual({
       extraRoots: [],
       loadedSkillNames: [],
     });
@@ -1102,16 +1396,27 @@ describe('Codex app-server protocol helpers', () => {
     const projectSkillsDir = join(workspace, '.claude', 'skills');
     mkdirSync(projectSkillsDir, { recursive: true });
     const rpc = {
-      call: vi.fn().mockRejectedValue(new Error('Method not found: skills/extraRoots/set')),
+      call: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('Method not found: skills/extraRoots/set'),
+        ),
     };
 
-    await expect(configureCodexSkillExtraRoots(
-      rpc,
-      workspace,
-      5_000,
-      [projectSkillsDir],
-      [{ name: 'review-helper', path: join(projectSkillsDir, 'review-helper', 'SKILL.md') }],
-    )).resolves.toEqual({ extraRoots: [], loadedSkillNames: [] });
+    await expect(
+      configureCodexSkillExtraRoots(
+        rpc,
+        workspace,
+        5_000,
+        [projectSkillsDir],
+        [
+          {
+            name: 'review-helper',
+            path: join(projectSkillsDir, 'review-helper', 'SKILL.md'),
+          },
+        ],
+      ),
+    ).resolves.toEqual({ extraRoots: [], loadedSkillNames: [] });
 
     expect(rpc.call).toHaveBeenCalledWith(
       'skills/extraRoots/set',
@@ -1121,16 +1426,20 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   it('passes cwd, approvalPolicy, sandboxPolicy, model, and summary to turn/start', () => {
-    expect(buildCodexSandboxPolicy('danger-full-access', '/tmp/ws')).toEqual({ type: 'dangerFullAccess' });
-    expect(buildCodexTurnStartParams({
-      threadId: 'thread-1',
-      input: [{ type: 'text', text: 'hi' }],
-      cwd: '/tmp/ws',
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
-      model: 'gpt-5.2-codex',
-      clientUserMessageId: 'user-1',
-    })).toEqual({
+    expect(buildCodexSandboxPolicy('danger-full-access', '/tmp/ws')).toEqual({
+      type: 'dangerFullAccess',
+    });
+    expect(
+      buildCodexTurnStartParams({
+        threadId: 'thread-1',
+        input: [{ type: 'text', text: 'hi' }],
+        cwd: '/tmp/ws',
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        model: 'gpt-5.2-codex',
+        clientUserMessageId: 'user-1',
+      }),
+    ).toEqual({
       threadId: 'thread-1',
       input: [{ type: 'text', text: 'hi' }],
       cwd: '/tmp/ws',
@@ -1147,24 +1456,40 @@ describe('Codex app-server protocol helpers', () => {
       { id: 'turn-1', status: 'completed' },
       { id: 'turn-2', status: 'completed' },
     ];
-    expect(resolveCodexConversationBranchPoint(turns, 'turn-1')).toEqual({ kind: 'fresh-thread' });
+    expect(resolveCodexConversationBranchPoint(turns, 'turn-1')).toEqual({
+      kind: 'fresh-thread',
+    });
     expect(resolveCodexConversationBranchPoint(turns, 'turn-2')).toEqual({
       kind: 'through-turn',
       runtimeTurnId: 'turn-1',
     });
-    expect(() => resolveCodexConversationBranchPoint(turns, 'missing')).toThrow(/anchor/i);
-    expect(() => resolveCodexConversationBranchPoint([
-      ...turns,
-      { id: 'turn-2', status: 'completed' },
-    ], 'turn-2')).toThrow(/anchor/i);
-    expect(() => resolveCodexConversationBranchPoint([
-      { id: 'turn-1', status: 'failed' },
-    ], 'turn-1')).toThrow(/not completed/i);
-    expect(() => resolveCodexConversationBranchPoint([
-      { id: 'turn-1', status: 'failed' },
-      { id: 'turn-2', status: 'completed' },
-    ], 'turn-2')).toThrow(/previous/i);
-    expect(() => resolveCodexConversationBranchPoint(undefined, 'turn-1')).toThrow(/full turn history/i);
+    expect(() => resolveCodexConversationBranchPoint(turns, 'missing')).toThrow(
+      /anchor/i,
+    );
+    expect(() =>
+      resolveCodexConversationBranchPoint(
+        [...turns, { id: 'turn-2', status: 'completed' }],
+        'turn-2',
+      ),
+    ).toThrow(/anchor/i);
+    expect(() =>
+      resolveCodexConversationBranchPoint(
+        [{ id: 'turn-1', status: 'failed' }],
+        'turn-1',
+      ),
+    ).toThrow(/not completed/i);
+    expect(() =>
+      resolveCodexConversationBranchPoint(
+        [
+          { id: 'turn-1', status: 'failed' },
+          { id: 'turn-2', status: 'completed' },
+        ],
+        'turn-2',
+      ),
+    ).toThrow(/previous/i);
+    expect(() =>
+      resolveCodexConversationBranchPoint(undefined, 'turn-1'),
+    ).toThrow(/full turn history/i);
   });
 
   it('branches only through the stable v2 read/fork/unsubscribe RPCs', async () => {
@@ -1195,13 +1520,26 @@ describe('Codex app-server protocol helpers', () => {
       rpc,
     } as unknown as import('../runtimes/types').RuntimeProcess;
 
-    await expect(runtime.branchConversation(process, {
-      kind: 'before-turn',
-      runtimeTurnId: 'turn-2',
-    })).resolves.toEqual({ kind: 'native-thread', runtimeSessionId: 'fork-thread' });
+    await expect(
+      runtime.branchConversation(process, {
+        kind: 'before-turn',
+        runtimeTurnId: 'turn-2',
+      }),
+    ).resolves.toEqual({
+      kind: 'native-thread',
+      runtimeSessionId: 'fork-thread',
+    });
     expect(rpc.call.mock.calls).toEqual([
-      ['thread/read', { threadId: 'source-thread', includeTurns: true }, 15_000],
-      ['thread/fork', { threadId: 'source-thread', lastTurnId: 'turn-1' }, 15_000],
+      [
+        'thread/read',
+        { threadId: 'source-thread', includeTurns: true },
+        15_000,
+      ],
+      [
+        'thread/fork',
+        { threadId: 'source-thread', lastTurnId: 'turn-1' },
+        15_000,
+      ],
       ['thread/unsubscribe', { threadId: 'fork-thread' }, 10_000],
     ]);
   });
@@ -1224,10 +1562,12 @@ describe('Codex app-server protocol helpers', () => {
       rpc,
     } as unknown as import('../runtimes/types').RuntimeProcess;
 
-    await expect(runtime.branchConversation(process, {
-      kind: 'before-turn',
-      runtimeTurnId: 'turn-1',
-    })).resolves.toEqual({ kind: 'fresh-thread' });
+    await expect(
+      runtime.branchConversation(process, {
+        kind: 'before-turn',
+        runtimeTurnId: 'turn-1',
+      }),
+    ).resolves.toEqual({ kind: 'fresh-thread' });
     expect(rpc.call).toHaveBeenCalledOnce();
     expect(rpc.call).toHaveBeenCalledWith(
       'thread/read',
@@ -1239,58 +1579,74 @@ describe('Codex app-server protocol helpers', () => {
   it.each([
     ['thread/read', { kind: 'before-turn', runtimeTurnId: 'turn-2' }],
     ['thread/fork', { kind: 'through-turn', runtimeTurnId: 'turn-1' }],
-  ] as const)('classifies %s schema rejection as a Codex capability mismatch', async (rejectedMethod, boundary) => {
-    const runtime = new CodexRuntime();
-    const rpc = {
-      call: vi.fn(async (method: string) => {
-        if (method === rejectedMethod) {
-          throw new Error('JSON-RPC error -32602: Invalid params: unknown field');
-        }
-        if (method === 'thread/read') {
-          return {
-            thread: {
-              id: 'source-thread',
-              turns: [
-                { id: 'turn-1', status: 'completed' },
-                { id: 'turn-2', status: 'completed' },
-              ],
-            },
-          };
-        }
-        throw new Error(`unexpected RPC ${method}`);
-      }),
-    };
-    const process = {
-      exited: false,
-      runtimeSource: 'managed-provider',
-      version: '0.146.0',
-      threadId: 'source-thread',
-      rpc,
-    } as unknown as import('../runtimes/types').RuntimeProcess;
+  ] as const)(
+    'classifies %s schema rejection as a Codex capability mismatch',
+    async (rejectedMethod, boundary) => {
+      const runtime = new CodexRuntime();
+      const rpc = {
+        call: vi.fn(async (method: string) => {
+          if (method === rejectedMethod) {
+            throw new Error(
+              'JSON-RPC error -32602: Invalid params: unknown field',
+            );
+          }
+          if (method === 'thread/read') {
+            return {
+              thread: {
+                id: 'source-thread',
+                turns: [
+                  { id: 'turn-1', status: 'completed' },
+                  { id: 'turn-2', status: 'completed' },
+                ],
+              },
+            };
+          }
+          throw new Error(`unexpected RPC ${method}`);
+        }),
+      };
+      const process = {
+        exited: false,
+        runtimeSource: 'managed-provider',
+        version: '0.146.0',
+        threadId: 'source-thread',
+        rpc,
+      } as unknown as import('../runtimes/types').RuntimeProcess;
 
-    await expect(runtime.branchConversation(process, boundary)).rejects.toMatchObject({
-      code: 'capability_unavailable',
-    });
-  });
+      await expect(
+        runtime.branchConversation(process, boundary),
+      ).rejects.toMatchObject({
+        code: 'capability_unavailable',
+      });
+    },
+  );
 
   it.each([
     ['JSON-RPC error -32601: Method not found', 'capability_unavailable'],
     ['no rollout found for thread', 'anchor_unavailable'],
-  ] as const)('normalizes thread/read failure %s', async (failure, expectedCode) => {
-    const runtime = new CodexRuntime();
-    const process = {
-      exited: false,
-      runtimeSource: 'managed-provider',
-      version: '0.146.0',
-      threadId: 'source-thread',
-      rpc: { call: vi.fn(async () => { throw new Error(failure); }) },
-    } as unknown as import('../runtimes/types').RuntimeProcess;
+  ] as const)(
+    'normalizes thread/read failure %s',
+    async (failure, expectedCode) => {
+      const runtime = new CodexRuntime();
+      const process = {
+        exited: false,
+        runtimeSource: 'managed-provider',
+        version: '0.146.0',
+        threadId: 'source-thread',
+        rpc: {
+          call: vi.fn(async () => {
+            throw new Error(failure);
+          }),
+        },
+      } as unknown as import('../runtimes/types').RuntimeProcess;
 
-    await expect(runtime.branchConversation(process, {
-      kind: 'before-turn',
-      runtimeTurnId: 'turn-2',
-    })).rejects.toMatchObject({ code: expectedCode });
-  });
+      await expect(
+        runtime.branchConversation(process, {
+          kind: 'before-turn',
+          runtimeTurnId: 'turn-2',
+        }),
+      ).rejects.toMatchObject({ code: expectedCode });
+    },
+  );
 
   it('normalizes a rejected previous turn boundary as an unavailable anchor', async () => {
     const runtime = new CodexRuntime();
@@ -1307,10 +1663,12 @@ describe('Codex app-server protocol helpers', () => {
       },
     } as unknown as import('../runtimes/types').RuntimeProcess;
 
-    await expect(runtime.branchConversation(process, {
-      kind: 'through-turn',
-      runtimeTurnId: 'turn-1',
-    })).rejects.toMatchObject({ code: 'anchor_unavailable' });
+    await expect(
+      runtime.branchConversation(process, {
+        kind: 'through-turn',
+        runtimeTurnId: 'turn-1',
+      }),
+    ).rejects.toMatchObject({ code: 'anchor_unavailable' });
   });
 
   it('terminates the source connection when the fork subscription cannot be released', async () => {
@@ -1318,7 +1676,8 @@ describe('Codex app-server protocol helpers', () => {
     const rpc = {
       call: vi.fn(async (method: string) => {
         if (method === 'thread/fork') return { thread: { id: 'fork-thread' } };
-        if (method === 'thread/unsubscribe') throw new Error('unsubscribe unavailable');
+        if (method === 'thread/unsubscribe')
+          throw new Error('unsubscribe unavailable');
         throw new Error(`unexpected RPC ${method}`);
       }),
     };
@@ -1329,14 +1688,21 @@ describe('Codex app-server protocol helpers', () => {
       threadId: 'source-thread',
       rpc,
     } as unknown as import('../runtimes/types').RuntimeProcess;
-    const stop = vi.spyOn(runtime, 'stopSession').mockImplementation(async (target) => {
-      target.exited = true;
-    });
+    const stop = vi
+      .spyOn(runtime, 'stopSession')
+      .mockImplementation(async (target) => {
+        target.exited = true;
+      });
 
-    await expect(runtime.branchConversation(process, {
-      kind: 'through-turn',
-      runtimeTurnId: 'turn-1',
-    })).resolves.toEqual({ kind: 'native-thread', runtimeSessionId: 'fork-thread' });
+    await expect(
+      runtime.branchConversation(process, {
+        kind: 'through-turn',
+        runtimeTurnId: 'turn-1',
+      }),
+    ).resolves.toEqual({
+      kind: 'native-thread',
+      runtimeSessionId: 'fork-thread',
+    });
     expect(stop).toHaveBeenCalledWith(process);
   });
 
@@ -1352,8 +1718,12 @@ describe('Codex app-server protocol helpers', () => {
       sandbox: 'danger-full-access' as const,
       model: null,
     };
-    expect(buildCodexTurnStartParams({ ...base, reasoningEffort: 'xhigh' }).effort).toBe('xhigh');
-    expect('effort' in buildCodexTurnStartParams({ ...base, reasoningEffort: null })).toBe(false);
+    expect(
+      buildCodexTurnStartParams({ ...base, reasoningEffort: 'xhigh' }).effort,
+    ).toBe('xhigh');
+    expect(
+      'effort' in buildCodexTurnStartParams({ ...base, reasoningEffort: null }),
+    ).toBe(false);
     expect('effort' in buildCodexTurnStartParams(base)).toBe(false);
   });
 
@@ -1384,15 +1754,17 @@ describe('Codex app-server protocol helpers', () => {
     expect(state.permissionMode).toBe('no-restrictions');
     expect(state.approvalPolicy).toBe('never');
     expect(state.sandbox).toBe('danger-full-access');
-    expect(buildCodexTurnStartParams({
-      threadId: 'thread-1',
-      input: [],
-      cwd: '/tmp/ws',
-      approvalPolicy: state.approvalPolicy,
-      sandbox: state.sandbox,
-      model: state.model,
-      reasoningEffort: state.reasoningEffort,
-    })).toMatchObject({
+    expect(
+      buildCodexTurnStartParams({
+        threadId: 'thread-1',
+        input: [],
+        cwd: '/tmp/ws',
+        approvalPolicy: state.approvalPolicy,
+        sandbox: state.sandbox,
+        model: state.model,
+        reasoningEffort: state.reasoningEffort,
+      }),
+    ).toMatchObject({
       model: 'gpt-5.2-codex',
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
@@ -1406,16 +1778,20 @@ describe('Codex app-server protocol helpers', () => {
       status: 'completed',
     });
 
-    expect(mapCodexTurnCompletedNotification({ status: 'interrupted' })).toEqual({
+    expect(
+      mapCodexTurnCompletedNotification({ status: 'interrupted' }),
+    ).toEqual({
       kind: 'turn_complete',
       status: 'interrupted',
       result: 'Turn ended with status interrupted',
     });
 
-    expect(mapCodexTurnCompletedNotification({
-      status: 'failed',
-      error: { message: 'websocket failed' },
-    })).toEqual({
+    expect(
+      mapCodexTurnCompletedNotification({
+        status: 'failed',
+        error: { message: 'websocket failed' },
+      }),
+    ).toEqual({
       kind: 'turn_complete',
       status: 'failed',
       error: 'websocket failed',
@@ -1436,40 +1812,49 @@ describe('Codex app-server protocol helpers', () => {
       exactUsageByTurn: new Map(),
       rpc,
     };
-    const parseNotification = (method: string, params: unknown) => (
-      runtime as unknown as {
-        parseNotification(
-          proc: typeof codexProc,
-          notificationMethod: string,
-          notificationParams: unknown,
-          asyncEmit: () => void,
-        ): unknown;
-      }
-    ).parseNotification(codexProc, method, params, () => {});
+    const parseNotification = (method: string, params: unknown) =>
+      (
+        runtime as unknown as {
+          parseNotification(
+            proc: typeof codexProc,
+            notificationMethod: string,
+            notificationParams: unknown,
+            asyncEmit: () => void,
+          ): unknown;
+        }
+      ).parseNotification(codexProc, method, params, () => {});
 
     const compact = runtime.compactContext(
       codexProc as unknown as import('../runtimes/types').RuntimeProcess,
     );
-    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledWith(
-      'thread/compact/start',
-      { threadId: 'thread-1' },
-      15_000,
-    ));
+    await vi.waitFor(() =>
+      expect(rpc.call).toHaveBeenCalledWith(
+        'thread/compact/start',
+        { threadId: 'thread-1' },
+        15_000,
+      ),
+    );
 
-    expect(parseNotification('turn/started', {
-      threadId: 'thread-1',
-      turn: { id: 'compact-turn', status: 'inProgress' },
-    })).toBeNull();
+    expect(
+      parseNotification('turn/started', {
+        threadId: 'thread-1',
+        turn: { id: 'compact-turn', status: 'inProgress' },
+      }),
+    ).toBeNull();
     expect(codexProc.currentTurnId).toBe('compact-turn');
-    expect(parseNotification('item/started', {
-      threadId: 'thread-1',
-      turnId: 'compact-turn',
-      item: { type: 'contextCompaction', id: 'compact-item' },
-    })).toBeNull();
-    expect(parseNotification('turn/completed', {
-      threadId: 'thread-1',
-      turn: { id: 'compact-turn', status: 'completed', error: null },
-    })).toBeNull();
+    expect(
+      parseNotification('item/started', {
+        threadId: 'thread-1',
+        turnId: 'compact-turn',
+        item: { type: 'contextCompaction', id: 'compact-item' },
+      }),
+    ).toBeNull();
+    expect(
+      parseNotification('turn/completed', {
+        threadId: 'thread-1',
+        turn: { id: 'compact-turn', status: 'completed', error: null },
+      }),
+    ).toBeNull();
 
     await expect(compact).resolves.toBeUndefined();
     expect(codexProc.compactControl).toBeNull();
@@ -1497,36 +1882,45 @@ describe('Codex app-server protocol helpers', () => {
       interruptPendingSubAgentTurns: false,
       releaseHeldMainTurnOnExit: false,
     };
-    const parseNotification = (method: string, params: unknown) => (
-      runtime as unknown as {
-        parseNotification(
-          proc: typeof codexProc,
-          notificationMethod: string,
-          notificationParams: unknown,
-          asyncEmit: () => void,
-        ): unknown;
-      }
-    ).parseNotification(codexProc, method, params, () => {});
+    const parseNotification = (method: string, params: unknown) =>
+      (
+        runtime as unknown as {
+          parseNotification(
+            proc: typeof codexProc,
+            notificationMethod: string,
+            notificationParams: unknown,
+            asyncEmit: () => void,
+          ): unknown;
+        }
+      ).parseNotification(codexProc, method, params, () => {});
 
     // During thread resume Codex can report its pre-turn idle snapshot after
     // MyAgents has already accepted the query. It must not end that active turn.
-    expect(parseNotification('thread/status/changed', {
-      threadId: 'thread-1',
-      status: { type: 'idle' },
-    })).toBeNull();
-    expect(parseNotification('thread/status/changed', {
-      threadId: 'thread-1',
-      status: { type: 'active' },
-    })).toBeNull();
+    expect(
+      parseNotification('thread/status/changed', {
+        threadId: 'thread-1',
+        status: { type: 'idle' },
+      }),
+    ).toBeNull();
+    expect(
+      parseNotification('thread/status/changed', {
+        threadId: 'thread-1',
+        status: { type: 'active' },
+      }),
+    ).toBeNull();
 
-    expect(parseNotification('thread/status/changed', {
-      threadId: 'thread-1',
-      status: { type: 'systemError' },
-    })).toEqual({ kind: 'status_change', state: 'error' });
-    expect(parseNotification('turn/started', {
-      threadId: 'thread-1',
-      turn: { id: 'turn-2' },
-    })).toEqual([
+    expect(
+      parseNotification('thread/status/changed', {
+        threadId: 'thread-1',
+        status: { type: 'systemError' },
+      }),
+    ).toEqual({ kind: 'status_change', state: 'error' });
+    expect(
+      parseNotification('turn/started', {
+        threadId: 'thread-1',
+        turn: { id: 'turn-2' },
+      }),
+    ).toEqual([
       { kind: 'turn_started' },
       { kind: 'status_change', state: 'running' },
       { kind: 'agent_plan_update', todos: [] },
@@ -1538,6 +1932,7 @@ describe('Codex app-server protocol helpers', () => {
     const codexProc = {
       threadId: 'thread-1',
       currentTurnId: '',
+      activeSteerTurnId: '',
       activeRootTurnAdmission: null,
       deferredSubAgentEvents: new Map(),
       subThreadToCard: new Map(),
@@ -1560,7 +1955,10 @@ describe('Codex app-server protocol helpers', () => {
       releaseHeldMainTurnOnExit: false,
     };
     const internals = runtime as unknown as {
-      beginRootTurnAdmission(process: object, clientUserMessageId: string): void;
+      beginRootTurnAdmission(
+        process: object,
+        clientUserMessageId: string,
+      ): void;
       completeRootTurnAdmission(
         process: object,
         runtimeTurnId: string,
@@ -1576,18 +1974,150 @@ describe('Codex app-server protocol helpers', () => {
     const emitted: unknown[] = [];
 
     internals.beginRootTurnAdmission(codexProc, 'user-1');
-    expect(internals.parseNotification(codexProc, 'turn/completed', {
-      threadId: 'thread-1',
-      turn: { id: 'turn-1', status: 'completed' },
-    }, () => {})).toEqual([]);
+    expect(
+      internals.parseNotification(
+        codexProc,
+        'turn/completed',
+        {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', status: 'completed' },
+        },
+        () => {},
+      ),
+    ).toEqual([]);
     expect(emitted).toEqual([]);
+    expect(codexProc.activeSteerTurnId).toBe('');
 
-    internals.completeRootTurnAdmission(codexProc, 'turn-1', event => emitted.push(event));
+    internals.completeRootTurnAdmission(codexProc, 'turn-1', (event) =>
+      emitted.push(event),
+    );
+    expect(codexProc.activeSteerTurnId).toBe('');
     expect(emitted).toEqual([
-      { kind: 'root_turn_admitted', runtimeTurnId: 'turn-1', clientUserMessageId: 'user-1' },
+      {
+        kind: 'root_turn_admitted',
+        runtimeTurnId: 'turn-1',
+        clientUserMessageId: 'user-1',
+      },
       { kind: 'turn_complete', status: 'completed' },
       { kind: 'agent_plan_update', todos: [] },
     ]);
+  });
+
+  it('does not restore steerability when an early root terminal is held for a child tail', () => {
+    const runtime = new CodexRuntime();
+    const codexProc = {
+      threadId: 'thread-1',
+      currentTurnId: '',
+      activeSteerTurnId: '',
+      activeRootTurnAdmission: null,
+      deferredSubAgentEvents: new Map(),
+      subThreadToCard: new Map([['child-thread', 'spawn-call']]),
+      subThreadToParent: new Map([['child-thread', 'thread-1']]),
+      subThreadMeta: new Map(),
+      collabControlToolParents: new Map(),
+      activeSubAgentTurns: new Map([['child-thread', 'child-turn']]),
+      completedSubAgentTurnsBeforeActivity: new Set(),
+      subAgentThreadsAwaitingActivity: new Set(),
+      codexV2SubAgentActivityObserved: false,
+      codexV2InteractionDeliveryByCallId: new Map(),
+      subAgentActivitySeenBeforeTurnStart: new Set(),
+      subAgentLifecycleByThread: new Map(),
+      emittedSubAgentLifecycleByCard: new Map(),
+      openedReasoningTracesByItem: new Map(),
+      exactUsageByTurn: new Map(),
+      subAgentInterruptsInFlight: new Map(),
+      pendingMainTurnCompletion: null,
+      interruptPendingSubAgentTurns: false,
+      releaseHeldMainTurnOnExit: false,
+      exited: false,
+    };
+    const internals = runtime as unknown as {
+      beginRootTurnAdmission(
+        process: object,
+        clientUserMessageId: string,
+      ): void;
+      completeRootTurnAdmission(
+        process: object,
+        runtimeTurnId: string,
+        emit: (event: unknown) => void,
+      ): unknown;
+      parseNotification(
+        process: object,
+        method: string,
+        params: unknown,
+        emit: (event: unknown) => void,
+      ): unknown;
+    };
+
+    internals.beginRootTurnAdmission(codexProc, 'user-1');
+    expect(
+      internals.parseNotification(
+        codexProc,
+        'turn/completed',
+        {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1', status: 'completed' },
+        },
+        () => {},
+      ),
+    ).toBeNull();
+    expect(codexProc.pendingMainTurnCompletion).not.toBeNull();
+
+    internals.completeRootTurnAdmission(codexProc, 'turn-1', () => {});
+    expect(codexProc.currentTurnId).toBe('turn-1');
+    expect(codexProc.activeSteerTurnId).toBe('');
+    expect(runtime.canSteerMessage?.(codexProc as never)).toBe(false);
+  });
+
+  it('classifies only Codex no-active steer rejection as safe to defer', () => {
+    expect(
+      isCodexNoActiveTurnSteerRejection(
+        Object.assign(new Error('RPC error -32600: no active turn to steer'), {
+          code: -32600,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isCodexNoActiveTurnSteerRejection(
+        Object.assign(
+          new Error('RPC error -32600: expected turn id mismatch'),
+          { code: -32600 },
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isCodexNoActiveTurnSteerRejection(
+        new Error('JSON-RPC call "turn/steer" timed out after 15000ms'),
+      ),
+    ).toBe(false);
+  });
+
+  it('revokes the stale steer target when Codex definitively rejects it as inactive', async () => {
+    const runtime = new CodexRuntime();
+    const rejection = Object.assign(
+      new Error('RPC error -32600: no active turn to steer'),
+      { code: -32600 },
+    );
+    const codexProc = {
+      exited: false,
+      threadId: 'thread-1',
+      currentTurnId: 'turn-1',
+      activeSteerTurnId: 'turn-1',
+      rpc: {
+        call: vi.fn(async () => {
+          throw rejection;
+        }),
+      },
+    };
+
+    await expect(
+      runtime.steerMessage(
+        codexProc as unknown as import('../runtimes/types').RuntimeProcess,
+        'next input',
+      ),
+    ).rejects.toBeInstanceOf(RuntimeSteerUnavailableError);
+    expect(codexProc.activeSteerTurnId).toBe('');
+    expect(codexProc.currentTurnId).toBe('turn-1');
   });
 
   it('terminates the Codex process when response and notification bind different root turns', () => {
@@ -1609,23 +2139,27 @@ describe('Codex app-server protocol helpers', () => {
       ): void;
     };
 
-    expect(() => internals.completeRootTurnAdmission(
-      codexProc,
-      'turn-from-response',
-      () => {},
-    )).toThrow(/mismatch/i);
+    expect(() =>
+      internals.completeRootTurnAdmission(
+        codexProc,
+        'turn-from-response',
+        () => {},
+      ),
+    ).toThrow(/mismatch/i);
     expect(stop).toHaveBeenCalledWith(codexProc);
   });
 
   it('maps Codex turn/plan/updated into an AgentStatusPanel todo snapshot', () => {
-    expect(mapCodexTurnPlanUpdatedNotification({
-      plan: [
-        { step: 'Inspect status flow', status: 'completed' },
-        { step: 'Wire plan updates', status: 'inProgress' },
-        { step: 'Run tests', status: 'pending' },
-        { step: '   ', status: 'pending' },
-      ],
-    })).toEqual({
+    expect(
+      mapCodexTurnPlanUpdatedNotification({
+        plan: [
+          { step: 'Inspect status flow', status: 'completed' },
+          { step: 'Wire plan updates', status: 'inProgress' },
+          { step: 'Run tests', status: 'pending' },
+          { step: '   ', status: 'pending' },
+        ],
+      }),
+    ).toEqual({
       kind: 'agent_plan_update',
       todos: [
         {
@@ -1651,44 +2185,58 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   it('formats fileChange object kinds without leaking [object Object]', () => {
-    expect(buildCodexFileChangeResultContent([
-      {
-        path: '/tmp/a.md',
-        kind: { type: 'update', move_path: null },
-        diff: '@@ -1 +1 @@\n-old\n+new',
-      },
-      {
-        path: '/tmp/new.md',
-        kind: { type: 'add' },
-        diff: 'hello',
-      },
-    ])).toBe('update: /tmp/a.md\n@@ -1 +1 @@\n-old\n+new\n\nadd: /tmp/new.md\nhello');
-    expect(buildCodexFileChangeResultContent([
-      {
-        path: '/tmp/old.md',
-        kind: { type: 'move', move_path: '/tmp/new.md' },
-      },
-    ])).toBe('move: /tmp/old.md -> /tmp/new.md');
+    expect(
+      buildCodexFileChangeResultContent([
+        {
+          path: '/tmp/a.md',
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1 +1 @@\n-old\n+new',
+        },
+        {
+          path: '/tmp/new.md',
+          kind: { type: 'add' },
+          diff: 'hello',
+        },
+      ]),
+    ).toBe(
+      'update: /tmp/a.md\n@@ -1 +1 @@\n-old\n+new\n\nadd: /tmp/new.md\nhello',
+    );
+    expect(
+      buildCodexFileChangeResultContent([
+        {
+          path: '/tmp/old.md',
+          kind: { type: 'move', move_path: '/tmp/new.md' },
+        },
+      ]),
+    ).toBe('move: /tmp/old.md -> /tmp/new.md');
     expect(buildCodexFileChangeResultContent([])).toBe('File changed');
   });
 
   it('keeps started fileChange lightweight and promotes the completed patch as final input', () => {
-    const startedChanges = [{
-      path: '/workspace/a.ts',
-      kind: { type: 'update', move_path: null },
-      diff: '@@ -1 +1 @@\n-old started\n+new started',
-    }];
-    const completedChanges = [{
-      path: '/workspace/a.ts',
-      kind: { type: 'update', move_path: null },
-      diff: '@@ -1 +1 @@\n-old applied\n+new applied',
-    }];
+    const startedChanges = [
+      {
+        path: '/workspace/a.ts',
+        kind: { type: 'update', move_path: null },
+        diff: '@@ -1 +1 @@\n-old started\n+new started',
+      },
+    ];
+    const completedChanges = [
+      {
+        path: '/workspace/a.ts',
+        kind: { type: 'update', move_path: null },
+        diff: '@@ -1 +1 @@\n-old applied\n+new applied',
+      },
+    ];
 
-    expect(buildCodexStartedFileChangeInput(startedChanges, '/workspace')).toEqual({
+    expect(
+      buildCodexStartedFileChangeInput(startedChanges, '/workspace'),
+    ).toEqual({
       file_path: '/workspace/a.ts',
       cwd: '/workspace',
     });
-    expect(buildCodexCompletedFileChangeInput(completedChanges, '/workspace')).toEqual({
+    expect(
+      buildCodexCompletedFileChangeInput(completedChanges, '/workspace'),
+    ).toEqual({
       file_path: '/workspace/a.ts',
       cwd: '/workspace',
       changes: completedChanges,
@@ -1696,16 +2244,20 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   it('ignores malformed fileChange entries before formatting result text', () => {
-    expect(buildCodexFileChangeResultContent([
-      null,
-      'not-a-change',
-      {
-        path: '/tmp/old.md',
-        kind: { type: 'move', move_path: '/tmp/new.md' },
-      },
-    ])).toBe('move: /tmp/old.md -> /tmp/new.md');
+    expect(
+      buildCodexFileChangeResultContent([
+        null,
+        'not-a-change',
+        {
+          path: '/tmp/old.md',
+          kind: { type: 'move', move_path: '/tmp/new.md' },
+        },
+      ]),
+    ).toBe('move: /tmp/old.md -> /tmp/new.md');
 
-    expect(buildCodexFileChangeResultContent([null, 'not-a-change'])).toBe('File changed');
+    expect(buildCodexFileChangeResultContent([null, 'not-a-change'])).toBe(
+      'File changed',
+    );
   });
 
   it('serializes command/file approvals with session scope when always allowed', () => {
@@ -1719,7 +2271,9 @@ describe('Codex app-server protocol helpers', () => {
       type: 'result',
       result: { decision: 'acceptForSession' },
     });
-    expect(serializeCodexPermissionResponse(pending, 'deny', undefined, true)).toEqual({
+    expect(
+      serializeCodexPermissionResponse(pending, 'deny', undefined, true),
+    ).toEqual({
       type: 'result',
       result: { decision: 'cancel' },
     });
@@ -1738,9 +2292,11 @@ describe('Codex app-server protocol helpers', () => {
       },
     };
 
-    expect(serializeCodexPermissionResponse(pending, 'allow_once', {
-      answers: { choice: 'A,B', notes: 'custom text, with comma' },
-    })).toEqual({
+    expect(
+      serializeCodexPermissionResponse(pending, 'allow_once', {
+        answers: { choice: 'A,B', notes: 'custom text, with comma' },
+      }),
+    ).toEqual({
       type: 'result',
       result: {
         answers: {
@@ -1756,9 +2312,13 @@ describe('Codex app-server protocol helpers', () => {
       kind: 'tool_user_input',
       rpcId: 8,
       method: 'item/tool/requestUserInput',
-      params: { questions: [{ id: 'choice', question: 'Pick', options: ['A', 'B'] }] },
+      params: {
+        questions: [{ id: 'choice', question: 'Pick', options: ['A', 'B'] }],
+      },
     };
-    expect(serializeCodexPermissionResponse(toolInput, 'deny', undefined, true)).toEqual({
+    expect(
+      serializeCodexPermissionResponse(toolInput, 'deny', undefined, true),
+    ).toEqual({
       type: 'result',
       result: { answers: {} },
     });
@@ -1775,7 +2335,9 @@ describe('Codex app-server protocol helpers', () => {
         },
       },
     };
-    expect(serializeCodexPermissionResponse(form, 'deny', undefined, true)).toEqual({
+    expect(
+      serializeCodexPermissionResponse(form, 'deny', undefined, true),
+    ).toEqual({
       type: 'result',
       result: { action: 'cancel', content: null, _meta: null },
     });
@@ -1799,15 +2361,17 @@ describe('Codex app-server protocol helpers', () => {
     };
     const onEvent = vi.fn();
 
-    (runtime as unknown as {
-      handleServerRequest(
-        proc: typeof codexProc,
-        rpcId: number,
-        method: string,
-        params: unknown,
-        onEvent: (event: unknown) => void,
-      ): void;
-    }).handleServerRequest(
+    (
+      runtime as unknown as {
+        handleServerRequest(
+          proc: typeof codexProc,
+          rpcId: number,
+          method: string,
+          params: unknown,
+          onEvent: (event: unknown) => void,
+        ): void;
+      }
+    ).handleServerRequest(
       codexProc,
       24,
       'item/tool/requestUserInput',
@@ -1833,15 +2397,17 @@ describe('Codex app-server protocol helpers', () => {
     };
     const onEvent = vi.fn();
 
-    (runtime as unknown as {
-      handleServerRequest(
-        proc: typeof codexProc,
-        rpcId: number,
-        method: string,
-        params: unknown,
-        onEvent: (event: unknown) => void,
-      ): void;
-    }).handleServerRequest(
+    (
+      runtime as unknown as {
+        handleServerRequest(
+          proc: typeof codexProc,
+          rpcId: number,
+          method: string,
+          params: unknown,
+          onEvent: (event: unknown) => void,
+        ): void;
+      }
+    ).handleServerRequest(
       codexProc,
       42,
       'mcpServer/elicitation/request',
@@ -1857,7 +2423,11 @@ describe('Codex app-server protocol helpers', () => {
 
     expect(pendingRequests.size).toBe(0);
     expect(onEvent).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(42, { action: 'cancel', content: null, _meta: null });
+    expect(respond).toHaveBeenCalledWith(42, {
+      action: 'cancel',
+      content: null,
+      _meta: null,
+    });
     expect(respondError).not.toHaveBeenCalled();
   });
 
@@ -1878,9 +2448,11 @@ describe('Codex app-server protocol helpers', () => {
         },
       },
     };
-    expect(serializeCodexPermissionResponse(elicitation, 'allow_once', {
-      answers: { branch: 'main', publish: 'true' },
-    })).toEqual({
+    expect(
+      serializeCodexPermissionResponse(elicitation, 'allow_once', {
+        answers: { branch: 'main', publish: 'true' },
+      }),
+    ).toEqual({
       type: 'result',
       result: {
         action: 'accept',
@@ -1888,23 +2460,31 @@ describe('Codex app-server protocol helpers', () => {
         _meta: null,
       },
     });
-    expect(serializeCodexPermissionResponse(elicitation, 'allow_once', {
-      answers: { publish: 'true' },
-    })).toEqual({
+    expect(
+      serializeCodexPermissionResponse(elicitation, 'allow_once', {
+        answers: { publish: 'true' },
+      }),
+    ).toEqual({
       type: 'error',
       code: -32000,
       message: 'Missing required MCP elicitation answers',
     });
 
-    expect(serializeCodexPermissionResponse({
-      ...elicitation,
-      params: {
-        ...elicitation.params,
-        mode: 'openai/form',
-      },
-    }, 'allow_once', {
-      answers: { branch: 'dev/0.2.44' },
-    })).toEqual({
+    expect(
+      serializeCodexPermissionResponse(
+        {
+          ...elicitation,
+          params: {
+            ...elicitation.params,
+            mode: 'openai/form',
+          },
+        },
+        'allow_once',
+        {
+          answers: { branch: 'dev/0.2.44' },
+        },
+      ),
+    ).toEqual({
       type: 'result',
       result: {
         action: 'accept',
@@ -1924,16 +2504,48 @@ describe('Codex app-server protocol helpers', () => {
         },
       },
     };
-    expect(serializeCodexPermissionResponse(permissions, 'always_allow')).toEqual({
+    expect(
+      serializeCodexPermissionResponse(permissions, 'always_allow'),
+    ).toEqual({
       type: 'result',
       result: {
         permissions: { network: { enabled: true } },
         scope: 'session',
       },
     });
-    expect(serializeCodexPermissionResponse(permissions, 'deny')).toMatchObject({
-      type: 'error',
-      code: -32000,
-    });
+    expect(serializeCodexPermissionResponse(permissions, 'deny')).toMatchObject(
+      {
+        type: 'error',
+        code: -32000,
+      },
+    );
   });
+});
+
+// Old Session definitions may bypass the current preset catalogue.
+it('omits retired bundled Cuse from Codex launch while retaining custom Cuse', () => {
+  const projection = projectManagedCodexMcpLaunchConfig(
+    [
+      {
+        id: 'legacy-cuse',
+        name: 'Legacy',
+        isBuiltin: true,
+        type: 'stdio',
+        command: '__bundled_cuse__',
+      },
+      {
+        id: 'cuse',
+        name: 'Custom',
+        isBuiltin: false,
+        type: 'stdio',
+        command: 'cuse',
+        args: ['mcp'],
+      },
+    ],
+    {},
+  );
+  expect(projection.acceptedServerIds).toEqual(['cuse']);
+  expect(projection.failures).toEqual([]);
+  expect(projection.args.join(' ')).not.toContain('__bundled_cuse__');
+  expect(projection.serverNames).toHaveLength(1);
 });

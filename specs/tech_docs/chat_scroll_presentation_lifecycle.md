@@ -1,6 +1,6 @@
 # Chat 滚动与窗口呈现生命周期
 
-本文定义桌面主窗口失焦、最小化、隐藏、恢复与内部 Tab 切换时，Chat 虚拟列表的 owner、状态来源和恢复不变量。用户可见交互以 `specs/DESIGN.md` 为准；本文解释实现边界与事故防护。
+本文定义桌面主窗口失焦、最小化、隐藏、恢复与内部 Tab 切换时，Chat 虚拟列表的 owner、状态来源和恢复不变量。用户可见的 Shell 交互以 `specs/design/app_shell.md` 为准；本文解释实现边界与事故防护。
 
 ## 1. 为什么 focus 不是滚动生命周期
 
@@ -65,6 +65,10 @@ App 的 Tab memo comparator 只让 active Chat 响应 presentation 对象变化�
 所有 callback 都核对当前 Session、presentation generation 与 pending transaction identity。发送消息/回到底部、搜索、工具定位，以及 `useVirtuosoScroll` 已识别的 wheel/touch/scrollbar/viewport-key 输入优先级更高，会取消未完成的 continuity transaction。恢复 fence 从 true→false 本身不是新内容，不能重新触发 streaming pin。
 
 ## 5. 不变量与禁止项
+
+Chat 底部 query 耗时由 TabProvider 的 `useQueryElapsedClock` 持有，使用单调时钟累计当前 query 的运行片段；未决权限、AskUserQuestion 或 ExitPlanMode 等待期间暂停。已 resolved 的计划卡及自动批准的 EnterPlanMode 不暂停。Footer 仅每秒采样，工具/文案/布局变化、presentation suspension 和 Chat 展示子树重挂载都不能重置起点。结束、新 query 或真实 Session 切换重置，pending identity 实体化保留。首次中途加入或整个 Tab owner 重建时无法恢复过去的暂停片段，计时从当前观察开始；不改变历史消息 `durationMs` 的后端墙钟含义。
+
+Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过现有 list context 传入，并与 data 一同遵守 frozen snapshot。`useMemo(() => function Footer(){...}, [动态值])` 仍会在依赖变化时创建新组件类型，重挂载整个 footer，不能作为“稳定 Footer”。
 
 - focus change 必须产生零个 Chat scroll command。
 - 可见失焦窗口的 `atBottomStateChange`、follow 与 pagination 正常工作。
