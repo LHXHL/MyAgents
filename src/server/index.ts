@@ -259,6 +259,7 @@ import type { AgentFrontmatter, AgentMeta, AgentWorkspaceConfig } from '../share
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   XAI_SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PRIMARY_MODEL,
   isProjectArchived,
   isProjectVisibleToUser,
   type McpServerDefinition,
@@ -3655,7 +3656,7 @@ async function main() {
           if (!providerEnv?.credentialSource || !providerEnv.baseUrl) {
             return jsonResponse({ success: false, error: 'Grok subscription provider is unavailable.' }, 409);
           }
-          const model = payload.model?.trim() || 'grok-4.5';
+          const model = payload.model?.trim() || XAI_SUBSCRIPTION_PRIMARY_MODEL;
           const verificationLineage = payload.verificationLineage?.trim();
           if (!verificationLineage) {
             return jsonResponse({ success: false, error: 'Grok verification lineage is required.' }, 400);

@@ -48,6 +48,8 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
     expect(reasoningEffortChoices('builtin', 'openai')).toEqual(OPENAI_EFFORT_LEVELS);
   });
   it('uses model-specific Grok vocabularies and hides unverified model knobs', () => {
+    expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.6'))
+      .toEqual(['low', 'medium', 'high', 'xhigh']);
     expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.5'))
       .toEqual(['low', 'medium', 'high']);
     expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.3'))

@@ -9,7 +9,7 @@ pub const XAI_OAUTH_SCOPE: &str = "openid profile email offline_access grok-cli:
 pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 pub const XAI_MODELS_URL: &str = "https://api.x.ai/v1/models";
 pub const XAI_RESPONSES_URL: &str = "https://api.x.ai/v1/responses";
-pub const XAI_PRIMARY_MODEL: &str = "grok-4.5";
+pub const XAI_PRIMARY_MODEL: &str = "grok-4.6";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

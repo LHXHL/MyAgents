@@ -462,6 +462,7 @@ pub fn choose_verification_model(models: Option<&Value>) -> String {
         return XAI_PRIMARY_MODEL.to_string();
     }
     const PRESET: &[&str] = &[
+        "grok-4.5",
         "grok-build-0.1",
         "grok-composer-2.5-fast",
         "grok-4.3",
@@ -585,8 +586,11 @@ mod tests {
 
     #[test]
     fn verification_model_prefers_primary_then_known_preset() {
-        let primary = json!({"data": [{"id": "grok-4.5"}]});
-        assert_eq!(choose_verification_model(Some(&primary)), "grok-4.5");
+        assert_eq!(choose_verification_model(None), "grok-4.6");
+        let primary = json!({"data": [{"id": "grok-4.5"}, {"id": "grok-4.6"}]});
+        assert_eq!(choose_verification_model(Some(&primary)), "grok-4.6");
+        let previous = json!({"data": [{"id": "grok-4.5"}, {"id": "grok-build-0.1"}]});
+        assert_eq!(choose_verification_model(Some(&previous)), "grok-4.5");
         let fallback = json!({"data": [{"id": "grok-4.3"}]});
         assert_eq!(choose_verification_model(Some(&fallback)), "grok-4.3");
     }

@@ -148,13 +148,27 @@ describe('normalizeProviderOrder', () => {
 });
 
 describe('Grok subscription preset', () => {
-  it('bundles only the two core models and leaves the remaining catalog to discovery', () => {
+  it('defaults to Grok 4.6 while keeping the previous core models available', () => {
     const grok = PRESET_PROVIDERS.find(provider => provider.id === XAI_SUBSCRIPTION_PROVIDER_ID);
-    expect(grok?.primaryModel).toBe('grok-4.5');
+    expect(grok?.primaryModel).toBe('grok-4.6');
     expect(grok?.models.map(model => model.model)).toEqual([
+      'grok-4.6',
       'grok-4.5',
       'grok-composer-2.5-fast',
     ]);
+    expect(grok?.modelAliases).toEqual({
+      fable: 'grok-4.6',
+      sonnet: 'grok-4.6',
+      opus: 'grok-4.6',
+      haiku: 'grok-composer-2.5-fast',
+    });
+    expect(grok?.models[0]).toMatchObject({
+      modelName: 'Grok 4.6',
+      contextLength: 500_000,
+      inputModalities: ['text', 'image'],
+      outputModalities: ['text'],
+      source: 'preset',
+    });
   });
 });
 
