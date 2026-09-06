@@ -185,7 +185,7 @@ async function createNativeHostFixture(label: string, route?: { productSessionId
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
-    it.runIf(process.platform !== 'win32').each([false, true])('continues all permissioned tools after Always Allow in Auto (large review: %s)', async largeReview => {
+    it.runIf(process.platform !== 'win32').each([false, true])('allows Action tools and routes child Shell approval after a shared grant (large review: %s)', async largeReview => {
       const productSessionId = randomUUID();
       const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"' + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
       const calls = [
@@ -194,6 +194,8 @@ describe.runIf(nativeSmokeEnabled)(
         { id: 'fixture-update-call', name: 'TaskUpdate', input: { taskId: 'task-1', status: 'completed' } },
         { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
         { id: 'fixture-agent-call', name: 'Agent', input: { subagent_type: 'permission-helper', description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.', run_in_background: false } },
+        { id: 'fixture-child-inherited-call', name: 'bash', input: { command: 'printf inherited-child', workdir: 'child', description: 'Verify the shared directory grant' } },
+        { id: 'fixture-child-review-call', name: 'bash', input: { command: 'printf approved-child', description: 'Verify child approval at another directory' } },
         undefined, // The foreground child completes before the root continues.
         { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [{ header: 'Review', question: 'Continue the synthetic plan check?', options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }], multiSelect: false }] } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
@@ -201,11 +203,17 @@ describe.runIf(nativeSmokeEnabled)(
         { id: 'fixture-exit-plan-call', name: 'ExitPlanMode', input: {} },
       ];
       let requests = 0;
+      let childSystemPrompt = '';
+      const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const server = createServer(async (request, response) => {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[] };
+        const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[]; system?: unknown };
+        for (const block of modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[] : [])) {
+          if (block.type === 'tool_result' && (block.tool_use_id === 'fixture-child-inherited-call' || block.tool_use_id === 'fixture-child-review-call')) childResults.set(block.tool_use_id, block);
+        }
         const tool = calls[requests++];
+        if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
         let input: Record<string, unknown> | undefined = tool?.input;
         if (tool?.name === 'Write') {
           const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
@@ -288,15 +296,16 @@ describe.runIf(nativeSmokeEnabled)(
         expect(receipt.state).toBe('applied');
         let approvalIndex = 1;
         let expectedRevision = receipt.state === 'applied' ? receipt.effectivePolicyRevision : '';
-        const approveTool = async (toolName: string, decision: 'always_allow' | 'allow_once' = 'allow_once') => {
+        const approveCall = async (callId: string, decision: 'always_allow' | 'allow_once' = 'allow_once') => {
           await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
           const next = approvals[approvalIndex++]!;
-          const call = calls.find(candidate => candidate?.name === toolName)!;
+          const call = calls.find(candidate => candidate?.id === callId)!;
           expect(next.kind).toBe('permission');
-          expect((next.schema as Record<string, unknown>).tool).toBe(toolName);
+          expect((next.schema as Record<string, unknown>).tool).toBe(call.name);
+          expect(next.review?.actor.origin).toBe('foreground_child');
           expect(next.authority).toMatchObject({ callId: call.id, rootCallId: call.id });
           expect(next.desiredPolicyRevision).toBe(expectedRevision);
-          expect(events.some(value => value.toolCallId === call.id && (value.event as Record<string, unknown>).phase === 'end')).toBe(false);
+          expect(childResults.has(call.id)).toBe(false);
           const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision });
           expect(result.state).toBe('applied');
           if (result.state === 'applied') expectedRevision = result.effectivePolicyRevision;
@@ -309,22 +318,27 @@ describe.runIf(nativeSmokeEnabled)(
           const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: [question.intent?.approve ?? question.options[0]!.label] })) } });
           expect(result.state).toBe('applied');
         };
-        await approveTool('TaskCreate', 'always_allow');
-        for (const tool of ['TaskUpdate', 'Skill', 'Agent', 'AskUserQuestion']) await approveTool(tool);
+        await approveCall('fixture-child-review-call');
         await answerQuestions('ask_user');
-        await approveTool('ExitPlanMode');
         await answerQuestions('plan_approval');
+        expect(approvals.filter(value => value.kind === 'permission')).toHaveLength(2);
+        expect(childResults.size).toBe(2);
+        for (const result of childResults.values()) expect(result.is_error, JSON.stringify(result)).not.toBe(true);
+        expect(JSON.stringify(childResults.get('fixture-child-inherited-call')?.content)).toContain('inherited-child');
+        expect(JSON.stringify(childResults.get('fixture-child-review-call')?.content)).toContain('approved-child');
         await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal !== undefined, { timeout: 20_000 }).toBe(true);
         const toolResult = events.find(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
         expect(toolResult).toBeDefined();
         expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
         expect(JSON.stringify(toolResult)).not.toContain('not sealed');
         const toolResults = events.filter(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
-        expect(toolResults).toHaveLength(calls.filter(Boolean).length);
+        expect(toolResults).toHaveLength(calls.filter(Boolean).length - childResults.size);
         for (const result of toolResults) expect((result.event as Record<string, unknown>).result).toMatchObject({ isError: false });
         expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
         expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
         expect(requests).toBe(calls.length + 1);
+        expect(childSystemPrompt).toContain('Product permissions and shared exact grants apply');
+        expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
       } finally {
         await host.stop();
         attachments.close();
