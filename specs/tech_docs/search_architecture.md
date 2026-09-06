@@ -61,7 +61,8 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 | 文件 | 职责 |
 |------|------|
 | `mod.rs` | `SearchEngine` 单例 + Tauri IPC facade 与后台索引启动 |
-| `schema.rs` | Tantivy Schema 定义 + `SCHEMA_VERSION` 版本号 |
+| `schema.rs` | Tantivy Schema 定义与各索引版本号 |
+| `session_query.rs` | Session 分组、排序快照、取消与分页；属于 SessionIndex 的子模块 |
 | `tokenizer.rs` | 中英混合分词器：jieba + `LowerCaser` + `RemoveLongFilter(40)` |
 | `session_indexer.rs` | Session 索引构建、reindex、delete、查询 |
 | `record_indexer.rs` | Record baseline rebuild、增量 upsert/delete、按 record_id 去重查询 |
@@ -74,7 +75,9 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 
 | 命令 | 返回 | 说明 |
 |------|------|------|
-| `cmd_search_sessions(query, limit?, tag?)` | `SessionSearchResult` | 全局会话搜索（标题 + 内容），可用一个用户 Tag 精确限定候选 Session |
+| `cmd_search_sessions(request)` | `SessionSearchResult` | 开始查询：consumerId、generation、query、tag、workspaces；返回首批 20 个会话 |
+| `cmd_search_session_page(request)` | `SessionSearchResult` | consumerId、generation、queryId、cursor 获取下一批；同一 cursor 可重试 |
+| `cmd_close_session_search(consumerId, generation)` | `()` | 取消对应窗口/consumer 的指定及更旧 generation，释放搜索 reader |
 | `cmd_search_records(query, limit?)` | `RecordSearchResult` | 全局 Record 搜索；每个 Record 至多一个 hit |
 | `cmd_search_workspace_files(query, workspace, limit?, maxMatchesPerFile?)` | `FileSearchResult` | 工作区文件搜索 |
 | `cmd_search_index_status()` | `IndexStatus` | 索引文档数 + 存储目录（调试用） |
@@ -90,9 +93,11 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 存储字段（`STORED` 回取）：`session_id`、`message_id`、`agent_dir`、`role`、`timestamp`、`last_active_at`、`source`、`message_count`。
 索引字段（用于全文匹配，走 `"chinese"` 分词器）：`title`、`content`。
 
-Session `content` 只索引用户可见文本：leading `<system-reminder>...</system-reminder>` 的 hidden payload 属于模型上下文，不进入搜索；有 visible tail 时只索引 tail，纯 hidden reminder 索引为空。这个语义变化也必须 bump `SCHEMA_VERSION`，让旧索引重建。
+Session `content` 只索引用户可见文本：leading `<system-reminder>...</system-reminder>` 的 hidden payload 属于模型上下文，不进入搜索；有 visible tail 时只索引 tail，纯 hidden reminder 索引为空。这个语义变化也必须 bump Session schema version，让旧索引重建。
 
-用户 Session Tag 不进入 Tantivy schema，也不参与标题/正文分词和高亮。带 `tag` 的查询在 blocking worker 上 fresh 读取 `sessions.json`，用与 metadata 投影一致的容错规则规范化 `userTags`，先构造 history-visible `session_id` 精确候选集合，再用 `TermSetQuery` 与全文 query 组合为两个 `Must` 条件，最后才应用 `TopDocs` limit。这样 Tag mutation 无需等待 5s 内容索引 watcher，且不能退化成对前 50 条结果做 Renderer 后过滤。权威 metadata 读取或解析失败必须让命令失败并由 UI 显示可恢复错误，不能伪装成零结果。
+`session_id` 同时为 STRING / STORED / raw string FAST 字段。FAST 字典 ordinal 供 collector 在不回取正文、不计算 BM25 的情况下完整聚合命中 Session，不能先对消息文档应用 TopDocs 上限。
+
+用户 Session Tag 不进入 Tantivy schema，也不参与标题/正文分词和高亮。每次查询与页读取在 blocking worker 上 fresh 读取一次 `sessions.json`，复用 metadata projection/redaction、Tag 规范化与 history visibility，并按请求工作区路径 identity 限定候选。`TermSetQuery` 在分页预算前与全文 query 组合为两个 Must。Tag mutation 不依赖内容 watcher；metadata 读取或解析错误显式返回，不能伪装成零结果。
 
 ### File Schema (`schema::file_schema`)
 
@@ -104,7 +109,7 @@ Session `content` 只索引用户可见文本：leading `<system-reminder>...</s
 
 ### Schema 版本门控
 
-`SCHEMA_VERSION` 常量 + `.schema_version` 磁盘 marker。版本不一致时自动删除目录重建，防止 Tantivy 因 schema 不匹配 panic。**修改任意 schema 字段、分词器、indexing option 时 MUST bump 版本号**。
+`SESSION_SCHEMA_VERSION = 4` 只控制 Session 索引；文件索引保持 `SCHEMA_VERSION = 3`，Record 使用自己的版本。各目录以 `.schema_version` marker 判断是否重建。**修改字段、分词器、indexing option 时必须 bump 受影响索引的版本**，Session 增加 FAST 字段不能连带重建文件索引。
 
 ### 中文分词
 
@@ -144,6 +149,17 @@ Tauri setup()
 `.tantivy-writer.lock` 的路径存在不代表锁仍被占用：Tantivy 通过 OS 文件锁判定 owner，句柄关闭后锁自然释放。Session / workspace writer 创建失败时必须保留锁文件并返回真实错误，禁止在未证明无活跃 writer 时 unlink。
 
 Session index 是完全派生数据。打开、commit、reload 或 search 遇到缺失 segment / Tantivy data corruption 时，`SessionIndex` 在唯一写锁下再次确认故障，然后删除 `search_index/sessions` 并从权威会话文件重建、重试原操作。`sessions.json` 与 JSONL 永不参与回滚或补偿事务。
+
+### 会话查询与分页生命周期
+
+1. 普通多词 query 默认 AND；显式 OR、引号和既有 jieba query tokenizer 的短语语义保留。关键词是否匹配决定准入，不使用不可跨查询比较的 BM25 固定阈值。
+2. Session collector 扫描完整命中文档并按 fast-field Session ID 分组，读取当前 metadata 的 `lastActiveAt`，按实际时刻倒序、同刻 ID 升序排序，非法/缺失时间置尾。总数是可呈现的唯一 Session 数。
+3. `SessionIndexState` 持有本次查询的 Searcher、原始 text query 与轻量 ID/日期数组。全库 eligibility TermSet 仅参与首轮聚合，不保留到页查询（Tantivy 会在交集前展开各 TermSet postings，重复该谓词会导致逐页重扫全库）。每页从数组取至多 20 个当前仍有资格的 Session，仅在这些 ID 内计算 BM25 选取每会话一个摘要，回取至多 20 份正文及脱敏 metadata。响应含 `queryId`、`nextCursor`、`totalCount`、`removedSessionIds`，以及带可导航 `session` metadata 的 hits。cursor 是冻结数组位置，无共享前移指针。
+4. 活跃时间变化和新增会话在下次查询体现；页读取剔除删除/失去 scope、Tag 或 visibility 的候选并补满当前页，返回 removedSessionIds 供前端同步剔除已加载行。剔除在当前快照内单向生效，恢复 Tag/可见性在新查询重新准入，避免游标已越过的会话让总数回升却无法补回；前端同样在 query 内保留已确认删除，不能依赖随后会被清理的全局临时 tombstone。页内 hit.lastActiveAt 始终是排序快照值，展示与顺序一致。
+5. 窗口 label + overlay consumerId 隔离查询。单一 semaphore 限制重计算并发；新 generation 或关闭先取消旧 token，collector 每 1024 个匹配文档检查取消，排队任务也可立即取消。旧清理不能取消新 generation，close-before-start 不能复活已关闭请求。
+6. 关闭 overlay、窗口销毁、替换查询、损坏恢复均释放 reader；10 分钟空闲快照由既有 watcher 每分钟清扫。恢复时先丢弃整个 state（含快照），再删除目录，保持 Windows 文件句柄约束。过期页显式返回 `[search-expired]`，前端保留已加载行并提供重新搜索。
+
+初始索引未完成返回 `[search-indexing]`，UI 显示准备中，并在当前 effect 内 500 ms 重试；查询变化或关闭即停止。初始索引失败返回错误。这里没有跨查询持久 cache、新进程或 Sidecar 依赖。
 
 ## Record 索引策略
 
@@ -283,7 +299,7 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 
 全局侧栏搜索只把 `searchOpen` 交给 `useGlobalSidebarTaskCenterData`，由该 app-global store projection 发起一次静默 full revalidate；`HistorySearchOverlayContent` mount 时不得再发第二次全量刷新。Overlay 先消费当前 snapshot，冷模块加载期间由 App Shell 立即绘制同尺寸搜索壳，搜索按钮 hover/focus 时提前请求 lazy chunk，避免点击后出现空白间隔。Backdrop、面板 DOM、`useCloseLayer` 和入口动画的唯一 owner 是 Suspense 外层的 App Shell frame；lazy `HistorySearchOverlayContent` 只渲染面板内容。fallback → real content 的交接必须保留同一个面板节点，禁止真实内容再持有第二套 opacity-from-zero 根动画，否则首次加载会表现为“出现 → 消失 → 再出现”。
 
-空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/用户 Tag/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 继续走 Tantivy，并由 `searchSessions()` 的 50 条上限保持结果集有界；单选用户 Tag 作为结构化参数传给 Rust，不拼进 query string。
+空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/用户 Tag/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 由 `useHistorySearch()` 以 200 ms 去抖、IME composition 隔离、Enter 立即提交进入分页查询；单选 Tag 和工作区作为结构化参数传给 Rust。列表同样使用 Virtuoso，距底 8 行预取，单页最多一个在途请求；查询变化废弃旧响应，页错误保留已有行并重试同一 cursor。不提供排序模式菜单，始终展示最近活动倒序与已加载/总数。跨年时间显示年份，悬浮显示完整时间。首批 hit 自带 metadata，不等待全局会话投影加载；已确认的用户修改更新行展示但不修改冻结排序时间。
 
 ## 工作区文件搜索结果导航
 

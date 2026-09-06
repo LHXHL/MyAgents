@@ -715,6 +715,8 @@ pub fn run() {
             workspace_files::watcher::cmd_workspace_watch_stop,
             // Full-text search commands
             search::cmd_search_sessions,
+            search::cmd_search_session_page,
+            search::cmd_close_session_search,
             search::cmd_search_records,
             search::cmd_search_workspace_files,
             search::cmd_search_index_status,
@@ -1722,6 +1724,9 @@ pub fn run() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    if let Some(search) = window.try_state::<Arc<search::SearchEngine>>() {
+                        search.close_window_searches(window.label());
+                    }
                     // A window owns only its WebView. Auxiliary windows are
                     // routinely destroyed while the application and every
                     // Session Sidecar remain live; app-wide teardown belongs

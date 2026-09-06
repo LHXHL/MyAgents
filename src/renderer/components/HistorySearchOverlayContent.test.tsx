@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
     searchSessions: vi.fn(),
+    searchSessionPage: vi.fn(),
+    closeSessionSearch: vi.fn(),
     deleteSession: vi.fn(),
+    deletedIds: new Set<string>(),
     toast: {
         success: vi.fn(),
         error: vi.fn(),
@@ -13,8 +16,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/api/searchClient', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/api/searchClient')>();
-    return { ...actual, searchSessions: mocks.searchSessions };
+    return { ...actual, searchSessions: mocks.searchSessions, searchSessionPage: mocks.searchSessionPage, closeSessionSearch: mocks.closeSessionSearch };
 });
+
+vi.mock('@/hooks/useTaskCenterData', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/hooks/useTaskCenterData')>(),
+    isSessionDeleted: (id: string) => mocks.deletedIds.has(id),
+}));
 
 vi.mock('@/components/Toast', () => ({
     useToast: () => mocks.toast,
@@ -110,11 +118,50 @@ function expectSharedSessionMenu() {
 describe('HistorySearchOverlayContent', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
+        mocks.deletedIds.clear();
+        mocks.closeSessionSearch.mockResolvedValue(undefined);
+        mocks.searchSessions.mockResolvedValue({ queryId: 'query', nextCursor: null, removedSessionIds: [], hits: [], totalCount: 0, queryTimeMs: 1 });
         await i18n.changeLanguage('zh-CN');
         Object.defineProperty(navigator, 'clipboard', {
             configurable: true,
             value: { writeText: vi.fn().mockResolvedValue(undefined) },
         });
+    });
+
+    it('renders a complete search page before the global metadata projection has loaded', async () => {
+        const hit = { session, sessionId: session.id, title: session.title, agentDir: session.agentDir,
+            score: 1, matchType: 'title', snippet: null, snippetHighlights: [], titleHighlights: [],
+            matchedRole: null, lastActiveAt: session.lastActiveAt, source: 'desktop', turnCount: 1 };
+        mocks.searchSessions.mockResolvedValue({ queryId: 'cold', nextCursor: null, removedSessionIds: [],
+            hits: [hit], totalCount: 1, queryTimeMs: 1 });
+        const onOpenSession = vi.fn();
+        render(<HistorySearchOverlayContent projects={[project]}
+            taskCenterData={taskCenterData({ sessions: [], isSessionsLoading: true })}
+            onClose={vi.fn()} onOpenSession={onOpenSession} onRenameSession={vi.fn()} />);
+        fireEvent.change(enterSearchMode(), { target: { value: 'Shared' } });
+        fireEvent.click(await screen.findByText(session.title!));
+        expect(onOpenSession).toHaveBeenCalledWith(session, project);
+    });
+
+    it('does not resurrect a deleted final-page result when the store prunes its tombstone', async () => {
+        const hit = { session, sessionId: session.id, title: session.title, agentDir: session.agentDir,
+            score: 1, matchType: 'title', snippet: null, snippetHighlights: [], titleHighlights: [],
+            matchedRole: null, lastActiveAt: session.lastActiveAt, source: 'desktop', turnCount: 1 };
+        mocks.searchSessions.mockResolvedValue({ queryId: 'final', nextCursor: null, removedSessionIds: [],
+            hits: [hit], totalCount: 1, queryTimeMs: 1 });
+        const view = (sessions: SessionMetadata[]) => <HistorySearchOverlayContent projects={[project]}
+            taskCenterData={taskCenterData({ sessions })} onClose={vi.fn()}
+            onOpenSession={vi.fn()} onRenameSession={vi.fn()} />;
+        const { rerender } = render(view([session]));
+        fireEvent.change(enterSearchMode(), { target: { value: 'Shared' } });
+        expect(await screen.findByText(session.title!)).toBeInTheDocument();
+        mocks.deletedIds.add(session.id);
+        rerender(view([]));
+        await waitFor(() => expect(screen.queryByText(session.title!)).not.toBeInTheDocument());
+        mocks.deletedIds.clear();
+        rerender(view([]));
+        expect(screen.queryByText(session.title!)).not.toBeInTheDocument();
+        expect(mocks.searchSessions).toHaveBeenCalledOnce();
     });
 
     it('opens with a compact right-side search field and expands it on activation', async () => {
@@ -262,7 +309,9 @@ describe('HistorySearchOverlayContent', () => {
 
     it('opens the same menu for a full-text search result', async () => {
         mocks.searchSessions.mockResolvedValue({
+            queryId: 'query', nextCursor: null, removedSessionIds: [], totalCount: 1, queryTimeMs: 1,
             hits: [{
+                session,
                 sessionId: session.id,
                 title: session.title,
                 agentDir: session.agentDir,
@@ -292,7 +341,7 @@ describe('HistorySearchOverlayContent', () => {
     it('uses a single Tag filter for both browse metadata and pre-limit full-text search', async () => {
         const taggedSession = { ...session, id: 'session-alpha', userTags: ['Alpha'] };
         const otherSession = { ...session, id: 'session-beta', title: 'Other session', userTags: ['Beta'] };
-        mocks.searchSessions.mockResolvedValue({ hits: [], totalCount: 0, queryTimeMs: 1 });
+        mocks.searchSessions.mockResolvedValue({ queryId: 'query', nextCursor: null, removedSessionIds: [], hits: [], totalCount: 0, queryTimeMs: 1 });
         render(
             <HistorySearchOverlayContent
                 projects={[project]}
@@ -310,7 +359,7 @@ describe('HistorySearchOverlayContent', () => {
         expect(screen.queryByText(otherSession.title)).not.toBeInTheDocument();
 
         fireEvent.change(enterSearchMode(), { target: { value: 'needle' } });
-        await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('needle', 50, 'Alpha'));
+        await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith(expect.objectContaining({ query: 'needle', tag: 'Alpha', workspaces: ['/workspace'] })));
     });
 
     it('applies a clicked Tag intent as a clean aggregation and acknowledges it once', () => {

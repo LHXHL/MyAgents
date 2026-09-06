@@ -1,11 +1,33 @@
 //! Search result types for frontend consumption.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchRequest {
+    pub consumer_id: String,
+    pub generation: u64,
+    pub query: String,
+    pub tag: Option<String>,
+    pub workspaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchPageRequest {
+    pub consumer_id: String,
+    pub generation: u64,
+    pub query_id: String,
+    pub cursor: usize,
+}
 
 /// Session search response.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSearchResult {
+    pub query_id: String,
+    pub next_cursor: Option<usize>,
+    pub removed_session_ids: Vec<String>,
     pub hits: Vec<SessionSearchHit>,
     pub total_count: usize,
     pub query_time_ms: f64,
@@ -32,6 +54,8 @@ pub struct SessionSearchHit {
     pub last_active_at: String,
     pub source: Option<String>,
     pub turn_count: Option<u32>,
+    /// Redacted metadata from the same snapshot that decided the row's order.
+    pub session: serde_json::Value,
 }
 
 /// File search response.

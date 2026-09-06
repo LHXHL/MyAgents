@@ -109,7 +109,13 @@ fn run_watcher(data_dir: PathBuf, session_index: Arc<SessionIndex>) -> Result<()
 
     // Block until the channel closes (debouncer dropped → happens on app
     // exit). We intentionally never break out of this loop ourselves.
-    for result in rx {
+    loop {
+        session_index.prune_searches();
+        let result = match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let events = match result {
             Ok(events) => events,
             Err(errors) => {

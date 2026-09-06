@@ -9,6 +9,7 @@ import SessionSearchItem from './SessionSearchItem';
 
 function hit(overrides: Partial<SessionSearchHit> = {}): SessionSearchHit {
     return {
+        session: session(),
         sessionId: 's1',
         title: 'Search Hit',
         agentDir: '/workspace',
@@ -49,7 +50,7 @@ describe('SessionSearchItem', () => {
         vi.useRealTimers();
     });
 
-    it('formats time from fresh session metadata before falling back to the search index hit', () => {
+    it('keeps the query snapshot date when live metadata has a different activity date', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 5, 20, 9, 0));
 
@@ -66,8 +67,8 @@ describe('SessionSearchItem', () => {
             />,
         );
 
-        expect(screen.getByText('昨天')).toBeInTheDocument();
-        expect(screen.queryByText('08:00')).not.toBeInTheDocument();
+        expect(screen.getByText('08:00')).toBeInTheDocument();
+        expect(screen.queryByText('昨天')).not.toBeInTheDocument();
     });
 
     it('shows a canonical renamed title before the search index catches up', () => {
@@ -86,6 +87,21 @@ describe('SessionSearchItem', () => {
 
         expect(screen.getByText('Canonical renamed title')).toBeInTheDocument();
         expect(screen.queryByText('Stale indexed title')).not.toBeInTheDocument();
+    });
+
+    it.each(['2025-02-03T04:00:00Z', 'invalid'])('disambiguates old or unknown activity dates: %s', (date) => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 5, 20, 9, 0));
+        const { container } = render(<SessionSearchItem hit={hit({ lastActiveAt: date })} session={session()}
+            project={project} deleteProtected={false} onClick={vi.fn()} onContextMenu={vi.fn()}
+            onShowStats={vi.fn()} onDelete={vi.fn()} />);
+        if (date === 'invalid') {
+            expect(container.querySelector('time')).not.toHaveAttribute('datetime');
+            expect(container.textContent).not.toContain('Invalid Date');
+        } else {
+            expect(container.querySelector('time')).toHaveTextContent('2025');
+            expect(container.querySelector('time')).toHaveAttribute('datetime', new Date(date).toISOString());
+        }
     });
 
     it('suppresses right-click selection and forwards the context-menu request', () => {
