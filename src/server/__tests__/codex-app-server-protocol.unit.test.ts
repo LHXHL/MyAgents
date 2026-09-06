@@ -598,7 +598,7 @@ describe('Codex app-server protocol helpers', () => {
   });
 
   it('reports the safe Windows npx distribution error at the Managed Codex projection boundary', () => {
-    const resolver = vi.spyOn(mcpCommand, 'resolveNpxMcpInvocation');
+    const resolver = vi.spyOn(mcpCommand, 'buildMcpStdioLaunchConfig');
     resolver.mockImplementationOnce(() => {
       throw new mcpCommand.NpxMcpResolutionError();
     });

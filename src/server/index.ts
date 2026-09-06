@@ -4099,35 +4099,23 @@ async function main() {
           if (server.type === 'stdio' && server.command) {
             const command = server.command;
 
-            // Preset MCP (isBuiltin: true) with npx → warmup to download and cache package
+            const { buildMcpStdioLaunchConfig, isMcpCommandAvailable } = await import('./utils/mcp-command');
+            const { getDefaultEnvironment } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+            const launch = buildMcpStdioLaunchConfig(server);
+            const mcpEnv = { ...getDefaultEnvironment(), ...launch.env };
+            const mcpCwd = getAgentState().agentDir || undefined;
+
+            // A global configuration warmup caches the preset package; it does
+            // not assert acceptance by a particular Session runtime.
             if (server.isBuiltin && command === 'npx') {
-              const { resolveNpxMcpInvocation } = await import('./utils/mcp-command');
-              const invocation = resolveNpxMcpInvocation(server.args || [], {
-                pinPresetPackages: true,
-              });
-
-              // Keep all Sidecar child processes on the shared spawn adapter.
-              // The npx resolver already projects Windows to node.exe +
-              // npx-cli.js because managed Codex owns its final native spawn;
-              // the adapter remains the single stream/error lifecycle owner.
               const { spawn: wrappedSpawn } = await import('./utils/subprocess');
-              const { getShellEnv } = await import('./utils/shell');
-              const baseEnv = getShellEnv();
-
-              const warmupCmd = invocation.command;
-              const warmupArgs = [...invocation.args, '--help'];
-              const npxDir = dirname(warmupCmd);
-              const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-              const sep = process.platform === 'win32' ? ';' : ':';
-              if (!(baseEnv[pathKey] || '').split(sep).includes(npxDir)) {
-                baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
-              }
-              console.log(`[api/mcp/enable] Warming up via ${invocation.source} npx: ${warmupArgs.join(' ')}`);
-
-              const handle = wrappedSpawn([warmupCmd, ...warmupArgs], {
-                env: baseEnv,
+              const warmupArgs = [...launch.args, '--help'];
+              console.log(`[api/mcp/enable] Warming up MCP ${server.id}`);
+              const handle = wrappedSpawn([launch.command, ...warmupArgs], {
+                env: mcpEnv,
+                cwd: mcpCwd,
                 stdin: 'ignore',
-                stdout: 'pipe',
+                stdout: 'ignore',
                 stderr: 'pipe',
               });
 
@@ -4241,41 +4229,17 @@ async function main() {
               return jsonResponse({ success: true });
             }
 
-            // Custom MCP or non-npx command → check if command exists in user's shell PATH
-            const { spawn } = await import('child_process');
-            const { getShellEnv } = await import('./utils/shell');
-            const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-
-            return new Promise<Response>((resolve) => {
-              const proc = spawn(checkCmd, [command], { stdio: 'ignore', env: getShellEnv() });
-
-              proc.on('error', () => {
-                resolve(jsonResponse({
-                  success: false,
-                  error: {
-                    type: 'command_not_found',
-                    command,
-                    message: `命令 "${command}" 未找到`,
-                    ...getCommandDownloadInfo(command),
-                  }
-                }));
-              });
-
-              proc.on('close', (code) => {
-                if (code === 0) {
-                  resolve(jsonResponse({ success: true }));
-                } else {
-                  resolve(jsonResponse({
-                    success: false,
-                    error: {
-                      type: 'command_not_found',
-                      command,
-                      message: `命令 "${command}" 未找到`,
-                      ...getCommandDownloadInfo(command),
-                    }
-                  }));
-                }
-              });
+            if (isMcpCommandAvailable(launch, mcpCwd)) {
+              return jsonResponse({ success: true });
+            }
+            return jsonResponse({
+              success: false,
+              error: {
+                type: 'command_not_found',
+                command,
+                message: `命令 "${command}" 未找到`,
+                ...getCommandDownloadInfo(command),
+              },
             });
           }
 

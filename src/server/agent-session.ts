@@ -13,7 +13,7 @@ import {
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
 import { getScriptDir } from './utils/runtime';
-import { resolveNpxMcpInvocation } from './utils/mcp-command';
+import { buildMcpStdioLaunchConfig } from './utils/mcp-command';
 import { resolveRemoteMcpTransportConfig } from './session-core/mcp-template-resolution';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
@@ -86,7 +86,6 @@ import {
   initializeProxyStateFromCurrentSettings,
   setProcessProxyConfig,
 } from './proxy-state';
-import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
 import { resolveManagedOAuthCredential, type ManagedOAuthPurpose } from './utils/management-api-client';
 import {
   acquireBrowserCapability,
@@ -4039,35 +4038,9 @@ async function buildSdkMcpServers(
     }
 
     if (server.type === 'stdio' && server.command) {
-      let command = server.command;
-      // Defensive: args may be non-array (e.g. boolean `true`) due to CLI parsing bugs or manual config edits
-      let args = [...(Array.isArray(server.args) ? server.args : [])];
-
-      // For npx commands: prefer system npx → bundled Node.js npx → bun x
-      // System Node.js is maintained by the user's package manager, more reliable than our bundled npm.
-      // Bundled Node.js serves as fallback for users who don't have Node.js installed.
-      if (command === 'npx') {
-        const invocation = resolveNpxMcpInvocation(args, {
-          pinPresetPackages: server.isBuiltin === true,
-        });
-        command = invocation.command;
-        args = invocation.args;
-        console.log(`[agent] MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
-      }
-
-      // Build MCP config with proxy env inherited from parent Sidecar.
-      // MCP subprocesses need outbound proxy inheritance, while localhost still
-      // needs NO_PROXY protection. Per-server env has final authority so users
-      // can work around downstream proxy parser bugs for a specific MCP.
-      const mcpEnv = buildMcpSubprocessEnv(process.env, server.env);
-
+      const mcpConfig = buildMcpStdioLaunchConfig(server);
+      const { command, args } = mcpConfig;
       console.log(`[agent] MCP ${server.id}: transport=stdio argvCount=${args.length}`);
-
-      const mcpConfig: SdkMcpServerConfig = {
-        command,
-        args,
-        env: mcpEnv,  // Always set: proxy inherited + NO_PROXY enforced
-      };
 
       stagedStdio.push({ id: server.id, config: mcpConfig, command, args });
     } else if ((server.type === 'sse' || server.type === 'http') && server.url) {

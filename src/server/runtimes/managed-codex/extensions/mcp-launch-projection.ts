@@ -1,7 +1,7 @@
 import type { McpServerDefinition } from '../../../../shared/config-types';
 import { isRetiredBundledMcpServer } from '../../../../shared/mcpConfig';
 import { resolveMcpTemplateValue } from '../../../session-core/mcp-template-resolution';
-import { NpxMcpResolutionError, resolveNpxMcpInvocation } from '../../../utils/mcp-command';
+import { NpxMcpResolutionError, buildMcpStdioLaunchConfig } from '../../../utils/mcp-command';
 
 const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1';
 /** Native attempt bound, deliberately independent from MyAgents' 10s dispatch grace. */
@@ -225,15 +225,8 @@ export function projectManagedCodexMcpLaunchConfig(
           continue;
         }
         if (!command) reject('missing stdio command');
-        let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
-        let projectedCommand = command;
-        if (projectedCommand === 'npx') {
-          const invocation = resolveNpxMcpInvocation(stdioArgs, {
-            pinPresetPackages: server.isBuiltin === true,
-          });
-          projectedCommand = invocation.command;
-          stdioArgs = invocation.args;
-        }
+        const launch = buildMcpStdioLaunchConfig(server, { parentEnv });
+        const { command: projectedCommand, args: stdioArgs } = launch;
         const commandReason = unsafeCodexMcpStdioValueReason(projectedCommand);
         if (commandReason) reject(`stdio command ${commandReason}`);
         const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
@@ -257,6 +250,12 @@ export function projectManagedCodexMcpLaunchConfig(
 
         pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.command`, tomlString(projectedCommand));
         pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.args`, tomlArray(stdioArgs));
+        // PATH belongs to this MCP child, never the Codex parent (and its AI
+        // shell). Only the non-secret computed PATH enters argv; user values
+        // keep the existing validated env_vars/parent projection below.
+        pushCodexConfigArg(serverArgs, `mcp_servers.${serverName}.env`, tomlInlineStringMap({
+          PATH: launch.env.PATH,
+        }));
         const envVars = new Set<string>();
         for (const key of CODEX_MCP_PROXY_ENV_KEYS) {
           if (parentEnv[key]) envVars.add(key);

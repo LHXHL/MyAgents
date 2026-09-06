@@ -56,7 +56,9 @@ Plugin Bridge 是 MyAgents 加载社区 OpenClaw Channel Plugin 的核心基础�
   ↓
 Rust sanitize_npm_spec() 清洗输入（剥离 npx -y 等前缀）
   ↓
-npm install --ignore-scripts --omit=peer（使用内置 Node.js）
+npm install <spec> --omit=peer（内置 Node + npm-cli.js，保留生命周期脚本）
+  ↓
+npm install --ignore-scripts --omit=peer（复用同套运行时，best-effort repair）
   ↓
 install_sdk_shim()（最后写入，覆盖 npm 可能安装的真 openclaw 包）
   ↓
@@ -64,6 +66,8 @@ install_sdk_shim()（最后写入，覆盖 npm 可能安装的真 openclaw 包�
 ```
 
 **关键原则**：SDK shim 必须在 npm install **之后**安装（last-write-wins），因为 npm 可能将真实 `openclaw` 包写入 `node_modules/openclaw/`，覆盖我们的 shim。
+
+安装、repair 与 Bridge 启动只接受应用内置的完整 Node/npm，不再查找或重试系统 npm。`plugin_node_command()` 为这些子进程前置所选 Node 目录，保证默认裸 `node` 后代可找到对应解释器；不修改全局 PATH。初装失败直接返回真实诊断；已有插件不自动重装。
 
 ### 阶段 2：Bridge 进程启动
 

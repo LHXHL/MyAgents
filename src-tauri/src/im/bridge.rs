@@ -1261,6 +1261,138 @@ fn path_env_value(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_install_records_paired_argv_and_stops_after_real_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let node = root.path().join("node");
+        let npm = root.path().join("npm cli.js");
+        let base = root.path().join("plugin with spaces");
+        std::fs::create_dir(&base).unwrap();
+        std::fs::write(&npm, "fixture").unwrap();
+        // Record exactly what the production install/repair entry executes.
+        // No real npm, user HOME, network, credentials or Tauri app are needed.
+        std::fs::write(
+            &node,
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' '--call--' \"$PWD\" \"$@\" >> calls\n",
+                "if [ \"$3\" = bad-package ]; then printf 'PACKAGE_SENTINEL' >&2; exit 17; fi\n",
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        install_plugin_package(&node, &npm, &base, "fixture@1")
+            .await
+            .unwrap();
+        let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+        let lines: Vec<_> = calls.lines().collect();
+        assert_eq!(lines.len(), 12);
+        assert_eq!(
+            Path::new(lines[1]).canonicalize().unwrap(),
+            base.canonicalize().unwrap()
+        );
+        assert_eq!(
+            &lines[2..6],
+            &[npm.to_str().unwrap(), "install", "fixture@1", "--omit=peer"]
+        );
+        assert_eq!(
+            &lines[8..12],
+            &[
+                npm.to_str().unwrap(),
+                "install",
+                "--ignore-scripts",
+                "--omit=peer"
+            ]
+        );
+
+        std::fs::remove_file(base.join("calls")).unwrap();
+        let error = install_plugin_package(&node, &npm, &base, "bad-package")
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("17") && error.contains("PACKAGE_SENTINEL"),
+            "{error}"
+        );
+        assert!(!error.contains("not found in PATH"), "{error}");
+        // Initial failure must not trigger repair or a second installation.
+        assert_eq!(
+            std::fs::read_to_string(base.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            6
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_command_binds_bare_node_descendants_without_system_node() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let node = root.path().join("node");
+        // Local executable fixture; never invokes npm, a real plugin or a URL.
+        std::fs::write(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = parent ]; then exec node child; fi\nprintf bundled-child\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = plugin_node_command(&node)
+            .unwrap()
+            .arg("parent")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        assert_eq!(output.stdout, b"bundled-child");
+    }
+
+    #[test]
+    fn plugin_node_path_binds_empty_and_competing_environments() {
+        let root = std::env::temp_dir().join("plugin runtime");
+        let selected = root.join("bundled");
+        let node = selected.join("node");
+        let competing = root.join("system");
+        let inherited = std::env::join_paths([&competing, &selected]).unwrap();
+        let actual = plugin_node_search_path(&node, &inherited).unwrap();
+        assert_eq!(
+            std::env::split_paths(&actual).collect::<Vec<_>>(),
+            [selected.clone(), competing]
+        );
+        let empty = plugin_node_search_path(&node, std::ffi::OsStr::new("")).unwrap();
+        assert_eq!(
+            std::env::split_paths(&empty).collect::<Vec<_>>(),
+            [selected]
+        );
+    }
+
+    #[test]
+    fn plugin_runtime_requires_complete_bundled_files() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let (node, npm) = (
+            root.path().join("node.exe"),
+            root.path().join("node_modules/npm/bin/npm-cli.js"),
+        );
+        #[cfg(not(windows))]
+        let (node, npm) = (
+            root.path().join("bin/node"),
+            root.path().join("lib/node_modules/npm/bin/npm-cli.js"),
+        );
+        std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+        std::fs::write(&node, "").unwrap();
+        assert!(bundled_node_npm_at(root.path()).is_none());
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        // A directory at the expected filename must not pass admission.
+        std::fs::create_dir(&npm).unwrap();
+        assert!(bundled_node_npm_at(root.path()).is_none());
+        std::fs::remove_dir(&npm).unwrap();
+        std::fs::write(&npm, "").unwrap();
+        assert_eq!(bundled_node_npm_at(root.path()), Some((node, npm)));
+    }
+
     #[test]
     fn openclaw_bridge_state_env_scopes_runtime_files_under_channel_dir() {
         let base = std::env::temp_dir()
@@ -1337,7 +1469,7 @@ mod tests {
     }
 }
 
-/// Spawn a plugin bridge Bun process
+/// Spawn a plugin bridge with the application-owned Node distribution
 pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     plugin_dir: &str,
@@ -1348,10 +1480,10 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
     plugin_config: Option<&serde_json::Value>,
     _creation_permit: &crate::sidecar::LifecycleSpawnPermit,
 ) -> Result<BridgeProcess, String> {
-    use crate::sidecar::find_node_executable_pub;
-
-    let node_path = find_node_executable_pub(app_handle)
-        .ok_or_else(|| "Node executable not found".to_string())?;
+    let (node_path, _) = find_bundled_node_npm(app_handle).ok_or_else(|| {
+        "Bundled Node.js/npm is missing. Reinstall MyAgents to restore the plugin runtime."
+            .to_string()
+    })?;
 
     let bridge_script = find_bridge_script(app_handle)
         .ok_or_else(|| "Plugin bridge script not found".to_string())?;
@@ -1451,7 +1583,7 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
         rust_port
     );
 
-    let mut cmd = crate::process_cmd::new(&node_path);
+    let mut cmd = plugin_node_command(&node_path)?;
     // Inject tsx via absolute file URL pointing at the bundled
     // `resources/tsx-runtime/` (prod) or the project's own `node_modules/tsx`
     // (dev). The loader has zero side effects on `.js` plugin loads (esbuild's
@@ -1624,9 +1756,7 @@ fn apply_proxy_env(cmd: &mut std::process::Command) {
     crate::proxy_config::apply_to_subprocess(cmd);
 }
 
-/// Locate bundled Node.js binary and npm-cli.js for plugin installation.
-/// Dual-runtime principle: social ecosystem packages use Node.js (not Bun) to avoid
-/// Bun's npm compatibility issues on Windows.
+/// Locate the single app-owned distribution for plugin installation and Bridge.
 ///
 /// Layout:
 /// - macOS prod:  Contents/Resources/nodejs/bin/node + ../lib/node_modules/npm/bin/npm-cli.js
@@ -1636,58 +1766,18 @@ fn apply_proxy_env(cmd: &mut std::process::Command) {
 fn find_bundled_node_npm<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
 ) -> Option<(PathBuf, PathBuf)> {
-    use crate::sidecar::normalize_external_path;
-
-    let check = |nodejs_dir: &Path| -> Option<(PathBuf, PathBuf)> {
-        #[cfg(target_os = "windows")]
-        let node_bin = nodejs_dir.join("node.exe");
-        #[cfg(not(target_os = "windows"))]
-        let node_bin = nodejs_dir.join("bin").join("node");
-
-        // Windows npm layout: nodejs/node_modules/npm/... (flat, no lib/)
-        // macOS/Linux npm layout: nodejs/lib/node_modules/npm/... (standard Unix)
-        #[cfg(target_os = "windows")]
-        let npm_cli = nodejs_dir
-            .join("node_modules")
-            .join("npm")
-            .join("bin")
-            .join("npm-cli.js");
-        #[cfg(not(target_os = "windows"))]
-        let npm_cli = nodejs_dir
-            .join("lib")
-            .join("node_modules")
-            .join("npm")
-            .join("bin")
-            .join("npm-cli.js");
-
-        if node_bin.exists() && npm_cli.exists() {
-            // On Windows, strip \\?\ extended-length prefix that Tauri's resource_dir() produces.
-            // Node.js/npm cannot handle it (causes "EISDIR: lstat 'C:'" error).
-            let node_bin = normalize_external_path(node_bin);
-            let npm_cli = normalize_external_path(npm_cli);
-            ulog_info!(
-                "[bridge] Bundled Node.js found: node={:?}, npm-cli={:?}",
-                node_bin,
-                npm_cli
-            );
-            Some((node_bin, npm_cli))
-        } else {
-            None
-        }
-    };
-
     // Production: nodejs/ inside resource_dir
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
         let resource_dir: PathBuf = resource_dir;
         let prod_dir = resource_dir.join("nodejs");
-        if let Some(result) = check(&prod_dir) {
+        if let Some(result) = bundled_node_npm_at(&prod_dir) {
             return Some(result);
         }
         // Windows: resource_dir parent might be the install dir
         #[cfg(target_os = "windows")]
         if let Some(parent) = resource_dir.parent() {
             let parent_dir = parent.join("nodejs");
-            if let Some(result) = check(&parent_dir) {
+            if let Some(result) = bundled_node_npm_at(&parent_dir) {
                 return Some(result);
             }
         }
@@ -1697,13 +1787,144 @@ fn find_bundled_node_npm<R: tauri::Runtime>(
     if cfg!(debug_assertions) {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let dev_dir = manifest_dir.join("resources").join("nodejs");
-        if let Some(result) = check(&dev_dir) {
+        if let Some(result) = bundled_node_npm_at(&dev_dir) {
             return Some(result);
         }
     }
 
-    ulog_warn!("[bridge] Bundled Node.js not found, falling back to Bun for plugin install");
+    ulog_warn!("[bridge] Bundled Node.js/npm not found");
     None
+}
+
+fn bundled_node_npm_at(nodejs_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    #[cfg(target_os = "windows")]
+    let node_bin = nodejs_dir.join("node.exe");
+    #[cfg(not(target_os = "windows"))]
+    let node_bin = nodejs_dir.join("bin").join("node");
+
+    // Windows npm layout: nodejs/node_modules/npm/... (flat, no lib/)
+    // macOS/Linux npm layout: nodejs/lib/node_modules/npm/... (standard Unix)
+    #[cfg(target_os = "windows")]
+    let npm_cli = nodejs_dir
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
+    #[cfg(not(target_os = "windows"))]
+    let npm_cli = nodejs_dir
+        .join("lib")
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
+
+    if node_bin.is_file() && npm_cli.is_file() {
+        // On Windows, strip \\?\ extended-length prefix that Tauri's resource_dir() produces.
+        // Node.js/npm cannot handle it (causes "EISDIR: lstat 'C:'" error).
+        let node_bin = crate::sidecar::normalize_external_path(node_bin);
+        let npm_cli = crate::sidecar::normalize_external_path(npm_cli);
+        ulog_info!(
+            "[bridge] Bundled Node.js found: node={:?}, npm-cli={:?}",
+            node_bin,
+            npm_cli
+        );
+        Some((node_bin, npm_cli))
+    } else {
+        None
+    }
+}
+
+/// Pair the explicit interpreter with the default Node lookup used by plugin
+/// scripts. Package-local .bin entries and explicit executables remain npm's
+/// and the plugin's responsibility; this does not change the app's global PATH.
+fn plugin_node_command(node: &Path) -> Result<std::process::Command, String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = plugin_node_search_path(node, &inherited)?;
+    let mut command = crate::process_cmd::new(node);
+    command.env("PATH", path);
+    Ok(command)
+}
+
+fn plugin_node_search_path(
+    node: &Path,
+    inherited: &std::ffi::OsStr,
+) -> Result<std::ffi::OsString, String> {
+    let node_dir = node
+        .parent()
+        .ok_or("Bundled Node path has no parent directory")?;
+    let paths = std::iter::once(node_dir.to_path_buf()).chain(
+        std::env::split_paths(inherited)
+            .filter(|path| !path.as_os_str().is_empty() && path != node_dir),
+    );
+    std::env::join_paths(paths).map_err(|error| format!("Invalid plugin Node PATH: {error}"))
+}
+
+fn plugin_npm_command(
+    node: &Path,
+    npm_cli: &Path,
+    cwd: &Path,
+) -> Result<std::process::Command, String> {
+    let mut command = plugin_node_command(node)?;
+    command
+        .arg(npm_cli)
+        .current_dir(cwd)
+        // Existing Node v24 CJS/ESM compatibility setting.
+        .env("NODE_OPTIONS", "--no-experimental-require-module");
+    apply_proxy_env(&mut command);
+    Ok(command)
+}
+
+/// Execute the existing install/repair sequence after the Rust owner has
+/// selected one bundled distribution. A failed initial install stops here.
+async fn install_plugin_package(
+    node_bin: &Path,
+    npm_cli: &Path,
+    base_dir: &Path,
+    npm_spec: &str,
+) -> Result<(), String> {
+    let mut install = plugin_npm_command(node_bin, npm_cli, base_dir)?;
+    // Avoid installing the full OpenClaw peer dependency; our SDK shim is
+    // installed last. Initial install retains package lifecycle scripts.
+    install.args(["install", npm_spec, "--omit=peer"]);
+    let output = tokio::task::spawn_blocking(move || install.output())
+        .await
+        .map_err(|error| format!("Plugin npm install task failed: {error}"))?
+        .map_err(|error| format!("Failed to start bundled npm: {error}"))?;
+    if !output.status.success() {
+        let diagnostic: String = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .chars()
+            .take(4000)
+            .collect();
+        return Err(format!(
+            "Plugin install failed for {npm_spec} ({}): {diagnostic}",
+            output.status
+        ));
+    }
+    ulog_info!("[bridge] Bundled npm install {} succeeded", npm_spec);
+
+    // Repair FIRST, shim LAST: npm may reconcile node_modules/openclaw.
+    // Reuse the distribution selected for this installation; repair retains
+    // its existing best-effort semantics and does not rerun lifecycle scripts.
+    let mut repair = plugin_npm_command(node_bin, npm_cli, base_dir)?;
+    repair.args(["install", "--ignore-scripts", "--omit=peer"]);
+    match tokio::task::spawn_blocking(move || repair.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            ulog_info!("[bridge] Dependency repair succeeded");
+        }
+        Ok(Ok(output)) => {
+            ulog_warn!(
+                "[bridge] Dependency repair failed (exit {}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        error => {
+            ulog_warn!("[bridge] Dependency repair spawn failed: {:?}", error);
+        }
+    }
+
+    Ok(())
 }
 
 /// Write a minimal package.json if it doesn't exist.
@@ -1879,224 +2100,19 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
         base_dir
     );
 
-    // Write package.json upfront (shared by both npm and bun paths).
+    // Installation and execution use the same app-owned distribution. A bad
+    // package/network/script is an install failure, not a reason to retry with
+    // a different Node ABI or run lifecycle scripts twice.
+    let (node_bin, npm_cli) = find_bundled_node_npm(app_handle).ok_or_else(|| {
+        "Bundled Node.js/npm is missing. Reinstall MyAgents to restore the plugin runtime."
+            .to_string()
+    })?;
     ensure_package_json(&base_dir, &plugin_id).await?;
 
-    // --- Try system npm first (user-maintained, most reliable) ---
-    let mut npm_succeeded = false;
-
-    if let Some(system_npm) = crate::system_binary::find("npm") {
-        ulog_info!("[bridge] Using system npm: {:?}", system_npm);
-        let sys_npm = system_npm;
-        let base_for_sys = base_dir.clone();
-        let spec_for_sys = install_spec.clone();
-        let sys_result = tokio::task::spawn_blocking(move || {
-            let mut cmd = crate::process_cmd::new(&sys_npm);
-            // --omit=peer: openclaw 插件声明 peerDependencies: { openclaw: '*' }，
-            // npm 会自动安装原始 openclaw 包的 400+ 传递依赖（larksuite、playwright-core、aws-sdk 等）。
-            // --omit=peer 阻止这一行为，节省安装时间/体积/安全攻击面。
-            //
-            // --no-experimental-require-module fixes Node.js v24 CJS/ESM crash on Windows.
-            cmd.args(["install", spec_for_sys.as_str(), "--omit=peer"])
-                .current_dir(&base_for_sys)
-                .env("NODE_OPTIONS", "--no-experimental-require-module");
-            apply_proxy_env(&mut cmd);
-            cmd.output()
-        })
-        .await;
-
-        match sys_result {
-            Ok(Ok(output)) if output.status.success() => {
-                ulog_info!("[bridge] System npm install {} succeeded", npm_spec);
-                npm_succeeded = true;
-            }
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                ulog_error!(
-                    "[bridge] System npm install {} failed: {}",
-                    npm_spec,
-                    stderr.trim()
-                );
-            }
-            Ok(Err(e)) => {
-                ulog_error!("[bridge] System npm spawn failed: {}", e);
-            }
-            Err(e) => {
-                ulog_error!("[bridge] System npm spawn_blocking failed: {}", e);
-            }
-        }
-    } else {
-        ulog_info!("[bridge] System npm not found in PATH, skipping");
-    }
-
-    // --- Bundled npm fallback: if system npm failed or unavailable ---
-    if !npm_succeeded {
-        if let Some((node_bin, npm_cli)) = find_bundled_node_npm(app_handle) {
-            // Diagnostic: log node + npm version for troubleshooting
-            let node_ver = crate::process_cmd::new(&node_bin)
-                .args(["--version"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|e| format!("error: {}", e));
-            let npm_ver = crate::process_cmd::new(&node_bin)
-                .args([npm_cli.to_str().unwrap_or(""), "--version"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|e| format!("error: {}", e));
-            ulog_info!(
-                "[bridge] Bundled npm install: node={}, npm={}, cli={:?}",
-                node_ver,
-                npm_ver,
-                npm_cli
-            );
-
-            let npm_cli_str = npm_cli
-                .to_str()
-                .ok_or_else(|| format!("npm-cli.js path contains invalid UTF-8: {:?}", npm_cli))?
-                .to_string();
-
-            // Prepend node binary's directory to PATH so postinstall scripts can find `node`.
-            let node_dir_for_path = node_bin
-                .parent()
-                .map(|d| d.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let augmented_path = {
-                let system_path = std::env::var("PATH").unwrap_or_default();
-                #[cfg(target_os = "windows")]
-                {
-                    format!("{};{}", node_dir_for_path, system_path)
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    format!("{}:{}", node_dir_for_path, system_path)
-                }
-            };
-
-            let node_for_add = node_bin;
-            let cli_str_add = npm_cli_str;
-            let base_for_add = base_dir.clone();
-            let npm_spec_owned = install_spec.clone();
-            let path_for_add = augmented_path;
-            let add_result = tokio::task::spawn_blocking(move || {
-                let mut cmd = crate::process_cmd::new(&node_for_add);
-                // --omit=peer: same rationale as system npm above.
-                // --no-experimental-require-module: Node.js v24 CJS/ESM crash fix.
-                cmd.args([
-                    cli_str_add.as_str(),
-                    "install",
-                    npm_spec_owned.as_str(),
-                    "--omit=peer",
-                ])
-                .current_dir(&base_for_add)
-                .env("PATH", &path_for_add)
-                .env("NODE_OPTIONS", "--no-experimental-require-module");
-                apply_proxy_env(&mut cmd);
-                cmd.output()
-            })
-            .await;
-
-            match add_result {
-                Ok(Ok(output)) if output.status.success() => {
-                    ulog_info!("[bridge] Bundled npm install {} succeeded", npm_spec);
-                    npm_succeeded = true;
-                }
-                Ok(Ok(output)) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    ulog_error!(
-                        "[bridge] Bundled npm install {} failed (exit {}): {}",
-                        npm_spec,
-                        output.status,
-                        stderr.trim()
-                    );
-                }
-                Ok(Err(e)) => {
-                    ulog_error!(
-                        "[bridge] Bundled npm install {} — process spawn failed: {}",
-                        npm_spec,
-                        e
-                    );
-                }
-                Err(e) => {
-                    ulog_error!(
-                        "[bridge] Bundled npm install {} — spawn_blocking failed: {}",
-                        npm_spec,
-                        e
-                    );
-                }
-            }
-        } else {
-            ulog_warn!("[bridge] Bundled Node.js/npm not found, skipping bundled npm install");
-        }
-    }
-
-    // Both system npm and bundled npm failed — there is no further fallback.
-    // (The pre-0.2.0 "Bun fallback" branch ran `node add` / `node install`,
-    // which are not valid Node subcommands; with Bun removed it could never
-    // succeed.)
-    if !npm_succeeded {
-        return Err(format!(
-            "Plugin install failed for {}: bundled npm unavailable and system npm not found in PATH. \
-             Install Node.js, or reinstall MyAgents to restore the bundled runtime.",
-            npm_spec
-        ));
-    }
-
-    // Dependency repair + shim install (order matters: repair FIRST, shim LAST).
-    //
-    // The shim replaces node_modules/openclaw/ with our custom exports. But npm/bun
-    // may overwrite it during dependency resolution (lockfile reconciliation, peer dep
-    // auto-install). To guarantee the shim survives:
-    //   1. Run `npm install --ignore-scripts` to fix transitive deps (e.g., zod)
-    //   2. THEN install shim as the FINAL step (last-write-wins)
-    {
-        let repair_dir = base_dir.clone();
-        if let Some((node_path, npm_cli)) = find_bundled_node_npm(app_handle) {
-            let node_dir = node_path.parent().map(|p| p.to_path_buf());
-            match tokio::task::spawn_blocking(move || {
-                let mut cmd = crate::process_cmd::new(&node_path);
-                cmd.args([
-                    npm_cli.to_str().unwrap_or(""),
-                    "install",
-                    "--ignore-scripts",
-                    "--omit=peer",
-                ])
-                .current_dir(&repair_dir)
-                .env("NODE_OPTIONS", "--no-experimental-require-module");
-                if let Some(ref nd) = node_dir {
-                    if let Some(path) = std::env::var_os("PATH") {
-                        let mut paths = std::env::split_paths(&path).collect::<Vec<_>>();
-                        paths.insert(0, nd.clone());
-                        cmd.env("PATH", std::env::join_paths(&paths).unwrap_or(path));
-                    }
-                }
-                apply_proxy_env(&mut cmd);
-                cmd.output()
-            })
-            .await
-            {
-                Ok(Ok(output)) if output.status.success() => {
-                    ulog_info!("[bridge] Dependency repair succeeded");
-                }
-                Ok(Ok(output)) => {
-                    ulog_warn!(
-                        "[bridge] Dependency repair failed (exit {}): {}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    );
-                }
-                _ => {
-                    ulog_warn!("[bridge] Dependency repair: spawn failed");
-                }
-            }
-        } else {
-            // No bundled npm — initial plugin install above must have used system
-            // npm; rely on that path's transitive dep resolution. No fallback runner.
-            ulog_warn!("[bridge] Skipping dependency repair: bundled npm unavailable");
-        }
-    }
+    install_plugin_package(&node_bin, &npm_cli, &base_dir, &install_spec).await?;
 
     // Install plugin-sdk shim as the FINAL step (after dependency repair).
-    // This MUST be last — npm/bun install above may overwrite
+    // This MUST be last — npm install above may overwrite
     // `node_modules/openclaw/` with the real package from the registry.
     // tsx is no longer installed per-plugin (it's bundled in
     // `resources/tsx-runtime/` and reached via absolute-path `--import`),
