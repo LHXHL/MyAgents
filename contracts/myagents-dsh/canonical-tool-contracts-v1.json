@@ -37,13 +37,14 @@
       "behaviorFixtureIds": [
         "text_range_and_read_receipt",
         "image_attachment_projection",
-        "pdf_page_projection",
-        "notebook_normalized_text",
+        "text_model_image_refusal",
+        "pdf_conversion_guidance",
+        "notebook_json_text",
         "symlink_and_size_rejection"
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Reads one allowed workspace or Runtime-output file. Supports bounded text ranges, images, notebooks, and visual PDF pages. Use an absolute path and read an existing file completely before overwriting it.",
+      "description": "Reads UTF-8 text with bounded line ranges, including notebook JSON, using the official DSH reader. PNG/JPEG/WebP/GIF images return image content only when the calling model supports image input. PDF requires document conversion to text/Markdown first. Read an existing file completely before overwriting it.",
       "errorCodes": [
         {
           "code": "path_denied",
@@ -152,16 +153,8 @@
                 "type": "string"
               },
               "kind": {
-                "anyOf": [
-                  {
-                    "const": "text",
-                    "type": "string"
-                  },
-                  {
-                    "const": "notebook",
-                    "type": "string"
-                  }
-                ]
+                "const": "text",
+                "type": "string"
               },
               "lineCount": {
                 "maximum": 9007199254740991,
@@ -202,7 +195,7 @@
           {
             "additionalProperties": false,
             "properties": {
-              "attachment": {
+              "image": {
                 "additionalProperties": false,
                 "properties": {
                   "attachmentId": {
@@ -211,50 +204,77 @@
                     "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   },
-                  "mimeType": {
-                    "maxLength": 256,
-                    "minLength": 1,
-                    "type": "string"
+                  "bytes": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "height": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "mediaType": {
+                    "anyOf": [
+                      {
+                        "const": "image/png",
+                        "type": "string"
+                      },
+                      {
+                        "const": "image/jpeg",
+                        "type": "string"
+                      },
+                      {
+                        "const": "image/webp",
+                        "type": "string"
+                      },
+                      {
+                        "const": "image/gif",
+                        "type": "string"
+                      }
+                    ]
                   },
                   "name": {
                     "maxLength": 512,
-                    "minLength": 1,
                     "type": "string"
                   },
-                  "sha256": {
-                    "pattern": "^[a-f0-9]{64}$",
-                    "type": "string"
+                  "originalDimensions": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "height": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "width": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "width",
+                      "height"
+                    ],
+                    "type": "object"
                   },
-                  "sizeBytes": {
-                    "maximum": 20971520,
+                  "width": {
+                    "maximum": 9007199254740991,
                     "minimum": 1,
                     "type": "integer"
                   }
                 },
                 "required": [
                   "attachmentId",
-                  "name",
-                  "mimeType",
-                  "sizeBytes",
-                  "sha256"
+                  "mediaType",
+                  "bytes",
+                  "width",
+                  "height"
                 ],
                 "type": "object"
               },
               "kind": {
-                "anyOf": [
-                  {
-                    "const": "image",
-                    "type": "string"
-                  },
-                  {
-                    "const": "pdf",
-                    "type": "string"
-                  }
-                ]
-              },
-              "mimeType": {
-                "maxLength": 256,
-                "minLength": 1,
+                "const": "image",
                 "type": "string"
               },
               "path": {
@@ -262,17 +282,12 @@
                 "minLength": 1,
                 "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                 "type": "string"
-              },
-              "truncated": {
-                "type": "boolean"
               }
             },
             "required": [
               "path",
               "kind",
-              "mimeType",
-              "truncated",
-              "attachment"
+              "image"
             ],
             "type": "object"
           }
@@ -283,7 +298,7 @@
         "mode": "allowed",
         "revision": "operation-birth-and-durable-session"
       },
-      "resultSemantics": "Return bounded text with line metadata or one validated image/PDF attachment projection; notebook content is normalized text.",
+      "resultSemantics": "Return the official bounded UTF-8 text view or validated image content for an image-capable calling model. PDF conversion belongs to document processing.",
       "sideEffect": "read",
       "timeoutMs": 30000
     },
@@ -448,7 +463,7 @@
       ],
       "checkpoint": "root_managed_file",
       "concurrency": "canonical_path",
-      "description": "Performs an exact string replacement in a text file. By default old_string must occur exactly once; replace_all replaces every non-overlapping occurrence. Notebook files are unsupported.",
+      "description": "Performs an exact string replacement in a UTF-8 text file using official DSH edit semantics, including CRLF preservation. By default old_string must occur exactly once; replace_all replaces every non-overlapping occurrence.",
       "errorCodes": [
         {
           "code": "read_required",

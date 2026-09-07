@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   realpath,
   rm,
@@ -200,6 +201,11 @@ describe.runIf(nativeSmokeEnabled)(
         + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
       const calls = [
         { id: 'fixture-shell-call', name: 'bash', input: { command, workdir: 'child', description: 'Read the current CLI route' } },
+        { id: 'fixture-file-write', name: 'Write', input: { file_path: 'native-file-tools/note.txt', content: 'alpha\r\nbeta\r\n' } },
+        { id: 'fixture-file-read', name: 'Read', input: { file_path: 'native-file-tools/note.txt' } },
+        { id: 'fixture-file-edit', name: 'Edit', input: { file_path: 'native-file-tools/note.txt', old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' } },
+        { id: 'fixture-large-read', name: 'Read', input: { file_path: 'native-large.txt', limit: 1 } },
+        { id: 'fixture-image-read', name: 'Read', input: { file_path: 'native-pixel.png' } },
         { id: 'fixture-create-call', name: 'TaskCreate', input: { subject: 'Verify approval progress', description: 'Synthetic native regression' } },
         { id: 'fixture-update-call', name: 'TaskUpdate', input: { taskId: 'task-1', status: 'completed' } },
         { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
@@ -216,6 +222,7 @@ describe.runIf(nativeSmokeEnabled)(
       let childSystemPrompt = '';
       const proxyRequests: string[] = [];
       const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
+      const modelToolResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const server = createServer(async (request, response) => {
         if (request.url?.startsWith('http://')) {
           proxyRequests.push(request.url);
@@ -230,12 +237,13 @@ describe.runIf(nativeSmokeEnabled)(
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[]; system?: unknown };
         for (const block of modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[] : [])) {
+          if (block.type === 'tool_result' && block.tool_use_id) modelToolResults.set(block.tool_use_id, block);
           if (block.type === 'tool_result' && (block.tool_use_id === 'fixture-child-inherited-call' || block.tool_use_id === 'fixture-child-review-call')) childResults.set(block.tool_use_id, block);
         }
         const tool = calls[requests++];
         if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
         let input: Record<string, unknown> | undefined = tool?.input;
-        if (tool?.name === 'Write') {
+        if (tool?.id === 'fixture-plan-write-call') {
           const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
             .find(block => block.type === 'tool_result' && block.tool_use_id === 'fixture-enter-plan-call');
           const content = planResult?.content;
@@ -267,6 +275,8 @@ describe.runIf(nativeSmokeEnabled)(
       });
       const attachments = new DshAttachmentRegistry(fixture.executionEnvironment.attachmentStagingRoot);
       await attachments.initialize();
+      await writeFile(join(fixture.workspace, 'native-large.txt'), 'short line\n'.repeat(850_000));
+      await writeFile(join(fixture.workspace, 'native-pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
       const reviews: PermissionReview[] = [];
       const approvals: MethodParams<'host/interaction/request'>[] = [];
       const events: Record<string, unknown>[] = [];
@@ -308,7 +318,7 @@ describe.runIf(nativeSmokeEnabled)(
         const environmentDigest = createDshInitializeParams({ productSessionId, productVersion: '0.4.11', runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity }, executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
         const configured = await host.request('config/apply', { revision: 'native-shell-review-auto', provider: profile, permissionMode: 'acceptEdits', interactionScenario: 'host-interaction-v1', systemPrompt: '', executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest });
         expect(configured.state).toBe('applied');
-        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route from the child directory.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 12 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
+        await host.request('turn/start', { clientOperationId: 'native-shell-review-turn', clientUserMessageId: 'native-shell-review-message', input: { parts: [{ kind: 'text', text: 'Read the current CLI route and verify file tools.' }] }, configRevision: 'native-shell-review-auto', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision, executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 24 }, origin: { kind: 'headless', scenario: 'native-shell-review' } });
         await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(1);
         const approval = approvals[0]!;
         expect(approval.authority).toMatchObject({ callId: 'fixture-shell-call', rootCallId: 'fixture-shell-call' });
@@ -365,8 +375,17 @@ describe.runIf(nativeSmokeEnabled)(
         expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
         expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
         expect(requests).toBe(calls.length + 1);
+        expect(await readFile(join(fixture.workspace, 'native-file-tools/note.txt'), 'utf8')).toBe('ALPHA\r\nBETA\r\n');
+        expect(JSON.stringify(modelToolResults.get('fixture-large-read')?.content)).toContain('short line');
+        const imageResult = modelToolResults.get('fixture-image-read');
+        expect(imageResult?.is_error).not.toBe(true);
+        expect(JSON.stringify(imageResult?.content)).toContain('"type":"image"');
+        expect(JSON.stringify(imageResult?.content)).toContain('"type":"base64"');
         expect(childSystemPrompt).toContain('Product permissions and shared exact grants apply');
         expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
+      } catch (error) {
+        const progress = { requests, results: [...modelToolResults].map(([id, result]) => ({ id, isError: result.is_error, content: JSON.stringify(result.content).slice(0, 1500) })), terminal: await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' }).catch(() => undefined), stderr: fixture.stderr.slice(-5) };
+        throw new Error(`Native tool sequence failed: ${JSON.stringify(progress)}`, { cause: error });
       } finally {
         await host.stop();
         attachments.close();

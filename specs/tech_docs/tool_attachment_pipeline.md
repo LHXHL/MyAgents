@@ -8,6 +8,8 @@
 
 Integrated DSH 事件只携带 Runtime registry 签发的 `image_ref` 与元数据。adapter 按 exact generation/session/digest 获取只读 lease，校验路径后调用共享 `saveToolAttachment({ externalPath })`，并在成功/失败时释放 lease；附件失败只降级该附件。图片字节和任意绝对路径不进入普通 Runtime JSON 事件。
 
+Host 的 `DshAttachmentRegistry` 在发布时把对象设为只读，并在签发 lease 前校验字节身份、兼容旧版仍可写的对象；`readOnlyPath` 必须与磁盘权限一致，否则 Runtime 会拒绝模型侧图片消费。工具发布附件和模型随后读取附件分别使用各自有效的 request scope，不能沿用已经结束的工具 scope。
+
 ## Owner 与数据流
 
 ```text

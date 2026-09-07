@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 
 import type { ResolvedImagePayload } from '../../runtimes/types';
@@ -54,7 +54,7 @@ export class DshAttachmentRegistry {
     try {
       await access(path, fsConstants.F_OK);
     } catch {
-      await writeFile(path, bytes, { mode: 0o600, flag: 'wx' }).catch(async error => {
+      await writeFile(path, bytes, { mode: 0o400, flag: 'wx' }).catch(async error => {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       });
     }
@@ -122,6 +122,8 @@ export class DshAttachmentRegistry {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       });
     }
+    // The Host owns immutable objects; Runtime consumers validate a read-only lease.
+    if (((await stat(destination)).mode & 0o222) !== 0) await chmod(destination, 0o400);
     return {
       attachmentId: `sha256:${expectedSha}`,
       mimeType: text(params.mimeType, 'DSH attachment MIME type'),
@@ -146,6 +148,8 @@ export class DshAttachmentRegistry {
     ) {
       throw new Error('DSH attachment acquire postcondition failed');
     }
+    // Also seal objects created by earlier Host versions before granting a lease.
+    if ((details.mode & 0o222) !== 0) await chmod(path, 0o400);
     const leaseId = `lease-${randomUUID()}`;
     this.leases.set(leaseId, attachmentId);
     return {

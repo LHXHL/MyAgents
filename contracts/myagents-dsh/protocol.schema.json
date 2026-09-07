@@ -8133,7 +8133,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.2-rc.1.myagents.a66e47020478.3fff39022bbd",
+                "const": "0.1.2-rc.1.myagents.a66e47020478.db06dc323417",
                 "type": "string"
               }
             },
@@ -10867,7 +10867,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
+                    "const": "577bda20bda88496647be39d4e0aa018eb1583924b0380b3b97a416ad86e98d1",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -14846,7 +14846,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "3e9c711becce5d954432a1d077970d7d58e5530d88cf8014dbf3957ad6fa67e2",
+                    "const": "577bda20bda88496647be39d4e0aa018eb1583924b0380b3b97a416ad86e98d1",
                     "type": "string"
                   },
                   "diagnostics": {
