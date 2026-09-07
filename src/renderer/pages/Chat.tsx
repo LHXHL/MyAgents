@@ -2817,6 +2817,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
   }, [skipSnapshotWrite, currentProject?.id, currentProject?.agentId, isExternalRuntime, currentRuntime, currentAgent?.runtimeConfig, patchSnapshot, patchProject, t]);
 
+  const handleMcpRetry = useCallback((serverId: string) => (
+    apiPost<import('../../shared/mcpFailure').McpRetryResult>('/api/mcp/retry', { serverId })
+  ), [apiPost]);
+
   // Handle workspace MCP toggle — Tab UI edits dual-write:
   // (1) session snapshot so THIS session uses the new tool set immediately (owned sessions only
   //     — unlocked/IM have no snapshot);
@@ -5592,6 +5596,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             runtimeMcpTools={runtimeMcpTools}
             mcpEffectiveSnapshot={mcpEffectiveSnapshot}
             onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
+            onMcpRetry={!isExternalRuntime || managedProviderRuntimeActive ? handleMcpRetry : undefined}
             officialTools={OFFICIAL_TOOLS}
             workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
             globalOfficialToolEnabled={globalOfficialToolEnabled}

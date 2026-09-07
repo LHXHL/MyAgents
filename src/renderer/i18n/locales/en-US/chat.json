@@ -42,7 +42,26 @@
       "readyTools": "{{count}} tools ready",
       "needsAuth": "Authentication required",
       "unavailable": "Unavailable",
-      "starting": "Starting…"
+      "starting": "Starting…",
+      "stale": "Status awaiting confirmation",
+      "retry": "Retry connection",
+      "retryHint": "Reconnect this session’s tools, keeping the conversation and tool selection",
+      "errors": {
+        "MCP_STARTUP_FAILED": "Unavailable",
+        "MCP_CONNECTION_TIMEOUT": "Tool connection timed out",
+        "MCP_RUNTIME_MISSING": "Tool startup program not found",
+        "MCP_PACKAGE_FAILED": "Tool dependencies failed to load",
+        "MCP_CONFIG_INVALID": "Invalid tool startup arguments",
+        "MCP_CONNECTION_FAILED": "Tool connection interrupted",
+        "MCP_NEEDS_AUTH": "Tool authorization required",
+        "MCP_RUNTIME_EXITED": "Tool runtime exited"
+      },
+      "retryErrors": {
+        "session_busy": "Wait for this session’s tasks to finish before retrying",
+        "unsupported_runtime": "This runtime does not support retrying here",
+        "server_not_failed": "The tool status has changed; check its latest status",
+        "retry_failed": "Could not reconnect; please try again"
+      }
     },
     "pluginsHeader": "Plugins",
     "pluginLoadsMcpTitle": "Enabling this plugin automatically loads these MCP servers: {{names}}",

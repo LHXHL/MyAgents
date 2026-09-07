@@ -1410,6 +1410,48 @@ describe('external SessionEngine with fake runtime', () => {
     });
   });
 
+  it('retries failed Managed Codex MCP with the same configuration through idle replacement', async () => {
+    const harness = await createHarness([], { runtimeSource: 'managed-provider' });
+    const sessionId = 'session-mcp-retry';
+    const workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      mcpEnabledServers: ['playwright'],
+      agents: [{ id: 'agent-mcp-retry', path: workspacePath, mcpEnabledServers: ['playwright'] }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([{
+      id: 'project-mcp-retry', path: workspacePath, agentId: 'agent-mcp-retry', mcpEnabledServers: ['playwright'],
+    }]));
+    await harness.externalSession.prewarmExternalSession({ sessionId, workspacePath, scenario: { type: 'desktop' } });
+    await waitFor(() => Boolean(harness.engine.getStreamReplaySnapshot().systemInitPayload), 'MCP retry prewarm');
+    const messages = harness.engine.getStreamReplaySnapshot().replayMessages;
+    const configBefore = readFileSync(join(harness.home, '.myagents', 'config.json'), 'utf8');
+    harness.runtime.emitForTest({
+      kind: 'mcp_effective_update', configGeneration: 1, configFingerprint: 'unchanged', catalogGeneration: 1,
+      dispatch: { state: 'released', releaseReason: 'terminal_status' }, tools: [],
+      servers: [{ id: 'playwright', desired: true, state: 'failed', errorCode: 'MCP_CONNECTION_TIMEOUT', toolCount: 0, attemptGeneration: 1, updatedAt: 1 }],
+    });
+    expect(harness.engine.getStreamReplaySnapshot().mcpEffectiveSnapshot?.servers[0].state).toBe('failed');
+    expect(await harness.engine.retryMcpServer('unknown')).toMatchObject({ success: false, errorCode: 'server_not_failed' });
+    const retry = harness.engine.retryMcpServer('playwright');
+    expect(await harness.engine.retryMcpServer('playwright')).toMatchObject({ success: false, errorCode: 'session_busy' });
+    expect(await retry).toEqual({ success: true });
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.engine.getStreamReplaySnapshot().replayMessages).toEqual(messages);
+    expect(readFileSync(join(harness.home, '.myagents', 'config.json'), 'utf8')).toBe(configBefore);
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:mcp-effective-snapshot',
+      data: expect.objectContaining({ sessionId, servers: [], tools: [], observationStale: true }),
+    });
+  });
+
+  it('does not pretend an unmanaged external Runtime supports MCP retry', async () => {
+    const harness = await createHarness([]);
+    expect(await harness.engine.retryMcpServer('playwright')).toEqual({
+      success: false, status: 400, errorCode: 'unsupported_runtime',
+    });
+  });
+
   it('spills oversized completed tool input before top-level and nested result events', async () => {
     const harness = await createHarness([]);
     const sessionId = 'session-tool-input-spill';

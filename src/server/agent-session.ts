@@ -157,10 +157,12 @@ import {
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
 import { canonicalizeManagedProviderEnv, findProjectAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveMcpServers, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig, resolveWorkspaceConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
-import type {
-  McpEffectiveServerSnapshot,
-  McpEffectiveSnapshot,
+import {
+  invalidateMcpEffectiveSnapshot,
+  type McpEffectiveServerSnapshot,
+  type McpEffectiveSnapshot,
 } from '../shared/mcpEffectiveState';
+import { classifyMcpFailure, type McpRetryResult } from '../shared/mcpFailure';
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
 import { participatesInLiveRestore } from '../shared/liveRevision';
 import {
@@ -2116,6 +2118,7 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // This is the only abort-request write path. The lifecycle owner flips the
   // flag; this facade performs the cross-owner cleanup chain below.
   requestAbort();
+  clearBuiltinQueryMcpOwner(lifecycleState.query ?? undefined);
   // Unconfirmed in-flight items belong to the SDK subprocess that is about
   // to die. Do not silently clear them (leaves UI pills behind) and do not
   // requeue them (could duplicate a message the SDK already consumed but
@@ -2767,7 +2770,7 @@ function projectBuiltinMcpStatuses(
       desired: true,
       state,
       toolCount: serverTools.length,
-      ...(state === 'failed' ? { errorCode: 'MCP_STARTUP_FAILED' } : {}),
+      ...(state === 'failed' ? { errorCode: classifyMcpFailure(status?.error) } : {}),
       ...(state === 'needs_auth' ? { errorCode: 'MCP_NEEDS_AUTH' } : {}),
       attemptGeneration: owner.revision,
       updatedAt: now,
@@ -2840,15 +2843,20 @@ function installQueryMcpOwner(params: Parameters<typeof setQueryMcpPrewarmOwner>
   builtinMcpLastStatuses = [];
   publishBuiltinMcpEffectiveSnapshot();
 
+  // SDK status reads have no cancellation API. Check this exact observer AND
+  // map revision again after every await, including rejected reads/recovery.
+  const isCurrent = (): boolean => {
+    const current = getQueryMcpPrewarmOwner();
+    return !controller.signal.aborted
+      && !lifecycleState.abortRequested
+      && current?.query === owner.query
+      && current.generation === owner.generation
+      && current.revision === owner.revision;
+  };
+
   void (async () => {
     while (!controller.signal.aborted) {
-      const current = getQueryMcpPrewarmOwner();
-      if (
-        !current
-        || current.query !== owner.query
-        || current.generation !== owner.generation
-        || current.revision !== owner.revision
-      ) return;
+      if (!isCurrent()) return;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
         const result = await Promise.race([
@@ -2858,6 +2866,7 @@ function installQueryMcpOwner(params: Parameters<typeof setQueryMcpPrewarmOwner>
             timeout.unref?.();
           }),
         ]);
+        if (!isCurrent()) return;
         if (result.kind === 'statuses') {
           builtinMcpLastStatuses = [...result.statuses];
           maybeSettleBuiltinMcpStartup(builtinMcpLastStatuses);
@@ -2871,6 +2880,7 @@ function installQueryMcpOwner(params: Parameters<typeof setQueryMcpPrewarmOwner>
           if (playwrightNeedsTransport && !builtinBrowserHostRecovery) {
             builtinBrowserHostRecovery = (async () => {
               const capability = await acquireBrowserCapability();
+              if (!isCurrent()) return;
               const previousHostGeneration = builtBrowserHostGeneration;
               if (!observeBuiltinBrowserCapability(capability)) return;
               console.warn(
@@ -2889,7 +2899,7 @@ function installQueryMcpOwner(params: Parameters<typeof setQueryMcpPrewarmOwner>
           publishBuiltinMcpEffectiveSnapshot({ observationStale: true });
         }
       } catch {
-        publishBuiltinMcpEffectiveSnapshot({ observationStale: true });
+        if (isCurrent()) publishBuiltinMcpEffectiveSnapshot({ observationStale: true });
       } finally {
         if (timeout) clearTimeout(timeout);
       }
@@ -2902,10 +2912,45 @@ function installQueryMcpOwner(params: Parameters<typeof setQueryMcpPrewarmOwner>
 }
 
 function clearBuiltinQueryMcpOwner(query?: Query): void {
+  const owner = getQueryMcpPrewarmOwner();
+  // A retiring Query finalizer cannot clear the replacement's observer.
+  if (query && owner && owner.query !== query) return;
   builtinMcpObserverAbort?.abort();
   builtinMcpObserverAbort = null;
   builtinMcpLastStatuses = [];
   clearQueryMcpPrewarmOwner(query);
+  if (builtinMcpEffectiveSnapshot) {
+    builtinMcpEffectiveSnapshot = invalidateMcpEffectiveSnapshot(builtinMcpEffectiveSnapshot);
+    builtinMcpCatalogGeneration = builtinMcpEffectiveSnapshot.catalogGeneration;
+    builtinMcpEffectiveRevision = builtinMcpEffectiveSnapshot.revision;
+    broadcast('chat:mcp-effective-snapshot', builtinMcpEffectiveSnapshot);
+  }
+}
+
+/** Explicit retry uses the existing resume + startup-admission owner, even for unchanged config. */
+export function retryBuiltinMcpServer(serverId: string): McpRetryResult {
+  if (isSessionBusy() || hasQueryBackgroundTasks(lifecycleState.query) || getQueryMcpMutation()) {
+    return { success: false, status: 409, errorCode: 'session_busy' };
+  }
+  const failed = builtinMcpEffectiveSnapshot?.servers.find(server => server.id === serverId);
+  if (!failed?.desired || failed.state !== 'failed'
+    || !configState.currentMcpServers?.some(server => server.id === serverId)) {
+    return { success: false, status: 409, errorCode: 'server_not_failed' };
+  }
+  // processing describes the persistent Query, not a foreground turn. The
+  // busy checks above establish quiescence, so drain through the existing
+  // turn-boundary restart owner immediately, including established sessions.
+  resetPreWarmFailCount();
+  scheduleDeferredRestart('mcp');
+  applyDeferredRestartIfNeeded();
+  // --no-pre-warm disables speculative starts, not an explicit user retry.
+  // startStreamingSession already fences termination and concurrent launches.
+  if (lifecycleState.preWarmDisabled) {
+    void startStreamingSession(true).catch(() => {
+      console.warn('[agent] Explicit MCP retry failed before Runtime startup');
+    });
+  }
+  return { success: true };
 }
 
 /**
@@ -3938,7 +3983,14 @@ function buildSettingSources(): ('user' | 'project')[] {
  */
 async function buildSdkMcpServers(
   browserProductSessionIdOverride?: string,
+  targetQuery?: Query,
 ): Promise<Record<string, McpServerEntry>> {
+  // Live mutation builds can outlive their Query while resolving capability,
+  // registry or auth data. Check the lifecycle owner before shared side effects,
+  // especially Browser Host observation and startup-admission acquisition.
+  const isCurrent = () => !targetQuery
+    || (lifecycleState.query === targetQuery && !lifecycleState.abortRequested);
+  if (!isCurrent()) return {};
   // null = MCP not yet configured (e.g. Global sidecar, or Tab pre-warm before /api/mcp/set)
   // [] = explicitly no MCP (user has none enabled)
   // [...]= user's enabled MCP servers
@@ -3990,6 +4042,7 @@ async function buildSdkMcpServers(
       continue;
     }
     const entry = await entryPromise;
+    if (!isCurrent()) return {};
     entry.configure?.(server.env || {}, { sessionId: sessionId || 'default', workspace: agentDir });
     result[server.id] = entry.server as McpSdkServerConfigWithInstance;
     console.log(`[agent] Added builtin MCP: ${server.id}`);
@@ -4023,8 +4076,10 @@ async function buildSdkMcpServers(
       }
       if (browserProductSessionIdOverride) {
         await adoptBrowserProductSession(browserProductSessionIdOverride);
+        if (!isCurrent()) return {};
       }
       const capability = await acquireBrowserCapability();
+      if (!isCurrent()) return {};
       observeBuiltinBrowserCapability(capability);
       result[server.id] = {
         type: 'http',
@@ -4051,6 +4106,7 @@ async function buildSdkMcpServers(
       const headers = { ...remote.headers };
       if (!headers['Authorization'] && !headers['authorization']) {
         const oauthHeaders = await resolveAuthHeaders(server.id);
+        if (!isCurrent()) return {};
         if (oauthHeaders['Authorization']) {
           Object.assign(headers, oauthHeaders);
           console.log(`[agent] MCP ${server.id}: OAuth token injected`);
@@ -4069,12 +4125,14 @@ async function buildSdkMcpServers(
       console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);
     }
     } catch (err) {
+      if (!isCurrent()) return {};
       // Isolate individual MCP errors — one bad config must not take down all MCPs
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[agent] MCP ${server.id}: initialization failed, skipping: ${msg}`);
     }
   }
 
+  if (!isCurrent()) return {};
   if (await shouldInstallBuiltinStdioWave(stagedStdio)) {
     for (const entry of stagedStdio) result[entry.id] = entry.config;
   } else if (stagedStdio.length > 0) {
@@ -4182,7 +4240,7 @@ function latchMcpMutationRecovery(targetQuery: Query): void {
 async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutationResult> {
   let newServers: Record<string, McpServerEntry>;
   try {
-    newServers = await buildSdkMcpServers();
+    newServers = await buildSdkMcpServers(undefined, targetQuery);
   } catch (error) {
     if (lifecycleState.query !== targetQuery) {
       return {

@@ -70,6 +70,7 @@ import {
 import { imageAttachmentName } from './attachmentNames';
 import { MentionTabButton } from './components/MentionTabButton';
 import { ThoughtPickerRow } from './components/ThoughtPickerRow';
+import { McpStatusNotice } from './components/McpStatusNotice';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
 import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
 
@@ -178,6 +179,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   runtimeMcpTools = [],
   mcpEffectiveSnapshot = null,
   onWorkspaceMcpToggle,
+  onMcpRetry,
   onRefreshProviders,
   onOpenAgentSettings,
   onWorkspaceRefresh,
@@ -2049,14 +2051,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                             const effective = mcpServerState(mcpEffectiveSnapshot, server.id);
                             if (!effective || !isMcpErrorState(effective.state)) return null;
                             return (
-                              <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                <span>
-                                  {effective.state === 'needs_auth'
-                                    ? t('input.mcpStatus.needsAuth')
-                                    : t('input.mcpStatus.unavailable')}
-                                </span>
-                              </div>
+                              <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                             );
                           })()}
                         </div>
@@ -2081,14 +2076,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                   </div>
                                 )}
                                 {isEnabled && effective && isMcpErrorState(effective.state) && (
-                                  <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                    <span>
-                                      {effective.state === 'needs_auth'
-                                        ? t('input.mcpStatus.needsAuth')
-                                        : t('input.mcpStatus.unavailable')}
-                                    </span>
-                                  </div>
+                                  <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot?.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                                 )}
                               </div>
                               {hasUserEditableMcpSettings(server.id) && (
