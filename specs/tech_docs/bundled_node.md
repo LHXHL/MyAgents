@@ -1,6 +1,8 @@
 # Bundled Node.js 运行时架构
 
-MyAgents 随应用提供单一 Node.js v24，用于 Sidecar、Plugin Bridge、MCP Server 和 `myagents` CLI。用户不需要安装系统 Node 才能运行产品功能；Node/npm 的精确组合以 `scripts/node-runtime.json` 为唯一构建权威，下载脚本和前端版本展示共同读取。开发用的 `package.json#packageManager` 不代表应用内置 npm。
+MyAgents 随应用提供单一 Node.js v24，用于 Sidecar、Plugin Bridge、MCP Server 和 `myagents` CLI。用户不需要安装系统 Node 才能运行产品功能；内置 Node/npm 的精确组合以 `scripts/node-runtime.json` 为唯一构建权威，下载脚本和前端版本展示共同读取。
+
+开发与构建工具链由 `package.json#engines` / `devEngines` 定义最低版本：Node `>=24.14.0`、npm `>=11.15.0`，不要求与内置运行时相等。`.nvmrc` 只提供推荐安装版本；setup 的无依赖版本检查与 npm 的安装、构建检查通过回归测试保持一致。原生扩展仍须针对内置 Node 的 ABI 重建，不能用构建机版本替代运行时 identity。
 
 ## 获取、缓存与打包
 
@@ -26,7 +28,7 @@ npm 随官方 Node 发行包整组获取，禁止通过 `npm/latest` 或独立�
 
 ## Integrated DSH
 
-DSH Runtime 使用同一个 bundled Node，不增加第二份 Node，也不回退到系统 Node。`scripts/node-runtime.json` 拥有产品内置 Node/npm 组合；`package.json` 拥有开发工具链约束；DSH handoff 的 Runtime manifest 拥有构建 provenance 和所需 Node 版本。当前目标统一为 Node `24.20.0` / npm `11.19.0`，三个权威必须经过实际构建与验证后相符，不能只改旧制品的版本字段。
+DSH Runtime 使用同一个 bundled Node，不增加第二份 Node，也不回退到系统 Node。`scripts/node-runtime.json` 拥有产品内置 Node/npm 组合；DSH handoff 的 Runtime manifest 拥有构建 provenance 和所需 Node 版本。内置运行时当前固定为 Node `24.20.0` / npm `11.19.0`，必须与 DSH handoff 经过实际构建与验证后相符，不能只改旧制品的版本字段。构建 MyAgents 的本机 Node/npm 只需满足开发工具链最低版本，不参与这组精确相等校验。
 
 `src-tauri/resources/integrated-runtimes/dsh/` 保存完整不可变交付。`ingest:dsh-runtime` 在临时副本内设置可打包权限并验证后原子接纳；`verify:dsh-runtime` 校验交付、契约、Node 元数据及实际 Node/npm executable。npm 版本读取官方发行包自己的 `package.json`，不另建版本标记权威；开发 freshness 检查还对照配置的 Runtime 仓库 HEAD。构建不从兄弟仓库或网络临时获取 DSH。
 

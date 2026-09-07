@@ -38,11 +38,27 @@ check_install() {
     fi
 }
 
+# Bootstrap cannot depend on node_modules. Compare stable release components
+# numerically (sort -V is unavailable on macOS); npm enforces the same ranges
+# from package.json during install and every build command.
+version_at_least() {
+    local actual="${1#v}" minimum="$2" i
+    local actual_parts minimum_parts
+    [[ "$actual" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r -a actual_parts <<< "$actual"
+    IFS=. read -r -a minimum_parts <<< "$minimum"
+    for ((i = 0; i < 3; i++)); do
+        ((10#${actual_parts[i]} > 10#${minimum_parts[i]})) && return 0
+        ((10#${actual_parts[i]} < 10#${minimum_parts[i]})) && return 1
+    done
+    return 0
+}
+
 echo -e "${BLUE}[1/6] 检查依赖${NC}"
 MISSING=0
 
-check_install "Node.js 24.20.0" "[[ \"\$(node --version 2>/dev/null)\" == \"v24.20.0\" ]]" "精确 Node.js 24.20.0（见 .nvmrc）" || MISSING=1
-check_install "npm 11.19.0" "[[ \"\$(npm --version 2>/dev/null)\" == \"11.19.0\" ]]" "精确 npm 11.19.0" || MISSING=1
+check_install "Node.js >=24.14.0" "version_at_least \"\$(node --version 2>/dev/null)\" 24.14.0" "Node.js >=24.14.0（.nvmrc 提供推荐版本）" || MISSING=1
+check_install "npm >=11.15.0" "version_at_least \"\$(npm --version 2>/dev/null)\" 11.15.0" "npm >=11.15.0" || MISSING=1
 check_install "Rust" "rustc --version" "https://rustup.rs" || MISSING=1
 check_install "Cargo" "cargo --version" "随 Rust 安装" || MISSING=1
 check_install "rustup" "rustup --version" "https://rustup.rs" || MISSING=1

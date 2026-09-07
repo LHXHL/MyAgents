@@ -150,11 +150,13 @@ MyAgents 是一个桌面端 AI Agent 产品，不是单纯的前端项目。改�
 
 开发者：
 
-- Node.js `24.20.0`（精确版本，见 `.nvmrc`）。
-- npm `11.19.0`（精确版本）。
+- Node.js `>=24.14.0`（`.nvmrc` 提供推荐版本，不限制使用更新版本构建）。
+- npm `>=11.15.0`。
 - Rust 通过 [rustup](https://rustup.rs) 安装，实际 toolchain 由 [rust-toolchain.toml](rust-toolchain.toml) 固定。
 - 原生推理资源冷构建需要 CMake 3.28+ 和平台 C/C++ 工具链；macOS 还需要 Git、Python 3.10+ 与 Apple Clang。
 - macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ 或 Debian 12+。
+
+开发工具链与应用内置运行时独立；打包的 Node/npm 精确版本由 [`scripts/node-runtime.json`](scripts/node-runtime.json) 固定。
 
 ### 本地开发
 
@@ -426,11 +428,13 @@ End users:
 
 Developers:
 
-- Node.js `24.20.0` exactly (see `.nvmrc`).
-- npm `11.19.0` exactly.
+- Node.js `>=24.14.0` (`.nvmrc` provides a recommended version; newer build versions are allowed).
+- npm `>=11.15.0`.
 - Rust installed through [rustup](https://rustup.rs). The actual toolchain is pinned by [rust-toolchain.toml](rust-toolchain.toml).
 - Cold native-inference resource builds require CMake 3.28+ and the platform C/C++ toolchain. macOS additionally requires Git, Python 3.10+, and Apple Clang.
 - macOS 13+ / Windows 10+ / Linux Ubuntu 22.04+ or Debian 12+.
+
+The development toolchain is independent of the bundled runtime. Exact bundled Node/npm versions are pinned in [`scripts/node-runtime.json`](scripts/node-runtime.json).
 
 ### Local Development
 

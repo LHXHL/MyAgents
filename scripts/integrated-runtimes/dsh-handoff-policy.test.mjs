@@ -277,8 +277,9 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   );
   assert.equal(distribution.node, lock.runtime.requiredNodeVersion);
   assert.equal(distribution.npm, lock.bundledNpm.version);
-  assert.equal(packageJson.engines.node, distribution.node);
-  assert.equal(packageJson.engines.npm, distribution.npm);
+  // Host build requirements are independent of the exact shipped runtime pair.
+  assert.equal(packageJson.engines.node, ">=24.14.0");
+  assert.equal(packageJson.engines.npm, ">=11.15.0");
   for (const script of resourceScripts) {
     assert.match(script, /node-runtime\.json/);
     assert.doesNotMatch(script, /registry\.npmjs\.org\/npm\/latest/);
