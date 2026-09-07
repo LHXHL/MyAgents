@@ -1161,7 +1161,7 @@ describe('GlobalSidebar rail flyout', () => {
       .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });
 
-  it('uses compact navigation and workspace rows with state-driven workspace weight', () => {
+  it('keeps compact geometry and stable workspace weight across selection and menus', () => {
     mocks.forcedRail = false;
     mocks.projects.push(
       { id: 'project-1', name: 'Project one', path: '/work/project-one' },
@@ -1197,9 +1197,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(activeRow).toHaveClass('h-9');
     expect(inactiveRow).toHaveClass('h-9');
     expect(activeTitle).toHaveClass('font-medium');
-    expect(inactiveTitle).toHaveClass('font-normal');
-    expect(inactiveTitle?.className).toContain('group-hover/workspace:font-medium');
-    expect(inactiveTitle?.className).toContain('group-focus-within/workspace:font-medium');
+    expect(inactiveTitle).toHaveClass('font-medium');
+    expect(inactiveTitle?.className).not.toContain('group-hover/workspace:font-medium');
+    expect(inactiveTitle?.className).not.toContain('group-focus-within/workspace:font-medium');
     const notificationButton = screen.getByRole('button', {
       name: String(i18n.t('app:notificationCenter.bell')),
     });
@@ -1224,7 +1224,7 @@ describe('GlobalSidebar rail flyout', () => {
     // occupy the exact pixels that used to be solid spacing below the
     // section title, instead of stacking a fade below an unchanged gap.
     const workspaceSectionHeader = screen.getByText(String(i18n.t('app:globalSidebar.workspaceSection'))).closest('div');
-    expect(workspaceSectionHeader).toHaveClass('h-8');
+    expect(workspaceSectionHeader).toHaveClass('h-8', 'px-3');
     // The fade must consume the spacing directly above the notification entry:
     // the expanded footer drops its top padding so the scroller edge (and the
     // fade) reach the notification button, instead of stacking an extra
@@ -1237,14 +1237,14 @@ describe('GlobalSidebar rail flyout', () => {
     expect(workspaceToggle).toHaveClass('flex-1');
     expect(workspaceActions).toHaveClass('pointer-events-none', 'absolute', 'inset-y-0', 'right-0', 'pl-6', 'pr-2');
     expect(workspaceActions).not.toHaveClass('shrink-0');
-    expect(workspaceActions?.style.background).toContain('linear-gradient(to right');
-    expect(workspaceActions?.style.background).toContain('var(--global-sidebar-bg-a0)');
-    expect(workspaceActions?.style.background).toContain('var(--global-sidebar-bg)');
-    expect(workspaceActions?.style.background).toContain('var(--accent)');
+    expect(workspaceActions).toHaveClass('global-sidebar-workspace-actions');
 
     fireEvent.click(within(inactiveRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) }));
     expect(inactiveTitle).toHaveClass('font-medium');
     expect(inactiveTitle).not.toHaveClass('font-normal');
+    expect(inactiveRow).toHaveAttribute('data-menu-open', 'true');
+    expect(inactiveRow).not.toHaveAttribute('aria-current');
+    expect(activeRow).toHaveAttribute('aria-current', 'page');
   });
 
   it('animates workspace branches in the expanded sidebar and cancels a pending collapse when reopened', () => {
@@ -1477,7 +1477,7 @@ describe('GlobalSidebar rail flyout', () => {
 
     expect(document.querySelector('[data-global-sidebar-workspace-list]')).not.toHaveClass('space-y-1');
     const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
-    expect(workspaceRow).toHaveClass('bg-[var(--hover-bg)]');
+    expect(workspaceRow).toHaveAttribute('aria-current', 'page');
     expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
     expect(workspaceRow?.querySelector('[data-global-sidebar-workspace-actions]')).toHaveClass('pr-2');
     const firstSession = screen.getByRole('button', { name: /Session 1/ });
@@ -1583,7 +1583,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(workspaceRow).not.toHaveAttribute('aria-current');
     expect(workspaceRow).not.toHaveClass('bg-[var(--hover-bg)]');
     expect(workspaceRow.querySelector('[data-global-sidebar-workspace-title]')).toHaveClass('font-medium');
-    expect(activeRow).toHaveClass('bg-[var(--hover-bg)]');
+    expect(activeRow).toHaveClass('global-sidebar-resource-row');
     expect(activeRow).toHaveAttribute('aria-current', 'page');
     expect(activeRow.querySelector('[data-tab-activity-indicator]')).toBeNull();
     expect(rowFor('Open session').querySelector('[data-tab-activity-indicator]')).toBeNull();

@@ -247,11 +247,11 @@ function SidebarNavButton({
       disabled={disabled}
       aria-current={active ? 'page' : undefined}
       aria-label={label}
-      className={`relative flex h-8 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+      className={`global-sidebar-row relative flex h-8 items-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
         expanded ? 'w-full' : 'w-10'
       } ${
         active
-          ? 'bg-[var(--hover-bg)] text-[var(--ink)] shadow-sm'
+          ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
           : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
       } ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}
       data-global-sidebar-nav-button
@@ -1216,9 +1216,9 @@ export default memo(function GlobalSidebar({
                   onClick={openFlyoutNow}
                   aria-label={t('globalSidebar.workspaces')}
                   aria-expanded={flyoutOpen}
-                  className={`flex h-9 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                  className={`global-sidebar-row flex h-9 w-10 items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                     activeWorkspacePath
-                      ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
+                      ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
                       : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                   }`}
                 >
@@ -1253,11 +1253,11 @@ export default memo(function GlobalSidebar({
             aria-haspopup="dialog"
             aria-expanded={notificationOpen}
             aria-controls="global-notification-center"
-            className={`relative flex h-8 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+            className={`global-sidebar-row relative flex h-8 items-center text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
               expanded ? 'w-full' : 'w-10'
             } ${
               notificationOpen
-                ? 'bg-[var(--hover-bg)] text-[var(--ink)] shadow-sm'
+                ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
                 : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
             }`}
             data-notification-center-trigger
@@ -1310,7 +1310,7 @@ export default memo(function GlobalSidebar({
       {!expanded && flyoutOpen && (
         <div
           ref={flyoutRef}
-          className={`fixed bottom-28 left-[calc(var(--global-sidebar-rail-width)+var(--space-2))] top-32 z-[240] w-[var(--global-sidebar-flyout-width)] ${APP_SHELL_POPOVER_CHROME}`}
+          className={`fixed bottom-28 left-[calc(var(--global-sidebar-rail-width)+var(--space-2))] top-32 z-[240] w-[var(--global-sidebar-flyout-width)] [--global-sidebar-surface:var(--paper-elevated)] ${APP_SHELL_POPOVER_CHROME}`}
           data-global-sidebar-flyout
           onPointerEnter={handleFlyoutPointerEnter}
           onPointerLeave={handleFlyoutPointerLeave}
@@ -1673,7 +1673,7 @@ function WorkspaceTree({
   return (
     <section className="relative flex h-full min-h-0 flex-col" aria-label={t('globalSidebar.workspaces')}>
       <div className="flex h-8 shrink-0 items-center gap-1 px-3">
-        <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
+        <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
           {t('globalSidebar.workspaceSection')}
         </h2>
         <Tip label={tLauncher('workspaceCard.more')} position="bottom" align="end" disabled={viewMenuOpen}>
@@ -1790,7 +1790,6 @@ function WorkspaceTree({
                     project={project}
                     expanded={expandedSet.has(key)}
                     active={isActiveWorkspaceContext && !activeSessionId}
-                    containsActiveSession={isActiveWorkspaceContext && Boolean(activeSessionId)}
                     actionTipPosition={index === 0 ? 'bottom' : 'top'}
                     onToggle={() => onToggleWorkspace(project)}
                     onOpenWorkspace={() => onOpenWorkspace(project)}
@@ -1913,7 +1912,6 @@ interface WorkspaceRowProps {
   project: Project;
   expanded: boolean;
   active: boolean;
-  containsActiveSession: boolean;
   actionTipPosition: 'top' | 'bottom';
   onToggle: () => void;
   onOpenWorkspace: () => void;
@@ -1929,7 +1927,6 @@ function WorkspaceRow({
   project,
   expanded,
   active,
-  containsActiveSession,
   actionTipPosition,
   onToggle,
   onOpenWorkspace,
@@ -1957,9 +1954,8 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className={`group/workspace relative flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] focus-within:bg-[var(--hover-bg)] ${
-        active || menuOpen ? 'bg-[var(--hover-bg)]' : ''
-      }`}
+      className="global-sidebar-row global-sidebar-resource-row group/workspace relative flex h-9 select-none items-center transition-colors"
+      data-menu-open={menuOpen || undefined}
       data-global-sidebar-workspace-row
       onMouseDown={(event) => {
         if (event.button === 2) {
@@ -1980,11 +1976,7 @@ function WorkspaceRow({
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         <WorkspaceIcon icon={project.icon} size={16} />
         <span
-          className={`ml-1 min-w-0 flex-1 truncate ${
-            active || containsActiveSession || menuOpen
-              ? 'font-medium'
-              : 'font-normal group-hover/workspace:font-medium group-focus-within/workspace:font-medium'
-          }`}
+          className="ml-1 min-w-0 flex-1 truncate font-medium"
           data-global-sidebar-workspace-title
         >
           {displayName}
@@ -1996,10 +1988,7 @@ function WorkspaceRow({
           supplies 8px, and the local right padding keeps controls outside
           Fluent's 16px overlay hit region. */}
       <div
-        className={`pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
-        style={{
-          background: 'linear-gradient(to right, var(--global-sidebar-bg-a0) 0, color-mix(in srgb, var(--global-sidebar-bg) 90%, var(--accent) 10%) 1.5rem)',
-        }}
+        className={`global-sidebar-workspace-actions pointer-events-none absolute inset-y-0 right-0 flex items-center pl-6 pr-2 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}
         data-global-sidebar-workspace-actions
       >
         <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
@@ -2104,9 +2093,10 @@ function SessionRow({
     <div
       role="treeitem"
       aria-current={active ? 'page' : undefined}
-      className={`group/session relative flex h-9 select-none items-center rounded-lg pl-2 pr-1 transition-colors focus-within:bg-[var(--hover-bg)] ${
-        active ? 'bg-[var(--hover-bg)] text-[var(--ink)]' : 'text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)]'
+      className={`global-sidebar-row global-sidebar-resource-row group/session relative flex h-9 select-none items-center pl-2 pr-1 transition-colors ${
+        active ? 'text-[var(--ink)]' : 'text-[var(--ink-secondary)]'
       }`}
+      data-menu-open={menuOpen || undefined}
       data-global-sidebar-session-row
       onMouseDown={(event) => {
         if (event.button === 2) {
@@ -2151,7 +2141,7 @@ function SessionRow({
           label={tLauncher('rightRail.unreadNotifications', { count: unreadNotificationCount })}
         />
         <span
-          className={`ml-auto shrink-0 text-xs tabular-nums text-[var(--ink-muted)]/55 transition-opacity ${
+          className={`ml-auto shrink-0 text-xs tabular-nums text-[var(--ink-muted)] transition-opacity ${
             menuOpen ? 'opacity-0' : 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
           }`}
           data-global-sidebar-session-date
