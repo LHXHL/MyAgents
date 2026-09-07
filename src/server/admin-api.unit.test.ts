@@ -193,6 +193,29 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+describe('Record Admin routing', () => {
+  it.each(['global', 'session'] as const)('forwards %s Record list results and errors through the production gate', async role => {
+    const { composeSidecarRequestHandler, resolveSidecarComposition } = await import('./sidecar-composition');
+    const { handleRecordList } = await import('./admin-api');
+    const handler = composeSidecarRequestHandler(resolveSidecarComposition(role, false), async request =>
+      Response.json(await handleRecordList(await request.json())),
+    );
+    for (const records of [[], [{ id: 'record-fixture', kind: 'text', content: 'Synthetic record' }]]) {
+      managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, records });
+      const response = await handler(new Request('http://localhost/api/admin/record/list', {
+        method: 'POST', body: JSON.stringify({ kind: 'text', limit: 5 }),
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true, data: records });
+      expect(managementApiMocks.managementApi).toHaveBeenLastCalledWith('/api/record/list?kind=text&limit=5');
+    }
+    const recoveryHint = { recoveryCommand: 'myagents status', message: 'Retry when storage is available' };
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'Record store unavailable', recoveryHint });
+    const response = await handler(new Request('http://localhost/api/admin/record/list', { method: 'POST', body: '{}' }));
+    expect(await response.json()).toMatchObject({ success: false, error: 'Record store unavailable', recoveryHint });
+  });
+});
+
 describe('admin-api help registry', () => {
   it('presents Record as canonical and Thought only as a compatibility alias', async () => {
     const { handleHelp } = await import('./admin-api');

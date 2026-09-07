@@ -3902,8 +3902,12 @@ export async function handleExternalProxyConfigChange(input: {
   const usesManagedProviderProxy =
     runtimeType === 'codex' && runtimeSource === 'managed-provider';
   const usesProcessProxyEnv =
-    runtimeSource !== 'managed-provider' &&
-    (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents';
+    // Integrated DSH Shell always consumes the general owner. The terminal
+    // envPolicy belongs only to external CLI runtimes.
+    runtimeType === 'dsh' || (
+      runtimeSource !== 'managed-provider' &&
+      (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents'
+    );
   const oldKey = usesManagedProviderProxy
     ? input.oldManagedProviderKey
     : input.oldProcessEnvKey;

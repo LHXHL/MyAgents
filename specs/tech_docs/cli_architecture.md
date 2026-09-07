@@ -441,9 +441,11 @@ live runtime 未收敛”，不能把当前 Sidecar 的 `config:changed` 当作�
 
 ### 管理 API 转发（`/api/task/*` / `/api/cron/*` 等）
 
-部分能力（Task / Cron compatibility / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
+部分能力（Task / Record / Cron compatibility / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
 - 成功响应剥掉 Rust `ok` 字段、包成 Admin `{ success: true, data }`
 - 失败响应原样透传 `recoveryHint`（例如 Management API 不可达时 Admin handler 注入 `→ Run: myagents status` 指引）
+
+`record/list` 和 `record/create` 经当前 Sidecar 转发到 Rust Record owner，`record/` 与兼容 `thought/` 都在 `sidecar-composition.ts` 登记为 common。该 gate 先于 Admin handler 执行；漏登记会直接返回 404，不能把这种错误当作“没有记录”转换为空数组。
 
 ### 官方 CLI 工具与用户 CLI 工具
 

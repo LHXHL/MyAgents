@@ -68,7 +68,11 @@ async function currentOpenFileDescriptorCount(): Promise<number | undefined> {
   return (await readdir("/dev/fd")).length;
 }
 
-async function createNativeHostFixture(label: string, route?: { productSessionId: string; sidecarPort: number }) {
+async function createNativeHostFixture(
+  label: string,
+  route?: { productSessionId: string; sidecarPort: number },
+  proxyEnvironment?: Readonly<NodeJS.ProcessEnv>,
+) {
   const temporaryRoot = await realpath(
     await mkdtemp(join(tmpdir(), `myagents-dsh-process-host-${label}-`)),
   );
@@ -85,6 +89,8 @@ async function createNativeHostFixture(label: string, route?: { productSessionId
   });
   const childEnvironment = buildDshChildEnvironment({
     nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
+    inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
+    proxyEnvironment,
     ...(route === undefined ? {} : { sessionRoute: route }),
   });
   const executionEnvironment: Omit<DshExecutionEnvironment, "digest"> = {
@@ -187,7 +193,11 @@ describe.runIf(nativeSmokeEnabled)(
   () => {
     it.runIf(process.platform !== 'win32').each([false, true])('allows Action tools and routes child Shell approval after a shared grant (large review: %s)', async largeReview => {
       const productSessionId = randomUUID();
-      const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"' + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
+      const curl = '/usr/bin/curl -q -fsS --max-time 5';
+      const command = 'printf "%s|%s" "$MYAGENTS_PORT" "$MYAGENTS_SESSION_ID"'
+        + `; ${curl} http://dsh-shell-fixture.invalid/root`
+        + `; ${curl} "http://127.0.0.1:$MYAGENTS_PORT/shell-loopback"`
+        + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
       const calls = [
         { id: 'fixture-shell-call', name: 'bash', input: { command, workdir: 'child', description: 'Read the current CLI route' } },
         { id: 'fixture-create-call', name: 'TaskCreate', input: { subject: 'Verify approval progress', description: 'Synthetic native regression' } },
@@ -195,7 +205,7 @@ describe.runIf(nativeSmokeEnabled)(
         { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
         { id: 'fixture-agent-call', name: 'Agent', input: { subagent_type: 'permission-helper', description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.', run_in_background: false } },
         { id: 'fixture-child-inherited-call', name: 'bash', input: { command: 'printf inherited-child', workdir: 'child', description: 'Verify the shared directory grant' } },
-        { id: 'fixture-child-review-call', name: 'bash', input: { command: 'printf approved-child', description: 'Verify child approval at another directory' } },
+        { id: 'fixture-child-review-call', name: 'bash', input: { command: `printf approved-child; ${curl} http://dsh-shell-fixture.invalid/child`, description: 'Verify child approval at another directory' } },
         undefined, // The foreground child completes before the root continues.
         { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [{ header: 'Review', question: 'Continue the synthetic plan check?', options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }], multiSelect: false }] } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
@@ -204,8 +214,18 @@ describe.runIf(nativeSmokeEnabled)(
       ];
       let requests = 0;
       let childSystemPrompt = '';
+      const proxyRequests: string[] = [];
       const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const server = createServer(async (request, response) => {
+        if (request.url?.startsWith('http://')) {
+          proxyRequests.push(request.url);
+          response.end('shell-proxy-ok');
+          return;
+        }
+        if (request.url === '/shell-loopback') {
+          response.end('shell-loopback-ok');
+          return;
+        }
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[]; system?: unknown };
@@ -236,7 +256,11 @@ describe.runIf(nativeSmokeEnabled)(
       await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Fixture server did not bind');
-      const fixture = await createNativeHostFixture('shell-review', { productSessionId, sidecarPort: address.port }).catch(async error => {
+      const proxyUrl = `http://127.0.0.1:${address.port}`;
+      const fixture = await createNativeHostFixture('shell-review', { productSessionId, sidecarPort: address.port }, {
+        HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, https_proxy: proxyUrl,
+        NO_PROXY: 'localhost,127.0.0.1,::1', no_proxy: 'localhost,127.0.0.1,::1',
+      }).catch(async error => {
         server.closeAllConnections();
         await new Promise<void>(resolve => server.close(() => resolve()));
         throw error;
@@ -326,10 +350,14 @@ describe.runIf(nativeSmokeEnabled)(
         for (const result of childResults.values()) expect(result.is_error, JSON.stringify(result)).not.toBe(true);
         expect(JSON.stringify(childResults.get('fixture-child-inherited-call')?.content)).toContain('inherited-child');
         expect(JSON.stringify(childResults.get('fixture-child-review-call')?.content)).toContain('approved-child');
+        expect(JSON.stringify(childResults.get('fixture-child-review-call')?.content)).toContain('shell-proxy-ok');
         await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal !== undefined, { timeout: 20_000 }).toBe(true);
         const toolResult = events.find(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
         expect(toolResult).toBeDefined();
         expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
+        expect(JSON.stringify(toolResult)).toContain('shell-proxy-ok');
+        expect(JSON.stringify(toolResult)).toContain('shell-loopback-ok');
+        expect(proxyRequests).toEqual(['http://dsh-shell-fixture.invalid/root', 'http://dsh-shell-fixture.invalid/child']);
         expect(JSON.stringify(toolResult)).not.toContain('not sealed');
         const toolResults = events.filter(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
         expect(toolResults).toHaveLength(calls.filter(Boolean).length - childResults.size);

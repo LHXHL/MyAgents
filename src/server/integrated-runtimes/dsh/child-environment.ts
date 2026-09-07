@@ -1,5 +1,6 @@
 import { delimiter, dirname, isAbsolute, normalize } from "node:path";
 import { isCliProductSessionId } from '../../../shared/cli-session-scope';
+import { PROXY_ENV_KEYS } from '../../../shared/proxyScope';
 
 const SAFE_INHERITED_ENVIRONMENT_KEYS = [
   "HOME",
@@ -47,6 +48,7 @@ export function buildDshChildEnvironment(options: {
   nodeExecutablePath: string;
   commandDirectories?: readonly string[];
   inheritedEnvironment?: Readonly<NodeJS.ProcessEnv>;
+  proxyEnvironment?: Readonly<NodeJS.ProcessEnv>;
   sessionRoute?: Readonly<{ productSessionId: string; sidecarPort: number }>;
 }): DshChildEnvironment {
   if (!isAbsolute(options.nodeExecutablePath)) {
@@ -79,6 +81,12 @@ export function buildDshChildEnvironment(options: {
     if (value === undefined) continue;
     env[key] = value;
     inheritedKeys.push(key);
+  }
+  // The Host selects general scope explicitly; ambient or Provider-owned env
+  // must never become the authority for Shell network access.
+  for (const key of PROXY_ENV_KEYS) {
+    const value = safeEnvironmentValue(options.proxyEnvironment?.[key]);
+    if (value !== undefined) env[key] = value;
   }
   return Object.freeze({
     env: Object.freeze(env),

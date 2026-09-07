@@ -62,6 +62,44 @@ describe("DSH child environment", () => {
     }
   });
 
+  it('admits only the explicit general proxy projection, independently of ambient variables', () => {
+    const proxyEnvironment = {
+      HTTP_PROXY: 'http://general.proxy:7890',
+      HTTPS_PROXY: 'http://general.proxy:7890',
+      http_proxy: 'http://general.proxy:7890',
+      https_proxy: 'http://general.proxy:7890',
+      ALL_PROXY: 'socks5://inherited.proxy:1080',
+      all_proxy: 'socks5://inherited.proxy:1080',
+      NO_PROXY: 'localhost,127.0.0.1,::1',
+      no_proxy: 'localhost,127.0.0.1,::1',
+    };
+    const environment = buildDshChildEnvironment({
+      nodeExecutablePath: '/verified/node',
+      inheritedEnvironment: { HTTPS_PROXY: 'http://stale.proxy:8080', NO_PROXY: '*' },
+      proxyEnvironment: {
+        ...proxyEnvironment,
+        ANTHROPIC_API_KEY: 'credential-canary',
+        NODE_OPTIONS: '--require=/tmp/inject.js',
+        PATH: '/untrusted',
+        MYAGENTS_PROXY_INJECTED: '1',
+      },
+    });
+    expect(environment.env).toEqual({ PATH: '/verified', ...proxyEnvironment });
+    expect(environment.allowedKeys).toEqual(['PATH', ...Object.keys(proxyEnvironment)]);
+    expect(environment.inheritedKeys).toEqual([]);
+    expect(JSON.stringify(environment)).not.toContain('credential-canary');
+    expect(Object.isFrozen(environment.env)).toBe(true);
+  });
+
+  it('omits invalid proxy values without falling back to ambient proxies', () => {
+    const environment = buildDshChildEnvironment({
+      nodeExecutablePath: '/verified/node',
+      inheritedEnvironment: { HTTPS_PROXY: 'http://stale.proxy:8080' },
+      proxyEnvironment: { HTTP_PROXY: '', HTTPS_PROXY: 'http://proxy\0invalid', ALL_PROXY: 'x'.repeat(32_769) },
+    });
+    expect(environment.env).toEqual({ PATH: '/verified' });
+  });
+
   it("rejects relative executable authorities", () => {
     expect(() =>
       buildDshChildEnvironment({ nodeExecutablePath: "node" }),

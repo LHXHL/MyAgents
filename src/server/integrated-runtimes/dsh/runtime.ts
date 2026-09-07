@@ -33,6 +33,7 @@ import { getHomeDir } from '../../utils/platform';
 import { getBundledNodePath } from '../../utils/runtime';
 import { ensureShellPath } from '../../utils/shell';
 import { getSidecarPort } from '../../session-core/sidecar-port';
+import { getGeneralProxyEnvironment } from '../../proxy-state';
 import type {
   AgentRuntime,
   ResolvedImagePayload,
@@ -816,6 +817,7 @@ export class DshRuntime implements AgentRuntime {
       nodeExecutablePath: installation.nodeExecutablePath,
       commandDirectories,
       inheritedEnvironment: process.env,
+      proxyEnvironment: getGeneralProxyEnvironment(),
       sessionRoute: { productSessionId: options.sessionId, sidecarPort: getSidecarPort() },
     });
     const environmentWithoutDigest = executionEnvironment(

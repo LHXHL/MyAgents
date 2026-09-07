@@ -3177,6 +3177,69 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
   });
 
+  it.each(['codex', 'dsh'] as const)('applies general proxy changes to %s according to its owner with terminal envPolicy saved', async runtimeType => {
+    const harness = await createHarness([{ kind: 'success', text: 'initial turn' }], { runtimeType });
+    const sessionId = 'session-proxy-owner';
+    const workspacePath = join(harness.home, 'workspace');
+    writeFileSync(join(harness.home, '.myagents', 'config.json'), JSON.stringify({
+      agents: [{ id: 'proxy-owner-agent', path: workspacePath, runtimeConfig: { envPolicy: { proxy: 'terminal' } } }],
+    }));
+    writeFileSync(join(harness.home, '.myagents', 'projects.json'), JSON.stringify([
+      { id: 'proxy-owner-project', path: workspacePath, agentId: 'proxy-owner-agent' },
+    ]));
+    const { resolveAgentEnvPolicy } = await import('./env-utils');
+    expect(await resolveAgentEnvPolicy(workspacePath)).toEqual({ proxy: 'terminal' });
+    const initial = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'start a process with the saved policy'),
+      ...(runtimeType === 'dsh' ? { permissionMode: 'auto' as const } : {}),
+    });
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    const result = await harness.externalSession.handleExternalProxyConfigChange({
+      oldManagedProviderKey: 'provider', newManagedProviderKey: 'provider',
+      oldProcessEnvKey: 'general-old', newProcessEnvKey: 'general-new',
+    });
+    expect(result).toEqual(runtimeType === 'dsh'
+      ? { success: true }
+      : { success: true, skipped: 'proxy-not-owned-by-myagents' });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(runtimeType !== 'dsh');
+  });
+
+  it.each([false, true])('defers DSH Shell proxy invalidation until terminal and cancels a reverted change: %s', async revert => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'completed with the original Shell environment', completeDelayMs: 150 },
+      { kind: 'success', text: 'next turn' },
+    ], { runtimeType: 'dsh' });
+    const sessionId = 'session-dsh-proxy-boundary';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'finish before replacing Shell environment'), permissionMode: 'auto',
+    });
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => harness.externalSession.getExternalSessionState() === 'running', 'active DSH turn');
+
+    const change = { oldManagedProviderKey: 'provider', newManagedProviderKey: 'provider', oldProcessEnvKey: 'A', newProcessEnvKey: 'B' };
+    await expect(harness.externalSession.handleExternalProxyConfigChange(change)).resolves.toEqual({ success: true });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    if (revert) {
+      await expect(harness.externalSession.handleExternalProxyConfigChange({
+        ...change, oldProcessEnvKey: 'B', newProcessEnvKey: 'A',
+      })).resolves.toEqual({ success: true, skipped: 'unchanged-after-defer' });
+    }
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('completed with the original Shell environment');
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(revert);
+    const next = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'use the effective proxy policy'), permissionMode: 'auto',
+    });
+    await expect(next.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(revert ? 1 : 2);
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('next turn');
+  });
+
   it('defers a real official tool restart until the active turn completes', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'turn before config restart', completeDelayMs: 80 },
