@@ -100,16 +100,86 @@ function assertJsonEqual(actual, expected, label) {
   }
 }
 
-export function runPublicVerifier(root, expectedManifestSha256) {
+// Build-tool Node only orchestrates admission. The public verifier includes a
+// Runtime self-check, so its execution identity must be the shipped Node.
+export function verifyBundledToolchain(
+  repoRoot,
+  lock,
+  nodeRoot = resolve(repoRoot, "src-tauri/resources/nodejs"),
+) {
+  const distribution = readJson(resolve(repoRoot, "scripts/node-runtime.json"));
+  assertEqual(distribution.node, lock.runtime.requiredNodeVersion, "bundled distribution Node");
+  assertEqual(distribution.npm, lock.bundledNpm.version, "bundled distribution npm");
+
+  if (!existsSync(nodeRoot)) {
+    fail(`bundled Node directory is missing: ${nodeRoot}; prepare it with scripts/download_nodejs.sh (Windows: scripts/download_nodejs.ps1)`);
+  }
+  nodeRoot = resolveExplicitDirectory(resolve(nodeRoot), "--node-root");
+  const nodeVersionPath = resolve(nodeRoot, ".myagents-nodejs-version");
+  const platformPath = resolve(nodeRoot, ".myagents-nodejs-platform");
+  for (const path of [nodeVersionPath, platformPath]) {
+    if (!existsSync(path) || !lstatSync(path).isFile()) {
+      fail(`bundled toolchain metadata is missing: ${path}`);
+    }
+  }
+  const nodeVersion = readFileSync(nodeVersionPath, "utf8").trim();
+  const platform = readFileSync(platformPath, "utf8").trim();
+  if (!["darwin", "linux", "win"].includes(platform)) {
+    fail(`unsupported bundled Node platform: ${platform}`);
+  }
+  const nodeExecutable = resolve(nodeRoot, platform === "win" ? "node.exe" : "bin/node");
+  const npmRoot = resolve(nodeRoot, platform === "win" ? "node_modules/npm" : "lib/node_modules/npm");
+  const npmPackagePath = resolve(npmRoot, "package.json");
+  const npmCli = resolve(npmRoot, "bin/npm-cli.js");
+  for (const path of [nodeExecutable, npmPackagePath, npmCli]) {
+    if (!existsSync(path) || !lstatSync(path).isFile()) {
+      fail(`bundled toolchain file is missing: ${path}`);
+    }
+  }
+  const npmVersion = readJson(npmPackagePath).version;
+  assertEqual(nodeVersion, lock.runtime.requiredNodeVersion, "bundled Node");
+  assertEqual(npmVersion, lock.bundledNpm.version, "bundled npm");
+
+  let executedNodeVersion;
+  let executedNpmVersion;
+  try {
+    executedNodeVersion = execFileSync(nodeExecutable, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim().replace(/^v/, "");
+    executedNpmVersion = execFileSync(nodeExecutable, [npmCli, "--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.message;
+    fail(`cannot execute bundled Node/npm from ${nodeRoot}: ${detail}`);
+  }
+  assertEqual(executedNodeVersion, lock.runtime.requiredNodeVersion, "bundled Node executable");
+  assertEqual(executedNpmVersion, lock.bundledNpm.version, "bundled npm executable");
+  return {
+    nodeExecutable,
+    bundledNodeVersion: nodeVersion,
+    bundledNpmVersion: npmVersion,
+  };
+}
+
+export function runPublicVerifier(root, expectedManifestSha256, nodeExecutable) {
+  if (typeof nodeExecutable !== "string" || !isAbsolute(nodeExecutable)) {
+    fail("public verifier requires an explicit absolute Node executable from verifyBundledToolchain");
+  }
   const verifier = resolve(root, "verify.mjs");
   if (!existsSync(verifier) || !lstatSync(verifier).isFile()) {
     fail(`public verifier is missing: ${verifier}`);
   }
   try {
-    return execFileSync(process.execPath, [verifier, expectedManifestSha256], {
+    return execFileSync(nodeExecutable, [verifier, expectedManifestSha256], {
       cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     }).trim();
   } catch (error) {
     const detail = error.stderr?.toString().trim() || error.message;

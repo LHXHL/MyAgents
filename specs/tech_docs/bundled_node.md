@@ -32,6 +32,8 @@ DSH Runtime 使用同一个 bundled Node，不增加第二份 Node，也不回�
 
 `src-tauri/resources/integrated-runtimes/dsh/` 保存完整不可变交付。`ingest:dsh-runtime` 在临时副本内设置可打包权限并验证后原子接纳；`verify:dsh-runtime` 校验交付、契约、Node 元数据及实际 Node/npm executable。npm 版本读取官方发行包自己的 `package.json`，不另建版本标记权威；开发 freshness 检查还对照配置的 Runtime 仓库 HEAD。构建不从兄弟仓库或网络临时获取 DSH。
 
+构建校验与 handoff 接纳共用 `dsh-handoff-policy.mjs::verifyBundledToolchain()`：先核对发行组合、资源元数据与实际 Node/npm executable，再把返回的 Node 绝对路径传给 `runPublicVerifier()`，包括接纳临时副本的第二次校验。公开 verifier 包含 Runtime self-check，必须使用产品内置 Node；若继承构建脚本的 `process.execPath`，合规的本机 Node 也可能因版本不同而被错误拒绝。两个入口默认使用 `resources/nodejs`，可通过 `--node-root` 显式指定待验证的发行目录；资源缺失时先运行对应平台的 `scripts/download_nodejs.sh` / `.ps1`。不回退本机 Node，也不提供 `--skip-node` 绕过入口。
+
 ## Claude Agent SDK native child
 
 Builtin Claude Agent SDK 自带 target-specific native executable；它是独立进程，不复用 MyAgents Node 的进程内状态。MyAgents 只通过 SDK transport 与它通信。

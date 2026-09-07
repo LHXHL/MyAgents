@@ -30,6 +30,7 @@
 - [`DeferredInitState` + readiness endpoints](#deferredinitstate) — 三分健康探针
 
 **Node.js 辅助层**
+- [DSH 构建校验的 Node identity](#dsh-build-node) — verifier 使用已验证的 bundled Node，构建机版本不参与 Runtime 自检
 - [`fs-utils`](#fs-utils) — 跨平台 mkdir / 目录判定 + 断链 symlink 探针（cpSync C++ 异常）
 - [`subprocess`](#subprocess) — Node 子进程 stream 形态适配
 - [`file-response`](#file-response) — 流式 HTTP 文件响应 + 渲染器直连接口的 CORS/CSP
@@ -49,6 +50,17 @@
 - [Test classification + non-credentialed no-egress](#test-classification-no-egress) — server 测试显式分层，非 credentialed Node 测试禁止真实出站
 
 ---
+
+<a id="dsh-build-node"></a>
+## DSH 构建校验的 Node identity
+
+**Problem.** DSH 公开 verifier 包含运行时自检。用构建进程的 `process.execPath` 启动它，会把满足开发工具链范围的本机 Node 误当作产品运行时，导致构建或 handoff 接纳因精确版本不匹配失败。
+
+**Surface.** `scripts/integrated-runtimes/dsh-handoff-policy.mjs` 的 `verifyBundledToolchain(repoRoot, lock, nodeRoot?)` 与 `runPublicVerifier(root, digest, nodeExecutable)`；构建校验和 handoff 接纳入口共用。
+
+**Invariants enforced.** 先验证 `scripts/node-runtime.json` 与 DSH lock、资源 Node/npm 元数据及实际 executable 版本，再以返回的 Node 绝对路径执行公开 verifier。接纳前后的两次 verifier 使用同一 Node。默认目录为产品 staging，显式 `--node-root` 也必须通过同一验证；缺失、漂移或不能执行时在运行 handoff 前失败。
+
+**Don't.** 不用 PATH 或 `process.execPath` 隐式选择 verifier 的 Node，不通过升级本机最低版本、修改不可变 handoff 的版本字段或跳过 Node 检查掩盖执行身份错位。行为回归在 `dsh-handoff-policy.test.mjs`，资源准备路径见 [Bundled Node](./bundled_node.md)。
 
 <a id="test-classification-no-egress"></a>
 ## Test classification + non-credentialed no-egress
