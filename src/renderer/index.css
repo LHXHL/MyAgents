@@ -592,6 +592,23 @@ body::before {
   color: var(--ink-muted);
 }
 
+/* Shared geometry for chat actions and workspace/preview toolbars.
+   Keep state colors on the owning button so selected/running states survive. */
+.compact-action {
+  display: inline-flex;
+  min-width: var(--space-8);
+  height: var(--space-8);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: min(var(--radius-md), var(--space-2));
+}
+
+.compact-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .action-button {
   display: inline-flex;
   align-items: center;

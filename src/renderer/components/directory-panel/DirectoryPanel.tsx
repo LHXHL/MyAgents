@@ -284,7 +284,7 @@ const DirectoryPanel = memo(
     );
     const treeScrollTopRef = useRef(0);
 
-    const ROW_HEIGHT = 26;
+    const ROW_HEIGHT = 28;
 
     // Git branch state
     const [gitBranch, setGitBranch] = useState<string | null>(null);
@@ -3018,7 +3018,7 @@ const DirectoryPanel = memo(
             isNarrowMode ? () => setIsCollapsed(!isCollapsed) : undefined
           }
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             {/* Search toggle button */}
             <Tip
               label={
@@ -3039,7 +3039,8 @@ const DirectoryPanel = memo(
                           setSearchQuery('');
                       }
                   }}
-                  className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                  aria-label={isSearchMode ? t("workspaceFiles.directory.closeSearch") : t("workspaceFiles.directory.fileSearch")}
+                  className={`compact-action transition-colors ${
                       isSearchMode
                           ? "bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]"
                           : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
@@ -3064,7 +3065,8 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenTerminal();
                   }}
-                  className={`relative flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                  aria-label={terminalAlive ? t("workspaceFiles.directory.showTerminal") : t("workspaceFiles.directory.openTerminal")}
+                  className={`relative compact-action transition-colors ${
                     terminalAlive
                       ? "text-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
                       : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
@@ -3087,7 +3089,8 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenBrowser();
                   }}
-                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  aria-label={t("workspaceFiles.directory.browser")}
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <Globe className="h-4 w-4" />
                 </button>
@@ -3108,7 +3111,7 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenConfig();
                   }}
-                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  className="compact-action gap-1 px-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                   {t("workspaceFiles.directory.agentSettings")}
@@ -3128,7 +3131,7 @@ const DirectoryPanel = memo(
                     onCollapse();
                   }}
                   aria-label={t("workspaceFiles.directory.collapseWorkspace")}
-                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <PanelRight className="h-4 w-4" />
                 </button>
@@ -3152,7 +3155,7 @@ const DirectoryPanel = memo(
                   aria-label={isCollapsed
                     ? t("workspaceFiles.directory.expandWorkspace")
                     : t("workspaceFiles.directory.foldWorkspace")}
-                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <ChevronUp
                     className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}

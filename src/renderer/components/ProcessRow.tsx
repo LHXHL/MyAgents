@@ -407,12 +407,12 @@ const ProcessRow = memo(function ProcessRow({
                                     <div className="group/think text-[var(--ink-secondary)] select-text">
                                         <Markdown compact>{block.thinking}</Markdown>
                                         {!isThinkingActive && (
-                                            <div className="mt-2 flex select-none items-center gap-2 opacity-0 transition-opacity duration-150 group-hover/think:opacity-100 focus-within:opacity-100">
+                                            <div className="-ml-2 mt-2 flex select-none items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/think:opacity-100 focus-within:opacity-100">
                                                 <Tip label={thinkingCopied ? t('shell.toolChrome.common.copied') : t('shell.toolChrome.common.copy')}>
                                                     <button type="button"
                                                         aria-label={t('shell.toolChrome.thinking.copyAria')}
                                                         onClick={handleCopyThinking}
-                                                        className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                                                        className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                                                         {thinkingCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                                                     </button>
                                                 </Tip>
@@ -420,7 +420,7 @@ const ProcessRow = memo(function ProcessRow({
                                                     <button type="button"
                                                         aria-label={t('shell.toolChrome.thinking.exportAria')}
                                                         onClick={handleExportThinking}
-                                                        className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                                                        className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                                                         <Download className="size-3.5" />
                                                     </button>
                                                 </Tip>

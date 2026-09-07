@@ -114,7 +114,7 @@ function renderViewport(
   const view = (next = props) => {
     const viewport = (
       <WorkspaceTreeViewport
-        rowHeight={26}
+        rowHeight={28}
         dropTargetPath={null}
         internalDropTarget={null}
         activeDragPaths={[]}
@@ -144,7 +144,7 @@ function renderViewport(
   };
 }
 
-async function publishLayout(height = 600 * 26 + 78) {
+async function publishLayout(height = 600 * 28 + 84) {
   await act(async () => {
     mocks.contentHeight = height;
     mocks.publishListHeight?.(height);
@@ -175,7 +175,7 @@ describe("WorkspaceTreeViewport reveal request", () => {
         0,
         Math.min(
           mocks.contentHeight - element.clientHeight,
-          index * 26 - (element.clientHeight - 26) / 2,
+          index * 28 - (element.clientHeight - 28) / 2,
         ),
       );
     });
@@ -237,7 +237,7 @@ describe("WorkspaceTreeViewport reveal request", () => {
       items: treeItems(["a.md", "dir/b.md"], false),
       revealRequest: { id: 8, path: "dir/b.md" },
     });
-    await publishLayout(2 * 26 + 78);
+    await publishLayout(2 * 28 + 84);
     await waitFor(() =>
       expect(view.onRevealHandled).toHaveBeenCalledExactlyOnceWith(8),
     );

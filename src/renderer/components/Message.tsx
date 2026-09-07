@@ -209,7 +209,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
   };
 
   return (
-    <div className={`group/actions flex min-h-7 w-full items-center gap-2 -ml-1 pt-1 ${className}`}>
+    <div className={`group/actions flex min-h-8 w-full items-center gap-1 -ml-2 pt-1 ${className}`}>
       <Tip label={copied ? t('message.actions.copied') : t('message.actions.copy')}>
         <button type="button"
           aria-label={t('message.actions.copy')}
@@ -225,7 +225,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
               toast?.error(t('fileActions.copyFailed'));
             }
           }}
-          className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+          className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </button>
       </Tip>
@@ -233,7 +233,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
         <button type="button"
           aria-label={t('message.actions.exportMarkdown')}
           onClick={handleExport}
-          className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+          className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
           <Download className="size-3.5" />
         </button>
       </Tip>
@@ -242,7 +242,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           <button type="button"
             aria-label={t('message.actions.retry')}
             onClick={() => onRetry(message.id)}
-            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+            className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <RotateCcw className="size-3.5" />
           </button>
         </Tip>
@@ -252,7 +252,7 @@ function AssistantActions({ message, onRetry, onFork, className = '' }: {
           <button type="button"
             aria-label={t('message.actions.fork')}
             onClick={() => onFork(message.id)}
-            className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+            className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <GitBranch className="size-3.5" />
           </button>
         </Tip>
@@ -507,7 +507,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                     <button type="button"
                       aria-label={t('message.actions.rewind')}
                       onClick={() => onRewind(message.id)}
-                      className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                      className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                       <Undo2 className="size-3.5" />
                     </button>
                   </Tip>
@@ -527,7 +527,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                       toast?.error(t('fileActions.copyFailed'));
                     }
                   }}
-                  className="rounded-lg p-1 text-[var(--ink-muted)] transition-all hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
                   {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                 </button>
               </Tip>

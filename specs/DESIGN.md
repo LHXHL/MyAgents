@@ -160,6 +160,7 @@ Toast 用于跨区域、短暂且无法从当前表面直接确认的结果。�
 - 一个区域只突出一个 Primary。Secondary 用于并列但较弱动作，Ghost 用于工具栏和行内动作。
 - Danger 只用于删除、不可逆和高风险操作，通常放在菜单尾部或确认对话框中。
 - Text Link 用于导航、展开和辅助入口，不伪装成主 CTA。
+- 对话消息/思考操作、右侧工作区和文件预览工具条使用 `compact-action` 共享 32px 高、至少 32px 宽的热区，图标保持 14–16px；颜色与选中/运行态由各按钮负责。
 - 图标按钮必须有 accessible name；即时说明使用共享 `Tip`，不同时叠加浏览器 `title`。
 
 ### 5.2 输入与 Composer
@@ -260,7 +261,7 @@ App Shell 使用“全局侧栏 + 顶部 Tab”的双层注意力模型，完整
 
 - Markdown H1/H2/H3/H4–H6 使用统一 Type Scale，`strong` 不超过 semibold。
 - 行内代码使用 code surface 和 `--font-code`；多行代码块拥有 Header、语言、复制和独立横向滚动。
-- 表格正文使用 14px、表头使用 12px；表格容器自己横向滚动，不撑破消息或 Drawer。
+- 常规 Markdown 表格正文和表头均使用 14px；compact 变体两者维持 12px；表格容器自己横向滚动，不撑破消息或 Drawer。
 - 链接使用 Accent 并保持下划线或其他非颜色识别；引用使用弱表面和结构边界，不降低到不可读灰度。
 
 ### 8.4 流式、恢复与空态
