@@ -1,14 +1,21 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PermissionPrompt } from './PermissionPrompt';
 import { fetchJsonLargeValueRef } from '../api/largeValueRef';
+import { copyPlainText } from '@/utils/clipboard';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, values?: Record<string, unknown>) => values ? `${key} ${Object.values(values).join(' ')}` : key }) }));
 vi.mock('../api/largeValueRef', () => ({ fetchJsonLargeValueRef: vi.fn() }));
 vi.mock('../api/tauriClient', () => ({ getSessionPort: vi.fn().mockResolvedValue(4182) }));
+vi.mock('@/theme', () => ({ useResolvedTheme: () => ({ adapters: { prism: {} } }) }));
+vi.mock('@/utils/clipboard', () => ({ copyPlainText: vi.fn().mockResolvedValue(undefined) }));
+beforeEach(() => {
+  vi.mocked(copyPlainText).mockClear();
+  vi.mocked(fetchJsonLargeValueRef).mockReset();
+});
 
 describe('PermissionPrompt operation display', () => {
-  it('shows a complete long command, directory and scope while preserving the decision identity', () => {
+  it('keeps the complete command and directory in the compact card without the redundant scope row', () => {
     const command = `printf '%s' '${'example'.repeat(200)}'\nprintf done`;
     const onDecision = vi.fn();
     const { container } = render(<PermissionPrompt request={{
@@ -16,11 +23,12 @@ describe('PermissionPrompt operation display', () => {
       display: { command, cwd: '/workspace', description: 'Inspect files', alwaysAllowScope: 'session_workspace' },
     }} onDecision={onDecision} />);
     expect(container.querySelector('.whitespace-pre-wrap')?.textContent).toBe(command);
-    expect(screen.getByText('/workspace')).toBeInTheDocument();
+    expect(container.querySelector('[data-permission-cwd]')).toHaveTextContent('/workspace');
     expect(screen.getByText('Inspect files')).toBeInTheDocument();
-    expect(screen.getByText('shell.permissionPrompt.sessionWorkspaceScope')).toBeInTheDocument();
+    expect(screen.queryByText('shell.permissionPrompt.sessionWorkspaceScope')).not.toBeInTheDocument();
+    expect(screen.getByText('shell.permissionPrompt.purpose').parentElement).toHaveTextContent('Inspect files');
     expect(screen.queryByText(/permissionClass/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('shell.permissionPrompt.allow'));
+    fireEvent.click(screen.getByText('shell.permissionPrompt.allowOnce'));
     expect(onDecision).toHaveBeenCalledWith('permission-1', 'allow_once');
   });
 
@@ -33,6 +41,51 @@ describe('PermissionPrompt operation display', () => {
     expect(container.querySelector('.whitespace-pre-wrap')?.textContent).toBe(expected);
     expect(screen.queryByText('shell.permissionPrompt.cwd')).not.toBeInTheDocument();
     expect(screen.queryByText('shell.permissionPrompt.sessionWorkspaceScope')).not.toBeInTheDocument();
+  });
+});
+
+describe('compact command approval authority', () => {
+  const review = {
+    operation: { kind: 'command' as const, dialect: 'bash' as const, command: 'printf approved', cwd: '/workspace/approved', description: 'Inspect the environment' },
+    actor: { agentId: 'child-1', origin: 'foreground_child' as const },
+    scope: { tool: 'bash', permissionClass: 'process.execute', target: '/workspace/approved', lifetimeMs: 86_400_000, owner: 'session_tree' as const },
+  };
+
+  it('renders authoritative review fields and keeps Always Allow bound to its exact request', async () => {
+    const onDecision = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(<PermissionPrompt request={{ requestId: 'exact-shell', toolName: 'bash', input: '{"command":"unreviewed input"}', review,
+      display: { command: 'old display', cwd: '/old', description: 'Old purpose' },
+    }} onDecision={onDecision} />);
+    expect(container.querySelector('[data-permission-command]')).toHaveTextContent('printf approved');
+    expect(container.querySelector('[data-permission-cwd]')).toHaveTextContent('/workspace/approved');
+    expect(screen.getByText('shell.permissionPrompt.purpose').parentElement).toHaveTextContent('Inspect the environment');
+    expect(screen.getByText(/child-1/)).toBeInTheDocument();
+    expect(container).not.toHaveTextContent('unreviewed input');
+    expect(container).not.toHaveTextContent('old display');
+    expect(container).not.toHaveTextContent('Old purpose');
+    expect(container).not.toHaveTextContent('shell.permissionPrompt.ruleScope');
+    fireEvent.click(screen.getByText('shell.permissionPrompt.alwaysAllow'));
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith('exact-shell', 'always_allow');
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it('waits for the complete large review and copies its exact command without clipping or trimming', async () => {
+    const command = `  printf '%s' '${'large fixture '.repeat(6_000)}'\n`;
+    let settle!: (value: Record<string, unknown>) => void;
+    vi.mocked(fetchJsonLargeValueRef).mockReturnValueOnce(new Promise(resolve => { settle = resolve; }));
+    const { container } = render(<PermissionPrompt request={{ requestId: 'large-shell', sessionId: 'session-ref', toolName: 'bash', input: '',
+      display: { command: 'do not use fallback', cwd: '/old' },
+      reviewRef: { kind: 'ref', id: 'full-shell-ref', mimetype: 'application/json', sizeBytes: 90_000, preview: '', expiresAt: 9_000_000_000_000 },
+    }} onDecision={vi.fn()} />);
+    expect(screen.getByText('shell.permissionPrompt.alwaysAllow').closest('button')).toBeDisabled();
+    expect(container).not.toHaveTextContent('do not use fallback');
+    settle({ ...review, operation: { ...review.operation, command } });
+    await screen.findByText('shell.permissionPrompt.command');
+    expect(container.querySelector('[data-permission-command]')?.textContent).toBe(command);
+    expect(screen.getByText('shell.permissionPrompt.alwaysAllow').closest('button')).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'app:markdown.copy' }));
+    await waitFor(() => expect(copyPlainText).toHaveBeenCalledExactlyOnceWith(command));
+    await screen.findByText('app:markdown.copied');
   });
 });
 

@@ -86,7 +86,8 @@ function isDirectRowToggle(reason: RowLayoutChangeReason): boolean {
     || reason === 'process-row-collapse'
     || reason === 'user-message-expand'
     || reason === 'block-group-expand'
-    || reason === 'expandable-container-expand';
+    || reason === 'expandable-container-expand'
+    || reason === 'expandable-container-collapse';
 }
 
 function escapeCssIdentifier(value: string): string {

@@ -7,6 +7,7 @@ export type RowLayoutChangeReason =
   | 'process-row-expand'
   | 'process-row-collapse'
   | 'expandable-container-expand'
+  | 'expandable-container-collapse'
   | 'attachment-settle'
   | 'widget-resize'
   | 'tool-complete';

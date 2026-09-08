@@ -526,6 +526,12 @@
       "cancelQueued": "Cancel queued"
     },
     "permissionPrompt": {
+      "commandTitle": "Run {{shell}} command",
+      "awaitingApproval": "Awaiting approval",
+      "command": "Command",
+      "expandCommand": "Expand full command",
+      "collapseCommand": "Collapse command",
+      "allowOnce": "Allow once",
       "cwd": "Working directory",
       "sessionWorkspaceScope": "Always allow also permits other Bash commands in this workspace for this session while the permission rule remains valid.",
       "progress": "Permission approval {{index}} / {{total}}",

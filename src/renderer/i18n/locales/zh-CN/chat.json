@@ -526,6 +526,12 @@
       "cancelQueued": "取消排队"
     },
     "permissionPrompt": {
+      "commandTitle": "{{shell}} 执行请求",
+      "awaitingApproval": "等待确认",
+      "command": "命令",
+      "expandCommand": "展开完整命令",
+      "collapseCommand": "收起命令",
+      "allowOnce": "允许一次",
       "cwd": "执行目录",
       "sessionWorkspaceScope": "“始终允许”会在当前会话的权限规则有效期内，同时允许此工作区中的其他 Bash 命令。",
       "progress": "权限审批 {{index}} / {{total}}",
