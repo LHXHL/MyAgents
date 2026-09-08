@@ -300,6 +300,15 @@ fn append_sidecar_entrypoint_args(
     port: u16,
     role: SidecarProcessRole,
 ) {
+    cmd.env("MYAGENTS_APP_VERSION", env!("CARGO_PKG_VERSION"));
+    cmd.env(
+        "MYAGENTS_APP_BUILD_MODE",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
     if script_path.extension().and_then(|s| s.to_str()) == Some("ts") {
         cmd.arg("--import").arg("tsx/esm");
     }
@@ -389,6 +398,14 @@ mod sidecar_process_role_tests {
             31416,
             SidecarProcessRole::Session,
         );
+        for command in [&global, &session] {
+            let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("MYAGENTS_APP_VERSION")),
+                Some(&Some(std::ffi::OsStr::new(env!("CARGO_PKG_VERSION")))),
+            );
+            assert!(environment.contains_key(std::ffi::OsStr::new("MYAGENTS_APP_BUILD_MODE")));
+        }
         let session_args: Vec<_> = session
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

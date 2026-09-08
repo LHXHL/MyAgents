@@ -220,6 +220,7 @@ describe.runIf(nativeSmokeEnabled)(
       ];
       let requests = 0;
       let childSystemPrompt = '';
+      let resumedRootInput = '';
       const proxyRequests: string[] = [];
       const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
       const modelToolResults = new Map<string, { content?: unknown; is_error?: boolean }>();
@@ -242,6 +243,7 @@ describe.runIf(nativeSmokeEnabled)(
         }
         const tool = calls[requests++];
         if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
+        if (tool?.id === 'fixture-question-call') resumedRootInput = JSON.stringify(modelRequest.messages);
         let input: Record<string, unknown> | undefined = tool?.input;
         if (tool?.id === 'fixture-plan-write-call') {
           const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
@@ -381,6 +383,14 @@ describe.runIf(nativeSmokeEnabled)(
         expect(imageResult?.is_error).not.toBe(true);
         expect(JSON.stringify(imageResult?.content)).toContain('"type":"image"');
         expect(JSON.stringify(imageResult?.content)).toContain('"type":"base64"');
+        const childInput = JSON.parse(childSystemPrompt) as { messages: Array<{ content: Array<{ text?: string }> }> };
+        const childText = childInput.messages.flatMap(message => Array.isArray(message.content) ? message.content.map(block => block.text ?? '') : []).join('\n');
+        const identityText = /Your execution identity \(Runtime authority\): (\{[^\n]*\})/.exec(childText)?.[1];
+        expect(identityText).toBeDefined();
+        expect(JSON.parse(identityText!)).toMatchObject({ model: profile.modelId, provider: profile.providerRouteId, role: 'permission-helper', depth: 1, remainingDepth: 0, canDelegate: false });
+        expect(resumedRootInput).toContain('fixture-agent-call');
+        expect(resumedRootInput).not.toContain('activation_completion');
+        expect(resumedRootInput).not.toContain('Your execution identity (Runtime authority)');
         expect(childSystemPrompt).toContain('Product permissions and shared exact grants apply');
         expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
       } catch (error) {

@@ -6931,6 +6931,12 @@ function getExternalPermissionRulePair() {
   return active;
 }
 
+export async function inspectExternalRuntime(runtime: RuntimeType) {
+  const active = getExternalActivePair();
+  if (!active || active.runtime.type !== runtime || !active.runtime.inspectRuntime) return null;
+  return active.runtime.inspectRuntime(active.process);
+}
+
 export async function listExternalAgentWork() {
   const active = getExternalActivePair();
   if (!active?.runtime.listAgentWork)

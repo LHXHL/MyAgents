@@ -1,3 +1,4 @@
+import { buildDshChildEnvironment } from './child-environment';
 import { RUNTIME_CAPABILITIES, DSH_ENGINE_VERSION, GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
 import { EventEmitter } from "node:events";
@@ -158,7 +159,7 @@ const notificationHandlers: DshRuntimeNotificationHandlers = {
   "host/interaction/cancel": vi.fn(),
 };
 
-function harness(result = initializeResult()) {
+function harness(result = initializeResult(), proxyEnvironment?: NodeJS.ProcessEnv) {
   const order: string[] = [];
   const child = new FakeChild();
   let registeredHostHandlers: DshHostRequestHandlers | undefined;
@@ -224,6 +225,9 @@ function harness(result = initializeResult()) {
   const failures: Error[] = [];
   const host = new DshRuntimeProcessHost({
     installation,
+    ...(proxyEnvironment ? { childEnvironment: buildDshChildEnvironment({
+      nodeExecutablePath: installation.nodeExecutablePath, inheritedEnvironment: {}, proxyEnvironment,
+    }) } : {}),
     initialize: initialize(),
     hostHandlers: hostHandlers(),
     notificationHandlers,
@@ -265,6 +269,15 @@ function harness(result = initializeResult()) {
 }
 
 describe("DSH RuntimeProcessHost", () => {
+  it("reports sealed proxy endpoints without credentials, paths or query values", () => {
+    const test = harness(undefined, { HTTPS_PROXY: 'http://private-user:private-pass@127.0.0.1:3128/private-path?secret=value', NO_PROXY: 'localhost' });
+    expect(test.host.diagnosticSnapshot.proxy).toMatchObject({
+      scope: 'general', endpoints: { HTTPS_PROXY: 'http://127.0.0.1:3128' }, keys: ['HTTPS_PROXY', 'NO_PROXY'],
+    });
+    expect(JSON.stringify(test.host.diagnosticSnapshot)).not.toMatch(/private-|secret=value/);
+    expect(test.host.diagnosticSnapshot.process.identity).toBeNull();
+  });
+
   it("performs the exact handshake before becoming protocol-ready", async () => {
     const test = harness();
     const identity = await test.host.start();
@@ -297,6 +310,13 @@ describe("DSH RuntimeProcessHost", () => {
       "credential-canary",
     );
 
+    expect(test.host.diagnosticSnapshot).toMatchObject({
+      process: { state: "protocol-ready", identity, artifact: { sourceCommit: dshLock.handoff.sourceCommit } },
+      environment: { policy: "allowlist", allowedKeys: expect.arrayContaining(["LANG"]) },
+      proxy: { scope: "general", capturedAt: "process_start", keys: [] },
+    });
+    expect(JSON.stringify(test.host.diagnosticSnapshot)).not.toContain("en_US.UTF-8");
+    expect(JSON.stringify(test.host.diagnosticSnapshot)).not.toContain("credential-canary");
     await expect(test.host.request("session/read", {})).resolves.toEqual({});
     expect(test.order).toContain("sessionRead");
 

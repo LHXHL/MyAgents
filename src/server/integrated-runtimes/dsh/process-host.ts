@@ -1,3 +1,4 @@
+import { PROXY_ENV_KEYS } from '../../../shared/proxyScope';
 import { isDeepStrictEqual } from 'node:util';
 import { RUNTIME_CAPABILITIES } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import {
@@ -212,6 +213,26 @@ export class DshRuntimeProcessHost {
         ? { inheritedEnvironment: options.inheritedEnvironment }
         : {}),
     });
+  }
+
+  /** Project only names and credential-free proxy endpoints from the sealed environment. */
+  get diagnosticSnapshot() {
+    const endpoints: Record<string, string> = {};
+    for (const key of PROXY_ENV_KEYS) {
+      const value = this.childEnvironment.env[key];
+      if (!value || key.toUpperCase() === 'NO_PROXY') continue;
+      try {
+        const url = new URL(value);
+        endpoints[key] = `${url.protocol}//${url.host}`;
+      } catch { endpoints[key] = '[invalid proxy URL]'; }
+    }
+    return {
+      process: { state: this.state, pid: this.pid, identity: this.identity ?? null,
+        artifact: this.identity ? { sourceCommit: dshLock.handoff.sourceCommit,
+          handoffSha256: dshLock.handoff.manifestSha256, runtimeManifestSha256: dshLock.handoff.runtimeManifestSha256 } : null },
+      environment: { policy: 'allowlist', allowedKeys: [...this.childEnvironment.allowedKeys] },
+      proxy: { scope: 'general', capturedAt: 'process_start', endpoints, keys: PROXY_ENV_KEYS.filter(key => Boolean(this.childEnvironment.env[key])) },
+    };
   }
 
   get state(): DshRuntimeProcessHostState {

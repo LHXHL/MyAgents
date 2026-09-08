@@ -1843,6 +1843,8 @@ async function routeAdminApi(
   if (route === 'skill/sync') return await api.handleSkillSync();
 
   // Config commands
+  if (route === 'config/list')
+    return api.handleConfigList(payload as Parameters<typeof api.handleConfigList>[0]);
   if (route === 'config/get')
     return api.handleConfigGet(
       payload as Parameters<typeof api.handleConfigGet>[0],

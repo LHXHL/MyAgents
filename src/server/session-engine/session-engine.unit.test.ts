@@ -402,6 +402,7 @@ vi.mock('../agent-session', () => ({
 }));
 
 vi.mock('../runtimes/external-session', () => ({
+  inspectExternalRuntime: vi.fn(async () => null),
   awaitExternalSessionStarting: mocks.awaitExternalSessionStarting,
   cancelExternalImRequest: mocks.cancelExternalImRequest,
   cancelExternalQueueItem: mocks.cancelExternalQueueItem,

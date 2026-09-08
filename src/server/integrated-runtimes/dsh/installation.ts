@@ -98,7 +98,7 @@ export async function resolveDshRuntimeInstallation(options: {
   });
 }
 
-async function runDshHandoffVerification(
+export async function verifyDshHandoffInstallation(
   installation: DshRuntimeInstallation,
   childEnvironment: DshChildEnvironment,
 ): Promise<void> {
@@ -141,7 +141,7 @@ export function assertDshHandoffVerification(
   const key = `${installation.nodeExecutablePath}\u0000${installation.handoffVerifierPath}`;
   const existing = acceptedHandoffs.get(key);
   if (existing) return existing;
-  const check = runDshHandoffVerification(installation, childEnvironment).catch(
+  const check = verifyDshHandoffInstallation(installation, childEnvironment).catch(
     (error) => {
       acceptedHandoffs.delete(key);
       throw error;

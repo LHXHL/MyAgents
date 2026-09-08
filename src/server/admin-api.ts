@@ -1,3 +1,4 @@
+import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
 /**
  * Admin API — Self-Configuration endpoints for the CLI tool.
  *
@@ -91,7 +92,7 @@ import {
   managementApi,
 } from './utils/management-api-client';
 import { buildSessionExecutablePath } from './utils/session-executable-path';
-import { getSessionEngine } from './session-engine';
+import { getSessionEngine, inspectRuntime } from './session-engine';
 import { getSessionsByAgentDir, isHistoryVisibleSession } from './SessionStore';
 import {
   agentWorkspaceIdentityFailure,
@@ -117,7 +118,6 @@ import { resolve } from 'path';
 import {
   setMcpServers,
   setAgents,
-  getMcpServers,
   getAgentState,
   getSidecarPort,
   forceReloadActiveSession,
@@ -2441,6 +2441,44 @@ export async function handleAgentChannelRemove(payload: {
 // Config Handlers
 // ---------------------------------------------------------------------------
 
+/** Discover normalized config shape without returning values or traversing secret maps. */
+export function handleConfigList(payload: { prefix?: string } = {}): AdminResponse {
+  const prefix = payload.prefix ?? '';
+  if (typeof prefix !== 'string' || hasDangerousKeySegment(prefix)) {
+    return { success: false, error: 'Invalid config prefix' };
+  }
+  if (SENSITIVE_TOP_KEYS.has(prefix.split('.')[0]) || SENSITIVE_KEY_PATTERNS.test(prefix)) {
+    return { success: false, error: 'Sensitive configuration is opaque. Use the dedicated credential command.' };
+  }
+  const value = prefix ? getNestedValue(loadConfig(), prefix) : loadConfig();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { success: false, error: 'Config prefix must name an object. Use config get for a leaf value.' };
+  }
+  const descriptions: Record<string, string> = {
+    defaultProviderId: 'Default model Provider selection',
+    providers: 'Model Provider definitions; manage with model commands',
+    providerApiKeys: 'Provider credentials; manage with model set-key',
+    agents: 'Agent defaults; manage with agent commands',
+    mcpServers: 'MCP server definitions; manage with mcp commands',
+    mcpEnabledServers: 'Globally enabled MCP server IDs',
+    proxySettings: 'Proxy settings for each traffic scope',
+    themeId: 'Selected visual theme',
+    appearanceMode: 'Application light/dark appearance preference',
+    locale: 'Application language preference',
+  };
+  const keys = Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([name, item]) => {
+    const key = prefix ? `${prefix}.${name}` : name;
+    const sensitive = SENSITIVE_TOP_KEYS.has(key.split('.')[0]) || SENSITIVE_KEY_PATTERNS.test(key);
+    const type = item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item;
+    return { key, type, sensitive,
+      description: descriptions[key] ?? (sensitive ? 'Sensitive field; values are redacted'
+        : type === 'object' ? `Nested settings; inspect with config list ${key}`
+          : `Stored setting; inspect with config get ${key}`),
+    };
+  });
+  return { success: true, data: { prefix, keys, note: 'Current normalized configuration keys; absent optional keys are not listed. Values are omitted.' } };
+}
+
 export function handleConfigGet(payload: { key: string }): AdminResponse {
   const { key } = payload;
   if (!key) return { success: false, error: 'Missing required field: key' };
@@ -2522,13 +2560,21 @@ export async function handleStatus(): Promise<AdminResponse> {
   const config = loadConfig();
   const allServers = getAllMcpServers(config);
   const enabledIds = getEnabledMcpServerIds(config);
-  const currentMcp = getMcpServers();
+  const engine = getSessionEngine();
+  const replay = engine.getStreamReplaySnapshot();
+  const snapshot = replay.mcpEffectiveSnapshot;
+  const current = snapshot && snapshot.sessionId === replay.sessionId && !snapshot.observationStale ? snapshot : null;
+  const workspacePath = engine.getCurrentSessionContext().workspacePath;
+  const project = workspacePath ? loadProjects().find(p => workspacePathsEqual(p.path, workspacePath)) : undefined;
+  const selected = project ? [...(project.mcpEnabledServers ?? [])] : null;
 
   return {
     success: true,
     data: {
       mcpServers: { total: allServers.length, enabled: enabledIds.length },
-      activeMcpInSession: currentMcp ? currentMcp.length : 0,
+      workspaceMcp: { selection: selected, enabled: selected?.filter(id => enabledIds.includes(id)) ?? null },
+      activeMcpInSession: current ? current.servers.filter(server => server.state === 'ready').length : null,
+      sessionMcp: { sessionId: replay.sessionId || null, observation: current ? 'current' : snapshot ? 'stale' : 'unavailable', snapshot: current },
       defaultProvider: config.defaultProviderId ?? 'not set',
       agents: filterAgentIdentities(registry.agentProjections).length,
     },
@@ -2972,6 +3018,16 @@ ERROR RECOVERY
     recovery:
       'For subscription authentication errors, follow the returned Settings or runtime recovery hint.',
   }),
+  'config/list': taskLeafHelp({
+    usage: 'myagents config list [prefix] [--json]',
+    when: 'Use to discover current normalized configuration keys and types.',
+    effect: 'Enumerates one object level from the existing config reader, without values.',
+    options: '  prefix                 Optional dotted object path; omit for top-level keys',
+    mutation: 'Read-only. Sensitive maps remain opaque.',
+    output: 'Key, type, sensitivity and description. Absent optional keys are not listed.',
+    example: '  myagents config list proxySettings --json',
+    recovery: 'Use config get for leaf values and dedicated commands for credential fields.',
+  }),
   'config/set': taskLeafHelp({
     usage: 'myagents config set <key> <value> [--dry-run]',
     when: 'Use when changing one supported application configuration key.',
@@ -2984,7 +3040,7 @@ ERROR RECOVERY
     output: 'The parsed key/value preview or the persisted value.',
     example: '  myagents config set locale en-US --dry-run',
     recovery:
-      'Run myagents config --help to inspect supported keys and value shapes.',
+      'Run myagents config list to discover keys, then config get <key> to inspect its value.',
   }),
   mcp: `myagents mcp — Manage MCP tool servers
 
@@ -3076,6 +3132,7 @@ Options for 'add':
   config: `myagents config — Read/write application config
 
 Commands:
+  list [prefix]           Discover current keys, types and descriptions (no values)
   get <key>               Read a config value
   set <key> <value>       Set a config value`,
 
@@ -4219,7 +4276,7 @@ IM bot sessions don't render widgets.`,
   skill: `myagents skill — Manage MyAgents skills (user skills live under ~/.myagents/skills/)
 
 Commands:
-  list                       List installed skills + enabled state
+  list [--verbose]           List skills; include normal admission details with --verbose
   info <name>                Show one skill's manifest + description
   add <source>               Install from GitHub, HTTPS .zip, or a local source
                              Local: absolute path, file://, explicit ./ or ../
@@ -4739,30 +4796,12 @@ export async function handleSpeechList(payload: {
 // Version
 // ---------------------------------------------------------------------------
 
-// Compile-time injected by esbuild (scripts/esbuild-bundle.mjs `define`).
-// In dev (`npm run server` via tsx, no esbuild), the identifier is undefined
-// at runtime — the `?? process.env.…` chain below reaches the env fallback.
-declare const __MYAGENTS_VERSION__: string | undefined;
-
 export function handleVersion(): AdminResponse {
-  // Resolution order:
-  //   1. esbuild-injected `__MYAGENTS_VERSION__` (production sidecar bundle).
-  //   2. `npm_package_version` (set by npm in dev when launched via scripts).
-  //   3. `MYAGENTS_VERSION` env override (build system / tests).
-  //   4. 'dev' sentinel — visibly NOT a release version, so anyone reading
-  //      `myagents version` knows they're on an un-stamped build instead of
-  //      seeing a stale hardcoded number that lies about which build is
-  //      installed (issue #149: users had no way to tell whether the dmg they
-  //      reinstalled actually contained the patched CLI/sidecar — the old
-  //      hardcoded '0.1.70' fallback shipped in every release).
-  const version =
-    (typeof __MYAGENTS_VERSION__ !== 'undefined'
-      ? __MYAGENTS_VERSION__
-      : undefined) ??
-    process.env.npm_package_version ??
-    process.env.MYAGENTS_VERSION ??
-    'dev';
-  return { success: true, data: { version } };
+  return { success: true, data: {
+    version: SIDECAR_BUILD_IDENTITY.version,
+    app: APP_BUILD_IDENTITY,
+    sidecar: { ...SIDECAR_BUILD_IDENTITY, startedAt: SIDECAR_STARTED_AT, nodeVersion: process.versions.node },
+  } };
 }
 
 // ---------------------------------------------------------------------------
@@ -7546,13 +7585,25 @@ export async function handleRuntimeDiagnose(payload: {
     };
   }
 
-  // Codex is the only runtime with diagnostic RPCs today. Claude Code's
+  try {
+    const inspection = await inspectRuntime(runtimeArg);
+    if (inspection) {
+      const replay = getSessionEngine().getStreamReplaySnapshot();
+      const mcp = replay.mcpEffectiveSnapshot;
+      return { success: true, data: { ...inspection, sessionMcp: mcp?.runtime === runtimeArg
+        && mcp.sessionId === replay.sessionId && !mcp.observationStale ? mcp : null } };
+    }
+  } catch {
+    return { success: false, error: 'Runtime inspection failed; inspect the Sidecar log for details.' };
+  }
+
+  // Codex also exposes standalone app-server diagnostic RPCs. Claude Code's
   // -p mode doesn't expose an equivalent surface (it's one-shot per turn);
   // Gemini's ACP has session-scoped state but no "list features / apps".
   if (runtimeArg !== 'codex') {
     return {
       success: false,
-      error: `Diagnostic not yet implemented for runtime '${runtimeArg}'. Only 'codex' is currently supported.`,
+      error: `Diagnostic not yet implemented for runtime '${runtimeArg}'. Supported: codex, dsh.`,
       data: { runtime: runtimeArg, supported: false },
     };
   }

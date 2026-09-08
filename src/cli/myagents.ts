@@ -112,6 +112,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'dry-run' ||
         key === 'disable-nonessential' ||
         key === 'full' ||
+        key === 'verbose' ||
         key === 'no-reply' ||
         key === 'clear-provider-override' ||
         key === 'clear-runtime-override' ||
@@ -811,7 +812,13 @@ export function printResult(
     return;
   }
   if (group === 'skill' && action === 'list') {
-    printSkillList(result.data as Array<Record<string, unknown>>);
+    printSkillList(result.data as Array<Record<string, unknown>>, { verbose: flags.verbose === true });
+    return;
+  }
+  if (group === 'config' && action === 'list') {
+    const data = result.data as { keys: Array<{ key: string; type: string; description: string }>; note: string };
+    for (const key of data.keys) console.log(`${key.key.padEnd(36)} ${key.type.padEnd(10)} ${key.description}`);
+    console.log(data.note);
     return;
   }
   if (group === 'skill' && action === 'info') {
@@ -827,7 +834,13 @@ export function printResult(
     return;
   }
   if (group === 'version') {
-    console.log((result.data as { version: string })?.version ?? 'Unknown');
+    const data = result.data as { version: string; app?: { version: string | null; mode: string | null }; sidecar?: { mode: string; commit: string | null; dirty: boolean | null; capturedAt: string; startedAt: string; nodeVersion: string } };
+    console.log(data.version ?? 'Unknown');
+    if (data.app) console.log(`App: ${data.app.version ?? 'not reported by launcher'} (${data.app.mode ?? 'unknown'})`);
+    if (data.sidecar) {
+      console.log(`Sidecar: ${data.sidecar.mode}; commit=${data.sidecar.commit ?? 'unavailable'}; dirty=${data.sidecar.dirty ?? 'unknown'}`);
+      console.log(`Identity captured: ${data.sidecar.capturedAt}; started: ${data.sidecar.startedAt}; Node: ${data.sidecar.nodeVersion}`);
+    }
     return;
   }
   if (group === 'agent' && action === 'runtime-status') {
@@ -1285,7 +1298,9 @@ function printRuntimeDescribe(data: Record<string, unknown>): void {
   console.log('');
   console.log('Models:');
   if (models.length === 0) {
-    console.log('  (none reported — runtime may not be installed, or has no static model list)');
+    console.log(runtime === 'dsh'
+      ? '  Models come from the selected Provider. Run: myagents model list'
+      : '  (none reported — runtime may not be installed, or has no static model list)');
   } else {
     for (const m of models) {
       const value = String(m.value ?? '');
@@ -1332,6 +1347,13 @@ function printRuntimeDiagnose(data: Record<string, unknown>): void {
   const runtime = String(data.runtime ?? '');
   const version = String(data.version ?? '');
   console.log(`Runtime: ${runtime}${version ? `  (${version})` : ''}`);
+
+  if (data.resources) {
+    for (const key of ['resources', 'process', 'model', 'permissions', 'proxy', 'environment', 'extensions', 'sessionMcp', 'observedAt']) {
+      console.log(`${key}: ${data[key] == null ? 'not active / unavailable' : JSON.stringify(data[key], null, 2)}`);
+    }
+    return;
+  }
 
   const diag = (data.diagnostics ?? {}) as Record<string, unknown>;
   const status = (diag.status ?? {}) as Record<string, unknown>;
@@ -1720,7 +1742,11 @@ function printSessionList(
 function printStatus(data: Record<string, unknown>): void {
   const mcp = data.mcpServers as Record<string, number>;
   console.log(`MCP Servers: ${mcp?.total ?? 0} total, ${mcp?.enabled ?? 0} enabled`);
-  console.log(`Active MCP in session: ${data.activeMcpInSession}`);
+  const workspace = data.workspaceMcp as { selection?: string[] | null; enabled?: string[] | null } | undefined;
+  const session = data.sessionMcp as { observation?: string; snapshot?: { servers?: Array<{ id: string; state: string }> } } | undefined;
+  console.log(`Workspace MCP: ${workspace?.selection ? `${workspace.selection.length} selected, ${workspace.enabled?.length ?? 0} globally enabled` : 'no workspace selection available'}`);
+  console.log(`Active MCP in session: ${data.activeMcpInSession ?? 'unknown'} (${session?.observation ?? 'unavailable'})`);
+  for (const server of session?.snapshot?.servers ?? []) console.log(`  ${server.id}: ${server.state}`);
   console.log(`Default provider: ${data.defaultProvider}`);
   console.log(`Agents: ${data.agents}`);
 }
@@ -2074,7 +2100,7 @@ function printPluginList(plugins: Array<Record<string, unknown>>): void {
   console.log(`\n${plugins.length} plugin(s) installed`);
 }
 
-export function printSkillList(skills: Array<Record<string, unknown>>): void {
+export function printSkillList(skills: Array<Record<string, unknown>>, options: { verbose?: boolean } = {}): void {
   if (!skills || skills.length === 0) {
     console.log('No skills installed.');
     return;
@@ -2093,9 +2119,12 @@ export function printSkillList(skills: Array<Record<string, unknown>>): void {
     const availability = s.runtimeAvailability as Record<string, unknown> | undefined;
     if (availability?.runtime === 'dsh') {
       const component = availability.component as Record<string, unknown> | undefined;
-      console.log(`  Runtime admission: ${availability.state ?? 'unknown'}; model invocation: ${component?.modelInvocable === true ? 'available (permission still required)' : component?.modelInvocable === false ? 'unavailable' : 'unknown'}`);
-      console.log(`  Effective generation: ${availability.effectiveRevision ?? 'not active'}; desired: ${availability.desiredRevision ?? 'unknown'}`);
-      if (component?.code) console.log(`  Reason: ${component.code}`);
+      const changed = availability.effectiveRevision !== availability.desiredRevision;
+      const hasReason = Boolean(component?.code) && component?.code !== 'dsh_extension_component_ready';
+      const abnormal = availability.state !== 'ready' || component?.modelInvocable !== true || hasReason;
+      if (options.verbose || abnormal || changed) console.log(`  Runtime admission: ${availability.state ?? 'unknown'}; model invocation: ${component?.modelInvocable === true ? 'available (permission still required)' : component?.modelInvocable === false ? 'unavailable' : 'unknown'}`);
+      if (options.verbose || changed) console.log(`  Effective generation: ${availability.effectiveRevision ?? 'not active'}; desired: ${availability.desiredRevision ?? 'unknown'}`);
+      if (component?.code && (options.verbose || abnormal)) console.log(`  Reason: ${component.code}`);
     }
   }
   console.log(`\n${skills.length} skill(s)`);
@@ -2964,7 +2993,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'plugin/list', 'plugin/install', 'plugin/remove',
   'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
   'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
-  'config/get', 'config/set',
+  'config/list', 'config/get', 'config/set',
   'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
   'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
   'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/append-session', 'task/archive', 'task/delete',
@@ -5117,6 +5146,7 @@ export function buildRequestBody(
 
   // Config commands
   if (group === 'config') {
+    if (action === 'list') return { prefix: rest[0] || flags.prefix };
     if (action === 'get') return { key: rest[0] || flags.key };
     if (action === 'set') return { key: rest[0] || flags.key, value: tryParseJson(rest[1] ?? String(flags.value ?? '')), dryRun: flags.dryRun };
     return {};
@@ -5843,8 +5873,8 @@ function resolvePreselectedSessionId(
     return exitAgentCliError(flags, {
       code: 'TASK_SESSION_REQUIRED',
       error: '--preselectedSessionId requires current or a Session id.',
-      suggestion: 'Pass `--preselectedSessionId current` inside a MyAgents Session, or use an id from `myagents session list --json`.',
-      suggestedCommand: 'myagents session list --json',
+      suggestion: 'Pass `--preselectedSessionId current` inside a MyAgents Session, or use an id from `myagents session list --agent <agentId> --json`.',
+      suggestedCommand: 'myagents session list --agent <agentId> --json',
     });
   }
   const value = raw.trim();
@@ -5854,8 +5884,8 @@ function resolvePreselectedSessionId(
   return exitAgentCliError(flags, {
     code: 'CURRENT_SESSION_UNAVAILABLE',
     error: '--preselectedSessionId current requires MYAGENTS_SESSION_ID.',
-    suggestion: 'Run this command inside a MyAgents Session, or pass an explicit id from `myagents session list --json`.',
-    suggestedCommand: 'myagents session list --json',
+    suggestion: 'Run this command inside a MyAgents Session, or pass an explicit id from `myagents session list --agent <agentId> --json`.',
+    suggestedCommand: 'myagents session list --agent <agentId> --json',
   });
 }
 
@@ -5876,8 +5906,8 @@ function validateTaskSessionBinding(
     exitAgentCliError(flags, {
       code: 'TASK_SESSION_REQUIRED',
       error: '--runMode single-session requires --preselectedSessionId current|<session-id>.',
-      suggestion: 'Use `current` inside MyAgents, or choose a materialized id from `myagents session list --json`.',
-      suggestedCommand: 'myagents session list --json',
+      suggestion: 'Use `current` inside MyAgents, or choose a materialized id from `myagents session list --agent <agentId> --json`.',
+      suggestedCommand: 'myagents session list --agent <agentId> --json',
     });
   }
 }

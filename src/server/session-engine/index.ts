@@ -32,3 +32,5 @@ export type {
   SessionEngine,
   SessionEngineKind,
 } from './types';
+
+export { inspectRuntime } from './runtime-inspection';

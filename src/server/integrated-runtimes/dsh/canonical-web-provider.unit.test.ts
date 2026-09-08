@@ -192,6 +192,25 @@ describe('DshCanonicalWebProvider', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it.each(['', '  \n '])('uses content then citation text for blank provider snippets (%#)', async (snippet) => {
+    const provider = providerWith(vi.fn(async () => json({
+      stop_reason: 'end_turn', content: [
+        { type: 'web_search_tool_result', tool_use_id: 'search', content: [
+          { url: 'https://example.com/one', snippet, content: 'Provider content' },
+          { url: 'https://example.com/two', snippet },
+        ] },
+        { type: 'text', text: 'Answer', citations: [{ url: 'https://example.com/two', cited_text: 'Citation excerpt' }] },
+      ], usage: { input_tokens: 1, output_tokens: 1 },
+    })));
+    await expect(provider.runSearch({
+      profile: zhipuAnthropicProfile, apiKey: 'synthetic-key', authType: 'both', query: 'fixture',
+      operationId: 'blank-snippet', signal: new AbortController().signal,
+    })).resolves.toMatchObject({ results: [
+      { url: 'https://example.com/one', snippet: 'Provider content' },
+      { url: 'https://example.com/two', snippet: 'Citation excerpt' },
+    ] });
+  });
+
   it.each([anthropicProfile, zhipuAnthropicProfile])('accepts an empty server-search result for $provider', async (profile) => {
     const provider = providerWith(vi.fn(async () => json({
       stop_reason: 'end_turn',

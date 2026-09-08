@@ -192,11 +192,12 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 ### Agent Runtime 发现（runtime）
 
 ```bash
-myagents runtime list                                   # 4 个 runtime（builtin/claude-code/codex/gemini）的装机情况 + 版本
+myagents runtime list                                   # builtin/dsh/claude-code/codex/gemini 的装机情况 + 版本
 myagents runtime list --json                            # 机读：installed/version/path
 myagents runtime describe <runtime>                     # 某 runtime 的 model 清单 + permissionMode 枚举
 myagents runtime diagnose codex [--workspacePath PATH]  # Codex 的 auth/features/MCP/apps/effective-env 快照（issue #194）
 myagents diagnose runtime codex                         # 同上的 sugar 写法
+myagents diagnose runtime dsh                           # 资源校验、当前进程/模型/权限/代理/扩展，不启动新 Session
 ```
 
 **何时用：**
@@ -210,7 +211,7 @@ myagents diagnose runtime codex                         # 同上的 sugar 写法
 ### Skills（skill）
 
 ```bash
-myagents skill list                                     # 已装 skill（全局 + 项目级）
+myagents skill list [--verbose]                          # 已装 skill（全局 + 项目级）
 myagents skill info <name>                              # 某 skill 的详情
 myagents skill add <source> [--scope user|project] [--plugin X] [--skill Y] [--force] [--dry-run]
 myagents skill remove <name>                            # 删除
@@ -437,10 +438,11 @@ myagents cc-plugin show <id|name>                       # 详情（含 manifest 
 ### 通用配置 + 状态（config / status / version / reload）
 
 ```bash
+myagents config list [prefix]                           # 发现当前配置键、类型、说明；不返回值
 myagents config get <key>                               # 读，支持点号路径如 proxySettings.host
 myagents config set <key> <value> [--dry-run]           # 写，value 是 JSON 字面量（字符串要带引号）
 myagents status                                         # 应用整体运行状态
-myagents version                                        # 应用版本号
+myagents version                                        # App 与 Sidecar 版本、构建/启动时固定的代码身份
 myagents reload [--workspacePath <abs>]                 # 热加载配置（不重启进程）
 ```
 
@@ -449,6 +451,8 @@ myagents reload [--workspacePath <abs>]                 # 热加载配置（不�
 - "把代理 host 改成 X" → `config set proxySettings.host '"X"'`
 - "应用版本" → `version`
 - "改完手动让它生效" → `reload`（多数命令已经自动 broadcast，这个是兜底）
+
+`status` 分别显示全局 MCP 配置、工作区选择和当前 Session 实际观测；unknown 表示没有可信的当前观测，不表示 0 个服务器。`skill list` 默认收起正常 admission 详情，异常和不可用原因仍显示；`--verbose` 展开，`--json` 保留完整结构。DSH 的模型目录由所选 Provider 提供，使用 `model list` 查询。
 
 ### IM 媒体下发（im）
 

@@ -2344,3 +2344,24 @@ describe('CLI skill availability', () => {
     } finally { log.mockRestore(); }
   });
 });
+
+
+describe('concise skill inventory', () => {
+  it('parses verbose without consuming the command and routes config discovery', () => {
+    expect(parseArgs(['skill', '--verbose', 'list']).positional).toEqual(['skill', 'list']);
+    expect(buildRoute('config', 'list', ['proxySettings'])).toBe('config/list');
+    expect(buildRequestBody('config', 'list', ['proxySettings'], {})).toEqual({ prefix: 'proxySettings' });
+  });
+  it('hides normal admission details by default while verbose retains them', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const skills = [{ name: 'normal', runtimeAvailability: { runtime: 'dsh', state: 'ready', effectiveRevision: 'v1', desiredRevision: 'v1', component: { modelInvocable: true, state: 'applied', code: 'dsh_extension_component_ready' } } }];
+    try {
+      printSkillList(skills);
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Runtime admission:');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('Reason:');
+      log.mockClear();
+      printSkillList(skills, { verbose: true });
+      expect(log.mock.calls.flat().join('\n')).toContain('Runtime admission: ready');
+    } finally { log.mockRestore(); }
+  });
+});

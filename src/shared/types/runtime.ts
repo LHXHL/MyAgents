@@ -945,6 +945,30 @@ export interface RuntimeDiagnostics {
   timestamp: string;
 }
 
+/** Read-only diagnostic projection; adapters must exclude credentials and rule targets. */
+export interface IntegratedRuntimeArtifactIdentity {
+  runtimeVersion: string;
+  dshVersion: string;
+  requiredNodeVersion: string;
+  sourceCommit: string;
+  handoffSha256: string;
+  runtimeManifestSha256: string;
+}
+
+export interface RuntimeInspection {
+  runtime: RuntimeType;
+  installed: boolean;
+  version?: string;
+  resources: { state: 'verified' | 'unavailable' | 'verification_failed'; code?: string; expectedIdentity: IntegratedRuntimeArtifactIdentity; installedIdentity: IntegratedRuntimeArtifactIdentity | null };
+  process: { state: string; pid?: number; identity?: object | null; artifact?: object | null };
+  model: { id: string; provider: string; revision: string } | null;
+  permissions: RuntimePermissionDiagnostics | null;
+  extensions: RuntimeExtensionDiagnostics | null;
+  environment: { policy: string; allowedKeys: readonly string[] } | null;
+  proxy: { scope: string; capturedAt: string; endpoints: Record<string, string>; keys: readonly string[] } | null;
+  observedAt: string;
+}
+
 /**
  * Resolve the effective permissionMode for a cron / unattended task tick.
  *

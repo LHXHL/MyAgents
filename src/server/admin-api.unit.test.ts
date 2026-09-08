@@ -75,6 +75,7 @@ const sessionEngineMocks = vi.hoisted(() => {
   };
   return {
     state,
+    getStreamReplaySnapshot: vi.fn((): { sessionId: string; mcpEffectiveSnapshot: unknown } => ({ sessionId: '', mcpEffectiveSnapshot: null })),
     getCurrentSessionContext: vi.fn(() => state.context),
     getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
     getSessionOrigin: vi.fn((sessionId: string) => state.origins.get(sessionId)),
@@ -120,8 +121,10 @@ vi.mock('./provider-verify', () => ({
 }));
 
 vi.mock('./session-engine', () => ({
+  inspectRuntime: vi.fn(async () => null),
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
+    getStreamReplaySnapshot: sessionEngineMocks.getStreamReplaySnapshot,
     getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
     getSessionOrigin: sessionEngineMocks.getSessionOrigin,
   }),
@@ -178,6 +181,7 @@ beforeEach(() => {
   sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
   sessionEngineMocks.state.turnIdentity = null;
   sessionEngineMocks.state.origins.clear();
+  sessionEngineMocks.getStreamReplaySnapshot.mockReset().mockReturnValue({ sessionId: '', mcpEffectiveSnapshot: null });
   sessionEngineMocks.getCurrentSessionContext.mockClear();
   sessionEngineMocks.getCurrentTurnIdentity.mockClear();
   sessionEngineMocks.getSessionOrigin.mockClear();
@@ -4234,5 +4238,52 @@ describe('admin-api Agent workspace archive', () => {
     expect(result.error).toContain('was unarchived');
     const projects = readJson(join(scratch, '.myagents', 'projects.json'));
     expect(projects[0]).not.toHaveProperty('archivedAt');
+  });
+});
+
+
+describe('admin config discovery and MCP observations', () => {
+  it('lists stored keys and types without exposing secrets, including nested credentials', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      theme: 'dark', providerApiKeys: { deepseek: 'synthetic-private-value' },
+      custom: { count: 3, nested: { password: 'synthetic-password' } },
+    });
+    const { handleConfigList } = await import('./admin-api');
+    const top = handleConfigList();
+    expect(top).toMatchObject({ success: true, data: { keys: expect.arrayContaining([
+      { key: 'appearanceMode', type: 'string', sensitive: false, description: expect.any(String) },
+      { key: 'providerApiKeys', type: 'object', sensitive: true, description: expect.any(String) },
+    ]) } });
+    expect(JSON.stringify(top)).not.toContain('synthetic-private-value');
+    expect(handleConfigList({ prefix: 'custom' })).toMatchObject({ success: true, data: { keys: expect.arrayContaining([
+      expect.objectContaining({ key: 'custom.count', type: 'number' }),
+    ]) } });
+    expect(handleConfigList({ prefix: 'providerApiKeys' }).success).toBe(false);
+    expect(handleConfigList({ prefix: '__proto__' }).success).toBe(false);
+    expect(handleConfigList({ prefix: 'appearanceMode' }).success).toBe(false);
+    expect(JSON.stringify(handleConfigList({ prefix: 'custom.nested' }))).not.toContain('synthetic-password');
+  });
+
+  it('reads workspace MCP selection from the Session facade independently of global configuration', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [], mcpEnabledServers: ['one'] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'project', name: 'Fixture', path: '/fixture/current', mcpEnabledServers: ['one', 'two'] }]);
+    sessionEngineMocks.state.context = { sessionId: 'current', workspacePath: '/fixture/current' };
+    agentSessionMocks.agentDir = '/fixture/old-builtin';
+    const { handleStatus } = await import('./admin-api');
+    expect(await handleStatus()).toMatchObject({ data: { workspaceMcp: { selection: ['one', 'two'], enabled: ['one'] } } });
+  });
+
+  it('counts only current ready MCP servers and keeps unknown observations distinct from zero', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), []);
+    const { handleStatus } = await import('./admin-api');
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null, sessionMcp: { observation: 'unavailable' } } });
+    const snapshot = { sessionId: 'session-1', servers: [{ id: 'ready', state: 'ready' }, { id: 'failed', state: 'failed' }] };
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: snapshot });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: 1, sessionMcp: { observation: 'current' } } });
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-2', mcpEffectiveSnapshot: snapshot });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null, sessionMcp: { observation: 'stale' } } });
+    sessionEngineMocks.getStreamReplaySnapshot.mockReturnValue({ sessionId: 'session-1', mcpEffectiveSnapshot: { ...snapshot, observationStale: true } });
+    expect(await handleStatus()).toMatchObject({ data: { activeMcpInSession: null } });
   });
 });

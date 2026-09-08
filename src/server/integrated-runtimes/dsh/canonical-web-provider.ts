@@ -203,7 +203,7 @@ function boundedResult(value: unknown, domains: ReturnType<typeof normalizeDomai
   const canonicalUrl = parsedUrl.toString();
   const fallbackTitle = parsedUrl.hostname || 'Web result';
   const titleValue = typeof item.title === 'string' && item.title.trim() ? item.title.trim() : fallbackTitle;
-  const snippetValue = typeof item.snippet === 'string'
+  const snippetValue = typeof item.snippet === 'string' && item.snippet.trim()
     ? item.snippet
     : typeof item.content === 'string' ? item.content : '';
   return Object.freeze({
@@ -577,7 +577,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     const seen = new Set<string>();
     const results = rawResults.flatMap(value => {
       const candidate = value as Record<string, unknown>;
-      const withSnippet = { ...candidate, snippet: typeof candidate.snippet === 'string' && candidate.snippet ? candidate.snippet
+      const withSnippet = { ...candidate, snippet: typeof candidate.snippet === 'string' && candidate.snippet.trim() ? candidate.snippet
         : typeof candidate.url === 'string' ? snippets.get(candidate.url) ?? '' : '' };
       const result = boundedResult(withSnippet, domains);
       if (!result || seen.has(result.url)) return [];

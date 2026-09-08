@@ -3134,7 +3134,7 @@
       ],
       "checkpoint": "none",
       "concurrency": "parallel",
-      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type for the general descriptor; Explore and Plan provide read-only research/planning roles. Custom descriptors may narrow inherited tools. run_in_background defaults to true: omitted/true returns a background handle; false waits for this activation's result. All roles and both modes retain context for SendMessage follow-ups after completion. taskId addresses TaskStop, agentId addresses SendMessage. Completion reports arrive automatically; an idle retained handle is not still executing. TaskStop closes the handle and model messages cannot restart it.",
+      "description": "Starts a supervised local child Agent with a fresh DSH context and the current bounded workspace/component snapshot. Omit subagent_type for the general descriptor; Explore and Plan provide read-only research/planning roles. Custom descriptors may narrow inherited tools. run_in_background defaults to true: omitted/true returns a background handle; false waits for this activation's result. All roles and both modes retain context for SendMessage follow-ups after completion. taskId addresses TaskStop, agentId addresses SendMessage. The first successful foreground result is returned only through this tool; background and follow-up completion reports arrive automatically. An idle retained handle is not still executing. TaskStop closes the handle and model messages cannot restart it.",
       "errorCodes": [
         {
           "code": "agent_unavailable",

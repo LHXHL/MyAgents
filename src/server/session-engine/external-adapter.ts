@@ -46,6 +46,7 @@ import {
   isExternalTurnCurrent,
   listExternalPermissionRules,
   listExternalAgentWork,
+  inspectExternalRuntime,
   controlExternalAgentWork,
   respondExternalAskUserQuestion,
   respondExternalPermission,
@@ -320,6 +321,8 @@ export function createExternalSessionEngine(): SessionEngine {
           ?? getExternalPendingInteractiveRequests(),
       };
     },
+
+    inspectRuntime: inspectExternalRuntime,
 
     getSessionConfigSnapshot() {
       const runtimeSessionId = getRuntimeSessionId();

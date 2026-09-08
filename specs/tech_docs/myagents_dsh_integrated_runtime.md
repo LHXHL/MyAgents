@@ -1,8 +1,8 @@
 ---
 type: module-technical-document
 status: implemented-native-validation-partial
-version: 0.32
-updated: 2026-09-07
+version: 0.33
+updated: 2026-09-09
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
@@ -1267,3 +1267,29 @@ The publishing tool and consuming model request require separate attachment scop
 Two independent patched DSH builds have identical bytes across all 78 files (74 packages): manifest `5348318d9157a7eedd29813265a5ae2e1ddc20651bae4652390388693113f13b`, version `0.1.2-rc.1.myagents.a66e47020478.db06dc323417`. The packed composition and installed Runtime verification pass: Runtime manifest `b4288b7722a0d1e4e88284d87ab5675aad9a080bf4b65acfefa52484fb4a8186` (17,458 files). The clean-HEAD pre-artifact gate passes at this source: report `7ce7b11f03d2a2d75ac30009cd41c2edeff6456d9b502da2a206ba144bd69f61`, 71 files / 764 tests, typecheck, lint, build, upstream source checks, fault matrix and three lifecycle soaks. The fresh external Tester campaign passes all eight macOS scenarios at this exact source and Runtime: native report `da21506ff95ecc69906c2ff1f714b245e7b260e00a5d62e2a7e140bfb2b42d09`, dynamic campaign `aba859066b6a61352a65e798c401f21ea79cf7b837951e056cb50e9f9c54cf29`. The official builder seals handoff `b522e3409b80c473f5916f75041a62c7dcee4205240cffbbfed9685b7e61946a`, and Host ingestion accepts its complete resources and generated contracts. Windows/Linux retain pending native-validation claims bound to these new bytes.
 
 Host acceptance passes resource verification and clean Runtime source freshness, 25 unit files / 152 tests, 37 handoff-policy tests, and all five staged process tests, including both actual image-request journeys and the 12-generation lifecycle soak. Focused attachment tests cover Runtime/Host/user image publication, old writable objects, and corruption rejection. Typecheck, lint, test classification and Sidecar build pass; dependency-cruiser retains 13 existing warnings and zero errors. This delivery updates source, generated contracts, staged Runtime resources and the Sidecar bundle; it does not replace an already installed App.
+
+
+### 2026-09-09 Round 6 reliability (UPG-W17)
+
+Authorized scope is items 1–6 and 8–11. Item 7 (codex-sub status) and item 12 (Record deletion CLI) are excluded.
+
+| Item | Result and authority |
+| --- | --- |
+| 1 | MCP status separates global configuration, the workspace selection from SessionEngine, and the current effective MCP snapshot. Stale/missing observations remain unknown. |
+| 2 | App metadata comes from the Rust launcher. Sidecar version and source identity are captured at build/startup. DSH diagnostics distinguish the Sidecar lock's expected artifact, a verified installation, and the current process handshake/artifact. |
+| 3 | `diagnose runtime dsh` uses the SessionEngine facade and runtime adapter to inspect resources, process, effective model/permissions/extensions and sealed general-proxy policy. It does not create a Session or expose credential values. |
+| 4 | Empty/whitespace search snippets fall back to actual Provider content, then matching citation excerpts where present; no summary is fabricated. |
+| 5 | `config list [prefix]` discovers normalized configuration keys, types and descriptions without values. Sensitive maps remain opaque; absent optional keys are explicitly not advertised. |
+| 6 | DSH model discovery points to the selected Provider catalog and no longer suggests a missing runtime merely because its static model list is empty. |
+| 8 | All three Session recovery suggestions include the required `--agent <agentId>`. |
+| 9 | `skill list` hides normal admission/generation/success-code details. `--verbose` expands them; abnormal admission, unavailability and generation drift remain visible. JSON remains complete. |
+| 10 | Official scoped SystemPrompt exposes each child's frozen model/native Provider route, role, parent, depth and present remaining delegation depth. Cold materialization reuses the exact birth authority. |
+| 11 | The first successful foreground result is delivered through the Agent result once. Durable epochs, failure details, background and subsequent activation reports remain intact; legacy persisted report intents are still recovered. |
+
+System skill projection advances to version 58. Runtime source freeze is `56e39d679eaf5bbbd68f34a6cc6e545784d88deb`; its clean-source pre-artifact report is `b954ed98363753765daf13f38bc53c443e098f0962daebfcace93d22ec739247`. The unchanged 11-patch, 74-package DSH dependency artifact is rebuilt with current dependency provenance: `56a4c392a88cfbc5b2fd6d492ebfbe12e76def536defe04c3d576502399a0e6c`. Runtime manifest `be4f0336be9a559058ccfde27baa6307cd792bfcf93f12900dcf2b4fb7f5c7d6` contains 17,458 files and passes packed composition/process verification. Runtime source gates pass 71 files / 766 tests, typecheck, lint and build.
+
+The fresh external Tester passes all eight official macOS scenarios against these exact bytes: native report `7291038ccf01f9a000e323d95ffdd00642d24573fa4d12e7ff5b26ed976dcf33`, dynamic campaign `4ce0e1f493d5c981720b2d0696c0c62ba0d21f1de8f1f401d96061430fd96f7f`. The official builder seals handoff `f27c4e4eafc5d066eb710078155898e003bc8d9723d1b1e2d751f56843767b71`; Host ingestion accepts the complete resources, lock and generated contracts. macOS is verified; Windows/Linux remain implementation-complete_pending-native-validation, with evidence bound to the new artifact.
+
+Host acceptance passes 36 unit files / 561 tests, all five staged process tests and 40 build-script/contract tests. Actual Provider-request assertions verify child identity and the absence of a duplicate first foreground completion, alongside file/image journeys and shared Shell approvals. The 12-generation lifecycle soak retains 14 file descriptors and grows RSS by 638,976 bytes. Resource verification, clean Runtime source freshness, typecheck, lint, test classification and Sidecar/CLI builds pass. Dependency-cruiser retains 13 existing warnings and zero errors. The targeted Rust checks pass 23 tests with one existing ignored test; this machine's test invocation supplies the installed Xcode Swift runtime library path. Changed Rust files pass the pinned formatter.
+
+This delivery updates source, generated contracts, staged Runtime resources and Sidecar/CLI bundles. The installed App and its already-running processes require a rebuild/restart to consume the changes; these checks do not claim a new signed App build.

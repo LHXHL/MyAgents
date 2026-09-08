@@ -85,7 +85,7 @@ export function parseCompatibleServerSearchContent(value: unknown): Readonly<{
       results.push({
         url,
         ...(typeof item.title === 'string' ? { title: item.title } : {}),
-        snippet: typeof item.snippet === 'string' ? item.snippet
+        snippet: typeof item.snippet === 'string' && item.snippet.trim() ? item.snippet
           : typeof item.content === 'string' ? item.content : '',
       });
       return;

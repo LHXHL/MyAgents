@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { parseCompatibleServerSearchContent } from './canonical-web-search-content';
 
 describe('compatible server-search data content', () => {
+  it.each(['', '  \n '])('uses provider content when snippet is blank (%#)', (snippet) => {
+    expect(parseCompatibleServerSearchContent({ url: 'https://example.com', snippet, content: 'Source excerpt' }).results)
+      .toEqual([{ url: 'https://example.com', snippet: 'Source excerpt' }]);
+  });
+
+  it('preserves a meaningful snippet over content', () => {
+    expect(parseCompatibleServerSearchContent({ url: 'https://example.com', snippet: 'Summary', content: 'Full text' }).results)
+      .toEqual([{ url: 'https://example.com', snippet: 'Summary' }]);
+  });
+
   it('decodes a single-quoted data envelope and preserves escaped source strings', () => {
     expect(parseCompatibleServerSearchContent("[{'text': [{'title': 'Reader\\'s source', 'link': 'https://example.com', 'content': 'First\\nSecond'}]}]"))
       .toEqual({ results: [{ title: "Reader's source", url: 'https://example.com', snippet: 'First\nSecond' }], unverified: false, text: [] });

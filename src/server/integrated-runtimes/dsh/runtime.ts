@@ -6,10 +6,12 @@ import { access, mkdir, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 
 import packageJson from '../../../../package.json';
+import dshLock from '../../../shared/integrated-runtimes/dsh-lock.json';
 import type { Provider, ProviderAuthType } from '../../../shared/config-types';
 import {
   DSH_PERMISSION_MODES,
   type RuntimeDiagnostics,
+  type RuntimeInspection,
   type RuntimeDetection,
   type RuntimeExtensionApplyState,
   type RuntimeExtensionComponentStatus,
@@ -64,7 +66,7 @@ import {
 } from './extension-compiler';
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
-import { resolveDshRuntimeInstallation } from './installation';
+import { resolveDshRuntimeInstallation, verifyDshHandoffInstallation } from './installation';
 import { reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { dshPermissionReview } from './permission-display';
 import { releaseLargeValueRef } from '../../utils/large-value-store';
@@ -777,12 +779,50 @@ export class DshRuntime implements AgentRuntime {
       const installation = await installedRuntime();
       return {
         installed: true,
-        version: packageJson.version,
+        version: dshLock.runtime.version,
         path: installation.runtimeEntrypointPath,
       };
     } catch {
       return { installed: false };
     }
+  }
+
+  async inspectRuntime(runtimeProcess?: RuntimeProcess): Promise<RuntimeInspection> {
+    const expectedIdentity = {
+      sourceCommit: dshLock.handoff.sourceCommit,
+      runtimeVersion: dshLock.runtime.version, dshVersion: dshLock.dsh.version, requiredNodeVersion: dshLock.runtime.requiredNodeVersion,
+      handoffSha256: dshLock.handoff.manifestSha256, runtimeManifestSha256: dshLock.handoff.runtimeManifestSha256,
+    };
+    const resources: RuntimeInspection['resources'] = {
+      state: 'unavailable', expectedIdentity, installedIdentity: null,
+    };
+    let installed = false;
+    try {
+      const installation = await installedRuntime();
+      installed = true;
+      resources.state = 'verification_failed';
+      await verifyDshHandoffInstallation(installation, buildDshChildEnvironment({
+        nodeExecutablePath: installation.nodeExecutablePath, inheritedEnvironment: process.env,
+      }));
+      resources.state = 'verified';
+      resources.installedIdentity = { ...expectedIdentity };
+    } catch {
+      resources.code = installed ? 'dsh_handoff_verification_failed' : 'dsh_resources_unavailable';
+    }
+    const active = runtimeProcess ? dshProcess(runtimeProcess) : undefined;
+    const current = active?.host.state === 'protocol-ready' && !active.exited ? active : undefined;
+    const configuration = current?.configuration;
+    const rules = current?.permissionRules;
+    return {
+      runtime: this.type, installed, version: dshLock.runtime.version, resources,
+      process: active?.host.diagnosticSnapshot.process ?? { state: 'not_running' },
+      model: configuration ? { id: configuration.profile.modelId, provider: configuration.profile.provider, revision: configuration.revision } : null,
+      permissions: configuration && rules ? projectDshPermissionDiagnostics(configuration.productPermissionMode, configuration.dshPermissionMode, rules) : null,
+      extensions: current?.extensionDiagnostics ?? null,
+      environment: active?.host.diagnosticSnapshot.environment ?? null,
+      proxy: active?.host.diagnosticSnapshot.proxy ?? null,
+      observedAt: new Date().toISOString(),
+    };
   }
 
   async queryModels(): Promise<RuntimeModelInfo[]> {

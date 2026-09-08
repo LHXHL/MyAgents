@@ -400,6 +400,7 @@ export interface SessionEngine {
   getLatestAssistantResult(): SessionEngineLatestResult;
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
+  inspectRuntime?(runtime: RuntimeType): Promise<import('../../shared/types/runtime').RuntimeInspection | null>;
   getCurrentSessionContext(): SessionEngineCurrentContext;
   getSessionOrigin(sessionId: string): SessionOrigin | undefined;
   ensureRegisteredAgentSessionOrigin(

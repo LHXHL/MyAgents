@@ -498,6 +498,9 @@ export interface AgentRuntime {
   /** Check if the CLI is installed and get version info */
   detect(): Promise<RuntimeDetection>;
 
+  /** Read-only resources plus the supplied lifecycle-owned process, if any. */
+  inspectRuntime?(process?: RuntimeProcess): Promise<import('../../shared/types/runtime').RuntimeInspection>;
+
   /** Query available models from the CLI (may spawn a temporary process) */
   queryModels(options?: {
     runtimeSource?: RuntimeSource;
