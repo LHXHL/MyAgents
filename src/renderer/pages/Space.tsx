@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   type KeyboardEvent,
   useCallback,
@@ -183,6 +184,7 @@ export function SpaceQuickActionDialog({
     });
   };
   const preventCreateOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposingEvent(event)) return;
     if (event.key === "Enter") event.preventDefault();
   };
   const pickAvatar = async () => {
@@ -244,6 +246,7 @@ export function SpaceQuickActionDialog({
                     setJoinSlug(event.target.value);
                   }}
                   onKeyDown={(event) => {
+                    if (isImeComposingEvent(event)) return;
                     if (event.key === "Enter") submit();
                   }}
                   className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"

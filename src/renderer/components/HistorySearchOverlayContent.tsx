@@ -16,6 +16,7 @@
  * been updated in the same commit.
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -239,7 +240,7 @@ export default memo(function HistorySearchOverlayContent({
     const isSearching = search.status === 'searching' || search.status === 'indexing';
     const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string } | null>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
-    const [contextMenu, setContextMenu] = useState<{ session: SessionMetadata; x: number; y: number } | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ sessionId: string; source: 'history' | 'search'; x: number; y: number } | null>(null);
     const contextMenuAnchorRef = useRef<HTMLSpanElement>(null);
     const [appliedTagIntent, setAppliedTagIntent] = useState(tagIntent?.id ?? null);
     const acknowledgedTagIntent = useRef<number | null>(null);
@@ -481,11 +482,19 @@ export default memo(function HistorySearchOverlayContent({
         }
     }, [tLauncher, toast]);
 
-    const openContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, session: SessionMetadata) => {
+    const openContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, session: SessionMetadata, source: 'history' | 'search' = 'history') => {
         event.preventDefault();
         event.stopPropagation();
-        setContextMenu({ session, x: event.clientX, y: event.clientY });
+        setContextMenu({ sessionId: session.id, source, x: event.clientX, y: event.clientY });
     }, []);
+    const openSearchContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, session: SessionMetadata) => {
+        openContextMenu(event, session, 'search');
+    }, [openContextMenu]);
+    // Menu position/target is local interaction state; Session metadata belongs
+    // to the same live collection as the row the user clicked.
+    const menuSession = contextMenu?.source === 'search'
+        ? searchResults.find(hit => hit.sessionId === contextMenu.sessionId)?.session
+        : sessions.find(candidate => candidate.id === contextMenu?.sessionId);
 
     return (
         <>
@@ -614,7 +623,7 @@ export default memo(function HistorySearchOverlayContent({
                                     placeholder={t('historyOverlay.searchPlaceholder')}
                                     className="h-full w-full bg-transparent py-1 pl-8 pr-10 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]/60 disabled:cursor-default"
                                     onKeyDown={(e) => {
-                                        if (e.nativeEvent.isComposing || composing) return;
+                                        if (isImeComposingEvent(e) || composing) return;
                                         if (e.key === 'Escape') {
                                             e.preventDefault();
                                             exitSearchMode();
@@ -736,7 +745,7 @@ export default memo(function HistorySearchOverlayContent({
                                             <HistorySearchResultRow
                                                 hit={row.hit} session={row.session} project={row.project}
                                                 deleteProtected={protectedSessionIds.has(row.session.id)}
-                                                onOpen={onOpenSession} onContextMenu={openContextMenu}
+                                                onOpen={onOpenSession} onContextMenu={openSearchContextMenu}
                                                 onShowStats={handleShowStats} onDelete={handleDeleteClick}
                                                 onTagClick={openTagAggregation}
                                             />
@@ -793,23 +802,23 @@ export default memo(function HistorySearchOverlayContent({
                 />,
                 document.body,
             )}
-            {contextMenu && (
+            {contextMenu && menuSession && !isSessionDeleted(menuSession.id) && (
                 <SessionContextMenu
                     open
                     onClose={() => setContextMenu(null)}
                     anchorRef={contextMenuAnchorRef}
                     placement="bottom-start"
-                    session={contextMenu.session}
-                    deleteProtected={protectedSessionIds.has(contextMenu.session.id)}
-                    onCopySessionId={() => handleCopySessionId(contextMenu.session)}
-                    onToggleFavorite={() => toggleFavorite(contextMenu.session)}
+                    session={menuSession}
+                    deleteProtected={protectedSessionIds.has(menuSession.id)}
+                    onCopySessionId={() => handleCopySessionId(menuSession)}
+                    onToggleFavorite={() => toggleFavorite(menuSession)}
                     onRenameSession={async (id, title) => {
                         const updated = await onRenameSession(id, title);
                         if (updated) search.updateSession(updated);
                         return updated;
                     }}
-                    onShowStats={() => showStats(contextMenu.session)}
-                    onDelete={() => requestDelete(contextMenu.session)}
+                    onShowStats={() => showStats(menuSession)}
+                    onDelete={() => requestDelete(menuSession)}
                     onSessionMutationStart={actions.beginSessionMetadataMutation}
                     onSessionUpdated={(updated, sequence) => {
                         const applied = actions.applySessionMetadata(updated, sequence);

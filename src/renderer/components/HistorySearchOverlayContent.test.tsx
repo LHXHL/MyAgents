@@ -6,12 +6,20 @@ const mocks = vi.hoisted(() => ({
     searchSessionPage: vi.fn(),
     closeSessionSearch: vi.fn(),
     deleteSession: vi.fn(),
+    getSessionUserTags: vi.fn(),
+    mutateSessionUserTagAssignment: vi.fn(),
     deletedIds: new Set<string>(),
     toast: {
         success: vi.fn(),
         error: vi.fn(),
         warning: vi.fn(),
     },
+}));
+
+vi.mock('@/api/sessionClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/api/sessionClient')>(),
+    getSessionUserTags: mocks.getSessionUserTags,
+    mutateSessionUserTagAssignment: mocks.mutateSessionUserTagAssignment,
 }));
 
 vi.mock('@/api/searchClient', async (importOriginal) => {
@@ -119,6 +127,7 @@ describe('HistorySearchOverlayContent', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
         mocks.deletedIds.clear();
+        mocks.getSessionUserTags.mockResolvedValue([{ name: 'Alpha', count: 1 }]);
         mocks.closeSessionSearch.mockResolvedValue(undefined);
         mocks.searchSessions.mockResolvedValue({ queryId: 'query', nextCursor: null, removedSessionIds: [], hits: [], totalCount: 0, queryTimeMs: 1 });
         await i18n.changeLanguage('zh-CN');
@@ -260,6 +269,64 @@ describe('HistorySearchOverlayContent', () => {
             expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`SessionID: ${session.id}`);
             expect(mocks.toast.success).toHaveBeenCalledWith(i18n.t('launcher:rightRail.copySessionIdSuccess'));
         });
+    });
+
+    it('uses the newly right-clicked session when switching an open Tag picker', async () => {
+        const secondSession = { ...session, id: 'session-b', title: 'Second session' };
+        mocks.mutateSessionUserTagAssignment.mockResolvedValue({
+            action: 'updated', affectedSessionCount: 1, tags: [{ name: 'Alpha', count: 2 }],
+            session: { ...session, userTags: ['Alpha'] },
+        });
+        render(<HistorySearchOverlayContent projects={[project]}
+            taskCenterData={taskCenterData({ sessions: [session, secondSession] })}
+            onClose={vi.fn()} onOpenSession={vi.fn()} onRenameSession={vi.fn(async () => null)} />);
+        fireEvent.contextMenu(screen.getByText(session.title).closest('[data-history-session-row]')!);
+        fireEvent.click(screen.getByRole('button', { name: i18n.t('common:sessionTags.addTag') }));
+        fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Alpha/ }));
+        await waitFor(() => expect(screen.getByRole('menuitemcheckbox', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'true'));
+
+        fireEvent.contextMenu(screen.getByText(secondSession.title).closest('[data-history-session-row]')!);
+        if (!screen.queryByRole('menuitemcheckbox', { name: /Alpha/ })) {
+            fireEvent.click(screen.getByRole('button', { name: i18n.t('common:sessionTags.addTag') }));
+        }
+        const tag = await screen.findByRole('menuitemcheckbox', { name: /Alpha/ });
+        expect(tag).toHaveAttribute('aria-checked', 'false');
+        fireEvent.click(tag);
+        await waitFor(() => expect(mocks.mutateSessionUserTagAssignment).toHaveBeenLastCalledWith(
+            secondSession.id, { kind: 'add', name: 'Alpha' },
+        ));
+    });
+
+    it('keeps an open history menu synchronized with the live Session collection', async () => {
+        mocks.getSessionUserTags.mockResolvedValue([{ name: 'Alpha', count: 1 }, { name: 'Beta', count: 1 }]);
+        const view = (current: SessionMetadata) => <HistorySearchOverlayContent projects={[project]}
+            taskCenterData={taskCenterData({ sessions: [current] })} onClose={vi.fn()}
+            onOpenSession={vi.fn()} onRenameSession={vi.fn()} />;
+        const { rerender } = render(view({ ...session, userTags: ['Alpha'] }));
+        fireEvent.contextMenu(screen.getByText(session.title).closest('[data-history-session-row]')!);
+        fireEvent.click(screen.getByRole('button', { name: i18n.t('common:sessionTags.addTag') }));
+        expect(await screen.findByRole('menuitemcheckbox', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'true');
+        rerender(view({ ...session, userTags: ['Beta'] }));
+        expect(screen.getByRole('menuitemcheckbox', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false');
+        expect(screen.getByRole('menuitemcheckbox', { name: /Beta/ })).toHaveAttribute('aria-checked', 'true');
+    });
+
+    it('uses the current search-hit metadata for a full-text result menu', async () => {
+        mocks.getSessionUserTags.mockResolvedValue([{ name: 'Alpha', count: 1 }, { name: 'Beta', count: 1 }]);
+        const hitSession = { ...session, userTags: ['Beta'] };
+        const hit = { session: hitSession, sessionId: session.id, title: session.title, agentDir: session.agentDir,
+            score: 1, matchType: 'title', snippet: null, snippetHighlights: [], titleHighlights: [],
+            matchedRole: null, lastActiveAt: session.lastActiveAt, source: 'desktop', turnCount: 1 };
+        mocks.searchSessions.mockResolvedValue({ queryId: 'tags-search', nextCursor: null, removedSessionIds: [], hits: [hit], totalCount: 1, queryTimeMs: 1 });
+        render(<HistorySearchOverlayContent projects={[project]}
+            taskCenterData={taskCenterData({ sessions: [{ ...session, userTags: ['Alpha'] }] })}
+            onClose={vi.fn()} onOpenSession={vi.fn()} onRenameSession={vi.fn()} />);
+        fireEvent.change(enterSearchMode(), { target: { value: 'Shared' } });
+        const title = await screen.findByText(session.title);
+        fireEvent.contextMenu(title.closest('[data-history-search-session-row]')!);
+        fireEvent.click(screen.getByRole('button', { name: i18n.t('common:sessionTags.addTag') }));
+        expect(await screen.findByRole('menuitemcheckbox', { name: /Beta/ })).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('menuitemcheckbox', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false');
     });
 
     it('routes browse deletion through the App owner and explains a live owner refusal', async () => {

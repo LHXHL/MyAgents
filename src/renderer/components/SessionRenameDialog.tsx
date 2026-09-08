@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -63,6 +64,7 @@ export default function SessionRenameDialog({
         aria-labelledby="session-rename-dialog-title"
         className="w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5 shadow-xl"
         onKeyDown={(event) => {
+          if (isImeComposingEvent(event)) return;
           if (event.key === 'Escape') {
             event.preventDefault();
             if (!saving) onCancel();
@@ -114,6 +116,7 @@ export default function SessionRenameDialog({
             if (error) setError(null);
           }}
           onKeyDown={(event) => {
+            if (isImeComposingEvent(event)) return;
             if (event.key === 'Enter') {
               event.preventDefault();
               void submit();

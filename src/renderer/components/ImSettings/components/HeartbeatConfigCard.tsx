@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -167,6 +168,7 @@ export default function HeartbeatConfigCard({
     }, [customDraft, config.intervalMinutes, update]);
 
     const handleCustomKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+        if (isImeComposingEvent(e)) return;
         if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
     }, []);
 

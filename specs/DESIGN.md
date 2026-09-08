@@ -140,6 +140,7 @@ Toast 用于跨区域、短暂且无法从当前表面直接确认的结果。�
 - 可点击容器必须可聚焦，并支持 Enter/Space；内部菜单和快捷动作阻止父级主动作。
 - Dialog/Overlay 打开后移动到合理首焦点，Escape 关闭，关闭后回到触发入口。
 - Tab、Menu、Dialog、Tree 等使用匹配的 ARIA role、状态和 roving focus，不只靠视觉模拟。
+- 文本输入的应用快捷键先用 `isImeComposingEvent`（`utils/imeKeyboard.ts`）判断输入法状态；组词确认、候选导航与取消交给原生输入法，不触发提交、保存或关闭。祖先和全局键盘监听器同样遵守，不能只保护最终发送分支。
 - Hover 才出现的动作在 `focus-within` 时同样可见；触屏场景必须有稳定入口。
 - 需要保留当前输入焦点的鼠标动作使用共享 `retainFocusOnMouseDown`，不在 click 后强行抢焦点。
 - 状态颜色必须伴随文字、形状或图标；内容和主动作需满足当前 Theme 的对比度测试。

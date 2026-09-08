@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
   Archive,
@@ -671,6 +672,7 @@ export default memo(function GlobalSidebar({
       closeNotificationCenter();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeComposingEvent(event)) return;
       if (event.key !== 'Escape') return;
       event.preventDefault();
       closeNotificationCenter(true);
@@ -1190,6 +1192,7 @@ export default memo(function GlobalSidebar({
               className="global-sidebar-rail-stack absolute inset-0 min-h-0 pt-3"
               data-global-sidebar-workspace-rail
               onKeyDown={(event) => {
+                if (isImeComposingEvent(event)) return;
                 if (!flyoutOpen) return;
                 if (event.key === 'Tab' && !event.shiftKey) {
                   const entry = flyoutRef.current?.querySelector<HTMLElement>(FLYOUT_FOCUS_ENTRY_SELECTOR);
@@ -1317,6 +1320,7 @@ export default memo(function GlobalSidebar({
           onFocusCapture={clearFlyoutTimers}
           onBlurCapture={scheduleFlyoutClose}
           onKeyDown={(event) => {
+            if (isImeComposingEvent(event)) return;
             if (event.key === 'Tab' && event.shiftKey) {
               const entry = flyoutRef.current?.querySelector<HTMLElement>(FLYOUT_FOCUS_ENTRY_SELECTOR);
               if (event.target !== entry || !flyoutTriggerRef.current) return;

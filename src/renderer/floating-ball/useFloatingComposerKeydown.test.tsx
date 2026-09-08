@@ -38,6 +38,16 @@ afterEach(() => {
 });
 
 describe('useFloatingComposerKeydown', () => {
+    it.each([{ isComposing: true, keyCode: 27 }, { isComposing: false, keyCode: 229 }])('keeps the companion open during composition Escape: %j', ime => {
+        const onEscape = vi.fn();
+        render(<Harness onSend={vi.fn()} onEscape={onEscape} />);
+        const textarea = screen.getByTestId('composer');
+        fireEvent.keyDown(textarea, { key: 'Escape', ...ime });
+        expect(onEscape).not.toHaveBeenCalled();
+        fireEvent.keyDown(textarea, { key: 'Escape', keyCode: 27 });
+        expect(onEscape).toHaveBeenCalledOnce();
+    });
+
     it('selects focused textarea on Ctrl/Cmd+A via the window-level router', () => {
         render(<Harness onSend={vi.fn()} />);
         const textarea = screen.getByTestId('composer') as HTMLTextAreaElement;

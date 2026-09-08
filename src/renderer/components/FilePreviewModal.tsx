@@ -13,6 +13,7 @@
  * 2. Explicit `onSave`/`onRevealFile` props — when caller provides save logic directly
  *    (e.g. Settings panels editing `~/.myagents/agents/...`)
  */
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { AtSign, Check, Copy, Edit2, Expand, Eye, FolderOpen, Loader2, LocateFixed, MoreHorizontal, X } from 'lucide-react';
 import Tip from './Tip';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useImperativeHandle, useMemo, useState, useRef, type Ref } from 'react';
@@ -283,11 +284,8 @@ function FilenameSlot({
             disabled={busy}
             onChange={(e) => onDraftChange(e.target.value)}
             onKeyDown={(e) => {
-                // IME composition guard: in CJK input, Enter often confirms
-                // the candidate selection rather than submitting the form.
-                // `nativeEvent.isComposing` is the cross-browser hint that
-                // a composition is in progress; let the IME consume it.
-                if (e.nativeEvent.isComposing) return;
+                // Let IME commit its candidate before interpreting rename keys.
+                if (isImeComposingEvent(e)) return;
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     onCommit(draft);

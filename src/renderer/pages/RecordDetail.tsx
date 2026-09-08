@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
@@ -1856,6 +1857,7 @@ export default function RecordDetail({
                 queueMetadataSave(titleDraft, parseTagDraft(tagDraft))
               }
               onKeyDown={(event) => {
+                if (isImeComposingEvent(event)) return;
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
               aria-label={t('records.titleLabel')}
@@ -2444,6 +2446,7 @@ export default function RecordDetail({
                                   void handleRenameSpeaker(speaker.speakerId)
                                 }
                                 onKeyDown={(event) => {
+                                  if (isImeComposingEvent(event)) return;
                                   if (event.key === 'Enter') {
                                     event.currentTarget.blur();
                                   }
@@ -2539,6 +2542,7 @@ export default function RecordDetail({
                                 )
                               }
                               onKeyDown={(event) => {
+                                if (isImeComposingEvent(event)) return;
                                 if (event.key === 'Enter') {
                                   event.currentTarget.blur();
                                 }

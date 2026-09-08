@@ -2,6 +2,7 @@
 // AI config (model/provider/permission/mcp) reads from AgentConfig (source of truth).
 // Metadata (name/icon) writes to both Project and AgentConfig.
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -349,7 +350,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           value={name}
           onChange={e => setName(e.target.value)}
           onBlur={handleNameBlur}
-          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          onKeyDown={e => { if (isImeComposingEvent(e)) return; if (e.key === 'Enter') e.currentTarget.blur(); }}
           placeholder={t('agentSettings.basics.workspaceNamePlaceholder')}
         />
 

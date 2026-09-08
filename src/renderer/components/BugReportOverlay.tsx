@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Send, ImagePlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -84,6 +85,7 @@ export default function BugReportOverlay({
 
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Escape' && !menuOpenRef.current) {
                 onCloseRef.current();
             }

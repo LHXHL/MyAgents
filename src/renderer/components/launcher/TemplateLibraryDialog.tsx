@@ -3,6 +3,7 @@
  * Shows template list, target directory, and project name
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, Loader2, Trash2, ChevronRight, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -246,6 +247,7 @@ export default memo(function TemplateLibraryDialog({
     }, [selectedTemplate, targetDir, projectName, findAvailablePath, onCreateWorkspace, onClose, t]);
 
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (isImeComposingEvent(e)) return;
         if (e.key === 'Escape') {
             if (showIconPicker) { setShowIconPicker(false); return; }
             onClose();
@@ -423,6 +425,7 @@ export default memo(function TemplateLibraryDialog({
                                                         }
                                                     }}
                                                     onKeyDown={(e) => {
+                                                        if (isImeComposingEvent(e)) return;
                                                         if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
                                                         if (e.key === 'Escape') { setEditingName(false); }
                                                     }}
@@ -462,6 +465,7 @@ export default memo(function TemplateLibraryDialog({
                                                         }
                                                     }}
                                                     onKeyDown={(e) => {
+                                                        if (isImeComposingEvent(e)) return;
                                                         if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
                                                         if (e.key === 'Escape') { setEditingDesc(false); }
                                                     }}

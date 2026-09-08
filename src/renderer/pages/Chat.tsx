@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import { AlertTriangle, Bot, Globe, History, Loader2, MessageSquarePlus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from 'react';
@@ -442,6 +443,7 @@ const SessionTitleEditor = forwardRef<
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={e => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Enter') inputRef.current?.blur();
             if (e.key === 'Escape') { setDraft(title); setEditing(false); }
           }}

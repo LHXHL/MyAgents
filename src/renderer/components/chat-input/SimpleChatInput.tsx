@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
   AtSign,
@@ -1034,6 +1035,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   useEffect(() => {
     if (!active) return;
     const handleShiftTab = (e: KeyboardEvent) => {
+      if (isComposingRef.current || isImeComposingEvent(e)) return;
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1155,6 +1157,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Candidate confirmation/navigation belongs to IME before slash/@ menus,
+    // permission shortcuts, or message sending can interpret the same key.
+    if (isComposingRef.current || isImeComposingEvent(event)) return;
     // Shift+Tab to cycle permission mode
     if (event.key === 'Tab' && event.shiftKey) {
       event.preventDefault();
@@ -1323,16 +1328,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       }
     }
 
-    // Normal send - but NOT during IME composition (e.g., Chinese input)
-    // Check both event.nativeEvent.isComposing (standard) and event.keyCode === 229 (legacy)
-    //
     // Chat-mode keyboard contract is now user-configurable via the
     // chatSendShortcut preference (resolveEnterKeyAction, shared with AI 小助理 /
     // 问题反馈). 'enter' → bare Enter sends; 'modEnter' → ⌘/Ctrl+Enter sends.
-    // The triple IME guard (#123) is preserved: a composition commit arrives as
-    // Enter and must never send. (Thought mode has its own ThoughtInput editor
-    // and does not pass through here.)
-    if (event.key === 'Enter' && !isComposingRef.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+    if (event.key === 'Enter') {
       if (resolveEnterKeyAction(event, sendShortcutRef.current) === 'send') {
         event.preventDefault();
         if ((inputValue.trim() || images.length > 0) && canSendMessageRef.current) {

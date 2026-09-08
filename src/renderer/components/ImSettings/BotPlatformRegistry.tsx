@@ -1,5 +1,6 @@
 /** Settings → Chatbot Bot platform registry and workspace entry flow. */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -360,7 +361,7 @@ export default function BotPlatformRegistry({
             type="text"
             value={installNpmSpec}
             onChange={event => setInstallNpmSpec(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Enter') void handleInstallPlugin(); }}
+            onKeyDown={event => { if (isImeComposingEvent(event)) return; if (event.key === 'Enter') void handleInstallPlugin(); }}
             placeholder={t('agentSettings.botRegistry.installPlaceholder')}
             className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent)] focus:outline-none"
             autoFocus

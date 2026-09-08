@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AtSign,
   ChevronUp,
@@ -3185,6 +3186,7 @@ const DirectoryPanel = memo(
                           placeholder={t("workspaceFiles.directory.searchPlaceholder")}
                           className="h-7 w-full rounded-md border border-[var(--line)] bg-transparent pl-8 pr-8 text-sm text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none transition-colors focus:border-[var(--accent)]"
                           onKeyDown={(e) => {
+                              if (isImeComposingEvent(e)) return;
                               if (e.key === 'Escape') {
                                   setIsSearchMode(false);
                                   setSearchQuery('');

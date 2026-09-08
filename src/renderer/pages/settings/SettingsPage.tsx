@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   Check,
   ChevronDown,
@@ -6022,6 +6023,7 @@ export default function Settings({
                         onChange={(e) => setProxyHostDraft(e.target.value)}
                         onBlur={commitProxyHost}
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (e.key === 'Enter') e.currentTarget.blur();
                         }}
                         placeholder={PROXY_DEFAULTS.host}
@@ -6047,6 +6049,7 @@ export default function Settings({
                         }}
                         onBlur={commitProxyPort}
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (e.key === 'Enter') e.currentTarget.blur();
                         }}
                         placeholder={String(PROXY_DEFAULTS.port)}
@@ -6897,6 +6900,7 @@ export default function Settings({
                             }
                             onBlur={commitClaudeTranscriptCleanupDays}
                             onKeyDown={(e) => {
+                              if (isImeComposingEvent(e)) return;
                               if (e.key === 'Enter') e.currentTarget.blur();
                             }}
                             aria-label={tSettings(
@@ -7173,6 +7177,7 @@ export default function Settings({
                           )
                         }
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (
                             e.key === 'Enter' &&
                             builtinMcpSettings.newArg.trim()
@@ -7310,6 +7315,7 @@ export default function Settings({
                       placeholder={tSettings('toolbox.common.valuePlaceholder')}
                       className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-mono text-sm text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
+                        if (isImeComposingEvent(e)) return;
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           const key = builtinMcpSettings.newEnvKey.trim();
@@ -8026,6 +8032,7 @@ export default function Settings({
                         )
                       }
                       onKeyDown={(e) => {
+                        if (isImeComposingEvent(e)) return;
                         if (
                           e.key === 'Enter' &&
                           playwrightSettings.newArg.trim()
@@ -8661,6 +8668,7 @@ export default function Settings({
                               )}
                               className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                               onKeyDown={(e) => {
+                                if (isImeComposingEvent(e)) return;
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
                                   if (mcpForm.newArg.trim()) {
@@ -8776,6 +8784,7 @@ export default function Settings({
                               )}
                               className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                               onKeyDown={(e) => {
+                                if (isImeComposingEvent(e)) return;
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
                                   const key = mcpForm.newEnvKey.trim();
@@ -8959,6 +8968,7 @@ export default function Settings({
                                   )}
                                   className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                                   onKeyDown={(e) => {
+                                    if (isImeComposingEvent(e)) return;
                                     if (e.key === 'Enter') {
                                       e.preventDefault();
                                       if (mcpForm.newHeaderKey) {
@@ -9739,6 +9749,7 @@ export default function Settings({
                     )}
                     className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors placeholder:text-[var(--ink-muted)] focus:border-[var(--focus-border)] focus:outline-none"
                     onKeyDown={(e) => {
+                      if (isImeComposingEvent(e)) return;
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         addCustomModelFromInput();

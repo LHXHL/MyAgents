@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef } from 'react';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
@@ -42,6 +43,7 @@ export default function ContextMenu({ x, y, items, onClose, zIndex = 50 }: Conte
         };
 
         const handleEscape = (event: KeyboardEvent) => {
+            if (isImeComposingEvent(event)) return;
             if (event.key === 'Escape') {
                 onClose();
             }

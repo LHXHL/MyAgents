@@ -1,6 +1,7 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type CompositionEvent, type KeyboardEvent } from 'react';
 
-import { isImeComposingEvent, resolveEnterKeyAction, type ChatSendShortcut } from '@/utils/chatSendKey';
+import { resolveEnterKeyAction, type ChatSendShortcut } from '@/utils/chatSendKey';
 import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
 
 interface FloatingComposerKeydownOptions {
@@ -48,6 +49,7 @@ export function useFloatingComposerKeydown({
 
     useEffect(() => {
         const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
+            if (isComposingRef.current || isImeComposingEvent(event)) return;
             if (handleSelectAllKeydown(event, isMacPlatform())) return;
             if (event.key === 'Escape') onEscapeRef.current();
         };
