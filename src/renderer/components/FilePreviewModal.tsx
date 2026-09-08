@@ -30,6 +30,7 @@ import { remapWorkspacePath, type WorkspacePathMove } from '@/utils/workspacePat
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 import { copyMarkdownAsRichText, copyPlainText } from '@/utils/markdownClipboard';
+import { filePathDirname } from '@/utils/workspaceFileLinks';
 
 import Markdown from './Markdown';
 import { useToast } from './Toast';
@@ -92,10 +93,8 @@ interface FilePreviewModalProps {
     onSave?: (content: string) => Promise<void>;
     /** External reveal-in-finder handler — enables "Open in Finder" without Tab context */
     onRevealFile?: () => Promise<void>;
-    /** Absolute workspace root path — Phase D.5: required for rendered
-     *  markdown to load relative-path images via `useWorkspaceFileService`.
-     *  When omitted, embedded images in markdown won't load (the modal's
-     *  text/code preview still works fine). */
+    /** Workspace authority for workspace files. External documents resolve
+     *  relative references from localPath through the local-file read API. */
     workspacePath?: string | null;
     /** Notify parent that the file was renamed. Parent MUST update the
      *  `name`/`path` it passes back so subsequent saves target the new
@@ -1234,7 +1233,7 @@ export default function FilePreviewModal({
             return (
                 <div ref={markdownScrollRef} className="h-full overflow-auto overscroll-contain p-6 bg-[var(--paper-elevated)]">
                     <div className="ai-message-content mx-auto max-w-3xl">
-                        <Markdown raw preserveNewlines basePath={path ? path.substring(0, path.lastIndexOf('/')) : undefined} workspacePath={workspacePath}>{previewSource}</Markdown>
+                        <Markdown raw preserveNewlines basePath={filePathDirname(localPath ?? path ?? '')} workspacePath={workspacePath}>{previewSource}</Markdown>
                     </div>
                 </div>
             );

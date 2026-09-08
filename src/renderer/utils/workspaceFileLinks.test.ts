@@ -5,6 +5,8 @@ import {
   resolveAgainstWorkspace,
   resolveFileActionTarget,
   resolveFileLinkTarget,
+  filePathDirname,
+  resolveDocumentFileLink,
   resolveWorkspaceFileLinkTarget,
   toWorkspaceRelativePath,
 } from './workspaceFileLinks';
@@ -84,6 +86,37 @@ describe('resolveWorkspaceFileLinkTarget', () => {
 });
 
 describe('resolveFileLinkTarget', () => {
+  it.each([
+    ['note%3A12.md', 'note:12.md'],
+    ['%23note.md', '#note.md'],
+    ['%2520.md', '%20.md'],
+  ])('keeps encoded bare filename %s distinct from link syntax', (href, path) => {
+    expect(resolveFileLinkTarget(href, WORKSPACE)).toEqual({ scope: 'workspace', path });
+    expect(resolveFileLinkTarget('#note.md', WORKSPACE)).toBeNull();
+    expect(resolveFileLinkTarget('javascript:note.md', WORKSPACE)).toBeNull();
+  });
+
+  it('recognizes native Windows relative directories using the workspace separators', () => {
+    expect(resolveFileLinkTarget('src%5Cdocs', 'C:\\work'))
+      .toEqual({ scope: 'workspace', path: 'src/docs' });
+    expect(toWorkspaceRelativePath('src\\docs', 'C:\\work')).toBe('src/docs');
+  });
+
+  it.each([
+    ['%2520.png', '%20.png'],
+    ['report%3A12', 'report:12'],
+    ['report%23L12', 'report#L12'],
+    ['a%5Cb%3F%23.png', 'a\\b?#.png'],
+  ])('decodes %s once without reinterpreting the resulting filename', (encoded, filename) => {
+    expect(resolveFileLinkTarget(`file://${WORKSPACE}/${encoded}`, WORKSPACE))
+      .toEqual({ scope: 'workspace', path: filename });
+    expect(resolveFileLinkTarget(`${WORKSPACE}/${encoded}`, WORKSPACE))
+      .toEqual({ scope: 'workspace', path: filename });
+    expect(resolveFileLinkTarget(`file://${WORKSPACE}/${encoded}`, null))
+      .toEqual({ scope: 'local', path: `${WORKSPACE}/${filename}` });
+    expect(resolveFileActionTarget(`${WORKSPACE}/${filename}`, WORKSPACE))
+      .toEqual({ scope: 'workspace', path: filename });
+  });
   it('keeps workspace links on the workspace action path', () => {
     expect(resolveFileLinkTarget(`${WORKSPACE}/src/App.tsx#L9`, WORKSPACE)).toEqual({
       scope: 'workspace',
@@ -111,6 +144,34 @@ describe('resolveFileLinkTarget', () => {
   it('rejects non-file schemes', () => {
     expect(resolveFileLinkTarget('https://example.com/file.ts', WORKSPACE)).toBeNull();
     expect(resolveFileLinkTarget('mailto:a@example.com', WORKSPACE)).toBeNull();
+  });
+});
+
+describe('document reference base', () => {
+  it.each([
+    ['/Users/demo/docs/report.md', '/Users/demo/docs'],
+    ['/report.md', '/'],
+    ['docs/report.md', 'docs'],
+    ['report.md', ''],
+    ['C:\\Users\\demo\\report.md', 'C:\\Users\\demo'],
+    ['C:\\report.md', 'C:\\'],
+    ['\\\\server\\share\\docs\\report.md', '\\\\server\\share\\docs'],
+    ['/Users/demo/a\\b.md', '/Users/demo'],
+  ])('extracts the native directory of %s', (path, directory) => {
+    expect(filePathDirname(path)).toBe(directory);
+  });
+
+  it('preserves native base characters while interpreting link syntax once', () => {
+    const href = resolveDocumentFileLink('next%23note.md#L2', '/Users/demo/%20 #notes');
+    expect(resolveFileLinkTarget(href, null)).toEqual({
+      scope: 'local', path: '/Users/demo/%20 #notes/next#note.md', initialLineNumber: 2,
+    });
+    expect(resolveFileLinkTarget(resolveDocumentFileLink('next.md', 'C:\\docs'), null))
+      .toEqual({ scope: 'local', path: 'C:/docs/next.md' });
+  });
+
+  it.each(['#section', '/Users/demo/file.md', 'https://example.com/a', '//cdn.example.com/a', 'file:///Users/demo/file.md', 'C:/docs/file.md'])('does not rebase %s', href => {
+    expect(resolveDocumentFileLink(href, '/Users/demo/docs')).toBe(href);
   });
 });
 

@@ -134,6 +134,19 @@ describe('Markdown local file links', () => {
     });
   });
 
+  it.each([
+    ['note%3A12.md', 'note:12.md'],
+    ['%23note.md', '#note.md'],
+  ])('opens and right-clicks encoded bare filename %s as a local file', async (href, path) => {
+    mocks.checkPaths.mockResolvedValue({ results: { [path]: { exists: true, type: 'file' } } });
+    const { onFilePreviewExternal } = renderMarkdown(`[Note](${href})`);
+    fireEvent.click(screen.getByRole('link', { name: 'Note' }));
+    await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({ path })));
+    fireEvent.contextMenu(screen.getByRole('link', { name: 'Note' }));
+    await screen.findByText('预览');
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+  });
+
   it('opens workspace absolute path links in the MyAgents file preview instead of the system default app', async () => {
     const { onFilePreviewExternal } = renderMarkdown(
       `[Message.tsx](${WORKSPACE}/src/renderer/components/Message.tsx)`,
@@ -170,6 +183,36 @@ describe('Markdown local file links', () => {
         initialLineNumber: 42,
       }));
     });
+  });
+
+  it.each([
+    [`file://${WORKSPACE}/src/renderer/components/Message.tsx:42`, 'src/renderer/components/Message.tsx', WORKSPACE],
+    ['C:/Users/demo/work/Guide.md#L42', 'Guide.md', 'C:\\Users\\demo\\work'],
+  ])('opens a supported local link %s with its line reference', async (href, path, workspace) => {
+    const onFilePreviewExternal = vi.fn();
+    mocks.checkPaths.mockResolvedValue({ results: { [path]: { exists: true, type: 'file' } } });
+    render(<FileActionProvider workspacePath={workspace} onFilePreviewExternal={onFilePreviewExternal}>
+      <Markdown>{`[Guide](${href})`}</Markdown>
+    </FileActionProvider>);
+    fireEvent.click(screen.getByRole('link', { name: 'Guide' }));
+    await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
+      path, initialLineNumber: 42,
+    })));
+  });
+
+  it('resolves external document links against their directory on click and right-click', async () => {
+    const localPath = '/Users/demo/reports/next.md';
+    mocks.checkLocalPaths.mockResolvedValue({ results: { [localPath]: { exists: true, type: 'file' } } });
+    const onFilePreviewExternal = vi.fn();
+    render(<FileActionProvider workspacePath={WORKSPACE} onFilePreviewExternal={onFilePreviewExternal}>
+      <Markdown raw basePath="/Users/demo/reports" workspacePath={null}>{'[Next](next.md)'}</Markdown>
+    </FileActionProvider>);
+    fireEvent.click(screen.getByRole('link', { name: 'Next' }));
+    await waitFor(() => expect(onFilePreviewExternal).toHaveBeenCalledWith(expect.objectContaining({
+      localPath, sourceScope: 'local',
+    })));
+    fireEvent.contextMenu(screen.getByRole('link', { name: 'Next' }));
+    expect(await screen.findByText('预览')).toBeInTheDocument();
   });
 
   it('does not let a stale fullscreen read replace a newer file target', async () => {

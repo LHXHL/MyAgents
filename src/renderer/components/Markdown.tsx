@@ -28,10 +28,11 @@ import {
   MARKDOWN_REHYPE_PLUGINS,
   MARKDOWN_REMARK_PLUGINS_DEFAULT,
   MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
+  MARKDOWN_URL_TRANSFORM,
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
-import { resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
+import { fileUrlToPath, resolveAgainstWorkspace, resolveDocumentFileLink } from '@/utils/workspaceFileLinks';
 
 // ── Streaming leading-edge fade ──
 // While streaming, wrap the LAST few characters of the last text node in a
@@ -94,9 +95,10 @@ const REHYPE_PLUGINS_STREAMING: ComponentProps<typeof ReactMarkdown>['rehypePlug
 const MarkdownLink = memo(function MarkdownLink({
   href,
   children,
+  basePath = '',
   node: _node,
   ...props
-}: React.ComponentProps<'a'> & { node?: unknown }) {
+}: React.ComponentProps<'a'> & { node?: unknown; basePath?: string }) {
   const fileLinkAction = useFileLinkAction();
   const openWebLink = useOpenWebLink();
 
@@ -111,7 +113,8 @@ const MarkdownLink = memo(function MarkdownLink({
       // Cmd (macOS) / Ctrl (Win/Linux) + click bypasses the embedded browser
       // panel and opens directly in the system default browser.
       const forceExternal = e.metaKey || e.ctrlKey;
-      if (fileLinkAction?.openFileLink(href, { forceExternal })) {
+      const actionHref = resolveDocumentFileLink(href, basePath);
+      if (fileLinkAction?.openFileLink(actionHref, { forceExternal })) {
         return;
       }
       openWebLink(href, { forceExternal });
@@ -120,7 +123,7 @@ const MarkdownLink = memo(function MarkdownLink({
 
   const handleContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (!href) return;
-    if (fileLinkAction?.openFileLinkMenu(e.clientX, e.clientY, href)) {
+    if (fileLinkAction?.openFileLinkMenu(e.clientX, e.clientY, resolveDocumentFileLink(href, basePath))) {
       e.preventDefault();
       e.stopPropagation();
     }
@@ -346,14 +349,14 @@ interface MarkdownProps {
    *  on the last paragraph. Only the currently-growing assistant text block sets
    *  this (see Message.tsx); it is removed the instant the turn ends → crisp final. */
   streaming?: boolean;
-  /** Document base directory path **relative to workspace root** — used to
-   *  resolve `<img src="../foo.png">` against the doc's own location. */
+  /** Native document directory: workspace-relative for workspace documents,
+   *  absolute for external documents. Used for relative images and links. */
   basePath?: string;
   /** **Absolute** workspace root path — fed to `useWorkspaceFileService` so
    *  the relative-image fetch goes through `cmd_workspace_download_file`.
    *  Defaults to the enclosing FileActionProvider's workspace in chat.
-   *  Explicit null means there is no workspace; `basePath` remains the doc's
-   *  directory inside the workspace, not the workspace itself. */
+   *  Explicit null means there is no workspace. An absolute `basePath` still
+   *  resolves external document references through the existing local-file API. */
   workspacePath?: string | null;
 }
 
@@ -387,10 +390,10 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
   const { isAvailable, readFileAsBlobUrl, readLocalFileAsBlobUrl } = fileService;
   const srcType = !src ? 'empty' : isAbsoluteUrl(src) ? 'url' : 'local';
   // Markdown encodes filenames as URLs. Decode once at the filesystem boundary.
-  const decoded = srcType === 'local' ? safeDecodeURIComponent(src!) : '';
-  const absolutePath = resolveAgainstWorkspace(decoded, null);
+  const decoded = srcType === 'local' ? fileUrlToPath(src!) ?? safeDecodeURIComponent(src!) : '';
   // Do not collapse `..` here: Rust must see and reject workspace escapes.
   const relativePath = basePath ? `${basePath}/${decoded}` : decoded;
+  const absolutePath = resolveAgainstWorkspace(decoded, null) ?? resolveAgainstWorkspace(relativePath, null);
   // isAvailable includes a workspace requirement; absolute local reads do not.
   const unavailable = srcType === 'local' && !absolutePath && !isAvailable;
 
@@ -484,11 +487,8 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
     [children, raw],
   );
 
-  // Phase D.5: image loading goes through Rust workspace_files. Renderer threads
-  // `workspacePath` (absolute) and `basePath` (workspace-relative dir of the
-  // doc) separately — the hook needs the absolute path to call the Rust cmd,
-  // while basePath is only used to resolve relative `<img src>` against the
-  // doc's own location.
+  // The document directory resolves relative references; it never becomes a
+  // workspace grant. Rust separately validates the resulting local/workspace read.
 
   // All Markdown surfaces share filesystem-aware images. Keep the component
   // identity stable while chat text streams so unchanged images retain handles.
@@ -498,12 +498,14 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
         <MarkdownImage src={props.src} alt={props.alt} basePath={basePath} workspacePath={workspacePath} />
       ),
+      a: (props: React.ComponentProps<'a'> & { node?: unknown }) => <MarkdownLink {...props} basePath={basePath} />,
     };
   }, [basePath, workspacePath]);
 
   return (
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
       <ReactMarkdown
+        urlTransform={MARKDOWN_URL_TRANSFORM}
         remarkPlugins={preserveNewlines ? MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : MARKDOWN_REMARK_PLUGINS_DEFAULT}
         rehypePlugins={streaming && !raw ? REHYPE_PLUGINS_STREAMING : MARKDOWN_REHYPE_PLUGINS}
         components={components}

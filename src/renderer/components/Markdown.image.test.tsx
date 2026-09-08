@@ -89,6 +89,30 @@ describe('Markdown local images', () => {
     }));
   });
 
+  it.each([
+    ['file:///Users/demo/%E7%9C%8B%E5%B1%B1%20%2520.png', '/Users/demo/看山 %20.png'],
+    ['FiLe:///Users/demo/chart.png', '/Users/demo/chart.png'],
+    ['C:/Users/demo/chart.png', 'C:\\Users\\demo\\chart.png'],
+    [String.raw`C:\\Users\\demo\\chart.png`, 'C:\\Users\\demo\\chart.png'],
+    ['file:///C:/Users/demo/chart.png', 'C:\\Users\\demo\\chart.png'],
+    ['file://server/share/chart.png', '\\\\server\\share\\chart.png'],
+  ])('loads the supported local reference %s', async (reference, fullPath) => {
+    render(<Markdown>{`![chart](${reference})`}</Markdown>);
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('cmd_download_local_file', {
+      fullPath, workspace: null,
+    }));
+    expect(await screen.findByRole('img')).toHaveAttribute('src', 'blob:image-1');
+  });
+
+  it('loads a relative image against an external document directory without workspace authority', async () => {
+    render(<FileActionProvider workspacePath={WORKSPACE}>
+      <Markdown raw basePath="/Users/demo/reports" workspacePath={null}>{'![chart](../images/看山.png)'}</Markdown>
+    </FileActionProvider>);
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('cmd_download_local_file', {
+      fullPath: '/Users/demo/reports/../images/看山.png', workspace: null,
+    }));
+  });
+
   it('decodes spaces, Chinese, reserved characters and literal percent sequences once', async () => {
     const path = '/Users/zhihu/图 #1? %20.png';
     render(<Markdown>{`![chart](${path.split('/').map(encodeURIComponent).join('/')})`}</Markdown>);

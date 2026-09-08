@@ -1,3 +1,5 @@
+import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
+
 export interface WorkspaceFileLinkTarget {
   path: string;
   initialLineNumber?: number;
@@ -33,27 +35,32 @@ export function resolveFileLinkTarget(
 ): FileActionTarget | null {
   const workspace = workspacePath?.trim();
   const raw = href?.trim();
-  if (!raw) return null;
+  if (!raw || raw.startsWith('#')) return null;
 
   const { base, line: hashLine } = stripHashLine(raw);
+  // Line annotations belong to the reference syntax, not the decoded filename:
+  // `report%3A12` is a file named `report:12`, while `report:12` selects line 12.
+  const { path: referencePath, line: suffixLine } = stripLineSuffix(base);
   // Parse file URLs before generic URI decoding so encoded `#` / `?` remain
   // filename characters instead of being reinterpreted as URL delimiters.
-  const localPath = fileUrlToPath(base) ?? decodeUriLoose(base);
-  if (hasUnsupportedScheme(localPath)) return null;
+  const filePath = fileUrlToPath(referencePath);
+  // Protocol/fragment syntax belongs to the encoded reference too. A decoded
+  // filename such as `note:12.md` or `#note.md` is an ordinary native filename.
+  if (!filePath && hasUnsupportedScheme(referencePath)) return null;
+  const localPath = filePath ?? decodeUriLoose(referencePath);
 
-  const { path: pathWithoutLine, line: suffixLine } = stripLineSuffix(localPath);
   const initialLineNumber = suffixLine ?? hashLine;
-  const relativePath = workspace ? toWorkspaceRelativePath(pathWithoutLine, workspace) : null;
+  const relativePath = workspace ? toWorkspaceRelativePath(localPath, workspace) : null;
   if (relativePath) {
     return initialLineNumber
       ? { scope: 'workspace', path: relativePath, initialLineNumber }
       : { scope: 'workspace', path: relativePath };
   }
 
-  if (isAbsolutePath(pathWithoutLine)) {
+  if (isAbsolutePath(localPath)) {
     return initialLineNumber
-      ? { scope: 'local', path: pathWithoutLine, initialLineNumber }
-      : { scope: 'local', path: pathWithoutLine };
+      ? { scope: 'local', path: localPath, initialLineNumber }
+      : { scope: 'local', path: localPath };
   }
 
   return null;
@@ -100,7 +107,7 @@ export function resolveAgainstWorkspace(
   if (isAbsolutePath(path)) return path;
   const workspace = workspacePath?.trim();
   if (!workspace) return null;
-  const rel = normalizeRelativePath(path); // collapses ./ .. ; null if it escapes
+  const rel = normalizeRelativePath(path, isWindowsPath(workspace)); // null if it escapes
   if (!rel) return null;
   return `${stripTrailingSlash(workspace)}/${rel}`;
 }
@@ -132,7 +139,8 @@ function positiveLine(raw: string): number | undefined {
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
-function fileUrlToPath(raw: string): string | null {
+/** Decode a file URL once into a native path; never use it as authorization. */
+export function fileUrlToPath(raw: string): string | null {
   if (!/^file:\/\//i.test(raw)) return null;
   try {
     const url = new URL(raw);
@@ -148,6 +156,24 @@ function fileUrlToPath(raw: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Native document directory, preserving POSIX backslashes and root markers. */
+export function filePathDirname(path: string): string {
+  const index = isWindowsPath(path)
+    ? Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    : path.lastIndexOf('/');
+  if (index < 0) return '';
+  if (index === 0 || (index === 2 && /^[A-Za-z]:/.test(path))) return path.slice(0, index + 1);
+  return path.slice(0, index);
+}
+
+/** Resolve a relative Markdown link at action time, keeping its DOM href intact
+ * for enclosing editor navigation. The base is native; the href is URL encoded. */
+export function resolveDocumentFileLink(href: string, basePath: string): string {
+  if (!basePath || href.startsWith('#') || isAbsolutePath(href) || /^[a-z][a-z\d+.-]*:/i.test(href)) return href;
+  const encodedBase = normalizeSlashes(basePath).split('/').map(encodeURIComponent).join('/');
+  return `${encodedBase}/${href}`;
 }
 
 function hasUnsupportedScheme(raw: string): boolean {
@@ -181,8 +207,9 @@ export function toWorkspaceRelativePath(rawPath: string | null | undefined, work
     return absoluteToWorkspaceRelative(path, workspacePath);
   }
 
-  if (!looksLikeRelativeFileReference(path)) return null;
-  return normalizeRelativePath(path);
+  const windowsStyle = isWindowsPath(workspacePath);
+  if (!looksLikeRelativeFileReference(path, windowsStyle)) return null;
+  return normalizeRelativePath(path, windowsStyle);
 }
 
 /**
@@ -207,8 +234,8 @@ export function resolveActionPath(rawPath: string, workspacePath: string | null 
 function absoluteToWorkspaceRelative(rawPath: string, rawWorkspace: string): string | null {
   const path = stripTrailingSlash(normalizeSlashes(rawPath));
   const workspace = stripTrailingSlash(normalizeSlashes(rawWorkspace));
-  const comparablePath = normalizeForCompare(path);
-  const comparableWorkspace = normalizeForCompare(workspace);
+  const comparablePath = normalizeWorkspacePathIdentity(path);
+  const comparableWorkspace = normalizeWorkspacePathIdentity(workspace);
 
   if (comparablePath === comparableWorkspace) return null;
   if (!comparablePath.startsWith(`${comparableWorkspace}/`)) return null;
@@ -216,10 +243,10 @@ function absoluteToWorkspaceRelative(rawPath: string, rawWorkspace: string): str
   return normalizeRelativePath(path.slice(workspace.length + 1));
 }
 
-function normalizeRelativePath(rawPath: string): string | null {
+function normalizeRelativePath(rawPath: string, windowsStyle = false): string | null {
   if (isAbsolutePath(rawPath)) return null;
 
-  const parts = normalizeSlashes(rawPath).split('/');
+  const parts = (windowsStyle ? rawPath.replace(/\\/g, '/') : rawPath).split('/');
   const stack: string[] = [];
 
   for (const part of parts) {
@@ -235,9 +262,9 @@ function normalizeRelativePath(rawPath: string): string | null {
   return stack.length > 0 ? stack.join('/') : null;
 }
 
-function looksLikeRelativeFileReference(rawPath: string): boolean {
-  const path = normalizeSlashes(rawPath.trim());
-  if (!path || path.startsWith('#')) return false;
+function looksLikeRelativeFileReference(rawPath: string, windowsStyle: boolean): boolean {
+  const path = windowsStyle ? rawPath.trim().replace(/\\/g, '/') : rawPath.trim();
+  if (!path) return false;
   if (path.startsWith('./') || path.startsWith('../')) return true;
   if (path.includes('/')) return true;
 
@@ -252,14 +279,13 @@ function isAbsolutePath(rawPath: string): boolean {
 }
 
 function normalizeSlashes(rawPath: string): string {
-  return decodeUriLoose(rawPath).replace(/\\/g, '/');
+  // This is a native path boundary. Decoding here corrupts literal `%20` names
+  // already decoded by the Markdown/file-URL boundary above.
+  return isWindowsPath(rawPath) ? rawPath.replace(/\\/g, '/') : rawPath;
 }
 
-function normalizeForCompare(rawPath: string): string {
-  const normalized = normalizeSlashes(rawPath);
-  return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//')
-    ? normalized.toLowerCase()
-    : normalized;
+function isWindowsPath(path: string): boolean {
+  return /^[A-Za-z]:/.test(path) || path.startsWith('\\\\') || path.startsWith('//');
 }
 
 function stripTrailingSlash(rawPath: string): string {
@@ -270,7 +296,7 @@ function stripTrailingSlash(rawPath: string): string {
 
 function decodeUriLoose(raw: string): string {
   try {
-    return decodeURI(raw);
+    return decodeURIComponent(raw);
   } catch {
     return raw;
   }
