@@ -21,7 +21,7 @@ import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
 import MermaidDiagram from './markdown/MermaidDiagram';
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
-import { useFileLinkAction } from '@/context/FileActionContext';
+import { useFileAction, useFileLinkAction } from '@/context/FileActionContext';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import {
@@ -31,6 +31,7 @@ import {
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
+import { resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
 
 // ── Streaming leading-edge fade ──
 // While streaming, wrap the LAST few characters of the last text node in a
@@ -350,36 +351,15 @@ interface MarkdownProps {
   basePath?: string;
   /** **Absolute** workspace root path — fed to `useWorkspaceFileService` so
    *  the relative-image fetch goes through `cmd_workspace_download_file`.
-   *  Required when `basePath` is set; the two are independent because
-   *  `basePath` is the doc's directory inside the workspace, not the
-   *  workspace itself. */
+   *  Defaults to the enclosing FileActionProvider's workspace in chat.
+   *  Explicit null means there is no workspace; `basePath` remains the doc's
+   *  directory inside the workspace, not the workspace itself. */
   workspacePath?: string | null;
 }
 
-/**
- * Resolve a relative path against a base directory.
- * Handles ./ and ../ prefixes, normalizes the result.
- */
-function resolveRelativePath(baseDir: string, src: string): string {
-  // Strip leading ./
-  const cleaned = src.replace(/^\.\//, '');
-  // Combine base dir and relative path
-  const parts = (baseDir ? baseDir + '/' + cleaned : cleaned).split('/').filter(Boolean);
-  // Resolve .. by walking the parts
-  const stack: string[] = [];
-  for (const part of parts) {
-    if (part === '..') {
-      stack.pop();
-    } else if (part !== '.') {
-      stack.push(part);
-    }
-  }
-  return stack.join('/');
-}
-
-/** Whether a URL is absolute (http/https/data/blob) */
+/** Browser URLs, including protocol-relative CDN addresses. */
 function isAbsoluteUrl(src: string): boolean {
-  return /^(https?:|data:|blob:)/i.test(src);
+  return /^(https?:|data:|blob:|\/\/)/i.test(src);
 }
 
 /** Safely decode URI component, returning original on malformed input */
@@ -388,54 +368,46 @@ function safeDecodeURIComponent(str: string): string {
 }
 
 /**
- * Image component that resolves relative paths via the Rust workspace_files
- * download command. Only used when basePath is provided (file preview mode).
- *
- * Phase D.5: switched from sidecar `/agent/download` HTTP fetch to
- * `useWorkspaceFileService.readFileAsBlobUrl` invoke. The blob-URL handle
- * is the source of truth for cleanup — calling `handle.revoke()` on unmount
- * frees the object URL.
- *
- * State model:
- * - empty / absolute src → handled purely in render, no state or effect needed
- * - relative src → useEffect fetches via fileService, stores blob URL handle
+ * Local image loading is shared by chat and document previews. Browser URLs
+ * remain URLs; absolute OS paths use the local-file API; relative paths use
+ * the document directory within the explicit or enclosing chat workspace.
+ * Rust owns path normalization, containment and read authorization. This
+ * component owns the returned blob handle, including late async completion.
  */
 function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
   src?: string;
   alt?: string;
   basePath: string;
-  workspacePath: string | null;
+  workspacePath?: string | null;
 }) {
   const { t } = useTranslation('app');
-  // Classify src type on every render (derived, not state)
-  const srcType: 'empty' | 'absolute' | 'relative' =
-    !src ? 'empty' : isAbsoluteUrl(src) ? 'absolute' : 'relative';
+  const fileAction = useFileAction();
+  const workspace = workspacePath === undefined ? fileAction?.workspacePath ?? null : workspacePath;
+  const fileService = useWorkspaceFileService(workspace);
+  const { isAvailable, readFileAsBlobUrl, readLocalFileAsBlobUrl } = fileService;
+  const srcType = !src ? 'empty' : isAbsoluteUrl(src) ? 'url' : 'local';
+  // Markdown encodes filenames as URLs. Decode once at the filesystem boundary.
+  const decoded = srcType === 'local' ? safeDecodeURIComponent(src!) : '';
+  const absolutePath = resolveAgainstWorkspace(decoded, null);
+  // Do not collapse `..` here: Rust must see and reject workspace escapes.
+  const relativePath = basePath ? `${basePath}/${decoded}` : decoded;
+  // isAvailable includes a workspace requirement; absolute local reads do not.
+  const unavailable = srcType === 'local' && !absolutePath && !isAvailable;
 
-  // CRITICAL: `basePath` is the doc's dir RELATIVE to the workspace; it MUST
-  // NOT be passed as the workspace root to the hook (Rust `validate_workspace_root`
-  // requires an absolute path and would reject). Pre-Phase-D.5 the sidecar
-  // resolved relative paths against its ambient `currentAgentDir`; in
-  // Phase D.5 the renderer threads `workspacePath` explicitly.
-  const fileService = useWorkspaceFileService(workspacePath);
-
-  // State only needed for async-loaded relative paths
+  // State only needed for async-loaded local files.
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Only relative paths need async loading
-    if (srcType !== 'relative') return;
-    if (!fileService.isAvailable) return;
-
-    // Decode first to prevent double-encoding (e.g. "some%20image.png")
-    const decoded = safeDecodeURIComponent(src!);
-    const resolvedPath = resolveRelativePath(basePath, decoded);
+    if (srcType !== 'local' || unavailable) return;
     let cancelled = false;
     let handle: { blobUrl: string; revoke: () => void } | null = null;
 
     (async () => {
       try {
-        handle = await fileService.readFileAsBlobUrl({ path: resolvedPath });
+        handle = absolutePath
+          ? await readLocalFileAsBlobUrl({ fullPath: absolutePath, workspace })
+          : await readFileAsBlobUrl({ path: relativePath });
         if (cancelled) {
           handle.revoke();
           return;
@@ -454,15 +426,15 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
       setBlobUrl(null);
       setError(null);
     };
-  }, [src, srcType, basePath, fileService, t]);
+  }, [src, srcType, absolutePath, relativePath, workspace, unavailable, readLocalFileAsBlobUrl, readFileAsBlobUrl, t]);
 
   // Empty src: static error (no state needed)
   if (srcType === 'empty') {
     return <span className="text-xs text-[var(--ink-muted)] italic">[{t('markdown.emptyImagePath')}]</span>;
   }
 
-  // Absolute URL: render directly (no state needed, always fresh from props)
-  if (srcType === 'absolute') {
+  // Browser URL: render directly, after the existing Markdown sanitizer.
+  if (srcType === 'url') {
     return (
       <img
         src={canonicalizeLegacyMyAgentsResourceUrl(src!)}
@@ -472,9 +444,9 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
     );
   }
 
-  // Relative path: loading / error / loaded
-  if (error) {
-    return <span className="text-xs text-[var(--ink-muted)] italic">[{error}]</span>;
+  // Local file: loading / error / loaded.
+  if (error || unavailable) {
+    return <span className="text-xs text-[var(--ink-muted)] italic">[{error ?? t('markdown.imageLoadFailed', { src })}]</span>;
   }
 
   if (!blobUrl) {
@@ -498,7 +470,7 @@ const MarkdownImage = memo(MarkdownImageInner, (prev, next) =>
   && prev.alt === next.alt,
 );
 
-const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath, workspacePath = null, streaming = false }: MarkdownProps) {
+const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false }: MarkdownProps) {
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
   //
@@ -518,10 +490,9 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   // while basePath is only used to resolve relative `<img src>` against the
   // doc's own location.
 
-  // Merge img handler when basePath is provided (for resolving relative image paths)
-  // Use == null to allow empty string basePath (root-level files)
+  // All Markdown surfaces share filesystem-aware images. Keep the component
+  // identity stable while chat text streams so unchanged images retain handles.
   const components = useMemo(() => {
-    if (basePath == null) return markdownComponents;
     return {
       ...markdownComponents,
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
