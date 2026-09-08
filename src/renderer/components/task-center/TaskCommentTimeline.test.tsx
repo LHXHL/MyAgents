@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Task } from "@/../shared/types/task";
 import type { TaskComment } from "@/../shared/types/taskComment";
@@ -64,16 +64,114 @@ const agentComment: TaskComment = {
   conversationSessionId: "session-exact",
 };
 
+const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+
+function mockReadingViewport(container: HTMLElement, rowTop = 680, rowHeight = 100) {
+  const viewport = container.querySelector(".overflow-y-auto") as HTMLElement;
+  const scrollTo = vi.fn();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const top = this === viewport ? 80 : rowTop;
+    const height = this === viewport ? 500 : rowHeight;
+    return { top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top, toJSON() {} };
+  });
+  Object.defineProperties(viewport, {
+    clientHeight: { configurable: true, value: 500 },
+    clientTop: { configurable: true, value: 2 },
+    scrollTop: { configurable: true, writable: true, value: 200 },
+    scrollTo: { configurable: true, value: scrollTo },
+  });
+  return scrollTo;
+}
+
 describe("TaskCommentTimeline", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.commentChanged = null;
     Element.prototype.scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
     mocks.list.mockResolvedValue({ items: [], nextBefore: undefined });
     mocks.context.mockResolvedValue({
       items: [agentComment],
       targetCommentId: agentComment.id,
     });
+  });
+
+  it("centers notification targets in the reading viewport without scrolling ancestors", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    const { container } = render(
+      <TaskCommentTimeline task={task()} targetCommentId={agentComment.id} />,
+    );
+    const scrollTo = mockReadingViewport(container);
+
+    await screen.findByText(agentComment.body);
+    // 200 existing scroll + (680 - 80 - 2) relative top + 50 half-row - 250 half-viewport.
+    expect(scrollTo).toHaveBeenCalledWith({ top: 598, behavior: "smooth" });
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it("keeps reply-quote navigation in the reading viewport", async () => {
+    mocks.list.mockResolvedValueOnce({ items: [agentComment, {
+      ...agentComment, id: "reply", body: "收到", replyToCommentId: agentComment.id,
+    }] });
+    const { container } = render(<TaskCommentTimeline task={task()} />);
+    const scrollTo = mockReadingViewport(container);
+    fireEvent.click(await screen.findByRole("button", { name: `回复 Agent：${agentComment.body}` }));
+    expect(scrollTo).toHaveBeenCalledWith({ top: 598, behavior: "smooth" });
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("reveals the previous first comment after prepending inside the reading viewport", async () => {
+    mocks.list.mockResolvedValueOnce({ items: [agentComment], nextBefore: agentComment.id });
+    mocks.list.mockResolvedValueOnce({ items: [{ ...agentComment, id: "older", body: "更早的评论" }] });
+    const { container } = render(<TaskCommentTimeline task={task()} />);
+    const scrollTo = mockReadingViewport(container, 780);
+    fireEvent.click(await screen.findByRole("button", { name: "加载更早评论" }));
+    await screen.findByText("更早的评论");
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 498, behavior: "auto" }));
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("supersedes notification smooth scrolling even when the pagination anchor is already visible", async () => {
+    mocks.context.mockResolvedValueOnce({ items: [agentComment], previousBefore: agentComment.id });
+    mocks.list.mockResolvedValueOnce({ items: [{ ...agentComment, id: "older", body: "更早的评论" }] });
+    const { container } = render(<TaskCommentTimeline task={task()} targetCommentId={agentComment.id} />);
+    const scrollTo = mockReadingViewport(container, 182);
+    await screen.findByText(agentComment.body);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 100, behavior: "smooth" });
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更早评论" }));
+    await screen.findByText("更早的评论");
+    // Issuing a scroll to the current position cancels the previous animation;
+    // returning without an instruction lets that stale navigation continue.
+    await waitFor(() => expect(scrollTo).toHaveBeenLastCalledWith({ top: 200, behavior: "auto" }));
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "below", top: 680, height: 100, expectedTop: 398 },
+    { label: "above", top: 32, height: 100, expectedTop: 150 },
+    { label: "visible", top: 182, height: 100, expectedTop: 200 },
+    { label: "tall and spanning", top: 32, height: 700, expectedTop: 200 },
+    { label: "tall and below", top: 680, height: 700, expectedTop: 798 },
+    { label: "tall and above", top: -718, height: 700, expectedTop: -400 },
+  ])("reveals a $label submitted comment with minimal reading scroll", async ({ top, height, expectedTop }) => {
+    mocks.create.mockResolvedValue({ ...agentComment, id: "created", body: "新的评论" });
+    const { container } = render(<TaskCommentTimeline task={task()} />);
+    const scrollTo = mockReadingViewport(container, top, height);
+    const textarea = screen.getByPlaceholderText("补充信息或回复 Agent…");
+    fireEvent.change(textarea, { target: { value: "新的评论" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送评论" }));
+    await screen.findByText("新的评论");
+    await act(async () => { await new Promise(requestAnimationFrame); });
+    expect(scrollTo).toHaveBeenCalledWith({ top: expectedTop, behavior: "smooth" });
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
 
   it("focuses an exact notification target and replies to its frozen Session relation", async () => {

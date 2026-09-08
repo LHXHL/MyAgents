@@ -116,6 +116,8 @@ Agent 只能从已绑定 Session 显式调用 `myagents task comment` 写回；�
 
 TaskStore 维护可重建、最多 5000 条的 Agent Comment locator/excerpt index：启动异步扫描，之后 append/rename/delete 增量维护。全局通知 owner 只读取该 source、保存有界本地已读 receipt，并与 Cloud source 合并排序/分页；不复制 Comment 正文。通知目标使用 typed `task.comment` AppRoute，打开同一个 Task detail Drawer 并 focus exact Comment。
 
+Drawer 的正文／评论阅读区独占评论导航滚动：通知定位、回复引用、加载更早评论和发送后的定位都通过该容器执行，焦点使用 `preventScroll`。不要在评论元素上调用会遍历祖先的 `scrollIntoView`；标题、Composer 和属性侧栏不属于评论定位的滚动范围。
+
 带受支持 `managedKind` 的内部 Task 不属于本地 Comment 产品 surface：评论读写、pending flush、Agent CLI 写回、通知索引和执行 reminder 都必须排除；升级前若磁盘上已有这类 `comments.jsonl`，文件保留但不投送、不展示、不生成通知。
 
 完整 provider/runtime/MCP 规则见 `task_provider_routing.md`。
