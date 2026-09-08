@@ -83,8 +83,34 @@ describe('useChatSearch', () => {
     });
   });
 
+  it('pauses following before scrolling an already-mounted match', () => {
+    const pauseAutoScroll = vi.fn();
+    const scrollToMessage = vi.fn(() => () => true);
+    const scroller = document.createElement('div');
+    const scope = document.createElement('div');
+    scope.setAttribute('data-chat-search-scope', '');
+    scope.setAttribute('data-message-id', 'm1');
+    scope.textContent = 'mounted needle';
+    scroller.appendChild(scope);
+    Object.defineProperty(scroller, 'scrollBy', { value: vi.fn(() => {
+      expect(pauseAutoScroll).toHaveBeenCalled();
+    }) });
+    const { result } = renderHook(() => useChatSearch({
+      active: true,
+      messages: [{ id: 'm1', role: 'assistant', content: 'mounted needle', timestamp: new Date(0) }],
+      scrollerRef: { current: scroller },
+      scrollToMessage,
+      pauseAutoScroll,
+    }));
+    act(() => result.current.setQuery('needle'));
+    act(() => vi.advanceTimersByTime(151));
+    act(() => result.current.next());
+    expect(pauseAutoScroll).toHaveBeenCalledTimes(1);
+    expect(scrollToMessage).not.toHaveBeenCalled();
+  });
+
   it('routes virtualized matches through the chat scroll controller', () => {
-    const scrollToMessage = vi.fn();
+    const scrollToMessage = vi.fn(() => () => true);
     const scroller = document.createElement('div');
     const messages: Message[] = [
       { id: 'm1', role: 'user', content: 'first needle', timestamp: new Date(0) },
@@ -96,6 +122,7 @@ describe('useChatSearch', () => {
       messages,
       scrollerRef: { current: scroller },
       scrollToMessage,
+      pauseAutoScroll: vi.fn(),
     }));
 
     act(() => {
@@ -114,12 +141,12 @@ describe('useChatSearch', () => {
     expect(scrollToMessage).toHaveBeenCalledWith('m2', {
       behavior: 'auto',
       align: 'center',
-      pauseMs: 2000,
     });
   });
 
-  it('keeps retrying until a virtualized target message mounts', () => {
-    const scrollToMessage = vi.fn();
+  it.each([false, true])('refines a mounted virtualized match only while navigation is current (cancelled=%s)', (cancelled) => {
+    let navigationCurrent = true;
+    const scrollToMessage = vi.fn(() => () => navigationCurrent);
     const scrollBy = vi.fn();
     const scroller = document.createElement('div');
     Object.defineProperty(scroller, 'scrollBy', {
@@ -145,6 +172,7 @@ describe('useChatSearch', () => {
       messages,
       scrollerRef: { current: scroller },
       scrollToMessage,
+      pauseAutoScroll: vi.fn(),
     }));
 
     act(() => {
@@ -163,6 +191,7 @@ describe('useChatSearch', () => {
     act(() => {
       vi.advanceTimersByTime(80);
     });
+    if (cancelled) navigationCurrent = false;
     const scope = document.createElement('div');
     scope.setAttribute('data-chat-search-scope', '');
     scope.setAttribute('data-message-id', 'm2');
@@ -175,9 +204,8 @@ describe('useChatSearch', () => {
     expect(scrollToMessage).toHaveBeenCalledWith('m2', {
       behavior: 'auto',
       align: 'center',
-      pauseMs: 2000,
     });
-    expect(scrollBy).toHaveBeenCalled();
-    expect(scope.classList.contains('chat-search-msg-pulse')).toBe(true);
+    expect(scrollBy.mock.calls.length > 0).toBe(!cancelled);
+    expect(scope.classList.contains('chat-search-msg-pulse')).toBe(!cancelled);
   });
 });

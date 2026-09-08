@@ -3348,6 +3348,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     scrollerRef: scrollerRef as React.RefObject<HTMLElement | null>,
     messages: chatScrollModel.data,
     scrollToMessage,
+    pauseAutoScroll,
     active: chatSearchOpen,
   });
 
@@ -4606,7 +4607,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Navigate to a specific query message (used by QueryNavigator).
   // ChatScrollController owns virtualized message navigation.
   const handleNavigateToQuery = useCallback((messageId: string) => {
-    scrollToMessage(messageId, { behavior: 'smooth', align: 'start', pauseMs: 2000 });
+    scrollToMessage(messageId, { behavior: 'smooth', align: 'start' });
   }, [scrollToMessage]);
 
   // PRD 0.2.17 Agent Status Panel — 点击 SubAgent 行跳转到对话流中对应 TaskTool。
@@ -4768,7 +4769,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
     // Without this, the smooth scroll animation fights with the browser's natural
     // scroll clamping (messages removed → scrollHeight shrinks → scrollTop adjusts).
-    pauseAutoScroll(500);
+    pauseAutoScroll();
     setRewindTarget(null);
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === messageId);
@@ -4892,7 +4893,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     const snapshot = messagesRef.current.slice();
 
     // 1. Optimistic UI: truncate to before user message
-    pauseAutoScroll(500);
+    pauseAutoScroll();
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === userMessageId);
       return idx >= 0 ? prev.slice(0, idx) : prev;

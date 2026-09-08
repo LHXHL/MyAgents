@@ -12,7 +12,7 @@ const MIN_QUERIES = 3;
 interface QueryNavigatorProps {
   messages: readonly Message[];
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
-  pauseAutoScroll: (duration?: number) => void;
+  pauseAutoScroll: () => void;
   /** Virtuoso-aware navigation: scrolls to message by ID even if virtualized (not in DOM) */
   onNavigateToQuery?: (messageId: string) => void;
 }
@@ -177,7 +177,7 @@ export default function QueryNavigator({
       );
       if (!target) return;
 
-      pauseAutoScroll(2000);
+      pauseAutoScroll();
       target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
     [scrollContainerRef, pauseAutoScroll, onNavigateToQuery],

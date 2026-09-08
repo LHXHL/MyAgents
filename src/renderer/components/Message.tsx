@@ -322,20 +322,8 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
   const userContentRef = useRef<HTMLDivElement>(null);
   const [userOverflows, setUserOverflows] = useState(() => initialUserCollapsed);
 
-  // Delay AssistantActions rendering on the STREAMING message only.
-  // Uses isLoading (not isStreaming) so that HISTORY messages (isLoading=false always)
-  // keep their actions visible at all times. This prevents a massive layout shift
-  // when streaming ends: previously all N history messages toggled actions simultaneously
-  // (~30px × N ≈ 1500+px in long sessions), overwhelming scroll anchoring.
-  const [actionsReady, setActionsReady] = useState(!isLoading);
-  useEffect(() => {
-    if (!isLoading) {
-      const timer = setTimeout(() => setActionsReady(true), 350);
-      return () => clearTimeout(timer);
-    }
-    setActionsReady(false); // eslint-disable-line react-hooks/set-state-in-effect -- synchronous reset is intentional: streaming just started, actions must hide immediately
-  }, [isLoading]);
-
+  // Actions join the terminal commit. Delaying their mount introduces a second
+  // height change after the loading footer has already disappeared.
   useEffect(() => {
     return () => {
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
@@ -559,7 +547,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
               <Markdown streaming={isLoading && !!message.streamingTextActive}>{message.content}</Markdown>
             </div>
           )}
-          {actionsReady && !isLoading && <AssistantActions message={message} onRetry={onRetry} onFork={onFork} />}
+          {!isLoading && <AssistantActions message={message} onRetry={onRetry} onFork={onFork} />}
         </div>
       </div>
     );
@@ -674,7 +662,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
             })}
           </div>
         </article>
-        {actionsReady && !isLoading && <AssistantActions className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
+        {!isLoading && <AssistantActions className="px-4" message={message} onRetry={onRetry} onFork={onFork} />}
       </div>
     </div>
   );

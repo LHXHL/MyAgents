@@ -14,7 +14,6 @@ export interface ScrollAnchorSnapshot {
 export interface ScrollToMessageOptions {
   align?: 'start' | 'center' | 'end';
   behavior?: 'smooth' | 'auto';
-  pauseMs?: number;
 }
 
 export interface RestoreAnchorOptions {
@@ -32,7 +31,8 @@ export interface ChatScrollController {
   onViewportAdmissionChanged: (admitted: boolean, presentationGeneration: number) => void;
   onItemsRendered: () => void;
   isViewportRecoveryFenced: boolean;
-  scrollToMessage: (messageId: string, options?: ScrollToMessageOptions) => void;
+  /** Returned predicate fences a caller's delayed range/tool refinement. */
+  scrollToMessage: (messageId: string, options?: ScrollToMessageOptions) => (() => boolean) | undefined;
   scrollToTool: (toolId: string, hostMessageId?: string) => void;
   captureAnchor: (label: string) => ScrollAnchorSnapshot | null;
   restoreAnchorAfterNextCommit: (anchor: ScrollAnchorSnapshot, options?: RestoreAnchorOptions) => void;
@@ -71,15 +71,10 @@ interface TrustedViewportAnchor {
 }
 
 const MESSAGE_SCOPE_SELECTOR = '[data-chat-search-scope][data-message-id]';
-const DEFAULT_JUMP_PAUSE_MS = 2000;
 const DEFAULT_WINDOW_PRESENTATION: MainWindowPresentation = {
   surfaceAvailable: true,
   generation: 0,
 };
-
-function shouldPinBottomAfterNextCommit(reason: RowLayoutChangeReason): boolean {
-  return reason === 'attachment-settle' || reason === 'widget-resize';
-}
 
 function isDirectRowToggle(reason: RowLayoutChangeReason): boolean {
   return reason === 'process-row-expand'
@@ -144,7 +139,7 @@ export function useChatScrollController({
     followEnabledRef,
     attachScroller: attachVirtuosoScroller,
     scrollToBottom: performScrollToBottom,
-    pauseAutoScroll,
+    pauseAutoScroll: performPauseAutoScroll,
     handleAtBottomChange,
   } = useVirtuosoScroll({ onUserScrollIntent: forwardUserScrollIntent });
   const messagesRef = useRef(messages);
@@ -162,8 +157,6 @@ export function useChatScrollController({
   rootRefRef.current = rootRef;
   const pendingAnchorRef = useRef<PendingAnchorRestore | null>(null);
   const [anchorRestoreTick, setAnchorRestoreTick] = useState(0);
-  const pendingBottomPinRef = useRef(false);
-  const [bottomPinTick, setBottomPinTick] = useState(0);
   // Admission is an epoch token, not a boolean. App may commit a newer native
   // generation before MessageList's layout effect publishes its false edge;
   // callbacks from the previously admitted generation must already fail closed
@@ -174,6 +167,9 @@ export function useChatScrollController({
   // eslint-disable-next-line react-hooks/refs
   presentationGenerationRef.current = windowPresentation.generation;
   const continuitySequenceRef = useRef(0);
+  // Index mounting and a caller's later precise range/tool scroll share one
+  // navigation intent. New viewport input invalidates both parts.
+  const navigationVersionRef = useRef(0);
   const continuitySnapshotRef = useRef<ViewportContinuitySnapshot | null>(null);
   const lastTrustedAnchorRef = useRef<TrustedViewportAnchor | null>(null);
   const [recoveryFenceId, setRecoveryFenceId] = useState<number | null>(null);
@@ -181,7 +177,8 @@ export function useChatScrollController({
     admittedPresentationGenerationRef.current === presentationGenerationRef.current
   ), []);
 
-  const cancelContinuity = useCallback(() => {
+  const cancelViewportNavigation = useCallback(() => {
+    navigationVersionRef.current += 1;
     const continuity = continuitySnapshotRef.current;
     const pending = pendingAnchorRef.current?.source === 'continuity'
       ? pendingAnchorRef.current
@@ -194,11 +191,16 @@ export function useChatScrollController({
     }
   }, []);
   // eslint-disable-next-line react-hooks/refs
-  userScrollIntentRef.current = cancelContinuity;
+  userScrollIntentRef.current = cancelViewportNavigation;
   const scrollToBottom = useCallback((behavior?: 'smooth' | 'auto') => {
-    cancelContinuity();
+    cancelViewportNavigation();
     performScrollToBottom(behavior);
-  }, [cancelContinuity, performScrollToBottom]);
+  }, [cancelViewportNavigation, performScrollToBottom]);
+
+  const pauseAutoScroll = useCallback(() => {
+    cancelViewportNavigation();
+    performPauseAutoScroll();
+  }, [cancelViewportNavigation, performPauseAutoScroll]);
 
   const messageIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -360,10 +362,10 @@ export function useChatScrollController({
         }
         return;
       }
+      navigationVersionRef.current += 1;
       admittedPresentationGenerationRef.current = null;
       if (!hasEverAdmittedRef.current) return;
       pendingAnchorRef.current = null;
-      pendingBottomPinRef.current = false;
       const follow = followEnabledRef.current !== false;
       const trusted = lastTrustedAnchorRef.current;
       const id = ++continuitySequenceRef.current;
@@ -427,11 +429,11 @@ export function useChatScrollController({
     const nextSessionId = sessionId ?? null;
     if (committedSessionIdRef.current === nextSessionId) return;
     committedSessionIdRef.current = nextSessionId;
+    navigationVersionRef.current += 1;
     lastTrustedAnchorRef.current = null;
     const continuity = continuitySnapshotRef.current;
     continuitySnapshotRef.current = null;
     pendingAnchorRef.current = null;
-    pendingBottomPinRef.current = false;
     if (continuity) {
       setRecoveryFenceId(current => current === continuity.id ? null : current);
     }
@@ -459,42 +461,33 @@ export function useChatScrollController({
     restoreAnchor(pending.anchor, pending.options, pending);
   }, [isCurrentViewportAdmitted, restoreAnchor]);
 
-  const pinBottomAfterNextCommit = useCallback(() => {
-    pendingBottomPinRef.current = true;
-    setBottomPinTick(tick => tick + 1);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!pendingBottomPinRef.current) return;
-    pendingBottomPinRef.current = false;
-    if (!isActiveRef.current || !isCurrentViewportAdmitted() || !followEnabledRef.current) return;
-    scrollToBottom('auto');
-  }, [bottomPinTick, followEnabledRef, isCurrentViewportAdmitted, scrollToBottom]);
-
   const scrollToMessage = useCallback((messageId: string, options: ScrollToMessageOptions = {}) => {
-    cancelContinuity();
     const index = messageIndexByIdRef.current.get(messageId);
     if (index === undefined) return;
-    pauseAutoScroll(options.pauseMs ?? DEFAULT_JUMP_PAUSE_MS);
+    pauseAutoScroll();
+    const version = navigationVersionRef.current;
+    const generation = presentationGenerationRef.current;
+    const navigationSessionId = sessionIdRef.current;
     virtuosoRef.current?.scrollToIndex({
       index,
       behavior: options.behavior ?? 'smooth',
       align: options.align ?? 'start',
     });
-  }, [cancelContinuity, pauseAutoScroll, virtuosoRef]);
+    return () => version === navigationVersionRef.current
+      && generation === presentationGenerationRef.current
+      && navigationSessionId === sessionIdRef.current
+      && isActiveRef.current
+      && isCurrentViewportAdmitted();
+  }, [isCurrentViewportAdmitted, pauseAutoScroll, virtuosoRef]);
 
   const scrollToTool = useCallback((toolId: string, hostMessageId?: string) => {
     const messageId = hostMessageId ?? getToolHostMessageId(messagesRef.current, toolId);
     if (!messageId) return;
-    const navigationGeneration = presentationGenerationRef.current;
-    scrollToMessage(messageId, { align: 'center', behavior: 'smooth', pauseMs: DEFAULT_JUMP_PAUSE_MS });
+    const isCurrentNavigation = scrollToMessage(messageId, { align: 'center', behavior: 'smooth' });
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (
-          presentationGenerationRef.current !== navigationGeneration
-          || !isCurrentViewportAdmitted()
-        ) return;
+        if (!isCurrentNavigation?.()) return;
         const root = rootRefRef.current?.current ?? scrollerRef.current;
         if (!root) return;
         const el = root.querySelector<HTMLElement>(`[data-tool-id="${escapeCssIdentifier(toolId)}"]`);
@@ -504,7 +497,7 @@ export function useChatScrollController({
         window.setTimeout(() => el.classList.remove('agent-status-flash'), 1500);
       });
     });
-  }, [isCurrentViewportAdmitted, scrollerRef, scrollToMessage]);
+  }, [scrollerRef, scrollToMessage]);
 
   const onRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
     if (!isActiveRef.current || !isCurrentViewportAdmitted()) return;
@@ -515,20 +508,18 @@ export function useChatScrollController({
     // the disclosure expand upward and can leave WebKit's paint and hit-test geometry
     // on different scroll offsets. Virtuoso owns the row-size update; do not add a
     // second scroll correction for direct toggles.
-    if (isDirectRowToggle(reason)) return;
-    if (reason === 'tool-complete' && followEnabledRef.current) {
-      scrollToBottom('auto');
+    if (isDirectRowToggle(reason)) {
+      pauseAutoScroll();
       return;
     }
-    if (shouldPinBottomAfterNextCommit(reason) && followEnabledRef.current) {
-      pinBottomAfterNextCommit();
-      return;
-    }
+    // Following geometry belongs to MessageList's measured alignment path.
+    // The controller only compensates a reading anchor here.
+    if (followEnabledRef.current) return;
     if (!messageIndexByIdRef.current.has(messageId)) return;
     const anchor = captureAnchor(reason);
     if (!anchor) return;
     restoreAnchorAfterNextCommit(anchor, { behavior: 'auto' });
-  }, [captureAnchor, followEnabledRef, isCurrentViewportAdmitted, pinBottomAfterNextCommit, restoreAnchorAfterNextCommit, scrollToBottom]);
+  }, [captureAnchor, followEnabledRef, isCurrentViewportAdmitted, pauseAutoScroll, restoreAnchorAfterNextCommit]);
 
   const onViewportScroll = useCallback(() => {
     rememberTrustedAnchor('viewport-scroll');
@@ -550,6 +541,7 @@ export function useChatScrollController({
   }, [attachVirtuosoScroller, onViewportScroll]);
 
   useLayoutEffect(() => () => {
+    navigationVersionRef.current += 1;
     attachedScrollerRef.current?.removeEventListener('scroll', onViewportScroll);
   }, [onViewportScroll]);
 
