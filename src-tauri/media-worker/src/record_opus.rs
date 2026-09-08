@@ -236,10 +236,8 @@ impl RecordOpusDecoder {
                 }
             }
             self.scratch.as_mut_slice().zeroize();
-            if samples.iter().any(|sample| !sample.is_finite()) {
-                samples.zeroize();
-                return Err(RecordOpusError::DecodeFailed);
-            }
+            crate::audio_samples::normalize_pcm(&mut samples)
+                .map_err(|()| RecordOpusError::DecodeFailed)?;
             let start_sample = self.output_samples_16k;
             self.output_samples_16k = self
                 .output_samples_16k
@@ -754,6 +752,16 @@ mod tests {
     use std::io::{Seek, SeekFrom, Write};
 
     fn write_fixture(path: &Path, channels: usize, frames: usize) -> u64 {
+        write_signal_fixture(path, channels, frames, 0.25, 0.017)
+    }
+
+    fn write_signal_fixture(
+        path: &Path,
+        channels: usize,
+        frames: usize,
+        amplitude: f32,
+        phase_step: f32,
+    ) -> u64 {
         let channel_kind = if channels == 1 {
             Channels::Mono
         } else {
@@ -761,6 +769,14 @@ mod tests {
         };
         let mut encoder =
             Encoder::new(OPUS_CLOCK_RATE as u32, channel_kind, Application::Audio).unwrap();
+        encoder
+            .set_bitrate(opus2::Bitrate::Bits(if channels == 1 {
+                64_000
+            } else {
+                96_000
+            }))
+            .unwrap();
+        encoder.set_vbr(true).unwrap();
         let pre_skip = encoder.get_lookahead().unwrap() as u16;
         assert_eq!(pre_skip as u64 % 3, 0);
         let file = File::create(path).unwrap();
@@ -780,7 +796,7 @@ mod tests {
         let mut pcm = vec![0.0_f32; 960 * channels];
         for frame in 0..frames {
             for sample in 0..960 {
-                let value = ((frame * 960 + sample) as f32 * 0.017).sin() * 0.25;
+                let value = ((frame * 960 + sample) as f32 * phase_step).sin() * amplitude;
                 for channel in 0..channels {
                     pcm[sample * channels + channel] =
                         if channel == 0 { value } else { value * 0.5 };
@@ -809,6 +825,36 @@ mod tests {
             .unwrap();
         writer.into_inner().sync_all().unwrap();
         (frames * 960) as u64
+    }
+
+    #[test]
+    fn full_scale_opus_stays_in_the_inference_range_without_changing_timeline() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("full-scale.opus");
+        write_signal_fixture(
+            &path,
+            1,
+            100,
+            1.0,
+            std::f32::consts::TAU * 1_000.0 / 48_000.0,
+        );
+        for tracks in [1, 2] {
+            let paths = vec![path.as_path(); tracks];
+            let mut mixer = RecordOpusMixer::open(&paths).unwrap();
+            let mut samples = 0_u64;
+            let mut peak = 0.0_f32;
+            while let Some(chunk) = mixer.read_chunk().unwrap() {
+                assert_eq!(chunk.start_sample(), samples);
+                for sample in chunk.samples() {
+                    peak = peak.max(sample.abs());
+                    assert!(sample.is_finite() && sample.abs() <= 1.0, "sample={sample}");
+                }
+                samples += chunk.samples().len() as u64;
+            }
+            assert!(peak > 0.9);
+            assert_eq!(samples, 32_000);
+            assert_eq!(mixer.summary().unwrap().output_samples_16k, samples);
+        }
     }
 
     fn opus_head(channels: u8, pre_skip: u16) -> Vec<u8> {

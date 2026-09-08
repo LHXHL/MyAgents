@@ -286,6 +286,16 @@ pub struct SpeechJob {
     pub metrics: Option<SpeechJobMetrics>,
 }
 
+/// Read-only Record detail projection; the durable speech job remains the
+/// authority, so Record manifests do not acquire a second copy of job errors.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTranscriptionFailure {
+    pub code: String,
+    pub retryable: bool,
+    pub stage: SpeechJobStage,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechResourceStatus {
@@ -601,6 +611,38 @@ pub struct SpeechRecognitionManager {
 }
 
 impl SpeechRecognitionManager {
+    pub fn record_transcription_failure(
+        &self,
+        record_id: &str,
+    ) -> Option<RecordTranscriptionFailure> {
+        let state = self.state.lock().ok()?;
+        let latest = state.jobs.values()
+            .filter(|job| job.kind == SpeechJobKind::RecordBackfillAsr
+                && matches!(&job.origin, SpeechJobOrigin::Record { record_id: id } if id == record_id))
+            .max_by(|a, b| (a.created_at, &a.job_id).cmp(&(b.created_at, &b.job_id)))?;
+        if !matches!(
+            latest.state,
+            SpeechJobState::Failed | SpeechJobState::Interrupted
+        ) {
+            return None;
+        }
+        let error = latest.error.as_ref()?;
+        if !error.code.starts_with("SPEECH_")
+            || error.code.len() > 128
+            || !error
+                .code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return None;
+        }
+        Some(RecordTranscriptionFailure {
+            code: error.code.clone(),
+            retryable: error.retryable,
+            stage: latest.stage,
+        })
+    }
+
     pub fn initialize(
         data_root: PathBuf,
         resource_root: PathBuf,
@@ -3457,7 +3499,7 @@ impl SpeechRecognitionManager {
         lease: &LocalComputeLease,
         yield_state: &BatchYieldState,
     ) -> SpeechWorkerOutcome {
-        let responses = start_batch_response_reader(stdout);
+        let responses = start_batch_response_reader(stdout, identity.clone());
         let started_at = Instant::now();
         let mut overall_deadline = MAX_AGENT_DEADLINE;
         let mut ready = false;
@@ -4563,6 +4605,7 @@ fn drain_worker_stderr(mut stderr: ChildStderr, job_id: String, generation: u64)
 
 fn start_batch_response_reader(
     stdout: ChildStdout,
+    identity: WorkloadIdentity,
 ) -> std_mpsc::Receiver<Result<Option<WorkerResponse>, &'static str>> {
     let (sender, receiver) = std_mpsc::sync_channel(16);
     let _ = std::thread::Builder::new()
@@ -4573,7 +4616,23 @@ fn start_batch_response_reader(
                 let (response, terminal) = match read_worker_response(&mut reader) {
                     Ok(Some(response)) => (Ok(Some(response)), false),
                     Ok(None) => (Ok(None), true),
-                    Err(_) => (Err("SPEECH_WORKER_PROTOCOL_ERROR"), true),
+                    Err(error) => {
+                        // Protocol errors use fixed local messages. Match an
+                        // allowlist so neither wire content nor OS/raw paths
+                        // can enter diagnostic output.
+                        let reason = match error.to_string().as_str() {
+                            "invalid worker response shape" => "invalid_response_shape",
+                            "invalid worker response JSON" => "invalid_response_json",
+                            "unexpected media worker response frame kind" => "unexpected_frame_kind",
+                            "media worker frame exceeds fixed limit" => "frame_size_limit",
+                            _ => "incomplete_or_unreadable_frame",
+                        };
+                        crate::ulog_warn!(
+                            "[speech] Worker response rejected jobId={} generation={} reason={} ioKind={:?}",
+                            identity.workload_id, identity.worker_generation, reason, error.kind()
+                        );
+                        (Err("SPEECH_WORKER_PROTOCOL_ERROR"), true)
+                    },
                 };
                 if sender.send(response).is_err() || terminal {
                     break;
@@ -4588,7 +4647,7 @@ fn collect_agent_probe(
     stdout: ChildStdout,
     deadline: Instant,
 ) -> Result<AgentMediaProbe, &'static str> {
-    let responses = start_batch_response_reader(stdout);
+    let responses = start_batch_response_reader(stdout, identity.clone());
     let mut ready = false;
     let mut probe = None;
     loop {
@@ -4849,7 +4908,12 @@ fn finish_job_locked(
     if let Some(job) = state.jobs.get_mut(job_id) {
         let now = Utc::now();
         job.state = terminal;
-        job.stage = SpeechJobStage::Publishing;
+        if matches!(
+            terminal,
+            SpeechJobState::Succeeded | SpeechJobState::SucceededWithWarnings
+        ) {
+            job.stage = SpeechJobStage::Publishing;
+        }
         job.updated_at = now;
         job.finished_at = Some(now);
         job.error = error;
@@ -5827,6 +5891,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn record_failure_projection_follows_latest_job_and_preserves_failure_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(&root);
+        let now = Utc::now();
+        let mut job = fixture_job(
+            "speech_failed",
+            SpeechJobKind::RecordBackfillAsr,
+            SpeechJobOrigin::Record {
+                record_id: "record-a".into(),
+            },
+            SpeechJobState::Running,
+            now,
+        );
+        job.worker_generation = Some(7);
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.active_job = Some((job.job_id.clone(), 7));
+            state.jobs.insert(job.job_id.clone(), job.clone());
+            finish_job_locked(
+                &manager.root,
+                &mut state,
+                &job.job_id,
+                7,
+                SpeechJobState::Failed,
+                Some(SpeechJobError {
+                    code: "SPEECH_WORKER_PROTOCOL_ERROR".into(),
+                    retryable: true,
+                }),
+                None,
+            );
+            assert_eq!(state.jobs[&job.job_id].stage, SpeechJobStage::Transcribing);
+        }
+        assert_eq!(
+            manager.record_transcription_failure("record-a"),
+            Some(RecordTranscriptionFailure {
+                code: "SPEECH_WORKER_PROTOCOL_ERROR".into(),
+                retryable: true,
+                stage: SpeechJobStage::Transcribing,
+            })
+        );
+        assert!(manager
+            .record_transcription_failure("record-other")
+            .is_none());
+        job.job_id = "speech_retry".into();
+        job.created_at = now + Duration::seconds(1);
+        job.state = SpeechJobState::Queued;
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .jobs
+            .insert(job.job_id.clone(), job);
+        assert!(
+            manager.record_transcription_failure("record-a").is_none(),
+            "new retry inherited an old failure"
+        );
+    }
+
     #[cfg(unix)]
     fn write_fake_worker(path: &Path, responses: &[WorkerResponse]) {
         use std::os::unix::fs::PermissionsExt;
@@ -6451,160 +6574,181 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exact_generation_worker_result_commits_record_and_queues_diarization() {
-        let root = tempfile::tempdir().unwrap();
-        let manager = manager(&root);
-        let record = manager
-            .record_store
-            .create_audio(AudioRecordCreateInput {
-                title: "Meeting".into(),
-                tracks: vec![AudioTrackKind::Microphone],
-                transcription_status: TranscriptionStatus::Queued,
-            })
-            .await
-            .unwrap();
-        let record_path = manager
-            .record_store
-            .audio_workspace_path(&record.id)
-            .await
-            .unwrap();
-        fs::write(record_path.join("audio/microphone.opus"), b"owned-audio").unwrap();
-        let finalized = manager
-            .record_store
-            .finalize_audio_capture(
-                &record.id,
-                CaptureStatus::Ready,
-                1_000,
-                vec![AudioTrackArtifactInput {
-                    track: AudioTrackKind::Microphone,
-                    relative_path: "audio/microphone.opus".into(),
-                }],
-            )
-            .await
-            .unwrap();
-
-        let mut job = fixture_job(
-            "speech_record_execute",
-            SpeechJobKind::RecordBackfillAsr,
-            SpeechJobOrigin::Record {
-                record_id: record.id.clone(),
-            },
-            SpeechJobState::Queued,
-            Utc::now(),
-        );
-        job.started_at = None;
-        job.worker_generation = None;
-        job.worker_attempts = 0;
-        job.source.size_bytes = finalized.audio.unwrap().size_bytes;
-        {
-            let mut state = manager.state.lock().unwrap();
-            state.queue.push_back(job.job_id.clone());
-            state.jobs.insert(job.job_id.clone(), job);
-        }
-        let (candidate, generation_hint) = manager.peek_next_job().unwrap().unwrap();
-        let (job, generation) = manager
-            .claim_next_job(&candidate.job_id, generation_hint)
-            .unwrap()
-            .unwrap();
-        let identity = WorkloadIdentity {
-            workload_id: job.job_id.clone(),
-            worker_generation: generation,
-        };
-        let worker = root.path().join("fake-media-worker");
-        write_fake_worker(
-            &worker,
-            &[
-                WorkerResponse::Ready {
-                    protocol_version: PROTOCOL_VERSION,
-                    identity: identity.clone(),
-                },
-                WorkerResponse::TranscriptSegment {
-                    protocol_version: PROTOCOL_VERSION,
-                    identity: identity.clone(),
-                    segment_id: "segment-1".into(),
-                    track: TrackKind::Microphone,
-                    start_sample: 0,
-                    end_sample: 8_000,
-                    text: "private transcript".into(),
-                    language: Some("en".into()),
-                    revision: 1,
-                },
-                WorkerResponse::Completed {
-                    protocol_version: PROTOCOL_VERSION,
-                    identity,
-                    metrics: WorkerMetrics {
-                        source_samples: 16_000,
-                        segments: 1,
-                        speakers: 0,
-                        elapsed_ms: 5,
-                        peak_working_bytes: Some(1024),
+        for dual in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let manager = manager(&root);
+            let record = manager
+                .record_store
+                .create_audio(AudioRecordCreateInput {
+                    title: "Meeting".into(),
+                    tracks: if dual {
+                        vec![AudioTrackKind::Microphone, AudioTrackKind::System]
+                    } else {
+                        vec![AudioTrackKind::Microphone]
                     },
-                },
-            ],
-        );
-        let native_manifest = root.path().join("native-manifest.json");
-        let runtime = root.path().join("libonnxruntime.dylib");
-        let model_manifest = root.path().join("model-manifest.json");
-        for path in [&native_manifest, &runtime, &model_manifest] {
-            fs::write(path, b"fixture").unwrap();
-        }
-        let resources = SpeechExecutionResources {
-            worker_path: worker,
-            native_manifest_path: native_manifest,
-            onnx_runtime_path: runtime,
-            model_pack_manifest_path: model_manifest,
-            provenance: RecordSpeechProvenance {
-                provider: "local".into(),
-                model_pack_revision: "revision-1".into(),
-                onnx_runtime_version: "1.28.0".into(),
-            },
-        };
-        let lease = manager
-            .compute_coordinator
-            .acquire(ComputeWorkloadIdentity {
-                kind: ComputeWorkloadKind::RecordBackfill,
-                id: job.job_id.clone(),
-                generation,
-            })
-            .await;
-        let runner = Arc::clone(&manager);
-        tauri::async_runtime::spawn_blocking(move || {
-            runner.execute_record_job(&job, generation, resources, lease)
-        })
-        .await
-        .unwrap();
-        manager.clear_active("speech_record_execute", generation);
+                    transcription_status: TranscriptionStatus::Queued,
+                })
+                .await
+                .unwrap();
+            let record_path = manager
+                .record_store
+                .audio_workspace_path(&record.id)
+                .await
+                .unwrap();
+            fs::write(record_path.join("audio/microphone.opus"), b"owned-audio").unwrap();
+            let mut artifacts = vec![AudioTrackArtifactInput {
+                track: AudioTrackKind::Microphone,
+                relative_path: "audio/microphone.opus".into(),
+            }];
+            if dual {
+                fs::write(record_path.join("audio/system.opus"), b"owned-system-audio").unwrap();
+                artifacts.push(AudioTrackArtifactInput {
+                    track: AudioTrackKind::System,
+                    relative_path: "audio/system.opus".into(),
+                });
+            }
+            let finalized = manager
+                .record_store
+                .finalize_audio_capture(&record.id, CaptureStatus::Ready, 1_000, artifacts)
+                .await
+                .unwrap();
 
-        let snapshot = manager
-            .record_store
-            .read_recording_final_transcript(&record.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snapshot.segments.len(), 1);
-        assert_eq!(snapshot.segments[0].text, "private transcript");
-        let state = manager.state.lock().unwrap();
-        assert_eq!(
-            state.jobs.get("speech_record_execute").unwrap().state,
-            SpeechJobState::Succeeded
-        );
-        assert_eq!(
-            state
-                .jobs
-                .get("speech_record_execute")
+            let mut job = fixture_job(
+                "speech_record_execute",
+                SpeechJobKind::RecordBackfillAsr,
+                SpeechJobOrigin::Record {
+                    record_id: record.id.clone(),
+                },
+                SpeechJobState::Queued,
+                Utc::now(),
+            );
+            job.started_at = None;
+            job.worker_generation = None;
+            job.worker_attempts = 0;
+            job.source.size_bytes = finalized.audio.unwrap().size_bytes;
+            {
+                let mut state = manager.state.lock().unwrap();
+                state.queue.push_back(job.job_id.clone());
+                state.jobs.insert(job.job_id.clone(), job);
+            }
+            let (candidate, generation_hint) = manager.peek_next_job().unwrap().unwrap();
+            let (job, generation) = manager
+                .claim_next_job(&candidate.job_id, generation_hint)
                 .unwrap()
-                .pipeline
-                .model_pack_revision,
-            "revision-1",
-            "a running generation keeps its admission-time model revision"
-        );
-        assert!(state.jobs.values().any(|job| {
-            job.kind == SpeechJobKind::RecordDiarization
-                && job.state == SpeechJobState::Queued
-                && matches!(
-                    &job.origin,
-                    SpeechJobOrigin::Record { record_id } if record_id == &record.id
-                )
-        }));
+                .unwrap();
+            let identity = WorkloadIdentity {
+                workload_id: job.job_id.clone(),
+                worker_generation: generation,
+            };
+            let worker = root.path().join("fake-media-worker");
+            write_fake_worker(
+                &worker,
+                &[
+                    WorkerResponse::Ready {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity: identity.clone(),
+                    },
+                    WorkerResponse::TranscriptSegment {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity: identity.clone(),
+                        segment_id: "segment-1".into(),
+                        track: if dual {
+                            TrackKind::Mixed
+                        } else {
+                            TrackKind::Microphone
+                        },
+                        start_sample: 0,
+                        end_sample: 8_000,
+                        text: "private transcript".into(),
+                        language: Some("en".into()),
+                        revision: 1,
+                    },
+                    WorkerResponse::Completed {
+                        protocol_version: PROTOCOL_VERSION,
+                        identity,
+                        metrics: WorkerMetrics {
+                            source_samples: 16_000,
+                            segments: 1,
+                            speakers: 0,
+                            elapsed_ms: 5,
+                            peak_working_bytes: Some(1024),
+                        },
+                    },
+                ],
+            );
+            let native_manifest = root.path().join("native-manifest.json");
+            let runtime = root.path().join("libonnxruntime.dylib");
+            let model_manifest = root.path().join("model-manifest.json");
+            for path in [&native_manifest, &runtime, &model_manifest] {
+                fs::write(path, b"fixture").unwrap();
+            }
+            let resources = SpeechExecutionResources {
+                worker_path: worker,
+                native_manifest_path: native_manifest,
+                onnx_runtime_path: runtime,
+                model_pack_manifest_path: model_manifest,
+                provenance: RecordSpeechProvenance {
+                    provider: "local".into(),
+                    model_pack_revision: "revision-1".into(),
+                    onnx_runtime_version: "1.28.0".into(),
+                },
+            };
+            let lease = manager
+                .compute_coordinator
+                .acquire(ComputeWorkloadIdentity {
+                    kind: ComputeWorkloadKind::RecordBackfill,
+                    id: job.job_id.clone(),
+                    generation,
+                })
+                .await;
+            let runner = Arc::clone(&manager);
+            tauri::async_runtime::spawn_blocking(move || {
+                runner.execute_record_job(&job, generation, resources, lease)
+            })
+            .await
+            .unwrap();
+            manager.clear_active("speech_record_execute", generation);
+
+            let snapshot = manager
+                .record_store
+                .read_recording_final_transcript(&record.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.segments.len(), 1);
+            assert_eq!(
+                snapshot.segments[0].track,
+                if dual {
+                    AudioTrackKind::Mixed
+                } else {
+                    AudioTrackKind::Microphone
+                }
+            );
+            assert_eq!(snapshot.segments[0].text, "private transcript");
+            let state = manager.state.lock().unwrap();
+            assert_eq!(
+                state.jobs.get("speech_record_execute").unwrap().state,
+                SpeechJobState::Succeeded
+            );
+            assert_eq!(
+                state
+                    .jobs
+                    .get("speech_record_execute")
+                    .unwrap()
+                    .pipeline
+                    .model_pack_revision,
+                "revision-1",
+                "a running generation keeps its admission-time model revision"
+            );
+            assert!(state.jobs.values().any(|job| {
+                job.kind == SpeechJobKind::RecordDiarization
+                    && job.state == SpeechJobState::Queued
+                    && matches!(
+                        &job.origin,
+                        SpeechJobOrigin::Record { record_id } if record_id == &record.id
+                    )
+            }));
+        }
     }
 
     #[cfg(unix)]

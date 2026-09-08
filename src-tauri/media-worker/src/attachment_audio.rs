@@ -254,6 +254,8 @@ impl AttachmentAudioDecoder {
         &mut self,
         mut samples: Vec<f32>,
     ) -> Result<Option<AttachmentPcmChunk>, AttachmentAudioError> {
+        crate::audio_samples::normalize_pcm(&mut samples)
+            .map_err(|()| AttachmentAudioError::CorruptMedia)?;
         let end = self
             .emitted_samples
             .checked_add(samples.len() as u64)
@@ -836,6 +838,32 @@ mod tests {
         assert_eq!(starts.first(), Some(&0));
         assert_eq!(samples, 1_600);
         assert_eq!(decoder.output_samples(), 1_600);
+    }
+
+    #[test]
+    fn full_scale_resampled_attachment_preserves_timeline_and_inference_range() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("square.wav");
+        write_pcm_wav(&source, 48_000, 1, 48_000);
+        let mut bytes = std::fs::read(&source).unwrap();
+        for (frame, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            let value = if frame % 96 < 48 { i16::MAX } else { i16::MIN };
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(&source, bytes).unwrap();
+        let mut decoder = AttachmentAudioDecoder::open(&source).unwrap();
+        let mut count = 0;
+        let mut clipped = false;
+        while let Some(chunk) = decoder.read_chunk().unwrap() {
+            assert_eq!(chunk.start_sample(), count);
+            for sample in chunk.samples() {
+                assert!(sample.is_finite() && sample.abs() <= 1.0);
+                clipped |= sample.abs() == 1.0;
+            }
+            count += chunk.samples().len() as u64;
+        }
+        assert!(clipped, "fixture must exercise resampler overshoot");
+        assert_eq!(count, 16_000);
     }
 
     #[test]

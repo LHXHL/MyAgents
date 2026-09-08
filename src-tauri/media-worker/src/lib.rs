@@ -6,6 +6,7 @@
 //! durable job and publication authority.
 
 pub mod attachment_audio;
+mod audio_samples;
 pub mod diarization;
 pub mod model_pack_source;
 pub mod native_adapter;

@@ -619,7 +619,9 @@ impl WorkerResponse {
                 ..
             } => {
                 valid_protocol_id(segment_id)
-                    && is_transcription_track(*track)
+                    // Mixed is a final result identity, never a physical PCM
+                    // input or checkpoint. Keep those boundaries separate.
+                    && (is_transcription_track(*track) || *track == TrackKind::Mixed)
                     && start_sample < end_sample
                     && *end_sample <= MAX_MEDIA_SAMPLES_PER_TRACK
                     && !text.trim().is_empty()
@@ -1112,6 +1114,61 @@ mod tests {
         assert!(
             wire.windows(24)
                 .any(|bytes| bytes == b"unique-secret-transcript")
+        );
+    }
+
+    #[test]
+    fn final_transcript_tracks_round_trip_without_widening_input_tracks() {
+        for track in [
+            TrackKind::Microphone,
+            TrackKind::System,
+            TrackKind::Mixed,
+            TrackKind::Attachment,
+        ] {
+            let response = WorkerResponse::TranscriptSegment {
+                protocol_version: PROTOCOL_VERSION,
+                identity: identity(),
+                segment_id: "segment-1".into(),
+                track,
+                start_sample: 0,
+                end_sample: SAMPLE_RATE as u64,
+                text: "synthetic transcript".into(),
+                language: None,
+                revision: 1,
+            };
+            let mut wire = Vec::new();
+            write_control_frame(&mut wire, &response).unwrap();
+            assert!(
+                read_worker_response(&mut wire.as_slice()).is_ok(),
+                "{track:?}"
+            );
+        }
+        assert!(!valid_live_streams(&[PcmStreamStart {
+            track: TrackKind::Mixed,
+            first_sequence: 0,
+            first_sample: 0,
+        }]));
+        assert!(!valid_record_artifacts(&[RecordArtifactInput {
+            track: TrackKind::Mixed,
+            input_path: "/record/mixed.opus".into(),
+        }]));
+        assert!(!valid_checkpoint(&Checkpoint {
+            streams: vec![PcmStreamCheckpoint {
+                track: TrackKind::Mixed,
+                last_ack_sequence: None,
+                analysis_sample: 0,
+            }],
+            analysis_sample: 0,
+        }));
+        assert!(
+            !WorkerResponse::InputAck {
+                protocol_version: PROTOCOL_VERSION,
+                identity: identity(),
+                track: TrackKind::Mixed,
+                sequence: 0,
+                end_sample: 1,
+            }
+            .has_valid_shape()
         );
     }
 

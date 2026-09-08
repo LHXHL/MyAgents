@@ -1,4 +1,5 @@
 #include "myagents_speech_adapter.h"
+#include "bounded_vad.h"
 
 #include <algorithm>
 #include <cmath>
@@ -107,6 +108,8 @@ struct MyAgentsSpeechAsr {
 
 struct MyAgentsSpeechVad {
   const SherpaOnnxVoiceActivityDetector *vad = nullptr;
+  BoundedVadInput input;
+  uint32_t max_active_samples = 0;
 };
 
 struct MyAgentsSpeechDiarizer {
@@ -257,6 +260,14 @@ MyAgentsSpeechStatus CreateVad(const MyAgentsSpeechVadConfig *config,
       return MYAGENTS_SPEECH_STATUS_RESOURCE_LIMIT;
     }
     vad->vad = detector;
+    // Detection starts after the model's minimum-speech lookback. Reserve that
+    // history and two windows so a forced endpoint stays within the configured
+    // duration even when the model never lowers its speech probability.
+    const float active_budget =
+        (config->max_speech_seconds - config->min_speech_seconds) *
+            MYAGENTS_SPEECH_SAMPLE_RATE - 2 * kVadWindowSamples;
+    vad->max_active_samples = static_cast<uint32_t>(
+        std::max(static_cast<float>(kVadWindowSamples), active_budget));
     *out = vad;
     return MYAGENTS_SPEECH_STATUS_OK;
   } catch (...) {
@@ -278,8 +289,14 @@ MyAgentsSpeechStatus VadAccept(MyAgentsSpeechVad *vad, const float *samples,
     return MYAGENTS_SPEECH_STATUS_INVALID_ARGUMENT;
   }
   try {
-    SherpaOnnxVoiceActivityDetectorAcceptWaveform(
-        vad->vad, samples, static_cast<int32_t>(sample_count));
+    vad->input.Feed(
+        samples, sample_count, kVadWindowSamples, vad->max_active_samples,
+        [vad](const float *pcm, uint32_t count) {
+          SherpaOnnxVoiceActivityDetectorAcceptWaveform(
+              vad->vad, pcm, static_cast<int32_t>(count));
+        },
+        [vad] { return SherpaOnnxVoiceActivityDetectorDetected(vad->vad) != 0; },
+        [vad] { SherpaOnnxVoiceActivityDetectorFlush(vad->vad); });
     return MYAGENTS_SPEECH_STATUS_OK;
   } catch (...) {
     return MYAGENTS_SPEECH_STATUS_INFERENCE_ERROR;
@@ -292,6 +309,7 @@ MyAgentsSpeechStatus VadFlush(MyAgentsSpeechVad *vad) {
   }
   try {
     SherpaOnnxVoiceActivityDetectorFlush(vad->vad);
+    vad->input.Reset();
     return MYAGENTS_SPEECH_STATUS_OK;
   } catch (...) {
     return MYAGENTS_SPEECH_STATUS_INFERENCE_ERROR;
@@ -340,6 +358,7 @@ MyAgentsSpeechStatus VadReset(MyAgentsSpeechVad *vad) {
   }
   try {
     SherpaOnnxVoiceActivityDetectorReset(vad->vad);
+    vad->input.Reset();
     return MYAGENTS_SPEECH_STATUS_OK;
   } catch (...) {
     return MYAGENTS_SPEECH_STATUS_INFERENCE_ERROR;
