@@ -48,7 +48,7 @@ describe('compact command approval authority', () => {
   const review = {
     operation: { kind: 'command' as const, dialect: 'bash' as const, command: 'printf approved', cwd: '/workspace/approved', description: 'Inspect the environment' },
     actor: { agentId: 'child-1', origin: 'foreground_child' as const },
-    scope: { tool: 'bash', permissionClass: 'process.execute', target: '/workspace/approved', lifetimeMs: 86_400_000, owner: 'session_tree' as const },
+    scope: { tool: 'bash', permissionClass: 'process.execute', target: '/workspace/approved', lifetimeMs: null, owner: 'session_tree' as const },
   };
 
   it('renders authoritative review fields and keeps Always Allow bound to its exact request', async () => {
@@ -96,6 +96,12 @@ describe('structured permission review', () => {
     actor: { agentId: 'child-news', origin: 'foreground_child' as const },
     scope: { tool: 'WebSearch', permissionClass: 'network.search', target: 'provider:fixture-search', lifetimeMs: 3_600_000, owner: 'session_tree' as const },
   };
+  it('presents a Session grant without an expiry for non-command reviews', () => {
+    const { container } = render(<PermissionPrompt request={{ requestId: 'session-search', toolName: 'WebSearch', input: '', review: { ...review, scope: { ...review.scope, lifetimeMs: null } } }} onDecision={vi.fn()} />);
+    expect(screen.getByText(/shell.permissionPrompt.sessionRuleScope/)).toBeInTheDocument();
+    expect(container).not.toHaveTextContent('shell.permissionPrompt.ruleScope');
+    expect(container).not.toHaveTextContent('NaN');
+  });
   it('loads complete referenced details before approval and retries a failed load', async () => {
     const loader = vi.mocked(fetchJsonLargeValueRef);
     loader.mockRejectedValueOnce(new Error('Details unavailable')).mockResolvedValueOnce(review);

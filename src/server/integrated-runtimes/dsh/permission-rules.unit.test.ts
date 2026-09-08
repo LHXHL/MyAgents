@@ -59,6 +59,14 @@ describe('DSH permission rule wire parsing', () => {
     })).toThrow('expiry');
   });
 
+  it('accepts an explicit Session lifetime while rejecting missing or nonnumeric expiry', () => {
+    const snapshot = { permissionMode: 'acceptEdits', autoAllowTools: [], revision: 'permission-revision-2', rules: [{ ...rule, expiresAt: null }] };
+    expect(parseDshPermissionRulesSnapshot(snapshot).rules[0]?.expiresAt).toBeNull();
+    for (const expiresAt of [undefined, 'forever', -1, Number.NaN]) {
+      expect(() => parseDshPermissionRulesSnapshot({ ...snapshot, rules: [{ ...rule, expiresAt }] })).toThrow('expiresAt');
+    }
+  });
+
   it('parses all retry-safe mutation states', () => {
     expect(parseDshPermissionRuleMutation({
       state: 'applied',

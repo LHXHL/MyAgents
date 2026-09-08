@@ -6353,8 +6353,15 @@
                 "additionalProperties": false,
                 "properties": {
                   "lifetimeMs": {
-                    "minimum": 0,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "owner": {
                     "const": "session_tree",
@@ -7234,7 +7241,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "3.1.0",
+            "const": "4.0.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -8355,8 +8362,15 @@
                     "type": "integer"
                   },
                   "expiresAt": {
-                    "minimum": 0,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "origin": {
                     "const": "root",
@@ -8432,8 +8446,15 @@
                     "type": "integer"
                   },
                   "expiresAt": {
-                    "minimum": 0,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "origin": {
                     "const": "root",
@@ -8558,8 +8579,15 @@
                   "type": "integer"
                 },
                 "expiresAt": {
-                  "minimum": 0,
-                  "type": "integer"
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  ]
                 },
                 "origin": {
                   "const": "root",
@@ -8663,8 +8691,15 @@
                     "type": "integer"
                   },
                   "expiresAt": {
-                    "minimum": 0,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "origin": {
                     "const": "root",
@@ -8740,8 +8775,15 @@
                     "type": "integer"
                   },
                   "expiresAt": {
-                    "minimum": 0,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "origin": {
                     "const": "root",
@@ -22398,6 +22440,6 @@
       }
     }
   },
-  "protocolVersion": "3.1.0",
+  "protocolVersion": "4.0.0",
   "title": "MyAgents DSH native RPC"
 }

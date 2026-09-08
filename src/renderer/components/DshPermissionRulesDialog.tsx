@@ -207,7 +207,7 @@ export default function DshPermissionRulesDialog({
                             {rule.target}
                           </code>
                           <div className="mt-2 text-xs text-[var(--ink-muted)]">
-                            {t('input.permissionRules.expires', {
+                            {rule.expiresAt === null ? t('input.permissionRules.sessionLifetime') : t('input.permissionRules.expires', {
                               value: expiresLabel(rule.expiresAt, i18n.language),
                             })}
                           </div>

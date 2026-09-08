@@ -52,8 +52,8 @@ export function parseDshPermissionRule(value: unknown): RuntimePermissionRule {
   const rule = object(value, 'DSH permission rule');
   if (rule.origin !== 'root') throw new Error('DSH permission rule origin is invalid');
   const createdAt = nonNegativeInteger(rule.createdAt, 'DSH permission rule createdAt');
-  const expiresAt = nonNegativeInteger(rule.expiresAt, 'DSH permission rule expiresAt');
-  if (expiresAt < createdAt) throw new Error('DSH permission rule expiry is invalid');
+  const expiresAt = rule.expiresAt === null ? null : nonNegativeInteger(rule.expiresAt, 'DSH permission rule expiresAt');
+  if (expiresAt !== null && expiresAt < createdAt) throw new Error('DSH permission rule expiry is invalid');
   return Object.freeze({
     ruleId: identifier(rule.ruleId, 'DSH permission rule id'),
     revision: identifier(rule.revision, 'DSH permission rule revision'),

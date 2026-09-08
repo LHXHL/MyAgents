@@ -580,6 +580,7 @@ describe.runIf(nativeSmokeEnabled)(
           permissionClass: "process.execute",
           target: "echo native-smoke",
           origin: "root",
+          expiresAt: null,
         });
         const grantedRule = granted.rule as { ruleId: string };
         const grantedRules = await host.request("permission/rules/list", {});
@@ -641,7 +642,7 @@ describe.runIf(nativeSmokeEnabled)(
       expect(host.state).toBe("stopped");
     }, 120_000);
 
-    it("resumes a configured Session after a Runtime process restart", async () => {
+    it("resumes a configured Session and its non-expiring grant after a Runtime process restart", async () => {
       const fixture = await createNativeHostFixture("resume");
       const provider = PRESET_PROVIDERS.find(
         ({ id }) => id === "anthropic-api",
@@ -704,6 +705,13 @@ describe.runIf(nativeSmokeEnabled)(
             interaction: "deterministic-headless",
           }).executionEnvironment.digest,
         });
+        const policy = await fixture.host.request("permission/rules/list", {});
+        const grant = await fixture.host.request("permission/rules/add", {
+          expectedRevision: policy.revision,
+          tool: "bash", permissionClass: "process.execute", target: fixture.workspace,
+        });
+        expect(grant).toMatchObject({ state: "applied", rule: { expiresAt: null } });
+        if (grant.state !== "applied" || !grant.rule) throw new Error("Native Session grant was not applied");
         await fixture.host.stop();
 
         resumedHost = fixture.createHost();
@@ -728,7 +736,13 @@ describe.runIf(nativeSmokeEnabled)(
           await resumedHost.request("permission/rules/list", {}),
         ).toMatchObject({
           permissionMode: "acceptEdits",
+          revision: grant.revision,
+          rules: [grant.rule],
         });
+        expect(await resumedHost.request("permission/rules/revoke", {
+          expectedRevision: grant.revision, ruleId: grant.rule.ruleId,
+        })).toMatchObject({ state: "applied" });
+        expect(await resumedHost.request("permission/rules/list", {})).toMatchObject({ rules: [] });
       } finally {
         await fixture.host.stop();
         await resumedHost?.stop();

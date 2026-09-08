@@ -854,7 +854,8 @@ export interface RuntimePermissionRule {
   target: string;
   origin: 'root';
   createdAt: number;
-  expiresAt: number;
+  /** null means the Runtime grant lasts for this Session, until revoked. */
+  expiresAt: number | null;
 }
 
 /** Authoritative Runtime permission policy snapshot. */

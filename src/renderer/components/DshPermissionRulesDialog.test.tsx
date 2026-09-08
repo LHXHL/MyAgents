@@ -35,7 +35,7 @@ describe('DshPermissionRulesDialog', () => {
           target: 'npm test',
           origin: 'root',
           createdAt: 1_000,
-          expiresAt: Date.UTC(2026, 7, 31),
+          expiresAt: null,
         }],
       })
       .mockResolvedValue({
@@ -58,6 +58,8 @@ describe('DshPermissionRulesDialog', () => {
     expect(await screen.findByRole('dialog', { name: 'Allowed actions' })).toBeInTheDocument();
     expect(await screen.findByText('npm test')).toBeInTheDocument();
     expect(screen.getByText('process.execute')).toBeInTheDocument();
+    expect(screen.getByText('Always allowed in this Session')).toBeInTheDocument();
+    expect(screen.queryByText(/^Expires /)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Revoke Bash grant' }));
 
