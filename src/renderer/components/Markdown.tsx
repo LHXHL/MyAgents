@@ -12,16 +12,16 @@
 import 'katex/dist/katex.min.css';
 import './Markdown.css';
 
-import { memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
-import MermaidDiagram from './markdown/MermaidDiagram';
+const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
-import { useFileAction, useFileLinkAction } from '@/context/FileActionContext';
+import { useFileAction, useFileLinkAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import {
@@ -172,7 +172,7 @@ const CodeComponent: Components['code'] = ({ className, children, node: _node, .
   if (isBlock) {
     // Special handling for Mermaid diagrams
     if (language === 'mermaid') {
-      return <MermaidDiagram>{codeString}</MermaidDiagram>;
+      return <Suspense fallback={<pre className="overflow-auto rounded-lg bg-[var(--paper-inset)] p-4">{codeString}</pre>}><MermaidDiagram>{codeString}</MermaidDiagram></Suspense>;
     }
 
     return (
@@ -339,6 +339,8 @@ const markdownComponents: Components = {
 
 interface MarkdownProps {
   children: string;
+  /** Document-level numbering for an editor rendering isolated fragments. */
+  footnoteNumbers?: ReadonlyMap<string, number>;
   /** Use compact styling for smaller spaces like thinking blocks */
   compact?: boolean;
   /** Preserve single newlines as line breaks (useful for user messages in chat) */
@@ -433,7 +435,7 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
 
   // Empty src: static error (no state needed)
   if (srcType === 'empty') {
-    return <span className="text-xs text-[var(--ink-muted)] italic">[{t('markdown.emptyImagePath')}]</span>;
+    return <span className="md-image-error text-xs text-[var(--ink-muted)] italic">[{t('markdown.emptyImagePath')}]</span>;
   }
 
   // Browser URL: render directly, after the existing Markdown sanitizer.
@@ -449,14 +451,14 @@ function MarkdownImageInner({ src, alt, basePath, workspacePath }: {
 
   // Local file: loading / error / loaded.
   if (error || unavailable) {
-    return <span className="text-xs text-[var(--ink-muted)] italic">[{error ?? t('markdown.imageLoadFailed', { src })}]</span>;
+    return <span className="md-image-error text-xs text-[var(--ink-muted)] italic">[{error ?? t('markdown.imageLoadFailed', { src })}]</span>;
   }
 
   if (!blobUrl) {
     return <span className="inline-block h-4 w-16 animate-pulse rounded bg-[var(--paper-inset)]" />;
   }
 
-  return <img src={blobUrl} alt={alt ?? ''} className="max-w-full" />;
+  return <img src={blobUrl} alt={alt ?? ''} className="max-w-full" onError={() => setError(t('markdown.imageLoadFailed', { src }))} />;
 }
 
 /**
@@ -473,7 +475,7 @@ const MarkdownImage = memo(MarkdownImageInner, (prev, next) =>
   && prev.alt === next.alt,
 );
 
-const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false }: MarkdownProps) {
+const Markdown = memo(function Markdown({ children, compact = false, preserveNewlines = false, raw = false, basePath = '', workspacePath, streaming = false, footnoteNumbers }: MarkdownProps) {
   // Skip preprocessing for raw mode (file preview) - preprocessing is for streaming chat messages.
   // In raw mode, convert YAML frontmatter to a fenced code block for proper rendering.
   //
@@ -498,9 +500,15 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
         <MarkdownImage src={props.src} alt={props.alt} basePath={basePath} workspacePath={workspacePath} />
       ),
-      a: (props: React.ComponentProps<'a'> & { node?: unknown }) => <MarkdownLink {...props} basePath={basePath} />,
+      a: (props: React.ComponentProps<'a'> & { node?: unknown }) => {
+        let number: number | undefined;
+        if (props.href?.startsWith('#user-content-fn-')) {
+          try { number = footnoteNumbers?.get(decodeURIComponent(props.href.slice('#user-content-fn-'.length))); } catch { /* keep the source fragment's link */ }
+        }
+        return <MarkdownLink {...props} basePath={basePath}>{number ?? props.children}</MarkdownLink>;
+      },
     };
-  }, [basePath, workspacePath]);
+  }, [basePath, workspacePath, footnoteNumbers]);
 
   return (
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>

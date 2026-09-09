@@ -1,4 +1,5 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
+import type { FilePreviewHandle } from '../FilePreviewModal';
 import {
   AtSign,
   ChevronUp,
@@ -901,6 +902,7 @@ const DirectoryPanel = memo(
       );
     }, [nodeMetaByPath]);
 
+    const previewHandleRef = useRef<FilePreviewHandle>(null);
     const handlePreview = useCallback(async (node: DirectoryTreeNode) => {
       if (node.type !== "file") return;
 
@@ -910,6 +912,8 @@ const DirectoryPanel = memo(
       try {
         const payload = await fileService.readPreview({ path: node.path });
         if (myReq !== previewReqIdRef.current) return; // superseded by newer click
+        if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
+        if (myReq !== previewReqIdRef.current) return;
         const fileData = { ...payload, path: node.path };
         if (onFilePreviewExternal) {
           onFilePreviewExternal(fileData);
@@ -922,7 +926,7 @@ const DirectoryPanel = memo(
         if (onFilePreviewExternal) {
           toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
         } else {
-          setPreview(null);
+          toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
           setPreviewError(
             err instanceof Error
               ? err.message
@@ -943,11 +947,13 @@ const DirectoryPanel = memo(
      *  reqId bump invalidates any in-flight text/image preview so its async
      *  result can't stomp this one (and won't reset isPreviewLoading, so we
      *  clear it ourselves). */
-    const handleRichDocPreview = useCallback((node: DirectoryTreeNode) => {
+    const handleRichDocPreview = useCallback(async (node: DirectoryTreeNode) => {
       if (node.type !== "file") return;
       const richDocKind = getRichDocKind(node.name);
       if (!richDocKind) return;
-      previewReqIdRef.current++;
+      const myReq = ++previewReqIdRef.current;
+      if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
+      if (myReq !== previewReqIdRef.current) return;
       // Clear loading regardless of branch: the reqId bump above means a prior
       // in-flight text/image preview's finally won't reset it, and the external
       // (split-view) branch must leave the state machine consistent too.
@@ -1010,6 +1016,8 @@ const DirectoryPanel = memo(
         try {
           const payload = await fileService.readPreview({ path });
           if (myReq !== previewReqIdRef.current) return; // superseded
+          if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(path)) return;
+          if (myReq !== previewReqIdRef.current) return;
           const initialEditMode = !!focusTarget && isMarkdownFile(payload.name);
           const fileData = {
             ...payload,
@@ -1032,7 +1040,7 @@ const DirectoryPanel = memo(
           if (onFilePreviewExternal) {
             toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
           } else {
-            setPreview(null);
+            toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
             setPreviewError(
               err instanceof Error
                 ? err.message
@@ -1257,6 +1265,7 @@ const DirectoryPanel = memo(
     useImperativeHandle(
       ref,
       () => ({
+        preparePreviewTransition: () => previewHandleRef.current?.prepareTransition() ?? Promise.resolve(true),
         handleFileDrop: async (
           paths: string[],
           position?: { x: number; y: number },
@@ -1898,6 +1907,7 @@ const DirectoryPanel = memo(
         if (onFilePreviewExternal) {
           onFilePreviewExternal(previewFile, { initialEditMode: true });
         } else {
+          if (previewHandleRef.current && !await previewHandleRef.current.prepareTransition(createdPath)) return;
           setPreview({ ...previewFile, initialEditMode: true });
           setPreviewError(null);
         }
@@ -3506,13 +3516,14 @@ const DirectoryPanel = memo(
           (preview || previewError || isPreviewLoading) && (
             <Suspense fallback={null}>
               <FilePreviewModal
+                ref={previewHandleRef}
                 name={preview?.name ?? t("workspaceFiles.common.preview")}
                 content={preview?.content ?? ""}
                 size={preview?.size ?? 0}
                 path={preview?.path ?? ""}
                 richDocKind={preview?.richDocKind}
-                isLoading={isPreviewLoading}
-                error={previewError}
+                isLoading={isPreviewLoading && !preview}
+                error={preview ? null : previewError}
                 // Phase D.5: thread the absolute workspace root so rendered
                 // markdown previews can load relative-path images.
                 workspacePath={agentDir}

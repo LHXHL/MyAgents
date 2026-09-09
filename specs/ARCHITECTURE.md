@@ -130,7 +130,7 @@ Node → Rust 的反向调用只经过 localhost Management API。应用级资�
 | 新定时自动化 | Rust TaskStore；Cron 只是兼容 surface |
 | Session Goal | SessionGoalManager |
 | Record、录音与转录结果 | RecordStore / RecordingManager / SpeechRecognitionManager |
-| 工作区文件 | Tauri `cmd_workspace_*` 与 `useWorkspaceFileService()` |
+| 工作区文件 | Tauri `cmd_workspace_*` 与 `useWorkspaceFileService()`；[Markdown 编辑器与文件生命周期](tech_docs/workspace_markdown_editor.md) |
 | Cloud 登录与 Registered Agent 本地状态 | Rust Space connector |
 
 兼容旧格式的读取或迁移不构成第二个 writer。具体数据格式、锁序与恢复协议由各模块技术文档维护。

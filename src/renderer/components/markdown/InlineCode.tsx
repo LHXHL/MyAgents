@@ -6,7 +6,7 @@
  * to FileActionContext; right-click opens the shared file menu.
  * Audio file paths get an inline play/stop button.
  */
-import { useFileAction, useFileTargetInfo } from '@/context/FileActionContext';
+import { useFileAction, useFileTargetInfo } from '@/context/fileActionState';
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
 import { isAudioPath } from '@/utils/audioPlayer';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';

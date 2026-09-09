@@ -4,13 +4,13 @@
  * Auto-save model (Typora/Obsidian-style): all editable files persist in the background
  * with a 1s debounce. No manual Save/Cancel buttons.
  * - **Code files**: writable Monaco directly.
- * - **Markdown files**: header `<MdViewSegment>` toggles between rendered preview and a
- *   writable Monaco editor. Both share the same auto-saved `editContent`, so the toggle
- *   is purely a view switch.
+ * - **Workspace Markdown**: one CM source state supplies editable live rendering
+ *   and temporary source mode; the document survives embedded/fullscreen changes.
+ * - **Settings Markdown**: its existing preview/edit entry uses a CM source editor.
  *
  * Edit capability comes from two sources (either is sufficient):
  * 1. `workspacePath` prop — Rust workspace_files via `useWorkspaceFileService`
- * 2. Explicit `onSave`/`onRevealFile` props — when caller provides save logic directly
+ * 2. Explicit `onSave` — when caller provides save logic directly
  *    (e.g. Settings panels editing `~/.myagents/agents/...`)
  */
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
@@ -21,6 +21,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { useTabActive, useTabApiOptional } from '@/context/TabContext';
 import { FileIcon } from '@/components/file-icon';
 import { useWorkspaceChangeSignal } from '@/hooks/useWorkspaceChangeSignal';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
@@ -38,9 +39,13 @@ import { useToast } from './Toast';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { MenuItem } from '@/components/ui/MenuItem';
 import { Popover } from '@/components/ui/Popover';
+import type { MarkdownEditorHandle } from './markdown-editor/MarkdownEditor';
+import type { ConflictSnapshot } from './markdown-editor/ConflictComparison';
 
 // Lazy load Monaco Editor: the ~3MB bundle is only loaded when user first opens a file
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
+const MarkdownEditor = lazy(() => import('./markdown-editor/MarkdownEditor'));
+const ConflictComparison = lazy(() => import('./markdown-editor/ConflictComparison'));
 
 // Lazy load the rich-document viewer (pdf.js / docx-preview / SheetJS / pptx-renderer).
 // Heavy parse/render libs stay out of the main bundle — loaded only when a user
@@ -63,6 +68,7 @@ const AUTO_SAVE_DELAY = 1000;
 
 export interface FilePreviewHandle {
     close: () => void;
+    prepareTransition: (nextPath?: string) => Promise<boolean>;
 }
 
 interface FilePreviewModalProps {
@@ -101,7 +107,8 @@ interface FilePreviewModalProps {
      *  `name`/`path` it passes back so subsequent saves target the new
      *  location (e.g., split-view's `splitFile` state). */
     onRenamed?: (newPath: string, newName: string) => void;
-    /** When `true`, markdown opens directly in the editable Monaco view
+    /** When `true`, new workspace Markdown focuses the unified editor immediately;
+     *  Settings Markdown opens its CM source editor
      *  instead of the rendered preview. Used by 「新建笔记」 flow so a fresh
      *  empty `note-…md` is immediately editable without an extra click. */
     initialEditMode?: boolean;
@@ -130,7 +137,7 @@ interface FilePreviewModalProps {
     onQuoteFile?: (path: string) => void;
     /** Reveal this workspace-relative file inside the app's workspace tree. */
     onRevealInTree?: (path: string) => void;
-    /** When provided, the Monaco editor (used for code files & markdown edit mode)
+    /** When provided, the source editor (Monaco for code, CM for Markdown)
      *  shows a floating「引用」menu on selection that injects `@<path>#L<start>[-L<end>]`
      *  into the chat input. Markdown preview mode (rendered HTML) intentionally does
      *  NOT surface this — line-mapping back to source is unreliable. */
@@ -384,13 +391,35 @@ export default function FilePreviewModal({
     onQuoteSelection,
 }: FilePreviewModalProps) {
     const { t } = useTranslation('chat');
+    const tabApi = useTabApiOptional();
+    const tabActive = useTabActive();
+    const isPreviewActive = !tabApi || tabActive;
+    const [markdownFullscreen, setMarkdownFullscreen] = useState(false);
+    const embeddedPlaceholderRef = useRef<HTMLDivElement>(null);
+    const [markdownPortalTarget] = useState(() => document.createElement('div'));
+    useLayoutEffect(() => {
+        if (!embedded) return;
+        const target = markdownFullscreen ? document.body : embeddedPlaceholderRef.current;
+        if (!target) return;
+        markdownPortalTarget.className = markdownFullscreen
+            ? 'fixed inset-0 z-[210] flex items-center justify-center bg-black/30 p-[3vh_3vw]'
+            : 'h-full min-h-0';
+        target.appendChild(markdownPortalTarget);
+        return () => markdownPortalTarget.remove();
+    }, [embedded, markdownFullscreen, markdownPortalTarget]);
+    useLayoutEffect(() => {
+        // The fullscreen target lives outside the Tab's hidden DOM subtree.
+        // Project the existing Tab authority without detaching its document.
+        markdownPortalTarget.style.display = isPreviewActive ? '' : 'none';
+        markdownPortalTarget.inert = !isPreviewActive;
+    }, [isPreviewActive, markdownPortalTarget]);
     // Cmd+W dismissal: only register for fullscreen mode (z-[210]).
     // Embedded mode (split-panel) has no z-index overlay and is handled separately.
     // Routes through `handleCloseRef` (latest-ref pattern) so Cmd+W respects the same
     // `flushAndClose` autosave drain that the X button uses — without this, edits made
     // after the last debounce fire would be silently lost on Cmd+W.
     const handleCloseRef = useRef<() => void>(onClose);
-    useCloseLayer(() => { if (embedded) return false; handleCloseRef.current(); return true; }, 210);
+    useCloseLayer(() => { if (!isPreviewActive || embedded && !markdownFullscreen) return false; handleCloseRef.current(); return true; }, 210);
 
     // Mounted guard for async autosave callbacks. Project convention requires this on any
     // setState that runs after `await`; without it, an in-flight save resolving after
@@ -427,14 +456,26 @@ export default function FilePreviewModal({
     const canReveal = !!(onRevealFile || workspacePath || localPath);
 
     const isMarkdown = useMemo(() => isMarkdownFile(name), [name]);
+    const isWorkspaceMarkdown = isMarkdown && canEdit && !!workspacePath && !onSave;
+    const markdownEditorRef = useRef<MarkdownEditorHandle>(null);
+    const [markdownSourceMode, setMarkdownSourceMode] = useState(false);
+    const conflictDiskRef = useRef<string | null>(null);
+    const [conflictSnapshot, setConflictSnapshot] = useState<ConflictSnapshot | null>(null);
+    const [conflictStale, setConflictStale] = useState(false);
+    const [comparisonOpen, setComparisonOpen] = useState(false);
+    const [receiptUnknown, setReceiptUnknown] = useState(false);
+    // Keep the proposed result separate from the editable draft until the disk
+    // receipt is definitive. A failed IPC reply may follow a successful write.
+    const comparisonWriteRef = useRef<{ snapshot: ConflictSnapshot; result: string; diskOnly: boolean } | null>(null);
+    const copyInFlightRef = useRef(false);
+    const [copyBusy, setCopyBusy] = useState(false);
+    const copiedMissingDraftRef = useRef<{ path: string; generation: number; revision: number } | null>(null);
     // Auto-save mode covers any editable file (markdown or code) — Typora/Obsidian-style.
     const isDirectEdit = canEdit;
 
     // ─── State ───────────────────────────────────────────────────────────────
-    // Markdown view-mode toggle (preview vs writable Monaco). Default to preview so opening
-    // a `.md` file shows the rendered version first; user toggles to edit. The
-    // 「新建笔记」 flow opts in to `initialEditMode` so a brand-new empty note
-    // opens directly in the editor without an extra click.
+    // Only onSave-owned Settings Markdown retains the preview/edit segment.
+    // Workspace Markdown always opens the unified editable surface.
     const [mdViewMode, setMdViewMode] = useState<'preview' | 'edit'>(initialEditMode ? 'edit' : 'preview');
     const [editContent, setEditContent] = useState(content);
     const [savedContent, setSavedContent] = useState(content); // Last saved baseline (for diff/dirty)
@@ -445,8 +486,13 @@ export default function FilePreviewModal({
     // Auto-save state (for any direct-edit file)
     const relocationRef = useRef<{ from: string; to: string } | null>(null);
     const documentGenerationRef = useRef(0);
+    const pathGenerationRef = useRef(0);
+    const synchronizedIdentityRef = useRef({ path, workspacePath });
     const [fileUnavailable, setFileUnavailable] = useState(false);
+    const fileUnavailableRef = useRef(fileUnavailable);
+    fileUnavailableRef.current = fileUnavailable;
     const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+    const [markdownOversized, setMarkdownOversized] = useState(false);
     const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isSavingRef = useRef(false); // guard against concurrent saves
     const inFlightPromiseRef = useRef<Promise<void> | null>(null); // track in-flight save for close coordination
@@ -466,17 +512,36 @@ export default function FilePreviewModal({
         // A committed rename preserves this document's draft and save baseline.
         // Only navigation to a different document resets the buffer.
         if (relocationRef.current?.to === path) return;
+        const sameDocument = synchronizedIdentityRef.current.path === path && synchronizedIdentityRef.current.workspacePath === workspacePath;
+        synchronizedIdentityRef.current = { path, workspacePath };
+        const draft = markdownEditorRef.current?.getSource();
+        if (sameDocument && draft !== undefined && draft !== savedContentRef.current) {
+            if (content !== savedContentRef.current && content !== draft && isWorkspaceMarkdown) {
+                externalUpdatePendingRef.current = true;
+                conflictDiskRef.current = content;
+                setExternalUpdatePending(true);
+                setConflictStale(true);
+            }
+            return;
+        }
         relocationRef.current = null;
         documentGenerationRef.current += 1;
+        pathGenerationRef.current += 1;
+        markdownEditorRef.current?.invalidateImports();
+        markdownEditorRef.current?.replaceSource(content, true);
+        setConflictSnapshot(null);
+        setComparisonOpen(false); setReceiptUnknown(false); comparisonWriteRef.current = null;
+        conflictDiskRef.current = null;
         setFileUnavailable(false);
         if (debounceTimerRef.current) {
             clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = null;
         }
         setEditContent(content);
+        editContentRef.current = content;
         setSavedContent(content);
         setMoreMenuOpen(false);
-    }, [content, path, name, workspacePath]);
+    }, [content, path, name, workspacePath, isWorkspaceMarkdown]);
 
     // Reset markdown view-mode + cancel any in-flight inline rename when the
     // file identity changes. Modal is reused for split-view file switches
@@ -492,6 +557,7 @@ export default function FilePreviewModal({
             return;
         }
         setMdViewMode(initialEditMode ? 'edit' : 'preview');
+        setMarkdownSourceMode(false);
         setIsEditingName(false);
         externalUpdatePendingRef.current = false;
         setLastExternalUpdateAt(null);
@@ -500,10 +566,10 @@ export default function FilePreviewModal({
     }, [path]);
 
     useEffect(() => {
-        if (focusTarget && isMarkdown && canEdit) {
+        if (focusTarget && isMarkdown && canEdit && !isWorkspaceMarkdown) {
             setMdViewMode('edit');
         }
-    }, [canEdit, focusTarget, isMarkdown]);
+    }, [canEdit, focusTarget, isMarkdown, isWorkspaceMarkdown]);
 
     // Syntax highlighting has its own budget, separate from the 2MB preview/save
     // cap. Normal source can highlight up to 1MB; unknown or long-line data stays
@@ -556,12 +622,13 @@ export default function FilePreviewModal({
 
     // We need ref-accessible versions for async save callbacks
     const editContentRef = useRef(editContent);
-    editContentRef.current = editContent;
+    useLayoutEffect(() => { editContentRef.current = editContent; }, [editContent]);
+    const readEditContent = useCallback(() => markdownEditorRef.current?.getSource() ?? editContentRef.current, []);
     const savedContentRef = useRef(savedContent);
     savedContentRef.current = savedContent;
     // Markdown is in "edit" mode when user toggled the segment AND the file is editable.
     // Read-only markdown stays in preview regardless of toggle (the toggle is hidden anyway).
-    const isMdEditView = isMarkdown && canEdit && mdViewMode === 'edit';
+    const isMdEditView = isMarkdown && canEdit && (isWorkspaceMarkdown || mdViewMode === 'edit');
 
     const liveReloadReqIdRef = useRef(0);
     const onRenamedRef = useRef(onRenamed);
@@ -571,14 +638,22 @@ export default function FilePreviewModal({
         const next = remapWorkspacePath(previous, moves);
         if (next === previous) return;
         relocationRef.current = { from: relocationRef.current?.from ?? previous, to: next };
+        // Crossing the Markdown/code boundary must transfer the current draft
+        // before React unmounts the old editing surface.
+        editContentRef.current = readEditContent();
+        setEditContent(editContentRef.current);
+        markdownEditorRef.current?.invalidateImports();
+        synchronizedIdentityRef.current = { path: next, workspacePath: synchronizedIdentityRef.current.workspacePath };
         pathRef.current = next;
         liveReloadReqIdRef.current += 1;
+        pathGenerationRef.current += 1;
+        setConflictStale(true);
         setFileUnavailable(false);
         onRenamedRef.current?.(next, next.split('/').pop() ?? next);
-    }, []);
+    }, [readEditContent]);
     const workspaceChangeSignal = useWorkspaceChangeSignal(
         workspacePath,
-        Boolean(workspacePath && path),
+        Boolean(workspacePath && path && !onSave),
         applyPathMoves,
     );
 
@@ -592,34 +667,76 @@ export default function FilePreviewModal({
         el.scrollTop = Math.min(pendingTop, maxTop);
     }, [editContent]);
 
+    const comparisonIsCurrent = useCallback((comparison: Pick<ConflictSnapshot, 'path' | 'generation' | 'revision'>) =>
+        comparison.path === pathRef.current && comparison.generation === pathGenerationRef.current &&
+        comparison.revision === (markdownEditorRef.current?.getRevision() ?? 0), []);
+    const acceptComparison = useCallback((result: string, diskOnly: boolean) => {
+        // This is the only transition from a proposed comparison to live source.
+        savedContentRef.current = result;
+        setSavedContent(result);
+        markdownEditorRef.current?.replaceSource(result, diskOnly);
+        editContentRef.current = result;
+        comparisonWriteRef.current = null;
+        setReceiptUnknown(false); setFileUnavailable(false);
+        externalUpdatePendingRef.current = false;
+        setExternalUpdatePending(false); conflictDiskRef.current = null;
+        setConflictSnapshot(null); setComparisonOpen(false); setConflictStale(false);
+        setAutoSaveStatus('saved'); onSavedRef.current?.();
+    }, []);
+
     const revalidateOpenFile = useCallback(async () => {
-        if (!workspacePath || richDocKind || !fileServiceRef.current.isAvailable) return;
+        if (!workspacePath || onSaveRef.current || richDocKind || !fileServiceRef.current.isAvailable) return false;
         const targetPath = pathRef.current;
-        if (!targetPath) return;
+        if (!targetPath) return false;
         const reqId = ++liveReloadReqIdRef.current;
 
         try {
             // Let this document's pending save settle before comparing its disk
             // snapshot; a rename notification can arrive before the save receipt.
             if (inFlightPromiseRef.current) await inFlightPromiseRef.current;
-            if (!isMountedRef.current || reqId !== liveReloadReqIdRef.current || pathRef.current !== targetPath) return;
+            if (!isMountedRef.current || reqId !== liveReloadReqIdRef.current || pathRef.current !== targetPath) return false;
             const payload = await fileServiceRef.current.readPreview({ path: targetPath });
             if (
                 !isMountedRef.current ||
                 reqId !== liveReloadReqIdRef.current ||
                 pathRef.current !== targetPath
             ) {
-                return;
+                return false;
             }
 
             setFileUnavailable(false);
+            const attempted = comparisonWriteRef.current;
+            if (attempted) {
+                if (payload.content === attempted.result && comparisonIsCurrent(attempted.snapshot)) {
+                    acceptComparison(attempted.result, attempted.diskOnly); return true;
+                }
+                comparisonWriteRef.current = null; setReceiptUnknown(false);
+                if (payload.content !== attempted.snapshot.disk || !comparisonIsCurrent(attempted.snapshot)) setConflictStale(true);
+            }
+            if (payload.content === readEditContent()) {
+                savedContentRef.current = payload.content;
+                setSavedContent(payload.content);
+                externalUpdatePendingRef.current = false;
+                setExternalUpdatePending(false);
+                conflictDiskRef.current = null;
+                setConflictSnapshot(null);
+                return true;
+            }
             const decision = decideLiveReload({
                 incomingContent: payload.content,
-                currentContent: editContentRef.current,
+                currentContent: readEditContent(),
                 savedContent: savedContentRef.current,
                 canEdit,
             });
-            if (decision === 'skip') return;
+            if (decision === 'skip') {
+                if (externalUpdatePendingRef.current && payload.content === savedContentRef.current) {
+                    externalUpdatePendingRef.current = false;
+                    setExternalUpdatePending(false);
+                    conflictDiskRef.current = null;
+                    setConflictSnapshot(null);
+                }
+                return true;
+            }
 
             const now = new Date();
             if (decision === 'pending') {
@@ -628,9 +745,11 @@ export default function FilePreviewModal({
                     debounceTimerRef.current = null;
                 }
                 externalUpdatePendingRef.current = true;
+                if (conflictDiskRef.current !== payload.content) setConflictStale(true);
+                conflictDiskRef.current = payload.content;
                 setLastExternalUpdateAt(now);
                 setExternalUpdatePending(true);
-                return;
+                return true;
             }
 
             const el = markdownScrollRef.current;
@@ -639,6 +758,7 @@ export default function FilePreviewModal({
             }
 
             editContentRef.current = payload.content;
+            markdownEditorRef.current?.replaceSource(payload.content, true);
             savedContentRef.current = payload.content;
             setEditContent(payload.content);
             setSavedContent(payload.content);
@@ -652,12 +772,14 @@ export default function FilePreviewModal({
                 content: payload.content,
                 size: payload.size,
             });
+            return true;
         } catch {
             if (isMountedRef.current && reqId === liveReloadReqIdRef.current && pathRef.current === targetPath) {
                 setFileUnavailable(true);
             }
+            return false;
         }
-    }, [workspacePath, richDocKind, canEdit, isMarkdown, isMdEditView]);
+    }, [workspacePath, richDocKind, canEdit, isMarkdown, isMdEditView, readEditContent, comparisonIsCurrent, acceptComparison]);
 
     const revalidateOpenFileRef = useRef(revalidateOpenFile);
     revalidateOpenFileRef.current = revalidateOpenFile;
@@ -720,6 +842,11 @@ export default function FilePreviewModal({
     /** Persist the given content to disk, update status indicator, and call onSaved.
      *  Includes retry-after-busy: if a save is already in-flight, reschedules after it finishes. */
     const doAutoSave = useCallback((contentToSave: string) => {
+        if (contentToSave === savedContentRef.current) return;
+        if (fileUnavailableRef.current) { setAutoSaveStatus('error'); return; }
+        const oversized = !!markdownEditorRef.current && !onSaveRef.current && new TextEncoder().encode(contentToSave).byteLength > 2 * 1024 * 1024;
+        setMarkdownOversized(oversized);
+        if (oversized) { setAutoSaveStatus('error'); return; }
         if (externalUpdatePendingRef.current) {
             // External disk content changed while this editor has local dirty
             // content. Do not let background auto-save silently overwrite it.
@@ -729,7 +856,7 @@ export default function FilePreviewModal({
             // Already saving — reschedule so this edit isn't lost
             if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = setTimeout(() => {
-                void doAutoSave(editContentRef.current);
+                void doAutoSave(readEditContent());
             }, AUTO_SAVE_DELAY);
             return;
         }
@@ -768,10 +895,10 @@ export default function FilePreviewModal({
                 }
                 onSavedRef.current?.();
                 // After save completes, check if content changed during the save (user kept typing)
-                if (isMountedRef.current && editContentRef.current !== contentToSave) {
+                if (isMountedRef.current && readEditContent() !== contentToSave) {
                     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
                     debounceTimerRef.current = setTimeout(() => {
-                        void doAutoSave(editContentRef.current);
+                        void doAutoSave(readEditContent());
                     }, AUTO_SAVE_DELAY);
                 }
             } catch (err) {
@@ -789,7 +916,16 @@ export default function FilePreviewModal({
         })();
         inFlightPromiseRef.current = savePromise;
         void savePromise;
-    }, [executeSave]);
+    }, [executeSave, readEditContent]);
+
+    const handleMarkdownChange = useCallback(() => {
+        setConflictStale(true);
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = setTimeout(() => { void doAutoSave(readEditContent()); }, AUTO_SAVE_DELAY);
+    }, [doAutoSave, readEditContent]);
+    useEffect(() => {
+        if (isMdEditView && !externalUpdatePending && readEditContent() !== savedContentRef.current) handleMarkdownChange();
+    }, [externalUpdatePending, isMdEditView, handleMarkdownChange, readEditContent]);
 
     const handleDirectEditChange = useCallback((newValue: string) => {
         setEditContent(newValue);
@@ -806,6 +942,10 @@ export default function FilePreviewModal({
 
     const flushForTransition = useCallback(async (): Promise<boolean> => {
         const generation = documentGenerationRef.current;
+        markdownEditorRef.current?.setImportsEnabled(false);
+        try {
+        if (markdownEditorRef.current && !await markdownEditorRef.current.settleComposition()) return false;
+        await markdownEditorRef.current?.settleImports();
         // Cancel pending debounce
         if (debounceTimerRef.current) {
             clearTimeout(debounceTimerRef.current);
@@ -816,17 +956,19 @@ export default function FilePreviewModal({
             try { await inFlightPromiseRef.current; } catch { /* ignore — error already handled */ }
         }
         if (!isMountedRef.current || generation !== documentGenerationRef.current) return false;
+        const copied = copiedMissingDraftRef.current;
+        if (copied && copied.path === pathRef.current && copied.generation === pathGenerationRef.current && copied.revision === markdownEditorRef.current?.getRevision()) return true;
         if (
             externalUpdatePendingRef.current &&
             isDirectEdit &&
-            editContentRef.current !== savedContentRef.current
+            readEditContent() !== savedContentRef.current
         ) {
             toastRef.current.warning(tRef.current('workspaceFiles.filePreview.toasts.externalUpdateConflict'));
             return false;
         }
         // If there are STILL unsaved direct-edit changes after in-flight completed, save now
-        if (isDirectEdit && editContentRef.current !== savedContentRef.current) {
-            const toSave = editContentRef.current;
+        if (isDirectEdit && readEditContent() !== savedContentRef.current) {
+            const toSave = readEditContent();
             doAutoSave(toSave);
             await inFlightPromiseRef.current;
             if (!isMountedRef.current || generation !== documentGenerationRef.current) return false;
@@ -837,8 +979,11 @@ export default function FilePreviewModal({
                 return false;
             }
         }
-        return !isDirectEdit || editContentRef.current === savedContentRef.current;
-    }, [isDirectEdit, doAutoSave]);
+        return !isDirectEdit || readEditContent() === savedContentRef.current;
+        } finally {
+            if (isMountedRef.current && generation === documentGenerationRef.current) markdownEditorRef.current?.setImportsEnabled(true);
+        }
+    }, [isDirectEdit, doAutoSave, readEditContent]);
 
     const flushAndClose = useCallback(async () => {
         if (await flushForTransition()) onClose();
@@ -852,14 +997,14 @@ export default function FilePreviewModal({
         }
         if (
             externalUpdatePendingRef.current &&
-            editContentRef.current !== savedContentRef.current
+            readEditContent() !== savedContentRef.current
         ) {
             toastRef.current.warning(tRef.current('workspaceFiles.filePreview.toasts.externalUpdateConflict'));
             return;
         }
-        if (editContentRef.current === savedContentRef.current) return; // nothing to save
-        void doAutoSave(editContentRef.current);
-    }, [doAutoSave]);
+        if (readEditContent() === savedContentRef.current) return; // nothing to save
+        void doAutoSave(readEditContent());
+    }, [doAutoSave, readEditContent]);
 
     // Wire the actual rename commit logic now that `handleManualFlush` is
     // defined. The toolbar reaches this through the ref-bouncer above so its
@@ -897,19 +1042,8 @@ export default function FilePreviewModal({
             renameInFlightRef.current = true;
             setRenameInFlight(true);
             try {
-                if (isDirectEdit && editContentRef.current !== savedContentRef.current) {
-                    handleManualFlush();
-                }
-                if (inFlightPromiseRef.current) {
-                    try { await inFlightPromiseRef.current; } catch { /* save errors already toast */ }
-                }
-                if (
-                    externalUpdatePendingRef.current &&
-                    editContentRef.current !== savedContentRef.current
-                ) {
-                    toastRef.current.warning(tRef.current('workspaceFiles.filePreview.toasts.externalUpdateConflict'));
-                    return;
-                }
+                if (!await flushForTransition()) return;
+                markdownEditorRef.current?.setImportsEnabled(false);
                 const oldPath = pathRef.current;
                 const { newPath } = await fileServiceRef.current.rename({
                     oldPath,
@@ -930,11 +1064,12 @@ export default function FilePreviewModal({
                     toastRef.current.error(err instanceof Error ? err.message : tRef.current('workspaceFiles.filePreview.toasts.renameFailed'));
                 }
             } finally {
+                markdownEditorRef.current?.setImportsEnabled(true);
                 renameInFlightRef.current = false;
                 if (isMountedRef.current) setRenameInFlight(false);
             }
         };
-    }, [name, canRename, workspacePath, isDirectEdit, handleManualFlush, applyPathMoves]);
+    }, [name, canRename, workspacePath, applyPathMoves, flushForTransition]);
 
     // Cleanup on unmount: clear timers and fire best-effort save if dirty
     useEffect(() => {
@@ -942,8 +1077,8 @@ export default function FilePreviewModal({
             if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
             if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
             // Best-effort flush: if there are unsaved edits, fire a save (async, not awaited)
-            if (!externalUpdatePendingRef.current && editContentRef.current !== savedContentRef.current) {
-                void executeSave(editContentRef.current, savedContentRef.current).catch(() => {});
+            if (!isWorkspaceMarkdown && !externalUpdatePendingRef.current && readEditContent() !== savedContentRef.current) {
+                void executeSave(readEditContent(), savedContentRef.current).catch(() => {});
             }
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refs + stable executeSave; cleanup must only run on unmount
@@ -951,18 +1086,19 @@ export default function FilePreviewModal({
 
     // ─── Close handler ────────────────────────────────────────────────────────
     const handleClose = useCallback(() => {
+        if (markdownFullscreen) { void markdownEditorRef.current?.settleComposition().then(ready => { if (ready) setMarkdownFullscreen(false); }); return; }
         if (isDirectEdit) {
             // Auto-save mode: flush pending save and close (no unsaved-confirm — saves are realtime).
             void flushAndClose();
         } else {
             onClose();
         }
-    }, [isDirectEdit, flushAndClose, onClose]);
+    }, [isDirectEdit, flushAndClose, onClose, markdownFullscreen]);
 
     // Keep the ref pointed at the latest handleClose so the Cmd+W layer (registered above
     // at module-top, before handleClose existed) routes through the autosave-aware path.
     handleCloseRef.current = handleClose;
-    useImperativeHandle(ref, () => ({ close: handleClose }), [handleClose]);
+    useImperativeHandle(ref, () => ({ close: handleClose, prepareTransition: nextPath => nextPath === pathRef.current ? Promise.resolve(true) : flushForTransition() }), [handleClose, flushForTransition]);
 
 
     // ─── Quote handlers ──────────────────────────────────────────────────────
@@ -1009,14 +1145,14 @@ export default function FilePreviewModal({
                 return;
             }
 
-            const text = editContentRef.current;
+            const text = readEditContent();
             if (text.length === 0) {
                 toastRef.current.warning(tRef.current('workspaceFiles.filePreview.emptyDocument'));
                 return;
             }
 
             try {
-                if (isMarkdown && !isMdEditView) {
+                if (isMarkdown && (isWorkspaceMarkdown ? !markdownSourceMode : !isMdEditView)) {
                     const result = await copyMarkdownAsRichText(text);
                     toastRef.current.success(result === 'rich'
                         ? tRef.current('workspaceFiles.filePreview.toasts.copiedFullText')
@@ -1029,7 +1165,7 @@ export default function FilePreviewModal({
                 toastRef.current.error(tRef.current('workspaceFiles.common.copyFailed'));
             }
         })();
-    }, [error, isLoading, isMarkdown, isMdEditView, richDocKind]);
+    }, [error, isLoading, isMarkdown, isMdEditView, richDocKind, readEditContent, isWorkspaceMarkdown, markdownSourceMode]);
 
     const handleRevealInTree = useCallback(() => {
         if (!onRevealInTree || localPath) return;
@@ -1055,12 +1191,13 @@ export default function FilePreviewModal({
     const onFullscreenRef = useRef(onFullscreen);
     onFullscreenRef.current = onFullscreen;
     const handleFullscreenClick = useCallback(async () => {
+        if (isWorkspaceMarkdown) { if (await markdownEditorRef.current?.settleComposition()) setMarkdownFullscreen(value => !value); return; }
         if (onFullscreenRef.current && await flushForTransition()) {
             // A move can update the parent's selected file while persistence is
             // pending. Use its current transition callback, not that old snapshot.
-            onFullscreenRef.current?.(isDirectEdit ? editContentRef.current : undefined);
+            onFullscreenRef.current?.(isDirectEdit ? readEditContent() : undefined);
         }
-    }, [flushForTransition, isDirectEdit]);
+    }, [flushForTransition, isDirectEdit, isWorkspaceMarkdown, readEditContent]);
 
     const handleOpenInFinder = useCallback(async () => {
         if (!canReveal) return;
@@ -1103,12 +1240,14 @@ export default function FilePreviewModal({
                     </button>
                 </Tip>
                 <Popover
-                    open={moreMenuOpen}
+                    open={moreMenuOpen && isPreviewActive}
                     onClose={() => setMoreMenuOpen(false)}
                     anchorRef={moreButtonRef}
                     placement="bottom-end"
                     className="w-48 py-1"
                 >
+                    {isWorkspaceMarkdown && <MenuItem icon={<Edit2 className="h-3.5 w-3.5" />} label={t('app:markdownEditor.source')} disabled={isLoading || !!error}
+                        onClick={() => runMenuAction(() => setMarkdownSourceMode(true))} />}
                     {onQuoteFile && (
                         <MenuItem
                             icon={<AtSign className="h-3.5 w-3.5" />}
@@ -1188,16 +1327,24 @@ export default function FilePreviewModal({
             );
         }
 
-        // Markdown: writable Monaco when toggle = 编辑
+        // One source state owns live rendering and the source-mode exit.
         if (isMdEditView) {
             return (
                 <Suspense fallback={monacoLoading}>
                     <div className="h-full bg-[var(--paper-elevated)]">
-                        <MonacoEditor
-                            value={editContent}
-                            onChange={handleDirectEditChange}
-                            language={effectiveMonacoLanguage}
-                            wordWrap={monacoWordWrap}
+                        <MarkdownEditor
+                            ref={markdownEditorRef}
+                            initialSource={readEditContent()}
+                            sourceMode={!isWorkspaceMarkdown || markdownSourceMode}
+                            onExitSource={isWorkspaceMarkdown ? () => setMarkdownSourceMode(false) : undefined}
+                            path={path}
+                            workspacePath={workspacePath}
+                            allowImages={isWorkspaceMarkdown && !fileUnavailable}
+                            active={isPreviewActive}
+                            paused={!!conflictSnapshot && comparisonOpen || receiptUnknown}
+                            autofocus={initialEditMode}
+                            onChange={handleMarkdownChange}
+                            onDetach={(source, sourcePath) => { if (sourcePath === pathRef.current) editContentRef.current = source; }}
                             onSave={handleManualFlush}
                             initialLineNumber={initialLineNumber}
                             focusTarget={focusTarget}
@@ -1257,7 +1404,109 @@ export default function FilePreviewModal({
         );
     };
 
-    const showMdSegment = isMarkdown && canEdit;
+    const showMdSegment = isMarkdown && canEdit && !isWorkspaceMarkdown;
+    const changeSettingsMode = (mode: 'preview' | 'edit') => {
+        setEditContent(readEditContent());
+        setMdViewMode(mode);
+    };
+
+    const refreshComparison = async () => {
+        const editor = markdownEditorRef.current;
+        if (!editor || !await editor.settleComposition()) return;
+        editor.setImportsEnabled(false);
+        try {
+            await editor.settleImports();
+            if (!await revalidateOpenFile()) throw new Error('Cannot refresh conflict comparison');
+            if (conflictDiskRef.current == null) return;
+            setConflictSnapshot({ local: readEditContent(), disk: conflictDiskRef.current, revision: editor.getRevision(),
+                path: pathRef.current, generation: pathGenerationRef.current });
+            setConflictStale(false); setComparisonOpen(true);
+        } finally { editor.setImportsEnabled(true); }
+    };
+    const copyMarkdownDraft = async () => {
+        if (copyInFlightRef.current) return;
+        copyInFlightRef.current = true; setCopyBusy(true);
+        try {
+            const editor = markdownEditorRef.current;
+            if (!editor || !await editor.settleComposition()) return;
+            await editor.settleImports();
+            if (inFlightPromiseRef.current) await inFlightPromiseRef.current;
+            const snapshot = { path: pathRef.current, generation: pathGenerationRef.current, revision: editor.getRevision(), local: readEditContent() };
+            const current = () => isMountedRef.current && comparisonIsCurrent(snapshot);
+            const copy = await fileService.saveMarkdownCopy({ documentPath: snapshot.path, content: snapshot.local });
+            toast.success(t('app:markdownEditor.conflict.copied', { path: copy.path }));
+            if (!current()) { if (isMountedRef.current) toast.info(t('app:markdownEditor.conflict.copyOlder')); return; }
+            try {
+                const disk = await fileService.readPreview({ path: snapshot.path });
+                if (current()) acceptComparison(disk.content, true);
+            } catch {
+                // A read failure alone isn't proof of deletion (UTF-8, size or
+                // access errors also fail preview). Verify existence first.
+                const checked = await fileService.checkPaths({ paths: [snapshot.path] });
+                if (current() && checked.results[snapshot.path]?.exists === false) {
+                    copiedMissingDraftRef.current = snapshot;
+                    setConflictSnapshot(null); setComparisonOpen(false);
+                }
+            }
+        } finally { copyInFlightRef.current = false; if (isMountedRef.current) setCopyBusy(false); }
+    };
+    const applyComparison = async (result: string, comparison: ConflictSnapshot, diskOnly: boolean) => {
+        if (!comparisonIsCurrent(comparison)) { setConflictStale(true); return false; }
+        if (inFlightPromiseRef.current) await inFlightPromiseRef.current;
+        // Reconcile even an unknown previous receipt before sending another write.
+        const payload = await fileService.readPreview({ path: comparison.path });
+        if (!comparisonIsCurrent(comparison)) { setConflictStale(true); return false; }
+        const attempted = comparisonWriteRef.current;
+        if (attempted && payload.content === attempted.result) { acceptComparison(attempted.result, attempted.diskOnly); return true; }
+        comparisonWriteRef.current = null; setReceiptUnknown(false);
+        if (payload.content !== comparison.disk) { setConflictStale(true); conflictDiskRef.current = payload.content; return false; }
+        if (diskOnly) { acceptComparison(result, true); return true; }
+        if (new TextEncoder().encode(result).byteLength > 2 * 1024 * 1024) throw new Error('Markdown exceeds save limit');
+        if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
+        const write = { snapshot: comparison, result, diskOnly };
+        comparisonWriteRef.current = write;
+        isSavingRef.current = true; setAutoSaveStatus('saving');
+        let accepted = false;
+        const pending = (async () => {
+            try {
+                await executeSave(result, comparison.disk);
+                if (!isMountedRef.current || comparisonWriteRef.current !== write) return;
+                if (comparisonIsCurrent(comparison)) { acceptComparison(result, false); accepted = true; }
+                else { comparisonWriteRef.current = null; setConflictStale(true); }
+            } catch (error) {
+                if (!isMountedRef.current || comparisonWriteRef.current !== write) return;
+                try {
+                    const receipt = await fileService.readPreview({ path: comparison.path });
+                    if (!isMountedRef.current || comparisonWriteRef.current !== write) return;
+                    comparisonWriteRef.current = null;
+                    if (receipt.content === result && comparisonIsCurrent(comparison)) { acceptComparison(result, false); accepted = true; return; }
+                    if (receipt.content !== comparison.disk) { conflictDiskRef.current = receipt.content; setConflictStale(true); }
+                } catch { if (isMountedRef.current && comparisonWriteRef.current === write) setReceiptUnknown(true); }
+                setAutoSaveStatus('error'); throw error;
+            } finally { isSavingRef.current = false; inFlightPromiseRef.current = null; }
+        })();
+        // Other lifecycle operations await this receipt but report their own UI
+        // errors. The comparison keeps the original rejection for its retry UI.
+        inFlightPromiseRef.current = pending.catch(() => {});
+        await pending;
+        return accepted;
+    };
+    const conflictControls = isWorkspaceMarkdown && <>
+        {markdownOversized && <div role="alert" className="px-4 py-1 text-xs text-[var(--error)]">{t('app:markdownEditor.oversized')}</div>}
+        {(fileUnavailable || autoSaveStatus === 'error') && <div className="px-4 py-1 text-xs"><button disabled={copyBusy} onClick={() => { void copyMarkdownDraft().catch(() => toast.error(t('app:markdownEditor.conflict.failed'))); }}>{t('app:markdownEditor.conflict.copy')}</button></div>}
+        {externalUpdatePending && <div className="flex items-center justify-between gap-2 px-4 py-1 text-xs text-[var(--ink-muted)]"><span>{t('app:markdownEditor.conflict.paused')}</span><button onClick={() => {
+            if (conflictSnapshot) { void (async () => {
+                const editor = markdownEditorRef.current; if (!editor || !await editor.settleComposition()) return;
+                editor.setImportsEnabled(false);
+                try { await editor.settleImports(); setComparisonOpen(true); } finally { editor.setImportsEnabled(true); }
+            })(); }
+            else void refreshComparison().catch(() => toast.error(t('app:markdownEditor.conflict.failed')));
+        }}>{t('app:markdownEditor.conflict.resolve')}</button></div>}
+        {conflictSnapshot && <Suspense fallback={monacoLoading}><ConflictComparison snapshot={conflictSnapshot} stale={conflictStale}
+            visible={comparisonOpen} receiptUnknown={receiptUnknown}
+            onClose={() => setComparisonOpen(false)} onRefresh={refreshComparison}
+            onCopy={copyMarkdownDraft} onApply={applyComparison} /></Suspense>}
+    </>;
 
     // ─── Embedded mode ────────────────────────────────────────────────────────
     if (embedded) {
@@ -1265,8 +1514,9 @@ export default function FilePreviewModal({
         // before truncating the filename so 32px targets never overlap the toggle.
         // Narrow previews put the mode toggle on its own row; an absent toggle
         // takes no space. This keeps the filename readable at the same target size.
-        return (
-            <div className="@container flex h-full flex-col overflow-hidden">
+        return <div ref={embeddedPlaceholderRef} className="h-full min-h-0">{createPortal(
+            <div role={markdownFullscreen ? 'dialog' : 'region'} aria-modal={markdownFullscreen || undefined}
+                className={`@container relative flex h-full w-full flex-col overflow-hidden bg-[var(--paper-elevated)] text-[var(--ink)] ${markdownFullscreen ? 'max-w-7xl rounded-xl border border-[var(--line)] shadow-2xl' : ''}`}>
                 <div className="relative z-10 grid flex-shrink-0 grid-cols-[minmax(0,1fr)_auto] @[480px]:grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] min-h-12 items-center gap-2 px-4 py-1.5 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
                     {/* Left: file info */}
                     <div className="flex min-w-0 items-center gap-2">
@@ -1293,7 +1543,7 @@ export default function FilePreviewModal({
                     {/* Middle: markdown view-mode toggle (centered) */}
                     <div className="col-span-2 row-start-2 flex items-center justify-center empty:hidden @[480px]:col-span-1 @[480px]:col-start-2 @[480px]:row-start-1">
                         {showMdSegment && (
-                            <MdViewSegment value={mdViewMode} onChange={setMdViewMode} compact />
+                            <MdViewSegment value={mdViewMode} onChange={changeSettingsMode} compact />
                         )}
                     </div>
 
@@ -1332,19 +1582,20 @@ export default function FilePreviewModal({
                     </div>
                 </div>
                 {/* Content */}
-                <div className="flex-1 overflow-hidden">
+                {conflictControls}
+                <div className="relative min-h-0 flex-1 overflow-hidden">
                     {renderPreviewContent()}
                 </div>
-            </div>
-        );
+            </div>, markdownPortalTarget
+        )}</div>;
     }
 
     // ─── Fullscreen mode (portal) ─────────────────────────────────────────────
     return createPortal(
-        <OverlayBackdrop onClose={handleClose} className="z-[210]" style={{ padding: '3vh 3vw' }}>
+        <OverlayBackdrop onClose={handleClose} className="z-[210]" style={{ padding: '3vh 3vw', display: isPreviewActive ? undefined : 'none' }}>
             {/* Modal content */}
             <div
-                className="@container glass-panel flex h-full w-full max-w-7xl flex-col overflow-hidden"
+                className="@container glass-panel relative flex h-full w-full max-w-7xl flex-col overflow-hidden"
                 onWheel={(e) => e.stopPropagation()}
             >
                 {/* Header — 3-col grid keeps the markdown view-mode toggle visually centered */}
@@ -1402,7 +1653,7 @@ export default function FilePreviewModal({
                     {/* Middle: markdown view-mode toggle (centered) */}
                     <div className="col-span-2 row-start-2 flex items-center justify-center empty:hidden @[480px]:col-span-1 @[480px]:col-start-2 @[480px]:row-start-1">
                         {showMdSegment && (
-                            <MdViewSegment value={mdViewMode} onChange={setMdViewMode} />
+                            <MdViewSegment value={mdViewMode} onChange={changeSettingsMode} />
                         )}
                     </div>
 
@@ -1420,7 +1671,8 @@ export default function FilePreviewModal({
                 </div>
 
                 {/* Content area */}
-                <div className="flex-1 overflow-hidden">
+                {conflictControls}
+                <div className="relative min-h-0 flex-1 overflow-hidden">
                     {renderPreviewContent()}
                 </div>
             </div>

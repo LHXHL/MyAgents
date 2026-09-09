@@ -11,6 +11,7 @@ import type { CapabilityInitialSelect } from '../../../shared/skillsTypes';
 import type { FileSearchHit } from '@/api/searchClient';
 
 export interface DirectoryPanelHandle {
+  preparePreviewTransition: () => Promise<boolean>;
   handleFileDrop: (
     paths: string[],
     position?: { x: number; y: number },

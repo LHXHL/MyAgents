@@ -8,17 +8,16 @@
  */
 import { AtSign, Copy, ExternalLink, Eye, FolderOpen, LocateFixed, PanelRightOpen } from 'lucide-react';
 import {
-  createContext,
   lazy,
   Suspense,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
+import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import { useTranslation } from 'react-i18next';
 
 import ContextMenu from '@/components/ContextMenu';
@@ -35,15 +34,16 @@ import {
 import { copyPlainText } from '@/utils/clipboard';
 import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
 
+import { FileActionContext, FileLinkActionContext } from './fileActionState';
+import type { PathInfo, FileActionMenuOptions, FileActionContextValue, FileLinkActionContextValue } from './fileActionState';
+export { useFileAction, useFileLinkAction, useFileTargetInfo } from './fileActionState';
+export type { PathInfo, FileActionMenuOptions, FileActionContextValue, FileLinkActionContextValue } from './fileActionState';
+
 // Lazy load FilePreviewModal (heavy: includes SyntaxHighlighter + Monaco)
 const FilePreviewModal = lazy(() => import('@/components/FilePreviewModal'));
 
 // ---------- Types ----------
 
-export interface PathInfo {
-  exists: boolean;
-  type: 'file' | 'dir';
-}
 
 type FileActionScope = FileActionTarget['scope'];
 
@@ -65,54 +65,11 @@ interface FileMenuState {
   zIndex?: number;
 }
 
-export interface FileActionMenuOptions {
-  displayPath?: string;
-  /** Render above the caller's host overlay when the menu is nested. */
-  zIndex?: number;
-  /** Lifecycle callbacks describe the standard menu surface, not its actions. */
-  onOpen?: () => void;
-  onClose?: () => void;
-}
 
-export interface FileActionContextValue {
-  /** Synchronous cache lookup. Returns cached result or null (pending / not yet requested). */
-  checkPath: (path: string) => PathInfo | null;
-  /** Synchronous cache lookup for a resolved workspace/local target. */
-  checkFileTarget: (target: FileActionTarget) => PathInfo | null;
-  /** Register a mounted inferred target. The first consumer schedules the
-   *  batched check; the last cleanup removes work that has not started. */
-  subscribeFileTarget: (target: FileActionTarget) => () => void;
-  /** Incremented each time the cache is updated, so consumers can re-render. */
-  cacheVersion: number;
-  /** Re-check a resolved target, then open its context menu only while it is
-   *  still an existing, safety-approved file/directory. */
-  openFileTargetMenu: (
-    x: number,
-    y: number,
-    target: FileActionTarget,
-    options?: FileActionMenuOptions,
-  ) => () => void;
-  /** Execute the target's primary action. Previewable files open internally,
-   *  workspace directories reveal in the tree, and unsupported targets report
-   *  a non-destructive hint instead of launching an OS application. */
-  openFileTarget: (
-    target: FileActionTarget,
-    options?: { displayPath?: string; forceExternal?: boolean },
-  ) => void;
-  /** Workspace root, for resolving workspace-relative paths to absolute (e.g. the
-   *  inline audio play button, whose player needs an absolute path). May be null
-   *  outside a workspace. */
-  workspacePath: string | null;
-}
 
-export interface FileLinkActionContextValue {
-  /** Claims and previews/opens a Markdown link when it targets a local file. */
-  openFileLink: (href: string, options?: { forceExternal?: boolean }) => boolean;
-  /** Claims and opens the shared file context menu for a Markdown local-file link. */
-  openFileLinkMenu: (x: number, y: number, href: string) => boolean;
-}
 
 interface FileActionProviderProps {
+  previewHandleRef?: RefObject<FilePreviewHandle | null>;
   children: ReactNode;
   /** Workspace path for resolving relative paths (Phase D.5: was previously
    *  inferred from sidecar's `currentAgentDir`; now passed explicitly so the
@@ -159,38 +116,6 @@ interface FileActionProviderProps {
 
 // ---------- Context ----------
 
-const FileActionContext = createContext<FileActionContextValue | null>(null);
-const FileLinkActionContext = createContext<FileLinkActionContextValue | null>(null);
-
-export function useFileAction(): FileActionContextValue | null {
-  return useContext(FileActionContext);
-}
-
-/**
- * Mounted-consumer boundary for inferred file affordances.
- *
- * Rendering reads the cache only. Subscription and filesystem work start in
- * an effect, so abandoned/speculative renders and virtualized rows that unmount
- * before the 50 ms batch do not leak into provider-owned IO/cache state.
- */
-export function useFileTargetInfo(target: FileActionTarget | null): PathInfo | null {
-  const fileAction = useFileAction();
-  const subscribeFileTarget = fileAction?.subscribeFileTarget;
-  const scope = target?.scope;
-  const path = target?.path;
-
-  useEffect(() => {
-    if (!subscribeFileTarget || !scope || !path) return;
-    return subscribeFileTarget({ scope, path });
-  }, [path, scope, subscribeFileTarget]);
-
-  return fileAction && target ? fileAction.checkFileTarget(target) : null;
-}
-
-export function useFileLinkAction(): FileLinkActionContextValue | null {
-  return useContext(FileLinkActionContext);
-}
-
 // ---------- Provider ----------
 
 const BATCH_DELAY_MS = 50;
@@ -205,7 +130,7 @@ function targetFileName(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
 }
 
-export function FileActionProvider({ children, workspacePath, onInsertReference, refreshTrigger, onFilePreviewExternal, onQuoteFile, onQuoteSelection, onRevealInTree, menuProfile = 'default', onOpenMyAgentsPreview }: FileActionProviderProps) {
+export function FileActionProvider({ previewHandleRef, children, workspacePath, onInsertReference, refreshTrigger, onFilePreviewExternal, onQuoteFile, onQuoteSelection, onRevealInTree, menuProfile = 'default', onOpenMyAgentsPreview }: FileActionProviderProps) {
   const { t } = useTranslation('app');
   const fileService = useWorkspaceFileService(workspacePath);
   const { openPreview: openImagePreview } = useImagePreview();
@@ -574,9 +499,13 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     isLoading: boolean;
     error: string | null;
   } | null>(null);
+  const previewFileRef = useRef(previewFile);
+  previewFileRef.current = previewFile;
 
   const previewFocusRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef(0);
+  const ownPreviewRef = useRef<FilePreviewHandle>(null);
+  const previewRef = previewHandleRef ?? ownPreviewRef;
   const openTargetIntentIdRef = useRef(0);
 
   const createFocusTarget = useCallback((lineNumber?: number) => {
@@ -627,6 +556,17 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
     const workspaceForLocal = workspacePath;
 
     const richDocKind = getRichDocKind(fileName);
+    if (!richDocKind && !isImageFile(fileName) && !isPreviewable(fileName)) return false;
+    const open = async () => {
+    const current = previewFileRef.current;
+    if (!onFilePreviewExternalRef.current && current?.path === path && current.sourceScope === scope && !current.isLoading && !current.error) {
+      // Same-document links are focus intents. A loading placeholder would
+      // destroy the active editor and its unsaved draft/history unnecessarily.
+      setPreviewFile(prev => prev === current ? { ...prev, focusTarget, initialLineNumber: options?.initialLineNumber, requestId } : prev);
+      return;
+    }
+    if (!onFilePreviewExternalRef.current && previewRef.current && !await previewRef.current.prepareTransition(path)) return;
+    if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
     if (richDocKind) {
       const fileData = {
         name: fileName,
@@ -748,7 +688,10 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
       }
     })();
     return true;
-  }, [createFocusTarget, invalidateTarget, openImagePreview, t, workspacePath]);
+    };
+    void open().catch(() => toastRef.current?.error(t('fileActions.previewLoadFailed')));
+    return true;
+  }, [createFocusTarget, invalidateTarget, openImagePreview, t, workspacePath, previewRef]);
 
   const handleChatPreviewIntent = useCallback((
     path: string,
@@ -1109,6 +1052,7 @@ export function FileActionProvider({ children, workspacePath, onInsertReference,
         {previewFile && (
           <Suspense fallback={null}>
             <FilePreviewModal
+              ref={previewRef}
               name={previewFile.name}
               content={previewFile.content}
               size={previewFile.size}

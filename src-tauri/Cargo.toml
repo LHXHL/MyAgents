@@ -63,6 +63,7 @@ uuid = { version = "1.11", features = ["v4"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 prost = "0.13"
 pulldown-cmark = "0.12"
+quick-xml = "0.38.4"
 # YAML frontmatter parsing for slash command / skill SKILL.md files (workspace_files::slash)
 serde_yaml = "0.9"
 # Fuzzy file name search for @ mention picker — small dependency, used only inside workspace_files::search
@@ -127,15 +128,17 @@ get-selected-text = "0.1"
 macos-accessibility-client = "0.0.1"
 objc2 = "0.6"
 block2 = "0.6"
+# Native menu emissions must leave Wry callbacks on the ordered main queue.
+# Already locked transitively through AppKit; no new runtime queue or worker.
+dispatch2 = "0.3.1"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "block2"] }
 # UserNotifications owns per-request identifiers and the response delegate so
 # stacked notification clicks stay correlated to the exact route.
 objc2-user-notifications = "0.3.2"
-# Main-window traffic-light layout owner. Keep the feature surface limited to
-# the NSWindow chrome/view types used by `macos_traffic_light.rs`.
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "std"] }
+# Native window chrome and Edit-menu focus routing use AppKit view/responder APIs.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "NSApplication", "std"] }
 # System-audio capture on macOS 13+; microphone capture uses CPAL/CoreAudio.
 screencapturekit = { version = "=8.0.1", features = ["macos_13_0"] }
 

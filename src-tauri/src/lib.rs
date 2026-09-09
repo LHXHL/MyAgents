@@ -36,6 +36,8 @@ pub mod logger;
 #[cfg(target_os = "macos")]
 mod macos_arrow_filter;
 #[cfg(target_os = "macos")]
+mod macos_edit_menu;
+#[cfg(target_os = "macos")]
 mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
@@ -361,6 +363,14 @@ pub fn run() {
                     ulog_warn!("[App] Cmd+W emit failed: {}", e);
                 }
             }
+            #[cfg(target_os = "macos")]
+            if let Some(command) = match event.id().as_ref() {
+                "edit-undo" => Some("undo"),
+                "edit-redo" => Some("redo"),
+                _ => None,
+            } {
+                macos_edit_menu::dispatch_history(app, command);
+            }
         })
         .register_asynchronous_uri_scheme_protocol("myagents-resource", attachment_protocol::handle)
         // Historical WebView-only compatibility. OS deep links are parsed by
@@ -677,6 +687,8 @@ pub fn run() {
             // submodule path (e.g. `workspace_files::files_b64::cmd_…`), not the
             // re-export at the parent module level.
             workspace_files::files_b64::cmd_workspace_import_files_b64,
+            workspace_files::markdown_assets::cmd_workspace_import_markdown_image,
+            workspace_files::markdown_assets::cmd_workspace_save_markdown_copy,
             workspace_files::files_b64::cmd_workspace_read_files_b64,
             workspace_files::user_attachments::cmd_prepare_user_image_attachments,
             workspace_files::check_paths::cmd_workspace_check_paths,
@@ -1352,9 +1364,8 @@ pub fn run() {
                 // Select All item registers ⌘A as a menu key-equivalent, which
                 // macOS dispatches as the native `selectAll:` selector in
                 // `performKeyEquivalent:` — BEFORE the WebView ever delivers a
-                // JS `keydown`. Unlike `copy:`/`cut:`/`paste:`/`undo:` (which
-                // WebKit translates into DOM clipboard / `beforeinput` events
-                // that Monaco listens to), `selectAll:` has no DOM-event
+                // JS `keydown`. Unlike `copy:`/`cut:`/`paste:` (which WebKit
+                // translates into DOM clipboard events), `selectAll:` has no DOM-event
                 // equivalent, so Monaco's own ⌘A keybinding never fires and the
                 // workspace tree's keyboard ⌘A is pre-empted too. Net effect:
                 // ⌘A silently does nothing in every custom WebView editor while
@@ -1365,13 +1376,19 @@ pub fn run() {
                 // reaches the WebView — the correct owner — exactly like ⌘T/⌘Y
                 // /⌘U/⌘1-9 already do. There Monaco's built-in selectAll, the
                 // tree's resolveTreeKeyAction, and WebKit's textarea default all
-                // pick it up. Keep cut/copy/paste/undo/redo: those map to DOM
-                // events Monaco honours, so removing them would gain nothing and
-                // risk the clipboard paths. (Long-standing since the custom menu
-                // landed in 11a35a25 / Tauri's default menu before that.)
+                // pick it up. Keep native cut/copy/paste for system clipboard
+                // access. Undo/Redo must reach the editor even when WebKit has no
+                // native undo record (e.g. CM toolbar formatting), so use custom
+                // menu intents with the same accelerators and existing event path.
+                let undo = MenuItemBuilder::with_id("edit-undo", "Undo")
+                    .accelerator("CmdOrCtrl+Z")
+                    .build(app_handle)?;
+                let redo = MenuItemBuilder::with_id("edit-redo", "Redo")
+                    .accelerator("CmdOrCtrl+Shift+Z")
+                    .build(app_handle)?;
                 let edit_menu = SubmenuBuilder::new(app_handle, "Edit")
-                    .undo()
-                    .redo()
+                    .item(&undo)
+                    .item(&redo)
                     .separator()
                     .cut()
                     .copy()

@@ -22,8 +22,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use super::path_safety::{
-    reject_managed_global_skill_mutation, resolve_inside_workspace, sanitize_filename,
-    validate_external_read_path, validate_workspace_root,
+    create_workspace_file_no_follow, reject_managed_global_skill_mutation,
+    resolve_inside_workspace, sanitize_filename, validate_external_read_path, validate_item_name,
+    validate_workspace_root, WORKSPACE_FILE_EXISTS,
 };
 
 /// Hard ceiling on collision retries — guards against pathological loops.
@@ -253,14 +254,13 @@ fn mime_for_ext(ext: &str) -> String {
 /// Write `bytes` into `<target_root>/<safe_name>`, bumping `_1`, `_2`, ... on
 /// collision. Returns the final path *relative to workspace_root* so the
 /// caller can build `@reference` strings without re-doing relativization.
-fn write_unique_file(
+pub(super) fn write_unique_file(
     target_root: &PathBuf,
     workspace_root: &PathBuf,
     safe_name: &str,
     bytes: &[u8],
 ) -> Result<String, String> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
+    validate_item_name(safe_name)?;
 
     let (stem, ext_with_dot) = match safe_name.rfind('.') {
         Some(idx) if idx > 0 => (&safe_name[..idx], &safe_name[idx..]),
@@ -276,20 +276,17 @@ fn write_unique_file(
         };
         let full = target_root.join(&candidate_name);
 
-        // O_CREAT | O_EXCL — atomic create-only, no overwrite. EEXIST is the
-        // race-safe "another writer just took this name" signal.
-        match OpenOptions::new().write(true).create_new(true).open(&full) {
-            Ok(mut f) => {
-                f.write_all(bytes)
-                    .map_err(|e| format!("Failed to write {}: {}", candidate_name, e))?;
-                let rel = full
-                    .strip_prefix(workspace_root)
-                    .map_err(|_| "Resolved path escaped workspace".to_string())?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                return Ok(rel);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        let rel = full
+            .strip_prefix(workspace_root)
+            .map_err(|_| "Resolved path escaped workspace".to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        // Share the handle-relative writer with document images/copies.
+        // Complete bytes are published with an exclusive final rename, so a
+        // write failure cannot expose a partial image or overwrite a collision.
+        match create_workspace_file_no_follow(workspace_root, &rel, bytes) {
+            Ok(_) => return Ok(rel),
+            Err(e) if e == WORKSPACE_FILE_EXISTS => {
                 counter += 1;
                 if counter > MAX_COLLISION_SUFFIX {
                     return Err(format!("Too many filename collisions for {}", safe_name));
