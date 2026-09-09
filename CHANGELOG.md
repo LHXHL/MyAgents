@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.16] - 2026-09-09
+## [0.4.16] - 2026-09-10
 
 > MyAgents 0.4.16 带来工作区 Markdown 二合一编辑器，支持直接修改正文和表格、粘贴图片及逐行处理文件冲突；同时升级会话搜索，改善录音转写、浏览器和日常交互的稳定性。
 
