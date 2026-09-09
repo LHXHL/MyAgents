@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Task } from "@/../shared/types/task";
@@ -85,6 +85,8 @@ function mockReadingViewport(container: HTMLElement, rowTop = 680, rowHeight = 1
 
 describe("TaskCommentTimeline", () => {
   afterEach(() => {
+    // Unmount may flush pending effects that still need the browser mocks.
+    cleanup();
     vi.restoreAllMocks();
     if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
     else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
@@ -111,7 +113,8 @@ describe("TaskCommentTimeline", () => {
 
     await screen.findByText(agentComment.body);
     // 200 existing scroll + (680 - 80 - 2) relative top + 50 half-row - 250 half-viewport.
-    expect(scrollTo).toHaveBeenCalledWith({ top: 598, behavior: "smooth" });
+    // The row can be present before the notification's passive effect has run.
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 598, behavior: "smooth" }));
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   });
@@ -144,7 +147,7 @@ describe("TaskCommentTimeline", () => {
     const { container } = render(<TaskCommentTimeline task={task()} targetCommentId={agentComment.id} />);
     const scrollTo = mockReadingViewport(container, 182);
     await screen.findByText(agentComment.body);
-    expect(scrollTo).toHaveBeenCalledWith({ top: 100, behavior: "smooth" });
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 100, behavior: "smooth" }));
 
     fireEvent.click(screen.getByRole("button", { name: "加载更早评论" }));
     await screen.findByText("更早的评论");
