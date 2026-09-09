@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const IDENTITY_SCHEMA_VERSION: u32 = 1;
+const IDENTITY_SCHEMA_VERSION: u32 = 2;
 const IDENTITY_FILE_NAME: &str = "browser-identity-store.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +57,69 @@ fn encoded_key(kind: &str, parts: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(".");
     format!("{kind}:{encoded}")
+}
+
+fn cookie_key(object: &Map<String, Value>) -> Result<String, String> {
+    let name = required_string(object, "name")?;
+    let domain = required_string(object, "domain")?;
+    let path = required_string(object, "path")?;
+    let partition = object
+        .get("partitionKey")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    Ok(match partition {
+        Some(partition) => encoded_key(
+            "cookie",
+            &[
+                name,
+                domain,
+                path,
+                partition,
+                // Match the installed Chromium adapter's restore default.
+                if object
+                    .get("_crHasCrossSiteAncestor")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    "true"
+                } else {
+                    "false"
+                },
+            ],
+        ),
+        None => encoded_key("cookie", &[name, domain, path]),
+    })
+}
+
+fn legacy_cookie_fence(key: &str) -> Option<String> {
+    let parts = key
+        .strip_prefix("cookie:")?
+        .split('.')
+        .take(3)
+        .collect::<Vec<_>>();
+    Some(format!("cookie-legacy:{}", parts.join(".")))
+}
+
+/// Schema 1 collapsed all cookie partitions into one revision key. Deleted
+/// payloads cannot reveal their former partition, so retain those revisions as
+/// immutable family fences. New writes use exact keys and do not advance them.
+fn decode_store(bytes: &[u8]) -> Result<(StoredIdentity, bool), String> {
+    let mut stored: StoredIdentity = serde_json::from_slice(bytes)
+        .map_err(|_| "Cannot parse Browser Identity Store".to_string())?;
+    if stored.schema_version != 1 && stored.schema_version != IDENTITY_SCHEMA_VERSION {
+        return Err("Unsupported Browser Identity Store schema".to_string());
+    }
+    flatten_state(&stored.state)?;
+    let migrated = stored.schema_version == 1;
+    if migrated {
+        stored.key_revisions = stored
+            .key_revisions
+            .into_iter()
+            .map(|(key, revision)| (legacy_cookie_fence(&key).unwrap_or(key), revision))
+            .collect();
+        stored.schema_version = IDENTITY_SCHEMA_VERSION;
+    }
+    Ok((stored, migrated))
 }
 
 fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> Result<&'a str, String> {
@@ -189,10 +252,7 @@ fn flatten_state(state: &Value) -> Result<BTreeMap<String, Value>, String> {
         let object = cookie
             .as_object()
             .ok_or_else(|| "Browser identity cookie must be an object".to_string())?;
-        let name = required_string(object, "name")?;
-        let domain = required_string(object, "domain")?;
-        let path = required_string(object, "path")?;
-        entities.insert(encoded_key("cookie", &[name, domain, path]), cookie.clone());
+        entities.insert(cookie_key(object)?, cookie.clone());
     }
 
     for origin_value in origins {
@@ -480,11 +540,10 @@ fn load_store() -> Result<(PathBuf, StoredIdentity), String> {
     if path.exists() {
         let bytes =
             fs::read(&path).map_err(|_| "Cannot read Browser Identity Store".to_string())?;
-        let stored = serde_json::from_slice::<StoredIdentity>(&bytes)
-            .ok()
-            .filter(|stored| stored.schema_version == IDENTITY_SCHEMA_VERSION)
-            .filter(|stored| flatten_state(&stored.state).is_ok());
-        if let Some(stored) = stored {
+        if let Ok((stored, migrated)) = decode_store(&bytes) {
+            if migrated {
+                persist_store(&path, &stored)?;
+            }
             return Ok((path, stored));
         }
         quarantine(&path);
@@ -560,13 +619,16 @@ fn merge_checkpoint(
             .key_revisions
             .get(&key)
             .is_some_and(|revision| *revision > base_revision);
+        let legacy_conflict = legacy_cookie_fence(&key)
+            .and_then(|key| stored.key_revisions.get(&key))
+            .is_some_and(|revision| *revision > base_revision);
         let origin_conflict = proposed
             .get(&key)
             .or_else(|| observed_base.get(&key))
             .and_then(entity_origin)
             .and_then(|origin| stored.key_revisions.get(&origin_delete_key(origin)))
             .is_some_and(|revision| *revision > base_revision);
-        if direct_conflict || origin_conflict {
+        if direct_conflict || legacy_conflict || origin_conflict {
             conflict_count += 1;
             continue;
         }
@@ -615,6 +677,102 @@ pub fn checkpoint_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn partitioned_state() -> Value {
+        json!({"cookies": [
+            {"name":"sid", "value":"plain", "domain":"example.test", "path":"/"},
+            {"name":"sid", "value":"a", "domain":"example.test", "path":"/", "partitionKey":"https://a.test"},
+            {"name":"sid", "value":"b", "domain":"example.test", "path":"/", "partitionKey":"https://b.test"},
+            {"name":"sid", "value":"a-same-site", "domain":"example.test", "path":"/", "partitionKey":"https://a.test", "_crHasCrossSiteAncestor":false}
+        ], "origins":[]})
+    }
+
+    #[test]
+    fn cookie_partitions_and_ancestor_bits_are_independent_cas_entities() {
+        let initial = partitioned_state();
+        let (stored, conflicts, _) =
+            merge_checkpoint(empty_store(), 0, &empty_state(), &empty_state(), &initial).unwrap();
+        assert_eq!(stored.state["cookies"].as_array().unwrap().len(), 4);
+        assert_eq!(conflicts, 0);
+        let mut changed_a = initial.clone();
+        changed_a["cookies"][1]["value"] = json!("updated-a");
+        let (stored, conflicts, _) =
+            merge_checkpoint(stored, 1, &initial, &initial, &changed_a).unwrap();
+        assert_eq!(conflicts, 0);
+        let mut deleted_b = initial.clone();
+        deleted_b["cookies"].as_array_mut().unwrap().remove(2);
+        let (stored, conflicts, _) =
+            merge_checkpoint(stored, 1, &initial, &initial, &deleted_b).unwrap();
+        assert_eq!(conflicts, 0);
+        assert_eq!(stored.state["cookies"].as_array().unwrap().len(), 3);
+        assert!(stored.state["cookies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["value"] == "updated-a"));
+        let (_, conflicts, applied) =
+            merge_checkpoint(stored, 1, &initial, &initial, &changed_a).unwrap();
+        assert_eq!(conflicts, 1);
+        assert!(!applied);
+    }
+
+    #[test]
+    fn legacy_cookie_revision_and_deletion_fences_survive_upgrade() {
+        let legacy_key = encoded_key("cookie", &["sid", "example.test", "/"]);
+        for state in [empty_state(), partitioned_state()] {
+            let legacy = json!({
+                "schemaVersion": 1, "revision": 7, "state": state,
+                "keyRevisions": {legacy_key.clone(): 7, "origin-delete:existing": 4}
+            });
+            let (stored, migrated) = decode_store(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert!(migrated);
+            assert_eq!(stored.schema_version, 2);
+            assert_eq!(stored.revision, 7);
+            assert_eq!(stored.state, state);
+            assert_eq!(stored.key_revisions["origin-delete:existing"], 4);
+            let mut proposal = partitioned_state();
+            for cookie in proposal["cookies"].as_array_mut().unwrap() {
+                cookie["value"] = json!("stale");
+            }
+            let (_, conflicts, applied) =
+                merge_checkpoint(stored.clone(), 6, &empty_state(), &empty_state(), &proposal)
+                    .unwrap();
+            assert_eq!(conflicts, 4);
+            assert!(!applied);
+            let (decoded, migrated) = decode_store(&serde_json::to_vec(&stored).unwrap()).unwrap();
+            assert!(!migrated);
+            assert_eq!(decoded.key_revisions, stored.key_revisions);
+        }
+    }
+
+    #[test]
+    fn upgraded_family_fences_do_not_conflict_with_new_independent_partition_writes() {
+        let key = encoded_key("cookie", &["sid", "example.test", "/"]);
+        let legacy =
+            json!({"schemaVersion":1, "revision":7, "state":empty_state(), "keyRevisions":{key:7}});
+        let (stored, _) = decode_store(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let cookies = partitioned_state();
+        let a = json!({"cookies":[cookies["cookies"][1]], "origins":[]});
+        let b = json!({"cookies":[cookies["cookies"][2]], "origins":[]});
+        let (stored, conflicts, _) =
+            merge_checkpoint(stored, 7, &empty_state(), &empty_state(), &a).unwrap();
+        assert_eq!(conflicts, 0);
+        let (stored, conflicts, _) =
+            merge_checkpoint(stored, 7, &empty_state(), &empty_state(), &b).unwrap();
+        assert_eq!(conflicts, 0);
+        assert_eq!(stored.state["cookies"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn partition_restore_default_and_explicit_ancestor_have_the_same_key() {
+        let state = partitioned_state();
+        let mut cookie = state["cookies"][1].clone();
+        let implicit = cookie_key(cookie.as_object().unwrap()).unwrap();
+        cookie["_crHasCrossSiteAncestor"] = json!(true);
+        assert_eq!(implicit, cookie_key(cookie.as_object().unwrap()).unwrap());
+        cookie["_crHasCrossSiteAncestor"] = json!(false);
+        assert_ne!(implicit, cookie_key(cookie.as_object().unwrap()).unwrap());
+    }
 
     fn state(cookie: Option<&str>, local: Option<(&str, &str)>) -> Value {
         json!({

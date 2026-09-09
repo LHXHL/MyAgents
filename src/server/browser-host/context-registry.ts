@@ -28,6 +28,7 @@ interface ContextEntry {
   selection: { page: Page | null };
   backendPageOrder: Page[];
   checkpointPromise: Promise<void> | null;
+  checkpointRequested: boolean;
   checkpointTimer: ReturnType<typeof setTimeout> | null;
   closePromise: Promise<void> | null;
   finalizePromise: Promise<void> | null;
@@ -85,10 +86,15 @@ function borrowBrowserContext(
     get(target, property, receiver) {
       if (property === 'on' || property === 'once' || property === 'addListener') {
         return (event: string | symbol, listener: Listener) => {
-          const installed: Listener = (...args) => listener(...(
-            transformArgs?.(event, args) ?? args
-          ));
-          listeners.push({ emitter: target, event, original: listener, installed });
+          const installed: Listener = (...args) => {
+            if (property === 'once') {
+              const index = listeners.indexOf(tracked);
+              if (index !== -1) listeners.splice(index, 1);
+            }
+            return listener(...(transformArgs?.(event, args) ?? args));
+          };
+          const tracked = { emitter: target, event, original: listener, installed };
+          listeners.push(tracked);
           const method = target[property];
           method?.call(target, event, installed);
           return receiver;
@@ -110,6 +116,19 @@ function borrowBrowserContext(
     if (existing) return existing;
     const proxy = wrapEmitter(page as unknown as Emitter) as unknown as Page;
     pageProxies.set(page, proxy);
+    proxy.once('close', () => {
+      // Allow every upstream close listener to observe the event before
+      // releasing this Page's borrow bookkeeping.
+      queueMicrotask(() => {
+        for (let index = listeners.length - 1; index >= 0; index -= 1) {
+          const tracked = listeners[index];
+          if (tracked.emitter !== (page as unknown as Emitter)) continue;
+          tracked.emitter.removeListener?.(tracked.event, tracked.installed);
+          listeners.splice(index, 1);
+        }
+        pageProxies.delete(page);
+      });
+    });
     return proxy;
   };
 
@@ -267,7 +286,7 @@ export class BrowserContextRegistry {
     if (previousId === nextId) return true;
     if (this.contextPromises.has(previousId) || this.contextPromises.has(nextId)) return false;
     const previousEntry = this.entries.get(previousId);
-    if (previousEntry && this.entries.has(nextId)) return false;
+    if (previousEntry && (this.entries.has(nextId) || previousEntry.closePromise)) return false;
 
     const previousOwner = this.connectionOwners.get(previousId);
     if (!previousOwner || previousOwner.count < 1) return false;
@@ -289,6 +308,11 @@ export class BrowserContextRegistry {
     if (previousEntry) {
       this.entries.delete(previousId);
       this.entries.set(nextId, previousEntry);
+      if (previousEntry.checkpointTimer) {
+        clearTimeout(previousEntry.checkpointTimer);
+        previousEntry.checkpointTimer = null;
+        this.scheduleCheckpoint(nextId);
+      }
     }
     return true;
   }
@@ -329,22 +353,14 @@ export class BrowserContextRegistry {
     if (signal?.aborted) throw new Error('BROWSER_CONTEXT_CANCELLED');
     const existing = this.entries.get(binding.productSessionId);
     if (existing) {
-      return borrowBrowserContext(
-        existing.context,
-        () => existing.selection.page,
-        pages => { existing.backendPageOrder = pages; },
-      );
+      return this.borrowContext(existing);
     }
     const pending = this.contextPromises.get(binding.productSessionId);
     if (pending) {
       const context = await pending;
       const entry = this.entries.get(binding.productSessionId);
       return entry
-        ? borrowBrowserContext(
-          entry.context,
-          () => entry.selection.page,
-          pages => { entry.backendPageOrder = pages; },
-        )
+        ? this.borrowContext(entry)
         : context;
     }
 
@@ -362,11 +378,7 @@ export class BrowserContextRegistry {
       const context = await promise;
       const entry = this.entries.get(binding.productSessionId);
       return entry
-        ? borrowBrowserContext(
-          entry.context,
-          () => entry.selection.page,
-          pages => { entry.backendPageOrder = pages; },
-        )
+        ? this.borrowContext(entry)
         : context;
     } finally {
       if (this.contextPromises.get(binding.productSessionId) === promise) {
@@ -379,6 +391,14 @@ export class BrowserContextRegistry {
         await this.closeSharedBrowserIfIdle();
       }
     }
+  }
+
+  private borrowContext(entry: ContextEntry): BrowserContext {
+    return borrowBrowserContext(
+      entry.context,
+      () => entry.selection.page,
+      pages => { entry.backendPageOrder = pages; },
+    );
   }
 
   private async createContext(
@@ -422,12 +442,28 @@ export class BrowserContextRegistry {
       selection,
       backendPageOrder: [],
       checkpointPromise: null,
+      checkpointRequested: false,
       checkpointTimer: null,
       closePromise: null,
       finalizePromise: null,
     };
     this.entries.set(binding.productSessionId, entry);
+    // Selection/order live through MCP disconnect and reattach grace, so their
+    // Page-close observer belongs to the real Context, not to a backend borrow.
+    const observePage = (page: Page) => {
+      page.once('close', () => {
+        const index = entry.backendPageOrder.indexOf(page);
+        entry.backendPageOrder = entry.backendPageOrder.filter(candidate => candidate !== page);
+        if (entry.selection.page === page) {
+          const pages = entry.backendPageOrder;
+          entry.selection.page = pages[Math.min(Math.max(index, 0), pages.length - 1)] ?? null;
+        }
+      });
+    };
+    context.on('page', observePage);
+    context.pages().forEach(observePage);
     context.once('close', () => {
+      context.off('page', observePage);
       const owner = [...this.entries].find(([, candidate]) => candidate.context === context)?.[0]
         ?? binding.productSessionId;
       void this.finalizeClosedEntry(owner, entry).catch(error => {
@@ -489,32 +525,44 @@ export class BrowserContextRegistry {
       clearTimeout(entry.checkpointTimer);
       entry.checkpointTimer = null;
     }
+    // A later trigger needs a snapshot taken after that trigger, including
+    // final close. Coalesce triggers during a commit into one follow-up read.
+    entry.checkpointRequested = true;
     if (entry.checkpointPromise) return entry.checkpointPromise;
 
-    entry.checkpointPromise = (async () => {
-      // `storageState()` materializes every non-visible Web Storage origin in
-      // a real Playwright page. In headed Chromium that leaks as a temporary
-      // tab cycling through historical sites. Managed Browser identity is
-      // therefore deliberately cookie-only and uses page-free cookie APIs.
-      const state: BrowserIdentityState = {
-        cookies: await entry.context.cookies() as unknown as Array<Record<string, unknown>>,
-        origins: [],
-      };
-      const result = await this.dependencies.checkpointIdentity(
-        productSessionId,
-        entry.identity,
-        entry.observedIdentityState,
-        state,
-      );
-      entry.identity = { revision: result.revision, state: result.state };
-      // Diff future checkpoints against what this Context actually held, not
-      // against a conflicting value another Session committed to the Store.
-      entry.observedIdentityState = state;
-      console.info(
-        `[browser-host] checkpoint=committed revision=${result.revision} conflictCount=${result.conflictCount}`,
-      );
-    })().finally(() => {
-      entry.checkpointPromise = null;
+    // Assign admission before executing even synchronously failing mocks/APIs.
+    entry.checkpointPromise = Promise.resolve().then(async () => {
+      try {
+        do {
+          entry.checkpointRequested = false;
+          // `storageState()` materializes every non-visible Web Storage origin in
+          // a real Playwright page. In headed Chromium that leaks as a temporary
+          // tab cycling through historical sites. Managed Browser identity is
+          // therefore deliberately cookie-only and uses page-free cookie APIs.
+          const state: BrowserIdentityState = {
+            cookies: await entry.context.cookies() as unknown as Array<Record<string, unknown>>,
+            origins: [],
+          };
+          const result = await this.dependencies.checkpointIdentity(
+            productSessionId,
+            entry.identity,
+            entry.observedIdentityState,
+            state,
+          );
+          entry.identity = { revision: result.revision, state: result.state };
+          // Diff future checkpoints against what this Context actually held, not
+          // against a conflicting value another Session committed to the Store.
+          entry.observedIdentityState = state;
+          console.info(
+            `[browser-host] checkpoint=committed revision=${result.revision} conflictCount=${result.conflictCount}`,
+          );
+        } while (entry.checkpointRequested);
+      } finally {
+        // Release ownership in the operation's continuation itself: an outer
+        // .finally leaves a microtask gap where a new trigger can join a loop
+        // that has already ended and silently lose its required snapshot.
+        entry.checkpointPromise = null;
+      }
     });
     return entry.checkpointPromise;
   }

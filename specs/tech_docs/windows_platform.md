@@ -117,11 +117,11 @@ CSP authority是 `src-tauri/tauri.conf.json`。新增 network/subresource surfac
 
 ## Native Browser child
 
-应用自有「浏览器」为每个 Product Session建立独立 BrowserContext和原生窗口/child WebView。Browser Host由Global Sidecar拥有，Chromium后代进入同一 process tree。
+`BrowserPanel` 页面预览是 Tauri 的原生 child WebView，绑定 Chat Tab 的生命周期，与工具页的托管 Chromium 分开。
 
 Renderer `BrowserPanel` 通过 lifecycle token和常驻 geometry reconciler维护OS child bounds；split过渡、拖拽和overlay期间隐藏native view但继续更新Rust cache。不能用一次性 ResizeObserver或transition-end采样替代。
 
-Browser resource由Rust按随App签名的lock下载官方artifact、校验URL/size/SHA-256并安装到应用数据目录。Release不捆绑Chromium，也不回退系统Chrome、npx或用户cache。正常shutdown先做有界Browser checkpoint/close，再由Job Object containment。
+工具页的 `myagents-browser` 由 Global Sidecar 的 Browser Host 拥有共享 Chromium，每个 Product Session 使用独立 BrowserContext，Chromium 后代进入同一 process tree。Browser resource 由 Rust 按随 App 签名的 lock 下载官方 artifact、校验 URL/size/SHA-256 并安装到应用数据目录。Release 不捆绑 Chromium，也不回退系统 Chrome、npx 或用户 cache。正常 shutdown 先做 Browser checkpoint/close，再由 Job Object containment；具体 owner、MCP 取消及身份迁移见 [托管浏览器工具](managed_browser.md)。
 
 ## Windows file IO
 

@@ -24,6 +24,7 @@ interface HostConnection {
   closed: boolean;
   retiring: boolean;
   activeRequests: number;
+  activeToolSignals: Set<AbortSignal>;
   drainWaiters: Set<() => void>;
 }
 
@@ -280,10 +281,11 @@ export class PlaywrightBrowserHost {
     }
 
     const { method, toolName, toolArguments } = requestBodyMethod(parsedBody);
-    if (method === 'notifications/cancelled') {
-      this.dependencies.registry.cancelPendingContext(binding.productSessionId);
-    }
     const isToolCall = method === 'tools/call' && toolName?.startsWith('browser_') === true;
+    const hasToolCall = isToolCall || (Array.isArray(parsedBody) && parsedBody.some(message => {
+      const shape = requestBodyMethod(message);
+      return shape.method === 'tools/call' && shape.toolName?.startsWith('browser_') === true;
+    }));
     if (isToolCall && toolName === 'browser_file_upload') {
       try {
         validateAuthorizedUploadPaths(binding.workspacePath, toolArguments?.paths);
@@ -294,9 +296,10 @@ export class PlaywrightBrowserHost {
 
     let response: Response;
     const cancelPendingContext = () => {
-      if (isToolCall) this.dependencies.registry.cancelPendingContext(binding.productSessionId);
+      if (hasToolCall) this.dependencies.registry.cancelPendingContext(connection.binding.productSessionId);
     };
-    if (isToolCall) {
+    if (hasToolCall) {
+      connection.activeToolSignals.add(request.signal);
       if (request.signal.aborted) cancelPendingContext();
       else request.signal.addEventListener('abort', cancelPendingContext, { once: true });
     }
@@ -311,13 +314,13 @@ export class PlaywrightBrowserHost {
         console.warn(
           `[browser-host] request=failed code=BROWSER_TRANSPORT_FAILED error=${error instanceof Error ? error.name : 'unknown'}`,
         );
-        connection.retiring = true;
+        this.beginRetiringConnection(connection);
         return jsonError(500, 'BROWSER_TRANSPORT_FAILED', 'Browser MCP request failed');
       }
       if (isToolCall && response.ok && !connection.closed) {
         if (toolName === 'browser_close') {
           try {
-            await this.dependencies.registry.closeSessionContext(binding.productSessionId);
+            await this.dependencies.registry.closeSessionContext(connection.binding.productSessionId);
           } catch (error) {
             const failure = browserConnectionError(error);
             return jsonError(failure.status, failure.code, failure.message);
@@ -325,12 +328,12 @@ export class PlaywrightBrowserHost {
         } else {
           if (toolName === 'browser_tabs') {
             this.dependencies.registry.reconcileTabAction(
-              binding.productSessionId,
+              connection.binding.productSessionId,
               toolArguments?.action,
               toolArguments?.index,
             );
           }
-          this.dependencies.registry.scheduleCheckpoint(binding.productSessionId);
+          this.dependencies.registry.scheduleCheckpoint(connection.binding.productSessionId);
         }
       }
       if (method === 'initialize' && response.ok && !connection.closed) {
@@ -344,6 +347,7 @@ export class PlaywrightBrowserHost {
       return response;
     } finally {
       connection.activeRequests = Math.max(0, connection.activeRequests - 1);
+      connection.activeToolSignals.delete(request.signal);
       request.signal.removeEventListener('abort', cancelPendingContext);
       if (connection.activeRequests === 0) {
         for (const resolve of connection.drainWaiters) resolve();
@@ -380,8 +384,10 @@ export class PlaywrightBrowserHost {
       server = await createConnection(
         compiled.connectionConfig,
         () => this.dependencies.registry.getContext(
-          binding,
-          abortController.signal,
+          connection.binding,
+          // An HTTP abort can arrive before the lazy factory registers a
+          // Registry waiter. Preserve that cancellation through acquisition.
+          AbortSignal.any([abortController.signal, ...connection.activeToolSignals]),
         ),
       );
     } catch (error) {
@@ -415,12 +421,14 @@ export class PlaywrightBrowserHost {
       closed: false,
       retiring: false,
       activeRequests: 0,
+      activeToolSignals: new Set(),
       drainWaiters: new Set(),
     };
     this.pendingConnections.add(connection);
     this.scheduleCapabilitySweep();
     try {
       await server.connect(transport);
+      this.bindManagedTransport(connection);
     } catch (error) {
       this.pendingConnections.delete(connection);
       if (assignedSessionId) this.connections.delete(assignedSessionId);
@@ -428,6 +436,63 @@ export class PlaywrightBrowserHost {
       throw error;
     }
     return connection;
+  }
+
+  /** Product policy at the public MCP transport boundary, including batches. */
+  private bindManagedTransport(connection: HostConnection): void {
+    const { transport } = connection;
+    const pending = new Map<string | number, { method: string; acquisition?: AbortController }>();
+    const onmessage = transport.onmessage;
+    const send = transport.send.bind(transport);
+    transport.send = async (message, options) => {
+      if ('id' in message && (typeof message.id === 'string' || typeof message.id === 'number') && ('result' in message || 'error' in message)) {
+        const request = pending.get(message.id);
+        pending.delete(message.id);
+        if (request?.acquisition) connection.activeToolSignals.delete(request.acquisition.signal);
+        if (request?.method === 'tools/list' && 'result' in message && Array.isArray(message.result.tools)) {
+          message = {
+            ...message,
+            result: { ...message.result, tools: message.result.tools.filter(tool => tool.name !== 'browser_install') },
+          };
+        }
+      }
+      await send(message, options);
+    };
+    transport.onmessage = (message, extra) => {
+      if ('method' in message && message.method === 'notifications/cancelled') {
+        const id = message.params?.requestId;
+        const request = (typeof id === 'string' || typeof id === 'number') ? pending.get(id) : undefined;
+        if (request?.acquisition) {
+          request.acquisition.abort();
+          this.dependencies.registry.cancelPendingContext(connection.binding.productSessionId);
+        }
+        // The installed Playwright backend does not consume the Protocol's
+        // request signal. Forwarding this notification only suppresses its
+        // eventual response, leaving JSON HTTP admission permanently pending.
+        // Cancel resource acquisition here; already executing tools drain and
+        // send their normal completion before the Host releases their owner.
+        return;
+      }
+      if ('method' in message && 'id' in message) {
+        const acquisition = message.method === 'tools/call' ? new AbortController() : undefined;
+        pending.set(message.id, { method: message.method, acquisition });
+        // Notifications can follow this request in the same batch, before
+        // Protocol dispatch reaches the lazy Context getter. Keep the signal
+        // until the tool replies so that cancellation cannot be forgotten.
+        if (acquisition) connection.activeToolSignals.add(acquisition.signal);
+        if (message.method === 'tools/call' && message.params?.name === 'browser_install') {
+          void transport.send({
+            jsonrpc: '2.0', id: message.id,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: 'MyAgents manages Chromium installation. Open Settings → Tools → Browser to install or repair it.' }],
+            },
+          }).catch(error => transport.onerror?.(error));
+          return;
+        }
+      }
+      onmessage?.(message, extra);
+    };
   }
 
   private async closeConnection(sessionId: string): Promise<void> {
@@ -439,12 +504,11 @@ export class PlaywrightBrowserHost {
 
   private async disposeConnection(connection: HostConnection): Promise<void> {
     if (connection.closed) return;
-    connection.retiring = true;
+    this.beginRetiringConnection(connection);
     if (connection.activeRequests > 0) return;
     connection.closed = true;
     this.pendingConnections.delete(connection);
     if (connection.sessionId) this.connections.delete(connection.sessionId);
-    connection.abortController.abort();
     await connection.server.close().catch(() => {});
     this.dependencies.registry.releaseConnection(connection.binding.productSessionId);
     if (this.connections.size === 0 && this.pendingConnections.size === 0) {
@@ -456,9 +520,10 @@ export class PlaywrightBrowserHost {
   private beginRetiringConnection(connection: HostConnection): void {
     if (connection.closed) return;
     connection.retiring = true;
-    // A resource/Context waiter has not entered a BrowserContext yet, so it is
-    // already at a safe replacement boundary. Cancel that exact pending
-    // acquisition; real Browser tool calls with an established Context drain.
+    // Publish the acquisition fence before draining: an admitted tool may not
+    // have reached its lazy factory or registered a Registry waiter yet. This
+    // signal only owns acquisition; established Browser tool calls still drain.
+    connection.abortController.abort();
     this.dependencies.registry.cancelPendingContext(connection.binding.productSessionId);
   }
 
@@ -477,7 +542,7 @@ export class PlaywrightBrowserHost {
       if (connection === current || connection.closed || !sameBinding(connection.binding, current.binding)) {
         return;
       }
-      connection.retiring = true;
+      this.beginRetiringConnection(connection);
       if (connection.activeRequests === 0) await this.disposeConnection(connection);
     }));
   }
@@ -486,7 +551,7 @@ export class PlaywrightBrowserHost {
     const candidates = new Set([...this.connections.values(), ...this.pendingConnections]);
     await Promise.allSettled([...candidates].map(async connection => {
       if (connection.closed || connection.binding.productSessionId !== productSessionId) return;
-      connection.retiring = true;
+      this.beginRetiringConnection(connection);
       if (connection.activeRequests === 0) await this.disposeConnection(connection);
     }));
   }
