@@ -63,6 +63,7 @@ import {
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { SubagentLifecycleStatus } from '../../shared/types/subagent-lifecycle';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
+import { classifyMcpFailure, type McpFailureCode } from '../../shared/mcpFailure';
 import { MYAGENTS_TOOL_CALL_TIMEOUT_MS } from '../session-core/tool-call-policy';
 import { summarizeSensitiveValueForLog } from '../utils/log-summary';
 import { supportsCodexConversationBranch } from '../../shared/codex-conversation-capability';
@@ -2884,7 +2885,8 @@ export function summarizeCodexNotificationForLog(method: string, params: unknown
     return threadId ? ` threadId=${summarizeCodexValueForLog(threadId)}` : '';
   }
   if (method === 'mcpServer/startupStatus/updated') {
-    return ` name=${summarizeCodexValueForLog(p.name)} status=${codexLogProtocolToken(p.status)}`;
+    return ` name=${summarizeCodexValueForLog(p.name)} status=${codexLogProtocolToken(p.status)}`
+      + (p.status === 'failed' ? ` code=${classifyMcpFailure(p.error, p.failureReason)}` : '');
   }
   return '';
 }
@@ -3694,6 +3696,7 @@ export class CodexRuntime implements AgentRuntime {
       effectiveMcpServerNames.map(name => [name, 'starting']),
     );
     const observedMcpToolCounts = new Map<string, number>();
+    const mcpFailureCodes = new Map<string, McpFailureCode>();
     const authBlockedMcpServerNames = new Set<string>();
     let lastMcpToolCatalog: string[] = [];
     let lastNativeMcpToolCatalog: string[] = [];
@@ -3778,7 +3781,7 @@ export class CodexRuntime implements AgentRuntime {
             desired: true,
             state,
             toolCount: state === 'ready' ? (observedMcpToolCounts.get(name) ?? 0) : 0,
-            ...(state === 'failed' ? { errorCode: 'MCP_STARTUP_FAILED' } : {}),
+            ...(state === 'failed' ? { errorCode: mcpFailureCodes.get(name) ?? 'MCP_STARTUP_FAILED' } : {}),
             attemptGeneration: 1,
             updatedAt: now,
           };
@@ -3842,6 +3845,11 @@ export class CodexRuntime implements AgentRuntime {
         if (belongsToActiveThread) {
           mcpStartup.observe(status);
           liveMcpStates.set(status.name, status.status);
+          if (status.status === 'failed') {
+            mcpFailureCodes.set(status.name, classifyMcpFailure(status.error, status.failureReason));
+          } else {
+            mcpFailureCodes.delete(status.name);
+          }
           if (status.status === 'ready') {
             readyMcpServerNames.add(status.name);
           } else {
@@ -3956,7 +3964,10 @@ export class CodexRuntime implements AgentRuntime {
         mcpCatalogRefreshTimer = null;
       }
       mcpStartup.fail(new Error(`Codex process exited during MCP startup with code ${code}`));
-      for (const name of launchConfig.mcpServerNames) liveMcpStates.set(name, 'failed');
+      for (const name of launchConfig.mcpServerNames) {
+        liveMcpStates.set(name, 'failed');
+        mcpFailureCodes.set(name, 'MCP_RUNTIME_EXITED');
+      }
       readyMcpServerNames.clear();
       observedMcpToolCounts.clear();
       authBlockedMcpServerNames.clear();

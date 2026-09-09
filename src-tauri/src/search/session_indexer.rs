@@ -1,6 +1,6 @@
 //! Session index — reads sessions.json + JSONL files, builds/queries Tantivy index.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -12,13 +12,15 @@ use crate::utils::bom::strip_bom;
 use crate::utils::system_reminder::strip_leading_system_reminder;
 
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermSetQuery};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyError, Term};
 
-use super::schema::{self, SessionFields, SCHEMA_VERSION};
+use super::schema::{self, SessionFields, SESSION_SCHEMA_VERSION as SCHEMA_VERSION};
 use super::searcher::{SessionSearchHit, SessionSearchResult};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
+
+#[path = "session_query.rs"]
+mod query;
 
 const INDEX_RECOVERY_REQUIRED: &str = "[recoverable-tantivy-corruption]";
 
@@ -29,12 +31,14 @@ const INDEX_RECOVERY_REQUIRED: &str = "[recoverable-tantivy-corruption]";
 /// write side is used only to replace a confirmed-corrupt derived index from
 /// authoritative `sessions.json` + JSONL data.
 pub struct SessionIndex {
+    queries: query::QueryControl,
     state: RwLock<Option<SessionIndexState>>,
     index_dir: PathBuf,
     data_dir: PathBuf,
 }
 
 struct SessionIndexState {
+    searches: StdMutex<HashMap<String, std::sync::Arc<query::SearchSnapshot>>>,
     index: Index,
     reader: IndexReader,
     writer: StdMutex<IndexWriter>,
@@ -60,6 +64,7 @@ impl SessionIndex {
             Err(error) => return Err(error),
         };
         Ok(Self {
+            queries: query::QueryControl::default(),
             state: RwLock::new(Some(state)),
             index_dir,
             data_dir,
@@ -147,6 +152,7 @@ impl SessionIndex {
         self.search_with_tag(query, limit, None)
     }
 
+    #[cfg(test)]
     pub fn search_with_tag(
         &self,
         query: &str,
@@ -251,6 +257,7 @@ impl SessionIndexState {
             .map_err(|e| tantivy_error("Failed to create index reader", e))?;
 
         Ok(Self {
+            searches: StdMutex::new(HashMap::new()),
             index,
             reader,
             writer: StdMutex::new(writer),
@@ -757,130 +764,6 @@ impl SessionIndexState {
         Ok(())
     }
 
-    /// Search sessions by query string.
-    pub fn search(
-        &self,
-        query: &str,
-        limit: usize,
-        data_dir: &Path,
-        tag: Option<&str>,
-    ) -> Result<SessionSearchResult, String> {
-        let start = std::time::Instant::now();
-        let searcher = self.reader.searcher();
-        let f = &self.fields;
-
-        // Search across title and content fields with title boosted
-        let mut parser = QueryParser::for_index(&self.index, vec![f.title, f.content]);
-        parser.set_field_boost(f.title, 3.0);
-
-        let text_query = parser
-            .parse_query(query)
-            .map_err(|e| format!("Query parse error: {}", e))?;
-
-        let eligible_session_ids = tag
-            .map(|tag_name| read_tag_eligible_session_ids(data_dir, tag_name))
-            .transpose()?;
-        if eligible_session_ids
-            .as_ref()
-            .is_some_and(|eligible| eligible.is_empty())
-        {
-            return Ok(SessionSearchResult {
-                total_count: 0,
-                hits: Vec::new(),
-                query_time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            });
-        }
-        let tantivy_query: Box<dyn Query> = if let Some(eligible) = eligible_session_ids.as_ref() {
-            let session_terms = eligible
-                .iter()
-                .map(|session_id| Term::from_field_text(f.session_id, session_id));
-            Box::new(BooleanQuery::new(vec![
-                (Occur::Must, text_query),
-                (Occur::Must, Box::new(TermSetQuery::new(session_terms))),
-            ]))
-        } else {
-            text_query
-        };
-
-        let top_docs = searcher
-            .search(&tantivy_query, &TopDocs::with_limit(limit * 3))
-            .map_err(|e| tantivy_error("Search error", e))?;
-
-        // Deduplicate by session_id (keep highest scoring doc per session)
-        let mut seen_sessions = HashSet::new();
-        let mut hits = Vec::new();
-        let query_lower = query.to_lowercase();
-
-        for (score, doc_addr) in top_docs {
-            let doc = searcher
-                .doc::<tantivy::TantivyDocument>(doc_addr)
-                .map_err(|e| tantivy_error("Doc retrieval error", e))?;
-
-            let session_id = get_text_field(&doc, f.session_id);
-            if !eligible_session_ids.as_ref().map_or_else(
-                || is_session_currently_history_visible(data_dir, &session_id),
-                |eligible| eligible.contains(&session_id),
-            ) {
-                continue;
-            }
-            if !seen_sessions.insert(session_id.clone()) {
-                continue;
-            }
-
-            // Once we've collected `limit` hits, keep scanning just to count
-            // additional unique sessions — this makes `total_count` reflect
-            // the true number of matching sessions rather than the page size.
-            if hits.len() >= limit {
-                continue;
-            }
-
-            let role = get_text_field(&doc, f.role);
-            let title = get_text_field(&doc, f.title);
-            let content = get_text_field(&doc, f.content);
-            let agent_dir = get_text_field(&doc, f.agent_dir);
-            let last_active_at = get_text_field(&doc, f.last_active_at);
-            let source = get_text_field(&doc, f.source);
-            let message_count = get_u64_field(&doc, f.message_count);
-
-            let match_type = if role == "title" {
-                "title".to_string()
-            } else {
-                "content".to_string()
-            };
-
-            // Build highlighted title
-            let title_highlights = find_highlights(&title, &query_lower);
-
-            // Build snippet with highlights for content matches
-            let (snippet, snippet_highlights) = if match_type == "content" && role != "title" {
-                build_snippet(&content, &query_lower, 80)
-            } else {
-                (None, vec![])
-            };
-
-            hits.push(SessionSearchHit {
-                session_id,
-                title: title.clone(),
-                agent_dir,
-                score,
-                match_type,
-                snippet,
-                snippet_highlights,
-                title_highlights,
-                matched_role: if role == "title" { None } else { Some(role) },
-                last_active_at,
-                source: Some(source),
-                turn_count: Some(message_count as u32),
-            });
-        }
-
-        Ok(SessionSearchResult {
-            total_count: seen_sessions.len(),
-            hits,
-            query_time_ms: start.elapsed().as_secs_f64() * 1000.0,
-        })
-    }
-
     /// Get the total number of documents in the index.
     pub fn doc_count(&self) -> u64 {
         let searcher = self.reader.searcher();
@@ -953,47 +836,6 @@ fn reset_session_index_dir(index_dir: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn is_session_currently_history_visible(data_dir: &Path, session_id: &str) -> bool {
-    let sessions_file = data_dir.join("sessions.json");
-    let sessions_dir = data_dir.join("sessions");
-    let Ok(content) = fs::read_to_string(sessions_file) else {
-        return false;
-    };
-    let Ok(sessions) = serde_json::from_str::<Vec<serde_json::Value>>(strip_bom(&content)) else {
-        return false;
-    };
-    sessions
-        .iter()
-        .find(|session| session.get("id").and_then(|v| v.as_str()) == Some(session_id))
-        .is_some_and(|session| {
-            crate::session_visibility::is_history_visible_session(session, &sessions_dir)
-        })
-}
-
-fn read_tag_eligible_session_ids(
-    data_dir: &Path,
-    requested_tag: &str,
-) -> Result<HashSet<String>, String> {
-    if crate::session_tags::normalize_session_user_tag(requested_tag).is_none() {
-        return Err("Invalid Session Tag filter.".to_string());
-    }
-    let sessions_file = data_dir.join("sessions.json");
-    let sessions_dir = data_dir.join("sessions");
-    let content = fs::read_to_string(&sessions_file)
-        .map_err(|error| format!("Failed to read sessions.json for Tag filter: {}", error))?;
-    let sessions = serde_json::from_str::<Vec<serde_json::Value>>(strip_bom(&content))
-        .map_err(|error| format!("Failed to parse sessions.json for Tag filter: {}", error))?;
-    Ok(sessions
-        .iter()
-        .filter(|session| {
-            crate::session_visibility::is_history_visible_session(session, &sessions_dir)
-                && crate::session_tags::session_has_user_tag(session, requested_tag)
-        })
-        .filter_map(|session| session.get("id").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-        .collect())
 }
 
 /// Read exactly the JSONL byte range needed for an incremental index pass.
@@ -1163,16 +1005,6 @@ fn get_text_field(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field)
             _ => None,
         })
         .unwrap_or_default()
-}
-
-/// Get a u64 field value from a Tantivy document.
-fn get_u64_field(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field) -> u64 {
-    doc.get_first(field)
-        .and_then(|v| match v {
-            tantivy::schema::OwnedValue::U64(n) => Some(*n),
-            _ => None,
-        })
-        .unwrap_or(0)
 }
 
 /// Find highlight positions for query terms in text.
@@ -1386,6 +1218,37 @@ mod tests {
                 "content": content
             })
         )
+    }
+
+    #[test]
+    fn long_session_does_not_hide_other_matching_sessions_or_total() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions_dir = temp.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let metadata: Vec<_> = (0..3)
+            .map(|i| {
+                let id = format!("session-{i}");
+                let messages = if i == 0 { 200 } else { 1 };
+                let body: String = (0..messages)
+                    .map(|m| message_line(&format!("m-{m}"), "needle"))
+                    .collect();
+                fs::write(sessions_dir.join(format!("{id}.jsonl")), body).unwrap();
+                json!({"id": id, "title": if i == 0 { "needle" } else { "Other" },
+                "agentDir": "/workspace", "lastActiveAt": format!("2026-09-0{}T00:00:00Z", i + 1)})
+            })
+            .collect();
+        fs::write(
+            temp.path().join("sessions.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        let index =
+            SessionIndex::new(temp.path().join("index"), temp.path().to_path_buf()).unwrap();
+        index.index_all_sessions(temp.path()).unwrap();
+        let result = index.search("needle", 50).unwrap();
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.hits.len(), 3);
+        assert_eq!(result.hits[0].session_id, "session-2");
     }
 
     #[test]
@@ -1806,7 +1669,7 @@ mod tests {
         let error = index
             .search_with_tag("legacytagquery", 10, Some("café"))
             .unwrap_err();
-        assert!(error.contains("Failed to parse sessions.json for Tag filter"));
+        assert!(error.contains("Failed to parse sessions.json for search"));
     }
 
     #[test]

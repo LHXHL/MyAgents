@@ -1,5 +1,6 @@
 // Channel platform selector — matches original PlatformSelect 2-column grid style
 // Includes promoted plugins and "install new plugin" dashed card
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -231,7 +232,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
             type="text"
             value={installNpmSpec}
             onChange={e => setInstallNpmSpec(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleInstallPlugin(); }}
+            onKeyDown={e => { if (isImeComposingEvent(e)) return; if (e.key === 'Enter') handleInstallPlugin(); }}
             placeholder={t('agentSettings.channels.installPlaceholder')}
             className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent)] focus:outline-none"
             autoFocus

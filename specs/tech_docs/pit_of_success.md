@@ -627,7 +627,7 @@ Session snapshot 的完整 authority 与写入方向见 [`session_architecture.m
 - **读侧 symlink 逃逸防护**：`resolve_existing_inside_workspace` canonicalize 双侧（path + workspace_root），通过 `starts_with` 拦截 `evil_link → /etc/passwd`。读 `read_preview`/`download`/`save_file` 必须用此 helper；只用 lexical 版会被穿透。
 - **destructive 写用 `fs::symlink_metadata`**：`crud.rs::slot_occupied`、`transfer.rs::slot_occupied` 都是 `fs::symlink_metadata(p).is_ok()`，**不**是 `Path::exists()`——断链 symlink 必须报告为占用，否则后续 `fs::write` / `fs::rename` 会写穿或报莫名错误。
 - **managed Skill 投影是 mutation-only 只读边界**：读取、揭示路径和从 Skill 向工作区 copy-out 继续允许；保存、新建、重命名、移动、删除、copy/import destination 必须经过 `reject_managed_global_skill_mutation`。不要把它并入通用 read resolver，也不要给 Node 投影增加 bypass flag。
-- **bounded read 防 TOCTOU**：所有读取大文件命令（`read_preview` 512KB cap、`download` 25MB、`files_b64::read_one_image_as_b64` 10MB）用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，bounded read 是唯一可靠防御。
+- **bounded read 防 TOCTOU**：所有读取大文件命令用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。上限以各模块的 `read_preview::MAX_PREVIEW_BYTES`、`download::MAX_DOWNLOAD_BYTES`、`files_b64::MAX_IMAGE_SIZE_BYTES` 为准。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，必须在实际读取时执行上限。
 - **validate 与 open 必须是一体的**：workspace attachment 不得退回 `metadata/canonicalize → File::open(path)`；Windows 的 share flags 不约束 `FILE_WRITE_ATTRIBUTES`，攻击者仍可把空目录原地设为 junction。必须由 `read_workspace_file_no_follow` 从已验证 parent handle 做 handle-relative child open/create，leaf 与 temp/final rename 也不得重新解析可变路径。
 
 **Don't.**

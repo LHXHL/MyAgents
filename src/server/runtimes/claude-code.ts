@@ -146,6 +146,19 @@ process.stdin.resume();
  * Generate temporary hook settings + forwarder script for CC SessionStart hook.
  * Both files are written to ~/.myagents/tmp/cc-hooks/ (outside the project).
  */
+export function buildSessionStartHookCommand(
+  forwarderPath: string,
+  sidecarPort: number,
+  nodePath = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const quote = (path: string): string => {
+    const normalized = platform === 'win32' ? path.replace(/\\/g, '/') : path;
+    return `'${normalized.replace(/'/g, "'\\''")}'`;
+  };
+  return `${quote(nodePath)} ${quote(forwarderPath)} ${sidecarPort}`;
+}
+
 function generateHookSettings(sidecarPort: number): string | null {
   try {
     ensureDirSync(HOOK_DIR);
@@ -162,7 +175,10 @@ function generateHookSettings(sidecarPort: number): string | null {
       hooks: {
         SessionStart: [{
           matcher: '*',
-          hooks: [{ type: 'command', command: `node "${forwarderPath}" ${sidecarPort}` }],
+          // Keep the Bash command-hook contract supported by older system CC
+          // installs (exec-form args only arrived in 2.1.139). Explicit shell
+          // also makes quoting independent of newer CC's PowerShell default.
+          hooks: [{ type: 'command', shell: 'bash', command: buildSessionStartHookCommand(forwarderPath, sidecarPort) }],
         }],
       },
     }));

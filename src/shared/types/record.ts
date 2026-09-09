@@ -59,6 +59,11 @@ export interface RecordDetail extends RecordSummary {
   content?: string;
   images?: string[];
   artifacts?: RecordArtifact[];
+  transcriptionFailure?: {
+    code: string;
+    retryable: boolean;
+    stage: string;
+  };
 }
 
 export interface CaptureFormat {

@@ -47,6 +47,7 @@ import {
   setBackgroundAgentPermissionMode,
   setInteractionScenario,
   setMcpServers,
+  retryBuiltinMcpServer,
   setSessionModel,
   setSessionPermissionMode,
   setSessionEnabledOfficialToolIds,
@@ -923,6 +924,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
     async updateMcpServers(servers) {
       setMcpServers(servers);
       return { success: true, servers: servers.map(s => s.id) };
+    },
+
+    async retryMcpServer(serverId) {
+      return retryBuiltinMcpServer(serverId);
     },
 
     async updateAgents(agents) {

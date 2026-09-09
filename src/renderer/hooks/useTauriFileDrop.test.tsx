@@ -11,12 +11,14 @@ interface TestDragEvent {
 }
 
 const listenerState = vi.hoisted(() => ({
-  listeners: new Map<string, (event: TestDragEvent) => void>(),
+  listeners: new Map<string, Set<(event: TestDragEvent) => void>>(),
 }));
 
 vi.mock('@/utils/tauriListen', () => ({
-  listenWithCleanup: vi.fn((eventName: string, listener: (event: TestDragEvent) => void) => {
-    listenerState.listeners.set(eventName, listener);
+  listenWithCleanup: vi.fn((eventName: string, listener: (event: TestDragEvent) => void, signal: AbortSignal) => {
+    const listeners = listenerState.listeners.get(eventName) ?? new Set();
+    listeners.add(listener); listenerState.listeners.set(eventName, listeners);
+    signal.addEventListener('abort', () => listeners.delete(listener), { once: true });
     return Promise.resolve();
   }),
 }));
@@ -36,12 +38,13 @@ vi.mock('@/analytics', () => ({
 function emit(eventName: string, payload: TestDragEvent['payload']) {
   const listener = listenerState.listeners.get(eventName);
   expect(listener).toBeDefined();
-  act(() => listener?.({ payload }));
+  act(() => listener?.forEach(callback => callback({ payload })));
 }
 
 afterEach(() => {
   listenerState.listeners.clear();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('useTauriFileDrop', () => {
@@ -126,4 +129,29 @@ describe('useTauriFileDrop', () => {
     emit('tauri://drag-over', { position: { x: 50, y: 50 } });
     expect(result.current).toMatchObject({ isDragging: true, activeZoneId: 'input' });
   });
+  it('gives a nested visible editor sole ownership and blocks overlays or paused editors', () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const chat = document.createElement('div'), editor = document.createElement('div'), target = document.createElement('span');
+    chat.append(editor); editor.append(target); document.body.append(chat);
+    for (const zone of [chat, editor]) vi.spyOn(zone, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 100, 100));
+    const hit = vi.fn(() => target as Element | null);
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: hit });
+    const chatDrop = vi.fn(), editorDrop = vi.fn();
+    const outer = renderHook(() => useTauriFileDrop()), inner = renderHook(() => useTauriFileDrop());
+    act(() => { outer.result.current.registerZone('chat', chat, chatDrop); inner.result.current.registerZone('markdown', editor, editorDrop); });
+    emit('tauri://drag-drop', { paths: ['/tmp/picture.png'], position: { x: 20, y: 20 } });
+    expect(editorDrop).toHaveBeenCalledTimes(1); expect(chatDrop).not.toHaveBeenCalled();
+    editor.setAttribute('inert', '');
+    emit('tauri://drag-drop', { paths: ['/tmp/picture.png'], position: { x: 20, y: 20 } });
+    editor.removeAttribute('inert');
+    hit.mockReturnValue(document.createElement('div')); // Floating comparison covers both.
+    emit('tauri://drag-drop', { paths: ['/tmp/picture.png'], position: { x: 20, y: 20 } });
+    hit.mockReturnValue(null); // Outside the hit-testable document.
+    emit('tauri://drag-drop', { paths: ['/tmp/picture.png'], position: { x: 20, y: 20 } });
+    expect(editorDrop).toHaveBeenCalledTimes(1); expect(chatDrop).not.toHaveBeenCalled();
+    inner.unmount(); outer.unmount(); chat.remove();
+    expect([...listenerState.listeners.values()].every(listeners => listeners.size === 0)).toBe(true);
+    Reflect.deleteProperty(document, 'elementFromPoint');
+  });
+
 });

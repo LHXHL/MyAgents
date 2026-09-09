@@ -112,3 +112,5 @@ export function usePassiveSessionMetadata(
 
     return data.sessions.find((session) => session.id === sessionId);
 }
+
+export { isSessionDeleted } from './taskCenterStore';

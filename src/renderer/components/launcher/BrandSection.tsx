@@ -9,6 +9,7 @@
  * Chat launch flow. Switching back to 「对话」 restores the default behavior.
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   memo,
   useCallback,
@@ -555,6 +556,7 @@ export default memo(function BrandSection({
   useEffect(() => {
     if (!modeSegmentEnabled) return;
     const handler = (e: KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (
         (e.metaKey || e.ctrlKey) &&
         e.shiftKey &&

@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
@@ -135,6 +136,26 @@ function formatBytes(value: number): string {
   if (value < 1_024 * 1_024 * 1_024)
     return `${(value / 1_024 / 1_024).toFixed(1)} MB`;
   return `${(value / 1_024 / 1_024 / 1_024).toFixed(1)} GB`;
+}
+
+function transcriptionFailureHint(code?: string): string {
+  switch (code) {
+    case 'SPEECH_WORKER_PROTOCOL_ERROR':
+      return 'records.transcriptFailedProtocolHint';
+    case 'SPEECH_CORRUPT_MEDIA':
+    case 'SPEECH_UNSUPPORTED_CODEC':
+      return 'records.transcriptFailedMediaHint';
+    case 'SPEECH_PUBLISH_FAILED':
+      return 'records.transcriptFailedPublishHint';
+    case 'SPEECH_WORKER_TIMEOUT':
+    case 'SPEECH_DEADLINE_EXCEEDED':
+      return 'records.transcriptFailedTimeoutHint';
+    case 'SPEECH_INFERENCE_FAILED':
+    case 'SPEECH_MODEL_LOAD_FAILED':
+      return 'records.transcriptFailedInferenceHint';
+    default:
+      return 'records.transcriptFailedHint';
+  }
 }
 
 function speakerLetter(index: number): string {
@@ -1856,6 +1877,7 @@ export default function RecordDetail({
                 queueMetadataSave(titleDraft, parseTagDraft(tagDraft))
               }
               onKeyDown={(event) => {
+                if (isImeComposingEvent(event)) return;
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
               aria-label={t('records.titleLabel')}
@@ -2276,7 +2298,21 @@ export default function RecordDetail({
               role="status"
               className="mb-3 flex items-center justify-between gap-3 rounded-[var(--radius-md)] bg-[var(--warning)]/10 px-3 py-2 text-sm text-[var(--ink-secondary)]"
             >
-              <span>{t('records.transcriptFailedHint')}</span>
+              <div className="min-w-0">
+                <span>
+                  {t(transcriptionFailureHint(record?.transcriptionFailure?.code))}
+                </span>
+                {record?.transcriptionFailure && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer">
+                      {t('records.transcriptFailureDetails')}
+                    </summary>
+                    <code className="break-all">
+                      {record.transcriptionFailure.code}
+                    </code>
+                  </details>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -2444,6 +2480,7 @@ export default function RecordDetail({
                                   void handleRenameSpeaker(speaker.speakerId)
                                 }
                                 onKeyDown={(event) => {
+                                  if (isImeComposingEvent(event)) return;
                                   if (event.key === 'Enter') {
                                     event.currentTarget.blur();
                                   }
@@ -2539,6 +2576,7 @@ export default function RecordDetail({
                                 )
                               }
                               onKeyDown={(event) => {
+                                if (isImeComposingEvent(event)) return;
                                 if (event.key === 'Enter') {
                                   event.currentTarget.blur();
                                 }

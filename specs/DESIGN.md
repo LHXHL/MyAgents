@@ -140,6 +140,7 @@ Toast 用于跨区域、短暂且无法从当前表面直接确认的结果。�
 - 可点击容器必须可聚焦，并支持 Enter/Space；内部菜单和快捷动作阻止父级主动作。
 - Dialog/Overlay 打开后移动到合理首焦点，Escape 关闭，关闭后回到触发入口。
 - Tab、Menu、Dialog、Tree 等使用匹配的 ARIA role、状态和 roving focus，不只靠视觉模拟。
+- 文本输入的应用快捷键先用 `isImeComposingEvent`（`utils/imeKeyboard.ts`）判断输入法状态；组词确认、候选导航与取消交给原生输入法，不触发提交、保存或关闭。祖先和全局键盘监听器同样遵守，不能只保护最终发送分支。
 - Hover 才出现的动作在 `focus-within` 时同样可见；触屏场景必须有稳定入口。
 - 需要保留当前输入焦点的鼠标动作使用共享 `retainFocusOnMouseDown`，不在 click 后强行抢焦点。
 - 状态颜色必须伴随文字、形状或图标；内容和主动作需满足当前 Theme 的对比度测试。
@@ -160,6 +161,7 @@ Toast 用于跨区域、短暂且无法从当前表面直接确认的结果。�
 - 一个区域只突出一个 Primary。Secondary 用于并列但较弱动作，Ghost 用于工具栏和行内动作。
 - Danger 只用于删除、不可逆和高风险操作，通常放在菜单尾部或确认对话框中。
 - Text Link 用于导航、展开和辅助入口，不伪装成主 CTA。
+- 对话消息/思考操作、右侧工作区和文件预览工具条使用 `compact-action` 共享 32px 高、至少 32px 宽的热区，图标保持 14–16px；颜色与选中/运行态由各按钮负责。
 - 图标按钮必须有 accessible name；即时说明使用共享 `Tip`，不同时叠加浏览器 `title`。
 
 ### 5.2 输入与 Composer
@@ -260,7 +262,7 @@ App Shell 使用“全局侧栏 + 顶部 Tab”的双层注意力模型，完整
 
 - Markdown H1/H2/H3/H4–H6 使用统一 Type Scale，`strong` 不超过 semibold。
 - 行内代码使用 code surface 和 `--font-code`；多行代码块拥有 Header、语言、复制和独立横向滚动。
-- 表格正文使用 14px、表头使用 12px；表格容器自己横向滚动，不撑破消息或 Drawer。
+- 常规 Markdown 表格正文和表头均使用 14px；compact 变体两者维持 12px；表格容器自己横向滚动，不撑破消息或 Drawer。
 - 链接使用 Accent 并保持下划线或其他非颜色识别；引用使用弱表面和结构边界，不降低到不可读灰度。
 
 ### 8.4 流式、恢复与空态

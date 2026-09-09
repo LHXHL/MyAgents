@@ -2,6 +2,7 @@
 // Custom dialog for confirming project path in browser development mode
 // Replaces window.prompt() which gets blocked by browser security policies
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -44,6 +45,7 @@ export default function PathInputDialog({
 
     // Handle Enter key to confirm
     const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (isImeComposingEvent(e)) return;
         if (e.key === 'Enter') {
             onConfirm(path);
         } else if (e.key === 'Escape') {

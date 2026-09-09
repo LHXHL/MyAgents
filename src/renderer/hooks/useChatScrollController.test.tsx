@@ -81,15 +81,52 @@ describe('useChatScrollController', () => {
     const { result } = renderHook(() => useChatScrollController({ messages, isActive: true }));
 
     act(() => {
-      result.current.scrollToMessage('m2', { align: 'center', behavior: 'auto', pauseMs: 1234 });
+      result.current.scrollToMessage('m2', { align: 'center', behavior: 'auto' });
     });
 
-    expect(controls.pauseAutoScroll).toHaveBeenCalledWith(1234);
+    expect(controls.pauseAutoScroll).toHaveBeenCalledWith();
     expect(controls.scrollToIndex).toHaveBeenCalledWith({
       index: 1,
       align: 'center',
       behavior: 'auto',
     });
+  });
+
+  it('invalidates a navigation refinement on newer viewport input and navigation', () => {
+    const { result } = renderHook(() => useChatScrollController({ messages: [msg('m1')], isActive: true }));
+    act(() => result.current.onViewportAdmissionChanged(true, 0));
+    let isCurrent: (() => boolean) | undefined;
+    act(() => { isCurrent = result.current.scrollToMessage('m1'); });
+    expect(isCurrent?.()).toBe(true);
+    act(() => controls.onUserScrollIntent?.());
+    expect(isCurrent?.()).toBe(false);
+    act(() => { isCurrent = result.current.scrollToMessage('m1'); });
+    expect(isCurrent?.()).toBe(true);
+    act(() => result.current.scrollToBottom());
+    expect(isCurrent?.()).toBe(false);
+  });
+
+  it('does not run a queued tool refinement after newer user input', () => {
+    const scroller = document.createElement('div');
+    const tool = document.createElement('div');
+    tool.dataset.toolId = 't1';
+    tool.scrollIntoView = vi.fn();
+    scroller.appendChild(tool);
+    controls.scrollerRef.current = scroller;
+    const { result } = renderHook(() => useChatScrollController({ messages: [msg('m1')], isActive: true }));
+    act(() => result.current.onViewportAdmissionChanged(true, 0));
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      act(() => result.current.scrollToTool('t1', 'm1'));
+      act(() => frames.shift()?.(0));
+      act(() => controls.onUserScrollIntent?.());
+      act(() => frames.shift()?.(0));
+      expect(tool.scrollIntoView).not.toHaveBeenCalled();
+    } finally { raf.mockRestore(); }
   });
 
   it('does not assign a navigation index to hidden task notification records', () => {
@@ -143,7 +180,7 @@ describe('useChatScrollController', () => {
       result.current.scrollToTool('server-tool-1');
     });
 
-    expect(controls.pauseAutoScroll).toHaveBeenCalledWith(2000);
+    expect(controls.pauseAutoScroll).toHaveBeenCalledWith();
     expect(controls.scrollToIndex).toHaveBeenCalledWith({
       index: 1,
       align: 'center',
@@ -151,7 +188,7 @@ describe('useChatScrollController', () => {
     });
   });
 
-  it('pins bottom on tool completion when follow is still enabled', () => {
+  it('leaves following tool completion to measured list geometry', () => {
     controls.followEnabledRef.current = true;
     const { result } = renderHook(() => useChatScrollController({
       messages: [msg('m1')],
@@ -163,13 +200,13 @@ describe('useChatScrollController', () => {
       result.current.onRowLayoutChanged('m1', 'tool-complete');
     });
 
-    expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
     expect(controls.scrollBy).not.toHaveBeenCalled();
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
   });
 
   it.each(['attachment-settle', 'widget-resize'] as const)(
-    'pins bottom on late %s layout growth when follow is still enabled',
+    'leaves following %s growth to measured list geometry',
     (reason) => {
       controls.followEnabledRef.current = true;
       const { result } = renderHook(() => useChatScrollController({
@@ -182,7 +219,7 @@ describe('useChatScrollController', () => {
         result.current.onRowLayoutChanged('m1', reason);
       });
 
-      expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
+      expect(controls.scrollToBottom).not.toHaveBeenCalled();
       expect(controls.scrollBy).not.toHaveBeenCalled();
       expect(controls.scrollToIndex).not.toHaveBeenCalled();
     },
@@ -227,6 +264,7 @@ describe('useChatScrollController', () => {
     act(() => {
       result.current.onViewportAdmissionChanged(true, 0);
       result.current.onRowLayoutChanged('m1', reason);
+      expect(controls.pauseAutoScroll).toHaveBeenCalled();
       // Emulate the same React commit growing or shrinking the virtualized row.
       setRect(row, { top: 80, bottom: 150 });
     });
@@ -375,41 +413,34 @@ describe('useChatScrollController', () => {
     expect(result.current.isViewportRecoveryFenced).toBe(false);
   });
 
-  it('handles row layout changes whenever the active viewport remains admitted', () => {
-    controls.followEnabledRef.current = true;
+  it.each([0, 2])('compensates reading layout only after generation %s is admitted', (generation) => {
+    const scroller = document.createElement('div');
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-search-scope', '');
+    row.setAttribute('data-message-id', 'm1');
+    scroller.appendChild(row);
+    setRect(scroller, { top: 10, bottom: 410 });
+    setRect(row, { top: 30, bottom: 100 });
+    controls.scrollerRef.current = scroller;
+    controls.followEnabledRef.current = false;
     const { result } = renderHook(() => useChatScrollController({
       messages: [msg('m1')],
       isActive: true,
+      windowPresentation: { surfaceAvailable: true, generation },
       sessionId: 's1',
     }));
-
     act(() => {
-      result.current.onViewportAdmissionChanged(true, 0);
-      result.current.onRowLayoutChanged('m1', 'tool-complete');
+      result.current.onViewportAdmissionChanged(true, generation - 1);
+      result.current.onRowLayoutChanged('m1', 'attachment-settle');
     });
-
-    expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
-    expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
     expect(controls.scrollBy).not.toHaveBeenCalled();
-    expect(controls.scrollToIndex).not.toHaveBeenCalled();
-  });
-
-  it('rejects a delayed admission callback from an older presentation generation', () => {
-    controls.followEnabledRef.current = true;
-    const { result } = renderHook(() => useChatScrollController({
-      messages: [msg('m1')],
-      isActive: true,
-      windowPresentation: { surfaceAvailable: true, generation: 2 },
-      sessionId: 's1',
-    }));
-
-    act(() => result.current.onViewportAdmissionChanged(true, 1));
-    act(() => result.current.onRowLayoutChanged('m1', 'tool-complete'));
+    act(() => {
+      result.current.onViewportAdmissionChanged(true, generation);
+      result.current.onRowLayoutChanged('m1', 'attachment-settle');
+      setRect(row, { top: 80, bottom: 150 });
+    });
+    expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
-
-    act(() => result.current.onViewportAdmissionChanged(true, 2));
-    act(() => result.current.onRowLayoutChanged('m1', 'tool-complete'));
-    expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
   });
 
   it('fences stale geometry callbacks as soon as the presentation generation advances', () => {

@@ -84,6 +84,7 @@ export interface SimpleChatInputProps {
   /** Runtime-owned MCP readiness; desired selection remains controlled separately. */
   mcpEffectiveSnapshot?: McpEffectiveSnapshot | null;
   onWorkspaceMcpToggle?: (serverId: string, enabled: boolean) => void;
+  onMcpRetry?: (serverId: string) => Promise<import('../../../shared/mcpFailure').McpRetryResult>;
   officialTools?: readonly OfficialToolDefinition[];
   workspaceOfficialToolEnabled?: OfficialToolId[];
   globalOfficialToolEnabled?: OfficialToolId[];

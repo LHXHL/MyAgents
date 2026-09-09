@@ -1,31 +1,7 @@
 /**
- * useVirtuosoScroll — thin wrapper around react-virtuoso's scroll API.
- *
- * Three-state follow model:
- *  - `'force'`: programmatic scroll-to-bottom in progress; catch-up autoscroll is allowed
- *               even if we're briefly not at bottom during the animation.
- *  - `true`:    normal follow (at bottom; autoscroll allowed).
- *  - `false`:   disabled (user scrolled up, or paused for rewind/retry/search).
- *
- * Transitions:
- *  scrollToBottom()                     → 'force' (+ auto-degrade timer)
- *  atBottomStateChange(true)            → true    (covers force→true success AND
- *                                                  false→true when the user manually
- *                                                  scrolls back to bottom. Skipped while
- *                                                  pauseAutoScroll is active so rewind /
- *                                                  search / retry don't get hijacked.)
- *  atBottomStateChange(false) + true    → false   (user scrolled up during normal follow)
- *  upward wheel / PageUp / ArrowUp /    → false   (escape hatch for `'force'` — without
- *  Home                                            this, force persists forever when
- *                                                  content grows faster than the
- *                                                  programmatic scroll can reach bottom,
- *                                                  trapping the user in a bounce-back
- *                                                  loop during streaming.)
- *  `'force'` auto-degrade (1500ms)      → true    (fallback: if neither atBottom(true)
- *                                                  nor a user-intent event has fired by
- *                                                  then, degrade so subsequent
- *                                                  atBottom(false) can take effect.)
- *  pauseAutoScroll(d)                   → false  (temporary; restores prior value after d)
+ * Owns chat follow intent. Geometry changes never turn following into reading.
+ * Upward viewport input/navigation pauses; explicit bottom navigation or downward
+ * input reaching the actual bottom resumes. `force` marks a requested bottom jump.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -36,7 +12,8 @@ export interface VirtuosoScrollControls {
     scrollerRef: React.MutableRefObject<HTMLElement | null>;
     followEnabledRef: React.MutableRefObject<boolean | 'force'>;
     scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
-    pauseAutoScroll: (duration?: number) => void;
+    /** Enters reading mode until the user returns to the bottom. */
+    pauseAutoScroll: () => void;
     handleAtBottomChange: (atBottom: boolean) => void;
     /**
      * Callback-ref for Virtuoso's `scrollerRef` prop. Stores the element for external
@@ -60,14 +37,9 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
     const virtuosoRef = useRef<VirtuosoHandle>(null);
     const scrollerRef = useRef<HTMLElement | null>(null);
     const followEnabledRef = useRef<boolean | 'force'>(true);
-    const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    // Track what followEnabled was before pause, so we can restore correctly
-    const prePauseFollowRef = useRef<boolean | 'force'>(true);
-    // `handleAtBottomChange(true)` must not re-enable follow while a pause is active —
-    // otherwise rewind/search/retry silently lose their follow suppression when Virtuoso
-    // re-fires atBottom for unrelated reasons (measurement shifts during streaming).
-    const pauseActiveRef = useRef(false);
-    // Auto-degrade force→true fallback timer (FORCE_AUTO_DEGRADE_MS).
+    const towardBottomRef = useRef(false);
+    const scrollbarDragRef = useRef(false);
+    const lastScrollTopRef = useRef(0);
     const forceDegradeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const onUserScrollIntentRef = useRef(onUserScrollIntent);
     // Ref mirror keeps native input listeners stable while observing the latest owner callback.
@@ -84,18 +56,10 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
         }
     }, []);
 
-    // behavior='smooth' (default) for user-triggered bottom jumps; 'auto' for session-switch
-    // pins where an instant, pre-paint jump is required (no visible scroll animation).
-    //
-    // align: 'end' is REQUIRED here. Virtuoso's `scrollToIndex` defaults to align:'start',
-    // which puts the LAST item's TOP at the viewport TOP. For a tall streaming assistant
-    // turn (multiple tool calls accumulated into one item), this lands the user partway
-    // through the message — not at the scroll bottom. align:'end' aligns the last item's
-    // BOTTOM to the viewport bottom, which (combined with the 280px footer spacer in
-    // MessageList) is the actual scroll bottom. Cross-checked against react-virtuoso's
-    // own internal followOutput path: it uses `{ align: 'end', index: 'LAST' }` — see the
-    // bundled source's `function f(y) { _(i, { align: 'end', behavior: y, index: 'LAST' }) }`.
+    // Explicit navigation still uses the virtualizer's index model to mount the
+    // last row. MessageList then aligns any measured growth through its scroll API.
     const scrollToBottom = useCallback((behavior: 'smooth' | 'auto' = 'smooth') => {
+        towardBottomRef.current = false;
         followEnabledRef.current = 'force';
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior });
         clearForceDegradeTimer();
@@ -107,65 +71,58 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
         }, FORCE_AUTO_DEGRADE_MS);
     }, [clearForceDegradeTimer]);
 
-    const pauseAutoScroll = useCallback((duration = 500) => {
-        // Save current state so we restore to the right value, not unconditionally true.
-        // Force is a transient programmatic state — if we pause during a force scroll, the
-        // attempt is effectively cancelled, so normalize 'force' → true so the restore
-        // lands in a stable state (without this, the pause swallows the degrade timer and
-        // later restores stale 'force' with no safety net, trapping the user).
-        const prior = followEnabledRef.current;
-        prePauseFollowRef.current = prior === 'force' ? true : prior;
+    const pauseAutoScroll = useCallback(() => {
         followEnabledRef.current = false;
-        pauseActiveRef.current = true;
-        // Clear any in-flight force-degrade timer — we've exited force intentionally.
+        towardBottomRef.current = false;
         clearForceDegradeTimer();
-        if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
-        pauseTimerRef.current = setTimeout(() => {
-            followEnabledRef.current = prePauseFollowRef.current;
-            pauseActiveRef.current = false;
-            pauseTimerRef.current = null;
-        }, duration);
+        // Cancel an in-flight smooth jump, including search navigation. scrollBy
+        // goes through Virtuoso but, unlike scrollTo(currentTop), isn't elided.
+        virtuosoRef.current?.scrollBy({ top: 0, behavior: 'auto' });
     }, [clearForceDegradeTimer]);
 
     const handleAtBottomChange = useCallback((atBottom: boolean) => {
-        if (atBottom) {
-            // Pause in progress (search/rewind/retry) — do NOT re-enable follow. The
-            // restore happens when the pause timer fires.
-            if (pauseActiveRef.current) return;
-            // Reaching bottom resumes follow, regardless of prior mode:
-            //   - force → true: programmatic scroll-to-bottom succeeded.
-            //   - false → true: user manually scrolled back to bottom.
-            if (followEnabledRef.current !== true) {
-                followEnabledRef.current = true;
-                clearForceDegradeTimer();
-            }
-            return;
+        if (atBottom && followEnabledRef.current === 'force') {
+            followEnabledRef.current = true;
+            clearForceDegradeTimer();
         }
-        // Leaving bottom disables follow ONLY if we were in normal-follow mode. 'force'
-        // is preserved here because the programmatic scroll is still chasing; user-
-        // initiated exit of force is handled by the user-intent listeners in
-        // attachScroller below.
-        if (followEnabledRef.current === true) {
-            followEnabledRef.current = false;
+        // This callback describes geometry (including footer/viewport resizing),
+        // not user intent. In particular its 50px threshold cannot resume reading.
+    }, [clearForceDegradeTimer]);
+
+    const resumeAtBottom = useCallback(() => {
+        const el = scrollerRef.current;
+        if (followEnabledRef.current === false && towardBottomRef.current && el && el.scrollHeight - el.clientHeight - el.scrollTop <= 1) {
+            followEnabledRef.current = true;
+            towardBottomRef.current = false;
+            clearForceDegradeTimer();
         }
     }, [clearForceDegradeTimer]);
 
-    // Direction-aware user-intent detection. Only UPWARD scroll intent breaks follow —
-    // downward wheel while already at bottom is a no-op that mustn't silently disable
-    // auto-follow for subsequent streaming content.
-    const breakForceIfUserIntent = useCallback(() => {
-        if (followEnabledRef.current === false) return;
-        followEnabledRef.current = false;
-        clearForceDegradeTimer();
-    }, [clearForceDegradeTimer]);
+    const moveTowardBottom = useCallback(() => {
+        // Downward input also supersedes an outstanding search/index jump while
+        // reading; it resumes following only once the user actually reaches bottom.
+        if (followEnabledRef.current === false) pauseAutoScroll();
+        towardBottomRef.current = true;
+        resumeAtBottom();
+    }, [pauseAutoScroll, resumeAtBottom]);
+
+    const onScroll = useCallback(() => {
+        const el = scrollerRef.current;
+        if (!el) return;
+        if (scrollbarDragRef.current) {
+            if (el.scrollTop < lastScrollTopRef.current) pauseAutoScroll();
+            else if (el.scrollTop > lastScrollTopRef.current) towardBottomRef.current = true;
+        }
+        lastScrollTopRef.current = el.scrollTop;
+        resumeAtBottom();
+    }, [pauseAutoScroll, resumeAtBottom]);
 
     const onWheel = useCallback((e: WheelEvent) => {
-        if (e.deltaY !== 0) notifyUserScrollIntent();
-        // Only upward wheel indicates user wants to see earlier content. Downward wheel
-        // or trackpad inertial decay past bottom shouldn't break follow.
-        if (e.deltaY >= 0) return;
-        breakForceIfUserIntent();
-    }, [breakForceIfUserIntent, notifyUserScrollIntent]);
+        if (e.deltaY === 0) return;
+        notifyUserScrollIntent();
+        if (e.deltaY < 0) pauseAutoScroll();
+        else moveTowardBottom();
+    }, [pauseAutoScroll, notifyUserScrollIntent, moveTowardBottom]);
 
     const touchStartYRef = useRef(0);
     const onTouchStart = useCallback((e: TouchEvent) => {
@@ -173,19 +130,23 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
     }, []);
     const onTouchMove = useCallback((e: TouchEvent) => {
         const y = e.touches[0]?.clientY ?? 0;
-        if (Math.abs(y - touchStartYRef.current) > 4) notifyUserScrollIntent();
-        // Finger moving DOWN on screen = content scrolling DOWN in viewport = user wants
-        // to see content ABOVE (earlier messages). That's an upward-content intent.
-        if (y > touchStartYRef.current + 4) {
-            breakForceIfUserIntent();
-        }
-    }, [breakForceIfUserIntent, notifyUserScrollIntent]);
-
-    // Pointer down covers native scrollbar dragging, which need not emit wheel
-    // or touch events before changing the viewport.
-    const onPointerDown = useCallback(() => {
+        const delta = y - touchStartYRef.current;
+        if (Math.abs(delta) <= 4) return;
+        touchStartYRef.current = y;
         notifyUserScrollIntent();
-    }, [notifyUserScrollIntent]);
+        if (delta > 0) pauseAutoScroll();
+        else moveTowardBottom();
+    }, [pauseAutoScroll, notifyUserScrollIntent, moveTowardBottom]);
+
+    const onPointerDown = useCallback((event: PointerEvent) => {
+        notifyUserScrollIntent();
+        if (followEnabledRef.current === false) pauseAutoScroll();
+        const el = scrollerRef.current;
+        // Native scrollbar events target the scroller itself, not its message rows.
+        scrollbarDragRef.current = event.target === el;
+        lastScrollTopRef.current = el?.scrollTop ?? 0;
+    }, [notifyUserScrollIntent, pauseAutoScroll]);
+    const onPointerUp = useCallback(() => { scrollbarDragRef.current = false; }, []);
 
     const onKeyDown = useCallback((e: KeyboardEvent) => {
         // Skip keys originating in editable targets — ArrowUp/Home are common cursor-nav
@@ -211,10 +172,12 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
         // Keys that unambiguously move the view upward/away from the bottom.
         // PageDown/End/ArrowDown at bottom shouldn't break follow — those keep user at
         // bottom or move them toward it.
-        if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') {
-            breakForceIfUserIntent();
+        if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home' || (e.key === ' ' && e.shiftKey)) {
+            pauseAutoScroll();
+        } else if (e.key === 'PageDown' || e.key === 'ArrowDown' || e.key === 'End' || e.key === ' ') {
+            moveTowardBottom();
         }
-    }, [breakForceIfUserIntent, notifyUserScrollIntent]);
+    }, [pauseAutoScroll, notifyUserScrollIntent, moveTowardBottom]);
 
     // Callback-ref pattern: stores the scroller for external consumers AND manages the
     // listener lifecycle. Virtuoso passes the scroller element (or Window) via its
@@ -223,6 +186,7 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
     const attachScroller = useCallback((el: HTMLElement | Window | null) => {
         const prev = scrollerRef.current;
         if (prev) {
+            prev.removeEventListener('scroll', onScroll);
             prev.removeEventListener('wheel', onWheel);
             prev.removeEventListener('touchstart', onTouchStart);
             prev.removeEventListener('touchmove', onTouchMove);
@@ -230,29 +194,36 @@ export function useVirtuosoScroll({ onUserScrollIntent }: UseVirtuosoScrollOptio
         }
         const next = el instanceof HTMLElement ? el : null;
         scrollerRef.current = next;
+        scrollbarDragRef.current = false;
+        lastScrollTopRef.current = next?.scrollTop ?? 0;
         if (next) {
+            next.addEventListener('scroll', onScroll, { passive: true });
             next.addEventListener('wheel', onWheel, { passive: true });
             next.addEventListener('touchstart', onTouchStart, { passive: true });
             next.addEventListener('touchmove', onTouchMove, { passive: true });
             next.addEventListener('pointerdown', onPointerDown, { passive: true });
         }
-    }, [onWheel, onTouchStart, onTouchMove, onPointerDown]);
+    }, [onScroll, onWheel, onTouchStart, onTouchMove, onPointerDown]);
 
     useEffect(() => {
         window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
         return () => {
             window.removeEventListener('keydown', onKeyDown);
-            if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
             clearForceDegradeTimer();
             const el = scrollerRef.current;
             if (el) {
+                el.removeEventListener('scroll', onScroll);
                 el.removeEventListener('wheel', onWheel);
                 el.removeEventListener('touchstart', onTouchStart);
                 el.removeEventListener('touchmove', onTouchMove);
                 el.removeEventListener('pointerdown', onPointerDown);
             }
         };
-    }, [onWheel, onTouchStart, onTouchMove, onPointerDown, onKeyDown, clearForceDegradeTimer]);
+    }, [onScroll, onWheel, onTouchStart, onTouchMove, onPointerDown, onPointerUp, onKeyDown, clearForceDegradeTimer]);
 
     return {
         virtuosoRef,

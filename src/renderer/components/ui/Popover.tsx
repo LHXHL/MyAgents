@@ -17,6 +17,7 @@
 // autocomplete already has its own ↑↓/Enter/Tab handling and shouldn't
 // have focus stolen from the textarea); transitions (kept lean for now).
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   autoUpdate,
   flip,
@@ -125,6 +126,7 @@ export function Popover({
   useEffect(() => {
     if (!open || !closeOnEscape) return;
     const handler = (e: KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handler);

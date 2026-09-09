@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { createPortal } from 'react-dom';
@@ -88,6 +89,7 @@ export default function RecordingSourceDialog({
 
   const handleDialogKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
+      if (isImeComposingEvent(event)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();

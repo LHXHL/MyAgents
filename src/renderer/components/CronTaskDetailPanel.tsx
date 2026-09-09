@@ -3,6 +3,7 @@
  * Design language aligned with CronTaskSettingsModal and Agent Settings panels.
  */
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpToLine, BarChart2, Bell, Check, Clock, FileText, Flag, FolderOpen, History, MessageSquare, Pencil, Play, Square, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -142,7 +143,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
     const isAtSchedule = editSchedule?.kind === 'at';
 
     useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (isEditing) setIsEditing(false); else onClose(); } };
+        const handler = (e: KeyboardEvent) => { if (isImeComposingEvent(e)) return; if (e.key === 'Escape') { if (isEditing) setIsEditing(false); else onClose(); } };
         document.addEventListener('keydown', handler);
         return () => document.removeEventListener('keydown', handler);
     }, [onClose, isEditing]);

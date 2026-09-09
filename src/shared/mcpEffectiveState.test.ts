@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   readyMcpToolCount,
+  invalidateMcpEffectiveSnapshot,
   reduceMcpEffectiveSnapshot,
   type McpEffectiveSnapshot,
 } from './mcpEffectiveState';
@@ -24,6 +25,18 @@ function snapshot(overrides: Partial<McpEffectiveSnapshot> = {}): McpEffectiveSn
 }
 
 describe('MCP effective snapshot reducer', () => {
+  it('accepts invalidation and refuses the last ready/failed snapshot replayed afterward', () => {
+    const previous = snapshot({
+      servers: [{ id: 'playwright', desired: true, state: 'failed', toolCount: 0, attemptGeneration: 1, updatedAt: 1 }],
+      tools: ['mcp__playwright__browser_navigate'],
+    });
+    const invalidated = invalidateMcpEffectiveSnapshot(previous);
+    expect(reduceMcpEffectiveSnapshot(previous, invalidated)).toBe(invalidated);
+    expect(reduceMcpEffectiveSnapshot(invalidated, previous)).toBe(invalidated);
+    expect(invalidated.servers).toEqual([]);
+    expect(readyMcpToolCount(invalidated)).toBe(0);
+  });
+
   it('rejects stale revisions, configs, runtimes, and another Product Session', () => {
     const current = snapshot({ runtimeGeneration: 3, configGeneration: 4, catalogGeneration: 5, revision: 5 });
     expect(reduceMcpEffectiveSnapshot(current, snapshot({ runtimeGeneration: 3, configGeneration: 4, catalogGeneration: 5, revision: 4 }))).toBe(current);

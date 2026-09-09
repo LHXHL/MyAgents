@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
-import React, { memo, useCallback, useMemo, useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, useLayoutEffect, useRef } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { ListItem, SizeFunction, VirtuosoHandle } from 'react-virtuoso';
 import type { TFunction } from 'i18next';
@@ -113,6 +113,10 @@ const DEFAULT_WINDOW_PRESENTATION: MainWindowPresentation = {
 const noopViewportAdmissionChanged = (_admitted: boolean, _presentationGeneration: number) => {};
 const noopItemsRendered = () => {};
 
+// Presentation admission remains owned by MessageList. Its projection must
+// reach the sampler even while Virtuoso's data/context are deliberately frozen.
+const MessageListPresentationContext = createContext(true);
+
 function isLargeRowShrink(reason: RowLayoutChangeReason): boolean {
   return reason === 'process-row-collapse' || reason === 'user-message-collapse-measured';
 }
@@ -145,11 +149,15 @@ function getRandomStreamingMessage(t: TFunction<'chat'>): string {
 
 const StatusTimer = memo(function StatusTimer({ message, getElapsedSeconds }: { message: string; getElapsedSeconds: () => number }) {
   const { t } = useTranslation('chat');
-  const [elapsedSeconds, setElapsedSeconds] = useState(() => getElapsedSeconds());
-  useEffect(() => {
-    const id = setInterval(() => setElapsedSeconds(getElapsedSeconds()), 1000);
+  const canPresent = useContext(MessageListPresentationContext);
+  const subscribe = useCallback((onStoreChange: () => void) => {
+    if (!canPresent) return () => {};
+    const id = setInterval(onStoreChange, 1000);
     return () => clearInterval(id);
-  }, [getElapsedSeconds]);
+  }, [canPresent]);
+  // The Tab clock keeps advancing without a timer. Re-subscription samples its
+  // current value on restore; hidden snapshots never keep a polling loop alive.
+  const elapsedSeconds = useSyncExternalStore(subscribe, getElapsedSeconds);
   const elapsedText = elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
   const displayText = elapsedText ? `${message} (${elapsedText})` : message;
   return (
@@ -159,7 +167,12 @@ const StatusTimer = memo(function StatusTimer({ message, getElapsedSeconds }: { 
       style={{ height: STATUS_ROW_HEIGHT_PX }}
       title={displayText}
     >
-      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      {/* Retire the animated node, preserving its slot. Chromium can defer a
+          class/style removal inside content-visibility:hidden, retaining the
+          old CSS animation until the subtree becomes renderable again. */}
+      <span className="h-3 w-3 shrink-0" aria-hidden="true">
+        {canPresent && <Loader2 className="h-full w-full animate-spin" />}
+      </span>
       <span className="min-w-0 truncate">{displayText}</span>
     </div>
   );
@@ -415,52 +428,27 @@ const MessageList = memo(function MessageList({
     handleAtBottomChange(atBottom);
   }, [canLayoutVirtualList, handleAtBottomChange]);
 
-  // ── Auto-scroll during streaming — keep the view pinned to the bottom as the
-  // streaming item grows taller. `followOutput` only fires on item-COUNT change,
-  // so the last item growing (text / thinking streaming in) needs an explicit nudge.
-  //
-  // This must stay inside Virtuoso's own scroll model — never write `el.scrollTop`
-  // directly. The important detail is timing: `autoscrollToBottom()` is designed
-  // for late size changes such as image loads; in react-virtuoso 4.18.3 it waits
-  // for an atBottomState update and clears the observer after 100ms. Used for
-  // per-token text streaming from a passive effect + rAF, it lets the browser
-  // paint one frame where the growing row/footer push the status down, then snaps
-  // back on Virtuoso's delayed correction. A layout-effect `scrollToIndex` lands
-  // the LAST/end alignment before paint while still going through Virtuoso.
-  //
-  // Gated on `isLoading` (actual streaming), not merely `!!streamingMessage`: a
-  // stale streaming message from the loadSession-REST / live-SSE mid-turn race
-  // must NOT keep auto-scroll alive once the turn has completed.
-  const wasViewportRecoveryFencedRef = useRef(isViewportRecoveryFenced);
-  useLayoutEffect(() => {
-    const justFinishedRecovery = wasViewportRecoveryFencedRef.current && !isViewportRecoveryFenced;
-    wasViewportRecoveryFencedRef.current = isViewportRecoveryFenced;
-    if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while the internal Tab is hidden — scrolling against a
-    // content-visibility:hidden scroller
-    // can compute against stale geometry. The re-pin layout effect above restores
-    // position on re-activation.
-    if (!canLayoutVirtualList || isViewportRecoveryFenced) return;
-    // The controller already issued the one authoritative recovery command.
-    // Fence settlement alone is not new streaming output and must not replay it.
-    if (justFinishedRecovery) return;
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [streamingMessage, isLoading, canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, virtuosoRef]);
-
-  // ── Terminal pin — pin to bottom once when a turn ends ──
-  // At turn end the data-layer reveal drains the remaining text and the message moves to
-  // history in a single React batch; the streaming-driven autoscroll effect above gates on
-  // `isLoading`, so it won't fire for that final height growth. Without this, the last
-  // revealed line(s) can land just below the fold. If we were still following (true/'force'),
-  // re-pin once. Routes through scrollToBottom so the hook's grace/degrade state stays consistent.
-  const prevIsLoadingRef = useRef(isLoading);
-  useLayoutEffect(() => {
-    const was = prevIsLoadingRef.current;
-    prevIsLoadingRef.current = isLoading;
-    if (was && !isLoading && canLayoutVirtualList && !isViewportRecoveryFenced && followEnabledRef.current) {
-      scrollToBottom('auto');
+  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
+  // One alignment path for text, footer/prompts, late media, and viewport resizing.
+  // scrollToIndex reads Virtuoso's cached item heights, which may still describe
+  // the previous commit. Its pixel scroll API clamps against current DOM geometry.
+  const alignFollowingViewport = useCallback(() => {
+    if (!canLayoutVirtualList || isViewportRecoveryFenced || !followEnabledRef.current) return;
+    if (!debugScroller || debugScroller.clientHeight <= 0) return;
+    const bottom = debugScroller.scrollHeight - debugScroller.clientHeight;
+    if (Math.abs(bottom - debugScroller.scrollTop) > 1) {
+      virtuosoRef.current?.scrollTo({ top: bottom, behavior: 'auto' });
     }
-  }, [isLoading, canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, scrollToBottom]);
+  }, [canLayoutVirtualList, isViewportRecoveryFenced, followEnabledRef, debugScroller, virtuosoRef]);
+  // React commits can precede ResizeObserver delivery. Align the current layout
+  // before painting, then let measured size changes use the same path below.
+  useLayoutEffect(alignFollowingViewport);
+  useLayoutEffect(() => {
+    if (!debugScroller || !canLayoutVirtualList || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(alignFollowingViewport);
+    observer.observe(debugScroller);
+    return () => observer.disconnect();
+  }, [debugScroller, canLayoutVirtualList, alignFollowingViewport]);
 
   // ── Refs for stable callbacks — avoid recreating itemContent/Footer on every render ──
   const streamingMessageRef = useRef(streamingMessage);
@@ -540,24 +528,6 @@ const MessageList = memo(function MessageList({
     setIsLargeRowShrinking(false);
   }, [cancelPendingLargeRowShrink, canLayoutVirtualList]);
   useEffect(() => cancelPendingLargeRowShrink, [cancelPendingLargeRowShrink]);
-  // Capture the committed admission state directly (not via a ref). Under React
-  // 19's child-before-parent layout-effect ordering, a ref updated in our parent
-  // layout effect could still be stale when Virtuoso's child effects fire during
-  // an admitted→suspended commit. These callbacks are not row identities, so
-  // recreating them at a rare lifecycle edge cannot remount message rows.
-  const handleFollowOutput = useMemo(
-    () => (isAtBottom: boolean) => {
-      // Hidden tab (content-visibility:hidden): never drive follow-scroll against
-      // skipped/stale geometry (same cache-poisoning class as the data freeze below).
-      if (!canLayoutVirtualList || isViewportRecoveryFenced) return false;
-      const mode = followEnabledRef.current;
-      if (!mode) return false;
-      if (mode === 'force') return 'smooth' as const;
-      return isAtBottom ? 'smooth' as const : false;
-    },
-    [followEnabledRef, canLayoutVirtualList, isViewportRecoveryFenced]
-  );
-
   // Pagination guard: don't load an older page off stale range math while hidden —
   // Virtuoso can fire startReached from corrupted offsets when our subtree's layout
   // was skipped (content-visibility:hidden), and a prepend in that state compounds the desync.
@@ -566,7 +536,6 @@ const MessageList = memo(function MessageList({
     onLoadOlder?.();
   }, [onLoadOlder, canLayoutVirtualList, isViewportRecoveryFenced]);
 
-  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
   const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
     const next = el instanceof HTMLElement ? el : null;
     setDebugScroller(prev => (prev === next ? prev : next));
@@ -693,6 +662,7 @@ const MessageList = memo(function MessageList({
   }, [debugProbe, onItemsRendered]);
 
   return (
+    <MessageListPresentationContext.Provider value={canLayoutVirtualList}>
     <div
       ref={viewportRootRef}
       className="relative flex-1"
@@ -739,7 +709,10 @@ const MessageList = memo(function MessageList({
         firstItemIndex={virtuosoFirstItemIndex}
         heightEstimates={virtuosoHeightEstimateSeed}
         startReached={onLoadOlder ? guardedLoadOlder : undefined}
-        followOutput={handleFollowOutput}
+        // The built-in size/viewport paths bypass function-valued followOutput.
+        // Literal false leaves all following to the existing chat intent owner.
+        followOutput={false}
+        totalListHeightChanged={alignFollowingViewport}
         atBottomStateChange={guardedAtBottomChange}
         rangeChanged={debugProbe?.handleRangeChanged}
         itemsRendered={handleItemsRendered}
@@ -755,6 +728,7 @@ const MessageList = memo(function MessageList({
         itemContent={renderItem}
       />
     </div>
+    </MessageListPresentationContext.Provider>
   );
 });
 

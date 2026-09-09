@@ -1,10 +1,11 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 /**
  * useChatComposerKeydown — Enter-to-send handling for "simple" AI-conversation
  * composers (AI 小助理 / 问题反馈) that have no other keydown concerns.
  *
  * Returns the three textarea handlers to spread. It is the single source of
  * truth with the main chat box: both consult `resolveEnterKeyAction` +
- * `isImeComposingEvent` (@/utils/chatSendKey). This hook additionally owns the
+ * `isImeComposingEvent` (@/utils/imeKeyboard). This hook additionally owns the
  * IME composition ref these surfaces previously lacked — a latent CJK mis-send
  * bug (cf. #123), now fixed for free by adopting the shared path.
  *
@@ -17,7 +18,6 @@ import type { KeyboardEvent } from 'react';
 
 import { useConfigData } from '@/config/useConfigData';
 import {
-  isImeComposingEvent,
   resolveEnterKeyAction,
   type ChatSendShortcut,
 } from '@/utils/chatSendKey';

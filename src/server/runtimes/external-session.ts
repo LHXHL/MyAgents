@@ -276,11 +276,14 @@ import {
   setExternalLifecycleState,
   setExternalPrewarmingSession,
   setExternalMcpEffectiveSnapshot,
+  getExternalMcpEffectiveSnapshot,
+  invalidateExternalMcpEffectiveSnapshot,
   setExternalRuntimeSessionId,
   setExternalSystemInitPayload,
   updateExternalLifecycleStartingSessionId,
 } from './external-session/lifecycle';
 export { getExternalMcpEffectiveSnapshot } from './external-session/lifecycle';
+import type { McpRetryResult } from '../../shared/mcpFailure';
 import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
 import type { SessionOrigin } from '../../shared/session-origin';
 import type { OfficialToolId } from '../../shared/official-tools';
@@ -540,6 +543,11 @@ function pendingExternalProcessConfigRestartReasons(): string[] {
   ];
 }
 
+function invalidateExternalMcpProjection(): void {
+  const snapshot = invalidateExternalMcpEffectiveSnapshot();
+  if (snapshot) broadcast('chat:mcp-effective-snapshot', snapshot);
+}
+
 function applyPendingExternalProcessConfigInvalidation(
   preservePromotion?: ExternalTurnPromotionToken | null,
 ): Promise<void> {
@@ -562,6 +570,7 @@ function applyPendingExternalProcessConfigInvalidation(
       if (desired) setExternalLifecycleScenario(desired.scenario);
     };
     if (!hasExternalRuntimeProcess()) {
+      invalidateExternalMcpProjection();
       promoteManagedCodexScenario();
       console.log(`[external-session] External runtime config invalidation already satisfied by process exit: ${reasons.join(',')}`);
       return;
@@ -577,9 +586,11 @@ function applyPendingExternalProcessConfigInvalidation(
       if (!stopped && hasExternalRuntimeProcess()) {
         throw new Error(`External runtime process did not stop for config change: ${reasons.join(',')}`);
       }
+      invalidateExternalMcpProjection();
       promoteManagedCodexScenario();
     } catch (error) {
       if (!hasExternalRuntimeProcess()) {
+        invalidateExternalMcpProjection();
         promoteManagedCodexScenario();
         return;
       }
@@ -5237,6 +5248,40 @@ export function isExternalSessionBusy(): boolean {
     || hasExternalSendInFlight()
     || hasExternalQueuedOperations()
     || isExternalOperationDrainInFlight();
+}
+
+/** Retry through the Session's existing idle replacement and startup admission. */
+export async function retryExternalMcpServer(serverId: string): Promise<McpRetryResult> {
+  if (!isManagedCodexProductRuntime()) {
+    return { success: false, status: 400, errorCode: 'unsupported_runtime' };
+  }
+  if (isExternalSessionBusy() || isExternalLifecycleStarting() || externalProcessConfigInvalidationInFlight) {
+    return { success: false, status: 409, errorCode: 'session_busy' };
+  }
+  const failed = getExternalMcpEffectiveSnapshot()?.servers.find(server => server.id === serverId);
+  const desired = getManagedCodexDesiredSnapshot();
+  if (!failed?.desired || failed.state !== 'failed'
+    || !desired?.mcpServers.some(server => server.id === serverId)) {
+    return { success: false, status: 409, errorCode: 'server_not_failed' };
+  }
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  const scenario = getExternalLifecycleScenario();
+  const lease = tryAcquireExternalSessionMutationLease();
+  if (!lease) return { success: false, status: 409, errorCode: 'session_busy' };
+  try {
+    pendingExternalCapabilityRestart = true;
+    await applyPendingExternalProcessConfigInvalidation();
+    const result = await prewarmExternalSession({ sessionId, workspacePath, scenario });
+    return result.prewarmed
+      ? { success: true }
+      : { success: false, status: 502, errorCode: 'retry_failed' };
+  } catch {
+    return { success: false, status: 502, errorCode: 'retry_failed' };
+  } finally {
+    lease.release();
+    scheduleExternalQueueDrainAfterTurnBoundary();
+  }
 }
 
 /**

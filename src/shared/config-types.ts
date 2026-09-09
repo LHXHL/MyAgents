@@ -218,6 +218,7 @@ export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'codex-sub';
 /** Host-managed Grok subscription provider ID. */
 export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
 export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
+export const XAI_SUBSCRIPTION_PRIMARY_MODEL = 'grok-4.6';
 
 export type BuiltinSubscriptionProviderId =
   | typeof SUBSCRIPTION_PROVIDER_ID
@@ -1547,7 +1548,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     type: 'subscription',
     subscriptionAuth: { kind: 'host-managed-oauth' },
     execution: { kind: 'builtin' },
-    primaryModel: 'grok-4.5',
+    primaryModel: XAI_SUBSCRIPTION_PRIMARY_MODEL,
     isBuiltin: true,
     apiProtocol: 'openai',
     upstreamFormat: 'responses',
@@ -1556,12 +1557,21 @@ export const PRESET_PROVIDERS: Provider[] = [
       baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
     },
     modelAliases: {
-      fable: 'grok-4.5',
-      sonnet: 'grok-4.5',
-      opus: 'grok-4.5',
+      fable: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+      sonnet: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+      opus: XAI_SUBSCRIPTION_PRIMARY_MODEL,
       haiku: 'grok-composer-2.5-fast',
     },
     models: [
+      {
+        model: XAI_SUBSCRIPTION_PRIMARY_MODEL,
+        modelName: 'Grok 4.6',
+        modelSeries: 'grok',
+        contextLength: 500_000,
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text'],
+        source: 'preset',
+      },
       {
         model: 'grok-4.5',
         modelName: 'Grok 4.5',

@@ -100,7 +100,7 @@ describe('App Shell chrome contract', () => {
       rightActions.indexOf('workspaceFiles.directory.collapseWorkspace'),
     );
     expect(rightActions).toContain(
-      'className="flex h-7 w-7 items-center justify-center rounded-lg',
+      'className="compact-action ',
     );
     expect(chat).toContain(
       'className="flex h-7 w-7 items-center justify-center rounded-lg',

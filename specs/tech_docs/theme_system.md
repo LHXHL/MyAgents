@@ -223,6 +223,7 @@ default + system，不能阻断窗口创建。
 | Launcher / About / GlobalSidebar 品牌 | `ResolvedTheme.hero` + Theme 产品字标/Hero CSS selector | 产品字标字体、字距和渐变同源；Hero 与紧凑侧栏只分离尺寸/字重角色，不复制品牌配色；背景不改变布局 |
 | CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
+| Markdown CM6 | `adapters.prism` 派生语法高亮 + host semantic Token | Compartment 原位重配；不换文档、选区、history 或活跃输入 view |
 | Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
 | Mermaid | `adapters.mermaid` | Theme key 变化重渲染；保留 strict/timeout/last-valid |
 | Prism | `adapters.prism` | CodeBlock、Mermaid code、Bash/FilePatch 派生同一 palette |

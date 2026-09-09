@@ -4,6 +4,7 @@
  * Upper section: Active models — hover "设为首选", delete any model, add custom ID
  * Lower section: Discover more — single-click "添加" per row, no multi-select
  */
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { X, Search, Loader2, RefreshCw, AlertCircle, Plus, Trash2, Settings2 } from 'lucide-react';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -504,6 +505,7 @@ export default function ModelManagementPanel({
         aria-labelledby={titleId}
         tabIndex={-1}
         onKeyDown={(event) => {
+          if (isImeComposingEvent(event)) return;
           if (editingModelId || pendingCustomModel) return;
           if (event.key === 'Escape') {
             event.stopPropagation();
@@ -578,7 +580,7 @@ export default function ModelManagementPanel({
                   type="text"
                   value={customInput}
                   onChange={(e) => setCustomInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomModel(); } }}
+                  onKeyDown={(e) => { if (isImeComposingEvent(e)) return; if (e.key === 'Enter') { e.preventDefault(); handleAddCustomModel(); } }}
                   placeholder={t('providers.models.customPlaceholder')}
                   className="flex-1 rounded-lg border border-[var(--line)] bg-transparent px-3 py-1.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:border-[var(--ink-muted)] focus:outline-none"
                 />
@@ -936,6 +938,7 @@ const ModelSettingsEditor = function ModelSettingsEditor({
         aria-label={t('providers.models.parameterTitle')}
         tabIndex={-1}
         onKeyDown={(event) => {
+          if (isImeComposingEvent(event)) return;
           if (event.key === 'Escape') {
             event.stopPropagation();
             handlePopoverClose();

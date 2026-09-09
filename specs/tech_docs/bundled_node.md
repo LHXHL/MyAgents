@@ -46,7 +46,8 @@ Builtin `anthropic-sub` 的 OAuth credential 仍由 Claude Code native credentia
 
 ### MyAgents-owned 入口
 
-- Rust 启动 Sidecar、Plugin Bridge 时优先使用安装目录中 bundled Node 的绝对路径：先查 resource root，再查 executable-relative layout，最后调用 `system_binary::find()` 查找 Node。最后一步虽注释为开发回退，代码没有仅 debug 生效的限制；不能宣称生产环境绝不回退系统 Node。
+- Rust 启动 Sidecar 时优先使用安装目录中 bundled Node 的绝对路径：先查 resource root，再查 executable-relative layout，最后调用 `system_binary::find()` 查找 Node。最后一步虽注释为开发回退，代码没有仅 debug 生效的限制；不能宣称 Sidecar 生产环境绝不回退系统 Node。
+- Plugin Bridge 的安装、repair 和启动共用 `im/bridge.rs::find_bundled_node_npm()`，仅接受应用资源中的完整 Node/npm；缺失时明确报错，不回退系统发行包。仅该子进程的 PATH 前置内置 Node 目录。
 - `~/.myagents/bin/{myagents,myagents.cmd}` 是 Rust 原子生成的薄启动器，只回到当前 MyAgents executable 并透明转发 argv。
 - `src-tauri/src/cli.rs` 从当前 executable 的受信 resource root 定位 Node 与 `myagents.cjs`；资源缺失或路径逃逸时 fail closed，不回退系统 Node 或 HOME 里的旧业务脚本。
 
@@ -67,6 +68,7 @@ SDK shell 不设置全局 `npm_config_prefix` 等会干扰 nvm 的变量。需�
 ### 外部 Runtime 与应用内终端
 
 - Claude Code / Codex 等外部 Runtime 的进程环境走 `runtimes/env-utils.ts → getShellEnv()`，不是 `buildClaudeSessionEnv()`。它以 `shell.ts` 的平台目录表开头，再追加 inherited PATH 和异步检测到的用户 Shell PATH；常见系统目录在 bundled 前，但部分版本管理器目录在 bundled 后。外部 Runtime 内部 Shell 的最终环境仍由相应 Runtime 决定。
+- MyAgents 自有 CC SessionStart forwarder 使用当前 Sidecar `process.execPath`，路径按 Bash 参数安全引用，并显式声明 hook shell。保留旧版 CC 的 command-hook 协议，不要求 2.1.139 才增加的 exec-form args；Windows 沿用产品的 Git Bash 依赖。它不改变外部 Runtime 的 AI Shell PATH。
 - 应用内 PTY 终端由 `src-tauri/src/terminal.rs::inject_terminal_env()` 注入：`~/.myagents/bin`、应用可执行资源目录、bundled Node、inherited PATH。因此它的初始优先级与内置 AI 的 Shell 不同；终端 Shell 加载用户配置后还可能重排。
 - `myagents tool add` 注册的用户工具也不等同于官方 CLI：POSIX 启动器使用 `#!/usr/bin/env node`，随后沿用该 Node；Windows shim 优先使用写入时的 bundled Node 绝对路径，失效后才回退 PATH 上的 Node。
 
@@ -86,13 +88,17 @@ Detector 在 `env_clear()` 后只恢复 OS、证书、general proxy、PATH 和 U
 - 用户附加参数只追加，不覆盖 preset 的 package / 基础参数；
 - localhost 保护和 proxy env 由对应进程 owner 注入。
 
-“系统 npx 优先”特指常见目录中的 npx 入口选择。Windows 显式配对同一 distribution 的 Node 与 npx；POSIX 直接执行 npx 文件，若入口使用 `#!/usr/bin/env node`，最终 Node 还取决于子进程 PATH，不保证与该 npx 来自同一发行包。自定义 MCP 的绝对命令路径和显式 env 另行生效；不能将 npx 特判扩展为所有 MCP 都固定使用 bundled Node。
+`buildMcpStdioLaunchConfig()` 统一配置检查、preset 预热、initialize probe、builtin prewarm/live 与 Managed Codex 的 stdio 参数：默认 PATH 复用 `buildSessionExecutablePath()`，随后将选中 npx/Node 的目录移到最前，最后合并 per-server env。Windows 统一输出大写 `PATH`，覆盖 MCP SDK 同名默认值，避免 `Path` 与 `PATH` 并存。预热同时使用 server.env 和当前 workspace cwd；custom command 检查使用同一解析结果和 PATH，无需外部 `which/where`。
+
+“系统 npx 优先”特指常见目录中的入口选择；POSIX 仍执行 npx 文件（可包含包管理器 shim），Windows 使用完整 Node/npx CLI 配对。用户显式 command/env 继续生效，npm 的包内 `.bin` 优先级也保持；这不是强制所有 MCP 使用内置 Node。Managed Codex 仅通过每个 MCP 的原生 `env.PATH` 设置子进程 PATH，不污染 Codex parent 或 AI Shell；用户 env 仍经过既有安全校验，代理由对应 Runtime owner 决定。
+
+全局设置预热只缓存包，CLI `mcp test` 只证明当前全局配置可 initialize；它们不拥有 Session 的 effective MCP 或 Runtime acceptance。Managed Codex 仍可能拒绝受保护 env/不支持的 transport，system CLI Runtime 仍自管自己的 MCP。实际可用状态由 Session adapter 的现有 readback 给出。
 
 ### OpenClaw 插件安装
 
-`src-tauri/src/im/bridge.rs` 将运行 Bridge 与安装插件分开处理。安装先通过 `system_binary::find("npm")` 查找 npm，失败或不可用时显式使用 bundled Node + `npm-cli.js`，并将其 Node 目录前置供安装脚本使用；后续依赖修复也显式使用 bundled 组合。
+`src-tauri/src/im/bridge.rs` 初装只运行内置 Node + `npm-cli.js install <spec> --omit=peer`，保留包生命周期脚本；repair 复用本次已选择的同套运行时，执行 `install --ignore-scripts --omit=peer`，保持既有 best-effort 语义。SDK shim 始终最后写入。初装失败保留实际退出码/诊断，不换系统 npm 重跑生命周期脚本，也不误报“未安装 Node”。
 
-这里第一步的 locator 搜索顺序是 inherited PATH → 应用目录 → 平台补充目录和检测出的 Shell PATH。即使变量和日志称为 “system npm”，实际也可能命中 bundled npm，不能按名称推断来源。`runtime.ts::getPackageManagerPath()` 虽定义 bundled 优先策略，目前没有生产调用方，不能用它代表插件安装的实际路径。
+已有插件不自动重装；下一次 Bridge 启动使用相同内置 Node 与 PATH 策略。插件显式可执行路径和 npm 包内 `.bin` 仍遵从包自身语义。`runtime.ts::getPackageManagerPath()` 没有生产调用方，不能用它代表插件安装路径。
 
 标准 `playwright` preset 仍是上游 stdio MCP。应用自有「浏览器」由 Global Sidecar Browser Host 和 Rust resource owner 管理，不通过 npx，也不从 bundled Node、系统 Chrome 或用户 Playwright cache 猜浏览器。Chromium artifact 不是 Node bundle 的一部分。
 

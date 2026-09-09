@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import { AlertTriangle, Bot, Globe, History, Loader2, MessageSquarePlus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from 'react';
@@ -442,6 +443,7 @@ const SessionTitleEditor = forwardRef<
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={e => {
+            if (isImeComposingEvent(e)) return;
             if (e.key === 'Enter') inputRef.current?.blur();
             if (e.key === 'Escape') { setDraft(title); setEditing(false); }
           }}
@@ -460,6 +462,7 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
+  registerFileEditSubmitter?: (tabId: string, submit: () => Promise<boolean>) => () => void;
   /** Native shown/not-minimized lifecycle; focus is intentionally independent. */
   windowPresentation: MainWindowPresentation;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
@@ -503,7 +506,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ windowPresentation, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, onLaunchRuntimeBackedProviderSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts, onOpenHistoryTag }: ChatProps) {
+export default function Chat({ registerFileEditSubmitter, windowPresentation, onNewSession, onOpenSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, onLaunchRuntimeBackedProviderSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts, onOpenHistoryTag }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -772,11 +775,22 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // `initialEditMode` is set when a fresh `note-…md` is created via 「新建笔记」 —
   // FilePreviewModal opens directly in the editable Monaco view instead of the
   // markdown rendered preview.
-  const isSplitViewEnabled = config.experimentalSplitView ?? true;
+  const splitViewRequested = config.experimentalSplitView ?? true;
   const [splitFile, setSplitFile] = useState<SplitPreviewFile | null>(null);
+  const isSplitViewEnabled = splitViewRequested || !!splitFile;
   const splitFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const fullscreenFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const actionFilePreviewRef = useRef<FilePreviewHandle>(null);
+  const filePreviewRequestRef = useRef(0);
   // Clear split panel when feature is turned off (prevents stale split state)
-  useEffect(() => { if (!isSplitViewEnabled) setSplitFile(null); }, [isSplitViewEnabled]);
+  useEffect(() => {
+    if (splitViewRequested || !splitFile) return;
+    let cancelled = false;
+    void (splitFilePreviewRef.current?.prepareTransition() ?? Promise.resolve(true)).then(saved => {
+      if (saved && !cancelled) setSplitFile(null);
+    });
+    return () => { cancelled = true; };
+  }, [splitViewRequested, splitFile]);
   const [splitRatio, setSplitRatio] = useState(0.5); // 0-1, left panel fraction
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
   const [isSplitWidthTransitioning, setIsSplitWidthTransitioning] = useState(false);
@@ -912,7 +926,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Fullscreen preview triggered from split panel's "全屏预览" button
   const [fullscreenPreviewFile, setFullscreenPreviewFile] = useState<SplitPreviewFile | null>(null);
 
-  const handleSplitFilePreview = useCallback((file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
+  const handleSplitFilePreview = useCallback(async (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
+    const request = ++filePreviewRequestRef.current;
+    if (splitFilePreviewRef.current && !await splitFilePreviewRef.current.prepareTransition(file.path)) return;
+    if (request !== filePreviewRequestRef.current) return;
     const ext = file.name.toLowerCase().split('.').pop();
     const isLocalFile = file.sourceScope === 'local';
     if ((ext === 'html' || ext === 'htm') && isSplitViewEnabled && !file.focusTarget) {
@@ -977,8 +994,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
 
         if (cancelled || !file) return;
         if (isSplitViewEnabled && !isNarrowLayout) {
-          handleSplitFilePreview(file);
+          await handleSplitFilePreview(file);
         } else {
+          if (fullscreenFilePreviewRef.current && !await fullscreenFilePreviewRef.current.prepareTransition(file.path)) return;
+          if (cancelled) return;
           setFullscreenPreviewFile(file);
         }
       } catch (err) {
@@ -1045,6 +1064,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       const sep = agentDir.includes('\\') ? '\\' : '/';
       const absPath = `${agentDir}${sep}${browserSourceFile.path}`;
       const fresh = await invoke<string | null>('cmd_read_workspace_file', { path: absPath });
+      if (splitFilePreviewRef.current && !await splitFilePreviewRef.current.prepareTransition(browserSourceFile.path)) return;
       if (fresh !== null) {
         const updated = { ...browserSourceFile, content: fresh, size: new Blob([fresh]).size };
         setBrowserSourceFile(updated);
@@ -1053,6 +1073,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         setSplitFile(browserSourceFile);
       }
     } catch {
+      if (splitFilePreviewRef.current && !await splitFilePreviewRef.current.prepareTransition(browserSourceFile.path)) return;
       setSplitFile(browserSourceFile); // fallback: use cached version
     }
   }, [browserSourceFile, agentDir]);
@@ -1263,6 +1284,12 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
 
   // Ref for DirectoryPanel to trigger refresh
   const directoryPanelRef = useRef<DirectoryPanelHandle>(null);
+  useEffect(() => registerFileEditSubmitter?.(tabId, async () => {
+    for (const preview of [splitFilePreviewRef.current, fullscreenFilePreviewRef.current, actionFilePreviewRef.current]) {
+      if (preview && !await preview.prepareTransition()) return false;
+    }
+    return directoryPanelRef.current?.preparePreviewTransition() ?? true;
+  }), [registerFileEditSubmitter, tabId]);
 
   // "在文件目录中展示" from the chat path context menu. Opening the workspace
   // panel (if collapsed) mounts DirectoryPanel; the declarative request prop is
@@ -2278,9 +2305,6 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
         void handleTauriChatDropRef.current(paths);
       } else if (zoneId === 'directory-panel') {
         void handleTauriDirectoryDropRef.current(paths, position);
-      } else {
-        // Default: drop to chat area
-        void handleTauriChatDropRef.current(paths);
       }
     },
   });
@@ -2817,6 +2841,10 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; persistInputOptionChange is a pure import, runtimeConfig accessed via currentAgent ref, apiPost is stable from TabContext
   }, [skipSnapshotWrite, currentProject?.id, currentProject?.agentId, isExternalRuntime, currentRuntime, currentAgent?.runtimeConfig, patchSnapshot, patchProject, t]);
 
+  const handleMcpRetry = useCallback((serverId: string) => (
+    apiPost<import('../../shared/mcpFailure').McpRetryResult>('/api/mcp/retry', { serverId })
+  ), [apiPost]);
+
   // Handle workspace MCP toggle — Tab UI edits dual-write:
   // (1) session snapshot so THIS session uses the new tool set immediately (owned sessions only
   //     — unlocked/IM have no snapshot);
@@ -3342,6 +3370,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     scrollerRef: scrollerRef as React.RefObject<HTMLElement | null>,
     messages: chatScrollModel.data,
     scrollToMessage,
+    pauseAutoScroll,
     active: chatSearchOpen,
   });
 
@@ -4600,7 +4629,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
   // Navigate to a specific query message (used by QueryNavigator).
   // ChatScrollController owns virtualized message navigation.
   const handleNavigateToQuery = useCallback((messageId: string) => {
-    scrollToMessage(messageId, { behavior: 'smooth', align: 'start', pauseMs: 2000 });
+    scrollToMessage(messageId, { behavior: 'smooth', align: 'start' });
   }, [scrollToMessage]);
 
   // PRD 0.2.17 Agent Status Panel — 点击 SubAgent 行跳转到对话流中对应 TaskTool。
@@ -4762,7 +4791,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     // Pause auto-scroll to prevent animated scrolling during rewind's DOM changes.
     // Without this, the smooth scroll animation fights with the browser's natural
     // scroll clamping (messages removed → scrollHeight shrinks → scrollTop adjusts).
-    pauseAutoScroll(500);
+    pauseAutoScroll();
     setRewindTarget(null);
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === messageId);
@@ -4886,7 +4915,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
     const snapshot = messagesRef.current.slice();
 
     // 1. Optimistic UI: truncate to before user message
-    pauseAutoScroll(500);
+    pauseAutoScroll();
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === userMessageId);
       return idx >= 0 ? prev.slice(0, idx) : prev;
@@ -5446,6 +5475,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             Explicit UI refreshes remain a second controlled source.
           */}
           <FileActionProvider
+            previewHandleRef={actionFilePreviewRef}
             workspacePath={agentDir}
             onInsertReference={handleInsertReference}
             refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
@@ -5592,6 +5622,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
             runtimeMcpTools={runtimeMcpTools}
             mcpEffectiveSnapshot={mcpEffectiveSnapshot}
             onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
+            onMcpRetry={!isExternalRuntime || managedProviderRuntimeActive ? handleMcpRetry : undefined}
             officialTools={OFFICIAL_TOOLS}
             workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}
             globalOfficialToolEnabled={globalOfficialToolEnabled}
@@ -5974,6 +6005,7 @@ export default function Chat({ windowPresentation, onNewSession, onOpenSession, 
       {fullscreenPreviewFile && (
         <Suspense fallback={null}>
           <FilePreviewModal
+            ref={fullscreenFilePreviewRef}
             name={fullscreenPreviewFile.name}
             content={fullscreenPreviewFile.content}
             size={fullscreenPreviewFile.size}

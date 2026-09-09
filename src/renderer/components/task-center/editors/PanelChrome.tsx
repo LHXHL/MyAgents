@@ -12,6 +12,7 @@
 // Spacing constants are exported so callers compose with `${SECTION_GAP}`
 // instead of pasting `space-y-7` and slowly drifting apart again.
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
@@ -208,6 +209,7 @@ export function usePanelKeys(opts: {
   const { onClose, onSubmit, disabled } = opts;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (e.key === 'Escape' && onClose) {
         onClose();
         return;
@@ -216,8 +218,7 @@ export function usePanelKeys(opts: {
         !disabled &&
         onSubmit &&
         e.key === 'Enter' &&
-        (e.metaKey || e.ctrlKey) &&
-        !(e as KeyboardEvent & { isComposing?: boolean }).isComposing
+        (e.metaKey || e.ctrlKey)
       ) {
         e.preventDefault();
         onSubmit();

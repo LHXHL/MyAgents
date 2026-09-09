@@ -10,6 +10,7 @@
 //     `EDIT_MAX_HEIGHT_PX`, beyond which it scrolls internally. This keeps
 //     a single oversized draft from eating the whole panel.
 
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -175,6 +176,7 @@ export function ThoughtCard({
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (isImeComposingEvent(e)) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         setDraft(thought.content);

@@ -738,6 +738,28 @@ pub fn write_workspace_file_no_follow(
     relative: &str,
     bytes: &[u8],
 ) -> WfResult<PathBuf> {
+    write_workspace_file_no_follow_mode(workspace_root, relative, bytes, true)
+}
+
+/// Stable collision result for callers that allocate a unique user filename.
+pub const WORKSPACE_FILE_EXISTS: &str = "Workspace destination already exists";
+
+/// Publish a complete new file without replacing an existing directory entry.
+/// Uses the same verified directory handles as the replacing writer.
+pub fn create_workspace_file_no_follow(
+    workspace_root: &Path,
+    relative: &str,
+    bytes: &[u8],
+) -> WfResult<PathBuf> {
+    write_workspace_file_no_follow_mode(workspace_root, relative, bytes, false)
+}
+
+fn write_workspace_file_no_follow_mode(
+    workspace_root: &Path,
+    relative: &str,
+    bytes: &[u8],
+    replace: bool,
+) -> WfResult<PathBuf> {
     let canonical_root = fs::canonicalize(workspace_root)
         .map_err(|e| format!("Failed to resolve workspace path: {}", e))?;
     let target = resolve_inside_workspace(&canonical_root, relative)?;
@@ -750,11 +772,11 @@ pub fn write_workspace_file_no_follow(
 
     #[cfg(unix)]
     {
-        write_relative_file_no_follow_unix(&canonical_root, relative_path, bytes)?;
+        write_relative_file_no_follow_unix(&canonical_root, relative_path, bytes, replace)?;
     }
     #[cfg(not(unix))]
     {
-        write_relative_file_no_follow_portable(&canonical_root, relative_path, bytes)?;
+        write_relative_file_no_follow_portable(&canonical_root, relative_path, bytes, replace)?;
     }
     Ok(target)
 }
@@ -850,7 +872,12 @@ fn open_relative_file_no_follow(
 }
 
 #[cfg(unix)]
-fn write_relative_file_no_follow_unix(root: &Path, relative: &Path, bytes: &[u8]) -> WfResult<()> {
+fn write_relative_file_no_follow_unix(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+    replace: bool,
+) -> WfResult<()> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let parent_relative = relative.parent().unwrap_or_else(|| Path::new(""));
@@ -916,6 +943,9 @@ fn write_relative_file_no_follow_unix(root: &Path, relative: &Path, bytes: &[u8]
             libc::AT_SYMLINK_NOFOLLOW,
         )
     };
+    if stat_result == 0 && !replace {
+        return Err(WORKSPACE_FILE_EXISTS.to_string());
+    }
     if stat_result == 0 && (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
         return Err("Destination must not be a symlink or directory".to_string());
     }
@@ -965,14 +995,39 @@ fn write_relative_file_no_follow_unix(root: &Path, relative: &Path, bytes: &[u8]
             unsafe { libc::unlinkat(parent_fd, temp_name.as_ptr(), 0) };
             return Err(error);
         }
-        let renamed =
-            unsafe { libc::renameat(parent_fd, temp_name.as_ptr(), parent_fd, leaf.as_ptr()) };
+        let renamed = if replace {
+            unsafe { libc::renameat(parent_fd, temp_name.as_ptr(), parent_fd, leaf.as_ptr()) }
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                unsafe {
+                    libc::renameatx_np(
+                        parent_fd,
+                        temp_name.as_ptr(),
+                        parent_fd,
+                        leaf.as_ptr(),
+                        libc::RENAME_EXCL,
+                    )
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let result = unsafe {
+                    libc::linkat(parent_fd, temp_name.as_ptr(), parent_fd, leaf.as_ptr(), 0)
+                };
+                if result == 0 {
+                    unsafe { libc::unlinkat(parent_fd, temp_name.as_ptr(), 0) };
+                }
+                result
+            }
+        };
         if renamed < 0 {
+            let error = std::io::Error::last_os_error();
             unsafe { libc::unlinkat(parent_fd, temp_name.as_ptr(), 0) };
-            return Err(format!(
-                "Failed to finalize attachment: {}",
-                std::io::Error::last_os_error()
-            ));
+            if !replace && error.kind() == std::io::ErrorKind::AlreadyExists {
+                return Err(WORKSPACE_FILE_EXISTS.to_string());
+            }
+            return Err(format!("Failed to finalize attachment: {}", error));
         }
         return Ok(());
     }
@@ -1494,6 +1549,7 @@ fn rename_windows_file_relative(
     file: &fs::File,
     parent: &fs::File,
     target_name: &std::ffi::OsStr,
+    replace: bool,
 ) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
@@ -1536,7 +1592,7 @@ fn rename_windows_file_relative(
     let mut storage = vec![0usize; buffer_bytes.div_ceil(word)];
     let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFO;
     unsafe {
-        (*info).Anonymous.ReplaceIfExists = 1;
+        (*info).Anonymous.ReplaceIfExists = u8::from(replace);
         (*info).RootDirectory = parent.as_raw_handle() as _;
         (*info).FileNameLength = target_bytes as u32;
         std::ptr::copy_nonoverlapping(
@@ -1564,16 +1620,28 @@ fn write_relative_file_no_follow_portable(
     root: &Path,
     relative: &Path,
     bytes: &[u8],
+    replace: bool,
 ) -> WfResult<()> {
-    write_relative_file_no_follow_windows_impl(root, relative, bytes, || {})
+    write_relative_file_no_follow_windows_mode(root, relative, bytes, || {}, replace)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn write_relative_file_no_follow_windows_impl<F: FnOnce()>(
     root: &Path,
     relative: &Path,
     bytes: &[u8],
     after_parent_opened: F,
+) -> WfResult<()> {
+    write_relative_file_no_follow_windows_mode(root, relative, bytes, after_parent_opened, true)
+}
+
+#[cfg(windows)]
+fn write_relative_file_no_follow_windows_mode<F: FnOnce()>(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+    after_parent_opened: F,
+    replace: bool,
 ) -> WfResult<()> {
     use windows_sys::Wdk::Storage::FileSystem::{
         FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
@@ -1602,6 +1670,7 @@ fn write_relative_file_no_follow_windows_impl<F: FnOnce()>(
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         FILE_ATTRIBUTE_NORMAL,
     ) {
+        Ok(_) if !replace => return Err(WORKSPACE_FILE_EXISTS.to_string()),
         Ok(existing) => validate_windows_regular_file_handle(&existing, "destination")?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -1640,13 +1709,27 @@ fn write_relative_file_no_follow_windows_impl<F: FnOnce()>(
             let _ = delete_windows_file_by_handle(&file);
             return Err(error);
         }
-        if let Err(error) = rename_windows_file_relative(&file, &parent, leaf) {
+        if let Err(error) = rename_windows_file_relative(&file, &parent, leaf, replace) {
             let _ = delete_windows_file_by_handle(&file);
+            if !replace && error.kind() == std::io::ErrorKind::AlreadyExists {
+                return Err(WORKSPACE_FILE_EXISTS.to_string());
+            }
             return Err(format!("Failed to finalize attachment: {}", error));
         }
-        file.sync_all()
-            .map_err(|error| format!("Failed to flush finalized attachment: {}", error))?;
-        verify_windows_workspace_parent(root, relative_parent, &parent)?;
+        // Rename already published the destination. Any subsequent failure is
+        // an uncertain receipt, not proof that a retry may create another file.
+        file.sync_all().map_err(|error| {
+            format!(
+                "Workspace write status unknown after publication: {}",
+                error
+            )
+        })?;
+        verify_windows_workspace_parent(root, relative_parent, &parent).map_err(|error| {
+            format!(
+                "Workspace write status unknown after publication: {}",
+                error
+            )
+        })?;
         return Ok(());
     }
     Err("Failed to allocate attachment temp file".to_string())
@@ -1657,6 +1740,7 @@ fn write_relative_file_no_follow_portable(
     root: &Path,
     relative: &Path,
     bytes: &[u8],
+    replace: bool,
 ) -> WfResult<()> {
     let target = root.join(relative);
     let lexical_parent = target
@@ -1668,6 +1752,9 @@ fn write_relative_file_no_follow_portable(
     let canonical_parent = resolve_portable_destination_parent(root, relative_parent)?;
     let canonical_target = canonical_parent.join(target.file_name().expect("leaf validated"));
     if let Ok(metadata) = fs::symlink_metadata(&canonical_target) {
+        if !replace {
+            return Err(WORKSPACE_FILE_EXISTS.to_string());
+        }
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err("Destination must be a regular, non-symlink file".to_string());
         }
@@ -1700,13 +1787,26 @@ fn write_relative_file_no_follow_portable(
         if let Err(error) =
             verify_portable_destination_parent(root, lexical_parent, &canonical_parent).and_then(
                 |_| {
-                    replace_portable_file(&temp, &canonical_target)
-                        .map_err(|e| format!("Failed to finalize attachment: {}", e))
+                    let result = if replace {
+                        replace_portable_file(&temp, &canonical_target)
+                    } else {
+                        fs::hard_link(&temp, &canonical_target)
+                    };
+                    result.map_err(|e| {
+                        if !replace && e.kind() == std::io::ErrorKind::AlreadyExists {
+                            WORKSPACE_FILE_EXISTS.to_string()
+                        } else {
+                            format!("Failed to finalize attachment: {}", e)
+                        }
+                    })
                 },
             )
         {
             let _ = fs::remove_file(&temp);
             return Err(error);
+        }
+        if !replace {
+            let _ = fs::remove_file(&temp);
         }
         return Ok(());
     }

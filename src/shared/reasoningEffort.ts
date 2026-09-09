@@ -34,6 +34,7 @@ export const OPENAI_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'
 /** Codex app-server `turn/start.effort` — model-advertised values; gpt-5.x
  *  family supports minimal..xhigh (no 'max' tier as of codex 0.136). */
 export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const GROK_46_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
 const GROK_45_EFFORT_LEVELS = ['low', 'medium', 'high'] as const;
 const GROK_43_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 
@@ -42,6 +43,7 @@ export function providerReasoningEffortChoices(
   model: string | undefined,
 ): readonly string[] | null | undefined {
   if (providerId !== 'xai-sub') return undefined;
+  if (model === 'grok-4.6') return GROK_46_EFFORT_LEVELS;
   if (model === 'grok-4.5') return GROK_45_EFFORT_LEVELS;
   if (model === 'grok-4.3') return GROK_43_EFFORT_LEVELS;
   return null;

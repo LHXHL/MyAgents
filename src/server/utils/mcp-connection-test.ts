@@ -6,12 +6,11 @@ import type { FetchLike, Transport } from '@modelcontextprotocol/sdk/shared/tran
 import type { Stream } from 'node:stream';
 
 import type { McpServerDefinition } from '../../shared/config-types';
-import { buildMcpSubprocessEnv } from '../session-core/mcp-env-policy';
 import {
   McpTemplateResolutionError,
   resolveRemoteMcpTransportConfig,
 } from '../session-core/mcp-template-resolution';
-import { resolveNpxMcpInvocation } from './mcp-command';
+import { buildMcpStdioLaunchConfig } from './mcp-command';
 
 export const MCP_CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
@@ -79,29 +78,16 @@ function createProbeTransport(
     if (!server.command) {
       throw new McpConnectionTestError(`MCP server '${server.id}' has no command configured`);
     }
-    let command = server.command;
-    let args = Array.isArray(server.args) ? [...server.args] : [];
-    if (command === 'npx') {
-      const invocation = resolveNpxMcpInvocation(args, {
-        pinPresetPackages: server.isBuiltin === true,
-      });
-      command = invocation.command;
-      args = invocation.args;
-    }
+    const launch = buildMcpStdioLaunchConfig(server, { executionEnv: options.executionEnv });
     const transport = new StdioClientTransport({
-      command,
-      args,
-      env: {
-        ...options.executionEnv,
-        ...buildMcpSubprocessEnv(process.env, server.env),
-      },
+      ...launch,
       cwd: options.cwd,
       stderr: 'pipe',
     });
     return {
       transport,
       stderr: transport.stderr ?? undefined,
-      resolvedCommand: command,
+      resolvedCommand: launch.command,
     };
   }
 

@@ -4,6 +4,7 @@
  *
  * Uses Tab-scoped API when in Tab context, falls back to global API otherwise.
  */
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { Save, Edit2, X, Plus, AlertCircle, Loader2, Trash2, Sparkles, FolderArchive } from 'lucide-react';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -401,6 +402,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                         value={renameValue}
                                         onChange={e => setRenameValue(e.target.value)}
                                         onKeyDown={e => {
+                                            if (isImeComposingEvent(e)) return;
                                             if (e.key === 'Enter') handleRenameSubmit();
                                             if (e.key === 'Escape') setRenamingFile(null);
                                         }}
@@ -446,6 +448,7 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                                 value={newFileName}
                                 onChange={e => setNewFileName(e.target.value)}
                                 onKeyDown={e => {
+                                    if (isImeComposingEvent(e)) return;
                                     if (e.key === 'Enter') handleCreateSubmit();
                                     if (e.key === 'Escape') {
                                         setIsCreating(false);

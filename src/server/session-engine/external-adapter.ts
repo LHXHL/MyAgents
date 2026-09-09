@@ -6,6 +6,7 @@ import {
   cancelExternalImRequest,
   clearExternalTurnBinding,
   compactExternalContext,
+  retryExternalMcpServer,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
   enqueueExternalSendForIm,
@@ -971,6 +972,10 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async updateMcpServers(servers) {
       return handleExternalMcpServersChange(servers);
+    },
+
+    retryMcpServer(serverId) {
+      return retryExternalMcpServer(serverId);
     },
 
     async updateAgents() {

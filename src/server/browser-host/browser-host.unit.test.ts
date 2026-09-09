@@ -276,7 +276,7 @@ describe('PlaywrightBrowserHost', () => {
     await host.shutdown();
   });
 
-  it('routes cancellation to only the pending Context acquisition', async () => {
+  it('ignores cancellation for a request not admitted on this connection', async () => {
     const registry = fakeRegistry();
     const host = new PlaywrightBrowserHost(BROWSER_HOST_PORT, {
       registry: registry as unknown as BrowserContextRegistry,
@@ -292,7 +292,7 @@ describe('PlaywrightBrowserHost', () => {
     }, TOKEN_A, sessionId));
 
     expect(response.status).toBeLessThan(500);
-    expect(registry.cancelPendingContext).toHaveBeenCalledWith('session-a');
+    expect(registry.cancelPendingContext).not.toHaveBeenCalled();
     await host.shutdown();
   });
 

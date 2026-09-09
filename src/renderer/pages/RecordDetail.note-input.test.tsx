@@ -1425,4 +1425,40 @@ describe('RecordDetail note input', () => {
       'Untitled record',
     );
   });
+  it.each([
+    [
+      'SPEECH_WORKER_PROTOCOL_ERROR',
+      /转写组件通信失败|transcription components could not communicate/i,
+    ],
+    ['SPEECH_CORRUPT_MEDIA', /音频解码失败|audio could not be decoded/i],
+    [
+      'SPEECH_PUBLISH_FAILED',
+      /转写结果保存失败|transcript could not be saved/i,
+    ],
+  ])(
+    'explains %s while preserving the recording retry action',
+    async (code, hint) => {
+      mocks.recordGet.mockResolvedValue({
+        ...RECORD,
+        audio: {
+          ...RECORD.audio!,
+          captureStatus: 'ready',
+          transcriptionStatus: 'failed',
+        },
+        transcriptionFailure: { code, stage: 'transcribing', retryable: true },
+      });
+      mocks.recordingSnapshot.mockResolvedValue(null);
+      render(<RecordDetail recordId={RECORD.id} isActive />);
+      expect(await screen.findByText(hint)).toBeInTheDocument();
+      expect(screen.getByText(code)).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole('button', { name: /重新转录|Retry transcription/i }),
+      );
+      await waitFor(() =>
+        expect(mocks.recordStartTranscription).toHaveBeenCalledWith(RECORD.id),
+      );
+    },
+  );
+
+
 });

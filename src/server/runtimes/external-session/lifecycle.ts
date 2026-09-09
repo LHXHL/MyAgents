@@ -4,7 +4,7 @@ import type { RuntimeType } from '../../../shared/types/runtime';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { SessionOrigin } from '../../../shared/session-origin';
 import type { OfficialToolId } from '../../../shared/official-tools';
-import type { McpEffectiveSnapshot } from '../../../shared/mcpEffectiveState';
+import { invalidateMcpEffectiveSnapshot, type McpEffectiveSnapshot } from '../../../shared/mcpEffectiveState';
 import type { AgentRuntime, RuntimeProcess } from '../types';
 import type { ExternalSessionState, ExternalSystemInitPayload } from './types';
 
@@ -258,6 +258,13 @@ export function getExternalMcpEffectiveSnapshot(): McpEffectiveSnapshot | null {
         tools: [...externalMcpEffectiveSnapshot.tools],
       }
     : null;
+}
+
+export function invalidateExternalMcpEffectiveSnapshot(): McpEffectiveSnapshot | null {
+  if (!externalMcpEffectiveSnapshot) return null;
+  externalMcpEffectiveSnapshot = invalidateMcpEffectiveSnapshot(externalMcpEffectiveSnapshot);
+  externalMcpEffectiveRevision = externalMcpEffectiveSnapshot.revision;
+  return getExternalMcpEffectiveSnapshot();
 }
 
 export function setExternalPrewarmingSession(value: boolean): void {

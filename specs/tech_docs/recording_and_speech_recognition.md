@@ -38,6 +38,8 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 - 重采样统一经过 `rubato` adapter；适配层只负责 interleaved/planar 转换、尾部 duration 对齐与 buffer hard limit，capture callback 不执行 DSP；
 - attachment container/codec probe 与解码统一使用 `symphonia` 的产品白名单 features，不引入 FFmpeg 或第二个 runtime decoder；
 - Ogg archive/test 与 bundled libopus 共享固定内部 profile。Worker reader 保留分配前 packet 上限、连续 page sequence 与 fail-closed 校验；
+- Opus 浮点解码和附件 sinc 重采样允许产生正常的 full-scale overshoot；两条 decoder 都在输出边界将有限 PCM 限幅到 `[-1, 1]` 后交给推理。NaN/Inf 仍是解码错误，不能当作静音吞掉。
+- sherpa 的 `max_speech_duration` 只是促使端点出现的软参数。native VAD adapter 按模型窗口喂入，基于连续 detected speech 预算强制 flush，并预留 onset lookback；静音、自然端点、pause flush 和 reset 清除预算，保证长段在达到 ASR 硬上限前形成有界结果。
 - diarization 模型推理属于 sherpa-onnx；自有代码只负责有界窗口、跨窗口 identity、重叠裁决、稀疏 fallback 与敏感 embedding 清理；
 - transcript revision 与 recording lifecycle 共享 `DurableRecordJournal` 的 regular-file、identity/schema、sequence/checksum、单行上限、durable append 与 torn-tail repair。
 
@@ -67,6 +69,12 @@ App-global compute admission 固定为 `RecordLive > RecordBackfill > RecordDiar
 Worker settlement 统一有界：合法 `Completed/Failed` 后最多给 30 秒自然退出；`Yielded`、本地 protocol/cancel 路径先给 15 秒 cooperative settlement；App shutdown 给 10 秒；任何路径进入 force-stop 后最多再等 10 秒确认 exact process tree 已无法执行。Manager 在 settlement 完成前不释放 generation/publish authority。
 
 Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业务数量/时间轴上限且当前 generation 仍持有 publish authority 时才能提交。Record ASR 成功后由同一 Manager 排队 diarization；stale generation、cancelled generation 和失败 probe 都不能发布内容。
+
+`mixed` 只属于双轨最终 transcript 的结果身份。共享协议 reader 必须接受该结果，但 live PCM、InputAck 和物理轨 checkpoint 不接受 `mixed`。回归测试必须经过实际 `write_control_frame → read_worker_response → Manager` 路径，不能只分别验证 Worker 输出和 Manager 业务 helper。
+
+Record 最终 transcript 与 diarization 结果先以唯一 UUID 文件名写入对应目录并同步，再由 `record.json` 原子接纳其 artifact；当前已引用文件不提前覆盖。提交失败仅在磁盘清单证实未引用时删除该次文件，提交成功后清理上一份已拥有的结果。读取兼容旧 `transcript/snapshot.json`、`diarization/result.json`；旧版半提交造成的失配引用在加载时降级为待重试的 failed projection，同步失效引用这些结果的讨论文档，原始音频保持严格校验且不被派生结果故障隐藏。未入清单的旧结果不自动接纳，显式重转直接生成新的结果。
+
+失败 job 保留最后确认的处理 stage；失败收尾不再一律将 stage 改成 `publishing`。Record 详情通过现有 `cmd_record_get` 从 SpeechRecognitionManager 的最新 backfill job 投影结构化失败原因，Record manifest 不持久化第二份 job error。协议读帧拒绝只记录固定原因枚举、job/generation 与 IO kind，不记录响应正文或原始 stderr。
 
 ### Agent attachment job scope
 

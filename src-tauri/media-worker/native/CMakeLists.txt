@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.28)
 project(myagents_speech_adapter LANGUAGES CXX)
 
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(speech-vad-bound-test bounded_vad_test.cc)
+  target_compile_features(speech-vad-bound-test PRIVATE cxx_std_20)
+  # Assertions are the regression checks, including in Release test builds.
+  if(MSVC)
+    target_compile_options(speech-vad-bound-test PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(speech-vad-bound-test PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME speech-vad-bound COMMAND speech-vad-bound-test)
+endif()
+
 foreach(required IN ITEMS MYAGENTS_SHERPA_INCLUDE_DIR MYAGENTS_SHERPA_LIBRARY MYAGENTS_HCLUST_INCLUDE_DIR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
     message(FATAL_ERROR "${required} is required")

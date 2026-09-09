@@ -42,7 +42,26 @@
       "readyTools": "{{count}} 个工具已就绪",
       "needsAuth": "需要登录授权",
       "unavailable": "当前不可用",
-      "starting": "正在启动…"
+      "starting": "正在启动…",
+      "stale": "状态待确认",
+      "retry": "重试连接",
+      "retryHint": "重新连接当前会话的工具，保留对话与工具选择",
+      "errors": {
+        "MCP_STARTUP_FAILED": "当前不可用",
+        "MCP_CONNECTION_TIMEOUT": "工具连接超时",
+        "MCP_RUNTIME_MISSING": "找不到工具启动程序",
+        "MCP_PACKAGE_FAILED": "工具依赖加载失败",
+        "MCP_CONFIG_INVALID": "工具启动参数有误",
+        "MCP_CONNECTION_FAILED": "工具连接已中断",
+        "MCP_NEEDS_AUTH": "工具需要重新授权",
+        "MCP_RUNTIME_EXITED": "工具所在的运行环境已退出"
+      },
+      "retryErrors": {
+        "session_busy": "请等待当前会话任务完成后重试",
+        "unsupported_runtime": "当前运行环境不支持原地重试",
+        "server_not_failed": "工具状态已变化，请查看最新状态",
+        "retry_failed": "未能重新连接，请稍后重试"
+      }
     },
     "pluginsHeader": "插件 Plugins",
     "pluginLoadsMcpTitle": "启用此插件会自动加载这些 MCP server：{{names}}",

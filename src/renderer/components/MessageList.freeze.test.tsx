@@ -26,7 +26,9 @@ type Recorded = {
   components?: unknown;
   context?: unknown;
   atBottomStateChange?: (atBottom: boolean) => void;
-  followOutput?: (isAtBottom: boolean) => false | 'smooth';
+  followOutput?: false;
+  scrollerRef?: (el: HTMLElement | null) => void;
+  totalListHeightChanged?: (height: number) => void;
   startReached?: () => void;
   skipAnimationFrameInResizeObserver?: boolean;
   itemSize?: SizeFunction;
@@ -40,7 +42,9 @@ vi.mock('react-virtuoso', () => ({
     components?: unknown;
     context?: unknown;
     atBottomStateChange?: (atBottom: boolean) => void;
-    followOutput?: (isAtBottom: boolean) => false | 'smooth';
+    followOutput?: false;
+  scrollerRef?: (el: HTMLElement | null) => void;
+  totalListHeightChanged?: (height: number) => void;
     startReached?: () => void;
     skipAnimationFrameInResizeObserver?: boolean;
     itemSize?: SizeFunction;
@@ -54,6 +58,8 @@ vi.mock('react-virtuoso', () => ({
       context: props.context,
       atBottomStateChange: props.atBottomStateChange,
       followOutput: props.followOutput,
+      scrollerRef: props.scrollerRef,
+      totalListHeightChanged: props.totalListHeightChanged,
       startReached: props.startReached,
       skipAnimationFrameInResizeObserver: props.skipAnimationFrameInResizeObserver,
       itemSize: props.itemSize,
@@ -500,15 +506,14 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     unfocused.atBottomStateChange?.(false);
     expect(handleAtBottomChange).toHaveBeenCalledWith(false);
     expect(followProps.followEnabledRef.current).toBe(false);
-    expect(unfocused.followOutput?.(true)).toBe(false);
+    expect(unfocused.followOutput).toBe(false);
     unfocused.atBottomStateChange?.(true);
     expect(handleAtBottomChange).toHaveBeenCalledWith(true);
     expect(followProps.followEnabledRef.current).toBe(true);
-    expect(unfocused.followOutput?.(true)).toBe('smooth');
+    expect(unfocused.followOutput).toBe(false);
     unfocused.startReached?.();
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
-    expect(scrollToBottom).toHaveBeenCalledTimes(1);
-    expect(scrollToBottom).toHaveBeenCalledWith('auto');
+    expect(scrollToBottom).not.toHaveBeenCalled();
 
     rerender(
       <MessageList
@@ -532,7 +537,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().heightEstimates).toEqual([150, 270, 900]);
     expect(lastData().components).toBe(focusedComponents);
     expect(lastData().context).not.toBe(focusedContext);
-    expect(scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToBottom).not.toHaveBeenCalled();
   });
 
   it('does NOT carry a stale "scrolled-up" follow snapshot across a session switch made while hidden', () => {
@@ -734,55 +739,53 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().heightEstimates).toEqual([120, 480]);
   });
 
-  it('keeps active streaming pinned before paint through Virtuoso LAST/end alignment while following', () => {
-    const scrollToIndex = vi.fn();
-    const autoscrollToBottom = vi.fn();
-    renderList({
-      messages: [msg('h1', 'hello', 'user'), msg('stream', 'partial')],
-      streamingMessage: msg('stream', 'partial'),
-      isLoading: true,
-      isActive: true,
-      ...createFollowProps(),
-      virtuosoRef: {
-        current: { scrollToIndex, autoscrollToBottom },
-      } as unknown as React.RefObject<VirtuosoHandle | null>,
+  it('aligns actual geometry for streaming, footer growth and terminal layout through one path', () => {
+    let height = 1000;
+    const scroller = document.createElement('div');
+    Object.defineProperties(scroller, {
+      scrollHeight: { get: () => height },
+      clientHeight: { value: 500 },
     });
-
-    expect(scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
-    expect(autoscrollToBottom).not.toHaveBeenCalled();
-  });
-
-  it('pins to bottom once when a turn completes while follow is enabled', () => {
-    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
-    const scrollToBottom = vi.fn();
-    const history = [msg('h1', 'hello', 'user')];
-    const baseProps = {
-      firstItemIndex: 1_000_000,
+    const scrollTo = vi.fn(({ top }: { top: number }) => { scroller.scrollTop = top; });
+    const scrollToIndex = vi.fn();
+    const stream = msg('stream', 'partial');
+    const props = {
+      messages: [msg('h1', 'hello', 'user'), stream],
+      streamingMessage: stream,
+      isLoading: true,
       sessionId: 's1',
-      virtuosoRef: { current: null },
-      followEnabledRef: followRef,
-      scrollToBottom,
+      ...createFollowProps(),
+      virtuosoRef: { current: { scrollTo, scrollToIndex } } as unknown as React.RefObject<VirtuosoHandle | null>,
+      scrollToBottom: vi.fn(),
       handleAtBottomChange: vi.fn(),
     };
-    const { rerender } = renderList({
-      ...baseProps,
-      messages: [...history, msg('stream', 'partial')],
-      streamingMessage: msg('stream', 'partial'),
-      isLoading: true,
-      isActive: true,
-    });
-    scrollToBottom.mockClear();
+    const { rerender } = render(<MessageList {...props} />);
+    act(() => lastData().scrollerRef?.(scroller));
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 500, behavior: 'auto' });
+    // The new DOM height is authoritative even while Virtuoso's estimate lags.
+    height = 1124;
+    act(() => lastData().totalListHeightChanged?.(1000));
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 624, behavior: 'auto' });
+    height = 1130;
+    rerender(<MessageList {...props} isLoading={false} streamingMessage={null} />);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 630, behavior: 'auto' });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(lastData().followOutput).toBe(false);
 
-    rerender(
-      <MessageList
-        {...baseProps}
-        messages={[...history, msg('assistant-1', 'final')]}
-        streamingMessage={null}
-        isLoading={false}
-        isActive
-      />,
-    );
+    scrollTo.mockClear();
+    act(() => lastData().totalListHeightChanged?.(1130));
+    expect(scrollTo).not.toHaveBeenCalled();
+    props.followEnabledRef.current = false;
+    height = 1400;
+    act(() => lastData().totalListHeightChanged?.(1400));
+    expect(scrollTo).not.toHaveBeenCalled();
 
-    expect(scrollToBottom).toHaveBeenCalledWith('auto');
+    props.followEnabledRef.current = true;
+    rerender(<MessageList {...props} isViewportRecoveryFenced />);
+    act(() => lastData().totalListHeightChanged?.(1400));
+    expect(scrollTo).not.toHaveBeenCalled();
+    rerender(<MessageList {...props} isActive={false} />);
+    act(() => lastData().totalListHeightChanged?.(1400));
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 });

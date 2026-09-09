@@ -114,6 +114,8 @@ stdin user message
 
 MyAgents 把 native stream 归一化为 UnifiedEvent，并通过 SessionStart hook 获取可靠的 session id。权限模式使用 CLI 当前支持的 native vocabulary；产品权限只在 Runtime boundary 做可证明的映射。
 
+SessionStart 的应用自有 forwarder 通过 Sidecar `process.execPath` 启动，不从外部 CLI 的 PATH 寻找 Node。生成的 command 使用 Bash 安全参数引用并声明 `shell: bash`（Windows 使用产品已有 Git Bash）；保留 2.1.119/2.1.138 的旧 command-hook 支持，不依赖 2.1.139 新增的 `args`。外部 Runtime 与 AI Shell 的环境策略保持独立。
+
 IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须保留 stdio permission channel。full-agency 对普通工具可以 fast-path，但不能用 bypass mode 吞掉结构化提问。
 
 ### 5.3 Codex

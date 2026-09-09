@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -56,6 +57,7 @@ export function TokenDanceDialog({
         aria-labelledby={titleId}
         className="flex max-h-[calc(100dvh-64px)] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-[var(--paper-elevated)] text-[var(--ink)] shadow-xl"
         onKeyDown={(event) => {
+          if (isImeComposingEvent(event)) return;
           if (event.key === 'Escape') {
             event.stopPropagation();
             onClose();

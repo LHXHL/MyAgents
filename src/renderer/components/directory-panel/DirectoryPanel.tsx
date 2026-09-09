@@ -1,3 +1,5 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
+import type { FilePreviewHandle } from '../FilePreviewModal';
 import {
   AtSign,
   ChevronUp,
@@ -284,7 +286,7 @@ const DirectoryPanel = memo(
     );
     const treeScrollTopRef = useRef(0);
 
-    const ROW_HEIGHT = 26;
+    const ROW_HEIGHT = 28;
 
     // Git branch state
     const [gitBranch, setGitBranch] = useState<string | null>(null);
@@ -900,6 +902,7 @@ const DirectoryPanel = memo(
       );
     }, [nodeMetaByPath]);
 
+    const previewHandleRef = useRef<FilePreviewHandle>(null);
     const handlePreview = useCallback(async (node: DirectoryTreeNode) => {
       if (node.type !== "file") return;
 
@@ -909,6 +912,8 @@ const DirectoryPanel = memo(
       try {
         const payload = await fileService.readPreview({ path: node.path });
         if (myReq !== previewReqIdRef.current) return; // superseded by newer click
+        if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
+        if (myReq !== previewReqIdRef.current) return;
         const fileData = { ...payload, path: node.path };
         if (onFilePreviewExternal) {
           onFilePreviewExternal(fileData);
@@ -921,7 +926,7 @@ const DirectoryPanel = memo(
         if (onFilePreviewExternal) {
           toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
         } else {
-          setPreview(null);
+          toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
           setPreviewError(
             err instanceof Error
               ? err.message
@@ -942,11 +947,13 @@ const DirectoryPanel = memo(
      *  reqId bump invalidates any in-flight text/image preview so its async
      *  result can't stomp this one (and won't reset isPreviewLoading, so we
      *  clear it ourselves). */
-    const handleRichDocPreview = useCallback((node: DirectoryTreeNode) => {
+    const handleRichDocPreview = useCallback(async (node: DirectoryTreeNode) => {
       if (node.type !== "file") return;
       const richDocKind = getRichDocKind(node.name);
       if (!richDocKind) return;
-      previewReqIdRef.current++;
+      const myReq = ++previewReqIdRef.current;
+      if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(node.path)) return;
+      if (myReq !== previewReqIdRef.current) return;
       // Clear loading regardless of branch: the reqId bump above means a prior
       // in-flight text/image preview's finally won't reset it, and the external
       // (split-view) branch must leave the state machine consistent too.
@@ -1009,6 +1016,8 @@ const DirectoryPanel = memo(
         try {
           const payload = await fileService.readPreview({ path });
           if (myReq !== previewReqIdRef.current) return; // superseded
+          if (!onFilePreviewExternal && previewHandleRef.current && !await previewHandleRef.current.prepareTransition(path)) return;
+          if (myReq !== previewReqIdRef.current) return;
           const initialEditMode = !!focusTarget && isMarkdownFile(payload.name);
           const fileData = {
             ...payload,
@@ -1031,7 +1040,7 @@ const DirectoryPanel = memo(
           if (onFilePreviewExternal) {
             toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
           } else {
-            setPreview(null);
+            toast.error(tRef.current("workspaceFiles.directory.toasts.previewFailed"));
             setPreviewError(
               err instanceof Error
                 ? err.message
@@ -1256,6 +1265,7 @@ const DirectoryPanel = memo(
     useImperativeHandle(
       ref,
       () => ({
+        preparePreviewTransition: () => previewHandleRef.current?.prepareTransition() ?? Promise.resolve(true),
         handleFileDrop: async (
           paths: string[],
           position?: { x: number; y: number },
@@ -1897,6 +1907,7 @@ const DirectoryPanel = memo(
         if (onFilePreviewExternal) {
           onFilePreviewExternal(previewFile, { initialEditMode: true });
         } else {
+          if (previewHandleRef.current && !await previewHandleRef.current.prepareTransition(createdPath)) return;
           setPreview({ ...previewFile, initialEditMode: true });
           setPreviewError(null);
         }
@@ -3018,7 +3029,7 @@ const DirectoryPanel = memo(
             isNarrowMode ? () => setIsCollapsed(!isCollapsed) : undefined
           }
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             {/* Search toggle button */}
             <Tip
               label={
@@ -3039,7 +3050,8 @@ const DirectoryPanel = memo(
                           setSearchQuery('');
                       }
                   }}
-                  className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                  aria-label={isSearchMode ? t("workspaceFiles.directory.closeSearch") : t("workspaceFiles.directory.fileSearch")}
+                  className={`compact-action transition-colors ${
                       isSearchMode
                           ? "bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]"
                           : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
@@ -3064,7 +3076,8 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenTerminal();
                   }}
-                  className={`relative flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                  aria-label={terminalAlive ? t("workspaceFiles.directory.showTerminal") : t("workspaceFiles.directory.openTerminal")}
+                  className={`relative compact-action transition-colors ${
                     terminalAlive
                       ? "text-[var(--accent-warm)] hover:bg-[var(--accent-warm-subtle)]"
                       : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
@@ -3087,7 +3100,8 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenBrowser();
                   }}
-                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  aria-label={t("workspaceFiles.directory.browser")}
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <Globe className="h-4 w-4" />
                 </button>
@@ -3108,7 +3122,7 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onOpenConfig();
                   }}
-                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  className="compact-action gap-1 px-2 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                   {t("workspaceFiles.directory.agentSettings")}
@@ -3128,7 +3142,7 @@ const DirectoryPanel = memo(
                     onCollapse();
                   }}
                   aria-label={t("workspaceFiles.directory.collapseWorkspace")}
-                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <PanelRight className="h-4 w-4" />
                 </button>
@@ -3152,7 +3166,7 @@ const DirectoryPanel = memo(
                   aria-label={isCollapsed
                     ? t("workspaceFiles.directory.expandWorkspace")
                     : t("workspaceFiles.directory.foldWorkspace")}
-                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  className="compact-action text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                 >
                   <ChevronUp
                     className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}
@@ -3182,6 +3196,7 @@ const DirectoryPanel = memo(
                           placeholder={t("workspaceFiles.directory.searchPlaceholder")}
                           className="h-7 w-full rounded-md border border-[var(--line)] bg-transparent pl-8 pr-8 text-sm text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none transition-colors focus:border-[var(--accent)]"
                           onKeyDown={(e) => {
+                              if (isImeComposingEvent(e)) return;
                               if (e.key === 'Escape') {
                                   setIsSearchMode(false);
                                   setSearchQuery('');
@@ -3501,13 +3516,14 @@ const DirectoryPanel = memo(
           (preview || previewError || isPreviewLoading) && (
             <Suspense fallback={null}>
               <FilePreviewModal
+                ref={previewHandleRef}
                 name={preview?.name ?? t("workspaceFiles.common.preview")}
                 content={preview?.content ?? ""}
                 size={preview?.size ?? 0}
                 path={preview?.path ?? ""}
                 richDocKind={preview?.richDocKind}
-                isLoading={isPreviewLoading}
-                error={previewError}
+                isLoading={isPreviewLoading && !preview}
+                error={preview ? null : previewError}
                 // Phase D.5: thread the absolute workspace root so rendered
                 // markdown previews can load relative-path images.
                 workspacePath={agentDir}

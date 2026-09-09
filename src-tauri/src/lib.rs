@@ -36,6 +36,8 @@ pub mod logger;
 #[cfg(target_os = "macos")]
 mod macos_arrow_filter;
 #[cfg(target_os = "macos")]
+mod macos_edit_menu;
+#[cfg(target_os = "macos")]
 mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
@@ -230,6 +232,20 @@ fn should_request_exit_confirmation(code: Option<i32>, confirmed: bool) -> bool 
     code != Some(tauri::RESTART_EXIT_CODE) && !confirmed
 }
 
+fn app_context() -> tauri::Context<tauri::Wry> {
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    let context = {
+        let mut context = context;
+        // Tauri's ICO codegen decodes only entries()[0], which is 16x16 in our
+        // multi-resolution ICO. Supply the full-resolution runtime image before
+        // any windows or the tray are built; keep the ICO for EXE/installer use.
+        context.set_default_window_icon(Some(tauri::include_image!("icons/128x128@2x.png")));
+        context
+    };
+    context
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ── DIAGNOSTIC PANIC HOOK (April 2026 crash investigation) ─────────────
@@ -346,6 +362,14 @@ pub fn run() {
                 if let Err(e) = app.emit("window:cmd-w", ()) {
                     ulog_warn!("[App] Cmd+W emit failed: {}", e);
                 }
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(command) = match event.id().as_ref() {
+                "edit-undo" => Some("undo"),
+                "edit-redo" => Some("redo"),
+                _ => None,
+            } {
+                macos_edit_menu::dispatch_history(app, command);
             }
         })
         .register_asynchronous_uri_scheme_protocol("myagents-resource", attachment_protocol::handle)
@@ -663,6 +687,8 @@ pub fn run() {
             // submodule path (e.g. `workspace_files::files_b64::cmd_…`), not the
             // re-export at the parent module level.
             workspace_files::files_b64::cmd_workspace_import_files_b64,
+            workspace_files::markdown_assets::cmd_workspace_import_markdown_image,
+            workspace_files::markdown_assets::cmd_workspace_save_markdown_copy,
             workspace_files::files_b64::cmd_workspace_read_files_b64,
             workspace_files::user_attachments::cmd_prepare_user_image_attachments,
             workspace_files::check_paths::cmd_workspace_check_paths,
@@ -701,6 +727,8 @@ pub fn run() {
             workspace_files::watcher::cmd_workspace_watch_stop,
             // Full-text search commands
             search::cmd_search_sessions,
+            search::cmd_search_session_page,
+            search::cmd_close_session_search,
             search::cmd_search_records,
             search::cmd_search_workspace_files,
             search::cmd_search_index_status,
@@ -1336,9 +1364,8 @@ pub fn run() {
                 // Select All item registers ⌘A as a menu key-equivalent, which
                 // macOS dispatches as the native `selectAll:` selector in
                 // `performKeyEquivalent:` — BEFORE the WebView ever delivers a
-                // JS `keydown`. Unlike `copy:`/`cut:`/`paste:`/`undo:` (which
-                // WebKit translates into DOM clipboard / `beforeinput` events
-                // that Monaco listens to), `selectAll:` has no DOM-event
+                // JS `keydown`. Unlike `copy:`/`cut:`/`paste:` (which WebKit
+                // translates into DOM clipboard events), `selectAll:` has no DOM-event
                 // equivalent, so Monaco's own ⌘A keybinding never fires and the
                 // workspace tree's keyboard ⌘A is pre-empted too. Net effect:
                 // ⌘A silently does nothing in every custom WebView editor while
@@ -1349,13 +1376,19 @@ pub fn run() {
                 // reaches the WebView — the correct owner — exactly like ⌘T/⌘Y
                 // /⌘U/⌘1-9 already do. There Monaco's built-in selectAll, the
                 // tree's resolveTreeKeyAction, and WebKit's textarea default all
-                // pick it up. Keep cut/copy/paste/undo/redo: those map to DOM
-                // events Monaco honours, so removing them would gain nothing and
-                // risk the clipboard paths. (Long-standing since the custom menu
-                // landed in 11a35a25 / Tauri's default menu before that.)
+                // pick it up. Keep native cut/copy/paste for system clipboard
+                // access. Undo/Redo must reach the editor even when WebKit has no
+                // native undo record (e.g. CM toolbar formatting), so use custom
+                // menu intents with the same accelerators and existing event path.
+                let undo = MenuItemBuilder::with_id("edit-undo", "Undo")
+                    .accelerator("CmdOrCtrl+Z")
+                    .build(app_handle)?;
+                let redo = MenuItemBuilder::with_id("edit-redo", "Redo")
+                    .accelerator("CmdOrCtrl+Shift+Z")
+                    .build(app_handle)?;
                 let edit_menu = SubmenuBuilder::new(app_handle, "Edit")
-                    .undo()
-                    .redo()
+                    .item(&undo)
+                    .item(&redo)
                     .separator()
                     .cut()
                     .copy()
@@ -1708,6 +1741,9 @@ pub fn run() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    if let Some(search) = window.try_state::<Arc<search::SearchEngine>>() {
+                        search.close_window_searches(window.label());
+                    }
                     // A window owns only its WebView. Auxiliary windows are
                     // routinely destroyed while the application and every
                     // Session Sidecar remain live; app-wide teardown belongs
@@ -1720,7 +1756,7 @@ pub fn run() {
                 _ => {}
             }
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application");
 
     // Run with event handler to catch Cmd+Q, Dock quit, and Dock click
@@ -1885,6 +1921,24 @@ mod nav_guard_tests {
         classify_navigation(&Url::parse(s).expect("parse url"))
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_runtime_icon_has_high_dpi_source() {
+        let context = super::app_context();
+        let icon = context.default_window_icon().expect("runtime app icon");
+        assert!(
+            icon.width() >= 256 && icon.height() >= 256,
+            "Windows must receive a high-resolution icon, got {}x{}",
+            icon.width(),
+            icon.height(),
+        );
+        assert_eq!(icon.width(), icon.height());
+        assert_eq!(
+            icon.rgba().len(),
+            (icon.width() * icon.height() * 4) as usize
+        );
+    }
+
     #[test]
     fn native_exit_requires_the_shared_frontend_confirmation_except_for_restart() {
         assert!(should_request_exit_confirmation(None, false));
@@ -2009,7 +2063,7 @@ mod nav_guard_tests {
         let source = include_str!("lib.rs");
         let window_handler = source
             .split_once(".on_window_event")
-            .and_then(|(_, tail)| tail.split_once(".build(tauri::generate_context!())"))
+            .and_then(|(_, tail)| tail.split_once(".build(app_context())"))
             .map(|(handler, _)| handler)
             .expect("window event handler source");
 

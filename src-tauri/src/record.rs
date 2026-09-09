@@ -1764,23 +1764,25 @@ impl RecordStore {
         validate_transcript_segments(audio, &segments.0)?;
         validate_speech_provenance(&provenance)?;
 
-        let relative = PathBuf::from("transcript/snapshot.json");
-        let snapshot_path = stored.path.join(&relative);
-        let projection_revision = match stored
+        let projection_revision = stored
             .record
             .artifacts
             .iter()
             .find(|artifact| artifact.kind == "transcript/recording-final+json")
-        {
-            Some(artifact) => read_owned_transcript_snapshot(id, &stored.path, audio, artifact)?
-                .projection_revision
-                .saturating_add(1)
-                .max(1),
-            None if snapshot_path.exists() => {
-                return Err("transcript snapshot exists outside Record inventory".to_string());
-            }
-            None => 1,
-        };
+            .map(|artifact| {
+                read_owned_transcript_snapshot(id, &stored.path, audio, artifact)
+                    .map_or(stored.record.revision, |snapshot| {
+                        snapshot.projection_revision
+                    })
+                    .saturating_add(1)
+            })
+            .unwrap_or_else(|| {
+                if audio.transcription_status == TranscriptionStatus::Failed {
+                    stored.record.revision.saturating_add(1)
+                } else {
+                    1
+                }
+            });
         let snapshot = RecordTranscriptSnapshot {
             schema_version: 1,
             record_id: id.to_string(),
@@ -1796,25 +1798,15 @@ impl RecordStore {
             bytes.zeroize();
             return Err("transcript snapshot exceeds the fixed size limit".to_string());
         }
-        let content = match std::str::from_utf8(&bytes) {
-            Ok(content) => content,
-            Err(_) => {
-                bytes.zeroize();
-                return Err("transcript snapshot serialization is not UTF-8".to_string());
-            }
-        };
-        let write_result = crate::task::write_atomic_text(&snapshot_path, content);
+        let write_result =
+            write_speech_projection(&stored.path, SpeechProjectionKind::Transcript, &bytes);
         bytes.zeroize();
-        write_result?;
+        let artifact = write_result?;
 
         let mut updated = stored.record.clone();
         replace_record_artifact(
             &mut updated.artifacts,
-            record_artifact_from_file(
-                &snapshot_path,
-                &relative,
-                "transcript/recording-final+json",
-            )?,
+            artifact.clone(),
             "transcript/recording-final+json",
         );
         let audio = updated
@@ -1827,12 +1819,7 @@ impl RecordStore {
         }
         updated.updated_at = now_ms();
         updated.revision = updated.revision.saturating_add(1);
-        persist_existing_record(
-            &stored.path,
-            &updated,
-            stored.legacy_thought_digest.clone(),
-            false,
-        )?;
+        publish_speech_projection(&stored, &updated, &artifact)?;
         updated = refresh_audio_discussion_document_best_effort(&stored, updated);
         inner.insert(
             id.to_string(),
@@ -1864,23 +1851,23 @@ impl RecordStore {
         validate_speaker_turns(audio, &turns)?;
         validate_speech_provenance(&provenance)?;
 
-        let relative = PathBuf::from("diarization/result.json");
-        let result_path = stored.path.join(&relative);
-        let projection_revision = match stored
+        let projection_revision = stored
             .record
             .artifacts
             .iter()
             .find(|artifact| artifact.kind == "diarization/model-projection+json")
-        {
-            Some(artifact) => read_owned_diarization_result(id, &stored.path, audio, artifact)?
-                .projection_revision
-                .saturating_add(1)
-                .max(1),
-            None if result_path.exists() => {
-                return Err("diarization result exists outside Record inventory".to_string());
-            }
-            None => 1,
-        };
+            .map(|artifact| {
+                read_owned_diarization_result(id, &stored.path, audio, artifact)
+                    .map_or(stored.record.revision, |result| result.projection_revision)
+                    .saturating_add(1)
+            })
+            .unwrap_or_else(|| {
+                if audio.diarization_status == DiarizationStatus::Failed {
+                    stored.record.revision.saturating_add(1)
+                } else {
+                    1
+                }
+            });
         let result = RecordDiarizationResult {
             schema_version: 1,
             record_id: id.to_string(),
@@ -1894,18 +1881,13 @@ impl RecordStore {
         if bytes.is_empty() || bytes.len() as u64 > TRANSCRIPT_SNAPSHOT_MAX_BYTES {
             return Err("diarization result exceeds the fixed size limit".to_string());
         }
-        let content = std::str::from_utf8(&bytes)
-            .map_err(|_| "diarization result serialization is not UTF-8".to_string())?;
-        crate::task::write_atomic_text(&result_path, content)?;
+        let artifact =
+            write_speech_projection(&stored.path, SpeechProjectionKind::Diarization, &bytes)?;
 
         let mut updated = stored.record.clone();
         replace_record_artifact(
             &mut updated.artifacts,
-            record_artifact_from_file(
-                &result_path,
-                &relative,
-                "diarization/model-projection+json",
-            )?,
+            artifact.clone(),
             "diarization/model-projection+json",
         );
         let audio = updated
@@ -1915,12 +1897,7 @@ impl RecordStore {
         audio.diarization_status = DiarizationStatus::Ready;
         updated.updated_at = now_ms();
         updated.revision = updated.revision.saturating_add(1);
-        persist_existing_record(
-            &stored.path,
-            &updated,
-            stored.legacy_thought_digest.clone(),
-            false,
-        )?;
+        publish_speech_projection(&stored, &updated, &artifact)?;
         updated = refresh_audio_discussion_document_best_effort(&stored, updated);
         inner.insert(
             id.to_string(),
@@ -3000,7 +2977,10 @@ fn read_record_directory_inner(
         manifest
             .artifacts
             .iter()
-            .filter(|artifact| artifact.kind != AUDIO_DISCUSSION_DOCUMENT_KIND)
+            .filter(|artifact| {
+                artifact.kind != AUDIO_DISCUSSION_DOCUMENT_KIND
+                    && SpeechProjectionKind::from_artifact(artifact).is_none()
+            })
             .cloned()
             .collect::<Vec<_>>()
     } else {
@@ -3008,13 +2988,53 @@ fn read_record_directory_inner(
     };
     validate_record_artifacts(path, &durable_artifacts, allow_staging_name)?;
     if manifest.kind == RecordKind::Audio {
+        // Speech results are derived from the preserved audio. Older versions
+        // replaced their fixed file before updating this inventory, so a torn
+        // publication must not hide the primary Record. Never adopt that file;
+        // discard its stale reference and let explicit retranscription replace
+        // it through the normal owner entry point.
+        let mut stale_transcript = false;
+        let mut stale_diarization = false;
+        let audio = manifest.audio.clone();
+        let mut seen_speech = HashSet::new();
+        manifest.artifacts.retain(|artifact| {
+            let Some(kind) = SpeechProjectionKind::from_artifact(artifact) else {
+                return true;
+            };
+            let valid = seen_speech.insert(artifact.kind.clone())
+                && audio.as_ref().is_some_and(|audio| match kind {
+                    SpeechProjectionKind::Transcript => {
+                        read_owned_transcript_snapshot(&manifest.id, path, audio, artifact).is_ok()
+                    }
+                    SpeechProjectionKind::Diarization => {
+                        read_owned_diarization_result(&manifest.id, path, audio, artifact).is_ok()
+                    }
+                });
+            if !valid {
+                match kind {
+                    SpeechProjectionKind::Transcript => stale_transcript = true,
+                    SpeechProjectionKind::Diarization => stale_diarization = true,
+                }
+            }
+            valid
+        });
+        if let Some(audio) = &mut manifest.audio {
+            if stale_transcript {
+                audio.transcription_status = TranscriptionStatus::Failed;
+            }
+            if stale_diarization {
+                audio.diarization_status = DiarizationStatus::Failed;
+            }
+        }
         let source_revision = manifest.revision;
         let mut seen = false;
         manifest.artifacts.retain(|artifact| {
             if artifact.kind != AUDIO_DISCUSSION_DOCUMENT_KIND {
                 return true;
             }
-            if seen {
+            // The document can still have a valid checksum/revision while
+            // containing a speech projection we just rejected.
+            if seen || stale_transcript || stale_diarization {
                 return false;
             }
             seen = true;
@@ -3554,7 +3574,7 @@ fn read_owned_transcript_snapshot(
     audio: &AudioRecordSummary,
     artifact: &RecordArtifact,
 ) -> Result<RecordTranscriptSnapshot, String> {
-    if artifact.path != "transcript/snapshot.json" {
+    if !SpeechProjectionKind::Transcript.accepts_path(&artifact.path) {
         return Err("transcript artifact inventory path is invalid".to_string());
     }
     let relative = validate_record_relative_path(&artifact.path)?;
@@ -3864,7 +3884,7 @@ fn read_owned_diarization_result(
     audio: &AudioRecordSummary,
     artifact: &RecordArtifact,
 ) -> Result<RecordDiarizationResult, String> {
-    if artifact.path != "diarization/result.json" {
+    if !SpeechProjectionKind::Diarization.accepts_path(&artifact.path) {
         return Err("diarization artifact inventory path is invalid".to_string());
     }
     let relative = validate_record_relative_path(&artifact.path)?;
@@ -3889,6 +3909,124 @@ fn replace_record_artifact(
 ) {
     artifacts.retain(|artifact| artifact.kind != kind);
     artifacts.push(replacement);
+}
+
+#[derive(Clone, Copy)]
+enum SpeechProjectionKind {
+    Transcript,
+    Diarization,
+}
+
+impl SpeechProjectionKind {
+    fn from_artifact(artifact: &RecordArtifact) -> Option<Self> {
+        match artifact.kind.as_str() {
+            "transcript/recording-final+json" => Some(Self::Transcript),
+            "diarization/model-projection+json" => Some(Self::Diarization),
+            _ => None,
+        }
+    }
+
+    fn paths(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Transcript => (
+                "transcript/snapshot.json",
+                "transcript/snapshot-",
+                "transcript/recording-final+json",
+            ),
+            Self::Diarization => (
+                "diarization/result.json",
+                "diarization/result-",
+                "diarization/model-projection+json",
+            ),
+        }
+    }
+
+    fn accepts_path(self, path: &str) -> bool {
+        let (legacy, prefix, _) = self.paths();
+        path == legacy
+            || path
+                .strip_prefix(prefix)
+                .and_then(|name| name.strip_suffix(".json"))
+                .is_some_and(|id| {
+                    id.len() == 32
+                        && id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+    }
+}
+
+fn write_speech_projection(
+    record_path: &Path,
+    kind: SpeechProjectionKind,
+    bytes: &[u8],
+) -> Result<RecordArtifact, String> {
+    let (_, prefix, artifact_kind) = kind.paths();
+    let relative = PathBuf::from(format!("{prefix}{}.json", Uuid::new_v4().simple()));
+    let path = record_path.join(&relative);
+    // Immutable result first, then atomically replace the existing manifest.
+    // An abandoned result can never overwrite the currently owned result or
+    // reserve the next retry's destination, unlike the old fixed filename.
+    let result = (|| {
+        write_new_synced_file(&path, bytes)?;
+        sync_directory(path.parent().expect("projection has a parent"))
+            .map_err(|error| format!("sync speech projection: {error}"))?;
+        record_artifact_from_file(&path, &relative, artifact_kind)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&path);
+    }
+    result
+}
+
+fn publish_speech_projection(
+    stored: &StoredRecord,
+    updated: &Record,
+    artifact: &RecordArtifact,
+) -> Result<(), String> {
+    let committed = persist_existing_record(
+        &stored.path,
+        updated,
+        stored.legacy_thought_digest.clone(),
+        false,
+    );
+    if committed.is_err() {
+        // rename may have succeeded before a directory-sync error. Only
+        // remove this attempt's file if the on-disk manifest demonstrably
+        // does not reference it; otherwise retain both possible generations.
+        let manifest =
+            read_bounded_regular_file(&stored.path.join("record.json"), RECORD_MANIFEST_MAX_BYTES)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<RecordManifest>(&bytes).ok());
+        if manifest.is_some_and(|manifest| {
+            !manifest
+                .artifacts
+                .iter()
+                .any(|entry| entry.path == artifact.path)
+        }) {
+            remove_owned_speech_projection(&stored.path, artifact);
+        }
+    } else if let Some(previous) = stored
+        .record
+        .artifacts
+        .iter()
+        .find(|entry| entry.kind == artifact.kind && entry.path != artifact.path)
+    {
+        remove_owned_speech_projection(&stored.path, previous);
+    }
+    committed
+}
+
+fn remove_owned_speech_projection(root: &Path, artifact: &RecordArtifact) {
+    let Some(kind) = SpeechProjectionKind::from_artifact(artifact) else {
+        return;
+    };
+    if !kind.accepts_path(&artifact.path) {
+        return;
+    }
+    if let Ok(path) = resolve_plain_record_artifact(root, Path::new(&artifact.path)) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn record_artifact_from_file(
@@ -5188,9 +5326,29 @@ pub async fn cmd_record_list(
 #[tauri::command]
 pub async fn cmd_record_get(
     state: tauri::State<'_, ManagedRecordStore>,
+    speech: tauri::State<'_, crate::speech_recognition::ManagedSpeechRecognition>,
     id: String,
-) -> Result<Option<Record>, String> {
-    Ok(state.get(&id).await)
+) -> Result<Option<RecordDetailResponse>, String> {
+    Ok(state.get(&id).await.map(|record| {
+        let transcription_failure = record
+            .audio
+            .as_ref()
+            .filter(|audio| audio.transcription_status == TranscriptionStatus::Failed)
+            .and_then(|_| speech.record_transcription_failure(&id));
+        RecordDetailResponse {
+            record,
+            transcription_failure,
+        }
+    }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordDetailResponse {
+    #[serde(flatten)]
+    record: Record,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcription_failure: Option<crate::speech_recognition::RecordTranscriptionFailure>,
 }
 
 #[tauri::command]
@@ -5910,7 +6068,7 @@ mod tests {
         assert_eq!(audio.diarization_status, DiarizationStatus::Queued);
         assert!(after_transcript.artifacts.iter().any(|artifact| {
             artifact.kind == "transcript/recording-final+json"
-                && artifact.path == "transcript/snapshot.json"
+                && SpeechProjectionKind::Transcript.accepts_path(&artifact.path)
         }));
 
         fs::write(
@@ -5944,10 +6102,17 @@ mod tests {
         );
         assert!(after_diarization.artifacts.iter().any(|artifact| {
             artifact.kind == "diarization/model-projection+json"
-                && artifact.path == "diarization/result.json"
+                && SpeechProjectionKind::Diarization.accepts_path(&artifact.path)
         }));
 
-        let snapshot_path = record_root.join("transcript/snapshot.json");
+        let snapshot_path = record_root.join(
+            &after_diarization
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.kind == "transcript/recording-final+json")
+                .unwrap()
+                .path,
+        );
         let original_snapshot = fs::read(&snapshot_path).unwrap();
         fs::write(&snapshot_path, b"tampered transcript canary").unwrap();
         assert!(store
@@ -6038,6 +6203,221 @@ mod tests {
                 .transcription_status,
             TranscriptionStatus::Queued
         );
+    }
+
+    async fn speech_projection_fixture(store: &RecordStore) -> (String, PathBuf) {
+        let record = store
+            .create_audio(AudioRecordCreateInput {
+                title: "Synthetic meeting".into(),
+                tracks: vec![AudioTrackKind::Microphone],
+                transcription_status: TranscriptionStatus::Queued,
+            })
+            .await
+            .unwrap();
+        let root = store.audio_workspace_path(&record.id).await.unwrap();
+        fs::write(
+            root.join("audio/microphone.opus"),
+            b"synthetic audio artifact",
+        )
+        .unwrap();
+        store
+            .finalize_audio_capture(
+                &record.id,
+                CaptureStatus::Ready,
+                5_000,
+                vec![AudioTrackArtifactInput {
+                    track: AudioTrackKind::Microphone,
+                    relative_path: "audio/microphone.opus".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        (record.id, root)
+    }
+
+    async fn publish_speech_fixture(
+        store: &RecordStore,
+        id: &str,
+        diarization: bool,
+        end: u64,
+    ) -> Result<(), String> {
+        let provenance = RecordSpeechProvenance {
+            provider: "local".into(),
+            model_pack_revision: "local-standard-speech-v2".into(),
+            onnx_runtime_version: "1.28.0".into(),
+        };
+        if diarization {
+            store
+                .commit_diarization_result(
+                    id,
+                    vec![RecordSpeakerTurn {
+                        start_sample: 0,
+                        end_sample: end,
+                        global_speaker: 0,
+                    }],
+                    provenance,
+                )
+                .await
+                .map(|_| ())
+        } else {
+            store
+                .commit_recording_final_transcript(
+                    id,
+                    vec![RecordTranscriptSegment {
+                        segment_id: "segment-1".into(),
+                        track: AudioTrackKind::Microphone,
+                        start_sample: 0,
+                        end_sample: end,
+                        text: "synthetic speech".into(),
+                        language: None,
+                        revision: 1,
+                    }],
+                    provenance,
+                )
+                .await
+                .map(|_| ())
+        }
+    }
+
+    #[tokio::test]
+    async fn speech_projection_manifest_failure_preserves_previous_result_and_allows_retry() {
+        for diarization in [false, true] {
+            for existing in [false, true] {
+                let temp = tempdir().unwrap();
+                let store = store_at(temp.path());
+                let (id, root) = speech_projection_fixture(&store).await;
+                if existing {
+                    publish_speech_fixture(&store, &id, diarization, 10_000)
+                        .await
+                        .unwrap();
+                }
+                let before = store.get(&id).await.unwrap();
+                let artifacts = before
+                    .artifacts
+                    .iter()
+                    .map(|artifact| {
+                        (
+                            artifact.path.clone(),
+                            fs::read(root.join(&artifact.path)).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                fs::rename(root.join("record.json"), root.join("record.backup")).unwrap();
+                fs::create_dir(root.join("record.json")).unwrap();
+                assert!(publish_speech_fixture(&store, &id, diarization, 20_000)
+                    .await
+                    .is_err());
+                fs::remove_dir(root.join("record.json")).unwrap();
+                fs::rename(root.join("record.backup"), root.join("record.json")).unwrap();
+                for (path, bytes) in artifacts {
+                    assert_eq!(
+                        fs::read(root.join(path)).unwrap(),
+                        bytes,
+                        "previous artifact changed"
+                    );
+                }
+                // Simulate a restart before retry as well as another failure
+                // in the same process: neither may poison the final path.
+                drop(store);
+                let reloaded = store_at(temp.path());
+                assert!(reloaded.get(&id).await.is_some());
+                publish_speech_fixture(&reloaded, &id, diarization, 30_000)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn speech_projection_reads_and_replaces_valid_legacy_results() {
+        for diarization in [false, true] {
+            let temp = tempdir().unwrap();
+            let store = store_at(temp.path());
+            let (id, root) = speech_projection_fixture(&store).await;
+            publish_speech_fixture(&store, &id, diarization, 10_000)
+                .await
+                .unwrap();
+            let projection_kind = if diarization {
+                SpeechProjectionKind::Diarization
+            } else {
+                SpeechProjectionKind::Transcript
+            };
+            let (legacy, _, kind) = projection_kind.paths();
+            let mut record = store.get(&id).await.unwrap();
+            let artifact = record
+                .artifacts
+                .iter_mut()
+                .find(|a| a.kind == kind)
+                .unwrap();
+            fs::rename(root.join(&artifact.path), root.join(legacy)).unwrap();
+            artifact.path = legacy.into();
+            persist_existing_record(&root, &record, None, false).unwrap();
+            drop(store);
+            let reloaded = store_at(temp.path());
+            let loaded = reloaded.get(&id).await.unwrap();
+            assert!(loaded.artifacts.iter().any(|a| a.path == legacy));
+            publish_speech_fixture(&reloaded, &id, diarization, 20_000)
+                .await
+                .unwrap();
+            assert!(!root.join(legacy).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn speech_projection_retry_recovers_legacy_orphans_and_stale_inventory() {
+        for diarization in [false, true] {
+            for inventoried in [false, true] {
+                let temp = tempdir().unwrap();
+                let store = store_at(temp.path());
+                let (id, root) = speech_projection_fixture(&store).await;
+                let (relative, kind) = if diarization {
+                    (
+                        "diarization/result.json",
+                        "diarization/model-projection+json",
+                    )
+                } else {
+                    (
+                        "transcript/snapshot.json",
+                        "transcript/recording-final+json",
+                    )
+                };
+                if inventoried {
+                    publish_speech_fixture(&store, &id, diarization, 10_000)
+                        .await
+                        .unwrap();
+                    let mut record = store.get(&id).await.unwrap();
+                    let artifact = record
+                        .artifacts
+                        .iter_mut()
+                        .find(|a| a.kind == kind)
+                        .unwrap();
+                    if artifact.path != relative {
+                        fs::rename(root.join(&artifact.path), root.join(relative)).unwrap();
+                        artifact.path = relative.into();
+                    }
+                    persist_existing_record(&root, &record, None, false).unwrap();
+                }
+                fs::write(root.join(relative), b"legacy incomplete publication").unwrap();
+                drop(store);
+                let reloaded = store_at(temp.path());
+                let loaded = reloaded
+                    .get(&id)
+                    .await
+                    .expect("derived result hid primary audio");
+                if inventoried {
+                    assert!(!loaded.artifacts.iter().any(|artifact| {
+                        artifact.kind == kind || artifact.kind == AUDIO_DISCUSSION_DOCUMENT_KIND
+                    }));
+                }
+                publish_speech_fixture(&reloaded, &id, diarization, 20_000)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fs::read(root.join(relative)).unwrap(),
+                    b"legacy incomplete publication"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@
  * Uses Tab-scoped API when in Tab context (WorkspaceConfigPanel),
  * falls back to global API when not in Tab context (GlobalAgentsPanel).
  */
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { Loader2, ChevronDown, ChevronUp, Trash2, Edit2, X, Check, Plus } from 'lucide-react';
 import { useCallback, useEffect, useState, useImperativeHandle, forwardRef, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -74,6 +75,7 @@ function TagInput({
     }, [tags, onChange]);
 
     const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (isImeComposingEvent(e)) return;
         const suggestionsVisible = showSuggestions && filteredSuggestions.length > 0;
 
         if (e.key === 'ArrowDown' && suggestionsVisible) {

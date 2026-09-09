@@ -32,6 +32,7 @@ pub mod files_b64;
 pub mod git_branch;
 pub mod gitignore;
 pub mod memory_rules;
+pub mod markdown_assets;
 pub mod path_safety;
 pub mod read_preview;
 pub mod save_file;

@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   Check,
   ChevronDown,
@@ -38,6 +39,7 @@ import { homeDir, join } from '@tauri-apps/api/path';
 
 import { track } from '@/analytics';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { useTtsPreview, type TtsPreviewSettings } from './hooks/useTtsPreview';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { apiFetch, apiGetJson, apiPostJson } from '@/api/apiFetch';
 import { useToast } from '@/components/Toast';
@@ -1365,19 +1367,16 @@ export default function Settings({
     'w-full h-1.5 rounded-full appearance-none cursor-pointer bg-[var(--line)] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--accent)] [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-110';
 
   // Edge TTS MCP custom settings dialog
-  const [edgeTtsSettings, setEdgeTtsSettings] = useState<{
-    defaultVoice: string;
-    defaultRate: number;
-    defaultVolume: number;
-    defaultPitch: number;
-    defaultOutputFormat: string;
-  } | null>(null);
+  const [edgeTtsSettings, setEdgeTtsSettings] = useState<TtsPreviewSettings | null>(null);
   const [ttsPreviewText, setTtsPreviewText] = useState(
     '你好，这是一段语音合成测试。Hello, this is a text-to-speech test.',
   );
-  const [ttsPreviewLoading, setTtsPreviewLoading] = useState(false);
-  const [ttsPreviewPlaying, setTtsPreviewPlaying] = useState(false);
-  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const {
+    loading: ttsPreviewLoading,
+    playing: ttsPreviewPlaying,
+    toggle: toggleTtsPreview,
+    stop: stopTtsPreview,
+  } = useTtsPreview(edgeTtsSettings);
 
   // OAuth polling cleanup refs (P0-7: prevent interval leak on unmount)
   const oauthPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
@@ -2081,94 +2080,7 @@ export default function Settings({
     }
   };
 
-  const stopTtsPreview = useCallback(() => {
-    if (ttsAudioRef.current) {
-      const src = ttsAudioRef.current.src;
-      ttsAudioRef.current.pause();
-      ttsAudioRef.current.onended = null;
-      ttsAudioRef.current.onerror = null;
-      ttsAudioRef.current = null;
-      if (src.startsWith('blob:')) URL.revokeObjectURL(src);
-    }
-    setTtsPreviewPlaying(false);
-  }, []);
-
-  // Stop audio when dialog closes or component unmounts
-  useEffect(() => {
-    if (!edgeTtsSettings) stopTtsPreview();
-    return () => {
-      stopTtsPreview();
-    };
-  }, [edgeTtsSettings, stopTtsPreview]);
-
-  const handlePreviewTts = async () => {
-    if (!edgeTtsSettings) return;
-
-    // If currently playing, stop
-    if (ttsPreviewPlaying) {
-      stopTtsPreview();
-      return;
-    }
-
-    setTtsPreviewLoading(true);
-    try {
-      const result = await apiPostJson<{
-        success: boolean;
-        audioBase64?: string;
-        mimeType?: string;
-        error?: string;
-      }>('/api/edge-tts/preview', {
-        text: ttsPreviewText,
-        voice: edgeTtsSettings.defaultVoice,
-        rate: fmtTtsRate(edgeTtsSettings.defaultRate),
-        volume: fmtTtsRate(edgeTtsSettings.defaultVolume),
-        pitch: fmtTtsPitch(edgeTtsSettings.defaultPitch),
-        outputFormat: edgeTtsSettings.defaultOutputFormat,
-      });
-      if (result.success && result.audioBase64) {
-        // Decode base64 → Blob URL (data URIs don't work for audio in WKWebView)
-        const bin = atob(result.audioBase64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const blob = new Blob([bytes], {
-          type: result.mimeType || 'audio/mpeg',
-        });
-        const blobUrl = URL.createObjectURL(blob);
-
-        const audio = new Audio(blobUrl);
-        ttsAudioRef.current = audio;
-        audio.onended = () => {
-          URL.revokeObjectURL(blobUrl);
-          setTtsPreviewPlaying(false);
-          ttsAudioRef.current = null;
-        };
-        audio.onerror = () => {
-          URL.revokeObjectURL(blobUrl);
-          toast.error(tSettings('toolbox.toasts.audioPlayFailed'));
-          setTtsPreviewPlaying(false);
-          ttsAudioRef.current = null;
-        };
-        await audio.play();
-        setTtsPreviewPlaying(true);
-      } else {
-        toast.error(
-          result.error || tSettings('toolbox.toasts.ttsPreviewFailed'),
-        );
-      }
-    } catch {
-      // Clean up blob URL on play() rejection to avoid memory leak
-      if (ttsAudioRef.current) {
-        const src = ttsAudioRef.current.src;
-        ttsAudioRef.current.onended = null;
-        ttsAudioRef.current.onerror = null;
-        ttsAudioRef.current = null;
-        if (src.startsWith('blob:')) URL.revokeObjectURL(src);
-      }
-      toast.error(tSettings('toolbox.toasts.ttsPreviewRequestFailed'));
-    } finally {
-      setTtsPreviewLoading(false);
-    }
-  };
+  const handlePreviewTts = () => toggleTtsPreview(ttsPreviewText);
 
   // OAuth: probe MCP server for OAuth requirements (returns probe result for chaining)
   const handleMcpOAuthProbe = async (
@@ -6111,6 +6023,7 @@ export default function Settings({
                         onChange={(e) => setProxyHostDraft(e.target.value)}
                         onBlur={commitProxyHost}
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (e.key === 'Enter') e.currentTarget.blur();
                         }}
                         placeholder={PROXY_DEFAULTS.host}
@@ -6136,6 +6049,7 @@ export default function Settings({
                         }}
                         onBlur={commitProxyPort}
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (e.key === 'Enter') e.currentTarget.blur();
                         }}
                         placeholder={String(PROXY_DEFAULTS.port)}
@@ -6986,6 +6900,7 @@ export default function Settings({
                             }
                             onBlur={commitClaudeTranscriptCleanupDays}
                             onKeyDown={(e) => {
+                              if (isImeComposingEvent(e)) return;
                               if (e.key === 'Enter') e.currentTarget.blur();
                             }}
                             aria-label={tSettings(
@@ -7262,6 +7177,7 @@ export default function Settings({
                           )
                         }
                         onKeyDown={(e) => {
+                          if (isImeComposingEvent(e)) return;
                           if (
                             e.key === 'Enter' &&
                             builtinMcpSettings.newArg.trim()
@@ -7399,6 +7315,7 @@ export default function Settings({
                       placeholder={tSettings('toolbox.common.valuePlaceholder')}
                       className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 font-mono text-sm text-[var(--ink)] placeholder-[var(--ink-muted)]/50 outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
+                        if (isImeComposingEvent(e)) return;
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           const key = builtinMcpSettings.newEnvKey.trim();
@@ -8115,6 +8032,7 @@ export default function Settings({
                         )
                       }
                       onKeyDown={(e) => {
+                        if (isImeComposingEvent(e)) return;
                         if (
                           e.key === 'Enter' &&
                           playwrightSettings.newArg.trim()
@@ -8750,6 +8668,7 @@ export default function Settings({
                               )}
                               className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                               onKeyDown={(e) => {
+                                if (isImeComposingEvent(e)) return;
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
                                   if (mcpForm.newArg.trim()) {
@@ -8865,6 +8784,7 @@ export default function Settings({
                               )}
                               className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                               onKeyDown={(e) => {
+                                if (isImeComposingEvent(e)) return;
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
                                   const key = mcpForm.newEnvKey.trim();
@@ -9048,6 +8968,7 @@ export default function Settings({
                                   )}
                                   className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 text-sm font-mono transition-colors focus:border-[var(--focus-border)] focus:outline-none"
                                   onKeyDown={(e) => {
+                                    if (isImeComposingEvent(e)) return;
                                     if (e.key === 'Enter') {
                                       e.preventDefault();
                                       if (mcpForm.newHeaderKey) {
@@ -9828,6 +9749,7 @@ export default function Settings({
                     )}
                     className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors placeholder:text-[var(--ink-muted)] focus:border-[var(--focus-border)] focus:outline-none"
                     onKeyDown={(e) => {
+                      if (isImeComposingEvent(e)) return;
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         addCustomModelFromInput();

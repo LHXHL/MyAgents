@@ -886,9 +886,17 @@ export default function App() {
     [],
   );
 
+  // Same admission boundary as Record notes: only callbacks live here. The
+  // mounted preview retains the draft and owns its IO/transition decision.
+  const fileEditSubmittersRef = useRef(new Map<string, () => Promise<boolean>>());
+  const registerFileEditSubmitter = useCallback((tabId: string, submit: () => Promise<boolean>) => {
+    fileEditSubmittersRef.current.set(tabId, submit);
+    return () => { if (fileEditSubmittersRef.current.get(tabId) === submit) fileEditSubmittersRef.current.delete(tabId); };
+  }, []);
   const chatTabLifecycle = useMemo(
     () =>
       createChatTabLifecycle({
+        flushFileEdits: async tabId => fileEditSubmittersRef.current.get(tabId)?.() ?? true,
         startBackgroundCompletion,
         stopSseProxy,
         releaseTabSession,
@@ -4650,6 +4658,7 @@ export default function App() {
   );
   const chatBinding = useMemo<BuiltinTabBindings['chat']>(
     () => ({
+      registerFileEditSubmitter,
       windowPresentation,
       onOpenHistorySession: handleOpenChatHistorySession,
       onOpenHistoryTag: handleOpenHistoryTag,
@@ -4669,6 +4678,7 @@ export default function App() {
       sessionNotificationBadgeCounts,
     }),
     [
+      registerFileEditSubmitter,
       claimSessionOpeningTransition,
       clearInitialMessage,
       handleFilePreviewIntentConsumed,

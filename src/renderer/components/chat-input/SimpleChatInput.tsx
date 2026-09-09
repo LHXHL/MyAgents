@@ -1,3 +1,4 @@
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertCircle,
   AtSign,
@@ -70,6 +71,7 @@ import {
 import { imageAttachmentName } from './attachmentNames';
 import { MentionTabButton } from './components/MentionTabButton';
 import { ThoughtPickerRow } from './components/ThoughtPickerRow';
+import { McpStatusNotice } from './components/McpStatusNotice';
 import { useAttachmentHandling } from './hooks/useAttachmentHandling';
 import { PermissionModeIcon, PermissionModeMenuContent } from '../PermissionModeMenu';
 
@@ -178,6 +180,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   runtimeMcpTools = [],
   mcpEffectiveSnapshot = null,
   onWorkspaceMcpToggle,
+  onMcpRetry,
   onRefreshProviders,
   onOpenAgentSettings,
   onWorkspaceRefresh,
@@ -1032,6 +1035,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   useEffect(() => {
     if (!active) return;
     const handleShiftTab = (e: KeyboardEvent) => {
+      if (isComposingRef.current || isImeComposingEvent(e)) return;
       if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1153,6 +1157,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [slashPosition, inputValue, slashSearchQuery, handleSkillSelect, onSlashAction, enabledClientActionCommands, showConfigLockedReason]);
 
   const handleKeyDown = useCallback(async (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Candidate confirmation/navigation belongs to IME before slash/@ menus,
+    // permission shortcuts, or message sending can interpret the same key.
+    if (isComposingRef.current || isImeComposingEvent(event)) return;
     // Shift+Tab to cycle permission mode
     if (event.key === 'Tab' && event.shiftKey) {
       event.preventDefault();
@@ -1321,16 +1328,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       }
     }
 
-    // Normal send - but NOT during IME composition (e.g., Chinese input)
-    // Check both event.nativeEvent.isComposing (standard) and event.keyCode === 229 (legacy)
-    //
     // Chat-mode keyboard contract is now user-configurable via the
     // chatSendShortcut preference (resolveEnterKeyAction, shared with AI 小助理 /
     // 问题反馈). 'enter' → bare Enter sends; 'modEnter' → ⌘/Ctrl+Enter sends.
-    // The triple IME guard (#123) is preserved: a composition commit arrives as
-    // Enter and must never send. (Thought mode has its own ThoughtInput editor
-    // and does not pass through here.)
-    if (event.key === 'Enter' && !isComposingRef.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+    if (event.key === 'Enter') {
       if (resolveEnterKeyAction(event, sendShortcutRef.current) === 'send') {
         event.preventDefault();
         if ((inputValue.trim() || images.length > 0) && canSendMessageRef.current) {
@@ -2049,14 +2050,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                             const effective = mcpServerState(mcpEffectiveSnapshot, server.id);
                             if (!effective || !isMcpErrorState(effective.state)) return null;
                             return (
-                              <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                <span>
-                                  {effective.state === 'needs_auth'
-                                    ? t('input.mcpStatus.needsAuth')
-                                    : t('input.mcpStatus.unavailable')}
-                                </span>
-                              </div>
+                              <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                             );
                           })()}
                         </div>
@@ -2081,14 +2075,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                                   </div>
                                 )}
                                 {isEnabled && effective && isMcpErrorState(effective.state) && (
-                                  <div className="mt-0.5 flex items-center gap-1 text-xs text-[var(--ink-muted)]">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                                    <span>
-                                      {effective.state === 'needs_auth'
-                                        ? t('input.mcpStatus.needsAuth')
-                                        : t('input.mcpStatus.unavailable')}
-                                    </span>
-                                  </div>
+                                  <McpStatusNotice server={effective} stale={mcpEffectiveSnapshot?.observationStale} busy={isLoading} onRetry={onMcpRetry} />
                                 )}
                               </div>
                               {hasUserEditableMcpSettings(server.id) && (

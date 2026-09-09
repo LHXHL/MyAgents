@@ -1,5 +1,6 @@
 // Agent channels section: list channels, add/remove, start/stop, configure
 // All channel operations open in a unified overlay panel (same size as WorkspaceConfigPanel)
+import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -79,6 +80,7 @@ function ChannelOverlayPanel({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isImeComposingEvent(event)) return;
       if (event.key !== 'Escape' || !dismissTopmost()) return;
       event.preventDefault();
       event.stopImmediatePropagation();
