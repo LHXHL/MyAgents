@@ -269,7 +269,7 @@ async fn cancelled_queued_query_leaves_without_waiting_for_the_running_job() {
     let (_temp, index, _) = fixture(&["needle"]);
     let permit = index.queries.gate.clone().acquire_owned().await.unwrap();
     let worker_index = index.clone();
-    let queued = tokio::spawn(async move {
+    let queued = tauri::async_runtime::spawn(async move {
         worker_index
             .start_search("main", request("needle", 1))
             .await
