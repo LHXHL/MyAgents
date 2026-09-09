@@ -291,7 +291,7 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 | **Session 搜索 Overlay** | `components/global-sidebar/GlobalSidebar.tsx`（稳定 shell）+ `components/HistorySearchOverlayContent.tsx`（lazy content） | 全局侧栏搜索按钮 → 以浏览态打开，右侧紧凑搜索框获得键盘焦点 → 用户激活后向左展开并聚焦输入框 |
 | **文件搜索模式** | `components/DirectoryPanel.tsx` facade → `components/directory-panel/DirectoryPanel.tsx` + `hooks/useDirectorySearch.ts` | 侧边栏搜索按钮切换 mode → 用户输入 query → `searchWorkspaceFiles` 原子返回 folder/file → 后台 `refreshWorkspaceFileIndex` → 重搜当前 query |
 | **结果项** | `search/SessionSearchItem.tsx`, `search/FileSearchResults.tsx` | Folder 固定置于 file 上方；folder 点击定位并展开目录，file 点击预览，chunk 点击预览并定位行 |
-| **文件跳转定位行** | `components/directory-panel/DirectoryPanel.tsx` + `FilePreviewModal.tsx` + `MonacoEditor.tsx` | `FileSearchResults` 触发 `FilePreviewFocusTarget` 事件，已打开 editor 也会重新 `revealLineInCenter()`；`initialLineNumber` 仅保留为兼容字段 |
+| **文件跳转定位行** | `components/directory-panel/DirectoryPanel.tsx` + `FilePreviewModal.tsx` + 对应编辑器 | `FileSearchResults` 触发 `FilePreviewFocusTarget`；可编辑 Markdown 经 CM 源码坐标定位，其他代码经 Monaco 定位，已打开文件也重新响应；`initialLineNumber` 仅保留为兼容字段 |
 | **文件树定位** | `components/directory-panel/DirectoryPanel.tsx` + `workspace-tree/WorkspaceTreeViewport.tsx` | 搜索结果 path-based reveal，逐层展开祖先目录，通过 Virtuoso `scrollToIndex` 滚动并消费 `revealRequest` |
 | **高亮渲染** | `search/SearchHighlight.tsx` | 消费 `[start, end][]` UTF-16 offsets |
 
@@ -313,8 +313,8 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 - **Reveal 请求消费**：`WorkspaceTreeViewport` 在 `items` 中找到目标 path，等待 Virtuoso `totalListHeightChanged` 与 DOM 滚动区域都容纳当前固定行高列表后，调用 `scrollToIndex({ align: 'center', behavior: 'auto' })`。只有目标行落入实际 viewport 才触发 `onRevealHandled(id)`；容器已有高度或已过两帧不代表虚拟内容已提交。隐藏面板保留请求，ResizeObserver 在恢复可见时继续定位；请求替换、清空或组件卸载会取消待执行回调。
 - **内容预览密度**：每文件默认显示两条命中，每条最多两行文本；展开后每条仍遵守两行限制。文件行不展示命中数量 badge；定位按钮在 hover / keyboard focus 时绝对覆盖于最右侧，不占正文宽度，展开 / 收起按钮在行内居中。
 - **取消语义**：新的 reveal 请求会让旧请求返回 `cancelled`，不弹错误 toast；只有目标确实 missing 才提示 `文件不存在或已删除`。
-- **Preview focus event**：点击搜索命中行会生成 `FilePreviewFocusTarget`。该事件通过 `DirectoryPanel -> Chat/FileActionContext -> FilePreviewModal -> MonacoEditor` 传递。Monaco 侧以 focus target 对象身份去重，而不是只看 `requestId`，所以不同来源不会碰撞，同一行重复点击也能重新定位。
-- **Markdown 源码定位**：Markdown rendered preview 没有稳定源码行号映射。带 search focus target 打开 Markdown 时切到 edit/source Monaco 视图定位，不做 rendered DOM 反推。
+- **Preview focus event**：点击搜索命中行会生成 `FilePreviewFocusTarget`，通过 `DirectoryPanel -> Chat/FileActionContext -> FilePreviewModal` 交给当前编辑器。CM 与 Monaco 均响应新的 focus target 对象，保留 requestId、源码行号、query/highlights；同一行重复点击也能重新定位。
+- **Markdown 源码定位**：工作区可编辑 Markdown 保持 CM Live Preview，`markdown-editor/focusTarget.ts` 按源码行与 UTF-16 offsets 建立高亮，并显露命中的隐藏语法/表格范围后定位，不需要切换整篇源码。Settings 的可编辑 Markdown 使用同一 CM 源码底座；只读 Markdown 仍为渲染预览，不从 DOM 反推源码位置。生命周期与映射详见 [工作区 Markdown 编辑器](./workspace_markdown_editor.md)。
 - **Chunk 渐进披露**：每个 file 默认渲染前 2 条真实正文命中，显式“展开”后渲染 Rust 本次响应提供的全部命中（最多 10 条），并可“收起”回 2 条；file header 不再有把 chunk 全隐藏的 chevron。filename-only file 的 `matchCount` 为 0，只显示并高亮文件名，不显示 badge、空 chunk 或展开控件。
 - **展开状态保留**：expanded set 只表达“2 条 → 最多 10 条”。新 query、退出再进入 search 都清空；同 query 后台 refresh 使用 `mergeExpandedFilesAfterRefresh`，只保留仍存在文件的手动 expanded path，新增命中文件保持默认 2 条，消失文件被移除。Folder 没有折叠状态。
 
@@ -343,8 +343,8 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 | Session 索引反复报 `FileDoesNotExist(.del)` | watcher 每批 commit 都失败 | Tantivy metadata 引用了缺失 segment | `SessionIndex` 单 owner 清空派生目录，从 `sessions.json` + JSONL 重建并重试一次 |
 | 重启后第一次文件搜索仍冷建 | 文件区显示长时间“搜索中” | 前台 `search` 错误调用了 cold build，或等待正在 cold build 的 workspace slot | `search` 只能用持久 index 或 direct scan fallback；cold build 只能由后台 `refresh_or_create` 触发 |
 | 文件 symlink 指到工作区外 | 搜索结果泄露外部文件片段 | 扫描或读取阶段跟随 symlink | `file_indexer` 扫描和读前都用 `symlink_metadata`，并按 discovery state 二次校验 |
-| 搜索命中同文件不跳转 | 右侧仍停在上一次行号 | 只依赖一次性的 `initialLineNumber` 或 remount editor | 使用 `FilePreviewFocusTarget` 事件驱动已 mount Monaco |
-| 点击“在文件目录中展示”后偶发跳旧文件 | 目录树重渲染时旧 reveal 再次执行 | `revealRequest` 没有被消费清空 | `WorkspaceTreeViewport` 成功 `scrollToIndex` 后调用 `onRevealHandled` |
+| 搜索命中同文件不跳转 | 右侧仍停在上一次行号 | 只依赖一次性的 `initialLineNumber` 或 remount editor | 使用 `FilePreviewFocusTarget` 事件驱动已 mount CM / Monaco |
+| 点击“在文件目录中展示”后偶发跳旧文件 | 目录树重渲染时旧 reveal 再次执行 | `revealRequest` 没有被消费清空 | `WorkspaceTreeViewport` 确认目标行已进入实际 viewport 后调用 `onRevealHandled` |
 | Windows 搜索结果无法在树中定位 | 搜索 hit path 带 `\`，文件树 path 带 `/` | 前端没有在搜索结果入口归一化 path | `normalizeFileSearchHits` 入 state 前统一转 slash path |
 | 新增空目录后搜索不刷新 | 文件内容没有变化，`changedFiles` 仍为 0 | SWR 只在 file diff 非零时重搜 | refresh 完成后只要 query generation 仍有效就重搜，并原子提交 folder/file |
 | 文件名命中显示“1 条正文” | 后端用 `max(1)` 把 filename hit 冒充内容 hit | 文件对象命中与正文 chunk 混为一个计数 | filename-only 的 `matchCount = 0`；UI 不渲染 badge/chunk |
@@ -356,4 +356,4 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 - 前端 API：`src/renderer/api/searchClient.ts`
 - 前端组件：`src/renderer/components/search/`
 - 搜索导航 helper：`src/renderer/utils/workspaceSearchNavigation.ts`
-- 文件预览跳转：`src/renderer/components/FilePreviewModal.tsx`, `MonacoEditor.tsx`
+- 文件预览跳转：`src/renderer/components/FilePreviewModal.tsx`、`markdown-editor/MarkdownEditor.tsx` 与 `focusTarget.ts`、`MonacoEditor.tsx`
