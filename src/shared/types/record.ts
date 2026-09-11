@@ -181,8 +181,8 @@ export interface RecordDiarizationResult {
 
 export interface RecordSpeakerProjection {
   speakerId: number;
-  customName?: string;
-  mergedInto?: number;
+  customName?: string | null;
+  mergedInto?: number | null;
 }
 
 export interface RecordSpeakerOverrideConflict {
@@ -190,10 +190,13 @@ export interface RecordSpeakerOverrideConflict {
   targetId: string;
 }
 
+export type RecordSegmentSpeakerAttribution = { kind: 'unknown' } | { kind: 'single'; speakerId: number } | { kind: 'multiple' };
+
 export interface RecordDiarizationProjection extends RecordDiarizationResult {
   overrideRevision: number;
   speakers: RecordSpeakerProjection[];
   segmentSpeakerOverrides: Record<string, number>;
+  segmentSpeakerAttributions: Record<string, RecordSegmentSpeakerAttribution>;
   conflicts: RecordSpeakerOverrideConflict[];
 }
 

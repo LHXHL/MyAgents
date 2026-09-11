@@ -938,6 +938,19 @@ pub struct RecordSpeakerOverrideConflict {
     pub target_id: String,
 }
 
+/// Derived from the current transcript, model turns and validated user overrides.
+/// Missing acoustic evidence is not speaker 0; paragraphs may span several voices.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RecordSegmentSpeakerAttribution {
+    Unknown,
+    Single {
+        #[serde(rename = "speakerId")]
+        speaker_id: u32,
+    },
+    Multiple,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordDiarizationProjection {
@@ -950,6 +963,7 @@ pub struct RecordDiarizationProjection {
     pub override_revision: u64,
     pub speakers: Vec<RecordSpeakerProjection>,
     pub segment_speaker_overrides: BTreeMap<String, u32>,
+    pub segment_speaker_attributions: BTreeMap<String, RecordSegmentSpeakerAttribution>,
     pub conflicts: Vec<RecordSpeakerOverrideConflict>,
 }
 
@@ -3755,7 +3769,7 @@ fn build_record_search_documents(
     let diarization = read_diarization_projection_for_stored(stored)?;
     if let Some(transcript) = transcript.as_ref() {
         for segment in &transcript.segments {
-            let speaker_terms = export_speaker_label(segment, diarization.as_ref());
+            let speaker_terms = export_speaker_label(segment, diarization.as_ref(), false);
             documents.push(RecordSearchDocument {
                 record_id: stored.record.id.clone(),
                 kind: RecordKind::Audio,
@@ -3794,7 +3808,9 @@ fn project_diarization(
     overrides: RecordSpeakerOverrides,
 ) -> Result<RecordDiarizationProjection, String> {
     let speaker_ids = model_speaker_ids(&model);
-    let transcript_segment_ids = read_current_transcript(stored)?
+    let transcript = read_current_transcript(stored)?;
+    let transcript_segment_ids = transcript
+        .as_ref()
         .map(|snapshot| {
             snapshot
                 .segments
@@ -3864,6 +3880,39 @@ fn project_diarization(
             .cmp(&right.kind)
             .then_with(|| left.target_id.cmp(&right.target_id))
     });
+    let canonical_speakers = speakers
+        .iter()
+        .map(|speaker| {
+            (
+                speaker.speaker_id,
+                speaker.merged_into.unwrap_or(speaker.speaker_id),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let segment_speaker_attributions = transcript
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .segments
+                .iter()
+                .map(|segment| {
+                    let attribution = segment_speaker_overrides
+                        .get(&segment.segment_id)
+                        .map(|speaker_id| RecordSegmentSpeakerAttribution::Single {
+                            speaker_id: *speaker_id,
+                        })
+                        .unwrap_or_else(|| {
+                            project_segment_speaker_attribution(
+                                segment,
+                                &model.turns,
+                                &canonical_speakers,
+                            )
+                        });
+                    (segment.segment_id.clone(), attribution)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(RecordDiarizationProjection {
         schema_version: model.schema_version,
         record_id: model.record_id,
@@ -3874,8 +3923,34 @@ fn project_diarization(
         override_revision: overrides.revision,
         speakers,
         segment_speaker_overrides,
+        segment_speaker_attributions,
         conflicts,
     })
+}
+
+fn project_segment_speaker_attribution(
+    segment: &RecordTranscriptSegment,
+    turns: &[RecordSpeakerTurn],
+    canonical_speakers: &BTreeMap<u32, u32>,
+) -> RecordSegmentSpeakerAttribution {
+    let mut speaker = None;
+    // Half-open intervals: a turn touching the paragraph boundary contributes
+    // no evidence. A midpoint miss can still have useful overlap elsewhere.
+    for turn in turns.iter().filter(|turn| {
+        turn.start_sample < segment.end_sample && segment.start_sample < turn.end_sample
+    }) {
+        let canonical = canonical_speakers
+            .get(&turn.global_speaker)
+            .copied()
+            .unwrap_or(turn.global_speaker);
+        if speaker.is_some_and(|existing| existing != canonical) {
+            return RecordSegmentSpeakerAttribution::Multiple;
+        }
+        speaker = Some(canonical);
+    }
+    speaker
+        .map(|speaker_id| RecordSegmentSpeakerAttribution::Single { speaker_id })
+        .unwrap_or(RecordSegmentSpeakerAttribution::Unknown)
 }
 
 fn read_owned_diarization_result(
@@ -4546,50 +4621,32 @@ fn export_duration(media_ms: u64) -> String {
 fn export_speaker_label(
     segment: &RecordTranscriptSegment,
     diarization: Option<&RecordDiarizationProjection>,
+    zh: bool,
 ) -> String {
-    let middle = segment
-        .start_sample
-        .saturating_add(segment.end_sample.saturating_sub(segment.start_sample) / 2);
-    let mut speaker_id = diarization
-        .and_then(|projection| {
-            projection
-                .segment_speaker_overrides
-                .get(&segment.segment_id)
-                .copied()
-        })
-        .or_else(|| {
-            diarization.and_then(|projection| {
+    match diarization.and_then(|projection| {
+        projection
+            .segment_speaker_attributions
+            .get(&segment.segment_id)
+    }) {
+        Some(RecordSegmentSpeakerAttribution::Single { speaker_id }) => diarization
+            .and_then(|projection| {
                 projection
-                    .turns
+                    .speakers
                     .iter()
-                    .find(|turn| turn.start_sample <= middle && turn.end_sample >= middle)
-                    .map(|turn| turn.global_speaker)
+                    .find(|speaker| speaker.speaker_id == *speaker_id)
+                    .and_then(|speaker| speaker.custom_name.clone())
             })
-        })
-        .unwrap_or(0);
-    if let Some(projection) = diarization {
-        let mut visited = BTreeSet::new();
-        while visited.insert(speaker_id) {
-            let Some(next) = projection
-                .speakers
-                .iter()
-                .find(|speaker| speaker.speaker_id == speaker_id)
-                .and_then(|speaker| speaker.merged_into)
-            else {
-                break;
-            };
-            speaker_id = next;
+            .unwrap_or_else(|| format!("Speaker {}", speaker_letter_for_export(*speaker_id))),
+        Some(RecordSegmentSpeakerAttribution::Multiple) => if zh {
+            "多位说话人"
+        } else {
+            "Multiple speakers"
         }
-        if let Some(name) = projection
-            .speakers
-            .iter()
-            .find(|speaker| speaker.speaker_id == speaker_id)
-            .and_then(|speaker| speaker.custom_name.as_ref())
-        {
-            return name.clone();
+        .to_string(),
+        Some(RecordSegmentSpeakerAttribution::Unknown) | None => {
+            if zh { "未确定" } else { "Unknown speaker" }.to_string()
         }
     }
-    format!("Speaker {}", speaker_letter_for_export(speaker_id))
 }
 
 fn speaker_letter_for_export(mut index: u32) -> String {
@@ -4748,7 +4805,7 @@ fn render_record_text_export(
         for segment in &transcript.segments {
             let media_ms =
                 segment.start_sample.saturating_mul(1_000) / transcript.sample_rate as u64;
-            let speaker = export_speaker_label(segment, diarization.as_ref());
+            let speaker = export_speaker_label(segment, diarization.as_ref(), zh);
             match format {
                 RecordTextExportFormat::Markdown => writeln!(
                     output,
@@ -6544,6 +6601,171 @@ mod tests {
                 .unwrap_err(),
             "RECORD_REVISION_CONFLICT"
         );
+    }
+
+    #[test]
+    fn segment_speaker_evidence_respects_half_open_boundaries_and_canonical_merges() {
+        let segment = RecordTranscriptSegment {
+            segment_id: "segment".into(),
+            track: AudioTrackKind::Microphone,
+            start_sample: 10,
+            end_sample: 20,
+            text: "paragraph".into(),
+            language: None,
+            revision: 1,
+        };
+        let turn = |start, end, speaker| RecordSpeakerTurn {
+            start_sample: start,
+            end_sample: end,
+            global_speaker: speaker,
+        };
+        let canonical = BTreeMap::new();
+        assert_eq!(
+            project_segment_speaker_attribution(&segment, &[], &canonical),
+            RecordSegmentSpeakerAttribution::Unknown
+        );
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                &[turn(0, 10, 0), turn(20, 30, 1)],
+                &canonical
+            ),
+            RecordSegmentSpeakerAttribution::Unknown
+        );
+        assert_eq!(
+            project_segment_speaker_attribution(&segment, &[turn(10, 12, 0)], &canonical),
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 0 }
+        );
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                &[turn(10, 12, 1), turn(18, 20, 1)],
+                &canonical
+            ),
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 1 }
+        );
+        let turns = [turn(10, 16, 1), turn(14, 20, 2)];
+        assert_eq!(
+            project_segment_speaker_attribution(&segment, &turns, &canonical),
+            RecordSegmentSpeakerAttribution::Multiple
+        );
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                &turns,
+                &BTreeMap::from([(1, 0), (2, 0)])
+            ),
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 0 }
+        );
+    }
+
+    #[tokio::test]
+    async fn speaker_attribution_uses_overlap_without_inventing_a_default_identity() {
+        let temp = tempdir().unwrap();
+        let store = store_at(temp.path());
+        let (id, root) = speech_projection_fixture(&store).await;
+        let provenance = RecordSpeechProvenance {
+            provider: "local".into(),
+            model_pack_revision: "speech-pack-1".into(),
+            onnx_runtime_version: "1.28.0".into(),
+        };
+        let segments = ["one", "gap", "multiple"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| RecordTranscriptSegment {
+                segment_id: text.into(),
+                track: AudioTrackKind::Microphone,
+                start_sample: index as u64 * 16_000,
+                end_sample: (index as u64 + 1) * 16_000,
+                text: text.into(),
+                language: None,
+                revision: 1,
+            })
+            .collect();
+        store
+            .commit_recording_final_transcript(&id, segments, provenance.clone())
+            .await
+            .unwrap();
+        let unknown_document =
+            fs::read_to_string(root.join(AUDIO_DISCUSSION_DOCUMENT_PATH)).unwrap();
+        assert!(unknown_document.contains("**Unknown speaker**: one"));
+        store
+            .commit_diarization_result(
+                &id,
+                vec![
+                    RecordSpeakerTurn {
+                        start_sample: 0,
+                        end_sample: 4_000,
+                        global_speaker: 1,
+                    },
+                    RecordSpeakerTurn {
+                        start_sample: 32_000,
+                        end_sample: 36_000,
+                        global_speaker: 1,
+                    },
+                    RecordSpeakerTurn {
+                        start_sample: 44_000,
+                        end_sample: 48_000,
+                        global_speaker: 2,
+                    },
+                ],
+                provenance,
+            )
+            .await
+            .unwrap();
+        let document = fs::read_to_string(root.join(AUDIO_DISCUSSION_DOCUMENT_PATH)).unwrap();
+        assert!(document.contains("**Speaker B**: one"));
+        assert!(document.contains("**Unknown speaker**: gap"));
+        assert!(document.contains("**Multiple speakers**: multiple"));
+        let projection = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wire = serde_json::to_value(&projection).unwrap();
+        assert_eq!(
+            wire["segmentSpeakerAttributions"]["one"],
+            serde_json::json!({ "kind": "single", "speakerId": 1 })
+        );
+        assert_eq!(
+            wire["segmentSpeakerAttributions"]["gap"],
+            serde_json::json!({ "kind": "unknown" })
+        );
+        assert_eq!(
+            wire["segmentSpeakerAttributions"]["multiple"],
+            serde_json::json!({ "kind": "multiple" })
+        );
+        let search = store.search_documents(&id).await.unwrap();
+        assert!(search
+            .iter()
+            .any(|doc| doc.content == "Unknown speaker\ngap"));
+        assert!(search
+            .iter()
+            .any(|doc| doc.content == "Multiple speakers\nmultiple"));
+        store
+            .reassign_segment_speaker(RecordSegmentSpeakerReassignInput {
+                record_id: id.clone(),
+                expected_override_revision: 0,
+                segment_id: "multiple".into(),
+                speaker_id: 2,
+                updated_at_wall_time: 10_000,
+            })
+            .await
+            .unwrap();
+        let corrected = fs::read_to_string(root.join(AUDIO_DISCUSSION_DOCUMENT_PATH)).unwrap();
+        assert!(corrected.contains("**Speaker C**: multiple"));
+        store
+            .merge_speakers(RecordSpeakerMergeInput {
+                record_id: id.clone(),
+                expected_override_revision: 1,
+                source_speaker_id: 2,
+                target_speaker_id: 1,
+                updated_at_wall_time: 11_000,
+            })
+            .await
+            .unwrap();
+        let merged = fs::read_to_string(root.join(AUDIO_DISCUSSION_DOCUMENT_PATH)).unwrap();
+        assert!(merged.contains("**Speaker B**: multiple"));
     }
 
     #[tokio::test]

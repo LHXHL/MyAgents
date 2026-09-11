@@ -25,6 +25,7 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 - 录音接纳后由 `RecordingManager` 独立持有 wake lock；获取失败不阻止录音，但 snapshot 与 lifecycle 保留 `RECORDING_WAKE_LOCK_UNAVAILABLE`，Record Detail 显示非阻塞警告。它只防止 idle sleep，不承诺合盖、用户主动睡眠、OS 强制休眠或断电期间继续采集。
 - 没有 transcript 的历史音频在转录区域显示“开始转录”。只有用户点击后才调用 `cmd_speech_record_transcribe`；安装模型、打开详情或启动 App 都不会自动扫描历史 Record。
 - 人工纠错只覆盖 speaker rename、merge 与 exact segment reassign。原始 transcript revision 保留，override 单独持久化并在 projection/export/search 时合成；不提供任意字词改写。
+- 段落归属由 `RecordStore` 在当前 diarization projection 的 `segmentSpeakerAttributions` 派生，页面、export、search 与 `content.md` 共用该结果。有效人工 reassign 优先；否则在共同 16 kHz 时间线上取段落与 speaker turn 的正长度半开区间交集，并按 merge 后 canonical identity 去重：零个为 unknown、一个为 single、多个为 multiple。禁止 midpoint miss / 无结果默认映射到 Speaker A；原 ASR 段落保持不变。历史 `content.md` 在既有 discussion admission 重建，Record 搜索在既有 startup baseline 重建，不增加迁移或扫描器。
 - 所有录音模式只投影当前 Record 内的匿名 `Speaker A/B/C`；物理麦克风不代表“我”。单轨直接 diarize，双物理轨由同一 Media Worker 按共同媒体时间线有界混合后做一次 Record-wide clustering。speaker embedding 只在 exact Worker generation 内短暂存在并在结束时主动清理，不持久化声纹，也不跨 Record 复用身份。
 - audio Record 结束保存后，`RecordStore` 在 Record 根目录生成唯一的 `content.md` 当前态文稿，包含元数据、当前 speaker projection、转写、现场笔记与重点 Mark。它是可重建的派生 artifact：最终转写、diarization、speaker override、metadata 或 timeline 变化后原子覆盖刷新；录音中不生成，损坏或缺失时由 AI 讨论接纳入口按当前 Record revision 重建。Renderer、Session 与 TaskStore 都不维护第二份副本。AI 讨论仍以该文稿为主；`RecordStore` 同时返回经 artifact inventory 验证的实际音轨绝对路径，仅供 Agent 需要时核对原始声音。
 - 托盘只消费 `RecordingManager` projection：录音中 icon 增加状态圆点，菜单出现“正在录音...”，点击打开 exact Record Tab。托盘不拥有录音状态或导航 history。

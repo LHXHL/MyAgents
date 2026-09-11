@@ -1295,51 +1295,10 @@ export default function RecordDetail({
     [canMixPhysicalTracks, playbackMs, selectedPhysicalTracks, tracks],
   );
 
-  const speakerIdFor = useCallback(
-    (segment: RecordTranscriptSegment): number => {
-      const middle =
-        segment.startSample +
-        Math.floor((segment.endSample - segment.startSample) / 2);
-      const turn = diarization?.turns.find(
-        (candidate) =>
-          candidate.startSample <= middle && candidate.endSample >= middle,
-      );
-      let speakerId =
-        diarization?.segmentSpeakerOverrides[segment.segmentId] ??
-        turn?.globalSpeaker ??
-        0;
-      const visited = new Set<number>();
-      while (!visited.has(speakerId)) {
-        visited.add(speakerId);
-        const mergedInto = diarization?.speakers.find(
-          (speaker) => speaker.speakerId === speakerId,
-        )?.mergedInto;
-        if (mergedInto === undefined) break;
-        speakerId = mergedInto;
-      }
-      return speakerId;
-    },
-    [diarization],
-  );
-
-  const speakerFor = useCallback(
-    (segment: RecordTranscriptSegment): string => {
-      const speakerId = speakerIdFor(segment);
-      const customName = diarization?.speakers.find(
-        (speaker) => speaker.speakerId === speakerId,
-      )?.customName;
-      if (customName) return customName;
-      return t('records.speakerUnknown', {
-        name: speakerLetter(speakerId),
-      });
-    },
-    [diarization?.speakers, speakerIdFor, t],
-  );
-
   const activeSpeakers = useMemo(
     () =>
       diarization?.speakers.filter(
-        (speaker) => speaker.mergedInto === undefined,
+        (speaker) => speaker.mergedInto == null,
       ) ?? [],
     [diarization?.speakers],
   );
@@ -1497,7 +1456,11 @@ export default function RecordDetail({
   const renderTranscriptSegment = useCallback(
     (segment: RecordTranscriptSegment) => {
       if (!transcript) return null;
-      const currentSpeakerId = speakerIdFor(segment);
+      const attribution = diarization?.segmentSpeakerAttributions[segment.segmentId];
+      const currentSpeakerId = attribution?.kind === 'single' ? attribution.speakerId : undefined;
+      const speakerText = currentSpeakerId !== undefined
+        ? speakerLabel(currentSpeakerId)
+        : t(attribution?.kind === 'multiple' ? 'records.speakerMultiple' : 'records.speakerUncertain');
       const mediaMs = (segment.startSample * 1_000) / transcript.sampleRate;
       const itemKey = `transcript-${segment.segmentId}`;
       return (
@@ -1547,7 +1510,8 @@ export default function RecordDetail({
           >
             {activeSpeakers.length > 0 ? (
               <CustomSelect
-                value={String(currentSpeakerId)}
+                value={currentSpeakerId === undefined ? '' : String(currentSpeakerId)}
+                placeholder={speakerText}
                 options={speakerOptions}
                 onChange={(value) =>
                   void handleReassignSegment(segment.segmentId, Number(value))
@@ -1559,7 +1523,7 @@ export default function RecordDetail({
               />
             ) : (
               <span className="inline-flex shrink-0 rounded-[var(--radius-sm)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-secondary)]">
-                {speakerFor(segment)}
+                {speakerText}
               </span>
             )}
             <button
@@ -1581,8 +1545,8 @@ export default function RecordDetail({
       handleReassignSegment,
       highlightAndFocus,
       highlightedItem,
-      speakerFor,
-      speakerIdFor,
+      diarization?.segmentSpeakerAttributions,
+      speakerLabel,
       speakerOptions,
       t,
       transcript,
