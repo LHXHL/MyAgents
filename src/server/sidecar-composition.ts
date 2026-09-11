@@ -177,6 +177,7 @@ const COMMON_ADMIN_PREFIXES = [
   'model/',
   'plugin/',
   'readme/',
+  'record/',
   'runtime/',
   'skill/',
   'speech/',

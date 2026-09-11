@@ -65,6 +65,30 @@ describe('Sidecar production composition', () => {
     expect(classifySidecarRequest(request('/api/future-owner', 'POST'))).toBeNull();
   });
 
+  describe.each(['global', 'session', 'development-union'] as const)(
+    '%s Record CLI admission',
+    (role) => {
+      it.each([
+        ['record', 'list'],
+        ['record', 'create'],
+        ['thought', 'list'],
+        ['thought', 'create'],
+      ] as const)('dispatches %s/%s through the common management surface', async (group, action) => {
+        const realHandler = vi.fn(async () => Response.json({ success: true }));
+        const composition = role === 'development-union'
+          ? resolveSidecarComposition(null, true)
+          : resolveSidecarComposition(role, false);
+        const cliRequest = request(`/api/admin/${group}/${action}`, 'POST');
+
+        const response = await composeSidecarRequestHandler(composition, realHandler)(cliRequest);
+
+        expect(response.status).toBe(200);
+        expect(classifySidecarRequest(cliRequest)).toBe('common');
+        expect(realHandler).toHaveBeenCalledExactlyOnceWith(cliRequest);
+      });
+    },
+  );
+
   it('routes one-shot Grok verification through the Global provider owner', async () => {
     const grokVerification = request('/api/grok/verify', 'POST');
     expect(classifySidecarRequest(grokVerification)).toBe('global');
