@@ -164,6 +164,16 @@ Provider / model 是 Session config。用户在已有 Session 修改它时：
 
 ## 自定义 Provider
 
+### 模型目录发现生命周期
+
+Renderer 的 `useProviderModelDiscovery` 由当前面板拥有，仅在打开、连接身份（Provider ID、Base URL、modelListUrl、有效凭据 / managed 模式）或发现资格变化时重新订阅；显式刷新 / 重试由按钮触发。模型名称、启用列表、首选、配置 projection 与回调引用都不是请求身份。尤其不能让日志驱动的 Settings 重渲染触发外部请求，否则请求自身的 Rust 日志会形成并发反馈循环。
+
+普通模型面板与 Token Dance 详情复用该生命周期；Token Dance 公开目录不依赖账户 Key。仅复用当前组件尚未完成的请求以承受 effect replay，不建立全局结果缓存或自动重试。切换、关闭或失去资格后，旧结果不能进入当前展示或发起能力补全；已提交的 native 单次 HTTP 没有取消接口，仍由 Rust 现有 15 秒 timeout 收敛。
+
+发现服务仅在有效 `data[]` 目录为空、或过滤已停用模型后无可用项时显示空态；上游错误、未知 envelope 或没有有效模型 ID 的非空响应进入可重试错误态，不能伪装为空列表。兼容原有 OpenAI / Anthropic `data[]` 格式、URL 推断与认证规则，不通过尝试多个端点或认证方式猜测自定义供应商协议。能力补全仍由 ConfigProvider 在 Provider 文件锁内重读后补缺；磁盘上的连接已变更时丢弃旧连接的补全意图。
+
+### 接入规则
+
 Custom Provider 复用相同 route/env/bridge 架构。新增或修改时：
 
 1. 在 Provider registry 定义 protocol、auth type、endpoint 和 model capability；

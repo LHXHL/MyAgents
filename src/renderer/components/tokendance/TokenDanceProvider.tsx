@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listenWithCleanup } from '../../utils/tauriListen';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -22,11 +22,10 @@ import { useConfigActions } from '../../config/useConfigActions';
 import { openExternal } from '../../utils/openExternal';
 import { copyPlainText } from '../../utils/clipboard';
 import {
-  fetchProviderModels,
   isTokenDanceConversationModel,
-  type DiscoveredModel,
 } from '../../config/services/modelDiscoveryService';
 import ModelManagementPanel from '../ModelManagementPanel';
+import { useProviderModelDiscovery } from '../../hooks/useProviderModelDiscovery';
 import WebsiteLink from '../ExternalLink';
 import {
   TokenDanceDialog,
@@ -67,8 +66,11 @@ export default function TokenDanceProvider({
   const [authFailure, setAuthFailure] = useState<string | null>(null);
   const [linkFailure, setLinkFailure] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [catalog, setCatalog] = useState<DiscoveredModel[]>([]);
-  const [catalogFailed, setCatalogFailed] = useState(false);
+  const { models: discoveredModels, error: catalogError } = useProviderModelDiscovery({
+    provider, apiKey, enabled: dialog === 'detail' && isActive,
+  });
+  const catalog = useMemo(() => discoveredModels.filter(isTokenDanceConversationModel), [discoveredModels]);
+  const catalogFailed = catalogError !== null;
   const [viewerId] = useState(() => crypto.randomUUID());
   const mounted = useRef(false);
   const dialogRef = useRef(dialog);
@@ -134,22 +136,6 @@ export default function TokenDanceProvider({
       setDialog(returnToDetail ? 'detail' : null);
     }
   }, [dialog, balance.version, returnToDetail]);
-
-  useEffect(() => {
-    if (dialog !== 'detail') return;
-    let active = true;
-    setCatalogFailed(false);
-    void fetchProviderModels(provider, apiKey)
-      .then((models) => {
-        if (active) setCatalog(models.filter(isTokenDanceConversationModel));
-      })
-      .catch(() => {
-        if (active) setCatalogFailed(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [dialog, provider, apiKey]);
 
   const closeAuth = useCallback(() => {
     dialogRef.current = null;

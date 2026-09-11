@@ -34,7 +34,7 @@ export interface DiscoveredModel {
  * - anthropic-sub: not supported (no API key, SDK returns aliases not real model IDs)
  */
 export async function fetchProviderModels(
-  provider: Provider,
+  provider: Pick<Provider, 'id' | 'config' | 'modelListUrl'>,
   apiKey: string | undefined,
 ): Promise<DiscoveredModel[]> {
   const publicCatalog = provider.id === TOKENDANCE_PROVIDER_ID;
@@ -67,7 +67,7 @@ export function isTokenDanceConversationModel(model: DiscoveredModel): boolean {
  *  - .../v1        → append /models (avoid /v1/v1/models duplication)
  *  - other         → append /v1/models (default OpenAI convention)
  */
-function resolveModelListUrl(provider: Provider): string | null {
+function resolveModelListUrl(provider: Pick<Provider, 'config' | 'modelListUrl'>): string | null {
   if (provider.modelListUrl) return provider.modelListUrl;
   const baseUrl = provider.config.baseUrl;
   if (!baseUrl) return null;
@@ -86,36 +86,35 @@ function resolveModelListUrl(provider: Provider): string | null {
 
 /** Parse raw API response into DiscoveredModel[] — auto-detects format */
 export function parseModelsResponse(body: unknown): DiscoveredModel[] {
-  if (!body || typeof body !== 'object') return [];
+  if (!body || typeof body !== 'object') {
+    throw new Error('Invalid model list response: expected an object with a data array');
+  }
   const obj = body as Record<string, unknown>;
-
-  let rawModels: unknown[] = [];
-
-  // Format A: OpenAI — { object: "list", data: [...] }
-  if (obj.object === 'list' && Array.isArray(obj.data)) {
-    rawModels = obj.data;
-  }
-  // Format B: Anthropic — { data: [...], has_more } where items have type: "model"
-  else if (Array.isArray(obj.data)) {
-    const first = (obj.data as Record<string, unknown>[])[0];
-    if (first && (first.type === 'model' || typeof first.id === 'string')) {
-      rawModels = obj.data;
-    }
+  if (obj.error != null || !Array.isArray(obj.data)) {
+    // Do not echo an arbitrary upstream payload (it may contain credentials).
+    throw new Error('Invalid model list response: expected a data array of models');
   }
 
+  // OpenAI and Anthropic both return data[]. Validate each row independently;
+  // a malformed first row must not hide the remaining valid models.
+  const rawModels = obj.data.filter((model): model is Record<string, unknown> =>
+    model != null && typeof model === 'object'
+    && typeof model.id === 'string' && model.id.trim() !== '');
+  if (obj.data.length > 0 && rawModels.length === 0) {
+    throw new Error('Invalid model list response: no model IDs found');
+  }
   return rawModels
-    .filter((m): m is Record<string, unknown> => m != null && typeof m === 'object')
     .map(mapRawToDiscovered)
     .filter(m => m.id !== '' && m.status !== 'Shutdown');
 }
 
 function mapRawToDiscovered(m: Record<string, unknown>): DiscoveredModel {
-  const tokenLimits = m.token_limits as Record<string, number> | undefined;
-  const topProvider = m.top_provider as Record<string, number> | undefined;
-  const inputMods = m.input_modalities as string[] | undefined;
-  const arch = m.architecture as Record<string, unknown> | undefined;
-  const archInputMods = arch?.input_modalities as string[] | undefined;
-  const caps = m.capabilities as Record<string, unknown> | undefined;
+  const tokenLimits = asRecordOrUndef(m.token_limits);
+  const topProvider = asRecordOrUndef(m.top_provider);
+  const inputMods = Array.isArray(m.input_modalities) ? m.input_modalities : undefined;
+  const arch = asRecordOrUndef(m.architecture);
+  const archInputMods = Array.isArray(arch?.input_modalities) ? arch.input_modalities : undefined;
+  const caps = asRecordOrUndef(m.capabilities);
 
   // Resolve capabilities — use || (not ??) for boolean-returning expressions
   // because Array.includes() returns false (not undefined) when item is absent,
@@ -124,7 +123,7 @@ function mapRawToDiscovered(m: Record<string, unknown>): DiscoveredModel {
     toBoolOrUndef(m.supports_image_in) ||
     inputMods?.includes('image') ||
     archInputMods?.includes('image') ||
-    toBoolOrUndef((caps?.image_input as Record<string, unknown>)?.supported) ||
+    toBoolOrUndef(asRecordOrUndef(caps?.image_input)?.supported) ||
     undefined;
 
   const supportsVideo =
@@ -135,29 +134,27 @@ function mapRawToDiscovered(m: Record<string, unknown>): DiscoveredModel {
   const supportsReasoning =
     toBoolOrUndef(m.supports_reasoning) ||
     toBoolOrUndef(caps?.reasoning) ||
-    toBoolOrUndef((caps?.thinking as Record<string, unknown>)?.supported) ||
+    toBoolOrUndef(asRecordOrUndef(caps?.thinking)?.supported) ||
     undefined;
 
   return {
     id: normalizeModelId(String(m.id ?? '')),
-    displayName: (m.display_name ?? m.name ?? undefined) as string | undefined,
-    ownedBy: m.owned_by as string | undefined,
+    displayName: asStringOrUndef(m.display_name) ?? asStringOrUndef(m.name),
+    ownedBy: asStringOrUndef(m.owned_by),
     // Context length: OpenAI extensions / Anthropic max_input_tokens / Volcengine token_limits
     contextLength:
       asNumberOrUndef(m.context_length) ??
       asNumberOrUndef(m.max_input_tokens) ??
-      tokenLimits?.context_window ??
-      undefined,
+      asNumberOrUndef(tokenLimits?.context_window),
     // Max output: Anthropic max_tokens / OpenRouter top_provider / Volcengine token_limits
     maxOutputTokens:
       asNumberOrUndef(m.max_tokens) ??
-      topProvider?.max_completion_tokens ??
-      tokenLimits?.max_output_token_length ??
-      undefined,
+      asNumberOrUndef(topProvider?.max_completion_tokens) ??
+      asNumberOrUndef(tokenLimits?.max_output_token_length),
     supportsImage,
     supportsVideo,
     supportsReasoning,
-    status: m.status as string | undefined,
+    status: asStringOrUndef(m.status),
     supportedProtocols: parseSupportedProtocols(m.supported_protocols),
   };
 }
@@ -165,6 +162,16 @@ function mapRawToDiscovered(m: Record<string, unknown>): DiscoveredModel {
 /** Gemini returns "models/gemini-2.5-flash" — strip the prefix */
 function normalizeModelId(id: string): string {
   return id.replace(/^models\//, '');
+}
+
+/** Optional provider extensions are untrusted JSON, not typed SDK models. */
+function asRecordOrUndef(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function asStringOrUndef(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }
 
 /** Safely cast to boolean or undefined (avoids `0` / `""` leaking as valid) */

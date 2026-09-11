@@ -78,6 +78,17 @@ describe('Token Dance authorization panel', () => {
       screen.getByText('Log in to view your balance and top up.'),
     ).toBeInTheDocument();
   });
+  it('does not refetch the public catalog when a config refresh recreates the Provider', async () => {
+    mocks.invoke.mockImplementation(async command => command === 'cmd_fetch_provider_models'
+      ? { data: [{ id: 'catalog-model', supported_protocols: ['openai:chat-completions'] }] }
+      : null);
+    const rendered = render(<TokenDanceProvider provider={provider} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Provider details' }));
+    await screen.findByText('catalog-model');
+    rendered.rerender(<TokenDanceProvider provider={{ ...provider, models: [...provider.models] }} />);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'cmd_fetch_provider_models')).toHaveLength(1);
+    expect(screen.getByText('catalog-model')).toBeInTheDocument();
+  });
   it('closes only the panel, reuses authorization, and auto-dismisses when native saving succeeds', async () => {
     render(<TokenDanceProvider provider={provider} />);
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));

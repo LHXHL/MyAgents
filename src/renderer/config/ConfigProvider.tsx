@@ -1123,6 +1123,11 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             // and merge only missing fields so a late result cannot overwrite
             // an explicit value or resurrect a deleted model.
             await atomicModifyCustomProvider(provider.id, current => {
+                // The same Provider ID may now point to another offering.
+                // A result from the old connection has no capability authority
+                // there, even if its model IDs happen to match.
+                if (current.config.baseUrl !== provider.config.baseUrl
+                    || current.modelListUrl !== provider.modelListUrl) return current;
                 const models = enrichExistingModelsFromDiscovery(current.models, discoveredModels);
                 return models === current.models ? current : { ...current, models };
             });
