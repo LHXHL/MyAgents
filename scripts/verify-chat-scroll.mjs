@@ -18,6 +18,7 @@ const entryId = repo + '/src/renderer/__scroll_audit.tsx';
 const entry=`import React,{useState,useRef,useLayoutEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import {i18n} from './i18n';
+import {ThemeRuntimeProvider} from './theme/ThemeRuntime';
 import './index.css';
 import MessageList from './components/MessageList';
 import {ImagePreviewProvider} from './context/ImagePreviewContext';
@@ -26,8 +27,16 @@ import {useChatScrollController} from './hooks/useChatScrollController';
 import {useChatSearch} from './hooks/useChatSearch';
 await i18n.changeLanguage('zh-CN');
 const mk=(id,content,role='assistant')=>({id,content,role,timestamp:new Date(),streamingTextActive:true});
-const history=Array.from({length:25},(_,i)=>mk('h'+i,('History paragraph '+i+' with stable lines. ').repeat(15)));
+const seedMode=new URLSearchParams(location.search).get('seed');
+const nl=String.fromCharCode(10),fence=String.fromCharCode(96).repeat(3);
+const mixedHistory=Array.from({length:300},(_,i)=>mk('h'+i,i%20!==1?'Short user message '+i:[
+ '## Report '+i,'| Column A | Column B |','| --- | --- |',
+ Array(40).fill('| cell | table content |').join(nl),fence+'typescript',
+ Array(60).fill('const value = 123;').join(nl),fence,
+].join(nl),i%20!==1?'user':'assistant'));
+const history=seedMode?mixedHistory:Array.from({length:25},(_,i)=>mk('h'+i,('History paragraph '+i+' with stable lines. ').repeat(15)));
 function Fixture(){
+ const [loaded,setLoaded]=useState(seedMode!=='deferred');
  const [sm,setSm]=useState(mk('stream','Streaming start.'));
  const [loading,setLoading]=useState(true);
  const [permission,setPermission]=useState(false);
@@ -35,10 +44,11 @@ function Fixture(){
  const [height,setHeight]=useState(640);
  const [spacer,setSpacer]=useState(176);
  const rootRef=useRef(null);
- const model=useChatScrollModel({historyMessages:history,streamingMessage:sm,sessionId:'audit'});
+ const model=useChatScrollModel({historyMessages:loaded?history:[],streamingMessage:loaded?sm:null,sessionId:'audit'});
  const ctrl=useChatScrollController({messages:model.data,isActive:true,sessionId:'audit',rootRef});
  const search=useChatSearch({active:searchOpen,messages:model.data,scrollerRef:ctrl.scrollerRef,scrollToMessage:ctrl.scrollToMessage,pauseAutoScroll:ctrl.pauseAutoScroll});
- useLayoutEffect(()=>{window.audit={ctrl,search,setSearchOpen,setLoading,setHeight,setSpacer,setPermission,
+ useLayoutEffect(()=>{window.audit={ctrl,search,load:()=>setLoaded(true),seed:model.heightEstimateSeed,
+ readState:()=>new Promise(resolve=>ctrl.virtuosoRef.current.getState(resolve)),setSearchOpen,setLoading,setHeight,setSpacer,setPermission,
  showDisclosure:()=>setSm(prev=>({...prev,content:[{type:'thinking',thinking:'Expanded thinking content with many lines. '.repeat(100),isComplete:true},{type:'text',text:'Disclosure tail.'}]})),
  growDisclosure:()=>setSm(prev=>({...prev,content:prev.content.map(block=>block.type==='text'?{...block,text:block.text+' Later output below the open content. '.repeat(20)}:block)})),append:text=>setSm(prev=>({...prev,content:prev.content+text})),replace:text=>setSm(prev=>({...prev,content:text})),snapshot:()=>{
   const el=ctrl.scrollerRef.current; const status=document.querySelector('[data-chat-status-row]');
@@ -48,7 +58,7 @@ function Fixture(){
   return {top:el?.scrollTop,height:el?.scrollHeight,viewport:el?.clientHeight,gap:el?el.scrollHeight-el.scrollTop-el.clientHeight:null,follow:ctrl.followEnabledRef.current,statusY:status?.getBoundingClientRect().top,statusH:status?.getBoundingClientRect().height,anchor:anchor?.dataset.messageId,anchorY:anchor?anchor.getBoundingClientRect().top-er.top:null};
  }}});
  return <div ref={rootRef} style={{height,width:760,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden'}}>
- <MessageList messages={model.data} streamingMessage={sm} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId="audit"
+ <MessageList firstItemIndex={100000} messages={model.data} streamingMessage={loaded?sm:null} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId="audit"
  heightEstimateSeed={model.heightEstimateSeed} layoutByMessageId={model.layoutByMessageId} virtuosoRef={ctrl.virtuosoRef}
  onScrollerRef={ctrl.attachScroller} followEnabledRef={ctrl.followEnabledRef} scrollToBottom={ctrl.scrollToBottom} handleAtBottomChange={ctrl.handleAtBottomChange}
  onViewportAdmissionChanged={ctrl.onViewportAdmissionChanged} onItemsRendered={ctrl.onItemsRendered} isViewportRecoveryFenced={ctrl.isViewportRecoveryFenced}
@@ -57,7 +67,7 @@ function Fixture(){
  onPermissionDecision={()=>setPermission(false)} />
  </div>;
 }
-createRoot(document.getElementById('root')).render(<ImagePreviewProvider><Fixture/></ImagePreviewProvider>);`;
+createRoot(document.getElementById('root')).render(<ThemeRuntimeProvider selection={null}><ImagePreviewProvider><Fixture/></ImagePreviewProvider></ThemeRuntimeProvider>);`;
 const server = await createServer({
   configFile: resolve(repo, 'vite.config.ts'),
   cacheDir: resolve(output, 'vite-cache'),
@@ -72,7 +82,7 @@ const server = await createServer({
     load(id) { if (id === entryId) return entry; },
     configureServer(vite) {
       vite.middlewares.use(async (req, res, next) => {
-        if (req.url !== '/__scroll_audit') return next();
+        if (req.url?.split('?')[0] !== '/__scroll_audit') return next();
         res.setHeader('Content-Type', 'text/html');
         res.end(await vite.transformIndexHtml(req.url, '<html><head><style>:root{--font-body:Arial,sans-serif;--font-code:monospace;--paper:white;--ink:black;--ink-muted:#666}body{margin:0}[data-chat-status-row]{outline:2px solid rgb(255,0,255)}</style></head><body><div id="root"></div><script type="module" src="/__scroll_audit.tsx"></script></body></html>'));
       });
@@ -84,14 +94,39 @@ const deadline = setTimeout(() => void browser?.close(), 120000);
 try {
   await server.listen();
   browser = await (engine === 'webkit' ? webkit : chromium).launch({
-    headless: true, ...(engine === 'chrome' ? { channel: 'chrome' } : {}),
+    headless: true, ignoreDefaultArgs: ['--hide-scrollbars'], ...(engine === 'chrome' ? { channel: 'chrome' } : {}),
   });
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 },
     recordVideo: { dir: output, size: { width: 1000, height: 800 } } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const address = server.httpServer.address();
-  await page.goto(`http://127.0.0.1:${address.port}/__scroll_audit`);
+  const fixtureUrl = `http://127.0.0.1:${address.port}/__scroll_audit`;
+  const seedEvidence = {};
+  for (const mode of ['immediate', 'deferred']) {
+    await page.goto(`${fixtureUrl}?seed=${mode}`);
+    await page.waitForFunction(() => window.audit?.ctrl.scrollerRef.current);
+    if (mode === 'deferred') {
+      // Let the empty list commit before history arrives, as on session restore.
+      await page.waitForTimeout(100);
+      await page.evaluate(() => window.audit.load());
+    }
+    await page.waitForFunction(() => document.querySelector('[data-message-id="stream"]'));
+    await page.waitForTimeout(300);
+    const seeded = await page.evaluate(async () => ({
+      state: await window.audit.readState(), seed: window.audit.seed,
+      mounted: [...document.querySelectorAll('[data-index]')].map(el => Number(el.dataset.index)),
+    }));
+    // Unmeasured short and tall rows must still hold their distinct content seeds.
+    for (const unmeasuredIndex of [150, 161]) {
+      assert.ok(!seeded.mounted.includes(unmeasuredIndex), `${mode}: probe row was mounted`);
+      const range = seeded.state.ranges.find(r => r.startIndex <= unmeasuredIndex && r.endIndex >= unmeasuredIndex);
+      assert.equal(range?.size, seeded.seed[unmeasuredIndex], `${mode}: per-row seed was ignored`);
+    }
+    seedEvidence[mode] = seeded;
+  }
+  await writeFile(resolve(output, 'height-seeds.json'), JSON.stringify(seedEvidence, null, 2));
+  await page.goto(fixtureUrl);
   await page.waitForFunction(() => window.audit?.ctrl.scrollerRef.current);
   await page.waitForTimeout(1500);
   const snapshot = () => page.evaluate(() => window.audit.snapshot());
@@ -246,7 +281,7 @@ try {
   await page.evaluate(() => { window.record = false; });
   await writeFile(resolve(output, 'samples.json'), JSON.stringify(await page.evaluate(() => window.samples)));
   await writeFile(resolve(output, 'results.json'), JSON.stringify(evidence, null, 2));
-  console.log(`Chat scroll ${engine}: streaming, reading, footer/viewport growth, navigation cancellation and terminal checks passed. Evidence: ${output}`);
+  console.log(`Chat scroll ${engine}: immediate/deferred height seeds, streaming, reading, footer/viewport growth, navigation cancellation and terminal checks passed. Evidence: ${output}`);
 } finally {
   clearTimeout(deadline);
   if (browser) await browser.close();
