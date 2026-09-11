@@ -82,6 +82,7 @@ impl RealtimeTrackSink {
         self.push_converted(samples.iter().map(|sample| *sample as f32 / i8::MAX as f32))
     }
 
+    #[cfg(target_os = "macos")]
     pub fn push_planar_f32(&self, planes: &[&[f32]]) -> u8 {
         if !self.accepting.load(Ordering::Acquire)
             || planes.len() != self.channels as usize
@@ -121,6 +122,7 @@ impl RealtimeTrackSink {
         self.push_converted(std::iter::repeat_n(0.0, sample_count))
     }
 
+    #[cfg(target_os = "macos")]
     pub fn push_planar_silence(&self, planes: &[&[f32]]) -> u8 {
         if planes.len() != self.channels as usize || planes.is_empty() {
             return 0;

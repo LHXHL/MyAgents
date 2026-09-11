@@ -1497,11 +1497,11 @@ fn ensure_plain_directory(path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn set_private_directory_permissions(path: &Path) -> Result<(), &'static str> {
+fn set_private_directory_permissions(_path: &Path) -> Result<(), &'static str> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o700))
             .map_err(|_| "SPEECH_RESOURCE_STORE_WRITE_FAILED")?;
     }
     Ok(())

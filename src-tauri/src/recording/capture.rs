@@ -220,6 +220,7 @@ impl CaptureTrackSink {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn push_planar_f32(&self, planes: &[&[f32]]) {
         if !self.enabled() {
             self.activity.set_level_percent(0);
