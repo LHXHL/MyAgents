@@ -1,3 +1,4 @@
+import type { AsyncQuestionSet } from '../../../shared/asyncUserQuestions';
 import { buildFilePatchDisplayDescriptor } from '../../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 import {
@@ -697,9 +698,9 @@ export function buildExternalPendingThinkingBlock(isComplete: boolean): PersistC
   };
 }
 
-export function flushExternalPendingTextBlock(): boolean {
-  if (!pendingTextBuffer) return false;
-  currentContentBlocks.push({ type: 'text', text: pendingTextBuffer });
+export function flushExternalPendingTextBlock(asyncQuestions?: AsyncQuestionSet): boolean {
+  if (!pendingTextBuffer && !asyncQuestions) return false;
+  currentContentBlocks.push({ type: 'text', text: pendingTextBuffer, isComplete: true, ...(asyncQuestions ? { asyncQuestions } : {}) });
   pendingTextBuffer = '';
   return true;
 }

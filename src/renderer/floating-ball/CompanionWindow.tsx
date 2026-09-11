@@ -1,3 +1,6 @@
+import AsyncQuestionCard, { AsyncQuestionComposerTarget } from '@/components/AsyncQuestionCard';
+import { AsyncQuestionContext, type AsyncQuestionActions } from '@/context/AsyncQuestionContext';
+import { sameAsyncQuestionReply, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 /**
  * Companion chat window (PRD 0.2.35) — the transparent NSPanel that holds the
  * Mino desktop-channel conversation. Visual spec: the sign-off'd playground
@@ -216,6 +219,7 @@ function AssistantMessage({ message, isStreaming, tick }: { message: Extract<FbM
                 return (
                     <div className="fbw-msg ai ai-message-content" key={`t-${index}`}>
                         <Markdown>{item.text ?? ''}</Markdown>
+                        {item.asyncQuestions && <AsyncQuestionCard questions={item.asyncQuestions} />}
                         {isStreaming && message.streamingTextActive && index === groupedBlocks.length - 1 && <span className="fbw-caret" />}
                     </div>
                 );
@@ -302,6 +306,9 @@ export default function CompanionWindow() {
     const [imageDrafts, setImageDrafts] = useState<FbImageDraft[]>([]);
     const [whoContext, setWhoContext] = useState<FbWhoContext | null>(null);
     const [input, setInput] = useState('');
+    const [questionDraft, setQuestionDraft] = useState<{ sessionId: string | null; reply: AsyncQuestionReply; title: string } | null>(null);
+    const questionTarget = questionDraft?.sessionId === session.sessionId ? questionDraft : null;
+
     const [axNeeded, setAxNeeded] = useState(false);
     const [providerForCapability, setProviderForCapability] = useState<Provider | null>(null);
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
@@ -1069,12 +1076,10 @@ export default function CompanionWindow() {
     const doSend = useCallback(async () => {
         const text = input.trim();
         const drafts = imageDrafts;
-        if ((!text && drafts.length === 0) || session.busy || !session.ready) return;
+        if ((!text && drafts.length === 0) || (session.busy && !questionTarget) || !session.ready) return;
         stickToBottomRef.current = true; // 发送 = 跟住回复
-        setInput('');
-        setImageDrafts([]);
+        if (!questionTarget) { setInput(''); setImageDrafts([]); setQuote(null); }
         const q = quote;
-        setQuote(null);
         const ctx = lastCtxRef.current;
         const screenshotDraft = drafts.find((draft) => draft.source === 'screenshot');
         const attachments: FbAttachment[] = drafts.map((draft) => ({
@@ -1086,7 +1091,8 @@ export default function CompanionWindow() {
             previewUrl: draft.previewUrl,
             isImage: true,
         }));
-        await send(text, {
+        const admitted = await send(questionTarget ? `${questionTarget.title}\n\n${text}` : text, {
+            asyncQuestionReply: questionTarget?.reply,
             quote: q,
             images: drafts.map((draft) => (
                 draft.transport === 'attachment_ref' && draft.relativePath
@@ -1112,7 +1118,25 @@ export default function CompanionWindow() {
             windowTitle: screenshotDraft?.windowTitle ?? ctx?.windowTitle ?? null,
             screenshotAttached: Boolean(screenshotDraft),
         });
-    }, [imageDrafts, input, quote, session.busy, session.ready, send]);
+        if (admitted && questionTarget) {
+            setInput(current => current.trim() === text ? '' : current);
+            setImageDrafts(current => current.filter(item => !drafts.includes(item)));
+            setQuote(current => current === q ? null : current);
+            setQuestionDraft(current => current && sameAsyncQuestionReply(current.reply, questionTarget.reply) ? null : current);
+        }
+    }, [imageDrafts, input, quote, session.busy, session.ready, send, questionTarget]);
+
+    const questionActions = useMemo<AsyncQuestionActions>(() => ({
+        answered: session.messages.flatMap(message => message.role === 'user' && message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+        queued: session.queuedMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []),
+        disabled: !session.ready,
+        onReply: (reply, text) => send(text, { asyncQuestionReply: reply }),
+        onCompose: (reply, title) => {
+            setQuestionDraft({ sessionId: session.sessionId, reply, title });
+            inputRef.current?.focus();
+        },
+    }), [session.messages, session.queuedMessages, session.ready, session.sessionId, send]);
+
 
     const resizeInput = useCallback((el: HTMLTextAreaElement) => {
         el.style.height = 'auto';
@@ -1306,7 +1330,7 @@ export default function CompanionWindow() {
         target.addEventListener('lostpointercapture', cleanup);
     }, []);
 
-    const sendReady = (input.trim().length > 0 || imageDrafts.length > 0) && !session.busy && session.ready;
+    const sendReady = (input.trim().length > 0 || imageDrafts.length > 0) && (!session.busy || !!questionTarget) && session.ready;
     const hasConversationSurface =
         session.messages.length > 0 ||
         Boolean(session.liveMessage) ||
@@ -1348,6 +1372,7 @@ export default function CompanionWindow() {
             </div>
 
             {/* 会话流 */}
+            <AsyncQuestionContext.Provider value={questionActions}>
             <FileActionProvider
                 workspacePath={session.workspacePath}
                 onInsertReference={insertReferencePaths}
@@ -1416,6 +1441,7 @@ export default function CompanionWindow() {
                 )}
             </div>
             </FileActionProvider>
+            </AsyncQuestionContext.Provider>
 
             {/* 兜底状态行：仅在还没有任何可见反馈（无活动行/无流式文本）时出现 */}
             {session.busy && session.activities.length === 0 && !session.liveMessage && (
@@ -1465,6 +1491,7 @@ export default function CompanionWindow() {
                         onPreview={previewDraft}
                     />
                 )}
+                {questionTarget && <AsyncQuestionComposerTarget title={questionTarget.title} onCancel={() => setQuestionDraft(null)} />}
                 <div className="fbw-inputrow">
                     <textarea
                         ref={inputRef}
@@ -1485,7 +1512,7 @@ export default function CompanionWindow() {
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
                     </button>
                     {/* 与主对话框同语义：运行中 = 停止（方块），否则 = 发送（箭头） */}
-                    {session.busy ? (
+                    {session.busy && !questionTarget ? (
                         <button className="send stop" onClick={() => void session.stop()} title={t('input.stop')}>
                             <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
                         </button>

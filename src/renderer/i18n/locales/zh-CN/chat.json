@@ -1,4 +1,13 @@
 {
+  "asyncQuestion": {
+    "compose": "自由回答",
+    "answered": "已回答",
+    "queued": "等待发送",
+    "sending": "正在提交…",
+    "failed": "发送失败，可以重试",
+    "replyingTo": "回答：{{title}}",
+    "cancel": "取消回答"
+  },
   "input": {
     "launcherPlaceholder": "今天，想干点啥？",
     "placeholder": "输入消息，使用 @ 引用文件，/ 使用技能...",

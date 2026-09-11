@@ -1,3 +1,5 @@
+import { asyncQuestionSetsInContent, sameAsyncQuestionReply, type AsyncQuestionSet, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
+import { getExternalPendingMessageOperations } from './external-session/operation-queue';
 // External Runtime Session Handler (v0.1.59)
 //
 // Manages the lifecycle of an external CLI runtime session (Claude Code, Codex).
@@ -761,6 +763,27 @@ function notifyExternalMessageDispatchAccepted(
   onDispatchAccepted?.();
 }
 
+async function admitExternalAsyncQuestionReply(
+  operation: ExternalMessageOperation,
+  generation: number,
+  onDispatchAccepted: (() => void) | undefined,
+  persist: () => Promise<void>,
+): Promise<void> {
+  if (!isCurrentExternalOperationGeneration(generation)
+    || operation.context.sessionId !== getExternalLifecycleSessionId()
+    || operation.userProjection.retracted) return;
+  pushExternalSessionMessage(operation.userProjection.message);
+  markExternalUserMessageInTranscript(operation);
+  notifyExternalMessageDispatchAccepted(operation, operation.context.sessionId, onDispatchAccepted);
+  try {
+    await persist();
+  } catch (error) {
+    // Native admission already succeeded. Keep the accepted live projection;
+    // the existing transcript append path can persist its tail at turn end.
+    console.error('[external-session] Failed to persist accepted async question answer:', error);
+  }
+}
+
 async function retractRejectedExternalUserMessage(
   operation: ExternalMessageOperation,
 ): Promise<void> {
@@ -925,6 +948,7 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
       content: entry.text,
       timestamp: userMsg.timestamp,
       attachments: userMsg.attachments,
+      asyncQuestionReply: userMsg.asyncQuestionReply,
     },
   });
   return persistence;
@@ -938,6 +962,19 @@ function surfaceAcceptedRealtimeSteeredUserMessage(
   return surfaceRealtimeSteeredUserMessage(entry);
 }
 
+function finalizeUnconfirmedRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMessage): Promise<boolean> {
+  if (entry.operation.context.asyncQuestionReply) {
+    // A steer RPC ack says transport succeeded, not that this answer was consumed.
+    markExternalUserMessageRetracted(entry.operation);
+    broadcast('queue:cancelled', { queueId: entry.queueId });
+    broadcast('chat:agent-error', { message: 'The runtime did not confirm the answer. Please try again.' });
+    return Promise.resolve(false);
+  } else {
+    // Preserve the existing compatibility fallback for ordinary messages.
+    return surfaceRealtimeSteeredUserMessage(entry);
+  }
+}
+
 function surfaceAcknowledgedPendingRealtimeSteeredUserMessages(): void {
   for (let index = 0; index < pendingRealtimeSteeredUserMessages.length;) {
     const entry = pendingRealtimeSteeredUserMessages[index];
@@ -946,7 +983,7 @@ function surfaceAcknowledgedPendingRealtimeSteeredUserMessages(): void {
       continue;
     }
     pendingRealtimeSteeredUserMessages.splice(index, 1);
-    void surfaceRealtimeSteeredUserMessage(entry);
+    void finalizeUnconfirmedRealtimeSteeredUserMessage(entry);
   }
 }
 
@@ -1362,10 +1399,10 @@ type ExternalTextMirrorDisposition = 'mirror-completed-block' | 'skip-incomplete
 
 /** Flush accumulated text into a text content block. Only completed blocks
  * enter the turn owner's ordered mirror delivery tail. */
-function flushPendingText(disposition: ExternalTextMirrorDisposition): void {
+function flushPendingText(disposition: ExternalTextMirrorDisposition, asyncQuestions?: AsyncQuestionSet): void {
   const completedText = getExternalPendingTextBuffer();
-  if (!flushExternalPendingTextBlock()) return;
-  if (disposition === 'skip-incomplete-block') return;
+  if (!flushExternalPendingTextBlock(asyncQuestions)) return;
+  if (disposition === 'skip-incomplete-block' || !completedText) return;
   const sessionId = getExternalLifecycleSessionId();
   stageExternalAssistantChannelDelivery(() => mirrorIfChannelBound({
     sessionId,
@@ -1406,7 +1443,7 @@ function clearPendingExternalSessionBirth(sessionId: string): void {
   }
 }
 
-async function persistUserMessageBeforeRuntimeDispatch(params: {
+async function persistExternalUserMessageAdmission(params: {
   sessionId: string;
   workspacePath: string;
   messageText: string;
@@ -2399,6 +2436,7 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
   inMemoryMessages: SessionMessage[];
   liveStreamingMessage: SessionMessage | null;
   liveSessionState: ExternalSessionState;
+  queuedMessages: ReturnType<typeof getExternalQueueStatus>;
   pendingInteractiveRequests: ExternalPendingInteractiveRequest[];
 } | null {
   if (targetSessionId !== getCurrentExternalBoundSessionId()) return null;
@@ -2416,6 +2454,7 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
     inMemoryMessages,
     liveStreamingMessage: getExternalLiveAssistantMessage(),
     liveSessionState: getExternalLifecycleState(),
+    queuedMessages: getExternalQueueStatus(),
     pendingInteractiveRequests: getExternalInteractiveRequestsSnapshot(),
   });
 }
@@ -3182,6 +3221,8 @@ async function _doStartExternalSession(options: {
   }
 
   let turnAdmissionActivated = false;
+  const initialOperationGeneration = getExternalOperationGeneration();
+  let persistInitialQuestionReply: (() => Promise<void>) | undefined;
   const admitInitialMessage = async (): Promise<string | undefined> => {
     if (!options.initialMessage || turnAdmissionActivated) return;
     const messageOperation = options.messageOperation;
@@ -3211,8 +3252,10 @@ async function _doStartExternalSession(options: {
       ? new Date().toISOString()
       : undefined;
     const userMsg = messageOperation.userProjection.message;
-    pushExternalSessionMessage(userMsg);
-    markExternalUserMessageInTranscript(messageOperation);
+    if (!messageOperation.context.asyncQuestionReply) {
+      pushExternalSessionMessage(userMsg);
+      markExternalUserMessageInTranscript(messageOperation);
+    }
     resetTurnAccumulators();
     seedTurnWatchdogEstimate();
     resetWatchdog();
@@ -3225,11 +3268,9 @@ async function _doStartExternalSession(options: {
         options.turnBinding.onTerminal,
       );
     }
-    notifyExternalMessageDispatchAccepted(
-      messageOperation,
-      options.sessionId,
-      options.onDispatchAccepted,
-    );
+    if (!messageOperation.context.asyncQuestionReply) {
+      notifyExternalMessageDispatchAccepted(messageOperation, options.sessionId, options.onDispatchAccepted);
+    }
     turnAdmissionActivated = true;
     currentTurnAnalyticsSource = turnAnalyticsSource;
     currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
@@ -3240,10 +3281,10 @@ async function _doStartExternalSession(options: {
     // SessionStore enforces the index⟺data invariant (issue #336): a JSONL is
     // never CREATED for a session without a sessions.json entry — persisting
     // first would get the write refused and drop the user's first message.
-    await persistUserMessageBeforeRuntimeDispatch({
+    const persistInitialMessage = () => persistExternalUserMessageAdmission({
       sessionId: options.sessionId,
       workspacePath: options.workspacePath,
-      messageText: options.initialMessage,
+      messageText: messageOperation.text,
       origin: 'initial message',
       scenario: options.scenario,
       turnPath: options.resumeSessionId ? 'resume-start' : 'fresh-start',
@@ -3255,6 +3296,11 @@ async function _doStartExternalSession(options: {
       channelDelivery,
       userChannelProjection,
     });
+    if (messageOperation.context.asyncQuestionReply) {
+      persistInitialQuestionReply = persistInitialMessage;
+    } else {
+      await persistInitialMessage();
+    }
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
     return messageOperation.userProjection.message.id;
   };
@@ -3412,6 +3458,10 @@ async function _doStartExternalSession(options: {
         options.initialImages,
         { clientUserMessageId: options.messageOperation?.userProjection.message.id },
       );
+      if (options.messageOperation && persistInitialQuestionReply) {
+        await admitExternalAsyncQuestionReply(options.messageOperation, initialOperationGeneration,
+          options.onDispatchAccepted, persistInitialQuestionReply);
+      }
     }
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
@@ -3653,6 +3703,12 @@ async function runExternalMessageOperation(
       await retractRejectedExternalUserMessage(operation);
       throw error;
     }
+  }).then(result => {
+    settleExternalMessageOperation(operation, result);
+    return result;
+  }, error => {
+    settleExternalMessageOperation(operation, { queued: false, error: error instanceof Error ? error.message : String(error) });
+    throw error;
   });
 }
 
@@ -4028,7 +4084,7 @@ async function dispatchExternalMessageOperation(
         skillAdmission,
         requiredSystemSkill: context.requiredSystemSkill,
       });
-      return { queued: true };
+      return { queued: !operation.context.asyncQuestionReply || operation.userProjection.surfaced };
     } catch (err) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       if (err instanceof ExternalTurnPromotionCanceledError) return { queued: false };
@@ -4095,7 +4151,7 @@ async function dispatchExternalMessageOperation(
         skillAdmission,
         requiredSystemSkill: context?.requiredSystemSkill,
       });
-      return { queued: true };
+      return { queued: !operation.context.asyncQuestionReply || operation.userProjection.surfaced };
     } catch (err) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       if (err instanceof ExternalTurnPromotionCanceledError) return { queued: false };
@@ -4127,6 +4183,7 @@ async function dispatchExternalMessageOperation(
   }
   let runtimeDispatchStarted = false;
   let turnAdmissionActivated = false;
+  const operationGeneration = getExternalOperationGeneration();
   try {
     assertExternalTurnPromotionCurrent(dispatchPromotion);
     const applyResult = await applyExternalRuntimeConfigToActiveProcess(
@@ -4153,8 +4210,10 @@ async function dispatchExternalMessageOperation(
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
       ? new Date().toISOString()
       : undefined;
-    pushExternalSessionMessage(userMsg);
-    markExternalUserMessageInTranscript(operation);
+    if (!operation.context.asyncQuestionReply) {
+      pushExternalSessionMessage(userMsg);
+      markExternalUserMessageInTranscript(operation);
+    }
     setExternalTurnCompleted(false);
     setExternalLastTurnSucceeded(false);  // Reset for this turn (prevents stale text on failure)
     resetTurnAccumulators();
@@ -4178,11 +4237,9 @@ async function dispatchExternalMessageOperation(
     if (dispatchPromotion) {
       finishExternalTurnPromotion(dispatchPromotion, { status: 'dispatched' });
     }
-    notifyExternalMessageDispatchAccepted(
-      operation,
-      getExternalLifecycleSessionId(),
-      onDispatchAccepted,
-    );
+    if (!operation.context.asyncQuestionReply) {
+      notifyExternalMessageDispatchAccepted(operation, getExternalLifecycleSessionId(), onDispatchAccepted);
+    }
     turnAdmissionActivated = true;
     setExternalSessionState('running');
 
@@ -4195,8 +4252,8 @@ async function dispatchExternalMessageOperation(
     // Normally this happens inside startExternalSession's initialMessage block,
     // but pre-warm calls startExternalSession WITHOUT an initialMessage, so we
     // have to register here when the first actual message arrives via Case 3.
-    await persistUserMessageBeforeRuntimeDispatch({
-      sessionId: getExternalLifecycleSessionId(),
+    const persistUserMessage = () => persistExternalUserMessageAdmission({
+      sessionId: operation.context.sessionId,
       workspacePath: getExternalLifecycleWorkspacePath(),
       messageText: text,
       origin: 'first message after pre-warm',
@@ -4210,8 +4267,9 @@ async function dispatchExternalMessageOperation(
       channelDelivery,
       userChannelProjection,
     });
+    if (!operation.context.asyncQuestionReply) await persistUserMessage();
     if (activeProcess.exited || getExternalActiveProcess() !== activeProcess) {
-      return { queued: true };
+      return { queued: !operation.context.asyncQuestionReply };
     }
     runtimeDispatchStarted = true;
     await activeRuntime.sendMessage(
@@ -4220,7 +4278,10 @@ async function dispatchExternalMessageOperation(
       hasImages ? resolvedImages : undefined,
       { clientUserMessageId: userMsg.id },
     );
-    return { queued: true };
+    if (operation.context.asyncQuestionReply) {
+      await admitExternalAsyncQuestionReply(operation, operationGeneration, onDispatchAccepted, persistUserMessage);
+    }
+    return { queued: !operation.context.asyncQuestionReply || operation.userProjection.surfaced };
   } catch (err) {
     if (
       !runtimeDispatchStarted
@@ -4230,7 +4291,7 @@ async function dispatchExternalMessageOperation(
         || getExternalActiveProcess() !== activeProcess
       )
     ) {
-      return { queued: true };
+      return { queued: !operation.context.asyncQuestionReply || operation.userProjection.surfaced };
     }
     if (err instanceof ExternalTurnPromotionCanceledError) {
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
@@ -4350,7 +4411,8 @@ async function steerExternalMessageForDesktop(input: {
       && isExternalTurnCompleted()
     ) {
       await waitExternalTurnFinalization(60_000);
-      await surfaceAcceptedRealtimeSteeredUserMessage(userMsg.id);
+      const unconfirmed = takePendingRealtimeSteeredUserMessage(userMsg.id);
+      if (unconfirmed) await finalizeUnconfirmedRealtimeSteeredUserMessage(unconfirmed);
     }
     return { result: { queued: true } };
   } catch (err) {
@@ -4377,6 +4439,7 @@ function deferRealtimeOperationToTurnBoundary(input: {
   broadcast('queue:added', {
     queueId: input.queueId,
     messageText: input.text.slice(0, 100),
+    asyncQuestionReply: input.operation.context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
     canCancel: true,
@@ -4463,6 +4526,7 @@ function enqueueExternalTurnBoundaryOperation(
   broadcast('queue:added', {
     queueId: queued.queueId,
     messageText: text.slice(0, 100),
+    asyncQuestionReply: context.asyncQuestionReply,
     isInFlight: false,
     deliveryMode: 'turn',
     canCancel: true,
@@ -4473,6 +4537,34 @@ function enqueueExternalTurnBoundaryOperation(
     queueId: queued.queueId,
     dispatch: queued.dispatchAcceptance,
   };
+}
+
+/** Validate at ingress and again at the existing dispatch gate after queue waits. */
+export async function validateExternalAsyncQuestionReply(
+  sessionId: string,
+  reply: AsyncQuestionReply,
+  ownQueueId?: string,
+): Promise<string | undefined> {
+  const generation = getExternalOperationGeneration();
+  const persisted = await loadSessionTranscript(sessionId);
+  if (generation !== getExternalOperationGeneration()) return 'The question session has changed.';
+  const live = getExternalLiveSessionSnapshot(sessionId);
+  const messages = [...persisted.messages, ...(live?.inMemoryMessages ?? [])];
+  const contents = [...messages.filter(message => message.role === 'assistant').map(message => message.content), live?.liveStreamingMessage?.content];
+  const question = contents.flatMap(asyncQuestionSetsInContent)
+    .find(set => set.id === reply.questionId)?.questions[reply.questionIndex];
+  if (!question) return 'This question is no longer available in this session.';
+  if (messages.some(message => message.role === 'user' && sameAsyncQuestionReply(message.asyncQuestionReply, reply))) {
+    return 'This question has already been answered.';
+  }
+  const pending = [...getExternalPendingMessageOperations(), ...pendingRealtimeSteeredUserMessages.map(entry => entry.operation)];
+  const ownOrder = pending.find(operation => operation.queueId === ownQueueId)?.admissionOrder;
+  if (pending.some(operation => (ownOrder === undefined || operation.admissionOrder < ownOrder)
+    && operation.queueId !== ownQueueId
+    && operation.context.sessionId === sessionId && !operation.userProjection.retracted
+    && sameAsyncQuestionReply(operation.context.asyncQuestionReply, reply))) {
+    return 'An answer to this question is already waiting to be sent.';
+  }
 }
 
 export function enqueueExternalSendForDesktop(
@@ -4490,6 +4582,19 @@ export function enqueueExternalSendForDesktop(
   canForceExecute?: boolean;
   dispatch: Promise<ExternalSendResult>;
 } {
+  if (context.asyncQuestionReply) {
+    const reply = context.asyncQuestionReply;
+    const sessionId = context.sessionId;
+    const queueId = context.queueId ?? nextExternalQueueId();
+    const preceding = context.beforeDispatch;
+    const guard = Object.assign(async () => {
+      const prior = preceding ? await preceding() : { accepted: true as const };
+      if (!prior.accepted) return prior;
+      const error = await validateExternalAsyncQuestionReply(sessionId, reply, queueId);
+      return error ? { accepted: false, error } : { accepted: true as const };
+    }, { cancel: () => preceding?.cancel?.() });
+    context = { ...context, queueId, beforeDispatch: guard };
+  }
   const queueResponseMode = context.turnBoundaryOnly
     ? 'turn'
     : resolveChatQueueResponseMode(loadAdminConfig().chatQueueResponseMode, true);
@@ -4506,6 +4611,7 @@ export function enqueueExternalSendForDesktop(
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
   if (
     externalSessionMutationInFlight
+    || (context.asyncQuestionReply && lifecycleState === 'idle')
     || (lifecycleState === 'idle' && hasExternalSendInFlight())
     || shouldQueueExternalOperation(lifecycleState, {
       responseMode: queueResponseMode,
@@ -4520,6 +4626,7 @@ export function enqueueExternalSendForDesktop(
       context,
     );
     if (!queued.queued || !queued.queueId) return queued;
+    scheduleExternalQueueDrainAfterDirectAdmission();
     return {
       queued: true,
       queueId: queued.queueId,
@@ -4546,13 +4653,14 @@ export function enqueueExternalSendForDesktop(
     broadcast('queue:added', {
       queueId,
       messageText: text.slice(0, 100),
+      asyncQuestionReply: context.asyncQuestionReply,
       isInFlight: true,
       deliveryMode: 'realtime',
       canCancel: false,
       canForceExecute: false,
     });
     const generation = getExternalOperationGeneration();
-    const dispatch = chainExternalSend(
+    const dispatch = withExternalMessageOperation(operation, () => chainExternalSend(
       () => steerExternalMessageForDesktop({
         queueId,
         text,
@@ -4562,7 +4670,7 @@ export function enqueueExternalSendForDesktop(
         generation,
       }),
       generation,
-    ).then(
+    )).then(
       ({ result, deferredDispatchAcceptance }) => {
         scheduleExternalQueueDrainAfterDirectAdmission();
         return deferredDispatchAcceptance ?? result;
@@ -4602,7 +4710,12 @@ export function enqueueExternalSendForDesktop(
     context: sendContext,
     runtimeConfig,
     userMessage: createExternalUserMessage(text, images, context.sessionId),
+    surfaceMode: context.asyncQuestionReply ? 'queue-started' : 'chat-replay',
   });
+  if (context.asyncQuestionReply) {
+    broadcast('queue:added', { queueId: operation.queueId, messageText: text.slice(0, 100),
+      asyncQuestionReply: context.asyncQuestionReply, isInFlight: true, deliveryMode: 'turn', canCancel: false, canForceExecute: false });
+  }
   const generation = getExternalOperationGeneration();
   const dispatch = runExternalMessageOperation(
     text,
@@ -4611,9 +4724,16 @@ export function enqueueExternalSendForDesktop(
     runtimeConfig.model,
     sendContext,
     operation,
-    undefined,
+    context.asyncQuestionReply ? () => broadcast('queue:started', {
+      queueId: operation.queueId, sessionId: context.sessionId,
+      userMessage: operation.userProjection.message,
+    }) : undefined,
     generation,
-  ).catch((err) => {
+  ).then(result => {
+    if (!result.queued && context.asyncQuestionReply) broadcast('queue:cancelled', { queueId: operation.queueId });
+    return result;
+  }).catch((err) => {
+    if (context.asyncQuestionReply) broadcast('queue:cancelled', { queueId: operation.queueId });
     if (isExternalQueueGenerationStaleError(err)) {
       return { queued: false };
     }
@@ -4622,7 +4742,9 @@ export function enqueueExternalSendForDesktop(
   if (!context.beforeDispatch) {
     surfaceExternalUserMessageAsReplay(operation, context.sessionId);
   }
-  return { queued: true, dispatch };
+  return { queued: true, dispatch, ...(context.asyncQuestionReply ? {
+    queueId: operation.queueId, isInFlight: true, deliveryMode: 'turn' as const, canCancel: false, canForceExecute: false,
+  } : {}) };
 }
 
 /**
@@ -4759,6 +4881,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
               content: item.text,
               timestamp: userMsg.timestamp,
               attachments: userMsg.attachments,
+              asyncQuestionReply: userMsg.asyncQuestionReply,
             },
           });
         },
@@ -4871,8 +4994,15 @@ export function hasExternalQueuedTurnByOwner(
 }
 
 /** Current external queue (for /chat/queue/status). Mirrors builtin getQueueStatus shape. */
-export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string }> {
-  return getExternalQueueStatusSnapshot();
+export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }> {
+  const queued = getExternalQueueStatusSnapshot();
+  const waiting = [...getExternalPendingMessageOperations(), ...pendingRealtimeSteeredUserMessages.map(entry => entry.operation)];
+  for (const operation of waiting) {
+    if (!operation.context.asyncQuestionReply || operation.userProjection.surfaced || operation.userProjection.retracted) continue;
+    if (queued.some(item => item.id === operation.queueId)) continue;
+    queued.push({ id: operation.queueId, messagePreview: operation.text.slice(0, 100), asyncQuestionReply: operation.context.asyncQuestionReply, canCancel: false, canForceExecute: false });
+  }
+  return queued;
 }
 
 /**
@@ -6489,7 +6619,31 @@ function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kin
 
 function handleUnifiedEvent(event: UnifiedEvent): void {
   recordRuntimeActivity();
+  if (event.kind === 'turn_complete' || event.kind === 'session_complete') {
+    // Native terminal notifications can precede the turn/start response. Keep
+    // accepted user -> assistant persistence ordered using the queue owner's
+    // existing operation dispatch promise; a rejected answer must never enter history.
+    const pending = getExternalPendingMessageOperations().find(
+      operation => Boolean(
+        operation.context.asyncQuestionReply
+        && isExternalTurnCurrent(operation.queueId)
+        && !operation.userProjection.retracted,
+      ),
+    );
+    if (pending) {
+      const generation = getExternalOperationGeneration();
+      void pending.dispatchAcceptance.then(result => {
+        if (result.queued && pending.userProjection.surfaced
+          && isCurrentExternalOperationGeneration(generation)
+          && isExternalTurnCurrent(pending.queueId)) applyUnifiedEvent(event);
+      });
+      return;
+    }
+  }
+  applyUnifiedEvent(event);
+}
 
+function applyUnifiedEvent(event: UnifiedEvent): void {
   switch (event.kind) {
     case 'root_turn_admitted':
       if (getCurrentRuntimeType() === 'codex') {
@@ -6526,11 +6680,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       // Text block ended — flush accumulated text into a content block
       console.log(`[external-session] text_stop: accumulated ${getExternalAssistantText().length} chars`);
-      flushPendingText('mirror-completed-block');
+      flushPendingText('mirror-completed-block', event.asyncQuestions);
       // Mirror builtin: tell the renderer the trailing text block closed so it clears
       // `streamingTextActive` and the tail-fade stops (same bug class, sibling runtime
       // path). type:'text' is the discriminator; index is unused for the text case.
-      broadcast('chat:content-block-stop', { index: -1, type: 'text' });
+      broadcast('chat:content-block-stop', { index: -1, type: 'text', ...(event.asyncQuestions ? { asyncQuestions: event.asyncQuestions } : {}) });
       fireExternalImCallback('block-end', '');
       break;
 
@@ -6981,11 +7135,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     case 'turn_complete': {
       // Mark turn complete — session_complete will follow for CC -p mode
       clearWatchdog();
-      // Defensive fallback: Codex should emit item/started userMessage for
-      // accepted turn/steer input. If an older app-server does not, promote an
-      // RPC-acknowledged pill at the turn boundary. An unresolved RPC is not
-      // acceptance: it may still return the exact no-active rejection and must
-      // remain available for turn-boundary demotion without transcript writes.
+      // Ordinary messages retain the older app-server compatibility fallback.
+      // Structured answers require native user echo; release unconfirmed ones
+      // for retry instead of recording a transport acknowledgement as answered.
       surfaceAcknowledgedPendingRealtimeSteeredUserMessages();
       finalizeExternalSubagentLifecycleProjection(
         getExternalUserRequestedStop() ? 'interrupted' : 'failed',

@@ -1,3 +1,4 @@
+import { parseAsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // CodexRuntime — drives the Codex CLI as a subprocess via app-server (v0.1.60)
 //
 // Communication: JSON-RPC 2.0 over stdio (codex app-server)
@@ -5257,7 +5258,7 @@ export class CodexRuntime implements AgentRuntime {
           query?: string; action?: { type: string; url?: string; queries?: string[]; pattern?: string };
           path?: string; revisedPrompt?: string; savedPath?: string;
           contentItems?: Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>;
-          success?: boolean; review?: string;
+          success?: boolean; review?: string; delivery?: unknown; questions?: unknown;
           senderThreadId?: string; receiverThreadIds?: string[];
           prompt?: string; model?: string;
         } | undefined;
@@ -5597,12 +5598,17 @@ export class CodexRuntime implements AgentRuntime {
             const streamedText = codexProc.agentMessageTextById.get(item.id) || '';
             codexProc.agentMessageTextById.delete(item.id);
 
+            const asyncQuestions = item.delivery === 'async'
+              ? parseAsyncQuestionSet({ id: codexTraceId(p, item.id), questions: item.questions })
+              : undefined;
+            const stop: UnifiedEvent = { kind: 'text_stop', traceId: codexTraceId(p, item.id), ...(asyncQuestions ? { asyncQuestions } : {}) };
+
             if (finalText) {
               if (!streamedText) {
                 console.log(`[codex] agentMessage completed without delta; backfilling ${finalText.length} chars`);
                 return [
                   { kind: 'text_delta', text: finalText, traceId: codexTraceId(p, item.id) },
-                  { kind: 'text_stop', traceId: codexTraceId(p, item.id) },
+                  stop,
                 ];
               }
 
@@ -5611,12 +5617,12 @@ export class CodexRuntime implements AgentRuntime {
                 console.log(`[codex] agentMessage completed with missing tail; backfilling ${tail.length} chars`);
                 return [
                   { kind: 'text_delta', text: tail, traceId: codexTraceId(p, item.id) },
-                  { kind: 'text_stop', traceId: codexTraceId(p, item.id) },
+                  stop,
                 ];
               }
             }
 
-            return { kind: 'text_stop', traceId: codexTraceId(p, item.id) };
+            return stop;
           }
           case 'userMessage':
           case 'contextCompaction':

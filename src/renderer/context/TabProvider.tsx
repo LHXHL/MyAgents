@@ -1,3 +1,5 @@
+import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
+import { sameAsyncQuestionReply, type AsyncQuestionSet, type AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 /**
  * TabProvider - Provides isolated state for each Tab
  * 
@@ -191,6 +193,7 @@ type WireMessageAttachment = {
 type WireMessageUsage = NonNullable<Message['usage']>;
 
 type WireSessionMessage = {
+    asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user' | 'assistant';
     content: string | ContentBlock[];
@@ -343,6 +346,7 @@ function wireSessionMessageToMessage(message: WireSessionMessage): Message {
         runtimeTurnAnchor: message.runtimeTurnAnchor,
         attachments: normalizeWireAttachments(message.attachments),
         metadata: message.metadata,
+        asyncQuestionReply: message.asyncQuestionReply,
         ...getAssistantTurnMetrics(message),
     };
 }
@@ -1677,15 +1681,8 @@ export default function TabProvider({
         setStreamingMessage(prev => {
             if (!prev || prev.role !== 'assistant') return prev;
             if (expectedId !== null && prev.id !== expectedId) return prev;
-            if (typeof prev.content === 'string') {
-                return { ...prev, content: prev.content + text };
-            }
-            const contentArray = closeOpenThinkingBlocks(prev.content);
-            const lastBlock = contentArray[contentArray.length - 1];
-            if (lastBlock?.type === 'text') {
-                return { ...prev, content: [...contentArray.slice(0, -1), { type: 'text', text: (lastBlock.text || '') + text }] };
-            }
-            return { ...prev, content: [...contentArray, { type: 'text', text }] };
+            const content = typeof prev.content === 'string' ? prev.content : closeOpenThinkingBlocks(prev.content);
+            return { ...prev, content: appendStreamingText(content, text) };
         });
     }, [setStreamingMessage]);
 
@@ -1996,6 +1993,7 @@ export default function TabProvider({
                     sessionId?: string | null;
                     sessionState?: SessionState;
                     liveStreamingMessage?: WireSessionMessage | null;
+                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }>;
                 } | null;
                 const payloadSessionId = initPayload?.sessionId ?? null;
                 if (payloadSessionId && !shouldAcceptSessionScopedSseSnapshot({
@@ -2072,6 +2070,7 @@ export default function TabProvider({
                     }
                 }
 
+                if (initPayload?.queuedMessages) setQueuedMessages(initPayload.queuedMessages.map(q => ({ ...q, queueId: q.id, text: q.messagePreview, timestamp: Date.now() })));
                 if (initPayload && Object.hasOwn(initPayload, 'liveStreamingMessage')) {
                     pendingTextRef.current = '';
                     if (revealRafRef.current != null) {
@@ -2196,6 +2195,7 @@ export default function TabProvider({
                     runtimeTurnAnchor: msg.runtimeTurnAnchor,
                     attachments,
                     metadata: msg.metadata,
+                    asyncQuestionReply: msg.asyncQuestionReply,
                     ...getAssistantTurnMetrics(msg),
                 };
                 setHistoryMessages(prev => appendUniqueMessageById(prev, replayMessage));
@@ -2635,13 +2635,24 @@ export default function TabProvider({
             }
 
             case 'chat:content-block-stop': {
-                const { index, toolId, type: blockType, input: finalInput, inputRef } = data as {
+                const { index, toolId, type: blockType, input: finalInput, inputRef, asyncQuestions } = data as {
                     index: number;
                     toolId?: string;
                     type?: string;
                     input?: Record<string, unknown>;
                     inputRef?: unknown;
+                    asyncQuestions?: AsyncQuestionSet;
                 };
+                if (blockType === 'text') {
+                    if (asyncQuestions && !isStreamingRef.current && !isNewSessionRef.current) {
+                        beginFreshStreamIfNeeded();
+                        setIsLoading(true);
+                        setStreamingMessage({ id: Date.now().toString(), role: 'assistant', content: [], timestamp: new Date() });
+                        isStreamingRef.current = true;
+                    }
+                    // Close only after all paced deltas for this item have landed.
+                    flushPendingTextNow();
+                }
                 // Pattern 3 §3.2.2 — drain RAF-batched tool-input deltas for this
                 // tool block before applying the final JSON.parse on the
                 // accumulated inputJson; otherwise the terminal parse races
@@ -2676,7 +2687,7 @@ export default function TabProvider({
                     // deltas (see chat:message-chunk), never in the reveal loop — so a
                     // post-stop reveal drain can't wrongly re-activate the fade.
                     if (blockType === 'text') {
-                        return prev.streamingTextActive ? { ...prev, streamingTextActive: false } : prev;
+                        return { ...prev, content: completeStreamingText(prev.content, asyncQuestions), streamingTextActive: false };
                     }
                     if (typeof prev.content === 'string') return prev;
                     const contentArray = prev.content;
@@ -3722,6 +3733,7 @@ export default function TabProvider({
                 const payload = data as {
                     queueId: string;
                     messageText: string;
+                    asyncQuestionReply?: AsyncQuestionReply;
                     isInFlight?: boolean;
                     deliveryMode?: 'realtime' | 'turn';
                     canCancel?: boolean;
@@ -3731,6 +3743,13 @@ export default function TabProvider({
                     const visibleMessageText = queueDisplayText(payload.messageText);
                     console.log(`[TabProvider] queue:added queueId=${payload.queueId} isInFlight=${!!payload.isInFlight}`);
                     setQueuedMessages(prev => {
+                        // Correlate async replies before HTTP settles, so a following
+                        // cancellation/acceptance removes the real entry immediately.
+                        const reply = payload.asyncQuestionReply;
+                        const optimisticReplyIndex = reply ? prev.findIndex(q => q.queueId.startsWith('opt-') && sameAsyncQuestionReply(q.asyncQuestionReply, reply)) : -1;
+                        if (optimisticReplyIndex !== -1) return prev.map((q, index) => index === optimisticReplyIndex
+                            ? { ...q, queueId: payload.queueId, isInFlight: !!payload.isInFlight, deliveryMode: payload.deliveryMode, canCancel: payload.canCancel, canForceExecute: payload.canForceExecute }
+                            : q);
                         // Exact queueId match — already added by .then(); update isInFlight if it changed.
                         const existingIdx = prev.findIndex(q => q.queueId === payload.queueId);
                         if (existingIdx !== -1) {
@@ -3742,11 +3761,13 @@ export default function TabProvider({
                                 && prev[existingIdx].deliveryMode === nextDeliveryMode
                                 && prev[existingIdx].canCancel === nextCanCancel
                                 && prev[existingIdx].canForceExecute === nextCanForceExecute
+                                && (!reply || sameAsyncQuestionReply(prev[existingIdx].asyncQuestionReply, reply))
                             ) return prev;
                             const next = [...prev];
                             next[existingIdx] = {
                                 ...prev[existingIdx],
                                 text: visibleMessageText,
+                                asyncQuestionReply: payload.asyncQuestionReply,
                                 isInFlight: !!payload.isInFlight,
                                 deliveryMode: nextDeliveryMode,
                                 canCancel: nextCanCancel,
@@ -3759,6 +3780,7 @@ export default function TabProvider({
                         return [...prev, {
                             queueId: payload.queueId,
                             text: visibleMessageText,
+                            asyncQuestionReply: payload.asyncQuestionReply,
                             timestamp: Date.now(),
                             isInFlight: !!payload.isInFlight,
                             deliveryMode: payload.deliveryMode,
@@ -3783,6 +3805,7 @@ export default function TabProvider({
                     userMessage?: {
                         id: string;
                         role: 'user';
+                        asyncQuestionReply?: AsyncQuestionReply;
                         content: string;
                         timestamp: string;
                         attachments?: WireMessageAttachment[];
@@ -3864,6 +3887,7 @@ export default function TabProvider({
                                 id: msgId,
                                 role: 'user' as const,
                                 content: payload.userMessage!.content,
+                                asyncQuestionReply: payload.userMessage!.asyncQuestionReply,
                                 timestamp: new Date(payload.userMessage!.timestamp),
                                 attachments: attachments && attachments.length > 0 ? attachments : undefined,
                             };
@@ -4322,6 +4346,7 @@ export default function TabProvider({
         reasoningEffort?: string,
         providerRoute?: ProviderRoute,
         requiredSystemSkill?: ProductSystemSkillRequirement,
+        asyncQuestionReply?: AsyncQuestionReply,
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
@@ -4377,11 +4402,12 @@ export default function TabProvider({
         // Optimistic queue: immediately show badge when AI is streaming.
         // We don't know the real queueId yet (backend assigns it), so use a local ID.
         // .then() will reconcile: replace opt- with real queueId, or clean up if already started.
-        const localQueueId = isStreamingRef.current ? `opt-${crypto.randomUUID()}` : null;
+        const localQueueId = isStreamingRef.current || asyncQuestionReply ? `opt-${crypto.randomUUID()}` : null;
         if (localQueueId) {
             setQueuedMessages(prev => [...prev, {
                 queueId: localQueueId,
                 text: visibleQueueText,
+                asyncQuestionReply,
                 images: images?.map(queuedImageInfo),
                 timestamp: Date.now(),
                 canCancel: false,
@@ -4410,11 +4436,12 @@ export default function TabProvider({
             reasoningEffort,
             providerRoute,
             requiredSystemSkill,
+            asyncQuestionReply,
             ...(birthOrigin ? { birthOrigin } : {}),
             ...(providerRoute ? {} : { providerEnv: providerEnv ?? 'subscription' }),
         };
 
-        void postJson<{
+        const admission = postJson<{
             success: boolean;
             error?: string;
             queued?: boolean;
@@ -4501,6 +4528,7 @@ export default function TabProvider({
                 setAgentError(response.error ?? appText('tabProvider.sendFailed'));
                 pendingAttachmentsRef.current = null;
             }
+            return response.success;
         }).catch((error) => {
             console.error(`[TabProvider ${tabId}] Send message failed:`, error);
             if (localQueueId) {
@@ -4509,12 +4537,14 @@ export default function TabProvider({
             const msg = error instanceof Error ? error.message : appText('tabProvider.networkError');
             setAgentError(msg === 'Failed to fetch' ? appText('tabProvider.networkDisconnected') : msg);
             pendingAttachmentsRef.current = null;
+            return false;
         }).finally(() => {
             releaseSendTransition?.();
         });
 
-        // Return true immediately — input clears without waiting for HTTP response
-        return true;
+        // A question reply keeps the composer/card retryable if admission fails.
+        // Only the accepted user-message replay, never this HTTP receipt, answers it.
+        return asyncQuestionReply ? admission : true;
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     }, [tabId, sessionId, claimSessionOpeningTransition]);
 
@@ -4664,6 +4694,7 @@ export default function TabProvider({
                     snapshotRevision?: number;
                     liveSessionState?: SessionState;
                     liveStreamingMessage?: WireSessionMessage | null;
+                    queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }>;
                     pendingInteractiveRequests?: Array<{ type: string; data: unknown }>;
                     messages: WireSessionMessage[];
                     totalCount?: number;
@@ -4820,6 +4851,7 @@ export default function TabProvider({
             }
 
             setIsLoading(isLiveActive);
+            setQueuedMessages((response.session.queuedMessages ?? []).map(q => ({ ...q, queueId: q.id, text: q.messagePreview, timestamp: Date.now() })));
             setSessionState(liveSessionState);
 
             clearInteractiveState();

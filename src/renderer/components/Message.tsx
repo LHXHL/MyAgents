@@ -1,3 +1,4 @@
+import AsyncQuestionCard from '@/components/AsyncQuestionCard';
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Copy, Check, Undo2, RotateCcw, GitBranch, Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -595,6 +596,12 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
             {groupedBlocks.map((item, index) => {
               // Single text block — may contain <widget> tags for inline rendering
               if (!Array.isArray(item)) {
+                if (item.type === 'text' && item.asyncQuestions) {
+                  return <div key={index} className="w-full px-1">
+                    {item.text && <Markdown>{item.text}</Markdown>}
+                    <AsyncQuestionCard questions={item.asyncQuestions} />
+                  </div>;
+                }
                 if (item.type === 'text' && item.text) {
                   // Check for <widget> tags in the text
                   if (hasWidgetTags(item.text)) {

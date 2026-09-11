@@ -1,3 +1,4 @@
+import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import { randomUUID } from 'crypto';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import type { ContextUsage } from '../../shared/types/context-usage';
@@ -215,6 +216,7 @@ export interface MessageSourceMetadata {
  * Simplified message format for storage
  */
 export interface SessionMessage {
+    asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user' | 'assistant';
     content: string;

@@ -1,3 +1,4 @@
+import type { AsyncQuestionReply } from '../../shared/asyncUserQuestions';
 import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
@@ -32,6 +33,7 @@ export type SessionEngineKind = 'builtin' | 'external';
 export type { PermissionMode } from '../agent-session';
 
 export type DesktopMessageRequest = {
+  asyncQuestionReply?: AsyncQuestionReply;
   text: string;
   images?: ImagePayload[];
   /** Product mode for builtin sessions; runtime-native mode for external sessions. */
@@ -233,7 +235,7 @@ export type ScheduledTurnPreparationResult = {
   status?: number;
 };
 
-export type QueueStatusItem = { id: string; messagePreview: string };
+export type QueueStatusItem = { id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean };
 
 export type SessionEngineRuntimeIdentity = {
   kind: SessionEngineKind;
@@ -342,6 +344,7 @@ export type SessionEngineLiveOverlay = {
   runtime?: RuntimeType;
   snapshotRevision?: number;
   liveStreamingMessage?: SessionMessage | null;
+  queuedMessages?: QueueStatusItem[];
   liveSessionState?: string;
   inMemoryMessages?: SessionMessage[];
   pendingInteractiveRequests?: SessionEnginePendingInteractiveRequest[];

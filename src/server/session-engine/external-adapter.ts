@@ -16,6 +16,7 @@ import {
   getActiveExternalImBridgeTurnContext,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
+  validateExternalAsyncQuestionReply,
   getExternalNativeSessionId,
   getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
@@ -303,6 +304,7 @@ export function createExternalSessionEngine(): SessionEngine {
           agentDir: productContext.workspacePath,
           sessionState: getExternalSessionState(),
           hasInitialPrompt: productContext.hasInitialPrompt,
+          queuedMessages: liveSnapshot?.queuedMessages ?? [],
         },
         replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
@@ -406,6 +408,10 @@ export function createExternalSessionEngine(): SessionEngine {
           error: `Invalid permissionMode '${request.permissionMode}' for ${getActiveRuntimeSource() ?? getActiveRuntimeType()}`,
         };
       }
+      if (request.asyncQuestionReply) {
+        const error = await validateExternalAsyncQuestionReply(request.sessionId, request.asyncQuestionReply);
+        if (error) return { success: false, status: 409, error };
+      }
       const sent = enqueueExternalSendForDesktop(
         request.text,
         request.images,
@@ -413,6 +419,7 @@ export function createExternalSessionEngine(): SessionEngine {
         request.model,
         {
           sessionId: request.sessionId,
+          asyncQuestionReply: request.asyncQuestionReply,
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,

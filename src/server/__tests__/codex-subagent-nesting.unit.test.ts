@@ -249,6 +249,7 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
     return {
       ...state(),
       threadId: 'main',
+      agentMessageTextById: new Map<string, string>(),
       currentTurnId: 'root-turn',
       activeSteerTurnId: 'root-turn',
       deferredSubAgentEvents: new Map<string, UnifiedEvent[]>(),
@@ -271,6 +272,28 @@ describe('applyCodexSubAgentActivity (Codex 0.144.1 multi-agent v2)', () => {
       rpc: { call: vi.fn(async () => ({})) },
     };
   }
+
+  it.each([
+    { streamed: '', final: 'Choose a destination', tail: 'Choose a destination' },
+    { streamed: 'Choose', final: 'Choose a destination', tail: ' a destination' },
+    { streamed: 'Choose', final: 'Choose', tail: '' },
+    { streamed: '', final: '', tail: '' },
+  ])('preserves async questions at agentMessage completion ($streamed → $final)', ({ streamed, final, tail }) => {
+    const runtime = new CodexRuntime();
+    const correlation = parserState();
+    const parse = (runtime as unknown as {
+      parseNotification: (proc: typeof correlation, method: string, params: unknown, emit: (event: UnifiedEvent) => void) => UnifiedEvent | UnifiedEvent[] | null;
+    }).parseNotification.bind(runtime);
+    if (streamed) parse(correlation, 'item/agentMessage/delta', { threadId: 'main', itemId: 'question-item', delta: streamed }, () => {});
+    const questions = [{ title: 'Where?', options: ['Beach', 'Mountains'] }];
+    const result = parse(correlation, 'item/completed', { threadId: 'main', item: { id: 'question-item', type: 'agentMessage', text: final, delivery: 'async', questions } }, () => {});
+    const events = Array.isArray(result) ? result : [result];
+    expect(events).toEqual([
+      ...(tail ? [{ kind: 'text_delta', text: tail, traceId: 'main::question-item' }] : []),
+      { kind: 'text_stop', traceId: 'main::question-item', asyncQuestions: { id: 'main::question-item', questions } },
+    ]);
+    expect(correlation.agentMessageTextById.size).toBe(0);
+  });
 
   it('turns a started activity into the parent CollabAgent card and records its child thread', () => {
     const correlation = state();

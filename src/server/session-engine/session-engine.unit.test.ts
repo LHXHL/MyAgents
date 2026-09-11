@@ -864,6 +864,7 @@ describe('session-engine selector and adapters', () => {
       isActive: true,
       runtime: 'builtin',
       snapshotRevision: 7,
+      queuedMessages: [{ id: 'q1', messagePreview: 'hello' }],
       inMemoryMessages: [{
         id: 'u-live',
         role: 'user',

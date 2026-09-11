@@ -1,3 +1,4 @@
+import { isAsyncQuestionReply, type AsyncQuestionReply } from '../shared/asyncUserQuestions';
 import { appendFileSync, cpSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync , rmSync, renameSync } from 'fs';
 import { copyFile as copyFileAsync, readdir as readdirAsync, rm, stat } from 'fs/promises';
 import { spawn as subprocessSpawn } from './utils/subprocess';
@@ -652,6 +653,7 @@ function getCommandDownloadInfo(command: string): { runtimeName?: string; downlo
 }
 
 type SendMessagePayload = {
+  asyncQuestionReply?: AsyncQuestionReply;
   text?: string;
   images?: ImagePayload[];
   sessionId?: string;
@@ -2218,6 +2220,9 @@ async function main() {
         } catch {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
+        if (payload.asyncQuestionReply !== undefined && !isAsyncQuestionReply(payload.asyncQuestionReply)) {
+          return jsonResponse({ success: false, error: 'Invalid async question reply.' }, 400);
+        }
         const text = payload?.text?.trim() ?? '';
         let images = payload?.images ?? [];
         const clientSessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : undefined;
@@ -2298,6 +2303,7 @@ async function main() {
           console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode}${permissionMode !== requestedPermissionMode ? ` (session authority; caller=${requestedPermissionMode})` : ''} model=${model ?? 'default'} baseUrl=${providerLabel}`);
           const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
+            asyncQuestionReply: payload.asyncQuestionReply,
             images,
             permissionMode,
             backgroundAgentPermissionMode: payload?.backgroundAgentPermissionMode,

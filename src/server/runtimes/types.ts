@@ -1,3 +1,4 @@
+import type { AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
 
@@ -220,7 +221,7 @@ export interface AgentPlanTodo {
 export type UnifiedEvent =
   // === Text streaming ===
   | { kind: 'text_delta'; text: string; traceId?: string; subAgent?: SubAgentScope }
-  | { kind: 'text_stop'; traceId?: string; subAgent?: SubAgentScope }
+  | { kind: 'text_stop'; traceId?: string; subAgent?: SubAgentScope; asyncQuestions?: AsyncQuestionSet }
 
   // === Thinking/reasoning streaming ===
   | { kind: 'thinking_start'; index: number; traceId?: string; subAgent?: SubAgentScope }

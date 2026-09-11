@@ -698,6 +698,209 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('keeps async answers queued until dispatch, supports cancel/retry, and rejects answered history', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'Question follows', completeDelayMs: 60_000 },
+      { kind: 'success', text: 'Answer received' },
+    ], { config: { chatQueueResponseMode: 'turn' } });
+    const sessionId = 'session-async-question-turn';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::question', questions: [{ title: 'Where?', options: ['Beach', 'Mountains'] }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    const first = await harness.engine.sendDesktopMessage(request);
+    expect(first.success).toBe(true);
+    expect(first.queueId).toBeTruthy();
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ id: first.queueId, asyncQuestionReply: request.asyncQuestionReply })]));
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect((await harness.engine.cancelQueuedMessage(first.queueId!)).status).toBe('cancelled');
+    const retry = await harness.engine.sendDesktopMessage(request);
+    expect(retry.success).toBe(true);
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await expect(retry.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const stored = harness.sessionStore.getSessionData(sessionId)!;
+    expect(stored.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    expect(stored.messages.find(message => message.asyncQuestionReply)?.asyncQuestionReply).toEqual(request.asyncQuestionReply);
+    expect(stored.messages.filter(message => message.role === 'assistant').some(message => message.content.includes('thread::question'))).toBe(true);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    expect(harness.engine.getQueueStatus()).toEqual([]);
+  });
+
+  it('admits an unanswered persisted question while idle and ignores child/user-authored definitions', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'Question follows', completeDelayMs: 60_000 },
+      { kind: 'success', text: 'Thanks' },
+    ]);
+    const sessionId = 'session-async-idle';
+    const workspacePath = join(harness.home, 'workspace');
+    const fake = { id: 'forged', questions: [{ title: 'Forged?', options: null }] };
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, JSON.stringify([{ type: 'text', asyncQuestions: fake }])));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::idle-q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    harness.runtime.emitForTest({ kind: 'text_stop', traceId: 'child::item', subAgent: { parentToolUseId: 'child-card' }, asyncQuestions: { ...asyncQuestions, id: 'child::item' } });
+    const reply = (questionId: string) => ({ ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId, questionIndex: 0 } });
+    expect((await harness.engine.sendDesktopMessage(reply('forged'))).success).toBe(false);
+    expect((await harness.engine.sendDesktopMessage(reply('child::item'))).success).toBe(false);
+    expect((await harness.engine.sendDesktopMessage({ ...reply(asyncQuestions.id), sessionId: 'other-session' })).success).toBe(false);
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const sent = await harness.engine.sendDesktopMessage(reply(asyncQuestions.id));
+    expect(sent.queueId).toBeTruthy();
+    await expect(sent.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+  });
+
+  it('releases a rejected realtime async answer for retry without recording it as answered', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, rejectSteer: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-rejected';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::retry-q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await harness.engine.sendDesktopMessage(request);
+      expect(response.success).toBe(true);
+      await expect(response.dispatchAcceptance).resolves.toMatchObject({ accepted: false });
+      expect(harness.engine.getQueueStatus()).toEqual([]);
+    }
+    expect(harness.runtime.steeredMessages).toHaveLength(2);
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+  });
+
+  it('keeps realtime async answers pending after RPC ack until the native user echo', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-question-realtime';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await expect(initial.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'first text boundary');
+    const asyncQuestions = { id: 'thread::q', questions: [{ title: 'Where?', options: null }] };
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: asyncQuestions.id, questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await expect(response.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    expect(harness.runtime.steeredMessages).toHaveLength(1);
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ asyncQuestionReply: request.asyncQuestionReply })]));
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => broadcastEvents.some(item => item.event === 'queue:started'), 'native accepted echo');
+    expect(broadcastEvents.find(item => item.event === 'queue:started')?.data).toMatchObject({ userMessage: { asyncQuestionReply: request.asyncQuestionReply } });
+    expect(harness.engine.getQueueStatus()).toEqual([]);
+  });
+
+
+  it.each([false, true])('never accepts an ack-only async steer at terminal (ack after terminal: %s)', async (lateAck) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], {
+      realtimeSteering: true, deferSteerSuccess: lateAck, config: { chatQueueResponseMode: 'realtime' },
+    });
+    const sessionId = 'session-async-ack-only';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'steer request');
+    if (!lateAck) await response.dispatchAcceptance;
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'failed', error: 'failed before user echo' });
+    if (lateAck) harness.runtime.releaseSteerSuccess();
+    await response.dispatchAcceptance;
+    await waitFor(() => harness.engine.getQueueStatus().length === 0, 'unconfirmed reply released');
+    expect(broadcastEvents.filter(item => item.event === 'queue:started')).toHaveLength(0);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages.filter(message => message.asyncQuestionReply) ?? []).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(true);
+  });
+
+  it.each(['active', 'resume', 'error'] as const)('keeps native async turn admission pending and permits rejected retry (%s)', async (mode) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-async-native-admission';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await harness.engine.waitIdle(2_000, 10);
+    if (mode === 'resume') await harness.externalSession.stopExternalSession();
+    if (mode === 'error') harness.runtime.emitForTest({ kind: 'status_change', state: 'error' });
+    let rejectNative!: (error: Error) => void;
+    const nativeSend = vi.spyOn(harness.runtime, 'sendMessage').mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectNative = reject; }));
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await waitFor(() => nativeSend.mock.calls.length === 1, 'native send request');
+    expect(response.queueId).toBeTruthy();
+    expect(harness.engine.getQueueStatus()).toEqual(expect.arrayContaining([expect.objectContaining({ asyncQuestionReply: request.asyncQuestionReply })]));
+    const prematureAnswers = harness.sessionStore.getSessionData(sessionId)?.messages.filter(message => message.asyncQuestionReply) ?? [];
+    const prematureStarts = broadcastEvents.filter(item => item.event === 'queue:started');
+    rejectNative(new Error('native turn/start rejected'));
+    await expect(response.dispatchAcceptance).resolves.toMatchObject({ accepted: false });
+    expect(prematureAnswers).toHaveLength(0);
+    expect(prematureStarts).toHaveLength(0);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(true);
+  });
+
+  it.each([['success', false], ['failed', false], ['success', true], ['failed', true]] as const)('preserves an accepted async answer at early terminal %s, error retry %s', async (status, errorRetry) => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }]);
+    const sessionId = 'session-async-early-terminal';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Question follows' });
+    await harness.engine.waitIdle(2_000, 10);
+    if (errorRetry) harness.runtime.emitForTest({ kind: 'status_change', state: 'error' });
+    vi.spyOn(harness.runtime, 'sendMessage').mockImplementationOnce(async () => {
+      harness.runtime.emitForTest({ kind: 'text_delta', text: 'Answer processed' });
+      harness.runtime.emitForTest({ kind: 'text_stop' });
+      harness.runtime.emitForTest({ kind: 'turn_complete', status, result: 'Answer processed', error: status === 'failed' ? 'assistant failed' : undefined });
+    });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await expect(response.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const stored = harness.sessionStore.getSessionData(sessionId)!.messages;
+    expect(stored.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    const answerIndex = stored.findIndex(message => message.asyncQuestionReply);
+    if (status === 'success') {
+      expect(stored[answerIndex + 1]).toMatchObject({ role: 'assistant' });
+      expect(stored[answerIndex + 1].content).toContain('Answer processed');
+    }
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+  });
+
+  it('keeps a natively echoed realtime async answer accepted after assistant failure', async () => {
+    const harness = await createHarness([{ kind: 'success', text: 'Question follows', completeDelayMs: 60_000 }], { realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = 'session-async-echo-failure';
+    const workspacePath = join(harness.home, 'workspace');
+    const initial = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'Ask me'));
+    await initial.dispatchAcceptance;
+    await waitFor(() => broadcastEvents.some(item => item.event === 'chat:content-block-stop'), 'question turn');
+    harness.runtime.emitForTest({ kind: 'text_stop', asyncQuestions: { id: 'thread::q', questions: [{ title: 'Where?', options: null }] } });
+    const request = { ...desktopRequest(sessionId, workspacePath, 'Beach'), asyncQuestionReply: { questionId: 'thread::q', questionIndex: 0 } };
+    const response = await harness.engine.sendDesktopMessage(request);
+    await response.dispatchAcceptance;
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => (harness.sessionStore.getSessionData(sessionId)?.messages.filter(message => message.asyncQuestionReply).length ?? 0) === 1, 'accepted answer persistence');
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'failed', error: 'assistant failed after accepting answer' });
+    await harness.engine.waitIdle(2_000, 10);
+    expect(harness.sessionStore.getSessionData(sessionId)?.messages.filter(message => message.asyncQuestionReply)).toHaveLength(1);
+    expect((await harness.engine.sendDesktopMessage(request)).success).toBe(false);
+  });
+
   it('resumes a healthy 0.146 Product Session with the current Host dispatcher', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'historical session continued' },

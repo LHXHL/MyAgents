@@ -1,3 +1,6 @@
+import type { QueuedMessageInfo } from '@/types/queue';
+import { appendStreamingText, completeStreamingText } from '@/utils/streamingTextBlocks';
+import { sameAsyncQuestionReply, type AsyncQuestionReply, type AsyncQuestionSet } from '../../shared/asyncUserQuestions';
 /**
  * Desktop-channel session brain for the floating ball companion (PRD 0.2.35).
  *
@@ -56,6 +59,7 @@ export interface FbAttachment {
 }
 
 export interface FbUserMsg {
+    asyncQuestionReply?: AsyncQuestionReply;
     id: string;
     role: 'user';
     text: string;
@@ -90,6 +94,7 @@ export interface FbPermReq {
 }
 
 export interface FbSendOpts {
+    asyncQuestionReply?: AsyncQuestionReply;
     quote?: string | null;
     images?: Array<
         | { kind?: 'inline_base64'; id?: string; name: string; mimeType: string; data: string; sizeBytes?: number }
@@ -307,12 +312,13 @@ export function parseSessionHistory(payload: unknown, limit: number): FbMsg[] {
         ? (session.messages as Array<{ id?: string; role?: string; content?: string }>)
         : [];
     return raw
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
         .slice(-limit)
         .map<FbMsg | null>((m, i) => {
             const msg = m as {
                 id?: string;
                 role?: string;
+                asyncQuestionReply?: AsyncQuestionReply;
                 content?: string;
                 attachments?: Array<{ id?: string; name?: string; mimeType?: string; path?: string; previewUrl?: string }>;
             };
@@ -336,6 +342,7 @@ export function parseSessionHistory(payload: unknown, limit: number): FbMsg[] {
             return {
                 id: msg.id ?? `h-${i}`,
                 role: 'user',
+                asyncQuestionReply: msg.asyncQuestionReply,
                 text: stripLeadingSystemReminder(extractMessageText(msg.content ?? '')),
                 attachments,
             };
@@ -481,6 +488,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const [workspacePath, setWorkspacePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState<string>('Mino');
     const [messages, setMessages] = useState<FbMsg[]>([]);
+    const [queuedMessages, setQueuedMessages] = useState<QueuedMessageInfo[]>([]);
     const [liveMessage, setLiveMessage] = useState<FbAssistantMsg | null>(null);
     const [busy, setBusy] = useState(false);
     const [permReqs, setPermReqs] = useState<FbPermReq[]>([]);
@@ -587,28 +595,16 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     }, [replaceLiveMessage]);
 
     const appendTextChunk = useCallback((chunk: string) => {
-        updateLiveContent((content) => {
-            const next = closeOpenThinkingBlocks(content);
-            const last = next.at(-1);
-            if (last?.type === 'text') {
-                return {
-                    content: [
-                        ...next.slice(0, -1),
-                        { ...last, text: (last.text ?? '') + chunk },
-                    ],
-                    streamingTextActive: true,
-                };
-            }
-            return {
-                content: [...next, { type: 'text', text: chunk }],
-                streamingTextActive: true,
-            };
-        });
+        updateLiveContent(content => ({
+            content: appendStreamingText(closeOpenThinkingBlocks(content), chunk) as ContentBlock[],
+            streamingTextActive: true,
+        }));
     }, [updateLiveContent]);
 
-    const markTextStopped = useCallback(() => {
-        replaceLiveMessage((current) => current ? { ...current, streamingTextActive: false } : current);
-    }, [replaceLiveMessage]);
+    const markTextStopped = useCallback((questions?: AsyncQuestionSet) => {
+        if (!questions && !liveMessageRef.current) return;
+        updateLiveContent(content => ({ content: completeStreamingText(content, questions), streamingTextActive: false }));
+    }, [updateLiveContent]);
 
     const appendThinkingBlock = useCallback((index: number | undefined) => {
         const now = Date.now();
@@ -717,6 +713,47 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const handleSseEvent = useCallback(
         (eventName: string, data: unknown) => {
             switch (eventName) {
+                case 'chat:init': {
+                    const payload = data as { sessionId?: string; queuedMessages?: Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply }>; liveStreamingMessage?: { id: string; content: string } } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    if (payload?.queuedMessages) setQueuedMessages(payload.queuedMessages.map(item => ({ queueId: item.id, text: item.messagePreview, asyncQuestionReply: item.asyncQuestionReply, timestamp: Date.now() })));
+                    if (payload?.liveStreamingMessage) {
+                        const message = payload.liveStreamingMessage;
+                        replaceLiveMessage(() => ({ id: message.id, role: 'ai', content: parseAssistantContent(message.content) }));
+                    }
+                    break;
+                }
+                case 'queue:added': {
+                    const payload = data as { queueId?: string; messageText?: string; asyncQuestionReply?: AsyncQuestionReply } | null;
+                    if (!payload?.queueId || !payload.asyncQuestionReply) break;
+                    const reply = payload.asyncQuestionReply;
+                    const entry = { queueId: payload.queueId, text: payload.messageText ?? '', asyncQuestionReply: reply, timestamp: Date.now() };
+                    setQueuedMessages(prev => [...prev.filter(item => item.queueId !== entry.queueId && !sameAsyncQuestionReply(item.asyncQuestionReply, reply)), entry]);
+                    break;
+                }
+                case 'queue:cancelled': {
+                    const payload = data as { queueId?: string } | null;
+                    setQueuedMessages(prev => prev.filter(item => item.queueId !== payload?.queueId));
+                    break;
+                }
+                case 'queue:started':
+                case 'chat:message-replay': {
+                    const payload = data as { sessionId?: string; queueId?: string; midTurnBreak?: boolean; userMessage?: unknown; message?: unknown } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    const message = parseSessionHistory({ session: { messages: [payload?.userMessage ?? payload?.message] } }, 1)[0];
+                    if (!message || message.role !== 'user' || !message.asyncQuestionReply) break;
+                    const reply = message.asyncQuestionReply;
+                    if (payload?.midTurnBreak) finalizeStream();
+                    setMessages(prev => prev.some(item => item.id === message.id) ? prev : [...prev, message]);
+                    setQueuedMessages(prev => prev.filter(item => item.queueId !== payload?.queueId && !sameAsyncQuestionReply(item.asyncQuestionReply, reply)));
+                    break;
+                }
+                case 'chat:messages-retracted': {
+                    const payload = data as { messageIds?: string[] } | null;
+                    if (payload?.messageIds) setMessages(prev => prev.filter(item => !payload.messageIds!.includes(item.id)));
+                    break;
+                }
+
                 case 'chat:message-chunk': {
                     const chunk = typeof data === 'string' ? data : '';
                     if (!chunk) break;
@@ -777,9 +814,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         type?: string;
                         input?: Record<string, unknown>;
                         inputRef?: unknown;
+                        asyncQuestions?: AsyncQuestionSet;
                     } | null;
                     if (payload?.type === 'text') {
-                        markTextStopped();
+                        markTextStopped(payload.asyncQuestions);
                         break;
                     }
                     if (payload?.type === 'thinking' || payload?.index !== undefined) {
@@ -1229,6 +1267,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     workspaceRef.current = { path: workspace };
                     setWorkspacePath(workspace);
                     setMessages([]);
+                    setQueuedMessages([]);
                     replaceLiveMessage(() => null);
                     setPermReqs([]);
                     setAskReq(null);
@@ -1360,7 +1399,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                 applySessionSnapshot((json as { session?: { runtime?: string; providerId?: string; model?: string } })?.session);
                             }
                             if (!cancelled && history.length > 0) {
-                                setMessages(history);
+                                setMessages(current => [...history, ...current.filter(message => !history.some(saved => saved.id === message.id))]);
                             }
                             console.info(
                                 `[fb-session] history load ok session=${sid} messages=${history.length} elapsed=${elapsedMs(historyStartedAt)}`,
@@ -1424,6 +1463,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             setWorkspacePath(workspace.path);
             if (workspace.name) setWorkspaceName(workspace.name);
             setMessages([]);
+                    setQueuedMessages([]);
             replaceLiveMessage(() => null);
             setPermReqs([]);
             setAskReq(null);
@@ -1546,7 +1586,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             const parts = [reminder, text.trim()].filter(Boolean);
             const finalText = parts.join('\n\n');
 
-            setMessages((prev) => [
+            const reply = opts?.asyncQuestionReply;
+            const optimisticQueueId = reply ? `opt-${crypto.randomUUID()}` : null;
+            if (reply && optimisticQueueId) setQueuedMessages(prev => [...prev, { queueId: optimisticQueueId, text, asyncQuestionReply: reply, timestamp: Date.now() }]);
+            if (!reply) setMessages((prev) => [
                 ...prev,
                 {
                     id: `u-${Date.now()}`,
@@ -1556,7 +1599,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     attachments: opts?.attachments,
                 },
             ]);
-            setBusy(true);
+            if (!reply) setBusy(true);
 
             // D14：带 session 当前权限模式（创建时种最宽松、之后跟随活状态）。
             // **不能省略**——/chat/send 对缺省 permissionMode 落 'auto'（index.ts），
@@ -1577,12 +1620,12 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                         images,
                         permissionMode: sendMode,
                         analyticsSource: 'floating_ball',
+                        asyncQuestionReply: reply,
                     }),
                 });
-                if (!resp.ok) {
-                    const body = (await resp.json().catch(() => ({}))) as { error?: string };
-                    throw new Error(body.error || `HTTP ${resp.status}`);
-                }
+                const body = (await resp.json().catch(() => ({}))) as { success?: boolean; error?: string; queueId?: string };
+                if (!resp.ok || body.success !== true) throw new Error(body.error || `HTTP ${resp.status}`);
+                if (optimisticQueueId && body.queueId) setQueuedMessages(prev => prev.map(item => item.queueId === optimisticQueueId ? { ...item, queueId: body.queueId! } : item));
                 // 打点放在确认入队之后（失败不计），runtime 用 gate-aware 口径。
                 track('message_send', {
                     runtime: analyticsRuntimeRef.current,
@@ -1598,7 +1641,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 console.info(`[fb-session] send accepted session=${sid} elapsed=${elapsedMs(sendStartedAt)}`);
                 return true;
             } catch (err) {
-                setBusy(false);
+                if (!reply) setBusy(false);
+                if (optimisticQueueId) setQueuedMessages(prev => prev.filter(item => item.queueId !== optimisticQueueId));
                 setError(err instanceof Error ? err.message : String(err));
                 console.error(`[fb-session] send failed session=${sid} elapsed=${elapsedMs(sendStartedAt)} error=${describeError(err)}`);
                 return false;
@@ -1742,6 +1786,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         workspacePath,
         workspaceName,
         messages,
+        queuedMessages,
         liveMessage,
         streamText: null,
         busy,

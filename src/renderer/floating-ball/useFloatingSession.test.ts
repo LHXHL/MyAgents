@@ -216,3 +216,16 @@ describe('parseSessionHistory', () => {
         expect(parseSessionHistory({ session: { messages: 'nope' } }, 10)).toEqual([]);
     });
 });
+
+it('restores explicit question-only cards and their accepted user reply without inferring legacy text', () => {
+    const asyncQuestions = { id: 'q', questions: [{ title: 'Where?', options: null }] };
+    const asyncQuestionReply = { questionId: 'q', questionIndex: 0 };
+    const history = parseSessionHistory({ session: { messages: [
+        { id: 'a', role: 'assistant', content: JSON.stringify([{ type: 'text', text: '', asyncQuestions, isComplete: true }]) },
+        { id: 'u', role: 'user', content: 'Beach', asyncQuestionReply },
+    ] } }, 100);
+    expect(history).toEqual([
+        { id: 'a', role: 'ai', content: [{ type: 'text', text: '', asyncQuestions, isComplete: true }] },
+        expect.objectContaining({ id: 'u', role: 'user', asyncQuestionReply }),
+    ]);
+});

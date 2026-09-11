@@ -1,4 +1,13 @@
 {
+  "asyncQuestion": {
+    "compose": "Write an answer",
+    "answered": "Answered",
+    "queued": "Waiting to send",
+    "sending": "Submitting…",
+    "failed": "Could not send. Please try again.",
+    "replyingTo": "Answering: {{title}}",
+    "cancel": "Cancel answer"
+  },
   "input": {
     "launcherPlaceholder": "What do you want to do today?",
     "placeholder": "Message MyAgents, use @ for files and / for skills...",

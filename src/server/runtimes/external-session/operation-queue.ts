@@ -1,3 +1,4 @@
+import type { AsyncQuestionReply } from '../../../shared/asyncUserQuestions';
 import type { ImagePayload } from '../types';
 import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '../types';
 import { canDrainExternalQueue, shouldQueueExternalSend } from '../external-queue-policy';
@@ -117,8 +118,14 @@ export function createExternalMessageOperation(input: {
   queueId?: string;
 }): ExternalMessageOperation {
   const queueId = input.queueId ?? input.context.queueId ?? nextExternalQueueId();
+  let settleDispatchAcceptance!: (result: ExternalSendResult) => void;
+  const dispatchAcceptance = new Promise<ExternalSendResult>((resolve) => {
+    settleDispatchAcceptance = resolve;
+  });
   return {
     kind: 'message',
+    dispatchAcceptance,
+    settleDispatchAcceptance,
     admissionOrder: externalAdmissionSeq++,
     queueId,
     text: input.text,
@@ -126,7 +133,7 @@ export function createExternalMessageOperation(input: {
     context: { ...input.context, queueId },
     runtimeConfig: input.runtimeConfig,
     userProjection: {
-      message: input.userMessage,
+      message: { ...input.userMessage, ...(input.context.asyncQuestionReply ? { asyncQuestionReply: input.context.asyncQuestionReply } : {}) },
       surfaceMode: input.surfaceMode ?? 'chat-replay',
       surfaced: false,
       inTranscript: false,
@@ -147,6 +154,15 @@ export async function withExternalMessageOperation<T>(
     const index = externalInFlightMessageOperations.indexOf(operation);
     if (index !== -1) externalInFlightMessageOperations.splice(index, 1);
   }
+}
+
+/** References to operations already owned by the queue, drain or direct dispatch. */
+export function getExternalPendingMessageOperations(): readonly ExternalMessageOperation[] {
+  return [...new Set([
+    ...externalOperationQueue.filter((item): item is ExternalQueuedMessageOperation => item.kind === 'message'),
+    ...(externalReservedDrainOperation?.kind === 'message' ? [externalReservedDrainOperation] : []),
+    ...externalInFlightMessageOperations,
+  ])];
 }
 
 export function getExternalPendingUserMessageProjections(sessionId: string): SessionMessage[] {
@@ -209,14 +225,7 @@ export function enqueueExistingExternalMessageOperation(
     throw new ExternalQueueGenerationStaleError();
   }
   const queueId = operation.queueId;
-  let settleDispatchAcceptance!: (result: ExternalSendResult) => void;
-  const dispatchAcceptance = new Promise<ExternalSendResult>((resolve) => {
-    settleDispatchAcceptance = resolve;
-  });
-  const queuedOperation = Object.assign(operation, {
-    dispatchAcceptance,
-    settleDispatchAcceptance,
-  });
+  const queuedOperation: ExternalQueuedMessageOperation = operation;
   const insertionIndex = externalOperationQueue.findIndex(
     item => !(
       item.kind === 'message' && item.forcePriority
@@ -227,7 +236,7 @@ export function enqueueExistingExternalMessageOperation(
   } else {
     externalOperationQueue.splice(insertionIndex, 0, queuedOperation);
   }
-  return { queued: true, queueId, dispatchAcceptance };
+  return { queued: true, queueId, dispatchAcceptance: operation.dispatchAcceptance };
 }
 
 export function enqueueExternalConfigOperation(
@@ -391,16 +400,16 @@ export function getExternalReservedMessageByRequestId(
 }
 
 export function settleExternalMessageOperation(
-  item: ExternalQueuedMessageOperation,
+  item: ExternalMessageOperation,
   result: ExternalSendResult,
 ): void {
   item.settleDispatchAcceptance(result);
 }
 
-export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string }> {
+export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string; asyncQuestionReply?: AsyncQuestionReply; canCancel?: boolean; canForceExecute?: boolean }> {
   return externalOperationQueue
     .filter((q): q is ExternalQueuedMessageOperation => q.kind === 'message')
-    .map(q => ({ id: q.queueId, messagePreview: q.text.slice(0, 100) }));
+    .map(q => ({ id: q.queueId, messagePreview: q.text.slice(0, 100), ...(q.context.asyncQuestionReply ? { asyncQuestionReply: q.context.asyncQuestionReply } : {}) }));
 }
 
 export function chainExternalSend<T>(

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  appendExternalPendingText,
+  flushExternalPendingTextBlock,
   applyExternalSubagentToolResult,
   applyExternalSubagentAttachmentUpdate,
   applyExternalToolAttachmentUpdate,
@@ -173,4 +175,18 @@ describe('external live assistant content', () => {
       ],
     });
   });
+});
+
+it('persists question-only items as explicit text boundaries in live snapshots', () => {
+  appendExternalPendingText('Before');
+  flushExternalPendingTextBlock();
+  const asyncQuestions = { id: 'q', questions: [{ title: 'Where?', options: null }] };
+  flushExternalPendingTextBlock(asyncQuestions);
+  appendExternalPendingText('After');
+  const blocks = JSON.parse(buildCurrentExternalAssistantSnapshotContent()!);
+  expect(blocks).toMatchObject([
+    { type: 'text', text: 'Before', isComplete: true },
+    { type: 'text', text: '', isComplete: true, asyncQuestions },
+    { type: 'text', text: 'After' },
+  ]);
 });

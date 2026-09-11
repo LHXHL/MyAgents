@@ -285,7 +285,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const systemInitInfo = getSystemInitInfo();
       return {
         sessionId,
-        initState: getAgentState(),
+        initState: { ...getAgentState(), queuedMessages: getQueueStatus() },
         replayMessages,
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? messageWireToReplayMessage(liveSnapshot.liveStreamingMessage)
@@ -361,6 +361,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         isActive: true,
         runtime: 'builtin',
         ...snapshot,
+        queuedMessages: getQueueStatus(),
       };
     },
 
@@ -381,6 +382,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
+      if (request.asyncQuestionReply) return { success: false, status: 400, error: 'This session has no asynchronous runtime question.' };
       const permissionMode = asBuiltinPermissionMode(request.permissionMode);
       if (request.permissionMode !== undefined && permissionMode === undefined) {
         return { success: false, error: `Invalid builtin permission mode: ${request.permissionMode}`, status: 400 };

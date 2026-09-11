@@ -144,6 +144,7 @@ function Probe() {
     cancelQueuedMessage,
     forceExecuteQueuedMessage,
   } = useTabState();
+  const [answerReceipt, setAnswerReceipt] = useState<boolean | null>(null);
   const [retryRestoreTargetPresent, setRetryRestoreTargetPresent] = useState<boolean | null>(null);
   return (
     <>
@@ -167,6 +168,10 @@ function Probe() {
         id: message.id,
         runtimeTurnAnchor: message.runtimeTurnAnchor ?? null,
       })))}</output>
+      <output data-testid="answer-receipt">{JSON.stringify(answerReceipt)}</output>
+      <output data-testid="question-replies">{JSON.stringify(historyMessages.flatMap(message => message.asyncQuestionReply ? [message.asyncQuestionReply] : []))}</output>
+      <output data-testid="question-queue">{JSON.stringify(queuedMessages)}</output>
+      <button type="button" onClick={() => { void sendMessage('看海', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { questionId: 'q', questionIndex: 0 }).then(setAnswerReceipt); }}>send async answer</button>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <output data-testid="agent-error">{agentError ?? ''}</output>
       <output data-testid="retry-restore-target-present">{JSON.stringify(retryRestoreTargetPresent)}</output>
@@ -395,6 +400,51 @@ describe('TabProvider session activity ownership', () => {
     tauriHarness.proxyFetch.mockRejectedValue(new Error('Unexpected proxyFetch call'));
     tauriHarness.isTauri = false;
     tauriHarness.listeners.clear();
+  });
+
+  it('closes an async question-only text item before subsequent commentary', async () => {
+    tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="async-boundary" agentDir="/tmp/workspace" sessionId="pending-async-boundary" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send message'));
+    const asyncQuestions = { id: 'q', questions: [{ title: '去哪？', options: ['看海'] }] };
+    emit('chat:content-block-stop', { type: 'text', asyncQuestions });
+    emit('chat:message-chunk', '随后继续说明');
+    emit('chat:content-block-stop', { type: 'text' });
+    expect(readStreamingContent()).toEqual([
+      { type: 'text', text: '', isComplete: true, asyncQuestions },
+      { type: 'text', text: '随后继续说明', isComplete: true },
+    ]);
+  });
+
+  it('awaits async-answer admission and allows retry after a rejected send', async () => {
+    let respond!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { respond = resolve; }));
+    render(<TabProvider tabId="async-receipt" agentDir="/tmp/workspace" sessionId="pending-async-receipt" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send async answer'));
+    await waitFor(() => expect(respond).toBeDefined());
+    expect(screen.getByTestId('answer-receipt')).toHaveTextContent('null');
+    expect(JSON.parse(screen.getByTestId('question-queue').textContent!)[0].asyncQuestionReply).toEqual({ questionId: 'q', questionIndex: 0 });
+    await act(async () => { respond(new Response(JSON.stringify({ success: false, error: 'rejected' }))); });
+    expect(screen.getByTestId('answer-receipt')).toHaveTextContent('false');
+    expect(readQueueIds()).toEqual([]);
+    expect(screen.getByTestId('question-replies')).toHaveTextContent('[]');
+  });
+
+  it('does not resurrect an async queue item cancelled before the HTTP receipt', async () => {
+    let respond!: (response: Response) => void;
+    tauriHarness.proxyFetch.mockImplementation(() => new Promise<Response>(resolve => { respond = resolve; }));
+    render(<TabProvider tabId="async-cancel" agentDir="/tmp/workspace" sessionId="pending-async-cancel" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    fireEvent.click(screen.getByText('send async answer'));
+    await waitFor(() => expect(respond).toBeDefined());
+    emit('queue:added', { queueId: 'real-q', messageText: '看海', asyncQuestionReply: { questionId: 'q', questionIndex: 0 } });
+    expect(readQueueIds()).toEqual(['real-q']);
+    emit('queue:cancelled', { queueId: 'real-q' });
+    await act(async () => { respond(new Response(JSON.stringify({ success: true, queued: true, queueId: 'real-q' }))); });
+    expect(readQueueIds()).toEqual([]);
+    expect(screen.getByTestId('question-replies')).toHaveTextContent('[]');
   });
 
   it('marks the live connection down across a Rust-owned Sidecar replacement', async () => {
