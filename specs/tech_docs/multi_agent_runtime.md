@@ -162,7 +162,7 @@ Gemini 模型与权限在 turn boundary 通过 native session RPC 应用；reaso
 | `turn-lifecycle.ts` | promotion、running、terminal 与 finalization gate |
 | `runtime-config.ts` | desired/effective config 与 source filtering |
 | `transcript-persistence.ts` | user append、assistant commit、retry/rewind mutations |
-| `content-blocks.ts` | UnifiedEvent 到持久内容块 |
+| `content-blocks.ts` | V1 内容块与共用展示 policy；V2 内容由 SessionStore projection 持有 |
 | `interactive.ts` | permissions、questions、IM/Inbox/watch association |
 | `extensions.ts` | Managed Codex extension projection |
 
@@ -174,13 +174,13 @@ facade 负责组装 owner，不重新保存同一份 mutable state。Route 和 S
 
 1. 等待正在进行的 start/pre-warm；
 2. 在持久进程中序列化 active turn；
-3. 等待上一 turn 的 transcript finalization settlement；
+3. 等待上一 turn 的真实执行结算；V1 仍保留原 transcript finalization 等待，V2 不等待产品 IO；
 4. 对 Task/Goal 等执行 exact domain dispatch claim；
 5. 在 transport 前再次验证 process generation 与 cancellation token。
 
 guard accepted 之前不展示伪 user bubble、不写 transcript、不启动 watchdog。transport write 开始后的 error 只表示 acknowledgement 不确定；必须尝试 exact stop，未确认终止时保留 process、queue binding 和 domain owner，不能自动重放。
 
-user message 在 transport 接纳后尽快 append；assistant content 在成功 terminal、附件保存与 finalization gate 内一次提交。下一 turn 和同步 caller 只有在 gate settle 后才能读取 latest assistant result。
+V1 保留 user append、成功 terminal/附件/finalization gate 内提交 assistant 的原行为。V2 在接纳和 native 内容事件中更新 canonical projection，后台持续保存；下一 turn 和同步 caller 只依赖执行结算，最新结果读 live projection。完整帧、retraction 和 Codex nativeText 按原产品目标确认；细节见 [`session_transcript_v2.md`](session_transcript_v2.md)。
 
 ### 6.2 realtime 与 turn-boundary queue
 

@@ -5601,7 +5601,7 @@ export class CodexRuntime implements AgentRuntime {
             const asyncQuestions = item.delivery === 'async'
               ? parseAsyncQuestionSet({ id: codexTraceId(p, item.id), questions: item.questions })
               : undefined;
-            const stop: UnifiedEvent = { kind: 'text_stop', traceId: codexTraceId(p, item.id), ...(asyncQuestions ? { asyncQuestions } : {}) };
+            const stop: UnifiedEvent = { kind: 'text_stop', nativeText: finalText, traceId: codexTraceId(p, item.id), ...(asyncQuestions ? { asyncQuestions } : {}) };
 
             if (finalText) {
               if (!streamedText) {

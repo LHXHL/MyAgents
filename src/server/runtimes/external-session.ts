@@ -9,6 +9,8 @@ import { getExternalPendingMessageOperations } from './external-session/operatio
 
 import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from '../sse';
 import { participatesInLiveRestore } from '../../shared/liveRevision';
+import { prepareToolPresentationEvent } from '../session-transcript/tool-transport';
+import { toClientTranscriptOperation } from '../session-transcript/client';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
 import { buildSystemPromptAppend } from '../system-prompt';
@@ -69,13 +71,15 @@ import {
 import {
   commitPreparedSessionForFirstUserTurn,
   commitCodexConversationRewind,
-  deleteSession,
   resolvePendingConversationMutation,
   saveSessionMetadata,
+  publishForkSession,
   updateSessionMetadata,
   getSessionMetadata,
   getSessionData,
   loadSessionTranscript,
+  activateSessionTranscript,
+  getActiveSessionTranscript,
 } from '../SessionStore';
 import { firePostTurnTitleHook } from '../turn-hooks';
 import {
@@ -100,10 +104,10 @@ import {
   type GlobalSkillInventorySnapshot,
 } from '../global-skill-inventory';
 import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
-import type { MessageUsage, SessionMessage, TurnAnalyticsSource } from '../types/session';
+import type { MessageUsage, SessionMetadata, SessionMessage, TurnAnalyticsSource } from '../types/session';
 import { createSessionMetadata } from '../types/session';
 import type { SystemInitInfo } from '../../shared/types/system';
-import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
+import { finalizeResidualSubagentCall, type SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import { trackServer } from '../analytics';
 import {
   addUsageTotals,
@@ -263,6 +267,7 @@ import {
   getExternalSystemInitPayloadSnapshot,
   getExternalUserRequestedStop,
   getExternalLiveRevision,
+  getExternalRuntimeGeneration,
   isExternalLifecycleRunning,
   isExternalLifecycleStarting,
   markExternalUserRequestedStop,
@@ -364,6 +369,7 @@ import {
   appendExternalToolInputDelta,
   applyExternalReplayedToolResultToContent,
   applyExternalSubagentLifecycle,
+  mergeSubagentLifecycle,
   applyExternalSubagentAttachmentUpdate,
   applyExternalSubagentToolResult as applyExternalSubagentToolResultToContent,
   applyExternalToolAttachmentUpdate,
@@ -403,8 +409,8 @@ import {
   getExternalSessionMessageCount,
   getExternalSessionMessagesSnapshot,
   getExternalTranscriptSessionId,
+  getExternalProductContent,
   getLastPersistedRuntimeUsageTotals,
-  persistExternalForkTranscript,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
   removeAndPersistExternalSessionMessage,
@@ -413,6 +419,8 @@ import {
   setLastPersistedRuntimeUsageTotals,
   truncateExternalTranscriptForRetry,
 } from './external-session/transcript-persistence';
+import { TranscriptPresentation } from '../session-transcript/presentation';
+import { toStoredTranscriptMessage, type TranscriptObject } from '../../shared/sessionTranscript';
 import {
   addExternalTurnAttachmentHint,
   clearExternalInboxMetaOnRejection,
@@ -1040,7 +1048,44 @@ function bindExternalSessionContext(
   bindExternalLifecycleSessionContext(input);
 }
 
+let transcriptPresentation: TranscriptPresentation | undefined;
+
+function getTranscriptPresentation(): TranscriptPresentation | undefined {
+  const content = getExternalProductContent();
+  if (!content) return undefined;
+  if (transcriptPresentation?.content !== content) {
+    transcriptPresentation = new TranscriptPresentation(content, operation => {
+      const projected = toClientTranscriptOperation(operation);
+      if (projected) broadcast('chat:transcript-operation', {
+        sessionId: content.writer.status.sessionId, generation: content.writer.status.generation,
+        instanceId: content.writer.status.instanceId, operation: projected,
+      });
+    }, target => {
+      const sessionId = content.writer.status.sessionId;
+      // Eligibility belongs to the channel owner at this block's completion.
+      // Resolve its text only when the terminal owner releases delivery, so
+      // complete-frame corrections/retractions cannot send the stale partial.
+      stageExternalAssistantChannelDelivery(async () => {
+        const text = content.readBlock(target)?.text;
+        if (typeof text === 'string' && text) await mirrorIfChannelBound({ sessionId, role: 'assistant', text });
+      });
+    });
+  }
+  return transcriptPresentation;
+}
+
 function broadcast(event: string, data: unknown): void {
+  // Results are recorded from the full native content before asynchronous spill;
+  // the SSE preview must never replace that canonical value.
+  if (!/^chat:(?:subagent-)?tool-result-(?:start|complete)$/.test(event)) {
+    getTranscriptPresentation()?.record(event, data);
+  }
+  if (getExternalProductContent() && /^chat:(?:(?:subagent-)?tool-|server-tool-|content-block-stop)/.test(event) && data && typeof data === 'object') {
+    publishExternalToolPresentation(event, data as Record<string, unknown>);
+  } else publishExternalUiEvent(event, data);
+}
+
+function publishExternalUiEvent(event: string, data: unknown): void {
   const payloadSessionId = data && typeof data === 'object'
     && typeof (data as { sessionId?: unknown }).sessionId === 'string'
     ? (data as { sessionId: string }).sessionId
@@ -1054,6 +1099,23 @@ function broadcast(event: string, data: unknown): void {
     return;
   }
   broadcastSse(event, data);
+}
+
+function publishExternalToolPresentation(event: string, data: Record<string, unknown>): void {
+  const product = getExternalProductContent();
+  const session = getExternalLifecycleSessionId();
+  const events = prepareToolPresentationEvent(event, data, session);
+  const deliver = (items: typeof events.immediate) => {
+    if (product && getActiveSessionTranscript(session)?.writer !== product.writer) return;
+    for (const item of items) publishExternalUiEvent(item.event, item.data);
+  };
+  deliver(events.immediate);
+  void events.deferred?.then(deliver);
+}
+
+export function publishExternalTranscriptSaveStatus(status: import('../../shared/sessionTranscript').TranscriptSaveStatus): void {
+  const active = getExternalProductContent();
+  if (active?.writer.status.instanceId === status.instanceId) broadcast('chat:transcript-save-status', status);
 }
 
 function emitRuntimeDiagnosticLogEntry(entry: RuntimeDiagnosticLogEntry): void {
@@ -1224,7 +1286,7 @@ function handleSubagentToolUseStart(
   parentToolUseId: string,
   event: Extract<UnifiedEvent, { kind: 'tool_use_start' }>,
 ): void {
-  startExternalSubagentToolUse({
+  if (!getExternalProductContent()) startExternalSubagentToolUse({
     parentToolUseId,
     toolUseId: event.toolUseId,
     toolName: event.toolName,
@@ -1288,6 +1350,26 @@ function finalizeExternalSubagentLifecycleProjection(
   for (const update of finalizeExternalSubagentLifecyclesForTurn({ status, observedAt })) {
     broadcastExternalSubagentLifecycle(update.parentToolUseId, update.lifecycle);
   }
+  const product = getExternalProductContent();
+  if (!product?.currentTurn) return;
+  for (const message of product.writer.projection.messages.values()) {
+    if (message.turnId !== product.currentTurn.id || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      const tool = block.tool as TranscriptObject | undefined;
+      if (!tool?.subagentLifecycle) continue;
+      const lifecycle = tool.subagentLifecycle as unknown as SubagentLifecycle;
+      if (lifecycle.status === 'running' && typeof tool.id === 'string') broadcastExternalSubagentLifecycle(tool.id, mergeSubagentLifecycle(lifecycle, status, observedAt));
+      if (!Array.isArray(tool.subagentCalls)) continue;
+      for (const value of tool.subagentCalls) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        if (typeof value.id !== 'string' || value.isLoading !== true) continue;
+        const target = product.tool(value.id);
+        if (target) product.updateTool(target, finalizeResidualSubagentCall({
+          isLoading: true, ...(typeof value.result === 'string' ? { result: value.result } : {}),
+        }, status));
+      }
+    }
+  }
 }
 
 type SubagentTraceName = 'AgentMessage' | 'Thinking';
@@ -1301,7 +1383,8 @@ function ensureSubagentTraceCall(
   toolUseId: string,
   name: SubagentTraceName,
 ): void {
-  if (!startExternalSubagentTraceTool({ parentToolUseId, toolUseId, toolName: name })) return;
+  const product = getExternalProductContent();
+  if (product ? Boolean(product.tool(toolUseId)) : !startExternalSubagentTraceTool({ parentToolUseId, toolUseId, toolName: name })) return;
   broadcast('chat:subagent-tool-use', {
     parentToolUseId,
     tool: {
@@ -1322,7 +1405,7 @@ function appendSubagentTraceDelta(
   const parentToolUseId = event.subAgent.parentToolUseId;
   const toolUseId = subagentTraceToolUseId(parentToolUseId, event.traceId, name);
   ensureSubagentTraceCall(parentToolUseId, toolUseId, name);
-  appendExternalSubagentTraceDeltaToContent({ parentToolUseId, toolUseId, delta: event.text });
+  if (!getExternalProductContent()) appendExternalSubagentTraceDeltaToContent({ parentToolUseId, toolUseId, delta: event.text });
 
   broadcast('chat:subagent-tool-result-delta', {
     parentToolUseId,
@@ -1351,9 +1434,21 @@ function completeSubagentTrace(
   if (!event.subAgent || !event.traceId) return false;
   const parentToolUseId = event.subAgent.parentToolUseId;
   const toolUseId = subagentTraceToolUseId(parentToolUseId, event.traceId, name);
-  const completed = completeExternalSubagentTraceContent({ parentToolUseId, toolUseId });
+  const product = getExternalProductContent();
+  const target = product?.tool(toolUseId);
+  const tool = target ? product!.readTool(target) : undefined;
+  const completed = product ? (tool ? { latchedParentToolUseId: parentToolUseId, content: typeof tool.result === 'string' ? tool.result : '' } : null)
+    : completeExternalSubagentTraceContent({ parentToolUseId, toolUseId });
   if (!completed) return true; // scoped stop with no emitted content; swallow it
 
+  if (target) {
+    product!.updateTool(target, { isLoading: false }, true);
+  }
+
+  if (product) {
+    publishExternalToolPresentation('chat:subagent-tool-result-complete', { parentToolUseId, toolUseId, content: completed.content });
+    return true;
+  }
   applySubagentToolResult(completed.latchedParentToolUseId, {
     kind: 'tool_result',
     toolUseId,
@@ -1400,6 +1495,11 @@ type ExternalTextMirrorDisposition = 'mirror-completed-block' | 'skip-incomplete
 /** Flush accumulated text into a text content block. Only completed blocks
  * enter the turn owner's ordered mirror delivery tail. */
 function flushPendingText(disposition: ExternalTextMirrorDisposition, asyncQuestions?: AsyncQuestionSet): void {
+  const presentation = getTranscriptPresentation();
+  if (presentation) {
+    presentation.closeText(asyncQuestions ? { asyncQuestions: asyncQuestions as unknown as TranscriptObject } : {});
+    return;
+  }
   const completedText = getExternalPendingTextBuffer();
   if (!flushExternalPendingTextBlock(asyncQuestions)) return;
   if (disposition === 'skip-incomplete-block' || !completedText) return;
@@ -1435,6 +1535,14 @@ function materializationScenarioFromInteraction(
 
 function pendingBirthForSession(sessionId: string): PendingExternalSessionBirth | null {
   return pendingExternalSessionBirth?.sessionId === sessionId ? pendingExternalSessionBirth : null;
+}
+
+/** The pre-warm owner has already confirmed a missing product birth. Ordinary
+ * resume and generic allow-missing requests still require their cold identity. */
+function getExternalSessionMetadata(sessionId: string): SessionMetadata | null {
+  const active = getActiveSessionTranscript(sessionId);
+  if (active) return active.metadata;
+  return pendingBirthForSession(sessionId) ? null : getSessionMetadata(sessionId);
 }
 
 function clearPendingExternalSessionBirth(sessionId: string): void {
@@ -1527,7 +1635,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   }
 
   const pendingBirth = pendingBirthForSession(sessionId);
-  const existing = getSessionMetadata(sessionId);
+  const existing = getExternalSessionMetadata(sessionId);
   if (existing) {
     const runtimeSessionId = pendingBirth?.runtimeSessionId;
     if (existing.materializationState === 'prepared') {
@@ -1601,13 +1709,16 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
 }
 
 function flushPendingThinking(forceComplete: boolean): void {
-  flushExternalPendingThinkingBlock(forceComplete);
+  const presentation = getTranscriptPresentation();
+  if (presentation) { presentation.closeThinking(); resetExternalPendingThinking(); }
+  else flushExternalPendingThinkingBlock(forceComplete);
 }
 
 /** Flush any incomplete blocks (thinking/tool) at turn boundary — handles interrupts */
 function flushAllPending(textMirrorDisposition: ExternalTextMirrorDisposition): void {
   flushPendingText(textMirrorDisposition);
   flushPendingThinking(true);
+  if (getExternalProductContent()) return;
   for (const interrupted of flushExternalPendingToolInputsForTurn()) {
     applySubagentToolResult(interrupted.parentToolUseId, {
       kind: 'tool_result',
@@ -1898,25 +2009,21 @@ function consumeExternalTurnUsage(): MessageUsage | undefined {
 }
 
 function currentExternalTurnTextSnapshot(): string {
+  if (getExternalProductContent()) return getLastExternalAssistantTextFromTranscript();
   const blockText = getExternalContentBlockText();
   return blockText || getExternalAssistantText().trim();
 }
 
 function consumeExternalTurnMetrics(): {
   durationMs?: number;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: MessageUsage;
 } {
   const turnStartTime = getExternalTurnStartTime();
   const durationMs = turnStartTime ? Math.max(0, Date.now() - turnStartTime) : undefined;
   const usage = consumeExternalTurnUsage();
   return {
     ...(durationMs !== undefined ? { durationMs } : {}),
-    ...(usage ? {
-      usage: {
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-      },
-    } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -1935,6 +2042,13 @@ function notifyFailedExternalTurn(
   text: string,
   error: string,
 ): SessionCompletionTerminal | null {
+  const metrics = consumeExternalTurnMetrics();
+  const product = getExternalProductContent();
+  if (product) {
+    getTranscriptPresentation()?.closeText();
+    getTranscriptPresentation()?.closeThinking();
+    product.finishTurn('error', metrics);
+  }
   const completionTerminal = recordExternalCompletionTerminal('error');
   const activityFacts = getExternalTurnActivityFacts();
   const finalization = persistExternalTerminalActivity(activityFacts, text)
@@ -1944,7 +2058,8 @@ function notifyFailedExternalTurn(
     success: false,
     text,
     error,
-    ...consumeExternalTurnMetrics(),
+    durationMs: metrics.durationMs,
+    ...(metrics.usage ? { usage: { inputTokens: metrics.usage.inputTokens, outputTokens: metrics.usage.outputTokens } } : {}),
   }, finalization);
   return completionTerminal;
 }
@@ -1986,6 +2101,12 @@ function finalizeStoppedExternalTurn(
   metrics: ReturnType<typeof consumeExternalTurnMetrics>,
   publishCompletion = true,
 ): SessionCompletionTerminal | null {
+  const product = getExternalProductContent();
+  if (product) {
+    getTranscriptPresentation()?.closeText();
+    getTranscriptPresentation()?.closeThinking();
+    product.finishTurn('stopped', metrics);
+  }
   const completionTerminal = publishCompletion
     ? recordExternalCompletionTerminal('stopped')
     : null;
@@ -1993,7 +2114,10 @@ function finalizeStoppedExternalTurn(
   const finalization = persistExternalTerminalActivity(activityFacts, text)
     .finally(() => clearExternalTurnActivityFacts(activityFacts));
   trackExternalTurnFinalization(finalization);
-  notifyExternalTurnStopped(text, metrics, finalization);
+  notifyExternalTurnStopped(text, {
+    durationMs: metrics.durationMs,
+    ...(metrics.usage ? { usage: { inputTokens: metrics.usage.inputTokens, outputTokens: metrics.usage.outputTokens } } : {}),
+  }, finalization);
   return completionTerminal;
 }
 
@@ -2057,6 +2181,7 @@ export async function restoreExternalSessionState(
   // 2. CC session (no runtimeSessionId, but has runtime + messages) → sessionId (CC uses our ID)
   // 3. Brand new session (no messages, or no metadata) → empty string → sendExternalMessage hits Case 1 (fresh start)
   const meta = getSessionMetadata(sessionId);
+  await activateSessionTranscript(sessionId);
   const transcript = await loadSessionTranscript(sessionId);
   const hasExistingMessages = transcript.messages.length > 0;
   const currentRuntimeType = getCurrentRuntimeType();
@@ -2367,10 +2492,11 @@ export function getExternalNativeSessionId(): string {
   return getExternalRuntimeSessionId();
 }
 
-export function isExternalSessionStateRestoredFor(sessionId: string): boolean {
+export async function isExternalSessionStateRestoredFor(sessionId: string): Promise<boolean> {
   if (getExternalLifecycleSessionId() !== sessionId) return false;
   if (getExternalTranscriptSessionId() !== sessionId) return false;
-  const diskMessages = getSessionData(sessionId)?.messages ?? [];
+  if (getActiveSessionTranscript(sessionId)) return true;
+  const diskMessages = (await getSessionData(sessionId))?.messages ?? [];
   const memoryMessages = getExternalSessionMessagesSnapshot();
   if (memoryMessages.length < diskMessages.length) return false;
   const diskMatchesMemoryPrefix = diskMessages.every((message, index) => memoryMessages[index]?.id === message.id);
@@ -2411,6 +2537,12 @@ export function getExternalLiveAssistantMessage(): SessionMessage | null {
   if (!lifecycleSessionId || getExternalLifecycleState() !== 'running') {
     return null;
   }
+  const product = getExternalProductContent();
+  if (product) {
+    const message = product.currentAssistantId
+      ? product.writer.projection.messages.get(product.currentAssistantId) : undefined;
+    return message?.transcriptState === 'streaming' ? toStoredTranscriptMessage(message) : null;
+  }
   const content = buildCurrentAssistantSnapshotContent();
   if (!content) {
     return null;
@@ -2425,6 +2557,7 @@ export function getExternalLiveAssistantMessage(): SessionMessage | null {
 }
 
 function finalizeExternalLiveAssistantInMemory(): void {
+  if (getExternalProductContent()) return;
   const message = getExternalLiveAssistantMessage();
   if (!message) return;
   const existing = getExternalSessionMessagesSnapshot().some(candidate => candidate.id === message.id);
@@ -2441,9 +2574,13 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
 } | null {
   if (targetSessionId !== getCurrentExternalBoundSessionId()) return null;
   flushPendingLiveEvents();
-  const inMemoryMessages = getExternalTranscriptSessionId() === targetSessionId
+  const liveStreamingMessage = getExternalLiveAssistantMessage();
+  let inMemoryMessages = getExternalTranscriptSessionId() === targetSessionId
     ? getExternalSessionMessagesSnapshot()
     : [];
+  if (getActiveSessionTranscript(targetSessionId) && liveStreamingMessage) {
+    inMemoryMessages = inMemoryMessages.filter(message => message.id !== liveStreamingMessage.id);
+  }
   for (const pending of getExternalPendingUserMessageProjections(targetSessionId)) {
     if (!inMemoryMessages.some(message => message.id === pending.id)) {
       inMemoryMessages.push(pending);
@@ -2452,7 +2589,7 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
   return structuredClone({
     snapshotRevision: getExternalLiveRevision(),
     inMemoryMessages,
-    liveStreamingMessage: getExternalLiveAssistantMessage(),
+    liveStreamingMessage,
     liveSessionState: getExternalLifecycleState(),
     queuedMessages: getExternalQueueStatus(),
     pendingInteractiveRequests: getExternalInteractiveRequestsSnapshot(),
@@ -2524,7 +2661,7 @@ function buildCurrentManagedCodexExtensionSnapshot(input?: {
     throw new Error('Managed Codex extension configuration has no workspace owner');
   }
   const sessionId = getExternalLifecycleSessionId();
-  const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+  const metadata = sessionId ? getExternalSessionMetadata(sessionId) : null;
   const sessionMcpServers = input?.mcpServers
     ? [...input.mcpServers]
     : getManagedCodexSessionMcpServers();
@@ -2647,7 +2784,7 @@ export async function handleExternalMcpServersChange(
   const sessionId = getExternalLifecycleSessionId();
   try {
     if (!workspacePath) throw new Error('Managed Codex MCP configuration has no workspace owner');
-    const metadata = sessionId ? getSessionMetadata(sessionId) : null;
+    const metadata = sessionId ? getExternalSessionMetadata(sessionId) : null;
     const authoritative = resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: true }).mcpServers;
     const resolvedServers = resolveManagedCodexMcpSelection(requestedIds, authoritative);
     setManagedCodexSessionMcpServers(resolvedServers);
@@ -2852,7 +2989,7 @@ export async function handleExternalOfficialToolIdsChange(
   const workspacePath = getExternalLifecycleWorkspacePath();
   const requestedIds = getEffectiveOfficialToolIdsForSession(
     workspacePath,
-    sessionId ? getSessionMetadata(sessionId) : null,
+    sessionId ? getExternalSessionMetadata(sessionId) : null,
     ids,
   );
   const appliedIds = getExternalActiveOfficialToolIds() ?? [];
@@ -3076,7 +3213,7 @@ async function _doStartExternalSession(options: {
   //
   // Generative-UI widget guidance is universal (no MCP equivalent) and is
   // injected unconditionally for desktop scenarios via buildWidgetSection().
-  const existingMetadataAtStart = getSessionMetadata(options.sessionId);
+  const existingMetadataAtStart = getExternalSessionMetadata(options.sessionId);
   const enabledOfficialToolIds = getEffectiveOfficialToolIdsForSession(
     options.workspacePath,
     existingMetadataAtStart,
@@ -3245,7 +3382,7 @@ async function _doStartExternalSession(options: {
     const activityFacts = options.activityFacts ?? {
       origin: turnAnalyticsOrigin,
       inputText: options.initialMessage,
-      systemMaintenanceKind: getSessionMetadata(options.sessionId)?.systemMaintenanceKind,
+      systemMaintenanceKind: getExternalSessionMetadata(options.sessionId)?.systemMaintenanceKind,
     };
     setExternalTurnActivityFacts(activityFacts);
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
@@ -3329,8 +3466,23 @@ async function _doStartExternalSession(options: {
   );
 
   let runtimeInitialTurn: RuntimeInitialTurn | undefined;
-  const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
-    runtime.startSession(
+  let currentEventReceiver: ((event: UnifiedEvent) => void) | undefined;
+  const nativeGeneration = getExternalRuntimeGeneration();
+  const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> => {
+    let writer = getActiveSessionTranscript(options.sessionId)?.writer;
+    const receive = (event: UnifiedEvent): void => {
+      writer ??= getActiveSessionTranscript(options.sessionId)?.writer;
+      if (getExternalLifecycleSessionId() !== options.sessionId) return;
+      if (writer && getActiveSessionTranscript(options.sessionId)?.writer !== writer) return;
+      // An accepted attachment job can finish after the native process exits.
+      // Its captured product owner still authorizes an update to that old tool.
+      const productAttachment = event.kind === 'tool_attachment_update' && writer;
+      if (!productAttachment && (currentEventReceiver !== receive
+        || getExternalRuntimeGeneration() !== nativeGeneration)) return;
+      handleUnifiedEvent(event);
+    };
+    currentEventReceiver = receive;
+    return runtime.startSession(
       {
         sessionId: options.sessionId,
         workspacePath: options.workspacePath,
@@ -3350,8 +3502,9 @@ async function _doStartExternalSession(options: {
         mcpServers: managedCodexMcpServers,
         managedCodexExtensions: managedCodexExtensionSnapshot,
       },
-      handleUnifiedEvent,
+      receive,
     );
+  };
 
   let startedProcess: RuntimeProcess | null = null;
   let terminalSettledByStop = false;
@@ -3999,7 +4152,7 @@ async function dispatchExternalMessageOperation(
   const activityFacts: SessionActivityTurnFacts = {
     origin: turnAnalyticsOrigin,
     inputText: text,
-    systemMaintenanceKind: getSessionMetadata(activitySessionId)?.systemMaintenanceKind,
+    systemMaintenanceKind: getExternalSessionMetadata(activitySessionId)?.systemMaintenanceKind,
   };
 
   // PRD 0.2.18 Session Inbox — bind per-turn inbox meta + reset attachment hints
@@ -5653,7 +5806,7 @@ export async function rewindExternalConversation(
   const result = await withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
     const metadata = sessionId ? getSessionMetadata(sessionId) : null;
-    const data = sessionId ? getSessionData(sessionId) : null;
+    const data = sessionId ? (await getSessionData(sessionId)) : null;
     if (!metadata || !data || !metadata.runtimeSessionId) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex conversation binding is unavailable' };
     }
@@ -5768,7 +5921,10 @@ export async function forkExternalConversation(
   }
   return withExternalConversationMutation(async () => {
     const sessionId = getExternalLifecycleSessionId();
-    const source = sessionId ? getSessionData(sessionId) : null;
+    const source = sessionId ? (await getSessionData(sessionId)) : null;
+    if (source?.transcriptRecovery) {
+      return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'Cannot fork an incompletely restored conversation' };
+    }
     if (!source?.runtimeSessionId) {
       return { success: false, status: 409, errorCode: 'anchor_unavailable', error: 'The Codex conversation binding is unavailable' };
     }
@@ -5821,10 +5977,8 @@ export async function forkExternalConversation(
     forked.origin = { kind: 'desktop', surface: 'session_fork' };
     const forkedMessages = source.messages.slice(0, targetIndex + 1);
     try {
-      await saveSessionMetadata(forked);
-      await persistExternalForkTranscript(forked.id, forkedMessages);
+      await publishForkSession(forked, forkedMessages, sessionId!);
     } catch (error) {
-      await deleteSession(forked.id, { kind: 'user-delete' });
       logCodexConversationOrphan(sessionId, branch.runtimeSessionId, 'fork_persistence_failed');
       return {
         success: false,
@@ -5951,7 +6105,7 @@ export async function prewarmExternalSession(options: {
   // frontend's sessionRuntime is populated async via loadSession, so the
   // effect may fire before that state settles. Backend check uses the
   // authoritative source (SessionStore) and closes the race-window hole.
-  const meta = getSessionMetadata(options.sessionId);
+  const meta = getExternalSessionMetadata(options.sessionId);
   if (meta?.runtime && meta.runtime !== runtimeType) {
     emitPerfTrace({
       trace: 'runtime',
@@ -5986,7 +6140,7 @@ export async function prewarmExternalSession(options: {
 
   const activeProcess = getExternalActiveProcess();
   if (activeProcess && !activeProcess.exited) {
-    if (isExternalSessionStateRestoredFor(options.sessionId)) {
+    if (await isExternalSessionStateRestoredFor(options.sessionId)) {
       emitPerfTrace({
         trace: 'runtime',
         phase: 'prewarm_skipped',
@@ -6183,17 +6337,29 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     // the snapshot survives it, while in-place attachment patches during
     // awaitInFlightSaves() still land in the captured blocks.
     const turnContentSnapshot = captureExternalTurnContentSnapshot();
-    capturedReplyText = getExternalTurnContentSnapshotText(turnContentSnapshot);
+    const productTranscript = getExternalProductContent();
+    capturedReplyText = productTranscript
+      ? getLastExternalAssistantTextFromTranscript()
+      : getExternalTurnContentSnapshotText(turnContentSnapshot);
 
     // PRD 0.2.15 Review A4 fix — drain in-flight attachment saves so the
     // placeholder attachments embedded in the turn's content blocks get patched
     // BEFORE we snapshot to disk. Without this await, large/slow saves land
     // their `tool_attachment_update` after `currentContentBlocks = []` reset
     // and the disk JSON keeps the "生成中" placeholder forever.
-    await awaitInFlightSaves();
+    if (!productTranscript) await awaitInFlightSaves();
+    else {
+      getTranscriptPresentation()?.closeText();
+      getTranscriptPresentation()?.closeThinking();
+    }
 
     const usageData = settledTurnUsage;
-    const turnToolCount = getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
+    const turnToolCount = productTranscript
+      ? [...productTranscript.writer.projection.messages.values()]
+        .filter(message => message.role === 'assistant' && message.turnId === productTranscript.currentTurn?.id)
+        .reduce((count, message) => count + (Array.isArray(message.content)
+          ? message.content.filter(block => block.type === 'tool_use' || block.type === 'server_tool_use').length : 0), 0)
+      : getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
     const runtimeType = getCurrentRuntimeType();
     const runtimeSource = getCurrentRuntimeSource();
     // turnContextUsage was snapshotted at the synchronous function entry (above) to
@@ -6209,7 +6375,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       if (isExternalTurnContentSnapshotCurrent(turnContentSnapshot)) resetTurnAccumulators();
     };
 
-    const persistedContent = getExternalTurnContentSnapshotPersistedContent(turnContentSnapshot);
+    const persistedContent = productTranscript ? null : getExternalTurnContentSnapshotPersistedContent(turnContentSnapshot);
     const lifecycleSessionId = getExternalLifecycleSessionId();
     activityOwnedByTranscriptPersist = true;
     const persistResult = await appendAndPersistExternalAssistantTurn({
@@ -6225,6 +6391,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       runtimeTurnAnchor: getCurrentRuntimeType() === 'codex'
         ? runtimeTurnAnchor ?? undefined
         : undefined,
+      terminalStatus: turnSucceededAtTerminal ? 'complete' : 'error',
     });
     if (persistResult.appendedAssistant) {
       resetIfStillOurs();
@@ -6427,10 +6594,11 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
 
 async function normalizeExternalToolResultForSse(
   event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+  sessionId = getExternalLifecycleSessionId(),
 ): Promise<Extract<UnifiedEvent, { kind: 'tool_result' }>> {
   const spilled = await maybeSpill(event.content, {
     mimetype: 'text/plain; charset=utf-8',
-    sessionId: getExternalLifecycleSessionId() || undefined,
+    sessionId: sessionId || undefined,
   });
   if ('inline' in spilled) {
     return event;
@@ -6453,9 +6621,13 @@ function broadcastExternalToolUseStop(
   parentToolUseId: string | undefined,
   toolName: string | null,
 ): void {
+  const product = getExternalProductContent();
+  const sourceSessionId = getExternalLifecycleSessionId();
   const broadcastStop = (payload: { input?: Record<string, unknown>; inputRef?: unknown }): void => {
+    if (product && getActiveSessionTranscript(sourceSessionId)?.writer !== product.writer) return;
+    if (getExternalLifecycleSessionId() !== sourceSessionId) return;
     if (parentToolUseId && toolName) {
-      broadcast('chat:subagent-tool-use', {
+      (product ? publishExternalToolPresentation : broadcast)('chat:subagent-tool-use', {
         parentToolUseId,
         tool: {
           id: event.toolUseId,
@@ -6469,13 +6641,20 @@ function broadcastExternalToolUseStop(
       return;
     }
     if (!parentToolUseId) {
-      broadcast('chat:content-block-stop', {
+      (product ? publishExternalToolPresentation : broadcast)('chat:content-block-stop', {
         type: 'tool_use',
         toolId: event.toolUseId,
         ...payload,
       });
     }
   };
+
+  if (product) {
+    // V2 uses the common immediate preview/ref transport; product IO cannot
+    // delay either the input stop or the following result presentation.
+    broadcastStop({ input: event.input });
+    return;
+  }
 
   if (!event.input) {
     broadcastStop({});
@@ -6558,15 +6737,38 @@ function applyExternalToolResult(event: Extract<UnifiedEvent, { kind: 'tool_resu
 
 function dispatchExternalToolResult(
   event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+  after?: Promise<void>,
 ): Promise<void> {
   emitExternalToolEndTrace(event.toolUseId, event.isError);
-  return normalizeExternalToolResultForSse(event)
-    .then((normalized) => {
+  const product = getExternalProductContent();
+  const target = product?.tool(event.toolUseId);
+  const sourceSessionId = getExternalLifecycleSessionId();
+  const deliver = (normalized: Extract<UnifiedEvent, { kind: 'tool_result' }>) => {
+    if (product) {
+      if (!target || getActiveSessionTranscript(sourceSessionId)?.writer !== product.writer) return;
+      const parentId = target.subagentToolId
+        ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id : undefined;
+      const tool = product.readTool(target);
+      if (!tool) return;
+      const payload = {
+        sessionId: sourceSessionId, ...(parentId ? { parentToolUseId: parentId } : {}),
+        toolUseId: normalized.toolUseId, content: normalized.content,
+        isError: normalized.isError ?? false, metadata: normalized.metadata,
+        attachments: tool.attachments,
+      };
+      if (!parentId) broadcast('chat:tool-result-start', payload);
+      broadcast(parentId ? 'chat:subagent-tool-result-complete' : 'chat:tool-result-complete', payload);
+      return;
+    }
       const subParent = getExternalChildToolParent(normalized.toolUseId);
       if (subParent) applySubagentToolResult(subParent, normalized);
       else applyExternalToolResult(normalized);
-    })
-    .catch((err) => {
+  };
+  if (product) {
+    deliver(event);
+    return Promise.resolve();
+  }
+  const normalized = normalizeExternalToolResultForSse(event, sourceSessionId).catch((err) => {
       console.error('[external-session] tool_result spill failed:', err);
       const fallback: Extract<UnifiedEvent, { kind: 'tool_result' }> = {
         ...event,
@@ -6576,10 +6778,9 @@ function dispatchExternalToolResult(
           status: event.metadata?.status ?? 'large-result-spill-failed',
         },
       };
-      const subParent = getExternalChildToolParent(fallback.toolUseId);
-      if (subParent) applySubagentToolResult(subParent, fallback);
-      else applyExternalToolResult(fallback);
+      return fallback;
     });
+  return Promise.all([normalized, after]).then(([result]) => deliver(result));
 }
 
 function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
@@ -6619,10 +6820,17 @@ function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kin
 
 function handleUnifiedEvent(event: UnifiedEvent): void {
   recordRuntimeActivity();
-  if (event.kind === 'turn_complete' || event.kind === 'session_complete') {
+  const isV2Content = Boolean(getExternalProductContent()) && (Boolean(event.nativeSource) || [
+    'text_delta', 'text_stop', 'thinking_start', 'thinking_delta', 'thinking_stop',
+    'tool_use_start', 'tool_input_delta', 'tool_use_stop', 'tool_result_delta', 'tool_result',
+    'subagent_lifecycle', 'tool_attachment_update', 'message_replay', 'native_retraction',
+  ].includes(event.kind));
+  if (isV2Content || event.kind === 'turn_complete' || event.kind === 'session_complete') {
     // Native terminal notifications can precede the turn/start response. Keep
-    // accepted user -> assistant persistence ordered using the queue owner's
-    // existing operation dispatch promise; a rejected answer must never enter history.
+    // accepted user -> assistant content ordered using the queue owner's native
+    // admission promise. This never waits for product persistence. Early native
+    // output cannot be assigned to the preceding user while the answer's actual
+    // admission is still being resolved.
     const pending = getExternalPendingMessageOperations().find(
       operation => Boolean(
         operation.context.asyncQuestionReply
@@ -6644,6 +6852,48 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 }
 
 function applyUnifiedEvent(event: UnifiedEvent): void {
+  const presentation = getTranscriptPresentation();
+  const source = event.nativeSource ?? (presentation && (event.kind === 'text_delta' || event.kind === 'text_stop') && event.traceId ? {
+    messageId: event.traceId, blockIndex: 0, parentToolUseId: event.subAgent?.parentToolUseId,
+    ...(!presentation.hasNativeBlock(event.traceId, 0) ? { blockStart: { type: 'text', text: '' } } : {}),
+  } : undefined);
+  if (presentation && event.kind === 'native_retraction') {
+    presentation.retractNativeContent(event.messageIds, event.parentToolUseId ? true : event.scope !== 'local', event.parentToolUseId);
+    return;
+  }
+
+  if (source && presentation && source.parentToolUseId && event.kind !== 'message_replay') {
+    const parentToolUseId = source.parentToolUseId;
+    presentation.beginNativeMessage(source.messageId, parentToolUseId);
+    if (source.blockStart && source.blockIndex !== undefined) {
+      presentation.beginNativeBlock(source.blockIndex, source.blockStart as TranscriptObject, parentToolUseId);
+      const entry = presentation.childNativeBlock(parentToolUseId, source.blockIndex);
+      const tool = entry && presentation.content.readTool(entry.target);
+      if (tool && (entry.type === 'text' || entry.type === 'thinking')) publishExternalUiEvent('chat:subagent-tool-use', {
+        parentToolUseId, tool: { id: tool.id, name: tool.name, input: {}, streamIndex: source.blockIndex },
+      });
+    }
+    if ((event.kind === 'text_delta' || event.kind === 'thinking_delta') && source.blockIndex !== undefined) {
+      const target = presentation.appendChildNativeText(parentToolUseId, source.blockIndex, event.text);
+      if (target) publishExternalToolPresentation('chat:subagent-tool-result-delta', { parentToolUseId, toolUseId: target.subagentToolId, delta: event.text });
+      return;
+    }
+    if ((event.kind === 'text_stop' || event.kind === 'thinking_stop') && source.blockIndex !== undefined) {
+      if (event.kind === 'text_stop' && event.nativeText !== undefined) presentation.confirmNativeBlocks(source.messageId, source.messageId, [{ type: 'text', text: event.nativeText }], parentToolUseId, 'native');
+      const entry = presentation.childNativeBlock(parentToolUseId, source.blockIndex);
+      presentation.endNativeBlock(source.blockIndex, parentToolUseId);
+      if (entry) publishExternalToolPresentation('chat:subagent-tool-result-complete', { parentToolUseId, toolUseId: entry.target.subagentToolId, content: presentation.content.readTool(entry.target)?.result ?? '' });
+      return;
+    }
+    if (event.kind === 'tool_use_start' || event.kind === 'tool_input_delta' || event.kind === 'tool_use_stop') event = { ...event, subAgent: { parentToolUseId } };
+    else if (event.kind === 'raw' || event.kind === 'status_change' || event.kind === 'thinking_start') return;
+  }
+  if (source && presentation && !source.parentToolUseId && event.kind !== 'message_replay') {
+    if (presentation.currentNativeMessageId !== source.messageId) presentation.beginNativeMessage(source.messageId);
+    if (source.blockStart && source.blockIndex !== undefined) presentation.beginNativeBlock(source.blockIndex, source.blockStart as TranscriptObject);
+    if (event.kind === 'text_stop' && event.nativeText !== undefined) presentation.confirmNativeBlocks(source.messageId, source.messageId, [{ type: 'text', text: event.nativeText }], undefined, 'native');
+    if ((event.kind === 'text_stop' || event.kind === 'thinking_stop' || event.kind === 'tool_use_stop') && source.blockIndex !== undefined) presentation.endNativeBlock(source.blockIndex);
+  }
   switch (event.kind) {
     case 'root_turn_admitted':
       if (getCurrentRuntimeType() === 'codex') {
@@ -6668,8 +6918,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         break;
       }
       emitExternalFirstDeltaTrace(event.text);
-      appendExternalAssistantText(event.text);
-      appendExternalPendingText(event.text);
+      if (!presentation) { appendExternalAssistantText(event.text); appendExternalPendingText(event.text); }
       broadcast('chat:message-chunk', event.text);
       fireExternalImCallback('delta', event.text);
       break;
@@ -6710,7 +6959,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       if (!isExternalPendingThinkingActive()) {
         activateExternalPendingThinking(event.index);
       }
-      appendExternalPendingThinkingText(event.text);
+      if (!presentation) appendExternalPendingThinkingText(event.text);
       // Frontend expects { index, delta } — match builtin SSE shape
       broadcast('chat:thinking-chunk', { index: event.index, delta: event.text });
       recordRuntimeActivity();
@@ -6735,7 +6984,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
         break;
       }
       flushPendingText('mirror-completed-block');  // Close any open text block before tool use
-      startExternalToolUseInput({
+      if (!presentation) startExternalToolUseInput({
         toolUseId: event.toolUseId,
         toolName: event.toolName,
         toolInput: event.input,
@@ -6751,7 +7000,10 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     case 'tool_input_delta': {
       // Route by the LATCHED map (set when the start nested), not by event.subAgent,
       // so all events for one tool stay on the same rendering path.
-      const { parentToolUseId: parentForInput } = appendExternalToolInputDelta(event.toolUseId, event.delta);
+      const product = presentation?.content;
+      const target = product?.tool(event.toolUseId);
+      const parentForInput = product ? (target?.subagentToolId ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id as string | undefined : undefined)
+        : appendExternalToolInputDelta(event.toolUseId, event.delta).parentToolUseId;
       if (parentForInput) {
         broadcast('chat:subagent-tool-input-delta', {
           parentToolUseId: parentForInput,
@@ -6770,6 +7022,25 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_use_stop': {
+      if (presentation) {
+        const product = presentation.content;
+        const target = product.tool(event.toolUseId);
+        if (!target) break;
+        let input = event.input;
+        const tool = product.readTool(target)!;
+        if (!input && typeof tool.inputJson === 'string') {
+          try { input = JSON.parse(tool.inputJson) as Record<string, unknown>; } catch { /* Preserve incomplete native input. */ }
+        }
+        if (input) product.confirmInput(target, input as TranscriptObject);
+        const parentId = target.subagentToolId ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id as string | undefined : undefined;
+        broadcastExternalToolUseStop({ ...event, input }, parentId, typeof tool.name === 'string' ? tool.name : null);
+        break;
+      }
+      if (event.input) {
+        const product = getExternalProductContent();
+        const target = product?.tool(event.toolUseId);
+        if (target) product!.confirmInput(target, event.input as TranscriptObject);
+      }
       const finalToolName = event.input
         ? replaceExternalToolUseInput(event.toolUseId, event.input)
         : null;
@@ -6788,8 +7059,11 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_result_delta': {
-      const parentForResultDelta = getExternalChildToolParent(event.toolUseId);
-      appendExternalToolResultDeltaToContent(event.toolUseId, event.delta);
+      const product = presentation?.content;
+      const target = product?.tool(event.toolUseId);
+      const parentForResultDelta = product ? (target?.subagentToolId ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id as string | undefined : undefined)
+        : getExternalChildToolParent(event.toolUseId);
+      if (!product) appendExternalToolResultDeltaToContent(event.toolUseId, event.delta);
       if (parentForResultDelta) {
         broadcast('chat:subagent-tool-result-delta', {
           parentToolUseId: parentForResultDelta,
@@ -6808,23 +7082,52 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_result': {
+      const product = getExternalProductContent();
+      const target = product?.tool(event.toolUseId);
+      if (target) {
+        product!.confirmText(target, 'result', event.content);
+        product!.updateTool(target, {
+          isLoading: false, isError: event.isError ?? false,
+          ...(event.metadata ? { resultMeta: event.metadata as TranscriptObject } : {}),
+        }, true);
+        if (event.attachments) product!.confirmAttachments(target, event.attachments as unknown as TranscriptObject[]);
+      }
       // Keep the stop→result order when a completion-owned tool input had to
       // spill before crossing SSE.
       const pendingInput = pendingExternalToolInputTransports.get(event.toolUseId);
-      const dispatched = pendingInput
-        ? pendingInput.then(() => dispatchExternalToolResult(event))
-        : dispatchExternalToolResult(event);
+      const dispatched = product ? dispatchExternalToolResult(event, pendingInput)
+        : pendingInput ? pendingInput.then(() => dispatchExternalToolResult(event)) : dispatchExternalToolResult(event);
       trackInFlightSave(dispatched);
       break;
     }
 
     case 'subagent_lifecycle': {
-      const lifecycle = applyExternalSubagentLifecycle(event);
+      const product = presentation?.content;
+      const target = product?.tool(event.parentToolUseId);
+      const lifecycle = product ? mergeSubagentLifecycle(
+        target ? product.readTool(target)?.subagentLifecycle as unknown as SubagentLifecycle | undefined : undefined,
+        event.status, event.observedAt,
+      ) : applyExternalSubagentLifecycle(event);
       broadcastExternalSubagentLifecycle(event.parentToolUseId, lifecycle);
       break;
     }
 
     case 'tool_attachment_update': {
+      const product = getExternalProductContent();
+      if (product) {
+        const target = product.tool(event.toolUseId);
+        if (target) {
+          const applied = product.updateAttachment(target, event.pendingId, event.attachment as unknown as TranscriptObject);
+          if (!applied) break;
+          const parentId = target.subagentToolId
+            ? (product.readBlock(target)?.tool as TranscriptObject | undefined)?.id : undefined;
+          broadcast(parentId ? 'chat:subagent-tool-attachment-update' : 'chat:tool-attachment-update', {
+            sessionId: product.writer.status.sessionId, ...(parentId ? { parentToolUseId: parentId } : {}),
+            toolUseId: event.toolUseId, pendingId: event.pendingId, attachment: event.attachment,
+          });
+        }
+        break;
+      }
       // Async fulfillment of a placeholder attachment (PRD 0.2.15 §4.7.1).
       // Cross-review (#0.2.29) — a sub-agent tool's attachment lives on a nested
       // SubagentToolCall, not a top-level block, so the scan below can't see it.
@@ -6955,17 +7258,10 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       if (event.sessionId) {
         setExternalRuntimeSessionId(event.sessionId);
         // Persist to SessionMetadata for cross-restart resume.
-        // During pre-warm, metadata may not exist yet. Attempt update; if
-        // metadata doesn't exist yet, store the ID in the pending birth record
-        // so the first real user turn can materialize metadata with the
-        // runtime thread id attached.
+        // Before product birth, retain the ID in the admitted pre-warm record.
+        // The first real user turn freezes metadata with this native identity.
         const lifecycleSessionId = getExternalLifecycleSessionId();
         if (lifecycleSessionId && event.sessionId !== lifecycleSessionId) {
-          // Eagerly schedule the patch with session affinity. If
-          // updateSessionMetadata succeeds, clear the pending birth because
-          // metadata already exists.
-          // handleUnifiedEvent is a sync stream callback — fire-and-forget the
-          // async lock-protected write.
           const targetSessionId = lifecycleSessionId;
           const targetRuntimeId = event.sessionId;
           if (pendingExternalSessionBirth?.sessionId === targetSessionId) {
@@ -6974,22 +7270,23 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
               runtimeSessionId: targetRuntimeId,
             };
           }
-          void updateSessionMetadata(targetSessionId, {
-            runtime: getCurrentRuntimeType(),
-            runtimeSource: getCurrentRuntimeSource(),
-            runtimeSessionId: targetRuntimeId,
-          })
-            .then((updated) => {
-              if (
-                updated
-                && pendingExternalSessionBirth?.sessionId === targetSessionId
-                && pendingExternalSessionBirth.runtimeSessionId === targetRuntimeId
-              ) {
-                // Metadata existed — persist succeeded; birth is no longer pending.
-                pendingExternalSessionBirth = null;
-              }
+          if (!pendingBirthForSession(targetSessionId) || getActiveSessionTranscript(targetSessionId)) {
+            void updateSessionMetadata(targetSessionId, {
+              runtime: getCurrentRuntimeType(),
+              runtimeSource: getCurrentRuntimeSource(),
+              runtimeSessionId: targetRuntimeId,
             })
-            .catch((err) => console.warn('[external-session] runtimeSessionId persist failed:', err));
+              .then((updated) => {
+                if (
+                  updated
+                  && pendingExternalSessionBirth?.sessionId === targetSessionId
+                  && pendingExternalSessionBirth.runtimeSessionId === targetRuntimeId
+                ) {
+                  pendingExternalSessionBirth = null;
+                }
+              })
+              .catch((err) => console.warn('[external-session] runtimeSessionId persist failed:', err));
+          }
         }
       }
       const info: SystemInitInfo = {
@@ -7453,7 +7750,15 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
               : Array.isArray(block.content)
                 ? (block.content as Array<Record<string, unknown>>).map(b => (b.text as string) || '').join('\n')
                 : (block.content != null ? JSON.stringify(block.content) : '');
-            broadcast('chat:tool-result-complete', {
+            const product = getExternalProductContent();
+            const target = product?.tool(String(block.tool_use_id));
+            if (target) {
+              product!.confirmText(target, 'result', resultText);
+              product!.updateTool(target, { isLoading: false, isError: block.is_error === true }, true);
+            }
+            const parentToolUseId = target?.subagentToolId ? (product?.readBlock(target)?.tool as TranscriptObject | undefined)?.id : undefined;
+            broadcast(parentToolUseId ? 'chat:subagent-tool-result-complete' : 'chat:tool-result-complete', {
+              ...(parentToolUseId ? { parentToolUseId } : {}),
               toolUseId: block.tool_use_id,
               content: resultText.slice(0, 2000),  // Truncate for SSE
               isError: block.is_error === true,
@@ -7461,7 +7766,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
             // Update the already-persisted tool_use block with its result.
             // tool_use_stop already consumed pendingToolInputs and pushed to currentContentBlocks,
             // so we find the existing block and add the result (same pattern as tool_result handler).
-            applyExternalReplayedToolResultToContent({
+            if (!product) applyExternalReplayedToolResultToContent({
               toolUseId: String(block.tool_use_id),
               content: resultText,
               isError: block.is_error === true,
@@ -7491,6 +7796,33 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       // Assistant replay: normally dropped because stream_event deltas already delivered
       // the content. But if stream deltas were missing (short response, rate limiting,
       // API truncation), the replay is the only source of truth. Use it as fallback.
+      if (replayRole === 'assistant' && presentation && source) {
+        const blocks = typeof replayContent === 'string' ? [{ type: 'text', text: replayContent }] : Array.isArray(replayContent) ? replayContent as TranscriptObject[] : [];
+        const unseenTools = new Set(blocks.filter(block => typeof block.id === 'string' && !presentation.content.tool(block.id)).map(block => block.id));
+        const changes = presentation.confirmNativeBlocks(source.messageId, event.message.id, blocks, source.parentToolUseId);
+        for (const { textDelta } of changes) if (textDelta && !source.parentToolUseId) {
+          fireExternalImCallback('delta', textDelta);
+        }
+        const product = presentation.content;
+        const publish = publishExternalToolPresentation;
+        if (source.parentToolUseId) {
+          for (const { target } of changes) {
+            const tool = product.readTool(target);
+            if (!tool) continue;
+            const input = tool.inputComplete && typeof tool.inputJson === 'string' ? JSON.parse(tool.inputJson) : {};
+            publish('chat:subagent-tool-use', { parentToolUseId: source.parentToolUseId, tool: { id: tool.id, name: tool.name, input, streamIndex: 0 }, finalInput: true });
+            if (typeof tool.result === 'string') publish('chat:subagent-tool-result-complete', { parentToolUseId: source.parentToolUseId, toolUseId: tool.id, content: tool.result });
+          }
+          break;
+        }
+        for (const block of blocks) {
+          if ((block.type !== 'tool_use' && block.type !== 'server_tool_use') || typeof block.id !== 'string') continue;
+          if (unseenTools.has(block.id)) publish('chat:tool-use-start', { id: block.id, name: block.name, input: {}, streamIndex: 0 });
+          if (block.input) publish('chat:content-block-stop', { toolId: block.id, type: block.type, input: block.input });
+        }
+        recordRuntimeActivity();
+        break;
+      }
       if (replayRole === 'assistant' && !getExternalAssistantText().trim()) {
         const content = replayContent;
         let text = '';
@@ -7513,6 +7845,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'native_retraction': // V1 keeps its existing replay behavior.
     case 'raw':
       // Unrecognized event — ignore
       break;

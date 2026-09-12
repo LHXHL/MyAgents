@@ -14,6 +14,8 @@ export function isLiveRevisionEnvelope(value: unknown): value is LiveRevisionEnv
 }
 
 const LIVE_RESTORE_EVENTS = new Set([
+  'chat:transcript-save-status',
+  'chat:transcript-operation',
   'chat:message-replay',
   'chat:status',
   'chat:message-chunk',

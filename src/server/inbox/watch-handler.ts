@@ -39,9 +39,9 @@ interface ManagementWatchApiResponse {
   error?: string;
 }
 
-function getFirstUserMessageText(sessionId: string): string {
+async function getFirstUserMessageText(sessionId: string): Promise<string> {
   try {
-    const data = getSessionData(sessionId);
+    const data = (await getSessionData(sessionId));
     if (!data) return '';
     for (const msg of data.messages) {
       if (msg.role === 'user') return msg.content;
@@ -52,16 +52,16 @@ function getFirstUserMessageText(sessionId: string): string {
   return '';
 }
 
-function deriveLabel(sessionId: string, meta: SessionMetadata | null): string {
+async function deriveLabel(sessionId: string, meta: SessionMetadata | null): Promise<string> {
   const raw = deriveSessionLabel(
     meta,
-    meta ? getFirstUserMessageText(sessionId) : undefined,
+    meta ? await getFirstUserMessageText(sessionId) : undefined,
   );
   return sanitizeInboxLabel(raw);
 }
 
-function latestResultForSession(sessionId: string): string {
-  const data = getSessionData(sessionId);
+async function latestResultForSession(sessionId: string): Promise<string> {
+  const data = (await getSessionData(sessionId));
   return data ? getLatestAssistantResultFromMessages(data.messages) : '(no text response)';
 }
 
@@ -140,7 +140,7 @@ export async function handleAdminSessionWatch(
 
   const watcherMeta = getSessionMetadata(watcherSessionId);
   const watchId = randomUUID();
-  const targetLabel = deriveLabel(targetSessionId, targetMeta);
+  const targetLabel = await deriveLabel(targetSessionId, targetMeta);
   const managementPort = process.env.MYAGENTS_MANAGEMENT_PORT;
   if (!managementPort) {
     return {
@@ -201,7 +201,7 @@ export async function handleAdminSessionWatch(
 
   const result = mgmt.result;
   if (result.delivery === 'already_idle' || result.delivery === 'error') {
-    const latestResult = result.latestResult?.trim() || latestResultForSession(targetSessionId);
+    const latestResult = result.latestResult?.trim() || await latestResultForSession(targetSessionId);
     const eventPrompt = buildWatchEventPrompt({
       type: result.delivery === 'already_idle' ? 'watch.already_idle' : 'watch.error',
       watchId: result.watchId,

@@ -11,6 +11,7 @@ vi.mock('../../sse', () => ({
 }));
 
 vi.mock('../../SessionStore', () => ({
+  getActiveSessionTranscript: vi.fn(() => undefined),
   getSessionMetadata: vi.fn(() => mocks.metadata),
   getSessionData: vi.fn(() => mocks.data),
   loadSessionTranscript: vi.fn(async () => ({

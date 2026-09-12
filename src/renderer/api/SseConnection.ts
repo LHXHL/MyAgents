@@ -23,6 +23,8 @@ import { isLiveRevisionEnvelope } from '../../shared/liveRevision';
 // Event types that should be parsed as JSON
 // IMPORTANT: When adding new SSE events in backend, remember to add them here too!
 const JSON_EVENTS = new Set([
+  'chat:transcript-operation',
+  'chat:transcript-save-status',
     'chat:init',
     'chat:message-replay',
     'chat:thinking-start',

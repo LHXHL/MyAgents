@@ -100,6 +100,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:system-status': 'critical',
   'chat:status': 'critical',
   'chat:init': 'critical',
+  'chat:transcript-operation': 'critical',
+  'chat:transcript-save-status': 'critical',
   'chat:api-retry': 'critical',
   'chat:attachments-filtered': 'critical',
   'chat:attachments-fallback': 'critical',

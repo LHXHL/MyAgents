@@ -5,9 +5,14 @@
 import { apiFetch, apiGetJson, apiPostJson } from './apiFetch';
 import {
     deleteSessionIfUnowned,
+    ensureSessionSidecar,
+    releaseSessionSidecar,
+    sessionSidecarFetch,
+    upgradeSessionId,
     isTauri,
     type SessionDeleteResult,
 } from './tauriClient';
+import { materializePendingSessionConfig, type MaterializePostBody, type MaterializeResponse } from './sessionMaterialize';
 import type { ContextUsage } from '../../shared/types/context-usage';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
@@ -48,6 +53,7 @@ export interface MessageUsage {
 }
 
 export interface SessionMetadata {
+    transcriptFormat?: 2;
     id: string;
     agentDir: string;
     title: string;
@@ -119,6 +125,8 @@ export interface SessionMetadata {
 }
 
 export interface SessionMessage {
+    turnId?: string;
+    transcriptState?: import('../../shared/types/session-message').SessionMessage['transcriptState'];
     id: string;
     role: 'user' | 'assistant';
     content: string;
@@ -142,6 +150,8 @@ export interface SessionMessage {
 
 export interface SessionData extends SessionMetadata {
     messages: SessionMessage[];
+    transcriptSaveStatus?: import('../../shared/sessionTranscript').TranscriptSaveStatus;
+    transcriptRecovery?: 'incomplete' | 'unavailable';
 }
 
 export interface SessionDetailedStats {
@@ -217,10 +227,9 @@ export async function createSession(
         prepareForFirstUserMessage?: boolean;
         materializationSourceSessionId?: string;
     },
+    owner?: { type: 'tab' | 'companion'; id: string; pendingSessionId?: string },
 ): Promise<SessionMetadata> {
-    const result = await apiPostJson<{ success: boolean; session: SessionMetadata }>(
-        '/sessions',
-        {
+    const payload = {
             agentDir,
             ...(runtime ? { runtime } : {}),
             ...(opts?.runtimeSource ? { runtimeSource: opts.runtimeSource } : {}),
@@ -238,8 +247,43 @@ export async function createSession(
             // PRD 0.2.34 §14 D14：桌面渠道创建时由服务端原子地种「最宽松权限 per
             // runtime」（getMaxPermissionForRuntime），避免创建后再 PATCH 的吞错窗口。
             ...(opts?.seedMaxPermission ? { seedMaxPermission: true } : {}),
-        },
-    );
+        };
+    if (owner) {
+        const pendingSessionId = owner.pendingSessionId ?? `pending-${crypto.randomUUID()}`;
+        let ownedSessionId = pendingSessionId;
+        await ensureSessionSidecar(pendingSessionId, agentDir, owner.type, owner.id,
+            runtime ? { runtime, runtimeSource: opts?.runtimeSource } : undefined);
+        const post = async (id: string, body: MaterializePostBody): Promise<MaterializeResponse> => {
+            const preparing = body.phase === 'prepare';
+            const response = await sessionSidecarFetch(id, owner,
+                preparing ? '/sessions' : '/api/session/materialize', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(preparing ? { ...payload, prepareOnCurrentSidecar: true } : body),
+                });
+            const result = await response.json() as MaterializeResponse & { session?: SessionMetadata };
+            if (!response.ok) throw new Error(result.error ?? 'Session creation failed.');
+            return preparing ? { ...result, sessionId: result.session?.id, metadata: result.session } : result;
+        };
+        try {
+            const created = await materializePendingSessionConfig({
+                pendingSessionId, tabId: owner.id, workspacePath: agentDir, snapshotPatch: {},
+                transport: {
+                    postCurrent: body => post(pendingSessionId, body),
+                    postForSession: post,
+                    upgradeSessionId: async (oldId, newId) => {
+                        const applied = await upgradeSessionId(oldId, newId, owner.id, owner.type);
+                        if (applied) ownedSessionId = newId;
+                        return applied;
+                    },
+                },
+            });
+            return created.metadata;
+        } catch (error) {
+            await releaseSessionSidecar(ownedSessionId, owner.type, owner.id).catch(() => false);
+            throw error;
+        }
+    }
+    const result = await apiPostJson<{ success: boolean; session: SessionMetadata }>('/sessions', payload);
     return result.session;
 }
 

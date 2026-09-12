@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  publishBuiltinTranscriptSaveStatus,
   cancelQueueItem,
   cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
@@ -94,6 +95,7 @@ import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
   getSessionData,
+  getActiveSessionTranscript,
   getSessionMetadata,
 } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
@@ -202,10 +204,11 @@ function providerEnvForRouteRequest(request: {
   return { providerEnv, model: request.providerRoute.model };
 }
 
-function getLatestBuiltinResult(): string {
+async function getLatestBuiltinResult(): Promise<string> {
   let latestResult = getLastBuiltinAssistantText();
+  if (getActiveSessionTranscript(getSessionId())) return latestResult.trim() || NO_TEXT_RESPONSE;
   if (!latestResult.trim()) {
-    const data = getSessionData(getSessionId());
+    const data = (await getSessionData(getSessionId()));
     latestResult = data
       ? getLatestAssistantResultFromMessages(data.messages)
       : NO_TEXT_RESPONSE;
@@ -261,6 +264,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    publishTranscriptSaveStatus(status) { publishBuiltinTranscriptSaveStatus(status); },
     getLiveSessionState() {
       return {
         sessionState: getAgentState().sessionState,
@@ -268,10 +272,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
-    getLatestAssistantResult() {
+    async getLatestAssistantResult() {
       return {
         sessionId: getSessionId(),
-        latestResult: getLatestBuiltinResult(),
+        latestResult: await getLatestBuiltinResult(),
       };
     },
 
@@ -302,7 +306,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       const mcpServers = getMcpServers();
       const agents = getAgents();
       const sessionId = getSessionId();
-      const session = getSessionData(sessionId);
+      const session = getSessionMetadata(sessionId);
       const workspacePath = getBuiltinWorkspacePath();
       const enabledOfficialToolIds = workspacePath
         ? getEffectiveOfficialToolIdsForSession(
@@ -331,7 +335,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         runtime: 'builtin',
         sessionId: sessionId || null,
         workspacePath: getBuiltinWorkspacePath(),
-        sessionMeta: sessionId ? getSessionData(sessionId) : null,
+        sessionMeta: sessionId ? getSessionMetadata(sessionId) : null,
       };
     },
 
@@ -567,7 +571,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           if (getMcpServers() === null) {
             const resolved = resolveWorkspaceConfig(
               request.workspacePath,
-              getSessionData(request.sessionId),
+              (await getSessionData(request.sessionId)),
               { includeMcp: true },
             );
             await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
@@ -893,6 +897,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
         origin: request.origin,
+        birthSnapshot: request.birthSnapshot,
       });
     },
 

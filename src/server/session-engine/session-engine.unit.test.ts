@@ -474,11 +474,14 @@ vi.mock('../utils/management-api-client', () => ({
 }));
 
 vi.mock('../SessionStore', () => ({
+  releaseSessionTranscriptForBinding: vi.fn(async () => undefined),
+  getActiveSessionTranscript: vi.fn(() => undefined),
   deleteSession: mocks.deleteSession,
   getSessionData: mocks.getSessionData,
   getSessionMetadata: mocks.getSessionMetadata,
   saveSessionMetadata: mocks.saveSessionMetadata,
   updateSessionMetadata: mocks.updateSessionMetadata,
+  updateSessionMetadataForBinding: mocks.updateSessionMetadata,
 }));
 
 vi.mock('../sse', () => ({
@@ -516,7 +519,7 @@ function runInjectedTurn(request: TestInjectedTurnRequest) {
 }
 
 describe('session-engine selector and adapters', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
@@ -532,7 +535,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.pendingExternalAsk = false;
     mocks.state.providerDisabled = false;
     mocks.state.sessionMetadata.clear();
-    resetProductSessionBinding({ sessionId: 'external-session', workspacePath: '/workspace' });
+    await resetProductSessionBinding({ sessionId: 'external-session', workspacePath: '/workspace' });
     mocks.state.sessionMetadata.set('external-session', {
       id: 'external-session',
       agentDir: '/workspace',
@@ -802,7 +805,7 @@ describe('session-engine selector and adapters', () => {
     expect(result.dispatchAcceptance).toBe(dispatchAcceptance);
   });
 
-  it('exposes builtin read and config surfaces without route-level helpers', () => {
+  it('exposes builtin read and config surfaces without route-level helpers', async () => {
     mocks.getSessionId.mockReturnValueOnce('builtin-live');
     mocks.getLastBuiltinAssistantText.mockReturnValueOnce('builtin answer');
     mocks.getMessages.mockReturnValueOnce([
@@ -821,7 +824,7 @@ describe('session-engine selector and adapters', () => {
       runtime: 'builtin',
       sessionId: 'builtin-live',
     });
-    expect(engine.getLatestAssistantResult()).toEqual({
+    expect((await engine.getLatestAssistantResult())).toEqual({
       sessionId: 'builtin-session',
       latestResult: 'builtin answer',
     });
@@ -897,6 +900,7 @@ describe('session-engine selector and adapters', () => {
   });
 
   it('exposes external read, config, and restore surfaces behind the external adapter', async () => {
+    mocks.state.sessionMetadata.set('external-session', { ...mocks.getSessionData('external-session') });
     mocks.state.useExternal = true;
     mocks.state.externalBusy = true;
     mocks.getCurrentBoundSessionId
@@ -2129,7 +2133,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.useExternal = true;
     mocks.getCurrentBoundSessionId.mockReturnValue('external-session');
     mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
-    resetProductSessionBinding({ sessionId: 'stale-product-session', workspacePath: '/workspace' });
+    await resetProductSessionBinding({ sessionId: 'stale-product-session', workspacePath: '/workspace' });
 
     const result = await getSessionEngine().prepareScheduledTurn({
       sessionId: 'external-session',
@@ -2413,7 +2417,7 @@ describe('session-engine selector and adapters', () => {
 
   it('stops an idle live external runtime process before committing desktop materialization', async () => {
     mocks.state.useExternal = true;
-    resetProductSessionBinding({ sessionId: 'pending-external-session' });
+    await resetProductSessionBinding({ sessionId: 'pending-external-session' });
     mocks.state.sessionMetadata.clear();
     mocks.getExternalQueueStatus.mockReturnValueOnce([]);
     const prepared = await getSessionEngine().materializePendingDesktopSession({

@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,7 +50,7 @@ afterAll(() => {
 
 describe('Session transcript mutation authority', () => {
   it('refuses a stale short owner after another writer advances the durable transcript (#510)', async () => {
-    const session = await store.createSession('/tmp/transcript-authority');
+    const session = await createLegacySession(store, '/tmp/transcript-authority');
     const initial = await store.loadSessionTranscript(session.id);
     const history = Array.from({ length: 22 }, (_, index) => message(String(index), index % 2 ? 'assistant' : 'user'));
     const seeded = await store.appendSessionMessages(session.id, initial.cursor, history);
@@ -74,7 +75,7 @@ describe('Session transcript mutation authority', () => {
   });
 
   it('recognizes an exact append retry without duplicating the durable suffix', async () => {
-    const session = await store.createSession('/tmp/transcript-exact-retry');
+    const session = await createLegacySession(store, '/tmp/transcript-exact-retry');
     const snapshot = await store.loadSessionTranscript(session.id);
     const tail = [message('user-1')];
 
@@ -86,7 +87,7 @@ describe('Session transcript mutation authority', () => {
   });
 
   it('preserves malformed historical bytes for append but refuses destructive mutation', async () => {
-    const session = await store.createSession('/tmp/transcript-malformed');
+    const session = await createLegacySession(store, '/tmp/transcript-malformed');
     const malformed = `${JSON.stringify(message('valid-1'))}\n{"broken"\n`;
     writeFileSync(transcriptPath(session.id), malformed, 'utf-8');
     const snapshot = await store.loadSessionTranscript(session.id);
@@ -107,7 +108,7 @@ describe('Session transcript mutation authority', () => {
   });
 
   it('commits an explicit retry truncation and advances the cursor to the target prefix', async () => {
-    const session = await store.createSession('/tmp/transcript-retry');
+    const session = await createLegacySession(store, '/tmp/transcript-retry');
     const snapshot = await store.loadSessionTranscript(session.id);
     const rows = [message('old'), message('failed'), message('partial', 'assistant')];
     const appended = await store.appendSessionMessages(session.id, snapshot.cursor, rows);
@@ -126,7 +127,7 @@ describe('Session transcript mutation authority', () => {
   });
 
   it('validates SDK UUID retraction against durable rows and only removes the open tail by message id', async () => {
-    const session = await store.createSession('/tmp/transcript-sdk-retraction');
+    const session = await createLegacySession(store, '/tmp/transcript-sdk-retraction');
     const snapshot = await store.loadSessionTranscript(session.id);
     const rows = [
       { ...message('named-1', 'assistant'), sdkUuid: 'sdk-1' },
@@ -147,7 +148,7 @@ describe('Session transcript mutation authority', () => {
   });
 
   it('atomically migrates legacy JSON before the first cursor append', async () => {
-    const session = await store.createSession('/tmp/transcript-legacy');
+    const session = await createLegacySession(store, '/tmp/transcript-legacy');
     writeFileSync(legacyTranscriptPath(session.id), JSON.stringify({ messages: [message('legacy')] }), 'utf-8');
 
     const snapshot = await store.loadSessionTranscript(session.id);

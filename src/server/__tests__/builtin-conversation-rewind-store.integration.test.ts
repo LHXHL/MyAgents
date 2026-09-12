@@ -1,3 +1,4 @@
+import { createLegacySession } from './fixtures/session-store';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,7 +41,7 @@ function transcript(): SessionMessage[] {
 }
 
 async function createBuiltinSession(sourceSdkSessionId = '11111111-1111-4111-8111-111111111111') {
-  return store.createSession('/tmp/builtin-workspace', {
+  return createLegacySession(store, '/tmp/builtin-workspace', {
     runtime: 'builtin',
     sdkSessionId: sourceSdkSessionId,
     unifiedSession: false,
@@ -90,7 +91,7 @@ describe('builtin conversation rewind SessionStore transaction', () => {
     });
 
     expect(result).toMatchObject({ success: true, cursor: { persistedMessageCount: 2 } });
-    const persisted = store.getSessionData(session.id);
+    const persisted = (await store.getSessionData(session.id));
     expect(persisted).toMatchObject({
       id: session.id,
       sdkSessionId: replacementSdkSessionId,

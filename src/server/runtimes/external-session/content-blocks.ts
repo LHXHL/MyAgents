@@ -194,7 +194,7 @@ export function attachExternalPendingSubagentCalls(
   pendingSubagentCallsByParent.delete(parentToolUseId);
 }
 
-function mergeSubagentLifecycle(
+export function mergeSubagentLifecycle(
   current: SubagentLifecycle | undefined,
   status: SubagentLifecycleStatus,
   observedAt: number,

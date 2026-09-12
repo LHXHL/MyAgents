@@ -170,9 +170,9 @@ Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-is
 
 ### 6.1 MyAgents transcript
 
-`SessionStore` 使用 `~/.myagents/sessions.json` 保存 metadata index，并在 `~/.myagents/sessions/` 下按 Session 保存 JSONL transcript。JSONL 支持 append、流式增量持久化、tail cursor 与损坏行隔离；路径必须先经过 canonical Session id validation，不能把用户输入直接拼进文件路径。
+`SessionStore` 用 `sessions.json` 固定格式和 metadata；旧 Session 沿用 `sessions/` 的原 JSON/JSONL 读写，新建及 fork 目标固定到 `sessions-v2/` 的内容操作日志。无迁移、双写或 V2→V1 fallback。路径先经过 canonical Session id validation。
 
-普通写入只追加尚未落盘的 tail。Rewind、retraction、reset、migration 和 delete 使用命名 mutation，在对应文件锁与 index 锁内执行；调用方不得自行改写文件。
+V2 的 live projection 与异步 writer 同属 SessionStore。约 100 ms 的持续批次保存未结束内容，插话产生稳定展示段，完整帧/工具/附件更新原目标。待写队列无容量上限，持续故障时接受积压的内存风险；保存失败或挂起只报告产品记录异常与 toast，不主动阻断 AI。显式 fork/rewind/reset/delete 仍守自身 lifecycle 和物理写权限边界。格式、恢复与接口细节见 [`session_transcript_v2.md`](session_transcript_v2.md)。
 
 ### 6.2 MyAgents 与 SDK 双重存储
 
@@ -180,7 +180,7 @@ Space Issue Delivery 复用 Inbox admission，但使用专用 `myagents-space-is
 
 | 存储 | 用途 |
 |---|---|
-| MyAgents JSONL | UI 展示、搜索、Session 列表、跨 Runtime 的产品历史 |
+| MyAgents V1/V2 产品文件 | UI 展示、搜索、Session 列表、跨 Runtime 的产品历史 |
 | Runtime 原生存储 | SDK/CLI resume、上下文连续性、Runtime 自有 cache 与 branch 语义 |
 
 不能用其中一份替代另一份。产品层恢复以 MyAgents transcript 为准，执行层 resume 以 adapter 的 native identity/history 为准；两者通过显式 identity 和 rewind boundary 对齐。
@@ -236,7 +236,7 @@ mount 期配置同步必须受 disposition 门控；用户主动修改配置可�
 | 路径 | 职责 |
 |---|---|
 | `src/server/types/session.ts` | 当前 Session metadata 与消息类型 |
-| `src/server/SessionStore.ts` | metadata、JSONL、migration 与 typed mutations |
+| `src/server/SessionStore.ts` | metadata、格式固定、V1/V2 历史与 typed mutations |
 | `src/server/session-engine/` | Product binding、Runtime selector 与统一 adapter contract |
 | `src/server/agent-session.ts` | builtin public facade |
 | `src/server/builtin-session/` | builtin lifecycle、queue、turn、config 与 transcript owners |

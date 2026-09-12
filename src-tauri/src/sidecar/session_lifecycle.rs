@@ -386,6 +386,24 @@ fn resolve_expected_runtime_identity(
     )
 }
 
+fn retained_session_runtime_identity(
+    manager: &SidecarManager,
+    session_id: &str,
+) -> Option<RuntimeIdentity> {
+    if let Some(sidecar) = manager.sidecars.get(session_id) {
+        return Some(RuntimeIdentity::new(
+            sidecar.runtime.as_deref(),
+            sidecar.runtime_source.as_deref(),
+        ));
+    }
+    manager.recovering_sidecars.get(session_id).map(|sidecar| {
+        RuntimeIdentity::new(
+            sidecar.runtime.as_deref(),
+            sidecar.runtime_source.as_deref(),
+        )
+    })
+}
+
 fn ensure_session_sidecar_attempt<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
@@ -417,7 +435,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     );
     let ensure_started = trace_start();
     let owner_for_trace = format!("{:?}", owner);
-    let expected_runtime_identity = resolve_expected_runtime_identity(
+    let mut expected_runtime_identity = resolve_expected_runtime_identity(
         session_id,
         workspace_path,
         &owner,
@@ -449,6 +467,17 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         e.to_string()
     })?;
     ulog_debug!("[sidecar] Manager lock acquired");
+    // A V2 birth may already be bound and running while its product metadata
+    // is still awaiting publication. The active generation retains its runtime
+    // identity; an Agent template is not authority to replace that process.
+    if runtime_override.is_none()
+        && !owner_prefers_live_agent_runtime(&owner)
+        && resolve_session_runtime_identity_full(session_id).is_none()
+    {
+        if let Some(identity) = retained_session_runtime_identity(&manager_guard, session_id) {
+            expected_runtime_identity = identity;
+        }
+    }
     if expected_recovery_epoch.is_some_and(|epoch| {
         !manager_guard.recovery_attempt_is_authorized(session_id, epoch, &owner)
     }) {
@@ -1529,7 +1558,28 @@ pub async fn cmd_ensure_session_sidecar(
     workspacePath: String,
     ownerType: String,
     ownerId: String,
+    birthRuntime: Option<String>,
+    birthRuntimeSource: Option<String>,
 ) -> Result<EnsureSidecarResult, String> {
+    if birthRuntime.is_some() || birthRuntimeSource.is_some() {
+        if !sessionId.starts_with("pending-")
+            || !is_canonical_session_id(&sessionId)
+            || !matches!(
+                birthRuntime.as_deref(),
+                Some("builtin" | "claude-code" | "codex" | "gemini")
+            )
+            || !matches!(
+                birthRuntimeSource.as_deref(),
+                None | Some("system-cli" | "managed-provider")
+            )
+            || (birthRuntimeSource.as_deref() == Some("managed-provider")
+                && birthRuntime.as_deref() != Some("codex"))
+        {
+            return Err(
+                "Runtime birth selection requires a valid pending desktop Session".to_string(),
+            );
+        }
+    }
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
         "companion" => SidecarOwner::Companion(ownerId),
@@ -1546,12 +1596,14 @@ pub async fn cmd_ensure_session_sidecar(
     // The async lifecycle entrypoint owns both the per-session deletion fence
     // and the blocking-thread handoff for the full cold boot/readiness wait.
     let manager = state.inner().clone();
-    let result = ensure_session_sidecar_with_lifecycle(
+    let result = ensure_session_sidecar_with_runtime_identity_override_lifecycle(
         app_handle,
         manager.clone(),
         sessionId.clone(),
         workspace_path,
         owner.clone(),
+        birthRuntime,
+        birthRuntimeSource,
     )
     .await?;
     if !crate::floating_ball::sidecar_owner_admitted(&owner) {
@@ -1620,14 +1672,20 @@ pub async fn cmd_upgrade_session_id(
     oldSessionId: String,
     newSessionId: String,
     tabId: String,
+    ownerType: Option<String>,
 ) -> Result<bool, String> {
+    let owner = match ownerType.as_deref().unwrap_or("tab") {
+        "tab" => SidecarOwner::Tab(tabId),
+        "companion" => SidecarOwner::Companion(tabId),
+        _ => return Err("Only a desktop owner can materialize a pending Session".to_string()),
+    };
     let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &newSessionId]).await;
     {
         let manager = state.lock().map_err(|e| e.to_string())?;
-        if manager.session_id_upgrade_is_already_applied_for_tab(
+        if manager.session_id_upgrade_is_already_applied_for_desktop_owner(
             &oldSessionId,
             &newSessionId,
-            &tabId,
+            &owner,
         ) {
             return Ok(true);
         }
@@ -1638,12 +1696,9 @@ pub async fn cmd_upgrade_session_id(
         return Ok(false);
     }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
-    if manager.session_has_persistent_owners(&oldSessionId)
-        || manager.session_has_persistent_owners(&newSessionId)
-    {
-        return Ok(false);
-    }
-    Ok(manager.upgrade_session_id_for_tab(&oldSessionId, &newSessionId, &tabId))
+    // The exact-owner predicate rejects every additional Tab/background owner,
+    // while allowing the Companion itself to materialize its own fresh birth.
+    Ok(manager.upgrade_session_id_for_desktop_owner(&oldSessionId, &newSessionId, &owner))
 }
 
 /// Check whether a session identity must remain stable after a Tab detaches.
@@ -1664,6 +1719,55 @@ pub async fn cmd_session_has_persistent_owners(
     };
     Ok(has_live_owner
         || has_non_tab_session_owner(&sessionId, agent_state.inner(), im_state.inner()).await?)
+}
+
+/// Deletion keeps owner tokens until the storage result, but the previous
+/// process must have exited before Global can unlink its transcript. Reuse
+/// the ordinary generation replacement state so a failed delete remains
+/// recoverable by the same mounted owners.
+fn retire_session_writer_for_delete(
+    sidecars: &ManagedSidecarManager,
+    session_id: &str,
+) -> Result<(), String> {
+    let drain = {
+        let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+        manager.prepare_session_sidecar_replacement(session_id)
+    };
+    if let Some(drain) = drain {
+        drain.wait();
+        let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+        manager.finish_session_sidecar_replacement(&drain);
+    }
+    {
+        let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+        if let Some(previous) = manager.recovering_sidecars.get_mut(session_id) {
+            previous
+                .process
+                .kill()
+                .map_err(|error| format!("Cannot retire session writer: {error}"))?;
+        }
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let exited = {
+            let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+            match manager.recovering_sidecars.get_mut(session_id) {
+                Some(previous) => previous
+                    .process
+                    .try_wait()
+                    .map_err(|error| format!("Cannot confirm session writer exit: {error}"))?
+                    .is_some(),
+                None => true,
+            }
+        };
+        if exited {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Session writer has not exited; history was not deleted".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Delete a transcript while releasing only the exact mounted Tab owners named
@@ -1772,6 +1876,9 @@ pub async fn cmd_delete_session_if_unowned(
             Err(_) => return Ok(SessionDeleteCommandResult::refused("authority-unavailable")),
         };
         drop(manager);
+        // A closed dispatch gate alone does not stop a writer's 100ms timer.
+        // Do not unlink until the exact old Node process has actually exited.
+        retire_session_writer_for_delete(&sidecars, &sessionId)?;
         let client = crate::local_http::blocking_builder()
             .timeout(Duration::from_secs(15))
             .build()
@@ -1852,10 +1959,67 @@ pub async fn cmd_release_tab_session(
 mod session_lifecycle_tests {
     use super::{
         acquire_session_lifecycle, is_canonical_session_id, resolve_runtime_identity_for_owner,
+        retained_session_runtime_identity, retire_session_writer_for_delete,
         validate_sidecar_runtime_invariant, EnsureSidecarResult, RuntimeIdentity,
-        SessionDeleteCommandResult, SidecarOwner,
+        SessionDeleteCommandResult, SidecarManager, SidecarOwner,
     };
     use std::time::Duration;
+
+    #[test]
+    fn deletion_retires_the_real_writer_before_storage_mutation_and_retains_tab_ownership() {
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        {
+            let mut manager = sidecars.lock().unwrap();
+            manager.insert_test_ready_frontend_sidecar(
+                "delete-writer",
+                31419,
+                SidecarOwner::Tab("delete-tab".into()),
+            );
+        }
+        retire_session_writer_for_delete(&sidecars, "delete-writer").unwrap();
+        let mut manager = sidecars.lock().unwrap();
+        assert!(manager.get_session_sidecar("delete-writer").is_none());
+        assert!(manager.session_has_owners("delete-writer"));
+        let retained = manager
+            .recovering_sidecars
+            .get_mut("delete-writer")
+            .unwrap();
+        assert!(retained.process.try_wait().unwrap().is_some());
+        drop(manager);
+        // A missing/already-retired process is an idempotent boundary.
+        retire_session_writer_for_delete(&sidecars, "delete-writer").unwrap();
+        retire_session_writer_for_delete(&sidecars, "missing").unwrap();
+    }
+
+    #[test]
+    fn unpublished_birth_identity_survives_retirement_for_builtin_and_external() {
+        for runtime in [None, Some("codex")] {
+            let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+            {
+                let mut manager = sidecars.lock().unwrap();
+                manager.insert_test_ready_frontend_sidecar(
+                    "birth",
+                    31420,
+                    SidecarOwner::Tab("tab".into()),
+                );
+                manager.sidecars.get_mut("birth").unwrap().runtime = runtime.map(String::from);
+                assert_eq!(
+                    retained_session_runtime_identity(&manager, "birth")
+                        .unwrap()
+                        .runtime,
+                    runtime.unwrap_or("builtin")
+                );
+            }
+            retire_session_writer_for_delete(&sidecars, "birth").unwrap();
+            let manager = sidecars.lock().unwrap();
+            assert_eq!(
+                retained_session_runtime_identity(&manager, "birth")
+                    .unwrap()
+                    .runtime,
+                runtime.unwrap_or("builtin")
+            );
+        }
+    }
 
     #[test]
     fn metadata_creator_uses_agent_runtime_for_external_reuse_and_spawn() {

@@ -1,12 +1,13 @@
 //! Session index — reads sessions.json + JSONL files, builds/queries Tantivy index.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex as StdMutex, RwLock};
 
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
+use crate::session_transcript::{self, Transcript, TranscriptFormat};
 use crate::ulog_warn;
 use crate::utils::bom::strip_bom;
 use crate::utils::system_reminder::strip_leading_system_reminder;
@@ -47,6 +48,9 @@ struct SessionIndexState {
     /// per-session `<sessionId>.offset` sidecar files used for incremental
     /// indexing (see `reindex_session_incremental`).
     index_dir: PathBuf,
+    /// Disposable fold cursors, never persisted without their projection. Keep
+    /// at most four recently indexed sessions and 128 MiB of source log data.
+    transcripts: StdMutex<VecDeque<(String, Transcript)>>,
 }
 
 impl SessionIndex {
@@ -263,6 +267,7 @@ impl SessionIndexState {
             writer: StdMutex::new(writer),
             fields,
             index_dir,
+            transcripts: StdMutex::new(VecDeque::new()),
         })
     }
 
@@ -323,11 +328,24 @@ impl SessionIndexState {
 
         let mut count = 0;
         let mut changed = false;
+        let mut versioned = Vec::new();
         for session in &sessions {
             let session_id = match session.get("id").and_then(|v| v.as_str()) {
                 Some(id) => id,
                 None => continue,
             };
+
+            if !session_transcript::is_valid_session_id(session_id) {
+                continue;
+            }
+            // Reconcile V2 even if a title document already exists: the app
+            // may have missed appends or a replacement while it was closed.
+            if session_transcript::session_format(data_dir, session_id, Some(session))?
+                != TranscriptFormat::Legacy
+            {
+                versioned.push(session_id.to_owned());
+                continue;
+            }
 
             if !crate::session_visibility::is_history_visible_session(session, &sessions_dir) {
                 writer.delete_term(Term::from_field_text(self.fields.session_id, session_id));
@@ -361,10 +379,20 @@ impl SessionIndexState {
             writer
                 .commit()
                 .map_err(|e| tantivy_error("Failed to commit session index", e))?;
-            drop(writer);
             self.reader
                 .reload()
                 .map_err(|e| tantivy_error("Failed to reload reader", e))?;
+        }
+        drop(writer);
+        for session_id in versioned {
+            match self.reindex_session(&session_id, &sessions_dir) {
+                Ok(()) => count += 1,
+                Err(error) => ulog_warn!(
+                    "[search] Cannot index product transcript {}: {}",
+                    session_id,
+                    error
+                ),
+            }
         }
 
         Ok(count)
@@ -384,6 +412,30 @@ impl SessionIndexState {
     ///     rewind/truncation), fall back to delete-all + full reindex and
     ///     reset the offset.
     pub fn reindex_session(&self, session_id: &str, sessions_dir: &Path) -> Result<(), String> {
+        let data_dir = sessions_dir.parent().unwrap_or(Path::new("."));
+        let metadata_text = fs::read_to_string(data_dir.join("sessions.json"))
+            .map_err(|e| format!("Read session index metadata: {e}"))?;
+        let metadata: Vec<serde_json::Value> = serde_json::from_str(strip_bom(&metadata_text))
+            .map_err(|e| format!("Parse session index metadata: {e}"))?;
+        let meta = metadata
+            .iter()
+            .find(|s| s.get("id").and_then(|id| id.as_str()) == Some(session_id));
+        let format = session_transcript::session_format(data_dir, session_id, meta)?;
+        if !meta
+            .is_some_and(|m| crate::session_visibility::is_history_visible_session(m, sessions_dir))
+        {
+            return self.delete_session(session_id);
+        }
+        match format {
+            TranscriptFormat::V2 => {
+                return self.reindex_v2(session_id, data_dir, meta.ok_or("Missing metadata")?)
+            }
+            TranscriptFormat::Legacy => {}
+            _ => {
+                self.delete_session(session_id)?;
+                return Err(format!("Product transcript format is {format:?}"));
+            }
+        }
         let jsonl_path = sessions_dir.join(format!("{}.jsonl", session_id));
         let saved_offset = self.read_session_offset(session_id);
         let current_size = jsonl_path.metadata().map(|m| m.len()).unwrap_or(0);
@@ -412,6 +464,107 @@ impl SessionIndexState {
         if indexed && current_size > 0 {
             self.write_session_offset(session_id, current_size);
         }
+        Ok(())
+    }
+
+    fn reindex_v2(
+        &self,
+        session_id: &str,
+        data_dir: &Path,
+        meta: &serde_json::Value,
+    ) -> Result<(), String> {
+        let started = trace_start();
+        // The same writer mutex serializes the cursor with Tantivy commits.
+        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let mut cursors = self.transcripts.lock().map_err(|e| e.to_string())?;
+        let cached = cursors
+            .iter()
+            .position(|(id, _)| id == session_id)
+            .and_then(|index| cursors.remove(index));
+        let path = data_dir
+            .join("sessions-v2")
+            .join(format!("{session_id}.jsonl"));
+        let read = (|| {
+            let mut file = File::open(&path).map_err(|e| format!("Open V2 transcript: {e}"))?;
+            if let Some((_, mut transcript)) = cached {
+                if let Some(touched) = transcript.extend_file(&mut file)? {
+                    return Ok((transcript, Some(touched)));
+                }
+            }
+            file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+            session_transcript::read_transcript(file, session_id)
+                .map(|transcript| (transcript, None))
+        })();
+        let (transcript, mut changed) = match read {
+            Ok(value) => value,
+            Err(error) => {
+                // A different/invalid current file has no authority to retain
+                // the previous generation's search results. Never repair it.
+                writer.delete_term(Term::from_field_text(self.fields.session_id, session_id));
+                writer
+                    .commit()
+                    .map_err(|e| tantivy_error("commit failed", e))?;
+                self.reader
+                    .reload()
+                    .map_err(|e| tantivy_error("reload failed", e))?;
+                return Err(error);
+            }
+        };
+        if self.indexed_title_for_session(session_id).as_deref()
+            != Some(meta["title"].as_str().unwrap_or("New Chat"))
+        {
+            // Title is an indexed field on message documents too. Reuse the
+            // existing projection for this uncommon metadata-only change.
+            changed = None;
+        }
+        let full = changed.is_none();
+        if full {
+            writer.delete_term(Term::from_field_text(self.fields.session_id, session_id));
+        }
+        let touched =
+            changed.unwrap_or_else(|| transcript.projection.messages.keys().cloned().collect());
+        let title_id = format!("{session_id}_title");
+        delete_message(&mut writer, &self.fields, session_id, &title_id)?;
+        index_v2_message(&mut writer, &self.fields, meta, None)?;
+        for id in &touched {
+            if !full {
+                delete_message(&mut writer, &self.fields, session_id, id)?;
+            }
+            if let Some(message) = transcript.projection.messages.get(id) {
+                index_v2_message(&mut writer, &self.fields, meta, Some(message))?;
+            }
+        }
+        writer
+            .commit()
+            .map_err(|e| tantivy_error("commit V2 index", e))?;
+        self.reader
+            .reload()
+            .map_err(|e| tantivy_error("reload V2 index", e))?;
+        let bytes = transcript.valid_bytes;
+        let revision = transcript.revision;
+        let tail = format!("{:?}", transcript.tail);
+        // Only a committed index owns the new cursor. Eviction is safe: a
+        // subsequent observation rebuilds from the authoritative file.
+        const CACHE_BYTES: u64 = 128 * 1024 * 1024;
+        if bytes <= CACHE_BYTES {
+            while cursors.len() >= 4
+                || cursors.iter().map(|(_, t)| t.valid_bytes).sum::<u64>() + bytes > CACHE_BYTES
+            {
+                cursors.pop_front();
+            }
+            cursors.push_back((session_id.to_owned(), transcript));
+        }
+        emit_perf_trace(
+            PerfTrace::new(PerfTraceName::StorageIo, "search_reindex_v2")
+                .duration_ms(elapsed_ms(started))
+                .session_id(Some(session_id))
+                .count(touched.len() as u64)
+                .size_bytes(bytes)
+                .status("ok")
+                .detail("full", full)
+                .detail("revision", revision)
+                .detail("tail", tail),
+        );
         Ok(())
     }
 
@@ -750,6 +903,10 @@ impl SessionIndexState {
             .lock()
             .map_err(|e| format!("writer mutex poisoned: {}", e))?;
         let term = Term::from_field_text(self.fields.session_id, session_id);
+        self.transcripts
+            .lock()
+            .map_err(|e| e.to_string())?
+            .retain(|(id, _)| id != session_id);
         writer.delete_term(term);
         writer
             .commit()
@@ -804,6 +961,71 @@ impl SessionIndexState {
         let doc = searcher.doc::<tantivy::TantivyDocument>(addr).ok()?;
         Some(get_text_field(&doc, self.fields.title))
     }
+}
+
+fn delete_message(
+    writer: &mut IndexWriter,
+    fields: &SessionFields,
+    session_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    use tantivy::query::{BooleanQuery, Occur, TermQuery};
+    use tantivy::schema::IndexRecordOption;
+    // Builtin message IDs are session-local numbers. Never delete a term by
+    // message ID alone, or updating one session erases another's document.
+    let query = BooleanQuery::new(vec![
+        (
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(fields.session_id, session_id),
+                IndexRecordOption::Basic,
+            )),
+        ),
+        (
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(fields.message_id, message_id),
+                IndexRecordOption::Basic,
+            )),
+        ),
+    ]);
+    writer
+        .delete_query(Box::new(query))
+        .map_err(|e| tantivy_error("delete product message", e))?;
+    Ok(())
+}
+
+fn index_v2_message(
+    writer: &mut IndexWriter,
+    f: &SessionFields,
+    meta: &serde_json::Value,
+    message: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let session_id = meta["id"].as_str().ok_or("Missing session ID")?;
+    let title = meta["title"].as_str().unwrap_or("New Chat");
+    let text = message
+        .map(extract_text_content)
+        .unwrap_or_else(|| title.to_owned());
+    if text.is_empty() {
+        return Ok(());
+    }
+    let title_id = format!("{session_id}_title");
+    let active = meta["lastActiveAt"].as_str().unwrap_or("");
+    writer
+        .add_document(doc!(
+            f.session_id => session_id,
+            f.message_id => message.and_then(|m| m["id"].as_str()).unwrap_or(&title_id),
+            f.agent_dir => meta["agentDir"].as_str().unwrap_or(""),
+            f.role => message.and_then(|m| m["role"].as_str()).unwrap_or("title"),
+            f.title => title,
+            f.content => text,
+            f.timestamp => message.and_then(|m| m["timestamp"].as_str()).unwrap_or(active),
+            f.last_active_at => active,
+            f.source => meta["source"].as_str().unwrap_or("desktop"),
+            f.message_count => meta["stats"]["messageCount"].as_u64().unwrap_or(0),
+        ))
+        .map_err(|e| tantivy_error("index product message", e))?;
+    Ok(())
 }
 
 fn is_recoverable_index_error(error: &str) -> bool {
@@ -996,6 +1218,10 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
 
     String::new()
 }
+
+#[cfg(test)]
+#[path = "session_transcript_tests.rs"]
+mod transcript_tests;
 
 /// Get a text field value from a Tantivy document.
 fn get_text_field(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field) -> String {

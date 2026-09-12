@@ -32,12 +32,20 @@ function mergeActiveOverlayMessages(
 function paginateMessages(
   messages: SessionMessage[],
   url: URL,
+  transcriptFormat?: number,
 ): { messages: SessionMessage[]; totalCount: number; hasMoreBefore: boolean } {
   const rawLimit = parseInt(url.searchParams.get('limit') ?? '0', 10);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 0;
   const before = url.searchParams.get('before');
 
   const totalCount = messages.length;
+  const from = transcriptFormat === 2 ? url.searchParams.get('from') : null;
+  if (from) {
+    const index = messages.findIndex(message => message.id === from);
+    if (index >= 0) return { messages: messages.slice(index), totalCount, hasMoreBefore: index > 0 };
+    // A mutation removed the retained anchor; return a fresh tail instead of
+    // preserving rows whose source is no longer present in the transcript.
+  }
   let paginatedMessages = messages;
   let hasMoreBefore = false;
 
@@ -81,7 +89,7 @@ async function handleSessionWatchRegister(request: Request): Promise<Response> {
   }
 
   const targetSessionState = engine.getLiveSessionState().sessionState;
-  const latestResult = engine.getLatestAssistantResult().latestResult;
+  const latestResult = (await engine.getLatestAssistantResult()).latestResult;
   if (targetSessionState === 'error') {
     return jsonResponse({
       accepted: false,
@@ -122,9 +130,9 @@ async function handleSessionWatchRegister(request: Request): Promise<Response> {
   });
 }
 
-function handleSessionDetails(sessionId: string, url: URL): Response {
+async function handleSessionDetails(sessionId: string, url: URL): Promise<Response> {
   const engine = getSessionEngine();
-  const session = getSessionData(sessionId);
+  const session = (await getSessionData(sessionId));
   const overlay = engine.getLiveSessionOverlay(sessionId);
 
   if (!session) {
@@ -159,8 +167,11 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
     return jsonResponse({ success: false, error: 'Session not found.' }, 404);
   }
 
-  const mergedMessages = mergeActiveOverlayMessages(session.messages, overlay.inMemoryMessages);
-  const { messages, totalCount, hasMoreBefore } = paginateMessages(mergedMessages, url);
+  const mergedMessages = session.transcriptFormat === 2
+    ? (overlay.isActive ? overlay.inMemoryMessages ?? [] : session.messages)
+      .filter(message => message.id !== overlay.liveStreamingMessage?.id)
+    : mergeActiveOverlayMessages(session.messages, overlay.inMemoryMessages);
+  const { messages, totalCount, hasMoreBefore } = paginateMessages(mergedMessages, url, session.transcriptFormat);
   const liveStreamingMessage = overlay.liveStreamingMessage
     ? shrinkSessionMessageForClient(overlay.liveStreamingMessage)
     : null;
@@ -197,7 +208,7 @@ export async function handleSessionReadRoute(
   }
 
   if (pathname === '/api/session-latest-result' && request.method === 'GET') {
-    return jsonResponse(getSessionEngine().getLatestAssistantResult());
+    return jsonResponse(await getSessionEngine().getLatestAssistantResult());
   }
 
   if (pathname === '/api/session-watch/register' && request.method === 'POST') {

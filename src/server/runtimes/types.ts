@@ -218,10 +218,17 @@ export interface AgentPlanTodo {
  * Unified event emitted by any runtime, consumed by the session layer.
  * The session layer maps these to SSE broadcast calls.
  */
-export type UnifiedEvent =
+export interface NativeContentSource {
+  messageId: string;
+  blockIndex?: number;
+  parentToolUseId?: string;
+  blockStart?: Record<string, unknown>;
+}
+
+export type UnifiedEvent = (
   // === Text streaming ===
   | { kind: 'text_delta'; text: string; traceId?: string; subAgent?: SubAgentScope }
-  | { kind: 'text_stop'; traceId?: string; subAgent?: SubAgentScope; asyncQuestions?: AsyncQuestionSet }
+  | { kind: 'text_stop'; nativeText?: string; traceId?: string; subAgent?: SubAgentScope; asyncQuestions?: AsyncQuestionSet }
 
   // === Thinking/reasoning streaming ===
   | { kind: 'thinking_start'; index: number; traceId?: string; subAgent?: SubAgentScope }
@@ -373,7 +380,8 @@ export type UnifiedEvent =
   | { kind: 'user_message_accepted'; clientUserMessageId?: string }
 
   // === Passthrough for unrecognized events ===
-  | { kind: 'raw'; data: unknown };
+  | { kind: 'native_retraction'; messageIds: string[]; scope?: 'local' | 'session'; parentToolUseId?: string }
+  | { kind: 'raw'; data: unknown }) & { nativeSource?: NativeContentSource };
 
 /**
  * Callback for unified events from the runtime

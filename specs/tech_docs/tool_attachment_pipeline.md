@@ -88,11 +88,11 @@ Codex 的大载荷保存不阻塞原始 Runtime notification：
 2. `tool_result` 先进入 streaming content 和 Renderer；
 3. 保存完成后发出 attachment update，以 `pendingId` 精确替换；
 4. root 或 nested sub-agent content owner 同步更新自己的 attachment；
-5. Turn 持久化前 `awaitInFlightSaves()`，保证 placeholder 不跨过 terminal 写盘。
+5. V1 保留 Turn 持久化前的 `awaitInFlightSaves()`；V2 不等待归档或产品写盘，pending 引用可被持续保存，归档完成后按原 writer/工具目标更新。
 
 顶层更新使用 `chat:tool-attachment-update`；nested sub-agent 更新使用 `chat:subagent-tool-attachment-update`。两者都必须在 SSE JSON 白名单，并按当前 Session scope 处理。
 
-Builtin 的结构化媒体在 tool result commit 路径完成保存后再写入 tool block，不建立第二套 placeholder owner。
+Builtin V1 保留原同步归档边界；V2 将归档留在 SDK 消费循环之外，完成回调按 captured writer 与原工具更新，不阻断当前或下一轮。Fork V2 目标独立复制源附件，必要附件未完成或缺失时明确失败；不删除源资源。
 
 `mergeAttachmentsByPendingId()` 在重复的 tool-result event 与 attachment update 之间保持单调：已 resolved entry 不能被迟到 placeholder 覆盖。
 

@@ -1141,6 +1141,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
      *  必然 "No conversation found"。 */
     const mintSession = useCallback(async (today: string, workspace: string): Promise<string> => {
         const startedAt = Date.now();
+        let createdSessionId: string | undefined;
         console.info(`[fb-session] mint start workspace=${workspace} date=${today}`);
         // 种「最宽松权限 per runtime」由服务端在快照构造期原子完成（seedMaxPermission
         // → getMaxPermissionForRuntime），不再创建后 PATCH——避免 PATCH 失败被吞、
@@ -1149,8 +1150,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         // chat:permission-mode-changed）。created.permissionMode 即服务端种好的值。
         try {
             const origin = { kind: 'desktop' as const, surface: 'floating_ball' as const };
-            const created = await createSession(workspace, undefined, { seedMaxPermission: true, origin });
+            const created = await createSession(workspace, undefined, { seedMaxPermission: true, origin },
+                { type: 'companion', id: OWNER_ID });
             const sid = created.id;
+            createdSessionId = sid;
             console.info(
                 `[fb-session] mint created session=${sid} runtime=${created.runtime ?? 'unknown'} permission=${created.permissionMode ?? 'default'} elapsed=${elapsedMs(startedAt)}`,
             );
@@ -1180,6 +1183,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             });
             return sid;
         } catch (err) {
+            if (createdSessionId) await releaseSessionSidecar(createdSessionId, 'companion', OWNER_ID).catch(() => false);
             console.error(`[fb-session] mint failed workspace=${workspace} elapsed=${elapsedMs(startedAt)} error=${describeError(err)}`);
             throw err;
         }
@@ -1376,7 +1380,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 } else {
                     sessionDateRef.current = cfg.floatingBallSessionDate ?? today;
                 }
-                if (cancelled || !sid) return;
+                if (cancelled || !sid) {
+                    if (rotated && sid) await releaseSessionSidecar(sid, 'companion', OWNER_ID).catch(() => false);
+                    return;
+                }
 
                 setWorkspacePath(boundWs.path);
                 setWorkspaceName(boundWs.name || 'Mino');

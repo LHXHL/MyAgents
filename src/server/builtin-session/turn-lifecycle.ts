@@ -57,7 +57,7 @@ import {
   getInterruptingInFlightQueueId,
   getForceSurfaceInFlightId,
 } from './queue';
-import { allocateMessageId, appendMessage, getMessages } from './transcript';
+import { allocateMessageId, appendMessage, getMessages, getMessageCount, getBuiltinProductContent } from './transcript';
 import {
   stampTurnUsageOnPendingAssistant,
 } from './transcript-persistence';
@@ -241,6 +241,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const turnStartTime = getCurrentTurnStartTime();
     const settledDurationMs = durationMs
       ?? (turnStartTime ? Date.now() - turnStartTime : undefined);
+    const product = getBuiltinProductContent();
+    if (product) {
+      stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(),
+        toolCount: getCurrentTurnToolCount(), durationMs: settledDurationMs });
+      product.finishTurn(terminalKind === 'cancelled' ? 'stopped' : (terminalError ? 'error' : 'complete'));
+    }
     let confirmedQueueTurnKeepStreaming = false;
 
     const inFlightQueueId = getInFlightQueueId();
@@ -288,7 +294,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
     const turnUsage = getCurrentTurnUsage();
     const turnToolCount = getCurrentTurnToolCount();
-    stampTurnUsageOnPendingAssistant({
+    if (!product) stampTurnUsageOnPendingAssistant({
       usage: turnUsage,
       toolCount: turnToolCount,
       durationMs: settledDurationMs,
@@ -330,10 +336,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const persistTrace = deps.snapshotTrace();
     const persistTraceStarted = deps.nowMs();
     const persistTraceToolCount = turnToolCount;
-    const persistTraceMessageCount = getMessages().length;
+    const persistTraceMessageCount = getMessageCount();
     lastTurnEndPersist = deps.persistTranscript(undefined, terminalActivityAt(terminalOutcome))
       .then(() => {
-        deps.emitTrace('persist_done', {
+        deps.emitTrace(product ? 'transcript_observed' : 'persist_done', {
           durationMs: deps.elapsedMs(persistTraceStarted),
           status: 'ok',
           count: persistTraceMessageCount,
@@ -342,7 +348,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         deps.clearTrace(persistTrace);
       })
       .catch(err => {
-        deps.emitTrace('persist_done', {
+        deps.emitTrace(product ? 'transcript_observed' : 'persist_done', {
           durationMs: deps.elapsedMs(persistTraceStarted),
           status: 'error',
           count: persistTraceMessageCount,
@@ -375,6 +381,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const stopTurn = (): SessionCompletionTerminal | null => {
     deps.setStreamingMessage(false);
+    const product = getBuiltinProductContent();
+    if (product) {
+      stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(), toolCount: getCurrentTurnToolCount() });
+      product.finishTurn('stopped');
+    }
     const terminalOutcome = snapshotCurrentTurnTerminalOutcome('stopped', {
       error: 'Execution stopped',
     });
@@ -440,6 +451,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       });
     } else {
       console.log('[agent] Skipping error persistence for expected termination:', error);
+    }
+    const product = getBuiltinProductContent();
+    if (product) {
+      stampTurnUsageOnPendingAssistant({ usage: getCurrentTurnUsage(), toolCount: getCurrentTurnToolCount() });
+      product.finishTurn('error');
     }
     lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
     void lastTurnEndPersist.catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
@@ -649,8 +665,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       },
     });
 
-    const messages = getMessages();
-    const lastMessage = messages[messages.length - 1];
+    const product = getBuiltinProductContent();
+    const lastMessage = product
+      ? (product.currentAssistantId ? product.writer.projection.messages.get(product.currentAssistantId) : undefined)
+      : getMessages().at(-1);
     const lastAssistant = lastMessage?.role === 'assistant' ? lastMessage : null;
 
     if (resultMessage.terminal_reason && resultMessage.terminal_reason !== 'completed') {
@@ -748,12 +766,15 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       // broadcasts message-stopped. The stopped terminal is still recorded in
       // both cases.
       let forceSurfaced = false;
+      const capturedCompletionTerminal = product
+        ? recordCompletionTerminal(isAbortResult ? 'stopped' : terminalError ? 'error' : 'complete')
+        : null;
       forceSurfaced = completeTurn(
         durationMs,
         terminalError,
         () => {
           if (isAbortResult) {
-            const completionTerminal = recordCompletionTerminal('stopped');
+            const completionTerminal = product ? capturedCompletionTerminal : recordCompletionTerminal('stopped');
             if (!forceSurfaced) {
               deps.broadcast(
                 'chat:message-stopped',
@@ -763,7 +784,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
           } else {
             console.log('[agent][sdk] Broadcasting chat:message-complete');
             const completionStatus = terminalError ? 'error' : 'complete';
-            const completionTerminal = recordCompletionTerminal(completionStatus);
+            const completionTerminal = product ? capturedCompletionTerminal : recordCompletionTerminal(completionStatus);
             if (composedAssistantText.trim()) {
               console.log(
                 `[assistant-output] runtime=builtin status=${completionTerminal?.status ?? completionStatus} `
@@ -837,6 +858,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 }
 
 function forceCloseOrphanThinkingBlocks(source: string): void {
+  if (getBuiltinProductContent()) return; // Its captured turn is closed synchronously by finishTurn.
   const messages = getMessages();
   const lastMsg = messages[messages.length - 1];
   if (!lastMsg || lastMsg.role !== 'assistant' || typeof lastMsg.content === 'string') return;

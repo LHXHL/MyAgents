@@ -6,7 +6,7 @@ import type { McpServerDefinition } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
 import type { InteractionScenario } from '../system-prompt';
 import type { SessionSource, TurnAnalyticsSource } from '../types/session';
-import type { SessionMessage } from '../types/session';
+import type { SessionMessage, SessionMetadata } from '../types/session';
 import type { ImagePayload } from '../runtimes/types';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
@@ -381,11 +381,12 @@ export type ConversationOperationErrorCode =
   | 'restore_failed';
 
 export interface SessionEngine {
+  publishTranscriptSaveStatus(status: import('../../shared/sessionTranscript').TranscriptSaveStatus): void;
   kind: SessionEngineKind;
   isBusy(): boolean;
   getRuntimeIdentity(): SessionEngineRuntimeIdentity;
   getLiveSessionState(): SessionEngineLiveState;
-  getLatestAssistantResult(): SessionEngineLatestResult;
+  getLatestAssistantResult(): Promise<SessionEngineLatestResult>;
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
@@ -427,6 +428,8 @@ export interface SessionEngine {
     preparedSessionId?: string;
     snapshotPatch?: SessionEngineSnapshotMaterializePatch;
     origin?: SessionOrigin;
+    /** Server-validated creation snapshot; never accepted by the materialize HTTP route. */
+    birthSnapshot?: Partial<SessionMetadata>;
   }): Promise<SessionEngineMaterializePendingResult>;
   freezeCurrentSessionForImDetach(options?: {
     metadataBirthPending?: boolean;

@@ -32,6 +32,11 @@ pub fn is_system_maintenance_session(session: &Value) -> bool {
 }
 
 pub fn is_legacy_pre_query_managed_codex_draft(session: &Value, sessions_dir: &Path) -> bool {
+    // Versioned births have an explicit lifecycle; lagging transcript statistics
+    // cannot make them legacy pre-query drafts.
+    if session.get("transcriptFormat").is_some() {
+        return false;
+    }
     if is_prepared_session(session) {
         return false;
     }
@@ -183,6 +188,16 @@ fn session_has_user_messages(session_id: &str, sessions_dir: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn versioned_birth_is_visible_before_transcript_statistics_are_published() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = legacy_managed_codex_session();
+        session["transcriptFormat"] = json!(2);
+        assert!(is_history_visible_session(&session, directory.path()));
+        session["materializationState"] = json!("prepared");
+        assert!(!is_history_visible_session(&session, directory.path()));
+    }
 
     fn legacy_managed_codex_session() -> Value {
         json!({

@@ -1,5 +1,6 @@
 import {
   appendSessionMessages,
+  getActiveSessionTranscript,
   commitBuiltinConversationRewind,
   loadSessionTranscript,
   mutateSessionTranscript,
@@ -12,11 +13,12 @@ import { resolveLastVisibleTurnPreview } from '../utils/session-message-preview'
 import { deriveReloadResumeAnchor } from '../utils/rewind-anchor';
 import { findTurnUsageStampIndex } from '../utils/sdk-turn-outcome';
 import { seedBridgeThoughtSignatures } from '../bridge-cache';
-import type { BuiltinTurnUsage, ContentBlock, MessageWire } from './types';
+import type { BuiltinTurnUsage } from './types';
 import {
   addCurrentSessionUuid,
   deletePersistChain,
   getMessages,
+  getBuiltinProductContent,
   invalidateTranscriptCursor,
   removeMessageAt,
   replaceMessages,
@@ -26,8 +28,8 @@ import {
   transcriptState,
 } from './transcript';
 
-/** Sentinel value for stripped Playwright tool results (truthy, so ProcessRow sees tool as complete). */
-export const PLAYWRIGHT_RESULT_SENTINEL = '[playwright_result_stripped]';
+import { messageWireToSessionMessage, sessionMessageToMessageWire } from './message-codec';
+export { PLAYWRIGHT_RESULT_SENTINEL, stripPlaywrightResults, messageWireToSessionMessage, sessionMessageToMessageWire } from './message-codec';
 
 export type ScheduleTranscriptPersistOptions = {
   sessionId: string;
@@ -37,77 +39,8 @@ export type ScheduleTranscriptPersistOptions = {
   metadataDisposition?: 'update' | 'skip';
 };
 
-export function stripPlaywrightResults(content: ContentBlock[]): ContentBlock[] {
-  return content.map(block => {
-    if (
-      block.type === 'tool_use' &&
-      block.tool?.name.startsWith('mcp__playwright__') &&
-      block.tool.result &&
-      block.tool.result !== PLAYWRIGHT_RESULT_SENTINEL
-    ) {
-      return { ...block, tool: { ...block.tool, result: PLAYWRIGHT_RESULT_SENTINEL } };
-    }
-    return block;
-  });
-}
-
-export function messageWireToSessionMessage(msg: MessageWire): SessionMessage {
-  const contentForDisk = typeof msg.content === 'string'
-    ? msg.content
-    : JSON.stringify(stripPlaywrightResults(msg.content));
-  const isAssistant = msg.role === 'assistant';
-  return {
-    id: msg.id,
-    role: msg.role,
-    content: contentForDisk,
-    timestamp: msg.timestamp,
-    sdkUuid: msg.sdkUuid,
-    attachments: msg.attachments?.map((att) => ({
-      id: att.id,
-      name: att.name,
-      mimeType: att.mimeType,
-      path: att.relativePath ?? '',
-    })),
-    metadata: msg.metadata,
-    usage: isAssistant ? msg.usage : undefined,
-    toolCount: isAssistant ? msg.toolCount : undefined,
-    durationMs: isAssistant ? msg.durationMs : undefined,
-  };
-}
-
-export function sessionMessageToMessageWire(storedMsg: SessionMessage): MessageWire {
-  let parsedContent: string | ContentBlock[] = storedMsg.content;
-  if (storedMsg.content.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(storedMsg.content);
-      if (Array.isArray(parsed)) {
-        parsedContent = parsed as ContentBlock[];
-      }
-    } catch {
-      // Keep as string if parse fails.
-    }
-  }
-  return {
-    id: storedMsg.id,
-    role: storedMsg.role,
-    content: parsedContent,
-    timestamp: storedMsg.timestamp,
-    sdkUuid: storedMsg.sdkUuid,
-    attachments: storedMsg.attachments?.map((att) => ({
-      id: att.id,
-      name: att.name,
-      size: 0,
-      mimeType: att.mimeType,
-      relativePath: att.path,
-    })),
-    metadata: storedMsg.metadata,
-    usage: storedMsg.usage,
-    toolCount: storedMsg.toolCount,
-    durationMs: storedMsg.durationMs,
-  };
-}
-
 export function scheduleTranscriptPersist(options: ScheduleTranscriptPersistOptions): Promise<void> {
+  if (getActiveSessionTranscript(options.sessionId)) return persistTranscriptNow(options);
   const key = options.sessionId;
   const targetMessageCount = options.targetMessageCount ?? transcriptState.messages.length;
   const prev = transcriptState.persistChainBySession.get(key) ?? Promise.resolve();
@@ -138,6 +71,22 @@ export async function persistTranscriptNow(options: {
   lastActiveAt?: string;
   metadataDisposition?: 'update' | 'skip';
 }): Promise<void> {
+  const active = getActiveSessionTranscript(options.sessionId);
+  if (active) {
+    const product = getBuiltinProductContent();
+    if (!product || product.writer !== active.writer) return;
+    // Lazy creation can happen after the admitted user surface was staged.
+    // Transfer that surface once; subsequent content is already canonical.
+    for (const message of transcriptState.messages) {
+      if (message.role === 'user') product.admitUser(messageWireToSessionMessage(message));
+    }
+    transcriptState.messages.length = 0;
+    if (options.metadataDisposition !== 'skip' && options.lastActiveAt) {
+      active.patchMetadata({ lastActiveAt: options.lastActiveAt });
+    }
+    active.writer.requestCommit();
+    return;
+  }
   const targetMessageCount = options.targetMessageCount ?? transcriptState.messages.length;
   const hadCursor = transcriptState.transcriptCursor !== null;
   const cursor = await ensureTranscriptCursor(options.sessionId);
@@ -191,17 +140,6 @@ export async function persistTranscriptNow(options: {
   }
 }
 
-export async function saveForkTranscript(sessionId: string, messages: SessionMessage[]): Promise<void> {
-  const snapshot = await loadSessionTranscript(sessionId);
-  if (snapshot.cursor.persistedMessageCount !== 0 || snapshot.hasMalformedRows) {
-    throw new Error(`[agent-session] refused fork transcript persist for non-empty target ${sessionId}`);
-  }
-  const result = await appendSessionMessages(sessionId, snapshot.cursor, messages);
-  if (!result.ok) {
-    throw new Error(`[agent-session] failed to persist fork transcript for ${sessionId}: ${result.reason}: ${result.error}`);
-  }
-}
-
 export function loadTranscriptFromSessionMessages(
   storedMessages: SessionMessage[],
   cursor: TranscriptWriteCursor,
@@ -209,11 +147,8 @@ export function loadTranscriptFromSessionMessages(
   replaceMessages(storedMessages.map(sessionMessageToMessageWire));
   setTranscriptCursor(cursor);
   if (storedMessages.length > 0) {
-    const lastMsgId = storedMessages[storedMessages.length - 1].id;
-    const parsedId = parseInt(lastMsgId, 10);
-    if (!Number.isNaN(parsedId)) {
-      setMessageSequence(parsedId + 1);
-    }
+    const numericIds = storedMessages.map(message => /^\d+$/u.test(message.id) ? Number(message.id) : -1);
+    setMessageSequence(numericIds.reduce((max, id) => Math.max(max, id), -1) + 1);
   }
 
   for (const msg of getMessages()) {
@@ -222,7 +157,7 @@ export function loadTranscriptFromSessionMessages(
     }
   }
 
-  setPendingReloadAnchor(deriveReloadResumeAnchor(transcriptState.messages, transcriptState.currentSessionUuids));
+  setPendingReloadAnchor(deriveReloadResumeAnchor(getMessages(), transcriptState.currentSessionUuids));
   seedThoughtSignatureCacheFromTranscript();
 }
 
@@ -232,6 +167,26 @@ export function stampTurnUsageOnPendingAssistant(options: {
   durationMs?: number;
   providerId?: string;
 }): void {
+  const product = getBuiltinProductContent();
+  if (product) {
+    const priorUsage = product.currentAssistantId ? product.writer.projection.messages.get(product.currentAssistantId)?.usage : undefined;
+    const usage = {
+      inputTokens: options.usage.inputTokens,
+      outputTokens: options.usage.outputTokens,
+      cacheReadTokens: options.usage.cacheReadTokens || undefined,
+      cacheCreationTokens: options.usage.cacheCreationTokens || undefined,
+      providerId: options.providerId ?? priorUsage?.providerId, model: options.usage.model, modelUsage: options.usage.modelUsage,
+    };
+    if (product.currentAssistantId) product.writer.observe({ kind: 'message-update',
+      messageId: product.currentAssistantId,
+      details: { usage, toolCount: options.toolCount, durationMs: options.durationMs },
+    });
+    const turn = product.currentTurn;
+    if (turn) product.writer.observe({ kind: 'turn-update', turn: { ...turn, usage,
+      ...(options.durationMs !== undefined ? { durationMs: options.durationMs } : {}),
+    } });
+    return;
+  }
   const usageStampIndex = findTurnUsageStampIndex(
     transcriptState.messages,
     transcriptState.transcriptCursor?.persistedMessageCount ?? 0,
@@ -301,6 +256,11 @@ export async function applyTranscriptRetractionToPersistence(
     | { kind: 'sdk-retraction'; sdkUuids: readonly string[]; streamingTailMessageId?: string }
     | { kind: 'builtin-admission-rollback' | 'builtin-transient-retry' },
 ): Promise<void> {
+  const product = getBuiltinProductContent();
+  if (product && getActiveSessionTranscript(sessionId)?.writer === product.writer) {
+    product.removeMessages([...removedMessageIds]);
+    return;
+  }
   const ids = [...removedMessageIds];
   const intent: TranscriptMutationIntent = request.kind === 'sdk-retraction'
     ? request
@@ -316,6 +276,11 @@ async function ensureTranscriptCursor(
   sessionId: string,
   forceReload = false,
 ): Promise<TranscriptWriteCursor> {
+  if (getActiveSessionTranscript(sessionId)) {
+    const snapshot = await loadSessionTranscript(sessionId);
+    setTranscriptCursor(snapshot.cursor);
+    return snapshot.cursor;
+  }
   if (!forceReload && transcriptState.transcriptCursor) {
     return transcriptState.transcriptCursor;
   }
@@ -348,7 +313,7 @@ async function commitTranscriptMutation(
 
 function seedThoughtSignatureCacheFromTranscript(): void {
   const thoughtSigEntries: Array<{ id: string; thought_signature: string }> = [];
-  for (const msg of transcriptState.messages) {
+  for (const msg of getMessages()) {
     if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === 'tool_use' && block.tool?.thought_signature) {

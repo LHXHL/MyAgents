@@ -125,7 +125,7 @@ Node → Rust 的反向调用只经过 localhost Management API。应用级资�
 | 事实 | 唯一写入权威 |
 |------|--------------|
 | App 配置 | `config.json`；写前锁内重读并合并，写后刷新 projection |
-| Product Session metadata/transcript | SessionStore |
+| Product Session metadata/transcript | SessionStore；旧格式保持原读写，新建/fork 固定 V2，产品保存与 AI 执行独立（[详述](./tech_docs/session_transcript_v2.md)） |
 | Custom MCP OAuth credential | Node `mcp-oauth` state store；Global Sidecar 独占 proactive refresh scheduler，revision CAS 裁决 refresh/revoke |
 | 新定时自动化 | Rust TaskStore；Cron 只是兼容 surface |
 | Session Goal | SessionGoalManager |

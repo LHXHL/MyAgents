@@ -47,7 +47,7 @@ export function resetExternalLifecycleState(): void {
   externalSystemInitPayload = null;
   externalMcpEffectiveSnapshot = null;
   externalMcpEffectiveRevision = 0;
-  externalRuntimeGeneration = 0;
+  externalRuntimeGeneration += 1;
   externalSessionState = 'idle';
   isPrewarmingSession = false;
   liveRevision = 0;
@@ -60,6 +60,11 @@ export function nextExternalLiveRevision(): number {
 
 export function getExternalLiveRevision(): number {
   return liveRevision;
+}
+
+/** Native callback authority survives turn boundaries, but not a process reset. */
+export function getExternalRuntimeGeneration(): number {
+  return externalRuntimeGeneration;
 }
 
 export async function awaitExternalLifecycleStarting(): Promise<void> {

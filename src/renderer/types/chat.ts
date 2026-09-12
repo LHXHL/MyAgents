@@ -141,6 +141,8 @@ export interface ToolUseSimple extends ToolUse {
 }
 
 export interface ContentBlock {
+  /** Present on V2 blocks; supplied by the product transcript owner. */
+  id?: string;
   asyncQuestions?: AsyncQuestionSet;
   type: 'text' | 'tool_use' | 'thinking' | 'server_tool_use';
   text?: string;
@@ -195,6 +197,8 @@ export interface MessageUsage {
 }
 
 export interface Message {
+  turnId?: string;
+  transcriptState?: import('../../shared/types/session-message').SessionMessage['transcriptState'];
   asyncQuestionReply?: AsyncQuestionReply;
   id: string;
   role: 'user' | 'assistant';

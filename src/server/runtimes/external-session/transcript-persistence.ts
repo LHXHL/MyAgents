@@ -4,26 +4,41 @@ import {
   loadSessionTranscript,
   mutateSessionTranscript,
   updateSessionMetadata,
+  getActiveSessionTranscript,
   type AppendSessionMessagesResult,
   type TranscriptWriteCursor,
 } from '../../SessionStore';
 import { resolveLastVisibleTurnPreview } from '../../utils/session-message-preview';
 import type { ContextUsage } from '../../../shared/types/context-usage';
 import type { PersistContentBlock } from './types';
+import { ProductTranscriptContent } from '../../session-transcript/content';
+import { transcriptMessages, toStoredTranscriptMessage } from '../../../shared/sessionTranscript';
+import { getExternalLifecycleSessionId } from './lifecycle';
 
 let allSessionMessages: SessionMessage[] = [];
 let lastPersistedRuntimeUsageTotals: MessageUsage | null = null;
 let transcriptSessionId = '';
 let transcriptCursor: TranscriptWriteCursor | null = null;
+let productContent: ProductTranscriptContent | undefined;
+
+export function getExternalProductContent(): ProductTranscriptContent | undefined {
+  const active = getActiveSessionTranscript(transcriptSessionId || getExternalLifecycleSessionId());
+  if (!active) return undefined;
+  if (productContent?.writer !== active.writer) productContent = new ProductTranscriptContent(active.writer);
+  return productContent;
+}
 
 export function resetExternalTranscriptState(): void {
   allSessionMessages = [];
   lastPersistedRuntimeUsageTotals = null;
   transcriptSessionId = '';
   transcriptCursor = null;
+  productContent = undefined;
 }
 
 export function getExternalSessionMessagesSnapshot(): SessionMessage[] {
+  const product = getExternalProductContent();
+  if (product) return transcriptMessages(product.writer.projection);
   return [...allSessionMessages];
 }
 
@@ -34,7 +49,7 @@ export function getExternalTranscriptSessionId(): string {
 export function forEachExternalSessionMessage(
   callback: (message: SessionMessage) => void,
 ): void {
-  for (const message of allSessionMessages) {
+  for (const message of getExternalSessionMessagesSnapshot()) {
     callback(message);
   }
 }
@@ -45,7 +60,7 @@ export function setExternalSessionMessages(
   cursor: TranscriptWriteCursor,
 ): void {
   transcriptSessionId = sessionId;
-  allSessionMessages = messages;
+  allSessionMessages = getExternalProductContent() ? [] : messages;
   transcriptCursor = cursor;
 }
 
@@ -58,20 +73,32 @@ export function clearExternalSessionMessages(sessionId?: string): void {
 }
 
 export function pushExternalSessionMessage(message: SessionMessage): void {
+  const product = getExternalProductContent();
+  if (product && message.role === 'user') {
+    product.admitUser(message);
+    return;
+  }
   allSessionMessages.push(message);
 }
 
 export function getExternalSessionMessageCount(): number {
+  const product = getExternalProductContent();
+  if (product) return product.writer.projection.messages.size;
   return allSessionMessages.length;
 }
 
 export function findExternalSessionMessageIndex(
   predicate: (message: SessionMessage) => boolean,
 ): number {
-  return allSessionMessages.findIndex(predicate);
+  return getExternalSessionMessagesSnapshot().findIndex(predicate);
 }
 
 export function getExternalSessionMessageAt(index: number): SessionMessage | undefined {
+  const product = getExternalProductContent();
+  if (product) {
+    const message = [...product.writer.projection.messages.values()][index];
+    return message ? toStoredTranscriptMessage(message) : undefined;
+  }
   return allSessionMessages[index];
 }
 
@@ -102,6 +129,15 @@ function isContentBlockJson(content: string): boolean {
 }
 
 export function getLastExternalAssistantTextFromTranscript(): string {
+  const product = getExternalProductContent();
+  if (product) {
+    const messages = [...product.writer.projection.messages.values()].filter(message => message.role === 'assistant');
+    const turnId = product.currentTurn?.id ?? messages.at(-1)?.turnId;
+    return messages.filter(message => turnId ? message.turnId === turnId : message.id === messages.at(-1)?.id)
+      .map(message => typeof message.content === 'string' ? message.content : message.content
+        .filter(block => block.type === 'text').map(block => typeof block.text === 'string' ? block.text : '').join(''))
+      .join('');
+  }
   for (let i = allSessionMessages.length - 1; i >= 0; i--) {
     const msg = allSessionMessages[i];
     if (msg.role !== 'assistant') continue;
@@ -144,18 +180,6 @@ function assertExternalSessionMessagesPersisted(
   return result.cursor;
 }
 
-export async function persistExternalForkTranscript(
-  sessionId: string,
-  messages: SessionMessage[],
-): Promise<void> {
-  const snapshot = await loadSessionTranscript(sessionId);
-  if (snapshot.cursor.persistedMessageCount !== 0 || snapshot.hasMalformedRows) {
-    throw new Error(`Fork transcript persist refused for non-empty target ${sessionId}`);
-  }
-  const saveResult = await appendSessionMessages(sessionId, snapshot.cursor, messages);
-  assertExternalSessionMessagesPersisted(saveResult, 'Fork transcript persist failed');
-}
-
 export async function persistExternalUserMessageAppend(
   sessionId: string,
   _userMessageId: string,
@@ -163,6 +187,19 @@ export async function persistExternalUserMessageAppend(
   lastActiveAt?: string,
   metadataDisposition: 'update' | 'skip' = 'update',
 ): Promise<{ lastMessagePreview?: string }> {
+  const active = getActiveSessionTranscript(sessionId);
+  if (active) {
+    transcriptSessionId = sessionId;
+    const product = getExternalProductContent()!;
+    // A first user can be staged before its metadata birth. Transfer that
+    // admitted prefix once; V2 never installs the legacy history array.
+    for (const message of allSessionMessages) if (message.role === 'user') product.admitUser(message);
+    allSessionMessages = [];
+    const user = active.writer.projection.messages.get(_userMessageId);
+    const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(user ? [toStoredTranscriptMessage(user)] : []);
+    if (metadataDisposition !== 'skip') active.patchMetadata({ lastMessagePreview, ...(lastActiveAt ? { lastActiveAt } : {}) });
+    return { lastMessagePreview };
+  }
   const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
   const cursor = await ensureExternalTranscriptCursor(sessionId);
   const tail = allSessionMessages.slice(cursor.persistedMessageCount);
@@ -188,6 +225,12 @@ export async function removeAndPersistExternalSessionMessage(
   messageId: string,
   failureContext: string,
 ): Promise<boolean> {
+  const product = getExternalProductContent();
+  if (product) {
+    const exists = product.writer.projection.messages.has(messageId);
+    if (exists) product.removeMessages([messageId]);
+    return exists;
+  }
   if (!allSessionMessages.some(message => message.id === messageId)) return false;
   const cursor = await ensureExternalTranscriptCursor(sessionId);
   const result = await mutateSessionTranscript(sessionId, cursor, {
@@ -212,13 +255,14 @@ export async function truncateExternalTranscriptForRetry(
   content?: string;
   attachments?: SessionMessage['attachments'];
 }> {
-  const targetIndex = allSessionMessages.findIndex(
+  const messages = getExternalSessionMessagesSnapshot();
+  const targetIndex = messages.findIndex(
     m => m.id === userMessageId && m.role === 'user',
   );
   if (targetIndex < 0) {
     return { success: false, error: 'Message not found' };
   }
-  const target = allSessionMessages[targetIndex];
+  const target = messages[targetIndex];
   if (!target) {
     return { success: false, error: 'Message not found' };
   }
@@ -242,7 +286,7 @@ export async function truncateExternalTranscriptForRetry(
       throw new Error(userFacingError);
     }
     transcriptCursor = result.cursor;
-    allSessionMessages.length = targetIndex;
+    if (!getExternalProductContent()) allSessionMessages.length = targetIndex;
   } catch (err) {
     console.error('[external-session] popLastUserMessageForRetry: failed to persist truncation:', err);
     return {
@@ -262,6 +306,7 @@ export interface ExternalAssistantTurnPersistInput {
   contextUsage: ContextUsage | null;
   lastActiveAt?: string;
   runtimeTurnAnchor?: RuntimeTurnAnchor;
+  terminalStatus?: 'complete' | 'stopped' | 'error';
 }
 
 export interface ExternalAssistantTurnPersistResult {
@@ -275,6 +320,20 @@ export interface ExternalAssistantTurnPersistResult {
 export async function appendAndPersistExternalAssistantTurn(
   input: ExternalAssistantTurnPersistInput,
 ): Promise<ExternalAssistantTurnPersistResult> {
+  const active = input.sessionId ? getActiveSessionTranscript(input.sessionId) : undefined;
+  const product = active ? getExternalProductContent() : undefined;
+  if (active && product) {
+    const assistantMessageId = product.finishTurn(input.terminalStatus ?? 'complete', {
+      durationMs: input.durationMs, usage: input.usage ?? undefined, toolCount: input.toolCount,
+      runtimeTurnAnchor: input.runtimeTurnAnchor,
+    }) ?? undefined;
+    active.patchMetadata({
+      runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
+      ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),
+      ...(input.lastActiveAt ? { lastActiveAt: input.lastActiveAt } : {}),
+    });
+    return { ok: true, messageCount: active.writer.projection.messages.size, appendedAssistant: Boolean(assistantMessageId), assistantMessageId };
+  }
   let appendedAssistant = false;
   let assistantMessageId: string | undefined;
   if (input.content) {
@@ -357,13 +416,12 @@ export async function appendAndPersistExternalAssistantTurn(
 
 async function reloadExternalTranscript(sessionId: string): Promise<TranscriptWriteCursor> {
   const snapshot = await loadSessionTranscript(sessionId);
-  transcriptSessionId = sessionId;
-  allSessionMessages = snapshot.messages;
-  transcriptCursor = snapshot.cursor;
+  setExternalSessionMessages(sessionId, snapshot.messages, snapshot.cursor);
   return snapshot.cursor;
 }
 
 async function ensureExternalTranscriptCursor(sessionId: string): Promise<TranscriptWriteCursor> {
+  if (getActiveSessionTranscript(sessionId)) return (await loadSessionTranscript(sessionId)).cursor;
   if (transcriptSessionId === sessionId && transcriptCursor) {
     if (allSessionMessages.length < transcriptCursor.persistedMessageCount) {
       const durableCount = transcriptCursor.persistedMessageCount;

@@ -492,6 +492,9 @@ import { getHomeDirOrNull } from './utils/platform';
 import { getScriptDir } from './utils/runtime';
 import {
   createSession,
+  publishSessionForHandoff,
+  drainSessionTranscripts,
+  subscribeTranscriptSaveStatus,
   deleteSession,
   getAllSessionMetadata,
   getSessionData,
@@ -526,7 +529,7 @@ import {
   shrinkSessionMessagesForClient,
 } from './utils/session-message-preview';
 import type { AgentConfig } from '../shared/types/agent';
-import type { SessionMetadata } from './types/session';
+import type { SessionData, SessionMetadata } from './types/session';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../shared/providerRoute';
 import { initLogger, getLoggerDiagnostics, withLogContext, setStdioBrokenProbe } from './logger';
 // `isStdioBroken` / `markStdioBroken` are defined above (in the crash-
@@ -1247,11 +1250,11 @@ function isGenericSessionTitle(title: string | undefined): boolean {
   return trimmed === '' || trimmed === 'New Chat' || trimmed === 'New Tab';
 }
 
-function normalizeSessionListPreview(meta: SessionMetadata): SessionMetadata {
+async function normalizeSessionListPreview(meta: SessionMetadata): Promise<SessionMetadata> {
   if (!isGenericSessionTitle(meta.title)) return meta;
   if (!meta.runtime || meta.runtime === 'builtin') return meta;
 
-  const data = getSessionData(meta.id);
+  const data = (await getSessionData(meta.id));
   const resolved = data
     ? resolveLastVisibleTurnPreview(data.messages)
     : { found: false as const };
@@ -1679,6 +1682,7 @@ async function main() {
   // dead, and so a sync write-throw can flip the bit immediately.
   setStdioBrokenProbe(isStdioBroken, markStdioBroken);
   initLogger(getClients);
+  subscribeTranscriptSaveStatus(status => getSessionEngine().publishTranscriptSaveStatus(status));
   startupBeacon('initLogger done — switching to console.log');
 
   // Store sidecar port BEFORE initializeAgent() so that:
@@ -1818,9 +1822,10 @@ async function main() {
     return browserHostPromise;
   };
   gracefulShutdownHook = async () => {
-    if (!browserHostPromise) return;
-    const browserHost = await browserHostPromise;
-    await browserHost.shutdown();
+    await Promise.all([
+      drainSessionTranscripts(),
+      browserHostPromise?.then(browserHost => browserHost.shutdown()),
+    ]);
   };
 
   honoServe({
@@ -2630,10 +2635,10 @@ async function main() {
           const now = Date.now();
           const rangeDays = range === '7d' ? 7 : range === '30d' ? 30 : 60;
           const cutoff = now - rangeDays * 86400_000;
-          const sessions = allSessions.flatMap((session) => {
-            if (!isHistoryVisibleSession(session)) return [];
-            return [getSessionDataFromMetadata(session)];
-          });
+          const sessions: SessionData[] = [];
+          for (const session of allSessions) {
+            if (isHistoryVisibleSession(session)) sessions.push(await getSessionDataFromMetadata(session));
+          }
           const stats = aggregateGlobalUsageStats(sessions, cutoff);
 
           return jsonResponse({
@@ -2735,10 +2740,10 @@ async function main() {
             ? getSessionsByAgentDir(agentDirParam)
             : getAllSessionMetadata();
           // Apply the shared client projection (credential redaction + wire stats names).
-          const safeSessions = sessions
-            .filter(isHistoryVisibleSession)
-            .map(normalizeSessionListPreview)
-            .map(toClientSessionMetadata);
+          const safeSessions = [];
+          for (const session of sessions) {
+            if (isHistoryVisibleSession(session)) safeSessions.push(toClientSessionMetadata(await normalizeSessionListPreview(session)));
+          }
           return jsonResponse({ success: true, sessions: safeSessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);
@@ -2753,6 +2758,7 @@ async function main() {
       if (pathname === '/sessions' && request.method === 'POST') {
         type CreateSessionPayload = {
           agentDir: string;
+          prepareOnCurrentSidecar?: boolean;
           runtime?: string;
           runtimeSource?: RuntimeSource;
           seedMaxPermission?: boolean;
@@ -2925,7 +2931,32 @@ async function main() {
             ? payload.materializationSourceSessionId.trim()
             : undefined;
         }
+        if (payload.prepareOnCurrentSidecar) {
+          const engine = getSessionEngine();
+          const identity = engine.getRuntimeIdentity();
+          if (!identity.sessionId || getSessionMetadata(identity.sessionId)
+            || resolve(agentDirValue) !== resolve(currentAgentDir)
+            || identity.runtime !== snapshotRuntime
+            || (identity.runtime !== 'builtin'
+              && identity.runtimeSource !== (baseSnapshot.runtimeSource ?? 'system-cli'))) {
+            return jsonResponse({ success: false, error: 'Birth snapshot does not match the pending Session Sidecar.' }, 409);
+          }
+          const prepared = await engine.materializePendingDesktopSession({
+            workspacePath: agentDirValue,
+            phase: 'prepare',
+            origin: baseSnapshot.origin,
+            birthSnapshot: baseSnapshot,
+          });
+          if (!prepared.success || !prepared.metadata) return jsonResponse(prepared, prepared.status ?? 409);
+          return jsonResponse({ success: true, session: toClientSessionMetadata(prepared.metadata as SessionMetadata) });
+        }
+        // This endpoint's unbound form creates an explicit unopened fork target.
+        // Ordinary desktop births use their own Sidecar above and never wait here.
         const session = await createSession(agentDirValue, baseSnapshot);
+        if (!(await publishSessionForHandoff(session.id))) {
+          void deleteSession(session.id, { kind: 'user-delete' });
+          return jsonResponse({ success: false, error: 'Unable to publish the new Session target.' }, 503);
+        }
         return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
       }
 
@@ -2944,7 +2975,7 @@ async function main() {
         const sessionId = decodeURIComponent(match[1]);
         const lastMessageId = decodeURIComponent(match[2]);
 
-        const session = getSessionData(sessionId);
+        const session = (await getSessionData(sessionId));
         if (!session) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
@@ -2974,7 +3005,7 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
         }
 
-        const session = getSessionData(sessionId);
+        const session = (await getSessionData(sessionId));
         if (!session) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }

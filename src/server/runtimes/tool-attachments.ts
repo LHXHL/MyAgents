@@ -207,7 +207,7 @@ async function saveBase64Source(
  */
 const HOME = homedir() || '';
 
-function isAllowedExternalAttachmentPrefix(canonical: string): boolean {
+export function isAllowedExternalAttachmentPrefix(canonical: string): boolean {
   if (!HOME) return false;
   const allowedPrefixes = [
     getToolAttachmentRoot(),

@@ -14,12 +14,21 @@
  * - Concurrent safety: append is atomic on most filesystems
  */
 
-import { existsSync, linkSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync, truncateSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, linkSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync, renameSync, truncateSync, openSync, readSync, closeSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import * as asyncFs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 
 import type { PendingConversationMutation, SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
-import { createSessionMetadata, generateSessionTitle } from './types/session';
+import { createSessionMetadata, generateSessionTitle, ownsSessionMetadataBirth } from './types/session';
+import { isValidProductSessionId, resolveTranscriptFormat } from '../shared/transcriptFormat';
+import { createTranscriptProjection, fromStoredTranscriptMessage, transcriptMessages, type TranscriptProjection, type TranscriptSaveStatus, type TranscriptObject } from '../shared/sessionTranscript';
+import { copyForkAttachments, discardForkAttachments } from './session-transcript/fork-attachments';
+import { SessionTranscript } from './session-transcript/session';
+import { TranscriptFile, readTranscriptFile, syncTranscriptDirectory } from './session-transcript/file';
+import { TranscriptStorageError } from './session-transcript/writer';
+import type { DecodedTranscript } from './session-transcript/codec';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
@@ -48,12 +57,209 @@ import { resolveLastVisibleTurnPreview } from './utils/session-message-preview';
 const MYAGENTS_DIR = join(homedir(), '.myagents');
 const SESSIONS_FILE = join(MYAGENTS_DIR, 'sessions.json');
 const SESSIONS_DIR = join(MYAGENTS_DIR, 'sessions');
+const SESSIONS_V2_DIR = join(MYAGENTS_DIR, 'sessions-v2');
 const ATTACHMENTS_DIR = join(MYAGENTS_DIR, 'attachments');
 const SESSIONS_TMP_FILE = join(MYAGENTS_DIR, 'sessions.json.tmp');
 const SESSIONS_LOCK_FILE = join(MYAGENTS_DIR, 'sessions.lock');
 const SESSIONS_LOCK_DIR = join(MYAGENTS_DIR, 'session-locks');
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 30000;
+
+// Active instances belong to this Session Sidecar, never to a mounted Tab.
+const activeTranscripts = new Map<string, SessionTranscript>();
+const transcriptBindings = new Map<string, Promise<SessionTranscript>>();
+const transcriptStatusListeners = new Set<(status: TranscriptSaveStatus) => void>();
+
+export function getActiveSessionTranscript(sessionId: string): SessionTranscript | undefined {
+    const active = activeTranscripts.get(sessionId);
+    return active?.isRevoked ? undefined : active;
+}
+
+export function subscribeTranscriptSaveStatus(listener: (status: TranscriptSaveStatus) => void): () => void {
+    transcriptStatusListeners.add(listener);
+    return () => transcriptStatusListeners.delete(listener);
+}
+
+function getV2SessionFilePath(sessionId: string): string {
+    if (!isValidProductSessionId(sessionId)) throw new Error('Invalid product Session ID');
+    return join(SESSIONS_V2_DIR, `${sessionId}.jsonl`);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+    try { await asyncFs.stat(path); return true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+    }
+}
+
+async function sessionTranscriptFormat(metadata: SessionMetadata | null, sessionId: string): Promise<'legacy' | 'v2'> {
+    const [legacyJsonl, legacyJson, v2] = await Promise.all([
+        pathExists(getSessionFilePath(sessionId)), pathExists(getLegacySessionFilePath(sessionId)),
+        pathExists(getV2SessionFilePath(sessionId)),
+    ]);
+    const format = resolveTranscriptFormat({
+        metadataExists: metadata !== null, transcriptFormat: metadata?.transcriptFormat,
+        legacyFileExists: legacyJsonl || legacyJson, v2FileExists: v2,
+    });
+    if (format === 'legacy' || format === 'v2') return format;
+    throw new TranscriptStorageError('invalid-history', `Session transcript format: ${format}`);
+}
+
+async function publishV2Metadata(
+    metadata: SessionMetadata, patch: Partial<SessionMetadata>, birth: boolean,
+): Promise<SessionMetadata> {
+    return withSessionsLock(async () => {
+        let all: SessionMetadata[];
+        try { all = parseSessionsIndex(await asyncFs.readFile(SESSIONS_FILE, 'utf8')); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            all = [];
+        }
+        const index = all.findIndex(row => row.id === metadata.id);
+        const existing = all[index];
+        if ((!existing && !birth) || (existing && (existing.transcriptFormat !== 2
+            || existing.createdAt !== metadata.createdAt || existing.agentDir !== metadata.agentDir))) {
+            throw new TranscriptStorageError('invalid-history', 'Session birth publication conflicts with metadata');
+        }
+        // V2 never writes a cached full row over another owner's unrelated fields.
+        const updated = existing ? { ...existing, ...patch } : metadata;
+        if (index < 0) all.push(updated); else all[index] = updated;
+        await asyncFs.mkdir(MYAGENTS_DIR, { recursive: true });
+        const file = await asyncFs.open(SESSIONS_TMP_FILE, 'w');
+        try { await file.writeFile(JSON.stringify(all, null, 2), 'utf8'); await file.sync(); }
+        finally { await file.close(); }
+        await asyncFs.rename(SESSIONS_TMP_FILE, SESSIONS_FILE);
+        await syncTranscriptDirectory(MYAGENTS_DIR);
+        return updated;
+    });
+}
+
+function createActiveTranscript(metadata: SessionMetadata, birth: boolean, decoded?: DecodedTranscript, incompleteSource = false): SessionTranscript {
+    const transcript = new SessionTranscript({
+        metadata, birth, filePath: getV2SessionFilePath(metadata.id),
+        generation: decoded?.header.generation ?? randomUUID(), revision: decoded?.revision ?? 0,
+        projection: decoded?.projection ?? createTranscriptProjection(),
+        recoverIncompleteTail: decoded?.tail === 'incomplete',
+        incompleteSource: incompleteSource || decoded?.tail === 'invalid',
+        deriveMetadata: projection => {
+            // Counts/usage are scalar message fields; tool bodies need no
+            // serialization to derive list metadata. Preview remains the last
+            // visible USER query, matching the established legacy behavior.
+            const messages = [...projection.messages.values()];
+            return {
+                stats: calculateSessionStats(messages),
+                lastMessagePreview: resolveLastVisibleTurnPreview(messages.filter(message => message.role === 'user')
+                    .map(message => ({ role: message.role, content: typeof message.content === 'string'
+                        ? message.content : JSON.stringify(message.content) }))).preview,
+            };
+        },
+        withLock: run => withSessionFileLock(metadata.id, run), publishMetadata: publishV2Metadata,
+        publishMutationIntent: async (source, intent) => {
+            await publishV2Metadata(source, { pendingConversationMutation: intent }, false);
+        },
+        onStatus: status => {
+            for (const listener of transcriptStatusListeners) {
+                try { listener(status); } catch (error) { console.warn('[SessionStore] Save status listener failed:', error); }
+            }
+        },
+    });
+    activeTranscripts.set(metadata.id, transcript);
+    return transcript;
+}
+
+/** Called by the existing runtime binding owner before it consumes native events. */
+export async function activateSessionTranscript(sessionId: string): Promise<SessionTranscript | undefined> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) throw new Error('Session binding has been revoked');
+        return active;
+    }
+    const metadata = getSessionMetadata(sessionId);
+    if (!metadata || metadata.transcriptFormat === undefined) return undefined;
+    const binding = transcriptBindings.get(sessionId);
+    if (binding) return binding;
+    const reading = withSessionFileLock(sessionId, async () => {
+        let decoded: DecodedTranscript | undefined;
+        let incomplete = false;
+        try {
+            await sessionTranscriptFormat(metadata, sessionId);
+            decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+        } catch (error) {
+            incomplete = true;
+            console.warn(`[SessionStore] Cannot fully restore V2 history for ${sessionId}:`, error);
+        }
+        return { decoded, incomplete };
+    });
+    // A cold history read is optional to an already validated runtime binding.
+    // Timeout does not release its physical lock or start a competing repair.
+    const task = (async () => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const result = await Promise.race([
+            reading.catch(() => ({ decoded: undefined, incomplete: true })),
+            new Promise<{ decoded: undefined; incomplete: boolean }>(resolve => {
+                timeout = setTimeout(() => resolve({ decoded: undefined, incomplete: true }), 2000);
+            }),
+        ]).finally(() => { if (timeout) clearTimeout(timeout); });
+        let effective = metadata;
+        if (metadata.pendingConversationMutation) {
+            const intent = metadata.pendingConversationMutation;
+            const stamp = intent.transcript;
+            const decoded = result.decoded;
+            if (!stamp || stamp.format !== 2 || !decoded || decoded.tail === 'invalid') {
+                throw new TranscriptStorageError('invalid-history', 'Pending conversation mutation has no confirmed native binding');
+            }
+            if (decoded.header.generation === stamp.targetGeneration && decoded.revision >= stamp.targetRevision) {
+                const messages = transcriptMessages(decoded.projection);
+                effective = intent.kind === 'codex-rewind'
+                    ? finalizeCodexRewindMetadata(metadata, intent, messages)
+                    : finalizeBuiltinRewindMetadata(metadata, intent, messages);
+            } else if (decoded.header.generation === stamp.sourceGeneration) {
+                effective = { ...metadata, pendingConversationMutation: undefined };
+            } else {
+                throw new TranscriptStorageError('invalid-history', 'Pending conversation mutation generation is ambiguous');
+            }
+        }
+        const transcript = createActiveTranscript(effective, false, result.decoded, result.incomplete);
+        if (effective !== metadata) transcript.patchMetadata(effective);
+        for (const message of transcript.writer.projection.messages.values()) {
+            if (message.transcriptState === 'streaming') transcript.writer.observe({
+                kind: 'message-update', messageId: message.id, details: { transcriptState: 'interrupted' },
+            });
+        }
+        // This is cold lifecycle adoption: the previous execution owner is gone.
+        // Preserve observed output, but never leave an orphaned tool spinning or
+        // imply it completed successfully. No native work is replayed here.
+        for (const message of transcript.writer.projection.messages.values()) {
+            if (!Array.isArray(message.content)) continue;
+            for (const block of message.content) {
+                const target = { messageId: message.id, blockId: block.id };
+                if ((block.type === 'text' || block.type === 'thinking') && !block.isComplete) {
+                    transcript.writer.observe({ kind: 'block-update', ...target, target: 'block', details: { isComplete: true } });
+                }
+                const tool = block.tool as TranscriptObject | undefined;
+                if (!tool || typeof tool !== 'object') continue;
+                const interruptTool = (value: TranscriptObject, subagentToolId?: string) => {
+                    const details: TranscriptObject = {};
+                    if (value.isLoading) Object.assign(details, { isLoading: false, isError: true,
+                        resultMeta: { ...(value.resultMeta as TranscriptObject ?? {}), status: 'interrupted' } });
+                    const lifecycle = value.subagentLifecycle as TranscriptObject | undefined;
+                    if (lifecycle?.status === 'running') details.subagentLifecycle = { ...lifecycle, status: 'interrupted', finishedAt: Date.now() };
+                    if (Object.keys(details).length) transcript.writer.observe({ kind: 'block-update', ...target, target: 'tool', ...(subagentToolId ? { subagentToolId } : {}), details });
+                };
+                interruptTool(tool);
+                if (Array.isArray(tool.subagentCalls)) for (const value of tool.subagentCalls) {
+                    const call = value as TranscriptObject;
+                    if (typeof call?.id === 'string') interruptTool(call, call.id);
+                }
+            }
+        }
+        for (const turn of transcript.writer.projection.turns.values()) {
+            if (turn.status === 'running') transcript.writer.observe({ kind: 'turn-update', turn: { ...turn, status: 'interrupted' } });
+        }
+        return transcript;
+    })();
+    transcriptBindings.set(sessionId, task);
+    try { return await task; } finally { transcriptBindings.delete(sessionId); }
+}
 
 type TranscriptFileIdentity = Readonly<{
     exists: boolean;
@@ -77,6 +283,7 @@ export type TranscriptWriteCursor = Readonly<{
     [transcriptCursorState]: Readonly<{
         sessionId: string;
         file: TranscriptFileIdentity;
+        v2?: Readonly<{ generation: string; revision: number; instanceId?: string; liveRevision?: number }>;
     }>;
 }>;
 
@@ -145,9 +352,7 @@ async function withSessionsLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 async function withSessionFileLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const safeId = sessionId.replace(/[^a-zA-Z0-9-]/g, '_');
-    if (!existsSync(SESSIONS_LOCK_DIR)) {
-        try { mkdirSync(SESSIONS_LOCK_DIR, { recursive: true }); } catch { /* ignore — withFileLock will surface acquire failures */ }
-    }
+    await asyncFs.mkdir(SESSIONS_LOCK_DIR, { recursive: true });
     const lockPath = join(SESSIONS_LOCK_DIR, `${safeId}.jsonl.lock`);
     return withFileLock(
         { lockPath, timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_STALE_MS },
@@ -941,6 +1146,8 @@ export function getSessionsByAgentDir(agentDir: string): SessionMetadata[] {
  * Get session metadata by ID
  */
 export function getSessionMetadata(sessionId: string): SessionMetadata | null {
+    const active = activeTranscripts.get(sessionId);
+    if (active) return active.isRevoked ? null : active.metadata;
     const all = getAllSessionMetadata();
     return all.find(s => s.id === sessionId) ?? null;
 }
@@ -961,55 +1168,44 @@ export type EnsureRegisteredAgentSessionOriginResult =
  * rejected. Missing metadata is safe: the caller must pass the same exact
  * origin as the birth origin when it materializes the Session.
  */
+function checkRegisteredAgentSessionOrigin(current: SessionMetadata | undefined, expected: RegisteredAgentSessionOrigin): EnsureRegisteredAgentSessionOriginResult {
+    if (!current) return { success: true, metadataExists: false };
+    const normalized = normalizeSessionOrigin(current.origin);
+    if (normalized?.kind === 'registered-agent' && normalized.surface === 'space_issue_delivery'
+        && normalized.context.spaceId === expected.context.spaceId
+        && normalized.context.registeredAgentId === expected.context.registeredAgentId) {
+        return { success: true, metadataExists: true };
+    }
+    const raw = current.origin as { kind?: unknown; surface?: unknown; context?: unknown } | undefined;
+    if (raw?.kind === 'registered-agent' && raw.surface === 'space_issue_delivery'
+        && !Object.prototype.hasOwnProperty.call(raw, 'context')) {
+        return { success: true, metadataExists: true, adoptedLegacyOrigin: true };
+    }
+    return { success: false, error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.' };
+}
+
 export async function ensureRegisteredAgentSessionOrigin(
     sessionId: string,
     expected: RegisteredAgentSessionOrigin,
 ): Promise<EnsureRegisteredAgentSessionOriginResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (active && !active.isRevoked) {
+        // The legitimate birth/claim already exists even if its index write is
+        // pending. An absent disk row cannot relax this exact origin check.
+        const result = checkRegisteredAgentSessionOrigin(active.metadata, expected);
+        if (result.success && result.adoptedLegacyOrigin) active.patchMetadata({ origin: expected });
+        return result;
+    }
     ensureStorageDir();
     return withSessionsLock(async () => {
         const all = readSessionsIndexForWrite();
         const index = all.findIndex(session => session.id === sessionId);
-        if (index < 0) {
-            return { success: true, metadataExists: false };
-        }
-
-        const current = all[index];
-        const normalized = normalizeSessionOrigin(current.origin);
-        if (normalized) {
-            const matches = normalized.kind === 'registered-agent'
-                && normalized.surface === 'space_issue_delivery'
-                && normalized.context.spaceId === expected.context.spaceId
-                && normalized.context.registeredAgentId === expected.context.registeredAgentId;
-            return matches
-                ? { success: true, metadataExists: true }
-                : {
-                    success: false,
-                    error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
-                };
-        }
-
-        const raw = current.origin as {
-            kind?: unknown;
-            surface?: unknown;
-            context?: unknown;
-        } | undefined;
-        const isLegacyContextFreeRegisteredOrigin = raw?.kind === 'registered-agent'
-            && raw.surface === 'space_issue_delivery'
-            && !Object.prototype.hasOwnProperty.call(raw, 'context');
-        if (isLegacyContextFreeRegisteredOrigin) {
-            all[index] = { ...current, origin: expected };
+        const result = checkRegisteredAgentSessionOrigin(all[index], expected);
+        if (result.success && result.adoptedLegacyOrigin) {
+            all[index] = { ...all[index], origin: expected };
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));
-            return {
-                success: true,
-                metadataExists: true,
-                ...(isLegacyContextFreeRegisteredOrigin ? { adoptedLegacyOrigin: true } : {}),
-            };
         }
-
-        return {
-            success: false,
-            error: 'SESSION_ORIGIN_CONFLICT: This Session is already bound to a different origin.',
-        };
+        return result;
     });
 }
 
@@ -1017,12 +1213,43 @@ export async function ensureRegisteredAgentSessionOrigin(
  * Save session metadata (create or update)
  */
 export async function saveSessionMetadata(session: SessionMetadata): Promise<void> {
+    if (session.transcriptFormat === 2) {
+        let active = activeTranscripts.get(session.id);
+        if (!active) {
+            // The creation owner already issued this identity. Disk validation
+            // belongs to asynchronous publication, never first AI admission.
+            if (ownsSessionMetadataBirth(session)) {
+                createActiveTranscript(session, true);
+                return;
+            }
+            const existing = getSessionMetadata(session.id);
+            if (existing?.transcriptFormat !== 2) {
+                throw new TranscriptStorageError('invalid-history', 'V2 creation requires a new Session birth');
+            }
+            active = await activateSessionTranscript(session.id);
+        }
+        if (!active) throw new TranscriptStorageError('invalid-history', 'Missing V2 Session binding');
+        // Whole-row compatibility callers may hold a pre-admission snapshot.
+        // Creation identity and prepared admission belong to their explicit CAS
+        // entrypoints, never to a subsequent snapshot save.
+        const {
+            id: _id, transcriptFormat: _format, createdAt: _createdAt, agentDir: _agentDir,
+            materializationState: _prepared, materializationSourceSessionId: _source,
+            ...patch
+        } = session;
+        active.patchMetadata(patch);
+        return;
+    }
     ensureStorageDir();
 
     await withSessionsLock(async () => {
         const all = readSessionsIndexForWrite();
 
         const index = all.findIndex(s => s.id === session.id);
+
+        if (index >= 0 && all[index].transcriptFormat !== session.transcriptFormat) {
+            throw new TranscriptStorageError('invalid-history', 'Session transcript format is immutable');
+        }
 
         if (index >= 0) {
             all[index] = session;
@@ -1073,6 +1300,54 @@ export async function deleteSession(
     sessionId: string,
     intent: SessionDeleteIntent,
 ): Promise<SessionDeleteResult> {
+    const active = activeTranscripts.get(sessionId);
+    const metadata = active?.metadata ?? getSessionMetadata(sessionId);
+    if (metadata?.transcriptFormat !== undefined) {
+        if (intent.kind === 'prepared-materialization-rollback' && (
+            metadata.materializationState !== 'prepared'
+            || metadata.materializationSourceSessionId !== intent.sourceSessionId
+            || (active && active.writer.projection.messages.size > 0)
+        )) return { deleted: false, reason: 'precondition-failed' };
+        if (intent.kind === 'user-delete' && isSystemMaintenanceSession(metadata)) return { deleted: false, reason: 'protected-session' };
+        // Rollback and admission decide synchronously on this same instance.
+        // Revocation survives a cleanup timeout; no producer can resurrect it.
+        const outstanding = active?.revoke() ?? Promise.resolve();
+        const deletion = outstanding.then(() => withSessionFileLock(sessionId, () => withSessionsLock(async (): Promise<SessionDeleteResult> => {
+            let all: SessionMetadata[];
+            try { all = parseSessionsIndex(await asyncFs.readFile(SESSIONS_FILE, 'utf8')); } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+                all = [];
+            }
+            const disk = all.find(row => row.id === sessionId);
+            if (disk && (disk.transcriptFormat !== 2 || disk.createdAt !== metadata.createdAt)) return { deleted: false, reason: 'precondition-failed' };
+            if (intent.kind === 'prepared-materialization-rollback' && disk && (
+                disk.materializationState !== 'prepared' || disk.materializationSourceSessionId !== intent.sourceSessionId
+            )) return { deleted: false, reason: 'precondition-failed' };
+            try {
+                await asyncFs.unlink(getV2SessionFilePath(sessionId));
+                await syncTranscriptDirectory(SESSIONS_V2_DIR);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+            if (disk) {
+                const file = await asyncFs.open(SESSIONS_TMP_FILE, 'w');
+                try { await file.writeFile(JSON.stringify(all.filter(row => row.id !== sessionId), null, 2)); await file.sync(); }
+                finally { await file.close(); }
+                await asyncFs.rename(SESSIONS_TMP_FILE, SESSIONS_FILE);
+                await syncTranscriptDirectory(MYAGENTS_DIR);
+            }
+            // Retain the revoked in-process identity until this Sidecar exits.
+            return { deleted: true };
+        }))).catch((error): SessionDeleteResult => {
+            console.warn(`[SessionStore] V2 delete failed for ${sessionId}:`, error);
+            return { deleted: false, reason: 'io-error' };
+        });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+            deletion,
+            new Promise<SessionDeleteResult>(resolve => { timer = setTimeout(() => resolve({ deleted: false, reason: 'io-error' }), 2000); }),
+        ]).finally(() => { if (timer) clearTimeout(timer); });
+    }
     ensureStorageDir();
 
     // Lock order matches transcript append/mutation: per-session file lock OUTER,
@@ -1381,7 +1656,7 @@ export async function migratePendingSessionIdentity(
 /**
  * Get full session data including messages
  */
-export function getSessionData(sessionId: string): SessionData | null {
+export async function getSessionData(sessionId: string): Promise<SessionData | null> {
     const metadata = getSessionMetadata(sessionId);
     if (!metadata) {
         return null;
@@ -1395,8 +1670,38 @@ export function getSessionData(sessionId: string): SessionData | null {
  * metadata row. Bulk readers must use this path instead of looking the same
  * row up in sessions.json again for every session.
  */
-export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionData {
+export async function getSessionDataFromMetadata(metadata: SessionMetadata): Promise<SessionData> {
     const sessionId = metadata.id;
+
+    const active = activeTranscripts.get(sessionId);
+    if (active) return {
+        ...active.metadata, messages: transcriptMessages(active.writer.projection),
+        transcriptSaveStatus: active.writer.status,
+        ...(active.writer.status.reason === 'invalid-history' ? { transcriptRecovery: 'unavailable' as const } : {}),
+    };
+    let format: Awaited<ReturnType<typeof sessionTranscriptFormat>>;
+    try {
+        format = await sessionTranscriptFormat(metadata, sessionId);
+    } catch (error) {
+        // Format/file conflicts concern product history, not an already valid
+        // native binding. Expose an unavailable history without falling back
+        // to a legacy file or making the REST shell disable conversation.
+        console.warn(`[SessionStore] History format unavailable for ${sessionId}:`, error);
+        return { ...metadata, messages: [], transcriptRecovery: 'unavailable' };
+    }
+    if (format === 'v2') {
+        try {
+            const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+            // A file reader cannot infer whether another Sidecar still owns execution.
+            const messages = transcriptMessages(decoded.projection);
+            return { ...metadata, messages,
+                ...(decoded.tail === 'invalid' ? { transcriptRecovery: 'incomplete' as const } : {}),
+            };
+        } catch (error) {
+            console.warn(`[SessionStore] V2 history unavailable for ${sessionId}:`, error);
+            return { ...metadata, messages: [], transcriptRecovery: 'unavailable' };
+        }
+    }
 
     const jsonlPath = getSessionFilePath(sessionId);
     const legacyPath = getLegacySessionFilePath(sessionId);
@@ -1424,8 +1729,42 @@ export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionDa
  * per-Session writer lock used by every transcript mutation.
  */
 export async function loadSessionTranscript(sessionId: string): Promise<SessionTranscriptSnapshot> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) return snapshotActiveTranscript(active);
+    const metadata = getSessionMetadata(sessionId);
+    if (metadata?.transcriptFormat === 2) {
+        return withSessionFileLock(sessionId, async () => {
+            await sessionTranscriptFormat(metadata, sessionId);
+            const decoded = await readTranscriptFile(getV2SessionFilePath(sessionId), sessionId);
+            const messages = transcriptMessages(decoded.projection);
+            return { messages, cursor: issueV2Cursor(sessionId, messages.length, decoded.header.generation, decoded.revision), hasMalformedRows: decoded.tail === 'invalid' };
+        });
+    }
+    if (await pathExists(getV2SessionFilePath(sessionId)) || metadata?.transcriptFormat !== undefined) {
+        throw new TranscriptStorageError('invalid-history', 'Conflicting or unsupported transcript format');
+    }
     ensureStorageDir();
     return withSessionFileLock(sessionId, async () => loadSessionTranscriptLocked(sessionId));
+}
+
+function issueV2Cursor(sessionId: string, count: number, generation: string, revision: number, live?: TranscriptSaveStatus): TranscriptWriteCursor {
+    return Object.freeze({
+        persistedMessageCount: count,
+        [transcriptCursorState]: Object.freeze({
+            sessionId,
+            file: { exists: true, dev: 0, ino: 0, size: 0, mtimeMs: 0, ctimeMs: 0, endsWithNewline: true },
+            v2: Object.freeze({ generation, revision, ...(live ? { instanceId: live.instanceId, liveRevision: live.liveRevision } : {}) }),
+        }),
+    });
+}
+
+function snapshotActiveTranscript(active: SessionTranscript): SessionTranscriptSnapshot {
+    const messages = transcriptMessages(active.writer.projection);
+    const status = active.writer.status;
+    return {
+        messages, cursor: issueV2Cursor(status.sessionId, messages.length, status.generation, status.durableRevision, status),
+        hasMalformedRows: status.reason === 'invalid-history',
+    };
 }
 
 export type ConversationMutationResult =
@@ -1448,7 +1787,7 @@ function conversationMutationSuccess(
         success: true,
         metadata,
         messages,
-        cursor: issueTranscriptCursor(
+        cursor: activeTranscripts.has(sessionId) ? snapshotActiveTranscript(activeTranscripts.get(sessionId)!).cursor : issueTranscriptCursor(
             sessionId,
             messages.length,
             getTranscriptFileIdentity(getSessionFilePath(sessionId)),
@@ -1546,6 +1885,15 @@ async function resolvePendingConversationMutationLocked(
 export async function resolvePendingConversationMutation(
     sessionId: string,
 ): Promise<ConversationMutationResult> {
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined) {
+        try {
+            const active = await activateSessionTranscript(sessionId);
+            if (!active) return { success: false, reason: 'precondition_failed', error: 'Session metadata is missing' };
+            return conversationMutationSuccess(sessionId, active.metadata, transcriptMessages(active.writer.projection));
+        } catch (error) {
+            return { success: false, reason: 'storage_consistency_error', error: error instanceof Error ? error.message : String(error) };
+        }
+    }
     ensureStorageDir();
     try {
         return await withSessionFileLock(sessionId, () => resolvePendingConversationMutationLocked(sessionId));
@@ -1568,6 +1916,13 @@ export async function commitCodexConversationRewind(input: {
     sourceMessages: SessionMessage[];
     targetMessages: SessionMessage[];
 }): Promise<ConversationMutationResult> {
+    if (getSessionMetadata(input.sessionId)?.transcriptFormat !== undefined) {
+        return commitV2ConversationMutation(input.sessionId, {
+            schemaVersion: 1, kind: 'codex-rewind', sourceRuntimeSessionId: input.sourceRuntimeSessionId,
+            replacementRuntimeSessionId: input.replacementRuntimeSessionId,
+            sourceMessageCount: input.sourceMessages.length, targetMessageCount: input.targetMessages.length,
+        }, input.targetMessages.map(message => message.id), input.sourceMessages.map(message => message.id));
+    }
     ensureStorageDir();
     if (
         input.targetMessages.length >= input.sourceMessages.length
@@ -1653,6 +2008,18 @@ export async function commitBuiltinConversationRewind(input: {
     targetMessageId: string;
     targetMessageCount: number;
 }): Promise<ConversationMutationResult> {
+    if (input.cursor[transcriptCursorState].v2) {
+        const active = activeTranscripts.get(input.sessionId);
+        if (!active || !v2CursorMatches(active, input.cursor)) return { success: false, reason: 'precondition_failed', error: 'Stale V2 rewind cursor' };
+        const source = transcriptMessages(active.writer.projection);
+        const derived = deriveTranscriptMutationTarget(source, { kind: 'builtin-rewind', targetMessageId: input.targetMessageId, targetMessageCount: input.targetMessageCount });
+        if (!derived.ok || !derived.target) return { success: false, reason: 'precondition_failed', error: derived.ok ? 'Empty rewind target' : derived.error };
+        return commitV2ConversationMutation(input.sessionId, {
+            schemaVersion: 1, kind: 'builtin-rewind', sourceSdkSessionId: input.sourceSdkSessionId,
+            replacementSdkSessionId: input.replacementSdkSessionId,
+            sourceMessageCount: source.length, targetMessageCount: derived.target.length,
+        }, derived.target.map(message => message.id), source.map(message => message.id));
+    }
     ensureStorageDir();
     if (input.sourceSdkSessionId === input.replacementSdkSessionId) {
         return { success: false, reason: 'precondition_failed', error: 'Replacement SDK identity must be fresh' };
@@ -1752,7 +2119,7 @@ export async function commitBuiltinConversationRewind(input: {
 /**
  * Calculate session statistics from messages
  */
-export function calculateSessionStats(messages: SessionMessage[]): SessionStats {
+export function calculateSessionStats(messages: readonly Pick<SessionMessage, 'role' | 'usage'>[]): SessionStats {
     let messageCount = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -1877,6 +2244,28 @@ export async function appendSessionMessages(
     cursor: TranscriptWriteCursor,
     messages: readonly SessionMessage[],
 ): Promise<AppendSessionMessagesResult> {
+    const v2 = cursor[transcriptCursorState].v2;
+    if (v2) {
+        const active = activeTranscripts.get(sessionId) ?? await activateSessionTranscript(sessionId);
+        if (!active || cursor[transcriptCursorState].sessionId !== sessionId
+            || (v2.instanceId && (v2.instanceId !== active.writer.status.instanceId || v2.liveRevision !== active.writer.status.liveRevision))
+            || v2.generation !== active.writer.status.generation) {
+            return { ok: false, reason: 'stale-cursor', error: 'V2 transcript changed before explicit append' };
+        }
+        for (const message of messages) {
+            active.writer.observe({ kind: 'message-create', message: fromStoredTranscriptMessage(message) });
+        }
+        if (messages.length) {
+            const projection = transcriptMessages(active.writer.projection);
+            active.patchMetadata({ stats: calculateSessionStats(projection), lastMessagePreview: resolveLastVisibleTurnPreview(projection).preview });
+        }
+        if (!await active.writer.flush()) return { ok: false, reason: 'write-error', error: 'V2 append could not confirm saving', cursor };
+        const snapshot = snapshotActiveTranscript(active);
+        return { ok: true, action: messages.length ? 'appended' : 'noop', count: messages.length, totalCount: snapshot.messages.length, cursor: snapshot.cursor };
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined || await pathExists(getV2SessionFilePath(sessionId))) {
+        return { ok: false, reason: 'storage-consistency-error', error: 'Legacy cursor cannot write a versioned transcript' };
+    }
     ensureStorageDir();
     const filePath = getSessionFilePath(sessionId);
     try {
@@ -1997,12 +2386,86 @@ function deriveTranscriptMutationTarget(
     return { ok: true, target: target.length === messages.length ? null : target };
 }
 
-/** Commit a named destructive transcript operation from a proven durable source. */
+function v2CursorMatches(active: SessionTranscript, cursor: TranscriptWriteCursor): boolean {
+    const stamp = cursor[transcriptCursorState];
+    const current = active.writer.status;
+    return stamp.sessionId === current.sessionId && stamp.v2?.generation === current.generation
+        && (stamp.v2.instanceId
+            ? stamp.v2.instanceId === current.instanceId && stamp.v2.liveRevision === current.liveRevision
+            : stamp.v2.revision === current.durableRevision && current.liveRevision === current.durableRevision);
+}
+
+function selectV2Messages(source: TranscriptProjection, ids: readonly string[]): TranscriptProjection {
+    const target = createTranscriptProjection();
+    const selected = new Set(ids);
+    const changedTurns = new Set<string>();
+    for (const message of source.messages.values()) {
+        if (selected.has(message.id)) target.messages.set(message.id, message);
+        else if (message.turnId) changedTurns.add(message.turnId);
+    }
+    for (const [id, turn] of source.turns) {
+        if (!selected.has(turn.rootUserMessageId)) continue;
+        target.turns.set(id, changedTurns.has(id)
+            ? { ...turn, status: 'interrupted', usage: undefined, durationMs: undefined } : turn);
+    }
+    return target;
+}
+
+async function commitV2ConversationMutation(
+    sessionId: string, intent: PendingConversationMutation, targetIds: string[], sourceIds: string[],
+): Promise<ConversationMutationResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (!active || active.hasPendingMutation || targetIds.length >= sourceIds.length
+        || targetIds.some((id, index) => id !== sourceIds[index])) {
+        return { success: false, reason: 'precondition_failed', error: 'V2 rewind requires a current, complete source prefix' };
+    }
+    const current = active.metadata;
+    const sourceMatches = intent.kind === 'codex-rewind'
+        ? current.runtime === 'codex' && current.runtimeSessionId === intent.sourceRuntimeSessionId
+        : (current.runtime ?? 'builtin') === 'builtin'
+            && (resolveBuiltinSdkSessionId(current) ?? null) === intent.sourceSdkSessionId
+            && intent.replacementSdkSessionId !== intent.sourceSdkSessionId;
+    if (!sourceMatches) return { success: false, reason: 'precondition_failed', error: 'Native rewind source binding changed' };
+    const revision = active.writer.status.liveRevision;
+    if (!await active.writer.flush()) return { success: false, reason: 'write_error', error: 'Rewind could not confirm its source within the save deadline' };
+    const source = [...active.writer.projection.messages.keys()];
+    if (revision !== active.writer.status.liveRevision || source.length !== sourceIds.length || source.some((id, i) => id !== sourceIds[i])) {
+        return { success: false, reason: 'precondition_failed', error: 'V2 rewind source changed while preparing' };
+    }
+    const target = selectV2Messages(active.writer.projection, targetIds);
+    const messages = transcriptMessages(target);
+    const updated = intent.kind === 'codex-rewind'
+        ? finalizeCodexRewindMetadata(current, intent, messages)
+        : finalizeBuiltinRewindMetadata(current, intent, messages);
+    // This is the logical commit. Native binding and live history now describe
+    // the same target; file publication is asynchronous and cannot undo it.
+    active.beginConversationMutation(intent, updated, target);
+    return conversationMutationSuccess(sessionId, active.metadata, messages);
+}
+
+/** Commit a named destructive transcript operation from the owner's proven source. */
 export async function mutateSessionTranscript(
     sessionId: string,
     cursor: TranscriptWriteCursor,
     intent: TranscriptMutationIntent,
 ): Promise<MutateSessionTranscriptResult> {
+    if (cursor[transcriptCursorState].v2) {
+        const active = activeTranscripts.get(sessionId);
+        if (!active || !v2CursorMatches(active, cursor)) return { ok: false, reason: 'stale-cursor', error: 'V2 mutation source changed' };
+        const derived = deriveTranscriptMutationTarget(transcriptMessages(active.writer.projection), intent);
+        if (!derived.ok) return { ok: false, reason: 'precondition-failed', error: derived.error };
+        if (!derived.target) return { ok: true, action: 'noop', cursor };
+        if (active.hasPendingMutation || active.writer.status.reason === 'invalid-history') {
+            return { ok: false, reason: 'malformed-transcript', error: 'V2 mutation requires a complete, settled source' };
+        }
+        const target = selectV2Messages(active.writer.projection, derived.target.map(message => message.id));
+        active.writer.replaceProjection(target);
+        active.patchMetadata({ stats: calculateSessionStats(derived.target), lastMessagePreview: resolveLastVisibleTurnPreview(derived.target).preview });
+        return { ok: true, action: 'replaced', cursor: snapshotActiveTranscript(active).cursor };
+    }
+    if (getSessionMetadata(sessionId)?.transcriptFormat !== undefined || await pathExists(getV2SessionFilePath(sessionId))) {
+        return { ok: false, reason: 'precondition-failed', error: 'Legacy mutation cannot change versioned history' };
+    }
     ensureStorageDir();
     const filePath = getSessionFilePath(sessionId);
     try {
@@ -2115,6 +2578,17 @@ export async function updateSessionMetadata(
      */
     precondition?: (current: SessionMetadata) => boolean,
 ): Promise<SessionMetadata | null> {
+    const active = activeTranscripts.get(sessionId);
+    if (active && updates.pinned === undefined && !precondition) {
+        if (active.isRevoked) return null;
+        const current = active.metadata;
+        const { pinned: _pinned, ...patch } = updates;
+        if (patch.lastActiveAt !== undefined) patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
+        return active.patchMetadata(patch);
+    }
+    // Explicit CAS edits wait only for their own bounded publication. Ordinary
+    // AI/birth lifecycle uses the active binding entrypoint below.
+    if (active && !(await active.writer.flush())) return null;
     // Race-safe read-modify-write — must happen entirely under
     // `withSessionsLock` so a concurrent updater (e.g. periodic stats /
     // title patch / runtime-change freeze) doesn't get its just-applied
@@ -2167,7 +2641,22 @@ export async function updateSessionMetadata(
             console.error('[SessionStore] updateSessionMetadata write failed:', error);
         }
     });
+    if (result && active) active.adoptPublishedMetadata(result);
     return result;
+}
+
+/** Admission CAS is adjudicated by the current binding, even before its disk
+ * birth exists. It must never inherit a product-edit durability dependency. */
+export async function updateSessionMetadataForBinding(
+    sessionId: string,
+    updates: Parameters<typeof updateSessionMetadata>[1],
+    precondition: (current: SessionMetadata) => boolean,
+): Promise<SessionMetadata | null> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (!active) return updateSessionMetadata(sessionId, updates, precondition);
+    if (!precondition(active.metadata)) return null;
+    const { pinned: _pinned, ...patch } = updates;
+    return active.patchMetadata(patch);
 }
 
 export async function commitPreparedSessionForFirstUserTurn(
@@ -2181,6 +2670,22 @@ export async function commitPreparedSessionForFirstUserTurn(
         lastMessagePreview?: string;
     },
 ): Promise<SessionMetadata | null> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) return null;
+        const current = active.metadata;
+        const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+        return active.patchMetadata({
+            ...(current.title === 'New Chat' && current.titleSource !== 'user' && title ? { title, titleSource: 'default' } : {}),
+            ...(!current.origin && params.origin ? { origin: params.origin } : {}),
+            ...(params.runtimeSessionId ? { runtimeSessionId: params.runtimeSessionId } : {}),
+            ...(current.materializationState === 'prepared' ? {
+                materializationState: undefined, materializationSourceSessionId: undefined,
+                lastMessagePreview: params.lastMessagePreview,
+                ...(params.lastActiveAt ? { lastActiveAt: monotonicLastActiveAt(current.lastActiveAt, params.lastActiveAt) } : {}),
+            } : {}),
+        });
+    }
     ensureStorageDir();
     const title = params.title ?? generateSessionTitle(params.messageText ?? '');
     let result: SessionMetadata | null = null;
@@ -2254,6 +2759,23 @@ export async function claimPreparedSessionForTurnAdmission(
         lastMessagePreview?: string;
     },
 ): Promise<PreparedSessionAdmissionClaimResult> {
+    const active = activeTranscripts.get(sessionId);
+    if (active) {
+        if (active.isRevoked) return { status: 'not-found' };
+        const current = active.metadata;
+        if (current.materializationState !== 'prepared') return { status: 'already-committed', metadata: current };
+        if (expectedSourceSessionId !== undefined && current.materializationSourceSessionId !== expectedSourceSessionId) return { status: 'source-mismatch' };
+        // No await between the ownership check and claim. Rollback uses this
+        // same instance, so a stale prepared disk row cannot revoke admission.
+        const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+        const metadata = active.patchMetadata({
+            materializationState: undefined, materializationSourceSessionId: undefined,
+            lastMessagePreview: params.lastMessagePreview,
+            ...(current.title === 'New Chat' && current.titleSource !== 'user' && title ? { title, titleSource: 'default' } : {}),
+            ...(!current.origin && params.origin ? { origin: params.origin } : {}),
+        });
+        return { status: 'claimed', metadata };
+    }
     ensureStorageDir();
     const title = params.title ?? generateSessionTitle(params.messageText ?? '');
 
@@ -2337,6 +2859,117 @@ export async function createSession(agentDir: string, snapshot?: Partial<Session
     await saveSessionMetadata(session);
     console.log(`[SessionStore] Created session ${session.id} for ${agentDir} runtime=${session.runtime} configSnapshot=${session.configSnapshotAt ? 'yes' : 'no'}`);
     return session;
+}
+
+/** Fork must import a complete product source, including any history predating
+ * a resumed native turn. An incomplete live tail is still usable for AI. */
+export async function assertCompleteSessionForkSource(sessionId: string): Promise<void> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (active) {
+        if (active.writer.status.reason === 'invalid-history') {
+            throw new TranscriptStorageError('invalid-history', 'Cannot fork an incompletely restored conversation');
+        }
+        return;
+    }
+    const source = await getSessionData(sessionId);
+    if (!source || source.transcriptRecovery) {
+        throw new TranscriptStorageError('invalid-history', 'Cannot fork an incompletely restored conversation');
+    }
+}
+
+/** Publish an unopened fork as one validated V2 baseline. This explicit
+ * transaction never installs a target writer in the source Session Sidecar.
+ * The prepared row stays hidden until the complete candidate is durable.
+ */
+export async function publishForkSession(
+    metadata: SessionMetadata, messages: readonly SessionMessage[], sourceSessionId: string,
+    timeoutMs = 2000,
+): Promise<void> {
+    if (!ownsSessionMetadataBirth(metadata) || metadata.transcriptFormat !== 2 || getSessionMetadata(metadata.id)) {
+        throw new Error('Fork target must be a fresh V2 Session birth');
+    }
+    await assertCompleteSessionForkSource(sourceSessionId);
+    const prepared: SessionMetadata = { ...metadata, materializationState: 'prepared', materializationSourceSessionId: sourceSessionId };
+    let cancelled = false;
+    let candidate: TranscriptFile | undefined;
+    const task = (async () => {
+        await publishV2Metadata(prepared, {}, true);
+        if (cancelled) throw new Error('Fork publication expired');
+        const copied = await copyForkAttachments(messages, metadata.id);
+        if (cancelled) throw new Error('Fork publication expired');
+        const projection = createTranscriptProjection();
+        for (const message of copied) {
+            if (projection.messages.has(message.id)) throw new Error('Duplicate fork message identity');
+            projection.messages.set(message.id, fromStoredTranscriptMessage(message));
+        }
+        const generation = randomUUID();
+        const file = candidate = new TranscriptFile({
+            sessionId: metadata.id, filePath: getV2SessionFilePath(metadata.id), generation,
+            allowCreate: true, withLock: run => withSessionFileLock(metadata.id, run),
+            publishBirth: async () => {
+                if (cancelled) throw new Error('Fork publication expired');
+                await publishV2Metadata(prepared, {
+                    materializationState: undefined, materializationSourceSessionId: undefined,
+                    lastMessagePreview: resolveLastVisibleTurnPreview([...messages]).preview,
+                    stats: calculateSessionStats(messages),
+                }, false);
+            },
+        });
+        await file.replace({ generation, revision: 0 }, projection, 0);
+    })();
+    // Cancellation ends only the caller's wait. Cleanup follows the actual IO,
+    // under the same file/metadata locks; it cannot race a late rename/commit.
+    const cleanup = task.catch(async error => {
+        await candidate?.discardCandidate();
+        const cleanup = await deleteSession(metadata.id, { kind: 'prepared-materialization-rollback', sourceSessionId });
+        if (cleanup.deleted) await discardForkAttachments(metadata.id);
+        throw error;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([cleanup, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => { cancelled = true; reject(new Error('Fork history could not be saved in time')); }, timeoutMs);
+        })]);
+    } finally { if (timer) clearTimeout(timer); }
+}
+
+/** Explicit unopened/fork targets hand off only after a committed publication.
+ * Ordinary births run inside their Session Sidecar and never use this barrier.
+ */
+export async function publishSessionForHandoff(sessionId: string): Promise<boolean> {
+    const active = getActiveSessionTranscript(sessionId);
+    if (!active || !(await active.writer.flush())) return false;
+    await active.writer.close();
+    if (activeTranscripts.get(sessionId) === active) activeTranscripts.delete(sessionId);
+    return true;
+}
+
+/** Existing binding owner calls this before changing the Session ID of its
+ * process. Unlike shutdown, a failed retirement retains the usable binding. */
+export async function releaseSessionTranscriptForBinding(sessionId: string, timeoutMs = 2000): Promise<void> {
+    const active = activeTranscripts.get(sessionId);
+    if (!active) return;
+    if (!await active.retire(timeoutMs)) throw new Error('Session history IO is still finishing; retry the session change');
+    if (activeTranscripts.get(sessionId) === active) activeTranscripts.delete(sessionId);
+}
+
+/** Last-owner/process shutdown has a finite product-history drain. A timeout
+ * revokes producers but does not pretend to cancel an outstanding filesystem
+ * operation; Rust still waits for this process to exit before replacement.
+ */
+export async function drainSessionTranscripts(timeoutMs = 1500): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const transcripts = [...activeTranscripts.values()];
+    await Promise.all(transcripts.map(transcript => transcript.writer.flush(timeoutMs)));
+    const closing = Promise.all(transcripts.map(transcript => transcript.revoke()));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([closing, new Promise<void>(resolve => { timer = setTimeout(resolve, remaining); })]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 /**
