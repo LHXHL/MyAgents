@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getDefaultRuntimePermissionMode, type RuntimeType } from '../../shared/types/runtime';
+import { getDefaultRuntimePermissionMode, getMaxPermissionForRuntime, type RuntimeType } from '../../shared/types/runtime';
 import {
   REQUIRED_SYSTEM_SKILLS,
   TASK_ALIGNMENT_SKILL_REQUIREMENT,
@@ -714,6 +714,74 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  const externalIdentities = [
+    { runtimeType: 'claude-code', runtimeSource: 'system-cli' },
+    { runtimeType: 'codex', runtimeSource: 'system-cli' },
+    { runtimeType: 'codex', runtimeSource: 'managed-provider' },
+    { runtimeType: 'gemini', runtimeSource: 'system-cli' },
+  ] as const;
+
+  it.each(externalIdentities)('keeps V1 format and native identity across IM, Inbox and background continuation ($runtimeType/$runtimeSource)', async identity => {
+    const harness = await createHarness(['IM', 'Inbox', 'background'].map(text => ({ kind: 'success', text })), identity);
+    const sessionId = 'legacy-cross-surface';
+    const workspacePath = join(harness.home, 'workspace');
+    const metadata = { id: sessionId, agentDir: workspacePath, title: 'legacy', createdAt: 't', lastActiveAt: 't',
+      runtime: identity.runtimeType, runtimeSource: identity.runtimeSource, runtimeSessionId: 'native-existing' };
+    await harness.sessionStore.saveSessionMetadata(metadata);
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
+    const im = await harness.engine.enqueueImMessage({ message: 'IM', requestId: 'im-existing', sessionId, workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'group' }, metadataBirthPending: false });
+    expect(im.success).toBe(true);
+    expect(im).toMatchObject({ success: true, queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const inbox = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath,
+      scenario: { type: 'desktop' }, allowLazySessionMaterialization: true });
+    expect(inbox).toMatchObject({ queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(await runInjectedTurn(harness, { prompt: 'background', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2_000, pollMs: 10 })).toMatchObject({ success: true });
+    expect(harness.runtime.startSessionResumeIds[0]).toBe(identity.runtimeType === 'claude-code' ? sessionId : 'native-existing');
+    expect(harness.sessionStore.getSessionMetadata(sessionId)).toMatchObject({ id: sessionId, runtime: identity.runtimeType, runtimeSource: identity.runtimeSource });
+    expect(harness.sessionStore.getSessionMetadata(sessionId)?.transcriptFormat).toBeUndefined();
+    expect(harness.sessionStore.getActiveSessionTranscript(sessionId)).toBeUndefined();
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(row => row.role === 'assistant')).toHaveLength(3);
+  });
+
+  it.each(externalIdentities)('admits IM birth and Inbox/Task/Goal/Heartbeat turns during product IO failure ($runtimeType/$runtimeSource)', async identity => {
+    const prompts = ['IM', 'Inbox', 'Task', 'Goal', 'Heartbeat'];
+    const harness = await createHarness(prompts.map(text => ({ kind: 'success', text, includeTool: true })), identity);
+    const sessionId = 'cross-surface-fault';
+    const workspacePath = join(harness.home, 'workspace');
+    productBirthFault.deny = true;
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
+    const im = await harness.engine.enqueueImMessage({ message: 'IM', requestId: 'im-birth', sessionId, workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, metadataBirthPending: true, permissionMode: getMaxPermissionForRuntime(identity.runtimeType) });
+    expect(im).toMatchObject({ success: true, queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const inbox = await harness.engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath,
+      scenario: { type: 'desktop' }, allowLazySessionMaterialization: true });
+    expect(inbox).toMatchObject({ queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    for (const prompt of prompts.slice(2)) {
+      const result = await runInjectedTurn(harness, { prompt, sessionId, workspacePath,
+        scenario: prompt === 'Heartbeat' ? { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }
+          : { type: 'cron', taskId: prompt, intervalMinutes: 15, aiCanExit: false },
+        assistantChannelDelivery: 'caller-owned', timeoutMs: 2_000, pollMs: 10 });
+      expect(result).toMatchObject({ success: true });
+    }
+    expect(harness.runtime.sentMessages).toEqual(prompts);
+    const transcript = harness.sessionStore.getActiveSessionTranscript(sessionId)!;
+    expect(transcript.metadata.transcriptFormat).toBe(2);
+    expect(await transcript.writer.flush(50)).toBe(false);
+    const live = await harness.sessionStore.getSessionData(sessionId);
+    expect(live?.messages.filter(row => row.role === 'assistant')).toHaveLength(prompts.length);
+    expect(broadcastEvents.some(item => item.event === 'chat:agent-error')).toBe(false);
+    productBirthFault.deny = false;
+    expect(await transcript.writer.flush()).toBe(true);
+    await transcript.revoke();
+    vi.resetModules();
+    const coldStore = await import('../SessionStore');
+    expect((await coldStore.getSessionData(sessionId))?.messages).toEqual(live?.messages);
+  });
   it.each(['system-cli', 'managed-provider'] as const)('admits the first real prewarmed turn and next turn despite product-directory EACCES before metadata birth (%s)', async runtimeSource => {
     const harness = await createHarness([{ kind: 'success', text: 'first' }, { kind: 'success', text: 'next' }], { runtimeSource });
     const sessionId = 'session-prewarm-birth-io';
@@ -775,19 +843,20 @@ describe('external SessionEngine with fake runtime', () => {
     } finally { syncIo.mockRestore(); productBirthFault.deny = false; }
   });
 
-  it.each((['codex', 'claude-code', 'gemini'] as const).flatMap(runtimeType =>
-    (['hang', 'reject'] as const).map(failure => ({ runtimeType, failure })),
-  ))('completes current and next V2 AI turns with $runtimeType/$failure history IO', async ({ runtimeType, failure }) => {
+  it.each(externalIdentities.flatMap(identity =>
+    (['hang', 'reject'] as const).map(failure => ({ ...identity, failure })),
+  ))('completes current and next V2 AI turns with $runtimeType/$runtimeSource/$failure history IO', async ({ runtimeType, runtimeSource, failure }) => {
     const harness = await createHarness([
       { kind: 'success', text: 'first answer' },
       { kind: 'success', text: 'answer during storage failure' },
       { kind: 'success', text: 'next answer still works' },
-    ], { runtimeType });
+    ], { runtimeType, runtimeSource });
     const sessionId = `v2-storage-${failure}`;
     const workspacePath = join(harness.home, 'workspace');
+    await expect(harness.externalSession.restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' })).resolves.toEqual({ success: true });
     const request = (text: string): DesktopMessageRequest => ({
       ...desktopRequest(sessionId, workspacePath, text),
-      permissionMode: getDefaultRuntimePermissionMode(runtimeType),
+      permissionMode: runtimeSource === 'managed-provider' ? 'no-restrictions' : getDefaultRuntimePermissionMode(runtimeType),
     });
     const admitted = await harness.engine.sendDesktopMessage(request('first'));
     expect(admitted.error).toBeUndefined();

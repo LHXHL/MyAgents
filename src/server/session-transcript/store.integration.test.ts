@@ -50,6 +50,18 @@ async function create(patch: Partial<SessionMetadata> = {}) {
 }
 
 describe('SessionStore V2 ownership and compatibility', () => {
+  it('does not create product directories during cold identity and empty transcript reads', async () => {
+    testState.failSyncStorage = true;
+    expect(store.getAllSessionMetadata()).toEqual([]);
+    expect(store.getSessionMetadata('cold-birth')).toBeNull();
+    expect((await store.loadSessionTranscript('cold-birth')).messages).toEqual([]);
+    expect(await readdir(testState.home)).toEqual([]);
+    const { metadata, active } = await create({ id: 'cold-birth' });
+    expect(metadata.transcriptFormat).toBe(2);
+    active.writer.observe({ kind: 'message-create', message: { id: 'u', role: 'user', content: 'admitted', timestamp: 't' } });
+    expect((await store.getSessionData(metadata.id))?.messages[0].content).toBe('admitted');
+  });
+
   async function preparedBinding() {
     const binding = await import('../session-engine/product-session-binding');
     const source = await create({ id: 'pending-retiring' });

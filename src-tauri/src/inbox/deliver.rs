@@ -366,7 +366,12 @@ where
     let lifecycle =
         std::sync::Arc::new(crate::sidecar::acquire_session_lifecycle(&[&to_sid]).await);
 
-    if !session_target_is_eligible(birth_policy, || session_metadata_exists(&to_sid)) {
+    if !session_target_is_eligible(birth_policy, || {
+        manager
+            .lock()
+            .is_ok_and(|state| state.session_has_owners(&to_sid))
+            || session_metadata_exists(&to_sid)
+    }) {
         ulog_warn!(
             "[inbox] target {} no longer exists — refusing to recreate it for delivery",
             to_sid

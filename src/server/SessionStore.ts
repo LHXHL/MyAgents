@@ -884,8 +884,6 @@ function migrateToJsonl(sessionId: string): SessionMessage[] {
  * Read all session metadata
  */
 export function getAllSessionMetadata(): SessionMetadata[] {
-    ensureStorageDir();
-
     try {
         return readSessionsIndexStrict();
     } catch (error) {
@@ -1743,7 +1741,12 @@ export async function loadSessionTranscript(sessionId: string): Promise<SessionT
     if (await pathExists(getV2SessionFilePath(sessionId)) || metadata?.transcriptFormat !== undefined) {
         throw new TranscriptStorageError('invalid-history', 'Conflicting or unsupported transcript format');
     }
-    ensureStorageDir();
+    // An unmaterialized identity has nothing to read or migrate. Cold lookup
+    // must not require a writable product directory before AI admission.
+    // The returned absent-file cursor still fences a later legacy append.
+    if (!existsSync(getSessionFilePath(sessionId)) && !existsSync(getLegacySessionFilePath(sessionId))) {
+        return loadSessionTranscriptLocked(sessionId);
+    }
     return withSessionFileLock(sessionId, async () => loadSessionTranscriptLocked(sessionId));
 }
 

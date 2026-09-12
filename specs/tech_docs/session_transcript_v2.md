@@ -10,6 +10,8 @@
 
 Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidecar 保留既定 runtime/source；Agent 当前默认不能替换已经绑定的身份。pending→real 的完整出生快照沿目标 Sidecar 的现有 prepare/rekey/commit 路径传递。
 
+跨进程续聊先尊重 SidecarManager 的逻辑 owner；只有无 owner 的身份才以磁盘索引判断是否失效。IM/Heartbeat 不因未发布 metadata 轮换仍有 owner 的 Session；Task single-session 保留已接纳的绑定，出生锁在既有 Runtime admission 回调释放；Inbox/CLI watch 与 Task 评论由生命周期 owner 判断目标是否存在。冷 metadata/空历史读取不创建产品目录，避免读取成为 AI 启动的写盘前置条件。
+
 ## 内容和读取
 
 `src/shared/sessionTranscript.ts` 定义唯一内容投影与操作语义；`src/server/session-transcript/` 是 SessionStore 内的实现，不是另一个存储 owner。
@@ -48,6 +50,8 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 领域操作经现有有序 SSE/liveRevision 更新稳定 message/block 的文本、thinking、状态与回撤。较早分页按请求内保存的 ref 在 page admission 前解析最终工具输入，不能只依赖 ref 最初到达时的已加载行。大工具正文继续使用既有 bounded preview/ref；先同步显示预览，后台补引用。回填按原 Session/writer、工具目标和 renderer restore/connection generation 定位。Renderer 没有第二份完整历史 Map。
 
 REST 返回同一 revision 的历史、live overlay 与保存状态。恢复刷新整个已加载范围；分页请求仅保存有界的 post-snapshot 操作重放，跨 Session/restore/connection 的旧响应被丢弃。展示长度与磁盘文本 offset 不等价，paced reveal 与全文修正按显示目标合并。
+
+Chat Tab 与桌宠复用 `transcriptDisplay`、`transcriptToolDisplay`、`liveRevisionFence` 和 toast consumer。桌宠只转换自身的 `ai`/`text` 展示形状，不另定义 V2 内容语义；连接/重连从 REST 建立 baseline，revision gap 刷新已展示范围。旧格式继续 legacy chunk 路径；复用的 Sidecar 不重新推送工作区 MCP/Agent 默认配置。
 
 `chat:transcript-save-status` 与 REST transcriptSaveStatus 只产生 toast：故障 5 秒、恢复 3 秒，同一 Session/instance/incident 在 ToastProvider 生命周期去重。发送、插话、工具、草稿和焦点保持可用。恢复必须对应实际提交、出生 metadata 已发布、记录缺口消失；单次试写成功不能宣称恢复。
 

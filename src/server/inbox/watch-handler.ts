@@ -27,7 +27,7 @@ interface ManagementWatchResult {
   watchId: string;
   targetSessionId: string;
   targetStateAtRegistration: string;
-  delivery: 'registered' | 'already_idle' | 'error';
+  delivery: 'registered' | 'already_idle' | 'error' | 'not_found';
   finalState?: string;
   terminalReason?: string;
   latestResult?: string;
@@ -127,16 +127,8 @@ export async function handleAdminSessionWatch(
   }
 
   const targetMeta = getSessionMetadata(targetSessionId);
-  if (!targetMeta) {
-    return {
-      status: 404,
-      response: {
-        watched: false,
-        targetSessionId,
-        error: { code: 'session_not_found', message: `target session ${targetSessionId} not found` },
-      },
-    };
-  }
+  // Only Rust can decide whether a target owned by another Sidecar exists.
+  // Its active V2 metadata may not yet be visible in this process's index.
 
   const watcherMeta = getSessionMetadata(watcherSessionId);
   const watchId = randomUUID();
@@ -200,6 +192,10 @@ export async function handleAdminSessionWatch(
   }
 
   const result = mgmt.result;
+  if (result.delivery === 'not_found') {
+    return { status: 404, response: { watched: false, targetSessionId,
+      error: { code: 'session_not_found', message: `target session ${targetSessionId} not found` } } };
+  }
   if (result.delivery === 'already_idle' || result.delivery === 'error') {
     const latestResult = result.latestResult?.trim() || await latestResultForSession(targetSessionId);
     const eventPrompt = buildWatchEventPrompt({

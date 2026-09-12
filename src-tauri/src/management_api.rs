@@ -4650,9 +4650,9 @@ async fn inbox_start_session_handler(
 
 /// `POST /api/session/watch` — register a one-shot cross-session watch.
 ///
-/// The caller sidecar validates session metadata and passes watcher resume
-/// information. Rust owns the live state observation because the SidecarManager
-/// is the source of truth for running/starting/idle process state.
+/// The caller passes watcher resume information. Rust validates target existence
+/// against logical owners and persisted metadata, and observes live state through
+/// SidecarManager; an unpublished live V2 Session is still a valid watch target.
 async fn session_watch_handler(
     Json(req): Json<crate::inbox::watch::SessionWatchRequest>,
 ) -> Json<serde_json::Value> {

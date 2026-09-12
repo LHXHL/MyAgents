@@ -43,13 +43,14 @@ let agent: typeof import('../agent-session');
 let store: typeof import('../SessionStore');
 let releaseWrite: (() => void) | undefined;
 
-function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId: string } }) {
+function fakeQuery(args: { prompt: AsyncIterable<unknown>; options: { sessionId?: string; resume?: string } }) {
   const prompt = args.prompt[Symbol.asyncIterator]();
   let close!: () => void;
   const closed = new Promise<void>(resolve => { close = resolve; });
   const pending: unknown[] = [];
   let turn = 0;
-  const sessionId = args.options.sessionId;
+  const sessionId = args.options.sessionId ?? args.options.resume;
+  if (!sessionId) throw new Error('SDK test transport requires a new or resumed Session identity');
   const iterator = {
     async next(): Promise<IteratorResult<unknown>> {
       if (pending.length) return { done: false, value: pending.shift() };
@@ -149,6 +150,40 @@ afterEach(async () => {
 });
 
 describe('builtin V2 execution independent of product storage', () => {
+  it.each(['v1', 'v2'] as const)('keeps %s identity across real builtin IM, Inbox and injected-turn adapters', async format => {
+    const workspace = join(state.home, 'workspace');
+    await mkdir(workspace);
+    const sessionId = randomUUID();
+    if (format === 'v1') await store.saveSessionMetadata({ id: sessionId, agentDir: workspace, title: 'legacy',
+      createdAt: 't', lastActiveAt: 't', runtime: 'builtin' });
+    state.failProductIo = format === 'v2';
+    state.toolFrames = true;
+    await agent.initializeAgent(workspace, null, sessionId, { preWarmDisabled: true });
+    const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
+    const im = await engine.enqueueImMessage({ message: 'IM', requestId: 'first-im', sessionId, workspacePath: workspace,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, metadataBirthPending: format === 'v2' });
+    expect(im.success).toBe(true);
+    await expect(engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const inbox = await engine.enqueueInboxMessage({ text: 'Inbox', sessionId, workspacePath: workspace,
+      scenario: { type: 'desktop' }, allowLazySessionMaterialization: true });
+    expect(inbox.error).toBeUndefined();
+    await expect(engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    for (const prompt of ['Task', 'Goal', 'Heartbeat']) {
+      expect(await engine.runInjectedTurn({ prompt, sessionId, workspacePath: workspace,
+        scenario: { type: 'cron', taskId: prompt, intervalMinutes: 15, aiCanExit: false },
+        assistantChannelDelivery: 'caller-owned', timeoutMs: 2_000, pollMs: 10 })).toMatchObject({ success: true });
+    }
+    expect(agent.getSessionId()).toBe(sessionId);
+    expect(store.getSessionMetadata(sessionId)?.transcriptFormat).toBe(format === 'v2' ? 2 : undefined);
+    expect((await store.getSessionData(sessionId))?.messages.filter(row => row.role === 'assistant')).toHaveLength(5);
+    if (format === 'v2') {
+      const active = store.getActiveSessionTranscript(sessionId)!;
+      expect(await active.writer.flush(50)).toBe(false);
+      state.failProductIo = false;
+      expect(await active.writer.flush()).toBe(true);
+    } else expect(store.getActiveSessionTranscript(sessionId)).toBeUndefined();
+  });
+
   it('keeps an existing V1 identity on the legacy path when an Inbox-style request allows missing metadata', async () => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace);
@@ -267,7 +302,11 @@ describe('builtin V2 execution independent of product storage', () => {
     expect(agent.getMessages().map(row => row.id)).toEqual(rows.slice(0, 2).map(row => row.id));
     await agent.enqueueUserMessage('after rewind', [], undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined, { channelDelivery: NO_CHANNEL_DELIVERY });
-    await vi.waitFor(() => expect(state.query).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      expect(agent.isSessionBusy()).toBe(false);
+      expect(agent.getMessages().at(-1)?.role).toBe('assistant');
+    });
+    expect(state.query).toHaveBeenCalledTimes(2);
     expect(state.query.mock.calls[1][0].options.resumeSessionAt).toBe('tail-frame-1');
   });
 

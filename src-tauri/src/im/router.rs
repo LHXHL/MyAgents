@@ -390,12 +390,15 @@ impl SessionRouter {
             .map(|peer| peer.session_id.clone())
         {
             let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
+            let has_live_owner = manager
+                .lock()
+                .is_ok_and(|state| state.session_has_owners(&session_id));
             match crate::sidecar::has_persisted_session_owner(&session_id).await {
-                Ok(false) => {
+                Ok(false) if !has_live_owner => {
                     self.reconcile_peer_session_metadata_before_use(session_key, manager)
                         .await
                 }
-                Ok(true) => {}
+                Ok(_) => {}
                 Err(error) => ulog_warn!(
                     "[im-router] Skipping Session identity reconciliation for {}: {}",
                     session_id,
@@ -1774,10 +1777,10 @@ mod tests {
     use super::{
         parse_session_key, peer_binding_source_requires_freeze, persisted_session_runtime_differs,
         persisted_session_runtime_identity_differs, reconcile_peer_metadata_with_lookup,
-        EnsureSidecarInfo, PeerMetadataDisposition, SessionRouter,
+        EnsureSidecarInfo, EnsureSidecarPrep, PeerMetadataDisposition, SessionRouter,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
-    use crate::sidecar::SidecarManager;
+    use crate::sidecar::{SidecarManager, SidecarOwner};
 
     fn peer(session_key: &str, session_id: &str) -> PeerSession {
         let (source_type, source_id) = parse_session_key(session_key);
@@ -2203,6 +2206,38 @@ mod tests {
         assert_eq!(restored_peer.message_count, 0);
         assert!(restored_peer.metadata_birth_pending);
         assert!(!restored_peer.metadata_indexed);
+    }
+
+    #[tokio::test]
+    async fn accepted_unpublished_peer_keeps_its_owned_identity_on_next_ingress() {
+        for owner in [
+            SidecarOwner::Agent("peer-v2".into()),
+            SidecarOwner::Companion("floating-ball".into()),
+        ] {
+            let session_id = format!("unpublished-{}", uuid::Uuid::new_v4());
+            let mut router = SessionRouter::new(PathBuf::from("/synthetic"));
+            let mut binding = peer("peer-v2", &session_id);
+            binding.sidecar_port = 0; // A stale port cache must not rotate a live identity.
+            binding.metadata_birth_pending = true;
+            binding.metadata_indexed = false;
+            router.upsert_peer_session(binding);
+            router.mark_metadata_birth_consumed_if_session("peer-v2", &session_id);
+            let manager = Arc::new(Mutex::new(SidecarManager::new()));
+            manager
+                .lock()
+                .unwrap()
+                .insert_test_ready_frontend_sidecar(&session_id, 1234, owner);
+            let EnsureSidecarPrep::NeedCreate(info) =
+                router.prepare_ensure_sidecar("peer-v2", &manager).await
+            else {
+                panic!("stale port cache must go through authoritative ensure");
+            };
+            assert_eq!(info.session_id, session_id);
+            assert!(
+                !info.metadata_birth_pending,
+                "ordinary continuation cannot mint the Session again"
+            );
+        }
     }
 
     #[tokio::test]

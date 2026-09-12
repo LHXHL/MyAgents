@@ -81,6 +81,19 @@ pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool
         || crate::task_scheduler::has_persistent_task_for_session(session_id).await)
 }
 
+/// Product metadata may still be queued in SessionStore while a Session is
+/// already owned and executing. Disk absence only invalidates an unowned
+/// identity. Callers that mutate a binding hold its Session lifecycle fence.
+pub(crate) fn session_exists_for_continuation(
+    manager: &ManagedSidecarManager,
+    session_id: &str,
+) -> bool {
+    manager
+        .lock()
+        .is_ok_and(|state| state.session_has_owners(session_id))
+        || resolve_session_runtime_identity_full(session_id).is_some()
+}
+
 async fn has_non_tab_session_owner(
     session_id: &str,
     agents: &crate::im::ManagedAgents,
