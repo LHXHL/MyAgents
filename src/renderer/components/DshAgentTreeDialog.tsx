@@ -4,13 +4,12 @@ import { useTranslation } from 'react-i18next';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useTabApi } from '@/context/TabContext';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import type { RuntimeAgentWorkControl, RuntimeAgentWorkSnapshot, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
+import type { RuntimeAgentWorkControl, RuntimeAgentWorkSnapshot } from '../../shared/types/subagent-lifecycle';
 
 export default function DshAgentTreeDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation('chat');
   const { apiGet, apiPost } = useTabApi();
   const [items, setItems] = useState<readonly RuntimeAgentWorkSnapshot[]>([]);
-  const [configuration, setConfiguration] = useState<RuntimeAgentWorkTree['configuration']>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
@@ -28,9 +27,9 @@ export default function DshAgentTreeDialog({ onClose }: { onClose: () => void })
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const result = await requests.current.apiGet<{ success: boolean; items: RuntimeAgentWorkSnapshot[]; configuration?: RuntimeAgentWorkTree['configuration']; error?: string }>('/api/session/agent-work', { signal: controller.signal });
+        const result = await requests.current.apiGet<{ success: boolean; items: RuntimeAgentWorkSnapshot[]; error?: string }>('/api/session/agent-work', { signal: controller.signal });
         if (!result.success || !Array.isArray(result.items)) throw new Error(result.error ?? 'Agent work is unavailable');
-        if (!controller.signal.aborted) { setItems(result.items); setConfiguration(result.configuration); setLoading(false); }
+        if (!controller.signal.aborted) { setItems(result.items); setLoading(false); }
       } catch (error) {
         if (!controller.signal.aborted) { setError(error instanceof Error ? error.message : String(error)); setLoading(false); }
       } finally { if (!controller.signal.aborted) timer = setTimeout(() => { void load(); }, 2000); }
@@ -72,40 +71,46 @@ export default function DshAgentTreeDialog({ onClose }: { onClose: () => void })
     while (id && !seen.has(id)) { if (id === parent.agentId) return true; seen.add(id); id = byId.get(id)?.tree?.parentAgentId; }
     return false;
   });
-  const reportedTotal = items.reduce((sum, item) => sum + (item.totalUsage?.totalTokens ?? 0), 0);
-  const partial = items.some(item => item.totalUsage === undefined);
   return <OverlayBackdrop onClose={busy ? undefined : onClose} className="z-[220] p-4" portal>
     <section role="dialog" aria-modal="true" aria-label={t('agentTree.title')} className="glass-panel flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden">
       <header className="flex items-center justify-between gap-4 border-b border-[var(--line)] p-5">
-        <div><h2 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]"><GitBranch className="h-4 w-4" />{t('agentTree.title')} ({items.length})</h2>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">{t('agentTree.totals', { active: items.filter(active).length, tokens: items.some(item => item.totalUsage) ? reportedTotal.toLocaleString() : t('agentTree.unknown') })}{partial && items.length > 0 ? ` · ${t('agentTree.partial')}` : ''}</p>
-        </div><button onClick={onClose} disabled={Boolean(busy)} aria-label={t('agentTree.close')} className="rounded-lg p-2 text-[var(--ink)]"><X className="h-4 w-4" /></button>
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--ink)]"><GitBranch className="h-4 w-4" />{t('agentTree.title')}<span className="rounded-full bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">{items.length}</span></h2>
+        <button onClick={onClose} disabled={Boolean(busy)} aria-label={t('agentTree.close')} className="rounded-lg p-2 text-[var(--ink)]"><X className="h-4 w-4" /></button>
       </header>
       <div className="min-h-0 overflow-auto p-5">
-        <p className="mb-4 text-sm text-[var(--ink-muted)]">{t('agentTree.description')}</p>
-        {configuration && <p className="mb-3 text-xs text-[var(--ink-muted)]">{t('agentTree.effective', {
-          depth: configuration.maxDepth, active: configuration.maxActiveChildren, retained: configuration.maxRetainedChildren,
-          policy: t(`agentTree.policies.${configuration.modelPolicy}`), delivery: t(`agentTree.delivery.${configuration.messageDelivery}`),
-        })}{configuration.desiredState !== 'effective' ? ` · ${t(`agentTree.config.${configuration.desiredState}`)}` : ''}</p>}
         {notice && <p role="status" className="mb-3 text-sm text-[var(--ink-secondary)]">{notice}</p>}
         {error && <p role="alert" className="mb-3 text-sm text-[var(--error)]">{error}</p>}
-        {loading ? <p>{t('agentTree.loading')}</p> : items.length === 0 ? <p className="text-sm text-[var(--ink-muted)]">{t('agentTree.empty')}</p> : ordered.map(item => <article key={item.agentId} style={{ marginLeft: Math.min(7, (item.tree?.depth ?? 1) - 1) * 16 }} className="mb-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium text-[var(--ink)]">{item.description ?? item.agentType ?? item.agentId}</h3>
-            <span className="text-xs text-[var(--ink-muted)]">{t(`agentTree.states.${item.handleState === 'closed' ? 'closed' : item.handleState === 'stopping' ? 'stopping' : item.activation?.state ?? item.status}`)} · #{item.activation?.ordinal ?? 1}</span>
+        {loading ? <p>{t('agentTree.loading')}</p> : items.length === 0 ? <p className="text-sm text-[var(--ink-muted)]">{t('agentTree.empty')}</p> : ordered.map(item => {
+          const role = item.agentType === 'general' || item.agentType === 'Explore' || item.agentType === 'Plan'
+            ? t(`agentTree.roles.${item.agentType}`) : item.agentType ?? t('agentTree.roles.general');
+          return <article key={item.agentId} style={{ marginLeft: Math.min(7, (item.tree?.depth ?? 1) - 1) * 16 }} className="mb-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 last:mb-0">
+          <div className="flex items-start justify-between gap-3"><h3 className="min-w-0 break-words text-base font-semibold text-[var(--ink)]">{item.description || role}</h3>
+            <span className={`shrink-0 rounded-full bg-[var(--paper-inset)] px-2 py-1 text-xs ${active(item) ? 'text-[var(--accent)]' : 'text-[var(--ink-secondary)]'}`}>{t(`agentTree.states.${item.handleState === 'closed' ? 'closed' : item.handleState === 'stopping' ? 'stopping' : item.activation?.state ?? item.status}`)}</span>
           </div>
           {descendantsActive(item) && item.status !== 'running' && <p className="mt-1 text-xs text-[var(--accent)]">{t('agentTree.descendants')}</p>}
-          <p className="mt-2 break-all text-xs text-[var(--ink-muted)]">{item.agentType} · {item.modelRoute?.provider ?? t('agentTree.unknown')} / {item.model ?? t('agentTree.unknown')}</p>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">{t('agentTree.tokens')}: {item.totalUsage?.totalTokens.toLocaleString() ?? t('agentTree.unknown')} · {t('agentTree.context')}: {item.context?.projectedInputTokens?.toLocaleString() ?? t('agentTree.unknown')} / {item.context?.capacity?.toLocaleString() ?? t('agentTree.unknown')}</p>
-          <details className="mt-2 text-xs text-[var(--ink-muted)]"><summary className="cursor-pointer">{t('agentTree.details')}</summary>
-            <p className="mt-1 break-all">Agent: {item.agentId}<br />Task: {item.taskId}<br />{t('agentTree.parent')}: {item.tree?.parentAgentId ?? t('agentTree.unknown')}</p>
-            {item.result && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-sm text-[var(--ink-secondary)]">{item.result}</pre>}
+          <p className="mt-1 flex min-w-0 items-center gap-2 text-xs text-[var(--ink-muted)]"><span className="shrink-0">{role}</span>{item.model && <><span aria-hidden="true">·</span><span className="truncate" title={item.model}>{item.model}</span></>}</p>
+          <details className="mt-3 text-xs text-[var(--ink-muted)]"><summary className="w-fit cursor-pointer rounded-sm hover:text-[var(--ink)]">{t('agentTree.details')}</summary>
+            <div className="mt-3 space-y-3 border-t border-[var(--line)] pt-3">
+              {item.result && <div><p className="mb-1 font-medium text-[var(--ink-secondary)]">{t('agentTree.latestResult')}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-sm text-[var(--ink-secondary)]">{item.result}</pre></div>}
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2">
+                <dt>{t('agentTree.provider')}</dt><dd className="break-all">{item.modelRoute?.provider ?? t('agentTree.unknown')}</dd>
+                <dt>{t('agentTree.model')}</dt><dd className="break-all">{item.model ?? t('agentTree.unknown')}</dd>
+                <dt>{t('agentTree.tokens')}</dt><dd>{item.totalUsage?.totalTokens.toLocaleString() ?? t('agentTree.unknown')}</dd>
+                <dt>{t('agentTree.context')}</dt><dd>{item.context?.projectedInputTokens?.toLocaleString() ?? t('agentTree.unknown')} / {item.context?.capacity?.toLocaleString() ?? t('agentTree.unknown')}</dd>
+                <dt>{t('agentTree.activation')}</dt><dd>{item.activation?.ordinal ?? 1}</dd>
+                <dt>Agent ID</dt><dd className="break-all">{item.agentId}</dd>
+                <dt>Task ID</dt><dd className="break-all">{item.taskId}</dd>
+                <dt>{t('agentTree.parent')}</dt><dd className="break-all">{item.tree?.parentAgentId ?? t('agentTree.unknown')}</dd>
+              </dl>
+            </div>
           </details>
-          <div className="mt-3 flex gap-2 text-sm"><button disabled={Boolean(busy) || item.handleState !== 'open'} onClick={() => { setSelected(item.agentId); setMessage(''); }} className="rounded-lg border border-[var(--line)] px-3 py-1.5 disabled:opacity-40">{t('agentTree.message')}</button>
+          <div className="mt-3 flex flex-wrap gap-2 text-sm">{item.handleState !== 'closed' && <button disabled={Boolean(busy) || item.handleState !== 'open'} onClick={() => { setSelected(item.agentId); setMessage(''); }} className="rounded-lg border border-[var(--line)] px-3 py-1.5 hover:bg-[var(--paper-inset)] disabled:opacity-40">{t('agentTree.message')}</button>}
             {item.handleState === 'closed' ? <button disabled={Boolean(busy) || item.handleRevision === undefined} onClick={() => void control(item, 'resume')} className="rounded-lg border border-[var(--line)] px-3 py-1.5 disabled:opacity-40">{t('agentTree.resume')}</button>
-              : <button disabled={Boolean(busy) || item.handleRevision === undefined || item.handleState === 'stopping'} onClick={() => void control(item, 'stop')} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-[var(--error)] disabled:opacity-40">{t('agentTree.stop')}</button>}
+              : <button disabled={Boolean(busy) || item.handleRevision === undefined || item.handleState === 'stopping'} onClick={() => void control(item, 'stop')} className="rounded-lg px-3 py-1.5 text-[var(--error)] hover:bg-[var(--paper-inset)] disabled:opacity-40">{t('agentTree.stop')}</button>}
           </div>
           {selected === item.agentId && <form className="mt-3 grid gap-2" onSubmit={event => { event.preventDefault(); if (message.trim()) void control(item, 'message'); }}><textarea aria-label={t('agentTree.message')} maxLength={12000} value={message} onChange={event => setMessage(event.target.value)} className="rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3 text-sm text-[var(--ink)]" /><button disabled={Boolean(busy) || !message.trim() || item.handleState !== 'open'} className="justify-self-end rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm text-[var(--button-primary-text)] disabled:opacity-40">{t('agentTree.send')}</button></form>}
-        </article>)}
+        </article>;
+        })}
       </div>
     </section>
   </OverlayBackdrop>;

@@ -18,7 +18,7 @@ const fixture = (override: Partial<RuntimeAgentWorkSnapshot> = {}): RuntimeAgent
 describe('DSH Agent tree controls', () => {
   beforeEach(async () => { vi.resetAllMocks(); await i18n.changeLanguage('zh-CN'); });
 
-  it('shows completed parent, active descendant, actual routes and unknown usage together', async () => {
+  it('shows parent and descendant states with actual routes and unknown usage in collapsed details', async () => {
     mocks.apiGet.mockResolvedValue({ success: true, items: [fixture(), fixture({ agentId: 'grandchild', taskId: 'task-2', description: 'Descendant fixture',
       tree: { rootAgentId: 'root-1', parentAgentId: 'child-1', depth: 2 }, status: 'running',
       activation: { id: 'grand-epoch-1', ordinal: 1, state: 'waiting_interaction' },
@@ -29,9 +29,14 @@ describe('DSH Agent tree controls', () => {
     expect(await screen.findByText('Parent fixture')).toBeInTheDocument();
     expect(screen.getByText('本次已完成，后台后代仍在活动')).toBeInTheDocument();
     expect(screen.getByText(/等待用户/)).toBeInTheDocument();
-    expect(screen.getByText(/provider-child \/ model-child/)).toBeInTheDocument();
-    expect(screen.getByText(/已报告 tokens: 未知/)).toBeInTheDocument();
-    expect(screen.getByText(/部分节点用量未知/)).toBeInTheDocument();
+    expect(screen.getByText('provider-child')).not.toBeVisible();
+    const parent = screen.getByText('Parent fixture').closest('article')!;
+    const details = within(parent).getByText('查看详情').closest('details')!;
+    expect(details).not.toHaveAttribute('open');
+    fireEvent.click(within(parent).getByText('查看详情'));
+    expect(within(parent).getByText('provider-parent')).toBeVisible();
+    expect(within(parent).getByText('已报告 tokens').nextElementSibling).toHaveTextContent('未知');
+    expect(screen.queryByText(/部分节点用量未知/)).not.toBeInTheDocument();
   });
 
   it('retries a lost explicit reopen receipt with the same identity and handle revision', async () => {
@@ -39,7 +44,7 @@ describe('DSH Agent tree controls', () => {
     mocks.apiPost.mockRejectedValueOnce(new Error('fixture response lost')).mockResolvedValue({ success: true });
     render(<DshAgentTreeDialog onClose={vi.fn()} />);
     const resume = await screen.findByRole('button', { name: '恢复此节点' });
-    expect(screen.getByRole('button', { name: '追问' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '追问' })).not.toBeInTheDocument();
     fireEvent.click(resume);
     expect(await screen.findByRole('alert')).toHaveTextContent('fixture response lost');
     await waitFor(() => expect(resume).not.toBeDisabled());

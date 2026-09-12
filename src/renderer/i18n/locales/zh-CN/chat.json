@@ -1198,16 +1198,13 @@
   "agentTree": {
     "title": "Agent 任务树",
     "close": "关闭",
-    "description": "追问沿用原上下文。停止会关闭该 Agent 及其后代；恢复只重新开放当前节点，等待新消息。上下文为估算值，用量来自 Provider 已报告的数据。",
-    "totals": "活动 {{active}} · 子树已报告 {{tokens}} tokens",
-    "partial": "部分节点用量未知",
     "unknown": "未知",
     "loading": "读取中…",
     "empty": "本会话尚未创建子 Agent。",
     "descendants": "本次已完成，后台后代仍在活动",
     "tokens": "已报告 tokens",
     "context": "预计下次输入 / 容量",
-    "details": "身份与最近成果",
+    "details": "查看详情",
     "parent": "直接父 Agent",
     "message": "追问",
     "resume": "恢复此节点",
@@ -1219,27 +1216,22 @@
       "waiting_child": "等待后代",
       "waiting_delivery": "等待消息投递",
       "waiting_interaction": "等待用户",
-      "completed": "本次已完成，可继续",
-      "failed": "本次失败",
-      "aborted": "本次中断",
-      "interrupted": "本次中断",
+      "completed": "已完成",
+      "failed": "失败",
+      "aborted": "已中断",
+      "interrupted": "已中断",
       "stopping": "停止中",
-      "closed": "已关闭，需用户恢复"
+      "closed": "已关闭"
     },
     "messageAccepted": "消息已接收，将在目标允许的执行边界生效。",
-    "effective": "当前生效：深度 {{depth}} · 活动上限 {{active}} · 保留上限 {{retained}} · {{policy}} · 协作{{delivery}}",
-    "policies": {
-      "inherit": "继承父模型",
-      "fixed": "固定模型",
-      "agent": "授权内自主选模"
-    },
-    "delivery": {
-      "realtime": "即时注入",
-      "turn": "轮次注入"
-    },
-    "config": {
-      "pending": "有待生效设置，将在下一次用户请求时应用",
-      "invalid": "新设置暂不可用，当前执行仍使用已生效配置"
+    "latestResult": "最近结果",
+    "provider": "供应商",
+    "model": "模型",
+    "activation": "执行次数",
+    "roles": {
+      "general": "通用",
+      "Explore": "探索",
+      "Plan": "规划"
     }
   }
 }

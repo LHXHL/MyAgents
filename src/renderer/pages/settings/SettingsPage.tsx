@@ -5845,12 +5845,6 @@ export default function Settings({
                 </div>
               </div>
 
-              <DshCollaborationSettings
-                value={config.dshCollaboration}
-                providers={providers}
-                updateConfig={updateConfig}
-              />
-
               {/* Notification Settings */}
               <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                 <h3 className="text-base font-medium text-[var(--ink)]">
@@ -6733,6 +6727,12 @@ export default function Settings({
                         </button>
                       </div>
                     </div>
+
+                    <DshCollaborationSettings
+                      value={config.dshCollaboration}
+                      providers={providers}
+                      updateConfig={updateConfig}
+                    />
 
                     {/* Legacy Chat History Entry */}
                     <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
