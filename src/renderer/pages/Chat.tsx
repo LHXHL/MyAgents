@@ -74,7 +74,6 @@ import SelectionCommentMenu from '@/components/SelectionCommentMenu';
 import TerminalReasonBanner from '@/components/TerminalReasonBanner';
 import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
 import DshPermissionRulesDialog from '@/components/DshPermissionRulesDialog';
-import DshAgentTreeDialog from '@/components/DshAgentTreeDialog';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, {
   type Tab as WorkspaceTab,
@@ -1506,7 +1505,6 @@ export default function Chat({
   }, []);
 
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
-  const [showAgentWork, setShowAgentWork] = useState(false);
   const [showDshPermissionRules, setShowDshPermissionRules] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (currentAgent?.permissionMode as PermissionMode | undefined) ??
@@ -7238,12 +7236,6 @@ export default function Chat({
               onWorkspacePluginToggle={handleWorkspacePluginToggle}
               onRefreshProviders={refreshProviderData}
               onOpenAgentSettings={handleOpenAgentSettings}
-              onManageAgentWork={
-                currentRuntime === 'dsh' &&
-                currentRuntimeSource === 'integrated'
-                  ? () => setShowAgentWork(true)
-                  : undefined
-              }
               onManagePermissionRules={
                 currentRuntime === 'dsh' &&
                 currentRuntimeSource === 'integrated'
@@ -7787,9 +7779,6 @@ export default function Chat({
       )}
 
       {/* Workspace Config Panel */}
-      {showAgentWork && (
-        <DshAgentTreeDialog onClose={() => setShowAgentWork(false)} />
-      )}
       {showDshPermissionRules && (
         <DshPermissionRulesDialog
           desiredProductMode={inputChromePermissionMode}
