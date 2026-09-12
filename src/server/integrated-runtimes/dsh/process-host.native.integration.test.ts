@@ -313,8 +313,14 @@ describe.runIf(nativeSmokeEnabled)(
         + `; ${curl} http://dsh-shell-fixture.invalid/root`
         + `; ${curl} "http://127.0.0.1:$MYAGENTS_PORT/shell-loopback"`
         + (largeReview ? ` # ${"example".repeat(10_000)}` : "");
+      const spillSizes = [64_000, 64_001, 81_000, 1_053_000];
       const calls = [
         { id: 'fixture-shell-call', name: 'bash', input: { command, workdir: 'child', description: 'Read the current CLI route' } },
+        ...spillSizes.map(size => ({ id: `fixture-spill-${size}`, name: 'bash', input: {
+          command: `node -e 'process.stdout.write("x".repeat(${size})); process.stderr.write("\\nspill-tail-marker\\n"); process.exitCode=7'`,
+          workdir: 'child', description: 'Verify real foreground output retention',
+        } })),
+        { id: 'fixture-spill-read', name: 'Read', input: { file_path: '', offset: 1, limit: 1 } },
         { id: 'fixture-file-write', name: 'Write', input: { file_path: 'native-file-tools/note.txt', content: 'alpha\r\nbeta\r\n' } },
         { id: 'fixture-file-read', name: 'Read', input: { file_path: 'native-file-tools/note.txt' } },
         { id: 'fixture-file-edit', name: 'Edit', input: { file_path: 'native-file-tools/note.txt', old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' } },
@@ -362,6 +368,12 @@ describe.runIf(nativeSmokeEnabled)(
         if (tool?.id === 'fixture-plan-shell-call') planSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
         if (tool?.id === 'fixture-question-call') resumedRootInput = JSON.stringify(modelRequest.messages);
         let input: Record<string, unknown> | undefined = tool?.input;
+        if (tool?.id === 'fixture-spill-read') {
+          const content = modelToolResults.get('fixture-spill-64001')?.content;
+          const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
+          const path = /\[output truncated; full output: (.+)\]/.exec(text)?.[1];
+          input = { ...tool.input, file_path: path ?? 'missing-spill-path' };
+        }
         if (tool?.id === 'fixture-plan-write-call') {
           const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
             .find(block => block.type === 'tool_result' && block.tool_use_id === 'fixture-enter-plan-call');
@@ -498,6 +510,24 @@ describe.runIf(nativeSmokeEnabled)(
         expect(modelToolResults.get('fixture-plan-shell-call')).toBeDefined();
         expect(modelToolResults.get('fixture-plan-shell-call')?.is_error).not.toBe(true);
         expect(JSON.stringify(modelToolResults.get('fixture-plan-shell-call')?.content)).toContain('plan-shell-research');
+        for (const size of spillSizes) {
+          const result = modelToolResults.get(`fixture-spill-${size}`);
+          expect(result?.is_error).not.toBe(true);
+          const text = typeof result?.content === 'string' ? result.content : (result?.content as { text: string }[]).map(block => block.text).join('');
+          expect(text).toContain('[exit code: 7]');
+          expect(text).toContain('spill-tail-marker');
+          const path = /\[output truncated; full output: (.+)\]/.exec(text)?.[1];
+          if (size === 64_000) expect(path).toBeUndefined();
+          else {
+            expect(path).toBeDefined();
+            expect(await realpath(path!)).toBe(path);
+            expect(await readFile(path!, 'utf8')).toBe('x'.repeat(size));
+          }
+          const event = events.find(value => value.toolCallId === `fixture-spill-${size}` && (value.event as Record<string, unknown>)?.phase === 'end');
+          expect((event?.event as Record<string, unknown>)?.result).toMatchObject({ isError: false, metadata: { exitCode: 7 } });
+        }
+        expect(modelToolResults.get('fixture-spill-read')?.is_error).not.toBe(true);
+        expect(JSON.stringify(modelToolResults.get('fixture-spill-read')?.content)).toContain('x'.repeat(100));
         expect(await readFile(join(fixture.workspace, 'native-file-tools/note.txt'), 'utf8')).toBe('ALPHA\r\nBETA\r\n');
         expect(JSON.stringify(modelToolResults.get('fixture-large-read')?.content)).toContain('short line');
         const imageResult = modelToolResults.get('fixture-image-read');
