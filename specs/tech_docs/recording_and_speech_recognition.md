@@ -121,6 +121,8 @@ live/final 共用来源、时间与回声预处理。Media Worker 使用 Sonora 
 
 ## 用户模型包
 
+模型资源不按操作系统或 CPU 架构分片：macOS arm64/x64、Windows x64、Linux x64/arm64 共用同一份 source lock、签名清单和 ONNX 模型文件，一次 R2 模型发布覆盖全部五个构建 target。平台差异属于随 App 打包的 Media Worker、speech native adapter 与共享 ONNX Runtime，由各 target 的 native preparation/build 处理；模型发布脚本不发布这些二进制。公网资源校验通过只证明下载内容就绪，各平台安装、实际模型加载和录音行为仍需在对应客户端验收。
+
 当前下载目标 pack identity 固定为 `local-standard-speech / local-standard-speech-v3`。pyannote segmentation 3.0 使用同一已锁定上游 archive 中的 FP32 模型：分段漏检会使后续声纹匹配无从归属，不能靠放宽聚类距离修复。SenseVoice、Silero 和 ERes2Net 不变，source 下载字节数不变，安装体积增加 4,452,407 字节；模型文件与 pack revision 一起更新，不覆盖已发布 v2 的身份。编译期 source lock 位于 `src-tauri/media-worker/model-pack-source-lock.json`，固定：
 
 - 四项第一方镜像 asset 与各自 URL、upstream revision、size、SHA-256、格式和许可；
