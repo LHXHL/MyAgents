@@ -30,7 +30,7 @@ export const CONTRACT_PATHS = Object.freeze([
   "contracts/public-contract.generated.ts",
   "contracts/myagents-dsh-compatibility-v1.json",
   "contracts/official-product-profile-v1.json",
-  "contracts/protocol-4.0.0-evidence.json",
+  "contracts/protocol-5.0.0-evidence.json",
   "contracts/protocol-fixtures.json",
   "contracts/protocol-meta.json",
   "contracts/protocol.schema.json",
@@ -370,6 +370,13 @@ export function compareOrAcceptContracts(
   acceptContracts,
 ) {
   const targetRoot = resolve(contractsRoot, "myagents-dsh");
+  // Preflight the entire new inventory before replacing any accepted contract.
+  for (const contractPath of CONTRACT_PATHS) {
+    const source = resolve(handoffRoot, contractPath);
+    if (!existsSync(source) || !lstatSync(source).isFile()) {
+      fail(`handoff contract is missing or not a regular file: ${contractPath}`);
+    }
+  }
   if (acceptContracts) mkdirSync(targetRoot, { recursive: true });
 
   for (const contractPath of CONTRACT_PATHS) {
@@ -388,6 +395,10 @@ export function compareOrAcceptContracts(
       sha256File(source),
       `generated contract ${contractPath}`,
     );
+  }
+  if (acceptContracts) {
+    // Protocol 4 evidence describes the previous generated projection only.
+    rmSync(resolve(targetRoot, "protocol-4.0.0-evidence.json"), { force: true });
   }
 }
 

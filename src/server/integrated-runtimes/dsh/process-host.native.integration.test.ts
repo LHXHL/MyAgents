@@ -1,5 +1,9 @@
 import { GENERATED_PROTOCOL_VERSION } from '../../../../contracts/myagents-dsh/public-contract.generated';
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { execFileSync } from "node:child_process";
+import { connect, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { DshAttachmentRegistry } from "./attachments";
 import type { PermissionReview } from "../../../shared/types/runtime";
 import { buildDshChildEnvironment } from "./child-environment";
@@ -73,6 +77,7 @@ async function createNativeHostFixture(
   label: string,
   route?: { productSessionId: string; sidecarPort: number },
   proxyEnvironment?: Readonly<NodeJS.ProcessEnv>,
+  testCertificateAuthority?: string,
 ) {
   const temporaryRoot = await realpath(
     await mkdtemp(join(tmpdir(), `myagents-dsh-process-host-${label}-`)),
@@ -88,12 +93,18 @@ async function createNativeHostFixture(
     resourceRoot,
     nodeExecutablePath: join(resourceRoot, "nodejs/bin/node"),
   });
-  const childEnvironment = buildDshChildEnvironment({
+  const launchEnvironment = buildDshChildEnvironment({
     nodeExecutablePath: installation.nodeExecutablePath, commandDirectories: ["/bin"],
     inheritedEnvironment: { HOME: temporaryRoot, USERPROFILE: temporaryRoot, LANG: 'en_US.UTF-8' },
     proxyEnvironment,
     ...(route === undefined ? {} : { sessionRoute: route }),
   });
+  // A generated local test CA is trusted only by this synthetic child process.
+  const childEnvironment = testCertificateAuthority === undefined ? launchEnvironment : {
+    ...launchEnvironment,
+    env: { ...launchEnvironment.env, NODE_EXTRA_CA_CERTS: testCertificateAuthority },
+    allowedKeys: [...launchEnvironment.allowedKeys, 'NODE_EXTRA_CA_CERTS'],
+  };
   const executionEnvironment: Omit<DshExecutionEnvironment, "digest"> = {
     revision: "native-smoke-execution-v1",
     workspace: {
@@ -192,6 +203,107 @@ async function createNativeHostFixture(
 describe.runIf(nativeSmokeEnabled)(
   "DSH RuntimeProcessHost native smoke",
   () => {
+    it.runIf(process.platform === 'darwin')('routes packed HTTPS model requests by current Provider policy', async () => {
+      const certificateRoot = await mkdtemp(join(tmpdir(), 'myagents-dsh-tls-'));
+      const certificate = join(certificateRoot, 'certificate.pem');
+      const key = join(certificateRoot, 'key.pem');
+      const proxies: ReturnType<typeof createServer>[] = [];
+      const sockets = new Set<Socket | Duplex>();
+      const proxyReceipts: string[] = [];
+      const targetReceipts: string[] = [];
+      let fixture: Awaited<ReturnType<typeof createNativeHostFixture>> | undefined;
+      let host: DshRuntimeProcessHost | undefined;
+      let target: ReturnType<typeof createHttpsServer> | undefined;
+      const listen = async (server: ReturnType<typeof createServer>) => {
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('TLS fixture did not bind');
+        return address.port;
+      };
+      try {
+        execFileSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+          '-subj', '/CN=provider-route.test', '-addext', 'subjectAltName=DNS:provider-route.test',
+          '-keyout', key, '-out', certificate], { stdio: 'ignore' });
+        target = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, async (request, response) => {
+          for await (const chunk of request) void chunk;
+          targetReceipts.push(request.url ?? '');
+          const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          emit('message_start', { type: 'message_start', message: { id: `tls-${targetReceipts.length}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+          emit('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+          emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'TLS fixture complete.' } });
+          emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+          emit('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
+          emit('message_stop', { type: 'message_stop' });
+          response.end();
+        });
+        const targetPort = await listen(target);
+        const proxy = async (name: string) => {
+          const server = createServer((_request, response) => { response.writeHead(502); response.end(); });
+          proxies.push(server);
+          server.on('connect', (request, downstream, head) => {
+            if (request.url !== `provider-route.test:${targetPort}`) { downstream.destroy(); return; }
+            proxyReceipts.push(name);
+            const upstream = connect({ host: '127.0.0.1', port: targetPort });
+            for (const socket of [downstream, upstream]) {
+              sockets.add(socket);
+              socket.on('close', () => sockets.delete(socket));
+              socket.on('error', () => { downstream.destroy(); upstream.destroy(); });
+            }
+            upstream.once('connect', () => {
+              downstream.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+              if (head.length) upstream.write(head);
+              downstream.pipe(upstream); upstream.pipe(downstream);
+            });
+          });
+          return `http://127.0.0.1:${await listen(server)}`;
+        };
+        const general = await proxy('general');
+        const providerA = await proxy('provider-a');
+        const providerB = await proxy('provider-b');
+        let currentProxy = providerA;
+        fixture = await createNativeHostFixture('tls-provider', undefined,
+          { HTTP_PROXY: general, HTTPS_PROXY: general, NO_PROXY: '' }, certificate);
+        host = fixture.createHost({ ...fixture.hostHandlers,
+          'host/credential/resolve': params => params.purpose === 'availability'
+            ? { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision }
+            : { kind: 'material', authoritativeCredentialRevision: params.profileRevision,
+              material: { apiKey: 'synthetic-tls-model-key' }, providerNetwork: { httpsProxy: currentProxy, noProxy: '' } },
+        });
+        await host.start();
+        const catalog = await host.request('extension/catalog', {});
+        const provider = structuredClone(PRESET_PROVIDERS.find(({ id }) => id === 'anthropic-api'));
+        if (!provider) throw new Error('Fixture Provider is missing');
+        provider.config.baseUrl = `https://provider-route.test:${targetPort}`;
+        const profile = compileDshModelExecutionProfile({ provider, modelId: 'claude-sonnet-4-6' });
+        await host.request('session/create', { clientOperationId: 'tls-bind', persistenceRef: 'tls-session', provider: profile,
+          configRevision: 'tls-config', extensionDigest: catalog.digest, systemPrompt: '', permissionMode: 'default', interactionScenario: 'host-interaction-v1' });
+        const environmentDigest = createDshInitializeParams({ productSessionId: 'native-tls-provider-product-session', productVersion: '0.4.15',
+          runtimeHome: fixture.runtimeHome, workspace: { path: fixture.workspace, identity: fixture.executionEnvironment.workspace.identity },
+          executionEnvironment: fixture.executionEnvironment, interaction: 'deterministic-headless' }).executionEnvironment.digest;
+        for (const [index, selected] of [providerA, providerB].entries()) {
+          currentProxy = selected;
+          const clientOperationId = `tls-turn-${index}`;
+          await host.request('turn/start', { clientOperationId, clientUserMessageId: `tls-input-${index}`, input: { parts: [{ kind: 'text', text: 'Return the synthetic TLS response.' }] },
+            configRevision: 'tls-config', extensionDigest: catalog.digest, executionEnvironmentRevision: fixture.executionEnvironment.revision,
+            executionEnvironmentDigest: environmentDigest, limits: { maxTurns: 1 }, origin: { kind: 'headless', scenario: 'native-tls-provider' } });
+          const activeHost = host;
+          await expect.poll(async () => (await activeHost.request('turn/get', { clientOperationId })).terminal?.kind, { timeout: 20_000 }).toBe('succeeded');
+        }
+        expect(targetReceipts).toEqual(['/v1/messages?beta=true', '/v1/messages?beta=true']);
+        expect(proxyReceipts).toEqual(['provider-a', 'provider-b']);
+      } finally {
+        await host?.stop();
+        for (const socket of sockets) socket.destroy();
+        for (const server of [...proxies, ...(target ? [target] : [])]) {
+          server.closeAllConnections();
+          await new Promise<void>(resolve => server.close(() => resolve()));
+        }
+        if (fixture) await rm(fixture.temporaryRoot, { recursive: true, force: true });
+        await rm(certificateRoot, { recursive: true, force: true });
+      }
+    }, 90_000);
+
     it.runIf(process.platform !== 'win32').each([false, true])('allows Action tools and routes child Shell approval after a shared grant (large review: %s)', async largeReview => {
       const productSessionId = randomUUID();
       const curl = '/usr/bin/curl -q -fsS --max-time 5';

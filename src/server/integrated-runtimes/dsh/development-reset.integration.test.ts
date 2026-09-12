@@ -100,6 +100,21 @@ describe('one-time unreleased DSH development reset', () => {
     expect(await readFile(external, 'utf8')).toBe('external user file');
   });
 
+  it('preserves raw legacy sibling metadata without adding bindings or normalizing Provider fields', async () => {
+    const old = await fixture();
+    const builtin = createSessionMetadata(scratch.home, { id: 'legacy-builtin' });
+    delete builtin.runtimeBinding;
+    const managed = { ...builtin, id: 'legacy-managed', runtime: 'codex', runtimeSource: 'managed-provider',
+      providerRoute: { providerId: 'synthetic-legacy-route' }, providerEnvJson: 'synthetic retained metadata' };
+    const survivors = [builtin, managed];
+    const path = join(root, 'sessions.json');
+    await writeFile(path, JSON.stringify([old.metadata, ...survivors]));
+    const plan = await planDshDevelopmentReset(root);
+    await expect(applyDshDevelopmentReset(plan, store.resetDshDevelopmentSession, () => Promise.resolve())).resolves.toMatchObject({ deleted: 1 });
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(survivors);
+    expect((await planDshDevelopmentReset(root)).sessions).toEqual([]);
+  });
+
   it('rejects links anywhere in a selected tree before deleting any Session', async () => {
     const first = await fixture('first-dsh');
     const second = await fixture('second-dsh');

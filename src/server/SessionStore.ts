@@ -188,7 +188,7 @@ function atomicWriteSessionsFile(content: string): void {
     });
 }
 
-function parseSessionsIndex(content: string): SessionMetadata[] {
+function parseSessionsIndexRaw(content: string): SessionMetadata[] {
     let parsed: unknown;
     try {
         parsed = JSON.parse(stripBom(content));
@@ -206,7 +206,11 @@ function parseSessionsIndex(content: string): SessionMetadata[] {
         throw new CorruptSessionsIndexError(`sessions.json entry at index ${malformedIndex} is not valid SessionMetadata.`);
     }
 
-    return (parsed as SessionMetadata[]).map(normalizeSessionRuntimeIdentity);
+    return parsed as SessionMetadata[];
+}
+
+function parseSessionsIndex(content: string): SessionMetadata[] {
+    return parseSessionsIndexRaw(content).map(normalizeSessionRuntimeIdentity);
 }
 
 function extractCompleteSessionMetadataObjects(content: string): SessionMetadata[] {
@@ -1156,7 +1160,12 @@ async function deleteSessionOwned(
     // just-recreated one.
     try {
         return await withSessionFileLock(sessionId, async () => withSessionsLock(async () => {
-            const all = readSessionsIndexForWrite();
+            // An offline targeted reset must not migrate unrelated legacy rows
+            // or repair the index as a side effect. Keep the shared validation
+            // and locks, but preserve every surviving raw metadata value.
+            const all = intent.kind === 'development-dsh-upg15-reset'
+                ? parseSessionsIndexRaw(readFileSync(SESSIONS_FILE, 'utf-8'))
+                : readSessionsIndexForWrite();
             const index = all.findIndex(s => s.id === sessionId);
 
             if (index < 0) {

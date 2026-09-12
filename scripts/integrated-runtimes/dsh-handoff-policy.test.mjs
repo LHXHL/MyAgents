@@ -261,7 +261,11 @@ test("generated contracts are accepted mechanically and then drift-gated", () =>
       writeFileSync(path, `${contractPath}\n`);
     }
 
+    const oldEvidence = resolve(contractsRoot, "myagents-dsh/protocol-4.0.0-evidence.json");
+    writeFixtureFile(oldEvidence, "previous protocol evidence");
     compareOrAcceptContracts(handoffRoot, contractsRoot, true);
+    assert.equal(existsSync(oldEvidence), false);
+    assert.equal(existsSync(resolve(contractsRoot, "myagents-dsh/protocol-5.0.0-evidence.json")), true);
     compareOrAcceptContracts(handoffRoot, contractsRoot, false);
 
     writeFileSync(
@@ -272,6 +276,23 @@ test("generated contracts are accepted mechanically and then drift-gated", () =>
       () => compareOrAcceptContracts(handoffRoot, contractsRoot, false),
       /generated contract contracts\/protocol-meta\.json mismatch/,
     );
+  });
+});
+
+test("a missing handoff contract cannot partially replace the accepted projection", () => {
+  withTemporaryDirectory((root) => {
+    const handoffRoot = resolve(root, "handoff");
+    const contractsRoot = resolve(root, "contracts-root");
+    for (const contractPath of CONTRACT_PATHS.slice(0, -1)) {
+      writeFixtureFile(resolve(handoffRoot, contractPath), "new");
+    }
+    const accepted = resolve(contractsRoot, "myagents-dsh/accepted-patched-dsh-artifact-v1.json");
+    const oldEvidence = resolve(contractsRoot, "myagents-dsh/protocol-4.0.0-evidence.json");
+    writeFixtureFile(accepted, "accepted");
+    writeFixtureFile(oldEvidence, "old evidence");
+    assert.throws(() => compareOrAcceptContracts(handoffRoot, contractsRoot, true), /handoff contract is missing/);
+    assert.equal(readFileSync(accepted, "utf8"), "accepted");
+    assert.equal(readFileSync(oldEvidence, "utf8"), "old evidence");
   });
 });
 
@@ -440,7 +461,7 @@ test("repository lock, generated contracts, resources, and toolchain authorities
   assert.equal(lock.runtime.requiredNodeVersion, "24.20.0");
   assert.equal(lock.bundledNpm.version, "11.19.0");
   assert.equal(lock.bundledNpm.authority, "myagents-product-resource");
-  assert.equal(lock.protocol.version, "4.0.0");
+  assert.equal(lock.protocol.version, "5.0.0");
   assert.equal(lock.protocol.hostMethodCount, 44);
   assert.equal(lock.protocol.reverseMethodCount, 7);
   assert.equal(lock.protocol.notificationCount, 4);

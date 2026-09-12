@@ -729,7 +729,8 @@ setInterval(() => {}, 1000);
         onnxRuntimePath: "fixture-ort",
         modelManifestPath: "fixture-model",
         sourcePath: "fixture-audio",
-        timeoutMs: 1_000,
+        // Identity rejection is independent of process startup latency. Use
+        // the client's normal deadline; dedicated tests cover timeout.
         terminationGraceMs: 100,
       }),
       /response identity does not match/,

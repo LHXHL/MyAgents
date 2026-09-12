@@ -263,12 +263,12 @@ Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta
 - 文档与代码冲突时先核对实现、测试和 git 历史，再同时修正文档图中受影响的节点。
 
 
-DSH UPG15 source extends the existing credential request with ephemeral Provider network policy.
+DSH UPG15 extends the existing credential request with ephemeral Provider network policy.
 The Host remains proxy selection authority; Runtime request scopes own concurrent model pools,
 while ordinary networking and Shell use the Host general launch snapshot. No new port, listener or
 persistent proxy owner is added. See [proxy configuration](./tech_docs/proxy_config.md) and the
-[DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md); staged protocol 4 resources
-remain historical until official candidate ingestion.
+[DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md). Protocol 5 resources are
+admitted through official verification and complete contract inventory checks.
 
 
 The UPG15 offline development reset remains a named SessionStore maintenance operation. It shares

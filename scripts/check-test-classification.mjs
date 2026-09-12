@@ -33,6 +33,10 @@ const CHILD_PROCESS_ALLOWLIST = new Set([
   // OpenClaw fixture and a loopback-only fake Rust ingress. It uses no secrets
   // and cannot reach an external service.
   'src/server/plugin-bridge/reply-transport.integration.test.ts',
+  // Explicit opt-in packed DSH smoke uses local OpenSSL solely to create a
+  // temporary test CA. HTTPS targets/proxies are loopback fixtures; no real
+  // credential or external model is used, and the default test run skips it.
+  'src/server/integrated-runtimes/dsh/process-host.native.integration.test.ts',
 ]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 

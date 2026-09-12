@@ -1,8 +1,8 @@
 ---
 type: module-technical-document
 status: implemented-native-validation-partial
-version: 0.33
-updated: 2026-09-09
+version: 0.34
+updated: 2026-09-12
 implementation_repository: "MyAgents"
 product_prd: MyAgents-dsh/specs/prd/prd_0.3_myagents_integration.md
 runtime_rfc: MyAgents-dsh/specs/prd/tech_rfc_0.3_myagents_dsh_integration.md
@@ -403,6 +403,8 @@ generatedClientSha256        fce73629088852077b09cb0b3b43b7d470b4f3a5fb936f82810
 dshArtifactManifestSha256    ea7918fa55540f7fe40c0849b9994ff4f197d599e40fbb69c72d8b842e6f1fe2
 requiredNodeVersion          24.14.0
 ```
+
+Protocol 5 ingestion preflights the complete generated contract inventory before replacing any file. Acceptance removes only the obsolete protocol 4 evidence projection; a missing source contract preserves the prior projection. The pinned contract inventory is part of the Host compatibility policy and is changed with the protocol upgrade.
 
 An ingestion script accepts one explicit external `--handoff <absolute-directory>` input, first executes that directory's public `verify.mjs` entrypoint with the expected handoff digest, validates the compatibility/platform facts, copies the complete Runtime directory byte-for-byte into build resources, and copies the generated client/contracts through a generated-diff gate. MyAgents code may wrap the generated client but may not hand-edit it or import verifier/package-private `src/*` paths. The accepted Runtime inventory is link-free. In the ingestion owner's temporary copy, directories and executable files use `0755`, other files use `0644`; links and special files are rejected. This makes resources readable by installed-app users and writable by the builder for macOS `xattr` cleanup before signing. The source handoff stays untouched, and the full public verifier runs again before atomic admission, including the Runtime's executable-mode checks. Ordinary Tauri/installer copying then preserves the verified identity without a post-bundle repair hook. `build.rs` clears only Cargo's generated resource staging directory before re-emitting the authoritative source inventory, preventing incremental builds from retaining files from an older immutable handoff; it never edits the source handoff or accepted package output. Installed application startup verifies the committed lock again before marking DSH ready.
 
@@ -1309,10 +1311,10 @@ The clean-source pre-artifact gate passes 71 files / 768 tests, typecheck, lint,
 Host validation passes 30 unit/DOM files / 187 tests, all five staged process tests including the 12-generation soak, 39 handoff/build tests, typecheck, lint, resource verification and clean Runtime source freshness. A separate real-process upgrade fixture creates an already-expired grant and a revoked grant with the previous protocol 3.1 Runtime, then resumes the same isolated persisted Session with protocol 4.0: rule identity/revision survive, the active grant has null expiry, the revoked grant stays absent, and explicit revoke still succeeds. The [local integration receipt](../../../MyAgents-dsh-release-work/upg-20260905/session-grants-integration-receipt.json) records final Host source and build results. This delivery updates source and staged development resources; an already installed App still requires rebuilding to consume the new protocol and Runtime.
 
 
-## DSH 0.1.5-rc.2 upgrade source adaptation (2026-09-12)
+## DSH 0.1.5-rc.2 upgrade implementation (2026-09-12)
 
-UPG15 source targets protocol 5.0.0 and native V3 Session history. The committed lock/resources
-still select the historical protocol 4.0.0 handoff; this section does not promote staged acceptance.
+UPG15 consumes protocol 5.0.0 and native V3 Session history through the official handoff.
+The committed lock and generated contracts bind the exact staged Runtime; post-freeze receipts below own acceptance.
 `event-projector.ts` tracks only the active assistant stream id, Product turn and last visible frame
 position. It rejects overlap, foreign stream/turn deltas and invalid end boundaries. Native non-text
 chunks can leave gaps in visible positions. Start/end metadata never synthesizes final content or
@@ -1324,7 +1326,7 @@ The profile compiler adds `in-history` system-prompt updates only when the confi
 `deepseek-flash` on the verified official DeepSeek route, matching the fixed rc.2 catalog. Existing
 v4 model selections and gateway routes do not inherit that capability. The compiler does not add or
 select models, and preserves declared input modalities. Projector/compiler/reconciliation fixtures
-pass 35 deterministic tests; official candidate ingestion and packaged journeys remain pending.
+pass 35 deterministic tests; the final staged process journey also passes.
 
 
 The existing credential reverse handler also sends `getProviderRequestProxyPolicy(providerId)` as
@@ -1332,8 +1334,10 @@ bounded optional `providerNetwork` material. It selects the same app overlay/inh
 other Host Provider requests; it is not persisted in profile or Session snapshots. Runtime uses
 its existing model-request scope to isolate concurrent proxy pools. General Runtime/MCP policy and
 Shell environment remain captured at launch; a later Provider request resolves current settings.
-The Host proxy-state matrix passes 24 unit cases. Source protocol 5.0.0, official candidate handoff,
-and actual packaged journeys still require synchronized acceptance.
+The Host proxy-state matrix passes 24 unit cases. Packed HTTPS evidence starts real loopback TLS
+and CONNECT fixtures, resolves current Provider policy twice, and verifies the two selected proxies
+and actual target receipts. The general proxy receives neither model request. The temporary test CA
+is restricted to this explicitly enabled smoke; production child environment policy is unchanged.
 
 
 UPG15 adds the one-time offline `reset:dsh-dev` maintenance entry. `owned-paths.ts` shares exact
@@ -1343,13 +1347,142 @@ shared/ambiguous attachments. It never turns external savedPath values into dele
 SessionStore owns the final binding check and the existing file-lock → index-lock deletion order;
 the callback removes only prevalidated DSH roots before transcript/index deletion. Default CLI
 execution only prints a content-free plan; apply requires its unchanged digest and stopped app/
-Sidecar/Runtime processes. Eight reset tests plus twenty existing mutation tests pass with real
-SessionStore over synthetic homes. Actual development planning found 23 eligible old Sessions;
-no real data has been removed. Execution follows candidate Runtime and Host journey verification.
+Sidecar/Runtime processes. Nine reset tests plus twenty existing mutation tests pass with real
+SessionStore over synthetic homes. The actual offline reset removed 23 old DSH Sessions and retains
+15 other Sessions. Their full metadata, configuration and 11 existing transcript digests match the
+pre-reset values; repeat planning is empty and repeat apply leaves the index unchanged.
+The first preservation check detected two legacy sibling bindings materialized by the shared read
+normalizer. A digest-proven correction removed exactly those additions under the existing locks.
+The reset now uses the same strict parser without read-time normalization or corruption recovery;
+its regression preserves raw legacy sibling metadata, including Provider fields.
 
-Host source regression passes 4,228 unit, 1,301 DOM and 541 integration tests, with eight
+The pre-ingestion Host source regression passed 4,228 unit, 1,301 DOM and 541 integration tests, with eight
 explicit skips, plus 146 build-script tests (five platform skips). The initial concurrent build
 run hit the unrelated media-worker identity fixture's one-second startup deadline; the unchanged
 fixture passes both independently and in the subsequent complete run. Attachment reference scans
 are skipped when no candidate attachment roots exist. These are source gates before ingestion,
 not acceptance of the historical staged Runtime for protocol 5.0.0.
+
+
+### UPG15 post-freeze acceptance ledger
+
+This section is the Runtime PRD §8 delegated post-freeze ledger. Runtime source remains clean at
+`cf6821ddd55bd9ee5fe0216c0dbeb285c5808d4a`; writing acceptance receipts here does not relabel newer
+Runtime source with older evidence. Earlier candidate receipts remain historical.
+
+- Official DSH changes from `0.1.2-rc.1` / `a66e4702047846cdaa10c66c9d3df3951f5ea70d`
+  to fixed `0.1.5-rc.2` / `fb2c4b9e698e30edb738bca4cf0618587db7d203`, tree
+  `bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38`; pi-ai is pinned to `0.85.1`.
+- The patch series changes from 11 to 9 patches. Series digest is
+  `13b108f38d68b914a7cb553192f3eb58d7630de1f75b6f293bd3bb82f2ae823e`.
+  Two independent builds match all 81 files and the complete 77-package consumer closure;
+  accepted DSH manifest is `9a81103ee911d4a9cdc5dcf60bd0de5621d20b8a309f30bb6bb692166be5f4a2`.
+- Complete clean-source pre-artifact report is
+  `031f1a9e985a1b2cf4a830ce115e037837bd55e372f6320d4680cd6bf64cca6c`:
+  exact source/seams, real network/ownership processes, fault matrix, three soaks,
+  typecheck/lint, 844 tests and build pass.
+- Packed Runtime manifest is `e02bbf94b5d5ce707b48bdd4de2a4cc387603dc53ae0f1959327e09309ff9543`
+  with 17,905 files; protocol is 5.0.0. The official final handoff is
+  `6a903f59d439655c3777449dd717ab618a11419807c512e795314f18089aa8e6`, compatibility
+  `a3b9c107042118752fba7e739408640195df8daf53bd847b03325267cc9a8104`.
+  Official ingestion, complete contracts and source freshness verify these identities.
+- macOS native report `fb0f6388a06c19b1060a77eb90c37ad42dd9c8d4dec5549652fba077406704dc`
+  and dynamic manifest `18cb07b9ee6c867a2cc209238aac2101c6175e64fd5777561360c6893957cdbc`
+  bind all eight fixed real-DeepSeek scenarios. Every final resource category, credential scope
+  and attachment lease is zero. Windows/Linux evidence binds these bytes but remains
+  `implementation-complete_pending-native-validation`.
+- Final performance report `f88f1cd3f64eeaa9f3e650fac15e47ad976c99c456f69b52494957397a28ed02`
+  passes all five original frozen ceilings with nine samples each. Long-history read median is
+  566.30 ms versus baseline 2,402.50 ms; this is a synthetic same-machine workload, not a
+  provider latency or desktop responsiveness guarantee. Scope excludes image decoding/upload
+  and full ProductWork orchestration.
+
+The fresh external Tester's [observations](../../../MyAgents-dsh-release-work/upg15-20260912/w07-tester-observations-4.md)
+are accepted as fixed-CLI observations, not desktop or free-exploration acceptance. Operation success
+is not tool success: protected/degraded paths correctly refuse calls; the plan case retries Read
+before a successful Edit; the child case has a rejected task completion update and later successful
+metadata/dependency updates, which do not prove that rejected completion succeeded. The real-model
+web case did not successfully invoke Skill/WebFetch/WebSearch. Its passing preservation/cleanup
+checks cannot serve as Web tool acceptance. Web/Skill execution is instead covered by the actual
+packed deterministic catalog, controlled Host reverse-port and HTTP/HTTPS transport fixtures.
+
+| Acceptance | Reviewed evidence and scope |
+| --- | --- |
+| U15-A01 | All 12 seam dispositions below; source/public-consumer checks, two identical patched builds, pi-ai conformance |
+| U15-A02 | Native V3 creation/cold reopen; 29 reset/mutation tests; actual 23-Session reset with preservation hashes and repeat no-op |
+| U15-A03 | SessionHandle and ownership unit tests plus real macOS process lock/close/crash/append campaign; unknown required event refusal |
+| U15-A04 | Operation/ProductWork fault fixtures and packed cold continuation; durable receipts and uncertain-side-effect fencing retain their separate meanings |
+| U15-A05 | Actual SQLite checkpoint/mutation and snapshot-reader tests; packed fork/rewind/delete and response-loss recovery; real campaign additionally proves prepare/abort |
+| U15-A06 | Real LlmRuntime/AgentLoop wire capture, supported/omitted/invalid capability and literal/scoped prompt tests; only configured supported routes opt in |
+| U15-A07 | Adapter SSE, native projector and Host projector/reconciliation/DOM tests; actual packed stream end before terminal, including closing |
+| U15-A08 | TokenMeter/compaction tests and packed context/usage checks; real native campaign records six successful automatic summary compactions |
+| U15-A09 | Real ProductWork/subagent composition and packed role/depth/tree/continuation tests; native case observes two child work epochs |
+| U15-A10 | Permission/Hooks tests plus both ordinary and 70 KB Host review journeys, same-target child grant and different-target approval |
+| U15-A11 | Complete packed catalog, next-request image bytes, file/checkpoint and official Shell/Jobs tests; other native platforms remain pending |
+| U15-A12 | Four Runtime launch-policy matrices, concurrent Provider/general requests, NO_PROXY/loopback, cancellation/disposal, safe HTTP/MCP, actual Host Shell and HTTPS CONNECT receipts |
+| U15-A13 | Final exact-source performance report with unchanged frozen configuration and no failed ceilings |
+| U15-A14 | Final staged Runtime handshake, configured cold recovery and 12-generation soak (descriptors 14→14, RSS growth 0); packaged App receipt below |
+| U15-A15 | Exact source/artifact/native/handoff/Host chain; full gate receipts; dependency review and explicit distribution limitations below |
+
+These rows supersede the frozen Runtime coverage file's planning statuses for this exact source and
+handoff only. They do not increase the measured scope of a fixture or promote unexecuted native routes.
+
+| Seam | Final local-development disposition | Reason and continuing removal condition |
+| --- | --- | --- |
+| 001 | rebase | Public Inbox cannot wake the same durable pending identity without reordering; retain until equivalent public wake semantics exist |
+| 002 | reduce | Retire upstream-adopted dependency edits; retain authoritative pre-commit tool-input waterfall until history, approval and execution can share governed input publicly |
+| 003 | retire | Public SessionPersistence/SessionHandle Provider admits known Product events and rejects unknown required events; actual V3 cold restoration proves the replacement |
+| 004 | keep public composition | Product SQLite/SessionHandle and mutation companion share the same writer lock; no core patch is needed |
+| 005 | rebase | Keep synchronous pre-publication guards until stock public registration can reject before Session/Agent visibility |
+| 006 | rebase | Keep Product-owned continuable settlement, strict final durability and cold ancestor residency until equivalent public lifecycle ownership exists |
+| 007 | retire | Official DeepSeek adapter now preserves established call identity across empty deltas; source and Provider conformance tests prove the replacement |
+| 008 | rebase | Keep exact request estimation/capacity fitting/structured repair until equivalent public compaction semantics exist |
+| 009 | rebase | Keep literal contributions and durable child persona mode; no legacy descriptor 3/4 compatibility is retained |
+| 010 | rebase | Keep first instruction-candidate selection and canonical file-touch configuration until stock public selection matches |
+| 011 | rebase | Keep non-executable Provider content and matching-route raw replay until official pi-ai bridge preserves both |
+| 012 | rebase | Keep official file-tool factories, stored-edit preparation and publication hook until stock public exports provide them |
+
+Each retained patch remains an upstream contribution/removal follow-up; no PR was sent upstream.
+The frozen registry/ADRs retain the pre-campaign candidate status and exact rationale. This delegated
+ledger records the later Product-level adjudication without changing the artifact's source identity.
+
+The [dependency audit](../../../MyAgents-dsh-release-work/upg15-20260912/w07-dependency-license-audit-4.json)
+records 318 actual installed package roots, 98 changed/added entries and the seven newly installed
+names, excluding nested documentation manifests. All declared third-party license families are
+already in the baseline obligation table; newly adopted fast-sha256 retains its Unlicense text.
+The existing official notices builder still exports the source baseline rather than the complete
+installed Runtime notice set. Some upstream packages lack package-local license text. This known
+notice-completeness gap is recorded explicitly; this development acceptance is not a self-contained
+redistribution compliance claim. Windows/Linux native validation, desktop user experience acceptance
+and distribution signing/notarization are likewise separate from the completed local implementation.
+
+The Host identity-rejection fixture now uses the batch client's ordinary deadline: its one-second
+startup override intermittently masked the expected wrong-identity error during concurrent build-script
+tests. The exact rejection assertion remains; dedicated timeout and process-termination tests remain.
+No production timeout changed. The new OpenSSL smoke has a file-specific classification exception
+because it only creates a temporary CA and uses loopback endpoints under explicit native opt-in.
+
+
+| Workstream | Local implementation and adjudication status |
+| --- | --- |
+| U15-W01–W03 | complete; frozen baseline, 12 seam reviews, reproducible DSH packages and V3 Provider ownership |
+| U15-W04–W05 | complete on macOS; native stream/context/capability, compaction, collaboration, permission/file/Shell/network proofs |
+| U15-W06 | complete; official protocol 5 ingestion, staged Host journeys and actual development reset |
+| U15-W07 | local macOS gates and immutable handoff accepted; Windows/Linux and distribution limitations remain explicitly pending |
+| U15-W08 | implementation review and local stage adjudication complete; main merge is not performed |
+
+The [post-freeze coverage adjudication](../../../MyAgents-dsh-release-work/upg15-20260912/w07-coverage-adjudication-4.json)
+and [development reset receipt](../../../MyAgents-dsh-release-work/upg15-20260912/w07-development-reset-receipt.json)
+record exact evidence hashes. Final Host source, App bytes, all gate log hashes and source cleanliness
+are bound by the [local development receipt](../../../MyAgents-dsh-release-work/upg15-20260912/w07-local-development-receipt.json).
+This receipt is the integration transfer record for the outer handoff digest; do not substitute a
+self-computed digest from an untrusted copy.
+
+
+Final Host source gates pass after the reset preservation correction: typecheck, lint,
+147 build-script tests (five platform skips), 4,228 unit tests (three opt-in skips),
+1,301 DOM tests and 542 integration tests (six opt-in native skips). All six native tests were
+also explicitly executed successfully against the new staged Runtime, including HTTPS policy
+changes and 12 process generations. The default suite remains credential-free. Lint retains
+13 pre-existing dependency-cruiser warnings and zero errors. The final App build and its separate
+resource/signature/native checks are identified by the external receipt above.

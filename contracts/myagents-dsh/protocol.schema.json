@@ -1623,6 +1623,10 @@
                       "minLength": 1,
                       "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                       "type": "string"
+                    },
+                    "systemPromptUpdate": {
+                      "const": "in-history",
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -2180,6 +2184,10 @@
                 "maxLength": 256,
                 "minLength": 1,
                 "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "systemPromptUpdate": {
+                "const": "in-history",
                 "type": "string"
               }
             },
@@ -5540,6 +5548,29 @@
                   }
                 },
                 "type": "object"
+              },
+              "providerNetwork": {
+                "additionalProperties": false,
+                "properties": {
+                  "httpProxy": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "httpsProxy": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "noProxy": {
+                    "maxLength": 8192,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "noProxy"
+                ],
+                "type": "object"
               }
             },
             "required": [
@@ -7241,7 +7272,7 @@
             "type": "string"
           },
           "protocolVersion": {
-            "const": "4.0.0",
+            "const": "5.0.0",
             "type": "string"
           },
           "runtimeCapabilities": {
@@ -8140,7 +8171,7 @@
                 "type": "string"
               },
               "version": {
-                "const": "0.1.2-rc.1.myagents.a66e47020478.db06dc323417",
+                "const": "0.1.5-rc.2.myagents.fb2c4b9e698e.13b108f38d68",
                 "type": "string"
               }
             },
@@ -9955,6 +9986,10 @@
                       "minLength": 1,
                       "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                       "type": "string"
+                    },
+                    "systemPromptUpdate": {
+                      "const": "in-history",
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -10518,6 +10553,10 @@
                 "maxLength": 256,
                 "minLength": 1,
                 "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "systemPromptUpdate": {
+                "const": "in-history",
                 "type": "string"
               }
             },
@@ -13933,6 +13972,10 @@
                       "minLength": 1,
                       "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                       "type": "string"
+                    },
+                    "systemPromptUpdate": {
+                      "const": "in-history",
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -14496,6 +14539,10 @@
                 "maxLength": 256,
                 "minLength": 1,
                 "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                "type": "string"
+              },
+              "systemPromptUpdate": {
+                "const": "in-history",
                 "type": "string"
               }
             },
@@ -20782,18 +20829,112 @@
               {
                 "additionalProperties": false,
                 "properties": {
-                  "delta": {
-                    "maxLength": 262144,
+                  "kind": {
+                    "const": "assistant_stream",
                     "type": "string"
                   },
-                  "kind": {
-                    "const": "assistant_delta",
+                  "phase": {
+                    "const": "start",
+                    "type": "string"
+                  },
+                  "streamId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   }
                 },
                 "required": [
                   "kind",
-                  "delta"
+                  "phase",
+                  "streamId"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "chunkCount": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "assistant_stream",
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "abandoned",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "eventId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          },
+                          "eventType": {
+                            "anyOf": [
+                              {
+                                "const": "assistant/message",
+                                "type": "string"
+                              },
+                              {
+                                "const": "assistant/attempt",
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "kind": {
+                            "const": "committed",
+                            "type": "string"
+                          },
+                          "messageId": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "eventId",
+                          "eventType"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "phase": {
+                    "const": "end",
+                    "type": "string"
+                  },
+                  "streamId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "phase",
+                  "streamId",
+                  "chunkCount",
+                  "outcome"
                 ],
                 "type": "object"
               },
@@ -20804,14 +20945,56 @@
                     "maxLength": 262144,
                     "type": "string"
                   },
+                  "frameIndex": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "kind": {
-                    "const": "thinking_delta",
+                    "const": "assistant_delta",
+                    "type": "string"
+                  },
+                  "streamId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
                     "type": "string"
                   }
                 },
                 "required": [
                   "kind",
-                  "delta"
+                  "delta",
+                  "streamId",
+                  "frameIndex"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "delta": {
+                    "maxLength": 262144,
+                    "type": "string"
+                  },
+                  "frameIndex": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "thinking_delta",
+                    "type": "string"
+                  },
+                  "streamId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "delta",
+                  "streamId",
+                  "frameIndex"
                 ],
                 "type": "object"
               },
@@ -22440,6 +22623,6 @@
       }
     }
   },
-  "protocolVersion": "4.0.0",
+  "protocolVersion": "5.0.0",
   "title": "MyAgents DSH native RPC"
 }

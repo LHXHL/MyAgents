@@ -70,7 +70,8 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未被 
 Runtime home 与专属附件由 `dsh/owned-paths.ts` 和 Runtime birth 共用推导；所有计划路径
 先验证 canonical containment、符号链接和挂载边界。公共附件被其他 Session 引用或引用
 无法可靠解析时保留；任意工具 `savedPath` 都不成为删除路径。SessionStore 的专用维护
-入口在既有 Session 文件锁→索引锁内重新核对旧 binding，先删除所选 owned roots，再用
+入口在既有 Session 文件锁→索引锁内重新核对旧 binding。该入口使用共享严格 parser 的原始
+元数据结果，不触发读取时的 Runtime 身份规范化或损坏索引恢复，避免改写保留会话。先删除所选 owned roots，再用
 既有数据文件先、索引后的顺序删除投影。失败保留可再次处理的索引，不自动执行副作用重试。
 
 该入口只处理本次未发布开发数据；未来持久版本升级必须另立数据兼容政策。实现及验证见
