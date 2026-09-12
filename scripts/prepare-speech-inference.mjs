@@ -304,6 +304,8 @@ function configurePreparation(options) {
       join(projectRoot, 'rust-toolchain.toml'),
       join(mediaWorkerRoot, 'Cargo.toml'),
       join(mediaWorkerRoot, 'Cargo.lock'),
+      join(mediaWorkerRoot, 'model-pack-source-lock.json'),
+      join(mediaWorkerRoot, 'compatible-model-packs'),
       join(mediaWorkerRoot, 'SPEECH_INFERENCE_NOTICES.md'),
       join(mediaWorkerRoot, 'native'),
       join(mediaWorkerRoot, 'src'),

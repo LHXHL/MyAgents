@@ -8,7 +8,7 @@
 - `RecordStore` 是 `~/.myagents/records/` 下 text/audio Record、artifact、timeline、transcript revision、diarization projection、speaker override 与 export source 的持久权威。旧 `thoughts/` 只作为幂等迁移输入；迁移完成后产品不再双写。
 - `RecordingManager` 拥有 App-global 唯一采集槽、设备流、Ogg Opus 归档、pause/stop/recovery 和录音期 wake lock。Renderer 与托盘只消费其 snapshot。录音控制命令的 revision fence 以 Manager 最近一次控制变更为下界、RecordStore 当前持久 revision 为上界；录音期笔记、Mark 或元数据写入可以推进全局 Record revision，但不能使同一 generation 的 pause/stop 失效。
 - `SpeechRecognitionManager` 拥有 durable speech job、优先级队列、Worker generation、重试/取消/退出收敛，以及向 `RecordStore` 发布 transcript / diarization projection 的授权。
-- `SpeechModelPackManager` 是 `SpeechRecognitionManager` 内的模型权重子 owner：只管理显式安装、校验、active revision 和移除，不拥有 job terminal 或 Record 内容。
+- `SpeechModelPackManager` 是 `SpeechRecognitionManager` 内的模型权重子 owner：只管理首次显式安装、已安装资源自动维护、校验、active revision 和移除，不拥有 job terminal 或 Record 内容。
 - `LocalInferenceRuntimeRegistry` 只解析 App bundle 中经过 manifest 校验的共享 `onnx-cpu` identity；`LocalComputeCoordinator` 只授予重型推理 lease。
 - `myagents-media-worker` 是单 workload、单 generation 的受管子进程。它不监听端口、不下载资源、不读配置，也不直接写 Record 或公开 artifact。
 
@@ -121,7 +121,7 @@ live/final 共用来源、时间与回声预处理。Media Worker 使用 Sonora 
 
 ## 用户模型包
 
-当前 pack identity 固定为 `local-standard-speech / local-standard-speech-v3`。pyannote segmentation 3.0 使用同一已锁定上游 archive 中的 FP32 模型：分段漏检会使后续声纹匹配无从归属，不能靠放宽聚类距离修复。SenseVoice、Silero 和 ERes2Net 不变，source 下载字节数不变，安装体积增加 4,452,407 字节；模型文件与 pack revision 一起更新，不覆盖已发布 v2 的身份。编译期 source lock 位于 `src-tauri/media-worker/model-pack-source-lock.json`，固定：
+当前下载目标 pack identity 固定为 `local-standard-speech / local-standard-speech-v3`。pyannote segmentation 3.0 使用同一已锁定上游 archive 中的 FP32 模型：分段漏检会使后续声纹匹配无从归属，不能靠放宽聚类距离修复。SenseVoice、Silero 和 ERes2Net 不变，source 下载字节数不变，安装体积增加 4,452,407 字节；模型文件与 pack revision 一起更新，不覆盖已发布 v2 的身份。编译期 source lock 位于 `src-tauri/media-worker/model-pack-source-lock.json`，固定：
 
 - 四项第一方镜像 asset 与各自 URL、upstream revision、size、SHA-256、格式和许可；
 - 五个实际推理文件的 archive source path、安装相对路径、size 与 SHA-256；
@@ -137,7 +137,7 @@ https://download.myagents.io/models/speech/sets/<pack-revision>/manifest.json.si
 https://download.myagents.io/models/speech/assets/sha256/<sha256>/<filename>
 ```
 
-远端 manifest 的原始 bytes 必须通过 detached Minisign 签名验证，并由 App/Worker 使用拒绝未知字段的 typed source lock 做完整语义 identity 比较。JSON 排版和 CRLF/LF 不参与资源身份；任一字段值、字段集合或数组顺序漂移都会被拒绝。验签后的原始 bytes 原样写盘并由 active pointer 固定其 SHA-256 与签名，因此远端 JSON 仍不能提供新的本地路径、host、模型或 native library。
+远端下载 manifest 的原始 bytes 必须通过 detached Minisign 签名验证，并与当前编译下载锁做完整 typed identity 比较。执行兼容性由 App/Worker 共享的 `model_pack_source.rs` 裁决：当前 v3 与明确保留的已发布 v2 完整锁都可执行，绝不把任意已签名远端清单当成兼容许可。JSON 排版和 CRLF/LF 不参与资源身份；任一字段值、字段集合或数组顺序漂移都会被拒绝。验签后的原始 bytes 原样写盘并由 active pointer 固定其 SHA-256 与签名，因此远端 JSON 仍不能提供新的本地路径、host、模型或 native library。
 
 发布 owner 是根目录 `publish_speech_model_set.sh`：它先调用 `scripts/prepare-speech-model-mirror.mjs`，将运行时 source lock 与 release-only `model-pack-mirror-origin-lock.json` 按 exact asset/legal ID join，复用 `acquireLockedResource` 的 content-addressed cache 从锁定 GitHub origin 取得并校验七个 source。publisher 先补传缺失的 content-addressed object 并逐个从公网完整回读比对，再调用 `scripts/package-speech-model-set.mjs` 原样复制编译 source lock、复用 Tauri updater signer 生成 detached signature，最后发布 manifest/signature。任何已有 source/manifest 内容漂移或签名失配都 fail closed，不接受 force、revision、asset、URL 或 trust-root 覆盖。GitHub origin lock 不进入 App 运行时；完整 source lock 语义仍由 Rust/Worker 的同一解析与测试裁决。
 
@@ -148,6 +148,7 @@ https://download.myagents.io/models/speech/assets/sha256/<sha256>/<filename>
   active.json
   packs/pack-<activation-uuid>/
     manifest.json
+    activation.json  # 此 immutable pack 的原始签名 activation receipt
     models/...
     legal/...
   private/.download-<operation-uuid>/
@@ -158,14 +159,16 @@ https://download.myagents.io/models/speech/assets/sha256/<sha256>/<filename>
 
 ## 安装与激活顺序
 
-1. 用户显式调用 install；同一时刻只允许一个 install/remove operation。
+1. 首次由用户显式调用 install；成功安装后以已认证的 `active.json` 作为维护资格。与 managed-codex 相同，每次 App 启动在延迟完整校验后自动尝试一次目标更新，失败下次启动再试；target 来自随 App 发布的锁，没有远端 latest 通道或 status-triggered 下载。自动维护与手动 install/remove 在同一 operation 锁内裁决。移除后不再自动下载。
 2. 校验随 App 发布的 media Worker、native manifest 与共享 ORT 都是普通文件。
 3. 从固定第一方地址取得 manifest/signature，对下载到的原始 bytes 验证 updater Minisign trust root，再验证其 typed source-lock identity；验签后的原始 bytes 在后续流程中保持不变。
 4. 顺序下载锁定 asset 到 0700 private 目录中的 0600 `create_new` 文件；每个响应只允许 HTTPS `download.myagents.io` 固定 host，逐 chunk 执行 exact size、SHA-256 与总下载硬上限。
 5. Rust 内置的 pure-Rust bzip2 decoder + tar reader 只选择 source lock 白名单文件。archive 中任意 traversal、重复路径、symlink 或 special entry 都让整个 staging 失败；运行时不调用系统 tar、Python 或用户 PATH。
-6. manifest 最后写入；Manager 在安装与激活边界要求磁盘 manifest 的原始 SHA-256 与 pointer 一致、原始 bytes 通过 pointer 中的签名验证，并与编译期 source lock 保持完整 typed identity；逐项重开模型与 legal 文件校验 regular file、无执行位、size 和 SHA-256。后续 App 启动只同步恢复签名 pointer、已签名 manifest 与文件元数据；等首屏和 Global Sidecar 启动后 10 秒，再用最低优先级、chunk-level 可让路的 `BackgroundResourceValidation` lease 完整校验 pack。该后台检查期间已激活 pack 仍可被语音功能使用，失败后才撤销内存 active 并投影 repair 状态。同步 live admission 不重复读取整个 pack；Worker 每次实际执行仍独立重开并校验 manifest 的 typed identity、模型与 legal 文件后才加载模型。
+6. manifest 最后写入；Manager 在安装与激活边界要求磁盘 manifest 的原始 SHA-256 与 pointer 一致、原始 bytes 通过 pointer 中的签名验证，并与对应可执行兼容锁保持完整 typed identity；逐项重开模型与 legal 文件校验 regular file、无执行位、size 和 SHA-256。后续 App 启动只同步恢复签名 pointer、已签名 manifest 与文件元数据；等首屏和 Global Sidecar 启动后 10 秒，再用最低优先级、chunk-level 可让路的 `BackgroundResourceValidation` lease 完整校验 pack。该后台检查期间已激活 pack 仍可被语音功能使用，失败后才撤销内存 active 并投影 repair 状态。同步 live admission 不重复读取整个 pack；Worker 每次实际执行仍独立重开并校验 manifest 的 typed identity、模型与 legal 文件后才加载模型。
 7. 安装/升级的显式验证取得 `SpeechModelValidation` compute lease，让当前随包 Worker 依次真实创建并释放 ASR、VAD 和 diarizer engine。只有 Record live 到达时才 cooperative cancel exact probe tree、释放 lease 后重试；其它 workload 只影响下一次 admission。
-8. staging 以 no-replace directory rename 发布到唯一 pack 目录，最后 atomic replace `active.json`。rename 前明确失败会删除新 pack并保持旧 pointer；rename 已可见但 parent-directory sync 失败时绝不删除 pointer 已引用的 pack，状态保留新 active 并报告 `SPEECH_RESOURCE_ACTIVATION_DURABILITY_UNCONFIRMED`。
+8. staging 以 no-replace directory rename 发布到唯一 pack 目录，先为旧、新 pack 保存包含原始签名的 immutable `activation.json` receipt，再 atomic replace 根 `active.json`。旧 v2 安装首次升级时从其已认证 active pointer 补存 receipt；receipt 不决定默认版本，只供旧任务按冻结 revision 解析，读取仍验签并匹配完整兼容锁。rename 前明确失败会删除新 pack并保持旧 pointer；rename 已可见但 parent-directory sync 失败时绝不删除 pointer 已引用的 pack，状态保留新 active 并报告 `SPEECH_RESOURCE_ACTIVATION_DURABILITY_UNCONFIRMED`。
+
+目标版本与可用版本分离：检查、下载、更新失败都不撤销健康的兼容旧版；新版完整校验并原子激活后，新 admission 使用新 active，已有 `SpeechPipelineSnapshot` 按 revision 解析保留的旧 pack，跨 Worker replacement 与 App 重启不改变版本。旧目录沿现有保留策略直到用户移除，不在更新期间删除或覆盖。真正损坏或不兼容的资源仍不可执行。
 
 安装成功只改变 capability；不会扫描历史 Record，也不会自动创建 backfill job。历史音频必须由用户点击“开始转录”后才进入 admission。
 
@@ -179,7 +182,7 @@ https://download.myagents.io/models/speech/assets/sha256/<sha256>/<filename>
 
 ## 状态与错误
 
-Tauri 提供 `cmd_speech_model_pack_status/install/remove`。状态为 `not_installed | checking | downloading | verifying | installing | removing | ready | update_available | error`，另带 `usable`、active/available revision、公开资源字节数与结构化 `lastErrorCode`。只读 status 只检查本地 owner，不联网；显式安装依次投影第一方清单/签名核验、固定资源下载、安全解包与文件校验、真实模型加载及原子激活，只有下载阶段展示 bytes/百分比。App revision 变化后，旧 pack 只有在本地 manifest 仍能通过 App updater trust root 验签且 identity 与 pointer 一致时才投影 `update_available`，但 `usable=false`、绝不交给 Worker；损坏或伪造 pointer 投影 `error`。
+Tauri 提供 `cmd_speech_model_pack_status/install/remove`。状态为 `not_installed | checking | downloading | verifying | installing | removing | ready | update_available | error`，另带 `usable`、active/available revision、公开资源字节数与结构化 `lastErrorCode`。只读 status 只检查本地 owner，不联网；显式安装依次投影第一方清单/签名核验、固定资源下载、安全解包与文件校验、真实模型加载及原子激活，只有下载阶段展示 bytes/百分比。App 目标 revision 变化后，已认证且兼容的旧 pack 投影 `update_available` 且 `usable=true`；更新失败可投影 `error`，但仍保留 `usable=true`。当前可用资源的 UI 不因后台维护出现安装按钮、进度或更新失败弹窗；显式移除失败及 durability warning 仍可操作。损坏或不支持的 pack 不可用，伪造 pointer 不授权自动下载。
 
 这些状态只是现有 `SpeechModelPackManager` operation 与持久 pointer 的投影，不是新的持久状态机。Renderer 在操作期间轮询同一 command；没有第二套 downloader、事件 owner、安装授权或错误 store。主要错误族：
 

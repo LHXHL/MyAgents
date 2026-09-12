@@ -824,7 +824,7 @@ impl SpeechRecognitionManager {
     }
 
     pub(crate) fn start_background_resource_validation(self: &Arc<Self>) {
-        self.model_pack.start_background_verification();
+        self.model_pack.start_background_maintenance();
     }
 
     pub fn capability_snapshot(&self) -> SpeechCapabilitySnapshot {

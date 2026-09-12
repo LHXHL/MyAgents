@@ -6,6 +6,13 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 pub const MODEL_PACK_SOURCE_LOCK: &str = include_str!("../model-pack-source-lock.json");
+// Released data remains executable while the target revision is maintained.
+// Keep exact historical identities; accepting arbitrary signed manifests here
+// would let download metadata define the Worker's model inventory.
+const COMPATIBLE_MODEL_PACK_LOCKS: &[&str] = &[
+    MODEL_PACK_SOURCE_LOCK,
+    include_str!("../compatible-model-packs/local-standard-speech-v2.json"),
+];
 
 const EXPECTED_ASSET_IDS: [&str; 4] = [
     "sensevoice",
@@ -230,16 +237,27 @@ enum LegalSource {
 /// harmless CRLF/LF or whitespace differences between independently-built App
 /// and Worker binaries while continuing to reject any semantic drift.
 pub fn manifest_matches_source_lock(bytes: &[u8]) -> bool {
+    manifest_matches_lock(bytes, MODEL_PACK_SOURCE_LOCK)
+        && validate_source_lock_json(MODEL_PACK_SOURCE_LOCK).is_ok()
+}
+
+pub fn manifest_matches_compatible_lock(bytes: &[u8]) -> bool {
+    COMPATIBLE_MODEL_PACK_LOCKS
+        .iter()
+        .any(|lock| manifest_matches_lock(bytes, lock))
+}
+
+fn manifest_matches_lock(bytes: &[u8], lock: &str) -> bool {
     if bytes.is_empty() || bytes.len() > 256 * 1024 {
         return false;
     }
     let Ok(candidate) = serde_json::from_slice::<SourceLock>(bytes) else {
         return false;
     };
-    let Ok(expected) = serde_json::from_str::<SourceLock>(MODEL_PACK_SOURCE_LOCK) else {
+    let Ok(expected) = serde_json::from_str::<SourceLock>(lock) else {
         return false;
     };
-    validate_source_lock_json(MODEL_PACK_SOURCE_LOCK).is_ok() && candidate == expected
+    candidate == expected
 }
 
 pub fn validate_source_lock_json(json: &str) -> Result<(), SourceLockError> {
@@ -462,7 +480,7 @@ pub fn install_plan() -> Result<ModelPackInstallPlan, SourceLockError> {
 }
 
 /// Verifies the exact activated speech model pack without trusting mutable
-/// manifest fields. The typed manifest must equal the source lock compiled
+/// manifest fields. The typed manifest must equal a compatible lock compiled
 /// into this worker generation; every selected model and legal notice is then
 /// re-opened as a no-symlink regular file and checked by size and SHA-256.
 pub fn verify_installed_pack(
@@ -508,7 +526,7 @@ fn inspect_installed_pack_inner(
     }
     let manifest_bytes =
         fs::read(manifest_path).map_err(|_| InstalledPackError::ManifestUnavailable)?;
-    if !manifest_matches_source_lock(&manifest_bytes) {
+    if !manifest_matches_compatible_lock(&manifest_bytes) {
         return Err(InstalledPackError::ManifestMismatch);
     }
     let lock: SourceLock = serde_json::from_slice(&manifest_bytes)
@@ -525,13 +543,23 @@ fn inspect_installed_pack_inner(
             .cloned()
             .ok_or(InstalledPackError::InvalidInventory)
     };
+    // v2 installed the INT8 segmentation under its precision-specific name.
+    // Resolve from the exact compiled compatible inventory, never by the new
+    // target's filename or by an unvalidated remote path.
+    let segmentation = lock
+        .assets
+        .iter()
+        .find(|asset| asset.id == "pyannote-segmentation")
+        .and_then(|asset| asset.selected_files.first())
+        .ok_or(InstalledPackError::InvalidInventory)?;
+    let pyannote_segmentation_model = path(&segmentation.install_path)?;
     Ok(VerifiedModelPack {
         pack_revision: lock.pack_revision,
         manifest_path: manifest_path.to_path_buf(),
         sense_voice_model: path("models/sensevoice/model.int8.onnx")?,
         sense_voice_tokens: path("models/sensevoice/tokens.txt")?,
         silero_vad_model: path("models/vad/silero_vad.int8.onnx")?,
-        pyannote_segmentation_model: path("models/diarization/pyannote-segmentation-3.0.onnx")?,
+        pyannote_segmentation_model,
         speaker_embedding_model: path("models/diarization/3dspeaker-eres2net-base-zh-16k.onnx")?,
     })
 }
@@ -722,6 +750,43 @@ mod tests {
         assert_eq!(plan.source_download_bytes, 209_767_948);
         assert_eq!(plan.installed_model_bytes, 285_349_269);
         assert_eq!(plan.download_hard_limit_bytes, 300 * 1024 * 1024);
+    }
+
+    #[test]
+    fn released_compatible_pack_is_executable_but_never_the_download_target() {
+        let previous = include_str!("../compatible-model-packs/local-standard-speech-v2.json");
+        assert!(manifest_matches_compatible_lock(previous.as_bytes()));
+        assert!(!manifest_matches_source_lock(previous.as_bytes()));
+        assert_eq!(
+            install_plan().unwrap().pack_revision,
+            "local-standard-speech-v3"
+        );
+        for drift in [
+            previous.replace("local-standard-speech-v2", "local-standard-speech-v999"),
+            previous.replace("model.int8.onnx", "other.onnx"),
+            previous.replace("1.13.6", "1.13.5"),
+            previous.replacen("{", "{\"unrecognized\": true,", 1),
+        ] {
+            assert!(!manifest_matches_compatible_lock(drift.as_bytes()));
+        }
+        let root = tempfile::tempdir().unwrap();
+        let manifest = root.path().join("manifest.json");
+        fs::write(&manifest, previous).unwrap();
+        assert_eq!(
+            verify_installed_pack(&manifest),
+            Err(InstalledPackError::UnsafePath)
+        );
+        // A genuine old identity gets as far as checking its missing model
+        // directories. Merely relabeling the new target as v2 is rejected earlier.
+        fs::write(
+            &manifest,
+            MODEL_PACK_SOURCE_LOCK.replace("local-standard-speech-v3", "local-standard-speech-v2"),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_installed_pack(&manifest),
+            Err(InstalledPackError::ManifestMismatch)
+        );
     }
 
     #[test]
