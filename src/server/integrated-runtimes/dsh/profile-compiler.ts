@@ -276,6 +276,9 @@ export function compileDshModelExecutionProfile(args: {
         contextWindow: capabilities.contextWindow,
         maxTokens: capabilities.maxTokens,
         inputModalities: capabilities.inputModalities,
+        // Fixed DSH rc.2 official model catalog; gateways and other model IDs
+        // must not inherit this wire capability from a Provider brand.
+        ...(modelId === "deepseek-flash" ? { systemPromptUpdate: "in-history" as const } : {}),
         reasoning: true,
         effort: "high",
       }

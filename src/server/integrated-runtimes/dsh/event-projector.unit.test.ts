@@ -42,8 +42,11 @@ describe('DshRuntimeEventProjector', () => {
       },
     }));
     await projector.accept(envelope(2, { kind: 'turn_started' }, { turnId: 'turn-1' }));
-    await projector.accept(envelope(3, { kind: 'assistant_delta', delta: 'hello' }, { turnId: 'turn-1' }));
-    await projector.accept(envelope(4, {
+    await projector.accept(envelope(3, { kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(4, { kind: 'assistant_delta', delta: 'hello', streamId: 'stream-1', frameIndex: 0 }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(5, { kind: 'assistant_stream', phase: 'end', streamId: 'stream-1', chunkCount: 1,
+      outcome: { kind: 'committed', eventType: 'assistant/message', eventId: 'assistant-1', messageId: 'message-1' } }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(6, {
       kind: 'turn_terminal',
       clientOperationId: 'operation-1',
       terminal: {
@@ -132,7 +135,7 @@ describe('DshRuntimeEventProjector', () => {
       runtimeGeneration: 'runtime-generation-1',
       onEvent: vi.fn(),
     });
-    const first = envelope(1, { kind: 'assistant_delta', delta: 'one' });
+    const first = envelope(1, { kind: 'turn_started' });
     await projector.accept(first);
     await expect(projector.accept(first)).resolves.toBeUndefined();
     await expect(projector.accept(envelope(1, {
@@ -260,16 +263,17 @@ describe('DshRuntimeEventProjector', () => {
       onEvent: event => events.push(event),
       onPlan,
     });
-    await projector.accept(envelope(1, {
-      kind: 'thinking_delta',
+    await projector.accept(envelope(1, { kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(2, {
+      kind: 'thinking_delta', streamId: 'stream-1', frameIndex: 0,
       delta: 'inspect the exact runtime state',
     }, { turnId: 'turn-1', itemId: 'thinking-1' }));
-    await projector.accept(envelope(2, {
+    await projector.accept(envelope(3, {
       kind: 'plan',
       revision: 'plan-revision-1',
       mode: 'plan',
     }, { turnId: 'turn-1' }));
-    await projector.accept(envelope(3, {
+    await projector.accept(envelope(4, {
       kind: 'task_graph',
       snapshot: {
         revision: 'tasks-revision-1',
@@ -280,7 +284,7 @@ describe('DshRuntimeEventProjector', () => {
         ],
       },
     }, { turnId: 'turn-1' }));
-    await projector.accept(envelope(4, {
+    await projector.accept(envelope(5, {
       kind: 'context',
       contextOccupiedTokens: 12_345,
       runtimeContextWindow: 200_000,
@@ -397,4 +401,36 @@ describe('DshRuntimeEventProjector', () => {
     }));
     expect(resolveToolImage).toHaveBeenCalledOnce();
   });
+  it('settles attempts without synthesizing completed content and accepts skipped non-text positions', async () => {
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: event => events.push(event) });
+    let sequence = 0;
+    const send = (event: Record<string, unknown>) => projector.accept(envelope(++sequence, event, { turnId: 'turn-1' }));
+    for (const [streamId, outcome] of [
+      ['first', { kind: 'abandoned' }],
+      ['second', { kind: 'committed', eventId: 'attempt-1', eventType: 'assistant/attempt' }],
+      ['third', { kind: 'committed', eventId: 'assistant-1', eventType: 'assistant/message', messageId: 'message-1' }],
+    ] as const) {
+      await send({ kind: 'assistant_stream', phase: 'start', streamId });
+      await send({ kind: 'assistant_delta', streamId, frameIndex: 2, delta: streamId });
+      await send({ kind: 'assistant_stream', phase: 'end', streamId, chunkCount: 4, outcome });
+    }
+    expect(events).toEqual(['first', 'second', 'third'].map(text => ({ kind: 'text_delta', text })));
+  });
+
+  it.each([
+    [{ kind: 'assistant_delta', streamId: 'other', frameIndex: 1, delta: 'bad' }, 'turn-1', 'active stream'],
+    [{ kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 1, delta: 'bad' }, 'turn-other', 'active stream'],
+    [{ kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 0, delta: 'bad' }, 'turn-1', 'not increasing'],
+    [{ kind: 'assistant_stream', phase: 'start', streamId: 'other' }, 'turn-1', 'overlap'],
+    [{ kind: 'assistant_stream', phase: 'end', streamId: 'stream-1', chunkCount: 0, outcome: { kind: 'abandoned' } }, 'turn-1', 'last frame'],
+    [{ kind: 'assistant_stream', phase: 'end', streamId: 'stream-1', chunkCount: 1, outcome: { kind: 'committed', eventId: 'bad', eventType: 'user/message' } }, 'turn-1', 'event type'],
+  ])('rejects mismatched live assistant boundaries %#', async (event, turnId, message) => {
+    const projector = new DshRuntimeEventProjector({ productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1', onEvent: vi.fn() });
+    await projector.accept(envelope(1, { kind: 'assistant_stream', phase: 'start', streamId: 'stream-1' }, { turnId: 'turn-1' }));
+    await projector.accept(envelope(2, { kind: 'assistant_delta', streamId: 'stream-1', frameIndex: 0, delta: 'preview' }, { turnId: 'turn-1' }));
+    await expect(projector.accept(envelope(3, event, { turnId }))).rejects.toThrow(message);
+    await expect(projector.whenIdle()).rejects.toThrow(message);
+  });
+
 });

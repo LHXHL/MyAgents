@@ -83,7 +83,8 @@
     "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml",
     "ingest:dsh-runtime": "node scripts/integrated-runtimes/ingest-dsh-handoff.mjs",
     "verify:dsh-runtime": "node scripts/integrated-runtimes/verify-dsh-resources.mjs",
-    "verify:dsh-runtime:fresh": "node scripts/integrated-runtimes/verify-dsh-dev-freshness.mjs"
+    "verify:dsh-runtime:fresh": "node scripts/integrated-runtimes/verify-dsh-dev-freshness.mjs",
+    "reset:dsh-dev": "node --import tsx/esm scripts/reset-dsh-development-sessions.ts"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.0.2",

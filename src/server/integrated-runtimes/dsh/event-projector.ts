@@ -288,6 +288,8 @@ export function projectDshAgentWorkSnapshot(snapshot: DshRpcObject): RuntimeAgen
 export class DshRuntimeEventProjector {
   private runtimeSessionIdValue: string | undefined;
   private nextSequence = 1;
+  // Correlation only: final content belongs to native history reconciliation.
+  private assistantStream: { id: string; turnId: string; lastFrameIndex: number } | undefined;
   private readonly observedDigests = new Map<number, string>();
   private inbox: Promise<void> = Promise.resolve();
   private failureValue: Error | undefined;
@@ -346,6 +348,14 @@ export class DshRuntimeEventProjector {
     await this.emit(envelope);
   }
 
+  private requireAssistantStream(id: string, turnId: string) {
+    const active = this.assistantStream;
+    if (!active || active.id !== id || active.turnId !== turnId) {
+      throw new Error('DSH assistant frame differs from its active stream or turn');
+    }
+    return active;
+  }
+
   private async emit(envelope: DshRuntimeEventEnvelope): Promise<void> {
     const onEvent = (event: UnifiedEvent): void => this.options.onEvent(event,
       envelope.turnId ?? (event.kind === 'root_turn_admitted' ? event.runtimeTurnId : undefined));
@@ -374,12 +384,47 @@ export class DshRuntimeEventProjector {
         onEvent({ kind: 'turn_started' });
         onEvent({ kind: 'status_change', state: 'running' });
         return;
+      case 'assistant_stream': {
+        const id = string(event.streamId, 'DSH assistant stream id');
+        const turnId = string(envelope.turnId, 'DSH assistant stream turn');
+        if (event.phase === 'start') {
+          if (this.assistantStream) throw new Error('DSH assistant streams overlap');
+          this.assistantStream = { id, turnId, lastFrameIndex: -1 };
+          return;
+        }
+        if (event.phase !== 'end') throw new Error('DSH assistant stream phase is invalid');
+        const active = this.requireAssistantStream(id, turnId);
+        const chunkCount = nonNegative(event.chunkCount);
+        if (chunkCount <= active.lastFrameIndex) throw new Error('DSH assistant stream ended before its last frame');
+        const outcome = object(event.outcome, 'DSH assistant stream outcome');
+        if (outcome.kind === 'committed') {
+          string(outcome.eventId, 'DSH committed assistant event');
+          if (outcome.eventType !== 'assistant/message' && outcome.eventType !== 'assistant/attempt') {
+            throw new Error('DSH assistant stream committed an invalid event type');
+          }
+          if (outcome.eventType === 'assistant/message') string(outcome.messageId, 'DSH committed assistant message');
+        } else if (outcome.kind !== 'abandoned') {
+          throw new Error('DSH assistant stream outcome is invalid');
+        }
+        this.assistantStream = undefined;
+        return;
+      }
       case 'assistant_delta':
-        onEvent({ kind: 'text_delta', text: string(event.delta, 'DSH assistant delta') });
+      case 'thinking_delta': {
+        const active = this.requireAssistantStream(
+          string(event.streamId, 'DSH assistant delta stream'),
+          string(envelope.turnId, 'DSH assistant delta turn'),
+        );
+        const frameIndex = nonNegative(event.frameIndex);
+        // Non-text native chunks are omitted from the Product notification stream.
+        if (frameIndex <= active.lastFrameIndex) throw new Error('DSH assistant delta position is not increasing');
+        active.lastFrameIndex = frameIndex;
+        const text = string(event.delta, 'DSH assistant delta');
+        onEvent(kind === 'assistant_delta'
+          ? { kind: 'text_delta', text }
+          : { kind: 'thinking_delta', text, index: 0 });
         return;
-      case 'thinking_delta':
-        onEvent({ kind: 'thinking_delta', text: string(event.delta, 'DSH thinking delta'), index: 0 });
-        return;
+      }
       case 'tool': {
         const phase = string(event.phase, 'DSH tool phase');
         const toolUseId = envelope.toolCallId ?? envelope.itemId;

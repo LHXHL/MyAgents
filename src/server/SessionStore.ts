@@ -23,7 +23,8 @@ import type { PendingDshInput } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isPendingSessionId } from '../shared/constants';
-import { runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
+import { isCliProductSessionId } from '../shared/cli-session-scope';
+import { parseEffectiveRuntimeBinding, runtimeTypeForBinding } from '../shared/integrated-runtimes/identity';
 import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import {
     deriveSessionUserTagSummaries,
@@ -1092,6 +1093,11 @@ export type SessionDeleteIntent =
     | { kind: 'user-delete' }
     | { kind: 'prepared-materialization-rollback'; sourceSessionId: string };
 
+type DevelopmentDshResetIntent = {
+    kind: 'development-dsh-upg15-reset';
+    expectedBinding: NonNullable<SessionMetadata['runtimeBinding']>;
+};
+
 export type SessionDeleteResult =
     | { deleted: true }
     | {
@@ -1101,7 +1107,7 @@ export type SessionDeleteResult =
 
 function rejectSessionDeletion(
     sessionId: string,
-    intent: SessionDeleteIntent,
+    intent: SessionDeleteIntent | DevelopmentDshResetIntent,
     reason: Exclude<SessionDeleteResult, { deleted: true }>['reason'],
     detail: string,
 ): SessionDeleteResult {
@@ -1121,6 +1127,24 @@ function rejectSessionDeletion(
 export async function deleteSession(
     sessionId: string,
     intent: SessionDeleteIntent,
+): Promise<SessionDeleteResult> {
+    return deleteSessionOwned(sessionId, intent);
+}
+
+/** Offline, one-time UPG15 maintenance. The CLI proves quiescence before entering. */
+export async function resetDshDevelopmentSession(
+    sessionId: string,
+    expectedBinding: NonNullable<SessionMetadata['runtimeBinding']>,
+    removeOwnedData: () => Promise<void>,
+): Promise<SessionDeleteResult> {
+    if (!isCliProductSessionId(sessionId) || typeof removeOwnedData !== 'function') throw new Error('Invalid development DSH reset authority');
+    return deleteSessionOwned(sessionId, { kind: 'development-dsh-upg15-reset', expectedBinding }, removeOwnedData);
+}
+
+async function deleteSessionOwned(
+    sessionId: string,
+    intent: SessionDeleteIntent | DevelopmentDshResetIntent,
+    removeOwnedData?: () => Promise<void>,
 ): Promise<SessionDeleteResult> {
     ensureStorageDir();
 
@@ -1145,6 +1169,19 @@ export async function deleteSession(
             const hasLegacyData = existsSync(legacyFile);
 
             switch (intent.kind) {
+                case 'development-dsh-upg15-reset': {
+                    const binding = current.runtimeBinding;
+                    if (!binding || binding.family !== 'integrated' || binding.id !== 'dsh'
+                        || !/^[234]\./u.test(binding.protocolVersion)
+                        || JSON.stringify(parseEffectiveRuntimeBinding(binding)) !== JSON.stringify(parseEffectiveRuntimeBinding(intent.expectedBinding))
+                        || isSystemMaintenanceSession(current)) {
+                        return rejectSessionDeletion(sessionId, intent, 'precondition-failed',
+                            'the unreleased DSH binding changed or is outside the UPG15 reset scope');
+                    }
+                    if (!removeOwnedData) throw new Error('Development reset requires its owned-data action');
+                    await removeOwnedData();
+                    break;
+                }
                 case 'user-delete':
                     if (isSystemMaintenanceSession(current)) {
                         return rejectSessionDeletion(

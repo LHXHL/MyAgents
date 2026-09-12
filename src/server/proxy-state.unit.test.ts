@@ -179,6 +179,11 @@ describe('proxy-state provider scope', () => {
     expect(providerEnv.HTTP_PROXY).toBe(
       providerUsesApp ? 'http://myagents.proxy:7890' : undefined,
     );
+    const requestPolicy = proxyState.getProviderRequestProxyPolicy(providerId);
+    expect(requestPolicy.httpProxy).toBe(providerEnv.HTTP_PROXY);
+    expect(requestPolicy.httpsProxy).toBe(providerEnv.HTTPS_PROXY);
+    expect(requestPolicy.noProxy).toBe(providerEnv.NO_PROXY);
+    expect(Object.isFrozen(requestPolicy)).toBe(true);
     expect(providerEnv.NO_PROXY).toContain('localhost');
     if (!providerUsesApp) expect(providerEnv.NO_PROXY).toContain('.corp.local');
     expect(providerEnv.MYAGENTS_PROXY_INJECTED).toBeUndefined();

@@ -1307,3 +1307,42 @@ Runtime source `2daf037c39f957b0ebee027333ea69fdcfc350a2` removes the permission
 The clean-source pre-artifact gate passes 71 files / 768 tests, typecheck, lint, build, fault matrix and three lifecycle soaks: report `86c98781b92f5805f6a570076201489892af2da9c92d84162fc4e89d0d5c73e0`. Runtime manifest `6bdd75fbf989889c55aed36593013d529c56e932521f034551e7044d34898a0a` passes packed composition and the fresh external Tester's eight-scenario macOS campaign: native report `4e462627186027cf8633d63a6acaa8701789fe148c8b9f731adb89a879188b6d`. Official handoff `abd05c3b784da5c842e35db15c17c4bb14719d8c3955e1530176bd517dd64154` supplies the complete protocol 4.0.0 contracts and staged Runtime. Windows/Linux retain artifact-bound pending native-validation claims.
 
 Host validation passes 30 unit/DOM files / 187 tests, all five staged process tests including the 12-generation soak, 39 handoff/build tests, typecheck, lint, resource verification and clean Runtime source freshness. A separate real-process upgrade fixture creates an already-expired grant and a revoked grant with the previous protocol 3.1 Runtime, then resumes the same isolated persisted Session with protocol 4.0: rule identity/revision survive, the active grant has null expiry, the revoked grant stays absent, and explicit revoke still succeeds. The [local integration receipt](../../../MyAgents-dsh-release-work/upg-20260905/session-grants-integration-receipt.json) records final Host source and build results. This delivery updates source and staged development resources; an already installed App still requires rebuilding to consume the new protocol and Runtime.
+
+
+## DSH 0.1.5-rc.2 upgrade source adaptation (2026-09-12)
+
+UPG15 source targets protocol 5.0.0 and native V3 Session history. The committed lock/resources
+still select the historical protocol 4.0.0 handoff; this section does not promote staged acceptance.
+`event-projector.ts` tracks only the active assistant stream id, Product turn and last visible frame
+position. It rejects overlap, foreign stream/turn deltas and invalid end boundaries. Native non-text
+chunks can leave gaps in visible positions. Start/end metadata never synthesizes final content or
+turn success; `dsh-turn-reconciliation.ts` continues to derive final Product history from exact
+durable assistant/message and operation terminal anchors. Raw abandoned/attempt streams are not
+converted into completed assistant messages.
+
+The profile compiler adds `in-history` system-prompt updates only when the configured selection is
+`deepseek-flash` on the verified official DeepSeek route, matching the fixed rc.2 catalog. Existing
+v4 model selections and gateway routes do not inherit that capability. The compiler does not add or
+select models, and preserves declared input modalities. Projector/compiler/reconciliation fixtures
+pass 35 deterministic tests; official candidate ingestion and packaged journeys remain pending.
+
+
+The existing credential reverse handler also sends `getProviderRequestProxyPolicy(providerId)` as
+bounded optional `providerNetwork` material. It selects the same app overlay/inherited baseline as
+other Host Provider requests; it is not persisted in profile or Session snapshots. Runtime uses
+its existing model-request scope to isolate concurrent proxy pools. General Runtime/MCP policy and
+Shell environment remain captured at launch; a later Provider request resolves current settings.
+The Host proxy-state matrix passes 24 unit cases. Source protocol 5.0.0, official candidate handoff,
+and actual packaged journeys still require synchronized acceptance.
+
+
+UPG15 adds the one-time offline `reset:dsh-dev` maintenance entry. `owned-paths.ts` shares exact
+Product Session root derivation with Runtime birth. The planner verifies selected pre-5 DSH
+bindings and path containment, rejects links/mounts and retained Task/Goal references, and keeps
+shared/ambiguous attachments. It never turns external savedPath values into deletion targets.
+SessionStore owns the final binding check and the existing file-lock → index-lock deletion order;
+the callback removes only prevalidated DSH roots before transcript/index deletion. Default CLI
+execution only prints a content-free plan; apply requires its unchanged digest and stopped app/
+Sidecar/Runtime processes. Eight reset tests plus twenty existing mutation tests pass with real
+SessionStore over synthetic homes. Actual development planning found 23 eligible old Sessions;
+no real data has been removed. Execution follows candidate Runtime and Host journey verification.

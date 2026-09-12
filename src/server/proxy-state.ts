@@ -441,6 +441,18 @@ export function applyProviderProxyPolicyToEnv(
   console.log(`[proxy-state] owner=provider provider=${providerId} path=${useAppProxy ? 'myagents-proxy' : 'inherited'}`);
 }
 
+/** Ephemeral Provider request policy for the DSH credential reverse response. */
+export function getProviderRequestProxyPolicy(providerId: string): Readonly<{
+  httpProxy?: string;
+  httpsProxy?: string;
+  noProxy: string;
+}> {
+  const source = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)
+    ? (appProxyEnvSnapshot ?? {})
+    : inheritedProxySnapshot;
+  return Object.freeze(envHttpProxyOptions(source));
+}
+
 export function getProxyForProviderUrl(providerId: string, url: string): string | undefined {
   const source = shouldUseMyAgentsProxyForProvider(currentProxySettings, providerId)
     ? (appProxyEnvSnapshot ?? {})

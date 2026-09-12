@@ -186,7 +186,7 @@ DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列�
 | System Prompt | Node；产品 append、Workspace 指令和逐轮 reminder 分层组装 | [Prompt](./tech_docs/system_prompt_architecture.md)、[Reminder](./tech_docs/system_reminder_protocol.md) |
 | SessionEngine | Node facade；builtin/external Runtime 的唯一 route-facing 入口 | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Builtin Session | Node；Claude Agent SDK Query、queue、turn、transcript 与配置 owner 分层 | [Session](./tech_docs/session_architecture.md) |
-| Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证 | [DSH 集成](./tech_docs/myagents_dsh_integrated_runtime.md) |
+| Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证 | [DSH 集成与 UPG15 原生流投影](./tech_docs/myagents_dsh_integrated_runtime.md) |
 | External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
@@ -261,3 +261,18 @@ Renderer、Node 和 Rust 日志汇入本地统一日志；高频 transport delta
 - 精确版本、命令清单、字段枚举和平台产物以代码、类型、测试、`package.json` 与构建脚本为准。
 - PRD、issue、commit 和 CHANGELOG 解释历史动机，不能覆盖现行实现。
 - 文档与代码冲突时先核对实现、测试和 git 历史，再同时修正文档图中受影响的节点。
+
+
+DSH UPG15 source extends the existing credential request with ephemeral Provider network policy.
+The Host remains proxy selection authority; Runtime request scopes own concurrent model pools,
+while ordinary networking and Shell use the Host general launch snapshot. No new port, listener or
+persistent proxy owner is added. See [proxy configuration](./tech_docs/proxy_config.md) and the
+[DSH integration guide](./tech_docs/myagents_dsh_integrated_runtime.md); staged protocol 4 resources
+remain historical until official candidate ingestion.
+
+
+The UPG15 offline development reset remains a named SessionStore maintenance operation. It shares
+DSH owned-root derivation with Runtime birth, verifies the old binding under existing storage
+locks, and preserves other Runtime/config/workspace authorities and referenced attachments.
+It requires stopped app/Sidecar/Runtime processes and does not replace Rust live deletion fencing.
+See [Session architecture](./tech_docs/session_architecture.md#24-upg15-开发数据重置).

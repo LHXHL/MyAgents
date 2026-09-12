@@ -49,8 +49,24 @@ describe("DSH ModelExecutionProfile compiler", () => {
       });
       expect(profile.revision).toMatch(/^myagents-dsh-profile-v1:[a-f0-9]{64}$/);
       expect(profile).not.toHaveProperty("compatibility");
+      expect(profile).not.toHaveProperty("systemPromptUpdate");
       expect(Object.isFrozen(profile)).toBe(true);
     }
+  });
+
+  it("declares in-history only for an explicitly selected official deepseek-flash model", () => {
+    const provider = preset("deepseek");
+    provider.models.push({ model: "deepseek-flash", modelName: "Flash", modelSeries: "deepseek", inputModalities: ["text"] });
+    const before = JSON.stringify(provider);
+    expect(compileDshModelExecutionProfile({ provider, modelId: "deepseek-flash" }))
+      .toMatchObject({ modelId: "deepseek-flash", systemPromptUpdate: "in-history", inputModalities: ["text"] });
+    expect(JSON.stringify(provider)).toBe(before);
+    provider.config.baseUrl = "https://gateway.example.test/anthropic";
+    expect(compileDshModelExecutionProfile({ provider, modelId: "deepseek-flash" }))
+      .not.toHaveProperty("systemPromptUpdate");
+    provider.models.push({ model: "unknown-model", modelName: "Unknown", modelSeries: "deepseek" });
+    expect(compileDshModelExecutionProfile({ provider, modelId: "unknown-model" }))
+      .toMatchObject({ modelId: "unknown-model", inputModalities: ["text"] });
   });
 
   it("compiles ordinary API Providers by their declared API family", () => {

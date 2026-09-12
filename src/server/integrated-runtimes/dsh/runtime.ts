@@ -1,3 +1,4 @@
+import { dshSessionOwnedPaths } from './owned-paths';
 import { resolveProviderForModel } from '../../../shared/tokendance';
 import type { MethodParams } from './protocol-types';
 import type { RuntimeAgentWorkControl } from '../../../shared/types/subagent-lifecycle';
@@ -35,7 +36,7 @@ import { getHomeDir } from '../../utils/platform';
 import { getBundledNodePath } from '../../utils/runtime';
 import { ensureShellPath } from '../../utils/shell';
 import { getSidecarPort } from '../../session-core/sidecar-port';
-import { getGeneralProxyEnvironment } from '../../proxy-state';
+import { getGeneralProxyEnvironment, getProviderRequestProxyPolicy } from '../../proxy-state';
 import type {
   AgentRuntime,
   ResolvedImagePayload,
@@ -488,10 +489,8 @@ async function createOwnedRoots(productSessionId: string): Promise<Readonly<{
   runtimeHome: string;
   attachmentRoot: string;
 }>> {
-  const identity = hash('myagents-dsh-product-session-v1', productSessionId);
-  const base = join(getHomeDir(), '.myagents');
-  const requestedRuntimeHome = join(base, 'dsh-runtime', identity);
-  const requestedAttachmentRoot = join(base, 'dsh-attachments', identity);
+  const { runtimeHome: requestedRuntimeHome, attachmentRoot: requestedAttachmentRoot } =
+    dshSessionOwnedPaths(join(getHomeDir(), '.myagents'), productSessionId);
   await Promise.all([
     mkdir(requestedRuntimeHome, { recursive: true, mode: 0o700 }),
     mkdir(requestedAttachmentRoot, { recursive: true, mode: 0o700 }),
@@ -973,6 +972,7 @@ export class DshRuntime implements AgentRuntime {
           kind: 'material',
           authoritativeCredentialRevision: active.profile.revision,
           material: { apiKey: active.apiKey },
+          providerNetwork: getProviderRequestProxyPolicy(active.profile.provider),
         };
       },
       'host/interaction/request': async (params, context) => {
