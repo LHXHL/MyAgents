@@ -8,7 +8,6 @@ import { DshCanonicalWebError } from './canonical-web-errors';
 import {
   DshCanonicalWebProvider,
   type DshCanonicalWebProviderPort,
-  type DshCanonicalTokenUsage,
 } from './canonical-web-provider';
 import { DshSafeHttpClient, type DshSafeHttpConfig } from './safe-http';
 
@@ -225,7 +224,7 @@ export class DshCanonicalWebHost {
       finalUrl: finalUrl.toString(),
       answer: utility.answer,
       citations: utility.citations,
-      usage: utility.usage satisfies DshCanonicalTokenUsage,
+      ...(utility.usage === undefined ? {} : { usage: utility.usage }),
       truncated: converted.truncated || utility.truncated,
     };
   }

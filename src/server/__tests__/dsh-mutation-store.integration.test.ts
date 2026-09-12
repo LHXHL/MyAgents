@@ -101,8 +101,8 @@ describe('DSH Product mutation journal', () => {
     })).rejects.toThrow('DSH has unsettled rewind recovery but Product has no matching mutation journal');
   });
 
-  it('recovers a Runtime-terminal turn lost before Product assistant persistence', async () => {
-    const sessionId = 'dsh-turn-crash-window';
+  it.each([true, false])('recovers and reopens a Runtime-terminal turn (usage available: %s)', async usageAvailable => {
+    const sessionId = `dsh-turn-crash-window-${usageAvailable}`;
     const runtimeSessionId = `runtime-${sessionId}`;
     const metadata = createSessionMetadata('/tmp/dsh-workspace', {
       id: sessionId,
@@ -123,7 +123,7 @@ describe('DSH Product mutation journal', () => {
     const terminal = {
       kind: 'succeeded',
       assistantEventId: `dsh-event-${sessionHash}-3`,
-      usage: {
+      ...(usageAvailable ? { usage: {
         inputTokens: 4,
         outputTokens: 2,
         cacheReadTokens: 0,
@@ -135,7 +135,7 @@ describe('DSH Product mutation journal', () => {
         contextOccupiedTokens: null,
         runtimeContextWindow: 131_072,
         modelProfileRevision: 'model-profile-v1',
-      },
+      } } : {}),
     };
     const events = [
       {
@@ -225,6 +225,15 @@ describe('DSH Product mutation journal', () => {
         },
       }),
     ]);
+    const assistant = store.getSessionData(sessionId)?.messages[1];
+    expect(assistant?.content).toContain('durable recovered answer');
+    if (!usageAvailable) expect(assistant?.usage).toBeUndefined();
+    await expect(turnReconciliation.reconcileDshTurnsAtStartup({
+      productSessionId: sessionId,
+      runtimeSessionId,
+      controller: { readHistory, getTurn } as never,
+    })).resolves.toEqual({ transcriptChanged: false, reconciledOperations: 1, settledTurnIds: ['product-turn-crash-window'] });
+    expect(store.getSessionData(sessionId)?.messages).toHaveLength(2);
   });
 
   it('preserves the exact Product owner while a resumed DSH turn remains active', async () => {

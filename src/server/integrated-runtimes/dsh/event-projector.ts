@@ -5,6 +5,7 @@ import type { ToolAttachment } from '../../../shared/types/tool-attachment';
 import type { SubagentLifecycle } from '../../../shared/types/subagent-lifecycle';
 import type { UnifiedEvent } from '../../runtimes/types';
 import type { DshRpcObject } from './protocol-types';
+import { readDshUsage, readDshUsageTotals, telemetryRecord, tokenCount } from './telemetry';
 
 type DshRuntimeEventEnvelope = Readonly<{
   runtimeGeneration: string;
@@ -56,12 +57,6 @@ function string(value: unknown, description: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function finiteNumber(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : fallback;
 }
 
 function canonicalJson(value: unknown): string {
@@ -118,24 +113,23 @@ function terminalStatus(terminal: DshRpcObject): Pick<Extract<UnifiedEvent, { ki
   };
 }
 
-function usageEvent(value: unknown, semantics: unknown, contextOccupiedTokens: unknown, runtimeContextWindow: unknown): Extract<UnifiedEvent, { kind: 'usage' }> {
-  const usage = object(value, 'DSH token usage');
-  const context = contextOccupiedTokens === null
-    ? undefined
-    : finiteNumber(contextOccupiedTokens);
-  const window = finiteNumber(runtimeContextWindow);
+function usageEvent(value: unknown, semantics: unknown, contextOccupiedTokens: unknown, runtimeContextWindow: unknown): Extract<UnifiedEvent, { kind: 'usage' }> | undefined {
+  const usage = readDshUsage(value);
+  if (!usage) return undefined;
+  const context = tokenCount(contextOccupiedTokens);
+  const window = tokenCount(runtimeContextWindow);
   return {
     kind: 'usage',
-    inputTokens: finiteNumber(usage.inputTokens),
-    outputTokens: finiteNumber(usage.outputTokens),
-    cacheReadTokens: finiteNumber(usage.cacheReadTokens),
-    cacheCreationTokens: finiteNumber(usage.cacheWriteTokens),
-    ...(typeof usage.costUsd === 'number' && Number.isFinite(usage.costUsd)
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+    ...(usage.cacheWriteTokens === undefined ? {} : { cacheCreationTokens: usage.cacheWriteTokens }),
+    ...(typeof usage.costUsd === 'number'
       ? { costUsd: usage.costUsd }
       : {}),
     ...(semantics === 'running_total' ? { semantics: 'running_total' as const } : { semantics: 'delta' as const }),
     ...(context === undefined ? {} : { contextOccupiedTokens: context }),
-    ...(window > 0 ? { runtimeContextWindow: window } : {}),
+    ...(window !== undefined && window > 0 ? { runtimeContextWindow: window } : {}),
   };
 }
 
@@ -164,8 +158,8 @@ function optionalFiniteNumber(value: unknown): number | null | undefined {
 }
 
 function toolMetadata(value: unknown): Extract<UnifiedEvent, { kind: 'tool_result' }>['metadata'] {
-  if (value === undefined) return undefined;
-  const metadata = object(value, 'DSH tool result metadata');
+  const metadata = telemetryRecord(value);
+  if (!metadata) return undefined;
   const exitCode = optionalFiniteNumber(metadata.exitCode);
   const durationMs = optionalFiniteNumber(metadata.durationMs);
   const processId = metadata.processId === null ? null : optionalString(metadata.processId);
@@ -229,7 +223,7 @@ function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 's
   const finishedAt = snapshot.finishedAt === undefined
     ? undefined
     : timestamp(snapshot.finishedAt, 'DSH ProductWork finish time');
-  const usage = snapshot.usage === undefined ? undefined : object(snapshot.usage, 'DSH ProductWork usage');
+  const usage = readDshUsage(snapshot.usage);
   return {
     kind: 'subagent_lifecycle',
     agentId: string(snapshot.agentId, 'Agent ID'), taskId: string(snapshot.taskId, 'Agent task ID'),
@@ -251,11 +245,11 @@ function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 's
     ...(typeof snapshot.resultTruncated === 'boolean' ? { resultTruncated: snapshot.resultTruncated } : {}),
     ...(usage ? {
       usage: {
-        inputTokens: finiteNumber(usage.inputTokens),
-        outputTokens: finiteNumber(usage.outputTokens),
-        cacheReadTokens: finiteNumber(usage.cacheReadTokens),
-        cacheCreationTokens: finiteNumber(usage.cacheWriteTokens),
-        ...(usage.costUsd === null || typeof usage.costUsd === 'number' ? { costUsd: usage.costUsd as number | null } : {}),
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+        ...(usage.cacheWriteTokens === undefined ? {} : { cacheCreationTokens: usage.cacheWriteTokens }),
+        ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
       },
     } : {}),
     affectsRootActivity: false,
@@ -264,19 +258,23 @@ function workLifecycle(snapshot: DshRpcObject): Extract<UnifiedEvent, { kind: 's
 
 export function projectDshAgentWorkSnapshot(snapshot: DshRpcObject): RuntimeAgentWorkSnapshot {
   const lifecycle = workLifecycle(snapshot);
-  const usage = snapshot.totalUsage === undefined ? undefined : object(snapshot.totalUsage, 'Agent total usage');
-  const pressure = snapshot.context === undefined ? undefined : object(snapshot.context, 'Agent context');
+  const usage = readDshUsageTotals(snapshot.totalUsage);
+  const pressure = telemetryRecord(snapshot.context);
+  const capacity = tokenCount(pressure?.capacity);
+  const projectedInputTokens = tokenCount(pressure?.projectedInputTokens);
+  const providerInputTokens = tokenCount(pressure?.providerInputTokens);
+  const context = {
+    ...(capacity === undefined ? {} : { capacity }),
+    ...(projectedInputTokens === undefined ? {} : { projectedInputTokens }),
+    ...(providerInputTokens === undefined ? {} : { providerInputTokens }),
+  };
   return {
     ...lifecycle,
     startedAt: lifecycle.startedAt ?? lifecycle.observedAt,
     ...(snapshot.finishedAt === undefined ? {} : { finishedAt: timestamp(snapshot.finishedAt, 'Agent completion time') }),
     agentId: string(snapshot.agentId, 'Agent ID'), taskId: string(snapshot.taskId, 'Agent task ID'),
-    ...(usage ? { totalUsage: { inputTokens: nonNegative(usage.inputTokens), outputTokens: nonNegative(usage.outputTokens),
-      cacheReadTokens: nonNegative(usage.cacheReadTokens), cacheWriteTokens: nonNegative(usage.cacheWriteTokens), totalTokens: nonNegative(usage.totalTokens), costUsd: typeof usage.costUsd === 'number' ? usage.costUsd : null } } : {}),
-    ...(pressure ? { context: { ...(pressure.capacity === undefined ? {} : { capacity: nonNegative(pressure.capacity) }),
-      ...(pressure.projectedInputTokens === undefined ? {} : { projectedInputTokens: nonNegative(pressure.projectedInputTokens) }),
-      ...(pressure.providerInputTokens === undefined ? {} : { providerInputTokens: nonNegative(pressure.providerInputTokens) }),
-    } } : {}),
+    ...(usage ? { totalUsage: usage } : {}),
+    ...(Object.keys(context).length > 0 ? { context } : {}),
   };
 }
 
@@ -520,14 +518,19 @@ export class DshRuntimeEventProjector {
         }
         throw new Error(`DSH Provider tool phase is unsupported: ${phase}`);
       }
-      case 'usage':
-        onEvent(usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow));
+      case 'usage': {
+        const usage = usageEvent(event.usage, event.semantics, event.contextOccupiedTokens, event.runtimeContextWindow);
+        if (usage) onEvent(usage);
         return;
+      }
       case 'context': {
+        const contextOccupiedTokens = tokenCount(event.contextOccupiedTokens);
+        const runtimeContextWindow = tokenCount(event.runtimeContextWindow);
+        if (contextOccupiedTokens === undefined || runtimeContextWindow === undefined) return;
         onEvent({
           kind: 'context_update',
-          contextOccupiedTokens: finiteNumber(event.contextOccupiedTokens),
-          runtimeContextWindow: finiteNumber(event.runtimeContextWindow),
+          contextOccupiedTokens,
+          runtimeContextWindow,
         });
         return;
       }
@@ -572,10 +575,9 @@ export class DshRuntimeEventProjector {
       case 'turn_terminal': {
         const clientOperationId = string(event.clientOperationId, 'DSH terminal operation id');
         const terminal = object(event.terminal, 'DSH turn terminal');
-        if (terminal.usage) {
-          const summary = object(terminal.usage, 'DSH terminal usage');
-          onEvent(usageEvent(summary, 'delta', summary.contextOccupiedTokens, summary.runtimeContextWindow));
-        }
+        const summary = telemetryRecord(terminal.usage);
+        const usage = usageEvent(summary, 'delta', summary?.contextOccupiedTokens, summary?.runtimeContextWindow);
+        if (usage) onEvent(usage);
         this.options.onTurnTerminal?.({ clientOperationId, turnId: envelope.turnId, terminal });
         onEvent({
           kind: 'turn_complete',

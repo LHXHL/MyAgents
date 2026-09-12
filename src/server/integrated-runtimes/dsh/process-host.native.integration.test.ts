@@ -30,6 +30,8 @@ import { resolveDshRuntimeInstallation } from "./installation";
 import { compileDshModelExecutionProfile } from "./profile-compiler";
 import { DSH_CANONICAL_WEB_ADAPTER_ID } from "./canonical-web-provider";
 import { DshRuntimeProcessHost, redactDshDiagnosticLine } from "./process-host";
+import { DshMutationController } from './mutations';
+import { buildDshTurnProjectionSnapshot } from '../../session-engine/dsh-turn-reconciliation';
 import {
   DSH_REVERSE_METHOD_NAMES,
   type DshExecutionEnvironment,
@@ -512,6 +514,16 @@ describe.runIf(nativeSmokeEnabled)(
         expect(resumedRootInput).not.toContain('Your execution identity (Runtime authority)');
         expect(childSystemPrompt).toContain('Product permissions and shared exact grants apply');
         expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
+        // This Provider omits cache buckets, so the native terminal intentionally
+        // has no complete usage summary. Reopening must still recover the reply.
+        const mutationController = new DshMutationController(host, String(binding.runtimeSessionId));
+        const history = await mutationController.readHistory();
+        const lookup = await mutationController.getTurn('native-shell-review-turn');
+        expect(lookup.terminal?.usage).toBeUndefined();
+        const recovered = buildDshTurnProjectionSnapshot(history, new Map([['native-shell-review-turn', lookup]]));
+        expect(recovered.assistantTurns).toHaveLength(1);
+        expect(recovered.assistantTurns[0]!.assistantMessage.content).toContain('Fixture complete.');
+        expect(recovered.assistantTurns[0]!.assistantMessage.usage).toBeUndefined();
       } catch (error) {
         const progress = { requests, results: [...modelToolResults].map(([id, result]) => ({ id, isError: result.is_error, content: JSON.stringify(result.content).slice(0, 1500) })), terminal: await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' }).catch(() => undefined), stderr: fixture.stderr.slice(-5) };
         throw new Error(`Native tool sequence failed: ${JSON.stringify(progress)}`, { cause: error });

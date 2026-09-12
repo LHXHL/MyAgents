@@ -37,6 +37,17 @@ function fixture(): DshNativeHistory {
 }
 
 describe('native child history presentation', () => {
+  it.each([null, 'unavailable', { inputTokens: -1, outputTokens: 2 }])(
+    'preserves a completed child when historical usage is unusable: %j', usage => {
+      const history = fixture();
+      const events = history.events.map(event => event.eventType === 'myagents/work/epoch'
+        ? { ...event, data: { ...(event.data as object), usage } } : event);
+      const child = projectWorkHistory({ ...history, events }, 'call-1');
+      expect(child).toMatchObject({ status: 'completed', result: 'second result', handleState: 'closed' });
+      expect(child?.usage).toBeUndefined();
+    },
+  );
+
   it('reconstructs later execution without changing earlier tool success or completion facts', () => {
     const history = fixture();
     const first = projectWorkHistory({ ...history, events: history.events.slice(0, 3) }, 'call-1');

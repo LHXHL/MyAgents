@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { UnifiedEvent } from '../../runtimes/types';
-import { DshRuntimeEventProjector } from './event-projector';
+import { DshRuntimeEventProjector, projectDshAgentWorkSnapshot } from './event-projector';
 
 function envelope(
   sequence: number,
@@ -20,6 +20,48 @@ function envelope(
 }
 
 describe('DshRuntimeEventProjector', () => {
+  it.each([null, 'unavailable', {}, { inputTokens: -1, outputTokens: 2 }])(
+    'settles a successful turn despite unusable optional telemetry: %j', async usage => {
+      const events: UnifiedEvent[] = [];
+      const onTurnTerminal = vi.fn();
+      const projector = new DshRuntimeEventProjector({
+        productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1',
+        onEvent: event => events.push(event), onTurnTerminal,
+      });
+      await projector.accept(envelope(1, { kind: 'usage', usage, contextOccupiedTokens: null }));
+      await projector.accept(envelope(2, { kind: 'context', contextOccupiedTokens: null, runtimeContextWindow: null }));
+      await projector.accept(envelope(3, {
+        kind: 'turn_terminal', clientOperationId: 'operation-1',
+        terminal: { kind: 'succeeded', assistantEventId: 'assistant-1', usage },
+      }));
+      expect(events).toEqual([{ kind: 'turn_complete', clientOperationId: 'operation-1', status: 'success' }]);
+      expect(onTurnTerminal).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('retains child completion and tools when optional metrics are unavailable', async () => {
+    const snapshot = {
+      taskId: 'task-1', agentId: 'child-1', agentType: 'Explore', description: 'Inspect fixture',
+      parentToolCallId: 'call-1', model: 'fixture-model', mode: 'continuable', state: 'succeeded',
+      startedAt: '2026-08-30T00:00:00.000Z', usage: null,
+      totalUsage: { inputTokens: 3 }, context: { capacity: null, projectedInputTokens: -1 },
+    };
+    const child = projectDshAgentWorkSnapshot(snapshot);
+    expect(child).toMatchObject({ agentId: 'child-1', status: 'completed' });
+    expect(child.usage).toBeUndefined();
+    expect(child.totalUsage).toBeUndefined();
+    expect(child.context).toBeUndefined();
+    const events: UnifiedEvent[] = [];
+    const projector = new DshRuntimeEventProjector({
+      productSessionId: 'product-session-1', runtimeGeneration: 'runtime-generation-1',
+      onEvent: event => events.push(event),
+    });
+    await projector.accept(envelope(1, { kind: 'tool', phase: 'end', name: 'Bash',
+      result: { state: 'succeeded', content: [{ type: 'text', text: 'useful output' }], metadata: null },
+    }, { turnId: 'turn-1', toolCallId: 'call-1' }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'tool_result', content: 'useful output' }));
+  });
+
   it('projects one exact durable turn without manufacturing an early idle state', async () => {
     const events: UnifiedEvent[] = [];
     const onTerminal = vi.fn();

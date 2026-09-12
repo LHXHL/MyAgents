@@ -8,6 +8,7 @@ import { DshCanonicalWebError } from './canonical-web-errors';
 import { truncateDshWebText } from './canonical-web-content';
 import { DshSafeHttpClient, type DshSafeHttpConfig, type DshSafeHttpResponse } from './safe-http';
 import { parseCompatibleServerSearchContent } from './canonical-web-search-content';
+import { telemetryRecord, tokenCount } from './telemetry';
 
 export const DSH_CANONICAL_WEB_ADAPTER_ID = 'myagents-host-canonical-web-v1';
 
@@ -59,7 +60,7 @@ export interface DshCanonicalWebProviderPort {
   runUtility(input: UtilityInput): Promise<Readonly<{
     answer: string;
     citations: readonly Readonly<{ title: string; url: string }>[];
-    usage: DshCanonicalTokenUsage;
+    usage?: DshCanonicalTokenUsage;
     truncated: boolean;
   }>>;
   close?(): Promise<void>;
@@ -80,60 +81,51 @@ function object(value: unknown, description: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function nonNegativeInteger(value: unknown, description: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new DshCanonicalWebError('provider_search_failed', `${description} is invalid`);
-  }
-  return value as number;
-}
-
-function optionalInteger(value: unknown, description: string): number {
-  return value === undefined ? 0 : nonNegativeInteger(value, description);
-}
-
-function addUsage(left: DshCanonicalTokenUsage, right: DshCanonicalTokenUsage): DshCanonicalTokenUsage {
-  return Object.freeze({
+function addUsage(left: DshCanonicalTokenUsage | undefined, right: DshCanonicalTokenUsage | undefined): DshCanonicalTokenUsage | undefined {
+  if (!left || !right) return undefined;
+  const total = {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
     cacheReadTokens: left.cacheReadTokens + right.cacheReadTokens,
     cacheWriteTokens: left.cacheWriteTokens + right.cacheWriteTokens,
     totalTokens: left.totalTokens + right.totalTokens,
-  });
+  };
+  return Object.values(total).every(value => tokenCount(value) !== undefined) ? Object.freeze(total) : undefined;
 }
 
-function anthropicUsage(payload: Record<string, unknown>): DshCanonicalTokenUsage {
-  const usage = object(payload.usage, 'Anthropic usage');
-  const inputTokens = nonNegativeInteger(usage.input_tokens, 'Anthropic input usage');
-  const outputTokens = nonNegativeInteger(usage.output_tokens, 'Anthropic output usage');
-  const cacheReadTokens = optionalInteger(usage.cache_read_input_tokens, 'Anthropic cache-read usage');
-  const cacheWriteTokens = optionalInteger(usage.cache_creation_input_tokens, 'Anthropic cache-write usage');
+function anthropicUsage(payload: Record<string, unknown>): DshCanonicalTokenUsage | undefined {
+  const usage = telemetryRecord(payload.usage);
+  const inputTokens = tokenCount(usage?.input_tokens);
+  const outputTokens = tokenCount(usage?.output_tokens);
+  const cacheReadTokens = tokenCount(usage?.cache_read_input_tokens ?? 0);
+  const cacheWriteTokens = tokenCount(usage?.cache_creation_input_tokens ?? 0);
+  if (inputTokens === undefined || outputTokens === undefined || cacheReadTokens === undefined || cacheWriteTokens === undefined) return undefined;
+  const totalTokens = tokenCount(inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens);
+  if (totalTokens === undefined) return undefined;
   return Object.freeze({
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    totalTokens,
   });
 }
 
-function openAiUsage(payload: Record<string, unknown>): DshCanonicalTokenUsage {
-  const usage = object(payload.usage, 'OpenAI-compatible usage');
-  const details = usage.prompt_tokens_details === undefined
-    ? {}
-    : object(usage.prompt_tokens_details, 'OpenAI-compatible prompt usage');
-  const inputTokens = nonNegativeInteger(usage.prompt_tokens, 'OpenAI-compatible input usage');
-  const outputTokens = nonNegativeInteger(usage.completion_tokens, 'OpenAI-compatible output usage');
-  const cacheReadTokens = optionalInteger(details.cached_tokens ?? usage.prompt_cache_hit_tokens, 'OpenAI-compatible cache-read usage');
-  const uncachedInputTokens = inputTokens - cacheReadTokens;
-  if (uncachedInputTokens < 0) {
-    throw new DshCanonicalWebError('provider_search_failed', 'OpenAI-compatible cache usage is invalid');
-  }
+function openAiUsage(payload: Record<string, unknown>, responses = false): DshCanonicalTokenUsage | undefined {
+  const usage = telemetryRecord(payload.usage);
+  const details = telemetryRecord(responses ? usage?.input_tokens_details : usage?.prompt_tokens_details);
+  const inputTokens = tokenCount(responses ? usage?.input_tokens : usage?.prompt_tokens);
+  const outputTokens = tokenCount(responses ? usage?.output_tokens : usage?.completion_tokens);
+  const cacheReadTokens = tokenCount(details?.cached_tokens ?? usage?.prompt_cache_hit_tokens ?? 0);
+  if (inputTokens === undefined || outputTokens === undefined || cacheReadTokens === undefined || cacheReadTokens > inputTokens) return undefined;
+  const totalTokens = tokenCount(inputTokens + outputTokens);
+  if (totalTokens === undefined) return undefined;
   return Object.freeze({
-    inputTokens: uncachedInputTokens,
+    inputTokens: inputTokens - cacheReadTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens: 0,
-    totalTokens: inputTokens + outputTokens,
+    totalTokens,
   });
 }
 
@@ -308,7 +300,7 @@ function providerHeaders(
 function searchOutput(
   query: string,
   results: readonly DshCanonicalWebResult[],
-  usage: DshCanonicalTokenUsage,
+  usage: DshCanonicalTokenUsage | undefined,
   searchCount: number,
   startedAt: number,
   truncated = false,
@@ -326,7 +318,7 @@ function searchOutput(
     ] } : {}),
     results: [] as DshCanonicalWebResult[],
     citations: [] as Array<{ title: string; url: string }>,
-    usage,
+    ...(usage === undefined ? {} : { usage }),
     truncated: truncated || answer?.truncated === true,
     searchCount,
     durationMs: Math.max(0, Math.floor(performance.now() - startedAt)),
@@ -383,7 +375,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
   async runUtility(input: UtilityInput): Promise<Readonly<{
     answer: string;
     citations: readonly Readonly<{ title: string; url: string }>[];
-    usage: DshCanonicalTokenUsage;
+    usage?: DshCanonicalTokenUsage;
     truncated: boolean;
   }>> {
     input.signal.throwIfAborted();
@@ -404,7 +396,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
         input.source,
       ].join('\n');
       let payload: Record<string, unknown>;
-      let usage: DshCanonicalTokenUsage;
+      let usage: DshCanonicalTokenUsage | undefined;
       let answer: string;
       if (input.profile.api === 'anthropic-messages') {
         const response = await this.post(input.profile, input.apiKey, input.authType, 'v1/messages', {
@@ -447,13 +439,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
           input: [{ role: 'user', content: [{ type: 'input_text', text: user }] }],
         }, input.signal);
         payload = parseJsonResponse(response, 'utility_model_failed');
-        const metering = object(payload.usage, 'Responses usage');
-        const details = metering.input_tokens_details === undefined ? {} : object(metering.input_tokens_details, 'Responses cache usage');
-        const inputTokens = nonNegativeInteger(metering.input_tokens, 'Responses input usage');
-        const cacheReadTokens = optionalInteger(details.cached_tokens, 'Responses cache usage');
-        const outputTokens = nonNegativeInteger(metering.output_tokens, 'Responses output usage');
-        if (cacheReadTokens > inputTokens) throw new DshCanonicalWebError('utility_model_failed', 'Responses cache usage is invalid');
-        usage = Object.freeze({ inputTokens: inputTokens - cacheReadTokens, cacheReadTokens, cacheWriteTokens: 0, outputTokens, totalTokens: inputTokens + outputTokens });
+        usage = openAiUsage(payload, true);
         answer = (Array.isArray(payload.output) ? payload.output : []).flatMap(value => {
           const item = object(value, 'Responses output');
           return item.type === 'message' && Array.isArray(item.content) ? item.content.flatMap(value => {
@@ -471,7 +457,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       return Object.freeze({
         answer: bounded.text,
         citations: Object.freeze([Object.freeze({ title, url: input.finalUrl })]),
-        usage,
+        ...(usage === undefined ? {} : { usage }),
         truncated: bounded.truncated,
       });
     } catch (error) {
@@ -499,7 +485,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       ...(domains.blocked ? { blocked_domains: domains.blocked } : {}),
     }];
     const payloads: Record<string, unknown>[] = [];
-    let usage = ZERO_USAGE;
+    let usage: DshCanonicalTokenUsage | undefined = ZERO_USAGE;
     for (let pause = 0; pause <= MAX_ANTHROPIC_PAUSES; pause += 1) {
       const response = await this.post(target, input.apiKey, input.authType, 'v1/messages', {
         model: input.profile.modelId,
@@ -534,11 +520,8 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
     let resultBlockCount = 0;
     let searchCount = 0;
     for (const payload of payloads) {
-      const usageValue = object(payload.usage, 'Anthropic WebSearch usage');
-      const serverUsage = usageValue.server_tool_use === undefined
-        ? undefined
-        : object(usageValue.server_tool_use, 'Anthropic server-tool usage');
-      searchCount += optionalInteger(serverUsage?.web_search_requests, 'Anthropic search count');
+      const serverUsage = telemetryRecord(telemetryRecord(payload.usage)?.server_tool_use);
+      searchCount += tokenCount(serverUsage?.web_search_requests) ?? 0;
       for (const blockValue of Array.isArray(payload.content) ? payload.content : []) {
         if (!blockValue || typeof blockValue !== 'object' || Array.isArray(blockValue)) {
           unverified = true;

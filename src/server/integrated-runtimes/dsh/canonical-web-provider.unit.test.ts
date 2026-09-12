@@ -65,6 +65,41 @@ function providerWith(dispatch: DshSafeHttpTransport['dispatch']): DshCanonicalW
 }
 
 describe('DshCanonicalWebProvider', () => {
+  it.each(['anthropic-messages', 'openai-completions', 'openai-responses'] as const)(
+    'keeps a valid WebFetch answer without usage on %s', async api => {
+      const payload = {
+        content: [{ type: 'text', text: 'Grounded answer' }],
+        choices: [{ message: { content: 'Grounded answer' } }],
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'Grounded answer' }] }],
+      };
+      const result = await providerWith(vi.fn(async () => json(payload))).runUtility({
+        profile: { ...anthropicProfile, api }, apiKey: 'synthetic-key', authType: 'api_key',
+        source: 'Fixture source', prompt: 'Summarize', finalUrl: 'https://example.com/',
+        statusCode: 200, signal: new AbortController().signal,
+      });
+      expect(result.answer).toBe('Grounded answer');
+      expect(result.usage).toBeUndefined();
+    },
+  );
+
+  it.each([null, { input_tokens: 2, output_tokens: 'unknown', server_tool_use: 'unknown' }])(
+    'keeps valid WebSearch results when usage is unavailable: %j', async usage => {
+      const provider = providerWith(vi.fn(async () => json({
+        stop_reason: 'end_turn', usage,
+        content: [
+          { type: 'server_tool_use', id: 'search-1', name: 'web_search', input: {} },
+          { type: 'web_search_tool_result', tool_use_id: 'search-1', content: [{ title: 'Source', url: 'https://example.com/' }] },
+        ],
+      })));
+      const result = await provider.runSearch({
+        profile: anthropicProfile, apiKey: 'synthetic-key', authType: 'api_key',
+        query: 'Fixture search', operationId: 'search-1', signal: new AbortController().signal,
+      });
+      expect(result.results).toEqual([expect.objectContaining({ title: 'Source', url: 'https://example.com/' })]);
+      expect(result.usage).toBeUndefined();
+    },
+  );
+
   it('merges repeated server result blocks and retains partial opaque text without fabricating citations', async () => {
     const provider = providerWith(vi.fn(async () => json({
       stop_reason: 'end_turn',

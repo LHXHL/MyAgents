@@ -10,6 +10,7 @@ import type { DshRpcObject } from '../integrated-runtimes/dsh/protocol-types';
 import type { SubagentLifecycle } from '../../shared/types/subagent-lifecycle';
 import { isProtocolIdentifier, projectWorkHistory, providerContentFailed, providerIdentity } from '../integrated-runtimes/dsh/history-content';
 import { reconcileDshTurnProjections } from '../SessionStore';
+import { readDshUsage, tokenCount } from '../integrated-runtimes/dsh/telemetry';
 import type {
   DshProjectionCursor,
   MessageUsage,
@@ -190,6 +191,13 @@ function parseTerminal(event: DshVerifiedHistoryEvent): TerminalOperation {
   });
 }
 
+function terminalOutcome(terminal: DshRpcObject): DshRpcObject {
+  // Metering is display data; admission, outcome and assistant ownership remain authoritative.
+  const outcome = { ...terminal };
+  delete outcome.usage;
+  return outcome;
+}
+
 function uniqueBy<T>(values: readonly T[], key: (value: T) => string, description: string): Map<string, T> {
   const result = new Map<string, T>();
   for (const value of values) {
@@ -200,16 +208,10 @@ function uniqueBy<T>(values: readonly T[], key: (value: T) => string, descriptio
   return result;
 }
 
-function parseUsage(value: unknown, model?: string): MessageUsage {
-  const row = object(value, 'DSH terminal usage');
-  const inputTokens = safeInteger(row.inputTokens, 'DSH input token usage');
-  const outputTokens = safeInteger(row.outputTokens, 'DSH output token usage');
-  const cacheReadTokens = row.cacheReadTokens === undefined
-    ? undefined
-    : safeInteger(row.cacheReadTokens, 'DSH cache-read token usage');
-  const cacheCreationTokens = row.cacheWriteTokens === undefined
-    ? undefined
-    : safeInteger(row.cacheWriteTokens, 'DSH cache-write token usage');
+function parseUsage(value: unknown, model?: string): MessageUsage | undefined {
+  const usage = readDshUsage(value);
+  if (!usage) return undefined;
+  const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: cacheCreationTokens } = usage;
   return {
     inputTokens,
     outputTokens,
@@ -219,21 +221,18 @@ function parseUsage(value: unknown, model?: string): MessageUsage {
   };
 }
 
-function addUsage(total: MessageUsage | undefined, value: MessageUsage): MessageUsage {
-  const add = (left: number, right: number, description: string): number => {
-    if (left > Number.MAX_SAFE_INTEGER - right) throw new Error(`DSH ${description} total exceeds the safe integer range`);
-    return left + right;
-  };
-  return {
-    inputTokens: add(total?.inputTokens ?? 0, value.inputTokens, 'input token'),
-    outputTokens: add(total?.outputTokens ?? 0, value.outputTokens, 'output token'),
+function addUsage(total: MessageUsage | undefined, value: MessageUsage): MessageUsage | undefined {
+  const result = {
+    inputTokens: (total?.inputTokens ?? 0) + value.inputTokens,
+    outputTokens: (total?.outputTokens ?? 0) + value.outputTokens,
     ...((total?.cacheReadTokens ?? 0) + (value.cacheReadTokens ?? 0) > 0
-      ? { cacheReadTokens: add(total?.cacheReadTokens ?? 0, value.cacheReadTokens ?? 0, 'cache-read token') }
+      ? { cacheReadTokens: (total?.cacheReadTokens ?? 0) + (value.cacheReadTokens ?? 0) }
       : {}),
     ...((total?.cacheCreationTokens ?? 0) + (value.cacheCreationTokens ?? 0) > 0
-      ? { cacheCreationTokens: add(total?.cacheCreationTokens ?? 0, value.cacheCreationTokens ?? 0, 'cache-write token') }
+      ? { cacheCreationTokens: (total?.cacheCreationTokens ?? 0) + (value.cacheCreationTokens ?? 0) }
       : {}),
   };
+  return Object.values(result).every(value => tokenCount(value) !== undefined) ? result : undefined;
 }
 
 function parseToolInput(rawArguments: string): Record<string, unknown> {
@@ -503,6 +502,7 @@ export function buildDshTurnProjectionSnapshot(
   const rootOperations: DshNativeRootOperation[] = [];
   const unsettledTurns: DshUnsettledTurn[] = [];
   let runtimeUsageTotals: MessageUsage | undefined;
+  let usageComplete = true;
   for (const operation of [...accepted].sort((left, right) => left.sequence - right.sequence)) {
     const lookup = lookups.get(operation.clientOperationId);
     if (!lookup?.admission) throw new Error('DSH accepted operation is absent from turn/get');
@@ -547,7 +547,7 @@ export function buildDshTurnProjectionSnapshot(
     if (terminal.productTurnId !== operation.productTurnId) {
       throw new Error('DSH terminal changed its Product turn identity');
     }
-    if (!lookup.terminal || canonicalJson(lookup.terminal) !== canonicalJson(terminal.terminal)) {
+    if (!lookup.terminal || canonicalJson(terminalOutcome(lookup.terminal)) !== canonicalJson(terminalOutcome(terminal.terminal))) {
       throw new Error('DSH turn/get terminal differs from durable Session truth');
     }
     if (terminalKind === undefined) throw new Error('DSH terminal kind is absent');
@@ -572,14 +572,17 @@ export function buildDshTurnProjectionSnapshot(
       claimedTurns,
     );
     const usage = parseUsage(terminal.terminal.usage, projected.model);
-    runtimeUsageTotals = addUsage(runtimeUsageTotals, usage);
+    if (usageComplete) {
+      runtimeUsageTotals = usage === undefined ? undefined : addUsage(runtimeUsageTotals, usage);
+      usageComplete = runtimeUsageTotals !== undefined;
+    }
     const assistantMessage: SessionMessage = {
       id: deterministicAssistantId(history.runtimeSessionId, operation.clientOperationId),
       role: 'assistant',
       content: projected.content,
       timestamp: new Date(terminal.terminalAt).toISOString(),
       durationMs: Math.max(0, terminal.terminalAt - operation.acceptedAt),
-      usage,
+      ...(usage === undefined ? {} : { usage }),
       ...(projected.toolCount > 0 ? { toolCount: projected.toolCount } : {}),
       runtimeTurnAnchor: {
         turnId: operation.productTurnId,

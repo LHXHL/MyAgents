@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { SubagentLifecycle } from '../../../shared/types/subagent-lifecycle';
 import type { DshNativeHistory } from './mutations';
+import { readDshUsage } from './telemetry';
 
 type RecordValue = Readonly<Record<string, unknown>>;
 function record(value: unknown): RecordValue {
@@ -113,13 +114,12 @@ export function projectWorkHistory(history: DshNativeHistory, callId: string): S
       state = row.stopReason === 'completed' ? 'completed' : row.stopReason === 'aborted' ? 'aborted' : 'failed';
       result = typeof row.result === 'string' ? row.result : undefined;
       resultTruncated = typeof row.resultTruncated === 'boolean' ? row.resultTruncated : undefined;
-      if (row.usage !== undefined) {
-        const value = record(row.usage);
-        usage = {
-          inputTokens: integer(value.inputTokens), outputTokens: integer(value.outputTokens),
-          cacheReadTokens: integer(value.cacheReadTokens), cacheCreationTokens: integer(value.cacheWriteTokens),
-        };
-      }
+      const value = readDshUsage(row.usage);
+      usage = value === undefined ? undefined : {
+        inputTokens: value.inputTokens, outputTokens: value.outputTokens,
+        ...(value.cacheReadTokens === undefined ? {} : { cacheReadTokens: value.cacheReadTokens }),
+        ...(value.cacheWriteTokens === undefined ? {} : { cacheCreationTokens: value.cacheWriteTokens }),
+      };
     } else if (event.eventType === 'myagents/work/stopping') {
       handleState = 'stopping'; handleRevision = event.sequence;
     } else if (event.eventType === 'myagents/work/settled') {

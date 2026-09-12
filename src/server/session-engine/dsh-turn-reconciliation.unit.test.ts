@@ -27,19 +27,16 @@ function durableEventId(sequence: number): string {
   return `dsh-event-${sessionHash}-${sequence}`;
 }
 
-function succeededHistory(): {
+function succeededHistory(usage: unknown = {
+  inputTokens: 11, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2,
+}): {
   history: DshNativeHistory;
   lookups: ReadonlyMap<string, DshTurnLookup>;
 } {
   const terminal = {
     kind: 'succeeded',
     assistantEventId: durableEventId(6),
-    usage: {
-      inputTokens: 11,
-      outputTokens: 7,
-      cacheReadTokens: 3,
-      cacheWriteTokens: 2,
-    },
+    ...(usage === 'omitted' ? {} : { usage }),
   };
   const events = [
     event(0, 'myagents/operation/accepted', {
@@ -132,6 +129,60 @@ function succeededHistory(): {
 }
 
 describe('DSH ordinary turn reconciliation', () => {
+  it('does not turn a usage-only lookup difference into a conflicting operation outcome', () => {
+    const fixture = succeededHistory('omitted');
+    const lookup = fixture.lookups.get('operation-1')!;
+    const lookups = new Map([['operation-1', {
+      ...lookup, terminal: { ...lookup.terminal, usage: { inputTokens: 11, outputTokens: 7 } },
+    }]]);
+    const snapshot = buildDshTurnProjectionSnapshot(fixture.history, lookups);
+    expect(snapshot.assistantTurns).toHaveLength(1);
+    expect(snapshot.assistantTurns[0]!.assistantMessage.usage).toBeUndefined();
+  });
+
+  it.each(['missing-first', 'missing-last', 'overflow'])(
+    'keeps both replies without presenting a partial or overflowing total: %s', scenario => {
+      const first = succeededHistory(scenario === 'missing-first' ? 'omitted'
+        : { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 1 });
+      const next = succeededHistory(scenario === 'missing-last' ? 'omitted'
+        : { inputTokens: 1, outputTokens: 1 });
+      const lookup = next.lookups.get('operation-1')!;
+      const terminal = { ...lookup.terminal!, assistantEventId: durableEventId(15) };
+      const events = next.history.events.map(candidate => {
+        const data = { ...(candidate.data as Record<string, unknown>) };
+        if (data.clientOperationId) data.clientOperationId = 'operation-2';
+        if (data.clientUserMessageId) data.clientUserMessageId = 'user-2';
+        if (data.productTurnId) data.productTurnId = 'product-turn-2';
+        if (data.turn) data.turn = 2;
+        if (data.dshTurn) { data.dshTurn = 2; data.messageId = 'native-user-2'; }
+        if (data.finalDshTurn) { data.finalDshTurn = 2; data.terminal = terminal; }
+        return event(candidate.sequence + 9, candidate.eventType, data);
+      });
+      const history = { ...first.history, events: [...first.history.events, ...events], durableSequence: 18 };
+      const lookups = new Map([...first.lookups, ['operation-2', {
+        ...lookup, clientOperationId: 'operation-2', terminal,
+        admission: { ...lookup.admission!, clientOperationId: 'operation-2', turnId: 'product-turn-2' },
+      }] as const]);
+      const snapshot = buildDshTurnProjectionSnapshot(history, lookups);
+      expect(snapshot.assistantTurns).toHaveLength(2);
+      expect(snapshot.runtimeUsageTotals).toBeUndefined();
+      expect(snapshot.unsettledTurns).toEqual([]);
+    },
+  );
+
+  it.each(['omitted', null, 'unavailable', {}, { inputTokens: -1, outputTokens: 2 }])(
+    'recovers the successful answer when optional usage is unavailable: %j', usage => {
+      const fixture = succeededHistory(usage);
+      const snapshot = buildDshTurnProjectionSnapshot(fixture.history, fixture.lookups);
+      expect(snapshot.assistantTurns).toHaveLength(1);
+      expect(snapshot.assistantTurns[0]!.assistantMessage.content).toContain('Done.');
+      expect(snapshot.assistantTurns[0]!.assistantMessage.usage).toBeUndefined();
+      expect(snapshot.runtimeUsageTotals).toBeUndefined();
+      expect(snapshot.rootOperations[0]?.terminal).toBe(true);
+      expect(snapshot.unsettledTurns).toEqual([]);
+    },
+  );
+
   it('accepts different realtime inputs claimed in one turn and excludes collaboration and cancelled input', () => {
     const fixture = succeededHistory();
     const events = [...fixture.history.events.slice(0, 6),
