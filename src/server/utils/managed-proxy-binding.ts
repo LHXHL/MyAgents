@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ManagedProxyBinding, ManagedProxyPurpose } from '../../shared/cliproxy';
+import { cliproxySdkSystemPrompt } from '../../shared/cliproxy';
 import { completeModelAliases } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
 import { managementApi } from './management-api-client';
@@ -58,6 +59,12 @@ export function assertManagedProviderPrepared(env: ProviderEnv | undefined): voi
 
 export function getPreparedModelPolicy(env: ProviderEnv | undefined): ManagedProxyBinding['modelPolicy'] | undefined {
   return env ? preparedEnvs.get(env) : undefined;
+}
+
+/** Preserve each one-shot's task instructions while using the same SDK mode
+ * as managed main Queries. Other providers retain their custom prompt. */
+export function getPreparedSdkSystemPrompt(env: ProviderEnv | undefined, prompt: string) {
+  return getPreparedModelPolicy(env) ? cliproxySdkSystemPrompt(prompt) : prompt;
 }
 
 /** SDK-loaded project/plugin agent frontmatter can also specify a full model

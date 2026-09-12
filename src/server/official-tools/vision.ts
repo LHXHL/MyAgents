@@ -27,7 +27,7 @@ import {
 import { processImage } from '../utils/imageResize';
 import { applyContextWindowSuffixForContextLength } from '../utils/model-capabilities';
 import { createGuardedSdkQuery } from '../utils/sdk-child-launch-guard';
-import { getPreparedModelPolicy, prepareProviderBinding, type PreparedProvider } from '../utils/managed-proxy-binding';
+import { getPreparedModelPolicy, getPreparedSdkSystemPrompt, prepareProviderBinding, type PreparedProvider } from '../utils/managed-proxy-binding';
 import { sdkSubprocessUserMessage } from '../utils/sdk-subprocess-diagnostics';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import type { SessionMetadata } from '../types/session';
@@ -463,7 +463,7 @@ async function runVisionQueryInner(args: {
       allowDangerouslySkipPermissions: true,
       pathToClaudeCodeExecutable: cliPath,
       env,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: getPreparedSdkSystemPrompt(args.providerEnv, SYSTEM_PROMPT),
       includePartialMessages: false,
       persistSession: false,
       mcpServers: {},

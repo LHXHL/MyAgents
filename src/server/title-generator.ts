@@ -30,7 +30,7 @@ import type { AgentRuntime, RuntimeProcess, SessionStartOptions } from './runtim
 import type { RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
-import { prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
+import { getPreparedSdkSystemPrompt, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
 
 const TITLE_MAX_LENGTH = 30;
 export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
@@ -267,7 +267,7 @@ async function generateTitleInner(
         allowDangerouslySkipPermissions: true,
         pathToClaudeCodeExecutable: cliPath,
         env,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: getPreparedSdkSystemPrompt(providerEnv, SYSTEM_PROMPT),
         // Title generation is a short text-classification task. Adaptive thinking
         // can spend the whole one-shot budget on hidden reasoning or delay first
         // text on strong reasoning models, so force the cheapest text path.
@@ -276,13 +276,14 @@ async function generateTitleInner(
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
+        strictMcpConfig: true,
         // Security (review #2): title generation is a PURE-TEXT task whose only
         // input is (attacker-influenceable) transcript text. Running it at
         // bypassPermissions with built-in tools available means an indirect
         // prompt injection in the transcript could make the title model emit a
         // Bash/Write tool_use that then executes with NO approval. `tools: []`
-        // is the SDK-native "disable ALL built-in tools" (sdk.d.ts:1360), and
-        // `mcpServers:{}` already removes MCP tools — together there is nothing
+        // disables builtins; the empty MCP map plus strictMcpConfig excludes
+        // project/user/plugin MCP servers — together there is nothing
         // to invoke, so bypassPermissions becomes moot. The model can still
         // produce the title text (tools are orthogonal to generation).
         tools: [],

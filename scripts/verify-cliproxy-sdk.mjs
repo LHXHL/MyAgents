@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { CLIPROXY_VERIFICATION_PROMPT, cliproxySdkSystemPrompt } from '../src/shared/cliproxy.ts';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
@@ -53,6 +54,7 @@ async function run(prompt, options) {
     tools: [], mcpServers: { 'subscription-verification': server }, settingSources: [], strictMcpConfig: true,
     permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,
     maxTurns: 3, abortController: controller, thinking: { type: thinking ? 'adaptive' : 'disabled' },
+    systemPrompt: cliproxySdkSystemPrompt(CLIPROXY_VERIFICATION_PROMPT),
     ...options } });
   try {
     for await (const message of instance) {

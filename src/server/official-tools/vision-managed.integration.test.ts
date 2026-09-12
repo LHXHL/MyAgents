@@ -42,6 +42,8 @@ it.each([false, true])('binds managed vision and trusts its actual terminal (fai
     else expect((await result).text).toBe('partial vision text');
     expect(mocks.api.mock.calls[0][0]).toBe('/api/cliproxy/binding/acquire');
     expect(mocks.query.mock.calls[0][0].options.env).toMatchObject({ ANTHROPIC_BASE_URL: grant.baseUrl, ANTHROPIC_API_KEY: grant.apiKey });
+    expect(mocks.query.mock.calls[0][0].options.systemPrompt).toMatchObject({ type: 'preset', preset: 'claude_code', append: expect.stringContaining('image') });
+    expect(mocks.query.mock.calls[0][0].options.tools).toEqual([]);
     expect(mocks.api.mock.calls.some(([, , body]) => body.terminal === (failed ? 'failed' : 'succeeded') && body.leaseId === grant.leaseId)).toBe(true);
     expect(mocks.api.mock.calls.at(-1)?.[0]).toBe('/api/cliproxy/binding/release');
     expect(close).toHaveBeenCalled();

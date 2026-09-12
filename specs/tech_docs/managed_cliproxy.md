@@ -29,6 +29,8 @@ Provider 代理配置变化通过既有 `cmd_propagate_proxy` 通知 Rust；执�
 
 SDK 进程的所有模型别名绑定到本次准入模型。主 Query 的 PreToolUse 在已有权限裁决通过后，把 Agent/Task 的 model override 投影到该别名，覆盖 SDK 直接加载的 project/plugin agent frontmatter；它不改变工具权限或 agent prompt。切换主模型需重建 Query 并重新准入。
 
+SDK 请求使用与主 Query 一致的 `claude_code` preset + 非空任务 append。SDK 会根据有无 append 选择不同的内置身份提示；0.3.261 / CLIProxy 7.2.158 的真实账号对照中，无 append 路径返回 429，而 preset + append 完成工具与历史闭环。仅设置 custom systemPrompt 仍保留无 append 的身份。`cliproxySdkSystemPrompt` 统一该模式；已准备 binding 的标题/vision 保留各自任务指令和禁用工具配置，验证与批准 harness 共用验证 append。其他 Provider 的提示配置不变，不在 HTTP 层删改 SDK 请求。能力批准必须验证正式使用的 SDK 配置，诊断中改写请求所得的成功不能形成批准。
+
 ## 账号与进程生命周期
 
 单账号有一个 active 和至多一个隔离 candidate。新候选先注册目录，再启动写入者。Rust 在等待健康检查前保留 child tree；失败停止未确认时不能丢掉句柄并复用同一 auth-dir。

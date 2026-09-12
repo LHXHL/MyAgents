@@ -1,5 +1,15 @@
 import type { ModelEntity } from './config-types';
 
+export const CLIPROXY_VERIFICATION_PROMPT = 'Verify the connected model using the supplied connection tool. Follow the verification instructions exactly.';
+
+/** Match the existing main Query's supported SDK preset+append mode. The
+ * SDK's no-append identity is a different upstream request, even with a custom
+ * system prompt. Keep verification and auxiliary requests on the tested mode. */
+export function cliproxySdkSystemPrompt(append: string) {
+  if (!append.trim()) throw new Error('CLIProxy SDK requests require a task-specific prompt append');
+  return { type: 'preset' as const, preset: 'claude_code' as const, append };
+}
+
 /** Product views contain no endpoint, local key, OAuth state or credential path. */
 export type CliProxyError = { code: string; message: string };
 export type CliProxyAccount = {

@@ -19,6 +19,7 @@ import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
 import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { CLIPROXY_VERIFICATION_PROMPT, cliproxySdkSystemPrompt } from '../shared/cliproxy';
 import type { Provider } from '../shared/config-types';
 import { resolveProviderForModel, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
 import { findEffectiveProvider, loadConfig as loadProviderConfig } from './utils/admin-config';
@@ -276,7 +277,8 @@ async function verifyViaSdk(
           console.error(`[${logPrefix}] stderr:`, message);
           stderrMessages.push(message);
         },
-        systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
+        systemPrompt: opts.managedToolProbe ? cliproxySdkSystemPrompt(CLIPROXY_VERIFICATION_PROMPT)
+          : { type: 'preset' as const, preset: 'claude_code' as const },
         includePartialMessages: true,
         persistSession: false,
         mcpServers: probe ? { 'subscription-verification': probe } : {},
