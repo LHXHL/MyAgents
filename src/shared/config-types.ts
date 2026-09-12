@@ -1608,9 +1608,9 @@ export const PRESET_PROVIDERS: Provider[] = [
   {
     id: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
     name: 'Antigravity（订阅）',
-    subtitle: '通过 CLIProxy 使用已授权的 Antigravity 账号',
+    subtitle: '使用 Google Antigravity 订阅账户额度',
     vendor: 'Google',
-    cloudProvider: 'CLIProxy',
+    cloudProvider: '官方',
     type: 'subscription',
     subscriptionAuth: { kind: 'proxy-managed', proxy: 'cliproxy' },
     execution: { kind: 'builtin' },

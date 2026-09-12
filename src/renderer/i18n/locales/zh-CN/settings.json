@@ -181,10 +181,9 @@
   },
   "providers": {
     "cliproxy": {
-      "description": "登录 Antigravity，使用订阅模型。",
+      "description": "使用 Google Antigravity 订阅账户额度",
       "continueConnection": "继续连接",
       "moreActions": "更多操作",
-      "componentDetails": "组件与更新",
       "loginTitle": "连接 Antigravity",
       "close": "关闭",
       "preparingLogin": "正在打开授权页面…",
@@ -197,7 +196,6 @@
       "retryCleanup": "重试清理",
       "cancel": "取消",
       "refreshModels": "刷新模型",
-      "checkUpdate": "检查更新",
       "disabled": "当前暂停使用，可以保留账号或断开连接。",
       "browserHint": "请在系统浏览器完成授权，授权窗口有效期为 5 分钟。",
       "operationFailed": "操作未完成，请重试。",
@@ -214,15 +212,6 @@
         "waiting-to-commit": "登录成功，正在切换账号",
         "cancelling": "正在取消",
         "failed": "登录未完成"
-      },
-      "update": {
-        "idle": "已就绪",
-        "checking": "正在检查更新",
-        "downloading": "正在下载",
-        "installing": "正在安装",
-        "ready": "更新已准备",
-        "waiting-to-switch": "等待当前任务结束后更新",
-        "failed": "更新未完成"
       },
       "connected": "已登录"
     },

@@ -84,10 +84,11 @@ async function main() {
     const plan = publicationPlan(manifest, name => readFileSync(join(distribution, name)));
     console.log(JSON.stringify({ action: args.includes('--publish') ? 'publish' : 'review-only', ...plan }, null, 2));
     if (!args.includes('--publish')) return;
-    for (const key of ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID', 'CF_ZONE_ID', 'CF_API_TOKEN']) {
+    for (const key of ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID']) {
       if (!process.env[key]) throw new Error(`Missing release environment ${key}`);
     }
-    if (!/^[a-f0-9]{32}$/i.test(process.env.R2_ACCOUNT_ID) || !/^[a-f0-9]{32}$/i.test(process.env.CF_ZONE_ID)) throw new Error('Invalid release account/zone identifier');
+    if (!/^[a-f0-9]{32}$/i.test(process.env.R2_ACCOUNT_ID)
+      || (process.env.CF_ZONE_ID && !/^[a-f0-9]{32}$/i.test(process.env.CF_ZONE_ID))) throw new Error('Invalid release account/zone identifier');
     const prior = await fetchBytes(base + 'manifest-v1.json', 256 * 1024, true);
     if (prior) {
       const priorSignature = await fetchBytes(base + 'manifest-v1.json.sig', 16 * 1024);
@@ -109,11 +110,15 @@ async function main() {
     // Readers fail closed on a transient mismatched pair and retain their last
     // trusted approval. Both mutable objects are purged only after both writes.
     upload('manifest-v1.json.sig', false); upload('manifest-v1.json', false);
-    const purge = await fetch(`https://api.cloudflare.com/client/v4/zones/${process.env.CF_ZONE_ID}/purge_cache`, {
-      method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: [base + 'manifest-v1.json', base + 'manifest-v1.json.sig'] }), signal: AbortSignal.timeout(30_000),
-    });
-    if (!purge.ok || (await purge.json()).success !== true) throw new Error('Published manifest CDN purge was not confirmed');
+    if (process.env.CF_ZONE_ID && process.env.CF_API_TOKEN) {
+      const purge = await fetch(`https://api.cloudflare.com/client/v4/zones/${process.env.CF_ZONE_ID}/purge_cache`, {
+        method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [base + 'manifest-v1.json', base + 'manifest-v1.json.sig'] }), signal: AbortSignal.timeout(30_000),
+      });
+      if (!purge.ok || (await purge.json()).success !== true) throw new Error('Published manifest CDN purge was not confirmed');
+    } else {
+      console.log('CDN purge is not configured; verifying public resource bytes directly.');
+    }
     const published = await fetchBytes(base + 'manifest-v1.json', 256 * 1024);
     const publishedSignature = await fetchBytes(base + 'manifest-v1.json.sig', 16 * 1024);
     verify(published, publishedSignature.toString('utf8').trim());

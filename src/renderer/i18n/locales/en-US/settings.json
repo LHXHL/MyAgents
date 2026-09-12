@@ -181,10 +181,9 @@
   },
   "providers": {
     "cliproxy": {
-      "description": "Sign in to Antigravity to use your subscription models.",
+      "description": "Use your Google Antigravity subscription allowance",
       "continueConnection": "Continue connection",
       "moreActions": "More actions",
-      "componentDetails": "Component and updates",
       "loginTitle": "Connect Antigravity",
       "close": "Close",
       "preparingLogin": "Opening authorization…",
@@ -197,7 +196,6 @@
       "retryCleanup": "Retry cleanup",
       "cancel": "Cancel",
       "refreshModels": "Refresh models",
-      "checkUpdate": "Check for updates",
       "disabled": "Currently paused. You can keep or disconnect your account.",
       "browserHint": "Complete authorization in your browser within 5 minutes.",
       "operationFailed": "The operation did not complete. Please retry.",
@@ -214,15 +212,6 @@
         "waiting-to-commit": "Logged in, switching account",
         "cancelling": "Cancelling",
         "failed": "Login incomplete"
-      },
-      "update": {
-        "idle": "Ready",
-        "checking": "Checking for updates",
-        "downloading": "Downloading",
-        "installing": "Installing",
-        "ready": "Update ready",
-        "waiting-to-switch": "Waiting for current tasks to finish",
-        "failed": "Update incomplete"
       },
       "connected": "Logged in"
     },

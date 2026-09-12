@@ -37,7 +37,7 @@ SDK 请求使用与主 Query 一致的 `claude_code` preset + 非空任务 appen
 
 连接依次完成：绑定 localhost callback → 请求原版 auth URL → 系统浏览器授权 → 转交一次 callback → 按准确 state 查询成功 → 原版账号摘要确认已保存且未 disabled → 保存 `authorizedAt` 并提交 active。无需模型请求。随后读取模型目录，失败保留已登录状态；实际模型权限、额度或调用错误沿正常对话链路返回。
 
-设置卡片显示“已登录”和主要操作，登录弹窗只承载浏览器授权与账号切换进度，成功后关闭。关闭视图不取消 Rust 操作，显式取消才清理准确候选。组件版本/更新在次级菜单的独立弹窗，更新错误不占用账号操作。账号错误按 generation 投影。
+设置卡片使用“官方”标签，登录前后统一说明“使用 Google Antigravity 订阅账户额度”，已连接时显示“已登录”。登录弹窗只承载浏览器授权与账号切换进度，成功后关闭；关闭视图不取消 Rust 操作，显式取消才清理准确候选。组件版本、检查更新、更新进度与更新失败均不提供用户界面入口，只在日志记录；账号错误仍按 generation 投影。
 
 原版确认账号后，Rust 通过既有 drain/实例切换原子提交 candidate → active 与旧目录清理意图，投影 `providerVerifyStatus.valid`，与验证通过的 API key 具有相同路由可用性。提交后的清理失败不回退旧账号。旧 active 的 verifiedAt 仅兼容为连接时间；旧候选的 awaiting-verification 不可靠地证明授权，启动后进入 stored，点击“继续连接”由原版账号摘要确认并完成登录，无需模型测试或重复 OAuth。
 
@@ -92,7 +92,7 @@ node scripts/package-cliproxy-component.mjs stage --from /path/to/distribution -
 
 构建脚本从 MYAGENTS_CLIPROXY_DISTRIBUTION_DIR 或 `src-tauri/resources/cliproxy-cache/distribution` 取得已签名资源。macOS/Windows 的 Tauri 平台配置内置组件；Rust build.rs 再验共享签名、source pin、目标平台、App/SDK、体积及 hash，支持目标缺资源时构建失败。现有 Linux App 构建不要求此组件，该 Provider 在未批准平台不可用。`build_dev.sh --build-only` 可构建而不停止正在运行的应用。
 
-`node scripts/publish-cliproxy-component.mjs /path/to/distribution` 使用 minisign（复用同一公钥）输出待发布计划。只有明确获准发布后才加 --publish，提供既有 R2/Cloudflare release 环境与 rclone；脚本先传不可变产物并验线上 bytes，再更新 manifest/signature、清 CDN 缓存并验签。公开启用和发布不是开发构建的默认动作。
+`node scripts/publish-cliproxy-component.mjs /path/to/distribution` 使用 minisign（复用同一公钥）输出待发布计划。获准发布后加 --publish，提供既有 R2 release 环境与 rclone；脚本先传不可变产物并验线上 bytes，再更新 manifest/signature。配置了 CF_ZONE_ID 与 CF_API_TOKEN 时清 CDN 缓存；与现有发布脚本一致，未配置时仍必须直接读取公开地址并核对全部字节和签名。公开启用和发布不是开发构建的默认动作。
 
 确定性测试不依赖用户目录、密钥或网络。`verify-cliproxy-contract.mjs` 与 Rust ignored native_process_management_contract 显式检查原版进程和接口，不完成 Google 登录。Rust ignored native_account_sdk_tool_and_history_contract 才打开系统浏览器，使用临时账号目录并调用真实 SDK 工具与历史测试；MYAGENTS_CLIPROXY_SMOKE_EXECUTABLE 必须指向已核验源码摘要的原版程序。
 

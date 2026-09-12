@@ -1,10 +1,10 @@
 import { useRef, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Download, Link, Loader2, RefreshCw, Settings2, Unlink, X } from 'lucide-react';
+import { Link, Loader2, RefreshCw, Unlink, X } from 'lucide-react';
 import type { CliProxyStatus } from '../../shared/cliproxy';
 import type { Provider } from '@/config/types';
-import { cancelCliProxy, checkCliProxyUpdate, connectCliProxy, disconnectCliProxy, discoverCliProxyModels, retryCliProxyCleanup } from '@/config/services/cliproxyService';
+import { cancelCliProxy, connectCliProxy, disconnectCliProxy, discoverCliProxyModels, retryCliProxyCleanup } from '@/config/services/cliproxyService';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import OverlayBackdrop from './OverlayBackdrop';
 import SubscriptionProviderCardContent from './SubscriptionProviderCardContent';
@@ -22,10 +22,8 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
 }) {
   const { t } = useTranslation('settings');
   const [busy, setBusy] = useState(false);
-  const [updateBusy, setUpdateBusy] = useState(false);
   const [error, setError] = useState<{ generation?: string; message: string } | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<'account' | 'component' | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [loginTarget, setLoginTarget] = useState<string | null>(null);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -38,10 +36,10 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
     ?? (!status.policy.usable ? status.policy.error?.message ?? t('providers.cliproxy.disabled') : undefined);
   // A candidate view belongs to that exact pending generation. Once Rust
   // removes it (commit/cancel/failure), later disconnects cannot reopen it.
-  const accountDialog = dialog === 'account' && (!loginTarget || status.candidate?.generation === loginTarget);
-  const closeDialog = () => setDialog(null);
+  const accountDialog = dialogOpen && (!loginTarget || status.candidate?.generation === loginTarget);
+  const closeDialog = () => setDialogOpen(false);
   useCloseLayer(() => {
-    if (!dialog || (dialog === 'account' && !accountDialog)) return false;
+    if (!accountDialog) return false;
     closeDialog(); return true;
   }, 200);
 
@@ -56,30 +54,20 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
     }
   };
   const beginLogin = () => {
-    setLoginTarget(null); setDialog('account');
+    setLoginTarget(null); setDialogOpen(true);
     void run(async () => {
       const next = await connectCliProxy();
-      if (mounted.current) setLoginTarget(next.candidate?.generation ?? null);
+      if (mounted.current) {
+        setLoginTarget(next.candidate?.generation ?? null);
+        if (!next.candidate && next.active?.status === 'connected') setDialogOpen(false);
+      }
     });
   };
   const showAccount = () => {
-    setLoginTarget(status.candidate?.generation ?? null); setDialog('account');
-  };
-  const checkUpdate = async () => {
-    setUpdateBusy(true); setUpdateError(null);
-    try { await checkCliProxyUpdate(); }
-    catch (failure) {
-      if (mounted.current) setUpdateError(messageOf(failure, t('providers.cliproxy.operationFailed')));
-    } finally {
-      try { await refresh(); }
-      finally { if (mounted.current) setUpdateBusy(false); }
-    }
+    setLoginTarget(status.candidate?.generation ?? null); setDialogOpen(true);
   };
   const label = status.active ? status.active.email ?? t('providers.cliproxy.account')
     : status.candidate?.email ?? (status.candidate ? t(`providers.cliproxy.phase.${status.candidate.phase}`) : t('providers.cliproxy.disconnected'));
-  const updatePending = updateBusy || ['checking', 'downloading', 'installing'].includes(status.update.phase);
-  const visibleUpdateError = updateError ?? status.update.error?.message;
-
   return <>
     <SubscriptionProviderCardContent
       description={t('providers.cliproxy.description')}
@@ -106,27 +94,20 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
           ] : [] },
           { items: [
             ...(status.cleanup ? [{ label: t('providers.cliproxy.retryCleanup'), onClick: () => { void run(retryCliProxyCleanup); }, disabled: busy }] : []),
-            { label: t('providers.cliproxy.componentDetails'), icon: <Settings2 className="h-4 w-4" />, onClick: () => setDialog('component') },
           ] },
         ]} />
       </>}
       error={!accountDialog && (accountError || !status.policy.usable) ? <p role="alert" className="break-words text-xs text-[var(--error)]">{accountError ?? status.policy.error?.message ?? t('providers.cliproxy.disabled')}</p> : undefined}
     />
-    {(accountDialog || dialog === 'component') && createPortal(
+    {accountDialog && createPortal(
       <OverlayBackdrop onClose={closeDialog} className="z-[200] overflow-y-auto px-4 py-8">
-        <div role="dialog" aria-modal="true" aria-label={t(dialog === 'component' ? 'providers.cliproxy.componentDetails' : 'providers.cliproxy.loginTitle')}
+        <div role="dialog" aria-modal="true" aria-label={t('providers.cliproxy.loginTitle')}
           className="w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-2xl">
           <div className="flex items-start justify-between gap-4">
-            <h2 className="text-lg font-semibold text-[var(--ink)]">{t(dialog === 'component' ? 'providers.cliproxy.componentDetails' : 'providers.cliproxy.loginTitle')}</h2>
+            <h2 className="text-lg font-semibold text-[var(--ink)]">{t('providers.cliproxy.loginTitle')}</h2>
             <button type="button" aria-label={t('providers.cliproxy.close')} onClick={closeDialog} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"><X className="h-4 w-4" /></button>
           </div>
-          {dialog === 'component' ? <div className="mt-5 space-y-4 text-sm">
-            <p className="text-[var(--ink-muted)]">CLIProxy {status.component.version ?? status.component.bundledVersion ?? '—'} · {t(`providers.cliproxy.update.${status.update.phase}`)}</p>
-            {visibleUpdateError && <p role="status" className="break-words text-xs text-[var(--ink-muted)]">{visibleUpdateError}</p>}
-            <div className="flex justify-end"><button type="button" className={primaryClass} disabled={updatePending} onClick={() => { void checkUpdate(); }}>
-              {updatePending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{t('providers.cliproxy.checkUpdate')}
-            </button></div>
-          </div> : <div className="mt-5 space-y-4">
+          <div className="mt-5 space-y-4">
             <div className="space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4 text-sm">
               {account?.email && <p className="truncate text-[var(--ink)]">{account.email}</p>}
               <p className="flex items-center gap-2 text-[var(--ink-muted)]">
@@ -143,7 +124,7 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
                 await cancelCliProxy(status.candidate!.attemptId); if (mounted.current) closeDialog();
               }); }}>{t('providers.cliproxy.cancel')}</button> : <button type="button" className={buttonClass} onClick={closeDialog}>{t('providers.cliproxy.close')}</button>}
             </div>
-          </div>}
+          </div>
         </div>
       </OverlayBackdrop>, document.body,
     )}

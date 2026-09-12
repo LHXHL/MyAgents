@@ -4,7 +4,7 @@ import type { CliProxyStatus } from '../../shared/cliproxy';
 import { PRESET_PROVIDERS } from '../../shared/config-types';
 import CliProxySubscriptionProvider from './CliProxySubscriptionProvider';
 
-const native = vi.hoisted(() => ({ cancelCliProxy: vi.fn(), checkCliProxyUpdate: vi.fn(), connectCliProxy: vi.fn(),
+const native = vi.hoisted(() => ({ cancelCliProxy: vi.fn(), connectCliProxy: vi.fn(),
   disconnectCliProxy: vi.fn(), discoverCliProxyModels: vi.fn(), retryCliProxyCleanup: vi.fn() }));
 vi.mock('@/config/services/cliproxyService', () => native);
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -50,31 +50,28 @@ it('shows a retained account instead of disconnected while login resumes', () =>
   expect(screen.queryByText('providers.cliproxy.disconnected')).toBeNull();
 });
 
-it('keeps manual update failure out of account errors and renders it only in component details', async () => {
-  native.checkCliProxyUpdate.mockRejectedValue({ code: 'update_unpublished', message: 'Update not published' });
-  render(<CliProxySubscriptionProvider provider={provider} status={{ ...status(), active: null,
-    error: { code: 'catalog_unavailable', message: 'Catalog unavailable' },
+it('keeps background update details and actions out of the account card and menu', () => {
+  render(<CliProxySubscriptionProvider provider={provider} status={{ ...status(),
+    component: { version: '7.2.158' },
     update: { phase: 'failed', error: { code: 'update_unpublished', message: 'Update not published' } },
   }} refresh={vi.fn()} />);
   expect(screen.queryByText('Update not published')).toBeNull();
+  expect(screen.queryByText(/7\.2\.158/)).toBeNull();
   fireEvent.click(screen.getByTitle('providers.cliproxy.moreActions'));
-  fireEvent.click(screen.getByRole('button', { name: 'providers.cliproxy.componentDetails' }));
-  fireEvent.click(screen.getByRole('button', { name: 'providers.cliproxy.checkUpdate' }));
-  await waitFor(() => expect(native.checkCliProxyUpdate).toHaveBeenCalledOnce());
-  expect(screen.getByRole('alert').textContent).toBe('Catalog unavailable');
-  expect(screen.getAllByText('Update not published')).toHaveLength(1);
+  expect(screen.queryByText('providers.cliproxy.componentDetails')).toBeNull();
+  expect(screen.queryByText('providers.cliproxy.checkUpdate')).toBeNull();
+  expect(screen.getByRole('button', { name: 'providers.cliproxy.disconnect' })).toBeTruthy();
 });
 
-it('does not disable account connection while checking component updates', async () => {
-  let finish!: () => void;
-  native.checkCliProxyUpdate.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
-  render(<CliProxySubscriptionProvider provider={provider} status={{ ...status(), active: null }} refresh={vi.fn()} />);
-  fireEvent.click(screen.getByTitle('providers.cliproxy.moreActions'));
-  fireEvent.click(screen.getByRole('button', { name: 'providers.cliproxy.componentDetails' }));
-  fireEvent.click(screen.getByRole('button', { name: 'providers.cliproxy.checkUpdate' }));
+it('keeps the same description and login action while updates run in the background', () => {
+  const { rerender } = render(<CliProxySubscriptionProvider provider={provider} status={{ ...status(), active: null,
+    update: { phase: 'checking' },
+  }} refresh={vi.fn()} />);
   expect((screen.getByRole('button', { name: 'providers.login' }) as HTMLButtonElement).disabled).toBe(false);
-  finish();
-  await waitFor(() => expect((screen.getByRole('button', { name: 'providers.cliproxy.checkUpdate' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getByText('providers.cliproxy.description')).toBeTruthy();
+  expect(screen.queryByTitle('providers.cliproxy.moreActions')).toBeNull();
+  rerender(<CliProxySubscriptionProvider provider={provider} status={status()} refresh={vi.fn()} />);
+  expect(screen.getByText('providers.cliproxy.description')).toBeTruthy();
 });
 
 it('keeps a Rust-owned candidate on dismissal and never reopens a completed dialog after disconnect', () => {
@@ -118,4 +115,14 @@ it('never reports logged in when connection fails before an account is created',
   fireEvent.click(screen.getByRole('button', { name: 'providers.login' }));
   await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Cannot save account'));
   expect(screen.queryByText('providers.cliproxy.connected')).toBeNull();
+});
+
+it('closes the dialog when a retained login completes before connect returns', async () => {
+  native.connectCliProxy.mockResolvedValue(status());
+  render(<CliProxySubscriptionProvider provider={provider} status={{ ...status(), active: null, candidate: {
+    generation: 'retained', attemptId: 'attempt', phase: 'stored',
+  } }} refresh={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'providers.cliproxy.continueConnection' }));
+  await waitFor(() => expect(native.connectCliProxy).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 });
