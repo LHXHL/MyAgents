@@ -1,20 +1,33 @@
 import { useRef, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
+import { Download, Link, Loader2, RefreshCw, Settings2, Unlink, X } from 'lucide-react';
 import type { CliProxyStatus } from '../../shared/cliproxy';
 import type { Provider } from '@/config/types';
 import { cancelCliProxy, checkCliProxyUpdate, connectCliProxy, disconnectCliProxy, discoverCliProxyModels, retryCliProxyCleanup, verifyCliProxy } from '@/config/services/cliproxyService';
+import { useCloseLayer } from '@/hooks/useCloseLayer';
+import OverlayBackdrop from './OverlayBackdrop';
 import SubscriptionProviderCardContent from './SubscriptionProviderCardContent';
+import DropdownMenu from './ui/DropdownMenu';
 import CustomSelect from './CustomSelect';
 
-const buttonClass = 'rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:opacity-50';
+const buttonClass = 'rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:opacity-50';
+const primaryClass = 'flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-60';
+function messageOf(error: unknown, fallback: string): string {
+  return error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+    ? error.message : fallback;
+}
 
 export default function CliProxySubscriptionProvider({ status, refresh }: {
   status: CliProxyStatus; provider: Provider; refresh: () => Promise<void>;
 }) {
   const { t } = useTranslation('settings');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [error, setError] = useState<{ generation?: string; message: string } | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<'account' | 'component' | null>(null);
+  const [loginTarget, setLoginTarget] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ generation: string; model: string } | null>(null);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -22,69 +35,133 @@ export default function CliProxySubscriptionProvider({ status, refresh }: {
   const generation = account?.generation;
   const authorizing = status.candidate?.phase === 'authorizing';
   const verifying = status.verification?.phase === 'running' || status.candidate?.phase === 'verifying' || status.candidate?.phase === 'waiting-to-commit';
-  // Opening settings reads the Rust projection only. Explicit refresh owns
-  // native discovery; its result cannot replace a newer account's status.
   const models = status.models;
   const model = selection && selection.generation === generation && models.some(m => m.model === selection.model)
-    ? selection.model : models[0]?.model ?? '';
+    ? selection.model : status.active?.verifiedModel && models.some(m => m.model === status.active?.verifiedModel)
+      ? status.active.verifiedModel : models[0]?.model ?? '';
+  const accountError = (error?.generation === generation ? error?.message : undefined)
+    ?? account?.error?.message ?? status.error?.message
+    ?? (!status.policy.usable ? status.policy.error?.message ?? t('providers.cliproxy.disabled') : undefined);
+  // A candidate view belongs to that exact pending generation. Once Rust
+  // removes it (commit/cancel/failure), later disconnects cannot reopen it.
+  const accountDialog = dialog === 'account' && (!loginTarget || status.candidate?.generation === loginTarget);
+  const closeDialog = () => setDialog(null);
+  useCloseLayer(() => {
+    if (!dialog || (dialog === 'account' && !accountDialog)) return false;
+    closeDialog(); return true;
+  }, 200);
+
   const run = async (operation: () => Promise<unknown>) => {
     setBusy(true); setError(null);
     try { await operation(); }
     catch (failure) {
-      if (mounted.current) setError(failure && typeof failure === 'object' && 'message' in failure
-        ? String(failure.message) : t('providers.cliproxy.operationFailed'));
+      if (mounted.current) setError({ generation, message: messageOf(failure, t('providers.cliproxy.operationFailed')) });
     } finally {
-      await refresh();
-      if (mounted.current) setBusy(false);
+      try { await refresh(); }
+      finally { if (mounted.current) setBusy(false); }
     }
   };
-  return <div className="space-y-3">
+  const beginLogin = () => {
+    setLoginTarget(null); setDialog('account');
+    void run(async () => {
+      const next = await connectCliProxy();
+      if (mounted.current) setLoginTarget(next.candidate?.generation ?? null);
+    });
+  };
+  const showAccount = () => {
+    setLoginTarget(status.candidate?.generation ?? null); setDialog('account');
+  };
+  const checkUpdate = async () => {
+    setUpdateBusy(true); setUpdateError(null);
+    try { await checkCliProxyUpdate(); }
+    catch (failure) {
+      if (mounted.current) setUpdateError(messageOf(failure, t('providers.cliproxy.operationFailed')));
+    } finally {
+      try { await refresh(); }
+      finally { if (mounted.current) setUpdateBusy(false); }
+    }
+  };
+  const label = status.active ? status.active.email ?? t('providers.cliproxy.account')
+    : status.candidate?.email ?? (status.candidate ? t(`providers.cliproxy.phase.${status.candidate.phase}`) : t('providers.cliproxy.disconnected'));
+  const updatePending = updateBusy || ['checking', 'downloading', 'installing'].includes(status.update.phase);
+  const visibleUpdateError = updateError ?? status.update.error?.message;
+
+  return <>
     <SubscriptionProviderCardContent
       description={t('providers.cliproxy.description')}
       status={<>
-        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        <span>{status.active
-          ? `${status.active.email ?? t('providers.cliproxy.account')} · ${t(`providers.cliproxy.accountState.${status.active.status}`)}`
-          : t('providers.cliproxy.disconnected')}</span>
+        <span className="truncate font-mono text-xs text-[var(--ink-muted)]">{label}</span>
+        {status.active?.status === 'verified' && <span className="rounded bg-[var(--success-bg)] px-1.5 py-0.5 text-xs font-medium text-[var(--success)]">{t('providers.verified')}</span>}
+        {!status.active && status.candidate?.email && <span className="text-[var(--ink-muted)]">{t(`providers.cliproxy.phase.${status.candidate.phase}`)}</span>}
       </>}
       actions={<>
-        <button type="button" className={buttonClass} disabled={busy || !status.policy.usable || !!status.candidate || !!status.cleanup}
-          onClick={() => { void run(connectCliProxy); }}>{t(status.active ? 'providers.cliproxy.reconnect' : 'providers.cliproxy.connect')}</button>
-        {(status.active || status.candidate) && <button type="button" className={buttonClass} disabled={busy}
-          onClick={() => { void run(disconnectCliProxy); }}>{t('providers.cliproxy.disconnect')}</button>}
-        {status.cleanup && <button type="button" className={buttonClass} disabled={busy}
-          onClick={() => { void run(retryCliProxyCleanup); }}>{t('providers.cliproxy.retryCleanup')}</button>}
+        {status.candidate ? <button type="button" className={primaryClass} onClick={showAccount}>
+          {authorizing || verifying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}
+          {t('providers.cliproxy.continueConnection')}
+        </button> : !status.active && <button type="button" className={primaryClass} disabled={busy || !status.policy.usable || !!status.cleanup} onClick={beginLogin}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}{t('providers.login')}
+        </button>}
+        {status.active && !status.candidate && <button type="button" disabled={busy || verifying} onClick={showAccount}
+          title={t('providers.reverify')} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] disabled:opacity-50">
+          <RefreshCw className={`h-4 w-4 ${verifying ? 'animate-spin' : ''}`} />
+        </button>}
+        <DropdownMenu title={t('providers.cliproxy.moreActions')} sections={[
+          { items: status.active ? [
+            { label: t('providers.cliproxy.reconnect'), icon: <Link className="h-4 w-4" />, onClick: beginLogin, disabled: busy || !!status.candidate || !!status.cleanup || !status.policy.usable },
+            { label: t('providers.cliproxy.disconnect'), icon: <Unlink className="h-4 w-4" />, onClick: () => { void run(disconnectCliProxy); }, disabled: busy },
+          ] : [] },
+          { items: [
+            ...(status.cleanup ? [{ label: t('providers.cliproxy.retryCleanup'), onClick: () => { void run(retryCliProxyCleanup); }, disabled: busy }] : []),
+            { label: t('providers.cliproxy.componentDetails'), icon: <Settings2 className="h-4 w-4" />, onClick: () => setDialog('component') },
+          ] },
+        ]} />
       </>}
-      error={(error || status.error?.message) && <p role="alert" className="text-sm text-[var(--error)]">{error ?? status.error?.message}</p>}
+      error={!accountDialog && (accountError || !status.policy.usable) ? <p role="alert" className="break-words text-xs text-[var(--error)]">{accountError ?? status.policy.error?.message ?? t('providers.cliproxy.disabled')}</p> : undefined}
     />
-    {status.candidate && <div className="space-y-2 rounded-lg bg-[var(--paper-inset)] p-3 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <span>{status.candidate.email ?? t('providers.cliproxy.newAccount')} · {t(`providers.cliproxy.phase.${status.candidate.phase}`)}</span>
-        <button type="button" className={buttonClass} disabled={busy}
-          onClick={() => { void run(() => cancelCliProxy(status.candidate!.attemptId)); }}>{t('providers.cliproxy.cancel')}</button>
-      </div>
-      {authorizing && <p className="text-[var(--ink-muted)]">{t('providers.cliproxy.browserHint')}</p>}
-    </div>}
-    {generation && !authorizing && <div className="flex flex-wrap items-center gap-2">
-      <CustomSelect ariaLabel={t('providers.cliproxy.verificationModel')} value={model}
-        disabled={busy || verifying || !status.policy.usable}
-        onChange={model => setSelection({ generation, model })}
-        options={models.map(model => ({ value: model.model, label: model.modelName ?? model.model }))}
-        placeholder={t('providers.cliproxy.noModels')} size="toolbar" className="min-w-0 flex-1" />
-      <button type="button" className={buttonClass} disabled={busy || verifying || !model || !status.policy.usable || !!status.cleanup}
-        onClick={() => { void run(() => verifyCliProxy(generation, model)); }}>{t('providers.cliproxy.verify')}</button>
-      <button type="button" className={buttonClass} disabled={busy || verifying || !status.policy.usable || !!status.cleanup}
-        onClick={() => { void run(() => discoverCliProxyModels(generation)); }}>{t('providers.cliproxy.refreshModels')}</button>
-      {status.modelsStale && <p className="w-full text-xs text-[var(--ink-muted)]">{t('providers.cliproxy.modelsStale')}</p>}
-      {model && <p className="w-full text-xs text-[var(--ink-muted)]">{t(`providers.cliproxy.modelState.${status.modelVerification?.[model]?.status ?? 'unknown'}`)}
-        {status.modelVerification?.[model]?.checkedAt && ` · ${new Date(status.modelVerification[model].checkedAt).toLocaleString()}`}</p>}
-    </div>}
-    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--ink-muted)]">
-      <span>CLIProxy {status.component.version ?? status.component.bundledVersion ?? '—'} · {t(`providers.cliproxy.update.${status.update.phase}`)}</span>
-      <button type="button" className={buttonClass} disabled={busy || ['checking', 'downloading', 'installing'].includes(status.update.phase)}
-        onClick={() => { void run(checkCliProxyUpdate); }}>{t('providers.cliproxy.checkUpdate')}</button>
-      {status.update.error && <p className="w-full">{status.update.error.message}</p>}
-      {!status.policy.usable && <p className="w-full">{status.policy.error?.message ?? t('providers.cliproxy.disabled')}</p>}
-    </div>
-  </div>;
+    {(accountDialog || dialog === 'component') && createPortal(
+      <OverlayBackdrop onClose={closeDialog} className="z-[200] overflow-y-auto px-4 py-8">
+        <div role="dialog" aria-modal="true" aria-label={t(dialog === 'component' ? 'providers.cliproxy.componentDetails' : 'providers.cliproxy.loginTitle')}
+          className="w-full max-w-lg rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <h2 className="text-lg font-semibold text-[var(--ink)]">{t(dialog === 'component' ? 'providers.cliproxy.componentDetails' : 'providers.cliproxy.loginTitle')}</h2>
+            <button type="button" aria-label={t('providers.cliproxy.close')} onClick={closeDialog} className="rounded-lg p-1.5 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]"><X className="h-4 w-4" /></button>
+          </div>
+          {dialog === 'component' ? <div className="mt-5 space-y-4 text-sm">
+            <p className="text-[var(--ink-muted)]">CLIProxy {status.component.version ?? status.component.bundledVersion ?? '—'} · {t(`providers.cliproxy.update.${status.update.phase}`)}</p>
+            {visibleUpdateError && <p role="status" className="break-words text-xs text-[var(--ink-muted)]">{visibleUpdateError}</p>}
+            <div className="flex justify-end"><button type="button" className={primaryClass} disabled={updatePending} onClick={() => { void checkUpdate(); }}>
+              {updatePending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{t('providers.cliproxy.checkUpdate')}
+            </button></div>
+          </div> : <div className="mt-5 space-y-4">
+            <div className="space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)] p-4 text-sm">
+              {account?.email && <p className="truncate text-[var(--ink)]">{account.email}</p>}
+              <p className="flex items-center gap-2 text-[var(--ink-muted)]">
+                {(busy || authorizing || verifying) && <Loader2 className="h-4 w-4 animate-spin" />}
+                {status.candidate ? t(`providers.cliproxy.phase.${status.candidate.phase}`) : busy ? t('providers.cliproxy.preparingLogin') : t('providers.cliproxy.verifyHint')}
+              </p>
+              {authorizing && <p className="text-xs text-[var(--ink-muted)]">{t('providers.cliproxy.browserHint')}</p>}
+            </div>
+            {accountError && <p role="alert" className="break-words text-sm text-[var(--error)]">{accountError}</p>}
+            {generation && !authorizing && <div className="space-y-3">
+              <CustomSelect ariaLabel={t('providers.cliproxy.verificationModel')} value={model} disabled={busy || verifying || !status.policy.usable || models.length === 0}
+                onChange={model => setSelection({ generation, model })} options={models.map(m => ({ value: m.model, label: m.modelName ?? m.model }))}
+                placeholder={t('providers.cliproxy.noModels')} size="toolbar" className="w-full" />
+              {!models.length && !accountError && <p className="text-xs text-[var(--ink-muted)]">{t('providers.cliproxy.refreshHint')}</p>}
+              {status.modelsStale && models.length > 0 && <p className="text-xs text-[var(--ink-muted)]">{t('providers.cliproxy.modelsStale')}</p>}
+              {model && status.modelVerification?.[model] && <p className="text-xs text-[var(--ink-muted)]">{t(`providers.cliproxy.modelState.${status.modelVerification[model].status}`)} · {new Date(status.modelVerification[model].checkedAt).toLocaleString()}</p>}
+              <div className="flex justify-end gap-2">
+                <button type="button" className={buttonClass} disabled={busy || verifying || !status.policy.usable || !!status.cleanup} onClick={() => { void run(() => discoverCliProxyModels(generation)); }}>{t('providers.cliproxy.refreshModels')}</button>
+                <button type="button" className={primaryClass} disabled={busy || verifying || !model || !status.policy.usable || !!status.cleanup} onClick={() => { void run(() => verifyCliProxy(generation, model)); }}>{t('providers.cliproxy.verify')}</button>
+              </div>
+            </div>}
+            <div className="flex justify-end border-t border-[var(--line)] pt-3">
+              {status.candidate ? <button type="button" className={buttonClass} disabled={busy} onClick={() => { void run(async () => {
+                await cancelCliProxy(status.candidate!.attemptId); if (mounted.current) closeDialog();
+              }); }}>{t('providers.cliproxy.cancel')}</button> : <button type="button" className={buttonClass} onClick={closeDialog}>{t('providers.cliproxy.close')}</button>}
+            </div>
+          </div>}
+        </div>
+      </OverlayBackdrop>, document.body,
+    )}
+  </>;
 }

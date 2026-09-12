@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Credentialed harness launched by the ignored Rust native-account test.
-// Only the local model key crosses stdin; Google credentials stay in Rust's
-// temporary CLIProxy auth-dir. Output contains contract results, never content.
+// Only the local model key crosses stdin; Google credentials stay in the
+// native-owned auth-dir. Output contains contract results, never content.
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,6 +27,8 @@ const scratch = mkdtempSync(join(tmpdir(), 'myagents-cliproxy-sdk-'));
 const nonce = randomUUID();
 let toolCalls = 0;
 let sawThinking = false;
+let stage = 'tool-roundtrip';
+const runs = [];
 const server = createSdkMcpServer({ name: 'subscription-verification', tools: [tool('check_connection',
   'Return the current connection verification code. No side effects.', {}, async () => {
     toolCalls++;
@@ -44,7 +46,8 @@ Object.assign(env, { CLAUDE_CONFIG_DIR: scratch, ANTHROPIC_BASE_URL: baseUrl, AN
   ANTHROPIC_DEFAULT_OPUS_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model });
 async function run(prompt, options) {
   const controller = new AbortController();
-  let terminal = false; let text = ''; let sessionId;
+  let terminal = false; let text = ''; let sessionId; let terminalSubtype; let assistantError;
+  const contentTypes = new Set();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   const instance = query({ prompt, options: { cwd: scratch, env, pathToClaudeCodeExecutable: native, model,
     tools: [], mcpServers: { 'subscription-verification': server }, settingSources: [], strictMcpConfig: true,
@@ -55,26 +58,35 @@ async function run(prompt, options) {
     for await (const message of instance) {
       if (message.type === 'system' && message.subtype === 'init') sessionId = message.session_id;
       if (message.type === 'assistant') {
-        if (message.error) throw new Error('Model request failed');
+        if (message.error) {
+          assistantError = /^[a-z_]{1,64}$/.test(message.error) ? message.error : 'other';
+          throw new Error('Model request failed');
+        }
         for (const block of message.message.content) {
+          contentTypes.add(block.type);
           if (block.type === 'text') text += block.text;
           if (block.type === 'thinking' && block.thinking) sawThinking = true;
         }
       }
-      if (message.type === 'result') { terminal = message.subtype === 'success'; break; }
+      if (message.type === 'result') { terminalSubtype = message.subtype; terminal = message.subtype === 'success'; break; }
     }
     return { terminal, text, sessionId };
-  } finally { clearTimeout(timeout); controller.abort(); instance.close(); }
+  } finally {
+    runs.push({ terminal, terminalSubtype, assistantError, hasSession: !!sessionId, hasNonce: text.includes(nonce), contentTypes: [...contentTypes] });
+    clearTimeout(timeout); controller.abort(); instance.close();
+  }
 }
 try {
   const first = await run('Call check_connection exactly once. Then reply with the exact code returned by the tool.', { sessionId: randomUUID() });
   if (!first.terminal || toolCalls !== 1 || !first.text.includes(nonce) || !first.sessionId) throw new Error('SDK tool round-trip did not complete');
+  stage = 'history';
   const resumed = await run('Without calling any tool, repeat the verification code from the previous turn.', { resume: first.sessionId });
   if (!resumed.terminal || toolCalls !== 1 || !resumed.text.includes(nonce)) throw new Error('SDK history resume did not complete');
+  stage = 'thinking';
   if (thinking && !sawThinking) throw new Error('Requested thinking capability was not observed');
   console.log(JSON.stringify({ success: true, sdkVersion: pkg.dependencies['@anthropic-ai/claude-agent-sdk'],
     model, tools: true, history: true, thinking: sawThinking, inputModalities: ['text'], outputModalities: ['text'] }));
 } catch {
-  console.log(JSON.stringify({ success: false, model, error: 'Credentialed SDK contract did not complete' }));
+  console.log(JSON.stringify({ success: false, model, stage, toolCalls, sawThinking, runs, error: 'Credentialed SDK contract did not complete' }));
   process.exitCode = 1;
 } finally { rmSync(scratch, { recursive: true, force: true }); }

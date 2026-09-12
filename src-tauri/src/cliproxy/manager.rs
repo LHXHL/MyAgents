@@ -190,6 +190,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         let _ = self.app.emit("cliproxy:changed", json!({}));
     }
     pub async fn set_error(&self, error: Error) {
+        crate::ulog_warn!("[cliproxy] operation failed code={}", error.code);
         self.state.lock().await.error = Some(error);
         self.emit();
     }
@@ -403,11 +404,12 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             json!({ "generation": a.generation, "email": state.emails.get(&a.generation),
             "status": if state.account_errors.get(&a.generation).is_some_and(|e| matches!(e.code.as_str(), "reauth_required" | "account_not_saved")) {
                 "reauth-required"
-            } else if a.verified_model.is_some() { "verified" } else { "stored" }, "verifiedModel": a.verified_model, "verifiedAt": a.verified_at })
+            } else if a.verified_model.is_some() { "verified" } else { "stored" }, "verifiedModel": a.verified_model, "verifiedAt": a.verified_at,
+                "error": state.account_errors.get(&a.generation) })
         };
         let candidate = state.accounts.candidate.as_ref().map(|a| {
             json!({ "attemptId": a.attempt_id, "generation": a.generation,
-            "phase": a.phase, "email": state.emails.get(&a.generation), "error": state.error })
+            "phase": a.phase, "email": state.emails.get(&a.generation), "error": state.account_errors.get(&a.generation) })
         });
         let model_verification: BTreeMap<_, _> = state
             .accounts
@@ -526,7 +528,13 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     drop(state);
                     let _ = manager.cleanup().await;
                 }
-                manager.set_error(error).await;
+                if authorized {
+                    if let Err(cleanup_error) = manager.record_account_failure(&account, &error).await {
+                        manager.set_error(cleanup_error).await;
+                    }
+                } else if error.code != "cancelled" {
+                    manager.set_error(error).await;
+                }
             }
             manager.finish_account_operation().await;
             manager.emit();
@@ -623,6 +631,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 state.emails.insert(account.generation.clone(), email);
             }
         }
+        crate::ulog_info!("[cliproxy] browser authorization confirmed; discovering models");
         self.refresh_for(account, &instance, &installed).await?;
         self.emit();
         let models = self
@@ -823,6 +832,8 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             instance.client.routed_models(),
             instance.client.definitions()
         )?;
+        crate::ulog_info!("[cliproxy] model catalog registered={} routed={} definitions={} approved={}",
+            registered.len(), routed.len(), definitions.len(), component.compatibility.models.len());
         let models = super::models::project(&registered, &routed, &definitions, &component)?;
         let mut state = self.state.lock().await;
         if !state
@@ -920,8 +931,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             if let Err(error) = result {
                 if let Err(cleanup_error) = manager.record_account_failure(&account, &error).await {
                     manager.set_error(cleanup_error).await;
-                } else {
-                    manager.set_error(error).await;
                 }
             }
             manager.finish_account_operation().await;
@@ -1071,6 +1080,10 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
     }
 
     async fn record_account_failure(&self, account: &AccountRef, error: &Error) -> Result<()> {
+        if error.code == "cancelled" {
+            return Ok(());
+        }
+        crate::ulog_warn!("[cliproxy] account operation failed code={}", error.code);
         let cleanup = {
             let mut state = self.state.lock().await;
             if !state
@@ -1090,6 +1103,10 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     a.generation == account.generation && a.phase != "authorizing"
                 });
             if incomplete {
+                // Cleanup removes this generation and its scoped error. Keep
+                // the failed connection result at the operation owner, without
+                // marking the still-valid active account as failed.
+                state.error = Some(error.clone());
                 let mut next = state.accounts.clone();
                 next.begin_cancel_candidate();
                 let saved = self.store.write_accounts(&next);
@@ -2481,6 +2498,52 @@ mod tests {
         directory: TempDir,
         processes: Vec<Arc<Instance>>,
         installed: Installed,
+    }
+    #[tokio::test]
+    async fn account_errors_stay_with_their_generation_in_the_status_projection() {
+        let fixture = Fixture::new().await;
+        let active = AccountRef::candidate();
+        let candidate = AccountRef::candidate();
+        {
+            let mut state = fixture.manager.state.lock().await;
+            state.accounts.active = Some(active.clone());
+            state.accounts.candidate = Some(candidate.clone());
+            state.error = Some(Error::new("component_failure", "Component failure"));
+            state.account_errors.insert(active.generation.clone(), Error::new("active_failure", "Active failure"));
+        }
+        let status = fixture.manager.status().await;
+        assert_eq!(status["active"]["error"]["code"], "active_failure");
+        assert!(status["candidate"]["error"].is_null());
+        fixture.manager.record_account_failure(&candidate, &Error::new("model_approval_missing", "Missing approval")).await.unwrap();
+        let status = fixture.manager.status().await;
+        assert_eq!(status["candidate"]["error"]["code"], "model_approval_missing");
+        assert_eq!(status["error"]["code"], "component_failure");
+    }
+    #[tokio::test]
+    async fn failed_candidate_cleanup_keeps_the_failure_without_marking_the_active_account() {
+        for has_active in [false, true] {
+            let fixture = Fixture::new().await;
+            let active = has_active.then(AccountRef::candidate);
+            let mut candidate = AccountRef::candidate();
+            candidate.phase = "awaiting-verification".to_owned();
+            {
+                let mut state = fixture.manager.state.lock().await;
+                state.accounts.active = active.clone();
+                state.accounts.candidate = Some(candidate.clone());
+            }
+            fixture.manager.record_account_failure(&candidate,
+                &Error::new("account_not_saved", "Candidate authorization was not saved")).await.unwrap();
+            let status = fixture.manager.status().await;
+            assert!(status["candidate"].is_null());
+            assert!(status["cleanup"].is_null());
+            assert_eq!(status["error"]["code"], "account_not_saved");
+            assert!(status["active"]["error"].is_null());
+            if let Some(active) = active {
+                assert_eq!(status["active"]["generation"], active.generation);
+            } else {
+                assert!(status["active"].is_null());
+            }
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {

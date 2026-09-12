@@ -713,7 +713,8 @@ async fn fetch_limited_bytes(
     label: &str,
 ) -> Result<Vec<u8>, String> {
     validate_download_url(url)?;
-    crate::resource_download::fetch_limited_bytes(client, url, max_bytes, label).await
+    crate::resource_download::fetch_limited_bytes(client, url, max_bytes, label)
+        .await.map_err(|error| error.to_string())
 }
 
 async fn download_to_file_with_hash(

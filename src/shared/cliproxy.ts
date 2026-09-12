@@ -8,6 +8,7 @@ export type CliProxyAccount = {
   status: 'stored' | 'verified' | 'reauth-required';
   verifiedAt?: string | null;
   verifiedModel?: string | null;
+  error?: CliProxyError | null;
 };
 export type CliProxyCandidate = {
   attemptId: string;

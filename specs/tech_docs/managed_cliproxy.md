@@ -35,6 +35,8 @@ SDK 进程的所有模型别名绑定到本次准入模型。主 Query 的 PreTo
 
 连接依次完成：绑定双栈 localhost callback → 请求原版 auth URL → 系统浏览器授权 → 转交一次 callback → 按准确 state 查询 → 读取白名单账号摘要 → 原版模型交集 → SDK 工具闭环验证。回调 200、文件存在或 SDK idle 均不能当成验证成功。
 
+设置卡片复用订阅供应商布局，只展示账号、验证状态与主要操作。授权进度、模型选择和验证放在连接弹窗；关闭弹窗只关闭视图，显式取消才清理准确候选。组件版本和检查更新放在次级菜单的独立弹窗，更新的忙碌与错误状态不占用账号操作。账号错误由 Rust 按 generation 投影，不能把 active 或组件的错误写到 candidate 上。
+
 候选验证成功后，Rust 阻止新 turn、等待既有 lease、停止旧 active 与 candidate，使用候选原目录启动正式实例。最后原子保存 candidate → active 和旧目录清理意图，再开放正式 binding。提交后不得因清理失败回退到旧账号。
 
 取消候选只清理候选；断开覆盖该 Provider 的所有已登记目录。两者先保存删除意图，后停止 writer 并删目录。`retry_cleanup` 仅重试已有目标，不能把 retired/candidate 清理扩展成断开 active。写意图失败时不返回成功，本进程保持对应准入关闭。普通停止不扫描或误杀其他 CLIProxy 安装。
@@ -60,6 +62,8 @@ SDK 进程的所有模型别名绑定到本次准入模型。主 Query 的 PreTo
 
 目录探测不带 Anthropic-Version、claude-cli UA 或 client_version，固定读取原始 `data[].id`。`-local-model` 与禁用模型名称伪装固定目录解释；模型准入为账号注册集合、当前路由、原版定义、签名兼容记录的交集。缺失能力保持未知，刷新失败保留旧列表并标为过期，每次 turn 检查当前路由。权限/额度失败不触发 MyAgents 刷新 token 或换模型。
 
+兼容记录没有已批准工具模型时返回 `model_approval_missing`，保留已授权候选；这与账号没有可用模型不同。不得仅凭原版列表或简单 HTTP 请求成功补写批准。统一日志中的 `[cliproxy]` 记录授权确认阶段、三份目录及批准模型的数量、有限错误码；不记录邮箱、回调 URL、响应内容或 key。
+
 ## 组件与批准记录
 
 实际执行位置统一为 `<data>/runtimes/cliproxy/<version>/<platform>/<artifact-digest>/`。随包程序也先校验复制到该目录，App 升级不会移除 previous。配置/key 只在 `<data>/providers/cliproxy/antigravity-sub/run/<instance-generation>/`；凭据在独立 accounts/<opaque-id>/auth。
@@ -67,6 +71,8 @@ SDK 进程的所有模型别名绑定到本次准入模型。主 Query 的 PreTo
 签名信任根复用 `resource_signature.rs` 与 Tauri updater pubkey。签名 controls 的单调 revision 与组件的 App/SDK/模型兼容分别裁决；线上新组件不兼容仍执行有效停用/撤销。没有短 TTL 或续签要求，网络不可达保留本机可信记录。
 
 App 启动后和每 15 分钟检查固定 MyAgents manifest；更高兼容版本自动准备并在 drain 后切换。同版本仅允许同一产物更高兼容 revision 更新。已失败 artifact/App/SDK/compatibility 组合不自动重复安装或启动；传输失败可重新检查，用户显式操作可重试。正常运行后的崩溃恢复有独立的次数上限，不重放任务。
+
+清单或签名下载的 HTTP 404 返回 `update_unpublished`；网络失败返回 `update_network`。日志仅保留资源类别、失败类别和 HTTP 状态，更新不可达不使本机可信组件或账号授权失效。
 
 新版的 credentialCompatibleVersions 列表证明它与所列旧版的双向凭据兼容；旧清单不需要预知未来版本。不兼容或已撤销的旧版不可作为回退。GC 仅处理组件 owner 目录，并保留 current/previous/pending。
 

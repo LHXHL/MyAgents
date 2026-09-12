@@ -182,7 +182,15 @@
   "providers": {
     "cliproxy": {
       "modelState": {"unknown": "尚未在当前账号验证", "succeeded": "此模型验证成功", "failed": "此模型暂时不可用"},
-      "description": "使用 Antigravity 账号，通过内置 CLIProxy 连接模型。",
+      "description": "登录 Antigravity，使用订阅模型。",
+      "continueConnection": "继续连接",
+      "moreActions": "更多操作",
+      "componentDetails": "组件与更新",
+      "loginTitle": "连接 Antigravity",
+      "close": "关闭",
+      "preparingLogin": "正在打开授权页面…",
+      "verifyHint": "验证当前账号的模型连接。",
+      "refreshHint": "刷新模型后继续验证，无需重复登录。",
       "account": "已保存账号",
       "disconnected": "尚未连接",
       "newAccount": "新账号",

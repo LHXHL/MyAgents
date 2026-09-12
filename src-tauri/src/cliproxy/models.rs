@@ -30,6 +30,12 @@ pub(super) fn project(
     definitions: &[Value],
     component: &Component,
 ) -> Result<Vec<Value>> {
+    if !component.compatibility.models.iter().any(|model| model.tools) {
+        return Err(Error::new(
+            "model_approval_missing",
+            "当前组件尚未提供通过验证的模型，请更新组件后继续。账号授权已保留。",
+        ));
+    }
     let ids = |items: &[Value]| -> Result<BTreeSet<String>> {
         items
             .iter()
@@ -108,6 +114,14 @@ pub(super) fn project(
 mod tests {
     use super::*;
     use crate::cliproxy::manifest::{tests::component, ApprovedModel};
+    #[test]
+    fn empty_component_approval_is_not_an_account_entitlement_failure() {
+        let mut approval = component("7.2.158");
+        approval.compatibility.models.clear();
+        let error = project(&[json!({"id":"native-model"})], &["native-model".to_owned()],
+            &[json!({"id":"native-model"})], &approval).unwrap_err();
+        assert_eq!(error.code, "model_approval_missing");
+    }
     #[test]
     fn catalog_merge_preserves_configured_overrides_and_temporarily_absent_models() {
         let saved = vec![

@@ -182,7 +182,15 @@
   "providers": {
     "cliproxy": {
       "modelState": {"unknown": "Not verified with this account", "succeeded": "Model verified", "failed": "Model temporarily unavailable"},
-      "description": "Connect your Antigravity account through the bundled CLIProxy component.",
+      "description": "Sign in to Antigravity to use your subscription models.",
+      "continueConnection": "Continue connection",
+      "moreActions": "More actions",
+      "componentDetails": "Component and updates",
+      "loginTitle": "Connect Antigravity",
+      "close": "Close",
+      "preparingLogin": "Opening authorization…",
+      "verifyHint": "Verify model access for this account.",
+      "refreshHint": "Refresh models to continue verification. No need to sign in again.",
       "account": "Saved account",
       "disconnected": "Not connected",
       "newAccount": "New account",

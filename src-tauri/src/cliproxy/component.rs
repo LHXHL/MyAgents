@@ -400,7 +400,7 @@ impl ComponentStore {
             "CLIProxy manifest",
         )
         .await
-        .map_err(|_| Error::new("update_network", "暂时无法检查组件更新，继续使用本机版本"))?;
+        .map_err(|error| manifest_download_error("manifest", error))?;
         let signature = crate::resource_download::fetch_limited_bytes(
             &client,
             &format!("{MANIFEST_URL}.sig"),
@@ -408,7 +408,7 @@ impl ComponentStore {
             "CLIProxy signature",
         )
         .await
-        .map_err(|_| Error::new("update_network", "暂时无法检查组件更新，继续使用本机版本"))?;
+        .map_err(|error| manifest_download_error("signature", error))?;
         let approved = SignedManifest {
             json: String::from_utf8(json).map_err(|_| Error::contract())?,
             signature: String::from_utf8(signature).map_err(|_| Error::contract())?,
@@ -463,7 +463,7 @@ impl ComponentStore {
                 };
                 if let Err(error) = downloaded {
                     match error {
-                        crate::resource_download::DownloadError::Transport(_) => {
+                        crate::resource_download::DownloadError::Transport(_) | crate::resource_download::DownloadError::Http(_) => {
                             // Only transport failures are automatically retryable.
                             let mut state = self.state.lock().await; let mut next = state.clone();
                             next.attempts.remove(&installed.identity(&self.app_version, &self.sdk_version)?);
@@ -506,6 +506,24 @@ fn external_client(timeout: Duration) -> Result<reqwest::Client> {
             .redirect(reqwest::redirect::Policy::none()),
     )
     .map_err(|_| Error::new("update_network", "无法连接组件更新服务"))
+}
+
+fn manifest_download_error(resource: &str, error: crate::resource_download::DownloadError) -> Error {
+    use crate::resource_download::DownloadError;
+    let (reason, status) = match &error {
+        DownloadError::Http(status) => ("http", *status),
+        DownloadError::Transport(_) => ("transport", 0),
+        DownloadError::SizeLimit => ("size", 0),
+        DownloadError::Storage(_) => ("storage", 0),
+    };
+    // The transport error may contain proxy credentials or URLs. Log only
+    // the finite stage/class/status; never the raw error or response body.
+    crate::ulog_warn!("[cliproxy] update check failed resource={} reason={} http_status={}", resource, reason, status);
+    match error {
+        DownloadError::Http(404) => Error::new("update_unpublished", "组件更新清单尚未发布，当前继续使用本机版本。"),
+        DownloadError::SizeLimit => Error::new("update_invalid", "组件更新清单无效，当前继续使用本机版本。"),
+        _ => Error::new("update_network", "暂时无法检查组件更新，继续使用本机版本"),
+    }
 }
 
 fn hash_file(path: &Path) -> Result<String> {
@@ -608,6 +626,16 @@ fn extract(archive: &Path, destination: &Path, artifact: &Artifact) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unpublished_update_is_distinct_from_transport_failure_without_exposing_details() {
+        use crate::resource_download::DownloadError;
+        let missing = super::manifest_download_error("manifest", DownloadError::Http(404));
+        assert_eq!(missing.code, "update_unpublished");
+        let transport = super::manifest_download_error("signature", DownloadError::Transport("private proxy details".to_owned()));
+        assert_eq!(transport.code, "update_network");
+        assert!(!transport.message.contains("private proxy details"));
+        assert_eq!(super::manifest_download_error("manifest", DownloadError::SizeLimit).code, "update_invalid");
+    }
     use super::*;
     fn signed_fixture() -> SignedManifest {
         // Internal, empty-model approval; contains no credentials or private key.

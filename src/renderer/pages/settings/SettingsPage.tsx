@@ -5115,13 +5115,13 @@ export default function Settings({
                             </span>
                           )}
                         </div>
-                        <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
+                        {(provider.id !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID || provider.models.length > 0) && <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
                           {provider.models.length > 0
                             ? provider.models
                                 .map((m) => m.modelName || m.model)
                                 .join(', ')
                             : tSettings('providers.noModels')}
-                        </p>
+                        </p>}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         {provider.websiteUrl && (
