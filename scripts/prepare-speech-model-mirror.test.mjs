@@ -23,7 +23,7 @@ const originLock = JSON.parse(
 
 test("speech mirror plan joins all runtime sources to content-addressed first-party URLs", () => {
   const plan = buildMirrorPlan(sourceLock, originLock);
-  assert.equal(plan.packRevision, "local-standard-speech-v2");
+  assert.equal(plan.packRevision, "local-standard-speech-v3");
   assert.equal(plan.entries.length, 7);
   assert.equal(
     plan.entries.reduce((total, entry) => total + entry.size, 0),

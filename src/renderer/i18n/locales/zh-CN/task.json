@@ -133,6 +133,7 @@
     "transcriptLiveFailed": "实时转写暂不可用",
     "transcriptLiveFailedHint": "实时转写遇到问题，录音仍在安全保存；停止后会自动重新处理。",
     "transcriptFailedHint": "转写未完成，可重新开始转录。",
+    "diarizationFailedHint": "说话人识别未完成，现有文稿仍可阅读。",
     "transcriptFailedProtocolHint": "转写组件通信失败。请更新应用后重试；若仍失败，请反馈错误码。",
     "transcriptFailedMediaHint": "音频解码失败。可先导出音频检查，直接重试可能仍会失败。",
     "transcriptFailedPublishHint": "转写结果保存失败。请检查磁盘空间和写入权限后重试。",

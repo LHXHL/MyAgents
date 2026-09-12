@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use zeroize::Zeroize;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub mod record_timeline;
+pub mod record_identity;
+use record_timeline::{CaptureTimeQuality, RecordTrackTimeline, TrackTimeSpan};
+
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const MAX_CONTROL_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_PCM_SAMPLES_PER_FRAME: usize = SAMPLE_RATE as usize * 5;
@@ -12,7 +16,7 @@ pub const MAX_MEDIA_SAMPLES_PER_TRACK: u64 = SAMPLE_RATE as u64 * 60 * 60 * 8;
 
 const CONTROL_FRAME_KIND: u8 = 1;
 const PCM_FRAME_KIND: u8 = 2;
-const PCM_HEADER_BYTES: usize = 1 + 4 + 8 + 1 + 8 + 8 + 4;
+const PCM_HEADER_BYTES: usize = 1 + 4 + 8 + 1 + 8 + 8 + 4 + 1 + 1 + 8 + 8;
 const MAX_WIRE_FRAME_BYTES: usize = 1 + MAX_CONTROL_FRAME_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +46,7 @@ impl WorkloadKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     Microphone,
@@ -95,8 +99,11 @@ impl WorkloadIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct PcmStreamStart {
     pub track: TrackKind,
+    pub channels: u8,
     pub first_sequence: u64,
     pub first_sample: u64,
+    /// DSP warm-up may precede the first uncommitted Record media sample.
+    pub publish_from_record_sample: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +119,7 @@ pub struct PcmStreamEnd {
 pub struct RecordArtifactInput {
     pub input_path: String,
     pub track: TrackKind,
+    pub timeline: Option<RecordTrackTimeline>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +131,7 @@ pub struct RecordArtifactInput {
 pub enum WorkloadInput {
     ModelPackProbe,
     LivePcm { streams: Vec<PcmStreamStart> },
-    RecordArtifacts { inputs: Vec<RecordArtifactInput> },
+    RecordArtifacts { inputs: Vec<RecordArtifactInput>, identity_anchors: Option<record_identity::IdentityAnchorInput> },
     Attachment { input_path: String },
 }
 
@@ -184,14 +192,14 @@ impl StartRequest {
             (&self.workload_kind, &self.input),
             (
                 WorkloadKind::RecordBackfillAsr,
-                WorkloadInput::RecordArtifacts { inputs }
+                WorkloadInput::RecordArtifacts { inputs, identity_anchors: None }
             ) if valid_record_artifacts(inputs)
         ) || matches!(
             (&self.workload_kind, &self.input),
             (
                 WorkloadKind::RecordDiarization,
-                WorkloadInput::RecordArtifacts { inputs }
-            ) if valid_record_artifacts(inputs)
+                WorkloadInput::RecordArtifacts { inputs, identity_anchors }
+            ) if valid_record_artifacts(inputs) && identity_anchors.as_ref().is_none_or(|a| !a.path.is_empty() && a.path.len() <= 32_768 && a.sha256.len() == 64 && a.sha256.bytes().all(|b| b.is_ascii_hexdigit()))
         ) || matches!(
             (&self.workload_kind, &self.input),
             (
@@ -205,18 +213,27 @@ impl StartRequest {
 
 fn valid_live_streams(streams: &[PcmStreamStart]) -> bool {
     (1..=2).contains(&streams.len())
-        && streams
-            .iter()
-            .all(|stream| is_record_source_track(stream.track))
+        && streams.iter().all(|stream| {
+            is_record_source_track(stream.track)
+                && (1..=2).contains(&stream.channels)
+                && stream.first_sample <= MAX_MEDIA_SAMPLES_PER_TRACK
+                && stream.publish_from_record_sample <= MAX_MEDIA_SAMPLES_PER_TRACK
+        })
         && (streams.len() == 1 || streams[0].track != streams[1].track)
 }
 
 fn valid_record_artifacts(inputs: &[RecordArtifactInput]) -> bool {
     let valid_count = (1..=2).contains(&inputs.len());
     valid_count
-        && inputs
-            .iter()
-            .all(|input| !input.input_path.is_empty() && is_record_source_track(input.track))
+        && inputs.iter().all(|input| {
+            !input.input_path.is_empty()
+                && (is_record_source_track(input.track)
+                    || (inputs.len() == 1 && input.track == TrackKind::Mixed))
+                && input
+                    .timeline
+                    .as_ref()
+                    .is_none_or(RecordTrackTimeline::is_valid)
+        })
         && (inputs.len() == 1 || inputs[0].track != inputs[1].track)
 }
 
@@ -336,6 +353,8 @@ fn valid_stream_ends(streams: &[PcmStreamEnd]) -> bool {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct PcmFrame {
+    pub channels: u8,
+    pub time_span: Option<TrackTimeSpan>,
     pub protocol_version: u32,
     pub worker_generation: u64,
     pub track: TrackKind,
@@ -359,16 +378,31 @@ impl std::fmt::Debug for PcmFrame {
 }
 
 impl PcmFrame {
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(self.channels.max(1))
+    }
+
     pub fn has_valid_shape(&self) -> bool {
         self.protocol_version == PROTOCOL_VERSION
             && self.worker_generation > 0
             && is_record_source_track(self.track)
             && !self.samples.is_empty()
-            && self.samples.len() <= MAX_PCM_SAMPLES_PER_FRAME
+            && (1..=2).contains(&self.channels)
+            && self
+                .samples
+                .len()
+                .is_multiple_of(usize::from(self.channels))
+            && self.frames() <= MAX_PCM_SAMPLES_PER_FRAME
+            && self.time_span.as_ref().is_none_or(|span| {
+                span.source_start == self.start_sample
+                    && span.source_end == self.start_sample.saturating_add(self.frames() as u64)
+                    && span.record_start < span.record_end
+                    && span.record_end <= MAX_MEDIA_SAMPLES_PER_TRACK
+            })
             && self
                 .start_sample
-                .checked_add(self.samples.len() as u64)
-                .is_some()
+                .checked_add(self.frames() as u64)
+                .is_some_and(|end| end <= MAX_MEDIA_SAMPLES_PER_TRACK)
     }
 }
 
@@ -408,6 +442,8 @@ pub struct PcmStreamCheckpoint {
     pub track: TrackKind,
     pub last_ack_sequence: Option<u64>,
     pub analysis_sample: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_record_sample: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,9 +459,10 @@ pub struct WorkerMetrics {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerTurn {
+    pub source: TrackKind,
     pub start_sample: u64,
     pub end_sample: u64,
-    pub global_speaker: u32,
+    pub global_speaker: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +516,14 @@ pub enum WorkerResponse {
         is_last: bool,
         turns: Vec<SpeakerTurn>,
     },
+    IdentityEvidenceBatch {
+        protocol_version: u32,
+        identity: WorkloadIdentity,
+        revision: u64,
+        batch_index: u32,
+        is_last: bool,
+        evidence: Vec<record_identity::PersonMatchEvidence>,
+    },
     Progress {
         protocol_version: u32,
         identity: WorkloadIdentity,
@@ -518,6 +563,7 @@ impl std::fmt::Debug for WorkerResponse {
             Self::MediaProbed { .. } => "WorkerResponse::MediaProbed",
             Self::TranscriptSegment { .. } => "WorkerResponse::TranscriptSegment([REDACTED])",
             Self::SpeakerTurnBatch { .. } => "WorkerResponse::SpeakerTurnBatch",
+            Self::IdentityEvidenceBatch { .. } => "WorkerResponse::IdentityEvidenceBatch",
             Self::Progress { .. } => "WorkerResponse::Progress",
             Self::Yielded { .. } => "WorkerResponse::Yielded",
             Self::Pong { .. } => "WorkerResponse::Pong",
@@ -548,6 +594,7 @@ impl WorkerResponse {
             | Self::SpeakerTurnBatch {
                 protocol_version, ..
             }
+            | Self::IdentityEvidenceBatch { protocol_version, .. }
             | Self::Progress {
                 protocol_version, ..
             }
@@ -574,6 +621,7 @@ impl WorkerResponse {
             | Self::MediaProbed { identity, .. }
             | Self::TranscriptSegment { identity, .. }
             | Self::SpeakerTurnBatch { identity, .. }
+            | Self::IdentityEvidenceBatch { identity, .. }
             | Self::Progress { identity, .. }
             | Self::Yielded { identity, .. }
             | Self::Pong { identity, .. }
@@ -647,13 +695,23 @@ impl WorkerResponse {
                         (
                             pair[0].start_sample,
                             pair[0].end_sample,
+                            pair[0].source,
                             pair[0].global_speaker,
                         ) <= (
                             pair[1].start_sample,
                             pair[1].end_sample,
+                            pair[1].source,
                             pair[1].global_speaker,
                         )
                     })
+            }
+            Self::IdentityEvidenceBatch { revision, batch_index, is_last, evidence, .. } => {
+                *revision == 1 && *batch_index < record_identity::MAX_IDENTITY_PEOPLE as u32
+                    && evidence.len() <= record_identity::MAX_IDENTITY_BATCH
+                    && ((*is_last && (!evidence.is_empty() || *batch_index == 0))
+                        || (!*is_last && evidence.len() == record_identity::MAX_IDENTITY_BATCH))
+                    && evidence.iter().all(record_identity::PersonMatchEvidence::has_valid_shape)
+                    && evidence.windows(2).all(|pair| pair[0].person_id < pair[1].person_id)
             }
             Self::Progress { current, total, .. } => *total > 0 && current <= total,
             Self::Completed { metrics, .. } => valid_metrics(metrics),
@@ -698,8 +756,12 @@ fn valid_error_code(value: &str) -> bool {
 fn valid_checkpoint(checkpoint: &Checkpoint) -> bool {
     (1..=2).contains(&checkpoint.streams.len())
         && checkpoint.streams.iter().all(|stream| {
-            is_transcription_track(stream.track)
+            (is_transcription_track(stream.track)
+                || (checkpoint.streams.len() == 1 && stream.track == TrackKind::Mixed))
                 && stream.analysis_sample <= MAX_MEDIA_SAMPLES_PER_TRACK
+                && stream
+                    .replay_record_sample
+                    .is_none_or(|sample| sample <= MAX_MEDIA_SAMPLES_PER_TRACK)
         })
         && (checkpoint.streams.len() == 1
             || checkpoint.streams[0].track != checkpoint.streams[1].track)
@@ -719,7 +781,8 @@ fn is_transcription_track(track: TrackKind) -> bool {
 fn valid_speaker_turn(turn: &SpeakerTurn) -> bool {
     turn.start_sample < turn.end_sample
         && turn.end_sample <= MAX_MEDIA_SAMPLES_PER_TRACK
-        && turn.global_speaker <= 4_096
+        && matches!(turn.source, TrackKind::Microphone | TrackKind::System | TrackKind::Mixed)
+        && turn.global_speaker.is_none_or(|speaker| speaker <= 4_096)
 }
 
 fn valid_metrics(metrics: &WorkerMetrics) -> bool {
@@ -740,6 +803,9 @@ pub fn read_manager_frame(reader: &mut impl Read) -> io::Result<Option<ManagerFr
         return Ok(None);
     };
     let parsed = match payload[0] {
+        CONTROL_FRAME_KIND if payload.len() > MAX_WIRE_FRAME_BYTES => {
+            Err(invalid_data("control frame exceeds fixed limit"))
+        }
         CONTROL_FRAME_KIND => serde_json::from_slice(&payload[1..])
             .map(|command| Some(ManagerFrame::Control(command)))
             .map_err(|_| invalid_data("invalid control JSON")),
@@ -754,7 +820,7 @@ pub fn read_worker_response(reader: &mut impl Read) -> io::Result<Option<WorkerR
     let Some(mut payload) = read_wire_frame(reader)? else {
         return Ok(None);
     };
-    let parsed = if payload[0] != CONTROL_FRAME_KIND {
+    let parsed = if payload[0] != CONTROL_FRAME_KIND || payload.len() > MAX_WIRE_FRAME_BYTES {
         Err(invalid_data("unexpected media worker response frame kind"))
     } else {
         serde_json::from_slice::<WorkerResponse>(&payload[1..])
@@ -802,10 +868,27 @@ pub fn write_pcm_frame(writer: &mut impl Write, frame: &PcmFrame) -> io::Result<
     payload.extend_from_slice(&frame.sequence.to_be_bytes());
     payload.extend_from_slice(&frame.start_sample.to_be_bytes());
     payload.extend_from_slice(&sample_count.to_be_bytes());
+    payload.push(frame.channels);
+    let (quality, record_start, record_end) = frame.time_span.as_ref().map_or((0, 0, 0), |span| {
+        (
+            (match span.quality {
+                CaptureTimeQuality::Clock => 1,
+                CaptureTimeQuality::Estimated => 2,
+                CaptureTimeQuality::Gap => 3,
+            }) | if span.discontinuity { 0x80 } else { 0 },
+            span.record_start,
+            span.record_end,
+        )
+    });
+    payload.push(quality);
+    payload.extend_from_slice(&record_start.to_be_bytes());
+    payload.extend_from_slice(&record_end.to_be_bytes());
     for sample in &frame.samples {
         payload.extend_from_slice(&sample.to_le_bytes());
     }
-    write_wire_frame(writer, &payload)
+    let result = write_wire_frame(writer, &payload);
+    payload.zeroize();
+    result
 }
 
 fn parse_pcm_frame(payload: &[u8]) -> io::Result<PcmFrame> {
@@ -819,7 +902,12 @@ fn parse_pcm_frame(payload: &[u8]) -> io::Result<PcmFrame> {
     let sequence = u64::from_be_bytes(payload[14..22].try_into().unwrap());
     let start_sample = u64::from_be_bytes(payload[22..30].try_into().unwrap());
     let sample_count = u32::from_be_bytes(payload[30..34].try_into().unwrap()) as usize;
-    if sample_count == 0 || sample_count > MAX_PCM_SAMPLES_PER_FRAME {
+    let channels = payload[34];
+    if !(1..=2).contains(&channels)
+        || sample_count == 0
+        || !sample_count.is_multiple_of(usize::from(channels))
+        || sample_count > MAX_PCM_SAMPLES_PER_FRAME * usize::from(channels)
+    {
         return Err(invalid_data("PCM sample count exceeds fixed limit"));
     }
     let expected = PCM_HEADER_BYTES
@@ -828,11 +916,33 @@ fn parse_pcm_frame(payload: &[u8]) -> io::Result<PcmFrame> {
     if payload.len() != expected {
         return Err(invalid_data("PCM payload length mismatch"));
     }
+    let record_start = u64::from_be_bytes(payload[36..44].try_into().unwrap());
+    let record_end = u64::from_be_bytes(payload[44..52].try_into().unwrap());
+    let time_span = match payload[35] & 0x7f {
+        0 if payload[35] == 0 && record_start == 0 && record_end == 0 => None,
+        quality @ 1..=3 => Some(TrackTimeSpan {
+            source_start: start_sample,
+            source_end: start_sample
+                .checked_add((sample_count / usize::from(channels)) as u64)
+                .ok_or_else(|| invalid_data("PCM source time overflow"))?,
+            record_start,
+            record_end,
+            discontinuity: payload[35] & 0x80 != 0,
+            quality: match quality {
+                1 => CaptureTimeQuality::Clock,
+                2 => CaptureTimeQuality::Estimated,
+                _ => CaptureTimeQuality::Gap,
+            },
+        }),
+        _ => return Err(invalid_data("invalid PCM capture time quality")),
+    };
     let samples = payload[PCM_HEADER_BYTES..]
         .chunks_exact(2)
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect::<Vec<_>>();
     let frame = PcmFrame {
+        channels,
+        time_span,
         protocol_version,
         worker_generation,
         track,
@@ -860,7 +970,7 @@ fn read_wire_frame(reader: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     reader.read_exact(&mut prefix[1..])?;
     let length = u32::from_be_bytes(prefix) as usize;
     if length == 0
-        || length > MAX_WIRE_FRAME_BYTES.max(PCM_HEADER_BYTES + 2 * MAX_PCM_SAMPLES_PER_FRAME)
+        || length > MAX_WIRE_FRAME_BYTES.max(PCM_HEADER_BYTES + 4 * MAX_PCM_SAMPLES_PER_FRAME)
     {
         return Err(invalid_data("media worker frame exceeds fixed limit"));
     }
@@ -900,14 +1010,18 @@ mod tests {
             input: WorkloadInput::LivePcm {
                 streams: vec![
                     PcmStreamStart {
+                        channels: 1,
                         track: TrackKind::Microphone,
                         first_sequence: 4,
                         first_sample: 2_048,
+                        publish_from_record_sample: 0,
                     },
                     PcmStreamStart {
+                        channels: 1,
                         track: TrackKind::System,
                         first_sequence: 9,
                         first_sample: 2_048,
+                        publish_from_record_sample: 0,
                     },
                 ],
             },
@@ -943,6 +1057,8 @@ mod tests {
     #[test]
     fn pcm_frame_is_binary_little_endian_and_round_trips_exactly() {
         let frame = PcmFrame {
+            channels: 1,
+            time_span: None,
             protocol_version: PROTOCOL_VERSION,
             worker_generation: 7,
             track: TrackKind::System,
@@ -962,9 +1078,58 @@ mod tests {
     }
 
     #[test]
+    fn stereo_pcm_preserves_channels_and_capture_time_without_doubling_duration() {
+        let frame = PcmFrame {
+            protocol_version: PROTOCOL_VERSION,
+            worker_generation: 1,
+            track: TrackKind::System,
+            channels: 2,
+            sequence: 0,
+            start_sample: 400,
+            samples: vec![1, -2, 3, -4, 5, -6],
+            time_span: Some(TrackTimeSpan {
+                source_start: 400,
+                source_end: 403,
+                record_start: 720,
+                record_end: 723,
+                quality: CaptureTimeQuality::Clock,
+                discontinuity: true,
+            }),
+        };
+        let mut wire = Vec::new();
+        write_pcm_frame(&mut wire, &frame).unwrap();
+        let Some(ManagerFrame::Pcm(decoded)) = read_manager_frame(&mut wire.as_slice()).unwrap()
+        else {
+            panic!("expected stereo PCM");
+        };
+        assert_eq!(decoded, frame);
+        assert_eq!(decoded.frames(), 3);
+        let mut invalid = frame.clone();
+        invalid.samples.pop();
+        assert!(!invalid.has_valid_shape());
+        let mut invalid = frame.clone();
+        invalid.time_span.as_mut().unwrap().source_end += 1;
+        assert!(!invalid.has_valid_shape());
+        // Unknown is distinct from a precise zero offset, including on wire.
+        wire[4 + 35] = 0;
+        assert!(read_manager_frame(&mut wire.as_slice()).is_err());
+    }
+
+    #[test]
+    fn stereo_payload_budget_does_not_enlarge_control_json_budget() {
+        let mut payload = vec![CONTROL_FRAME_KIND];
+        payload.extend(serde_json::to_vec(&WorkerCommand::Start(start_request())).unwrap());
+        payload.resize(MAX_WIRE_FRAME_BYTES + 1, b' ');
+        let mut wire = Vec::new();
+        write_wire_frame(&mut wire, &payload).unwrap();
+        assert!(read_manager_frame(&mut wire.as_slice()).is_err());
+        assert!(read_worker_response(&mut wire.as_slice()).is_err());
+    }
+
+    #[test]
     fn rejects_oversized_frame_before_allocating_payload() {
         let length =
-            (MAX_WIRE_FRAME_BYTES.max(PCM_HEADER_BYTES + 2 * MAX_PCM_SAMPLES_PER_FRAME) + 1) as u32;
+            (MAX_WIRE_FRAME_BYTES.max(PCM_HEADER_BYTES + 4 * MAX_PCM_SAMPLES_PER_FRAME) + 1) as u32;
         let prefix = length.to_be_bytes();
         let mut wire = prefix.as_slice();
         let error = read_manager_frame(&mut wire).unwrap_err();
@@ -974,6 +1139,8 @@ mod tests {
     #[test]
     fn rejects_pcm_length_and_generation_mismatch() {
         let frame = PcmFrame {
+            channels: 1,
+            time_span: None,
             protocol_version: PROTOCOL_VERSION,
             worker_generation: 7,
             track: TrackKind::Microphone,
@@ -1017,14 +1184,17 @@ mod tests {
 
         start.workload_kind = WorkloadKind::RecordDiarization;
         start.input = WorkloadInput::RecordArtifacts {
+            identity_anchors: None,
             inputs: vec![RecordArtifactInput {
+                timeline: None,
                 input_path: "/private/record/system.opus".into(),
                 track: TrackKind::System,
             }],
         };
         assert!(start.has_valid_shape());
-        if let WorkloadInput::RecordArtifacts { inputs } = &mut start.input {
+        if let WorkloadInput::RecordArtifacts { inputs, .. } = &mut start.input {
             inputs.push(RecordArtifactInput {
+                timeline: None,
                 input_path: "/private/record/microphone.opus".into(),
                 track: TrackKind::Microphone,
             });
@@ -1144,16 +1314,20 @@ mod tests {
             );
         }
         assert!(!valid_live_streams(&[PcmStreamStart {
+            channels: 1,
             track: TrackKind::Mixed,
             first_sequence: 0,
             first_sample: 0,
+            publish_from_record_sample: 0,
         }]));
-        assert!(!valid_record_artifacts(&[RecordArtifactInput {
+        assert!(valid_record_artifacts(&[RecordArtifactInput {
+            timeline: None,
             track: TrackKind::Mixed,
             input_path: "/record/mixed.opus".into(),
         }]));
-        assert!(!valid_checkpoint(&Checkpoint {
+        assert!(valid_checkpoint(&Checkpoint {
             streams: vec![PcmStreamCheckpoint {
+                replay_record_sample: None,
                 track: TrackKind::Mixed,
                 last_ack_sequence: None,
                 analysis_sample: 0,
@@ -1202,6 +1376,7 @@ mod tests {
                 stage: WorkerStage::Transcribing,
                 checkpoint: Checkpoint {
                     streams: vec![PcmStreamCheckpoint {
+                        replay_record_sample: None,
                         track: TrackKind::Attachment,
                         last_ack_sequence: None,
                         analysis_sample: 16_000,
@@ -1238,9 +1413,10 @@ mod tests {
             batch_index: 0,
             is_last: true,
             turns: vec![SpeakerTurn {
+                source: TrackKind::Microphone,
                 start_sample: 9,
                 end_sample: 8,
-                global_speaker: 0,
+                global_speaker: Some(0),
             }],
         };
         assert!(!invalid_batch.has_valid_shape());

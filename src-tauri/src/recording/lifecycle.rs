@@ -1,6 +1,10 @@
 //! Checksummed lifecycle journal for capture/device/recovery facts.
 
 use crate::durable_journal::DurableRecordJournal;
+use crate::record::AudioTrackKind;
+use myagents_media_worker_protocol::record_timeline::{
+    CaptureTimeQuality, RecordTrackTimeline, TrackTimeSpan, MAX_TRACK_TIME_SPANS,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -10,6 +14,11 @@ const MAX_JOURNAL_LINE_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LifecycleEvent {
+    CaptureTrackTime {
+        track: AudioTrackKind,
+        from_index: usize,
+        spans: Vec<TrackTimeSpan>,
+    },
     CaptureAdmitted {
         operation_id: String,
         sources: Vec<String>,
@@ -57,6 +66,61 @@ pub struct LifecycleJournal {
 }
 
 impl LifecycleJournal {
+    pub fn recover_track_time(
+        entries: &[LifecycleEntry],
+        track: AudioTrackKind,
+        samples: u64,
+    ) -> Result<Option<RecordTrackTimeline>, String> {
+        let mut spans = Vec::new();
+        for entry in entries {
+            let LifecycleEvent::CaptureTrackTime {
+                track: kind,
+                from_index,
+                spans: update,
+            } = &entry.event
+            else {
+                continue;
+            };
+            if *kind != track {
+                continue;
+            }
+            if *from_index > spans.len()
+                || from_index.saturating_add(update.len()) > MAX_TRACK_TIME_SPANS
+            {
+                return Err("invalid capture time checkpoint sequence".into());
+            }
+            spans.truncate(*from_index);
+            spans.extend_from_slice(update);
+            if !(RecordTrackTimeline {
+                spans: spans.clone(),
+            })
+            .is_valid()
+            {
+                return Err("invalid capture time checkpoint".into());
+            }
+        }
+        let Some(last) = spans.last().cloned() else {
+            return Ok(None);
+        };
+        if samples > last.source_end {
+            // After a crash the audio can be ahead of the last time checkpoint.
+            // Preserve that speech while explicitly withholding precise timing.
+            spans.push(TrackTimeSpan {
+                source_start: last.source_end,
+                source_end: samples,
+                record_start: last.record_end,
+                record_end: last.record_end.saturating_add(samples - last.source_end),
+                quality: CaptureTimeQuality::Estimated,
+                discontinuity: true,
+            });
+        }
+        let timeline = RecordTrackTimeline { spans };
+        timeline
+            .prefix(samples)
+            .map(Some)
+            .ok_or_else(|| "invalid recovered capture time extent".into())
+    }
+
     pub fn open(record_dir: &Path, record_id: &str) -> Result<Self, String> {
         let path = record_dir.join("lifecycle.jsonl");
         Ok(Self {
@@ -111,6 +175,63 @@ mod tests {
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn recovery_replays_timing_updates_and_marks_audio_after_checkpoint_estimated() {
+        let mut entries = Vec::new();
+        let span = |end, record_end| TrackTimeSpan {
+            source_start: 0,
+            source_end: end,
+            record_start: 3_200,
+            record_end,
+            quality: CaptureTimeQuality::Clock,
+            discontinuity: true,
+        };
+        for (seq, extent, record_end) in [(1, 1_600, 4_800), (2, 3_200, 6_402)] {
+            entries.push(LifecycleEntry {
+                seq,
+                wall_time_ms: 0,
+                media_ms: 0,
+                event: LifecycleEvent::CaptureTrackTime {
+                    track: AudioTrackKind::Microphone,
+                    from_index: 0,
+                    spans: vec![span(extent, record_end)],
+                },
+            });
+        }
+        let recovered =
+            LifecycleJournal::recover_track_time(&entries, AudioTrackKind::Microphone, 4_000)
+                .unwrap()
+                .unwrap();
+        assert_eq!(recovered.spans.len(), 2);
+        assert_eq!(recovered.spans[0], span(3_200, 6_402));
+        assert_eq!(recovered.spans[1].quality, CaptureTimeQuality::Estimated);
+        assert_eq!(recovered.spans[1].source_end, 4_000);
+        let truncated =
+            LifecycleJournal::recover_track_time(&entries, AudioTrackKind::Microphone, 1_600)
+                .unwrap()
+                .unwrap();
+        assert_eq!(truncated.spans[0].record_end, 4_801);
+        assert!(
+            LifecycleJournal::recover_track_time(&entries, AudioTrackKind::System, 4_000)
+                .unwrap()
+                .is_none()
+        );
+        entries.push(LifecycleEntry {
+            seq: 3,
+            wall_time_ms: 0,
+            media_ms: 0,
+            event: LifecycleEvent::CaptureTrackTime {
+                track: AudioTrackKind::Microphone,
+                from_index: 2,
+                spans: vec![span(5_000, 8_200)],
+            },
+        });
+        assert!(
+            LifecycleJournal::recover_track_time(&entries, AudioTrackKind::Microphone, 5_000)
+                .is_err()
+        );
+    }
 
     #[test]
     fn journal_repairs_torn_tail_and_continues_sequence() {

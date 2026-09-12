@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   acquireLockedResource,
@@ -31,6 +31,7 @@ import {
 import {
   extractSherpaBuildSource,
   patchHclustWindowsFenvPragma,
+  patchSherpaRawEvidence,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -564,6 +565,7 @@ export async function prepareSpeechInference(options, documentResult) {
       destination: sourceExtract,
       archiveRoot: speechLock.source.archiveRoot,
     });
+    patchSherpaRawEvidence(sherpaSource);
     if (targetLock.platform === 'windows') {
       patchSherpaWindowsOnnxRuntimeImport(sherpaSource);
     }
@@ -582,6 +584,14 @@ export async function prepareSpeechInference(options, documentResult) {
           ? 'libonnxruntime.dylib'
           : 'libonnxruntime.so';
     copyFileSync(runtime.path, join(ortLibraryRoot, runtimeBuildName));
+    // Linkers use the unversioned name; the loader follows ORT's embedded
+    // install name / SONAME. Keep both aliases in this temporary build tree.
+    // The app still ships and verifies exactly one shared ORT runtime.
+    if (targetLock.platform !== 'windows') {
+      const runtimeLoaderName = targetLock.platform === 'macos'
+        ? 'libonnxruntime.1.dylib' : 'libonnxruntime.so.1';
+      copyFileSync(runtime.path, join(ortLibraryRoot, runtimeLoaderName));
+    }
 
     let ortIncludeRoot;
     if (targetLock.onnxRuntime.sourceBuild) {
@@ -731,6 +741,16 @@ export async function prepareSpeechInference(options, documentResult) {
       ['--build', adapterBuild, '--config', 'Release', '--parallel', buildJobs],
       { stdio: 'inherit' },
     );
+    const nativeTestLibraryVariable = targetLock.platform === 'windows' ? 'PATH'
+      : targetLock.platform === 'macos' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
+    execFileSync('ctest', ['--test-dir', adapterBuild, '--build-config', 'Release', '--output-on-failure'], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        [nativeTestLibraryVariable]: [adapterBuild, dirname(sherpaLibrary), ortLibraryRoot,
+          process.env[nativeTestLibraryVariable]].filter(Boolean).join(delimiter),
+      },
+    });
     const adapterLibrary = findOne(
       adapterBuild,
       (path) =>
@@ -841,8 +861,6 @@ export async function prepareSpeechInference(options, documentResult) {
       join(legalRoot, 'LIBOPUS-SYS-LICENSE'),
     );
     for (const [packageName, version, prefix] of [
-      ['hdbscan', speechLock.hdbscanVersion, 'HDBSCAN'],
-      ['kdtree', speechLock.kdtreeVersion, 'KDTREE'],
       ['num-traits', speechLock.numTraitsVersion, 'NUM-TRAITS'],
     ]) {
       const packageRoot = cargoPackageRoot(packageName, version);
@@ -855,6 +873,18 @@ export async function prepareSpeechInference(options, documentResult) {
         join(legalRoot, `${prefix}-LICENSE-MIT`),
       );
     }
+
+    const sonoraRoot = cargoPackageRoot('sonora', speechLock.sonoraVersion);
+    for (const packageName of ['sonora', 'sonora-aec3', 'sonora-agc2',
+      'sonora-common-audio', 'sonora-fft', 'sonora-ns', 'sonora-simd']) {
+      const packageRoot = cargoPackageRoot(packageName, speechLock.sonoraVersion);
+      // sonora-aec3's crate omits the repository-wide license file. It shares
+      // the exact repository/version and BSD notice shipped in the root crate.
+      const licenseRoot = packageName === 'sonora-aec3' ? sonoraRoot : packageRoot;
+      copyFileSync(join(licenseRoot, 'LICENSE'), join(legalRoot, `${packageName.toUpperCase()}-LICENSE`));
+    }
+    copyFileSync(join(cargoPackageRoot('rubato', speechLock.rubatoVersion), 'LICENSE.txt'),
+      join(legalRoot, 'RUBATO-LICENSE'));
 
     function integrityFile(path) {
       return {

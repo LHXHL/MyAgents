@@ -3,7 +3,7 @@
 //! This is intentionally separate from the untrusted attachment media probe.
 //! Record artifacts have one frozen Ogg Opus profile, so a small checked page
 //! parser plus the same bundled libopus revision as the archive writer gives
-//! us deterministic 16 kHz mono PCM without allowing an attacker-controlled
+//! us deterministic 16 kHz PCM with source channels preserved, without allowing an attacker-controlled
 //! packet to grow across an unbounded number of Ogg pages.
 
 use opus2::{Channels, Decoder};
@@ -56,6 +56,7 @@ pub struct RecordOpusMixSummary {
 
 pub struct DecodedPcmChunk {
     start_sample: u64,
+    channels: usize,
     samples: Vec<f32>,
 }
 
@@ -67,6 +68,22 @@ impl DecodedPcmChunk {
     pub fn samples(&self) -> &[f32] {
         &self.samples
     }
+
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    pub fn frames(&self) -> usize {
+        self.samples.len() / self.channels
+    }
+
+    /// Downmix only within this physical source, after consumers such as AEC
+    /// have had an opportunity to use the independent render channels.
+    pub fn mono_samples(&self) -> impl Iterator<Item = f32> + '_ {
+        self.samples
+            .chunks_exact(self.channels)
+            .map(|frame| frame.iter().sum::<f32>() / self.channels as f32)
+    }
 }
 
 impl std::fmt::Debug for DecodedPcmChunk {
@@ -74,6 +91,7 @@ impl std::fmt::Debug for DecodedPcmChunk {
         formatter
             .debug_struct("DecodedPcmChunk")
             .field("start_sample", &self.start_sample)
+            .field("channels", &self.channels)
             .field("sample_count", &self.samples.len())
             .finish()
     }
@@ -110,6 +128,10 @@ impl std::fmt::Debug for RecordOpusDecoder {
 }
 
 impl RecordOpusDecoder {
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
     pub fn open(path: &Path) -> Result<Self, RecordOpusError> {
         let file = open_source(path)?;
         let mut packets = BoundedOggPackets::new(BufReader::with_capacity(64 * 1024, file));
@@ -227,21 +249,16 @@ impl RecordOpusDecoder {
                 self.scratch.as_mut_slice().zeroize();
                 return Err(RecordOpusError::CorruptContainer);
             }
-            let mut samples = Vec::with_capacity(end_frame - start_frame);
-            if self.channels == 1 {
-                samples.extend_from_slice(&self.scratch[start_frame..end_frame]);
-            } else {
-                for frame in self.scratch[start_frame * 2..end_frame * 2].chunks_exact(2) {
-                    samples.push((frame[0] + frame[1]) * 0.5);
-                }
-            }
+            let frames = end_frame - start_frame;
+            let mut samples =
+                self.scratch[start_frame * self.channels..end_frame * self.channels].to_vec();
             self.scratch.as_mut_slice().zeroize();
             crate::audio_samples::normalize_pcm(&mut samples)
                 .map_err(|()| RecordOpusError::DecodeFailed)?;
             let start_sample = self.output_samples_16k;
             self.output_samples_16k = self
                 .output_samples_16k
-                .checked_add(samples.len() as u64)
+                .checked_add(frames as u64)
                 .ok_or(RecordOpusError::DurationExceeded)?;
             if self.output_samples_16k > MAX_RECORD_DURATION_SECONDS * OUTPUT_SAMPLE_RATE {
                 samples.zeroize();
@@ -252,6 +269,7 @@ impl RecordOpusDecoder {
             }
             return Ok(Some(DecodedPcmChunk {
                 start_sample,
+                channels: self.channels,
                 samples,
             }));
         }
@@ -301,9 +319,9 @@ impl BufferedRecordOpusDecoder {
                     }
                     self.decoded_samples = self
                         .decoded_samples
-                        .checked_add(chunk.samples().len() as u64)
+                        .checked_add(chunk.frames() as u64)
                         .ok_or(RecordOpusError::DurationExceeded)?;
-                    self.pending.extend_from_slice(chunk.samples());
+                    self.pending.extend(chunk.mono_samples());
                 }
                 None => {
                     let summary = self
@@ -322,8 +340,8 @@ impl BufferedRecordOpusDecoder {
 }
 
 /// Bounded, timeline-preserving mixer for the one or two physical tracks in a
-/// Record. It feeds Record-wide inference passes; playback and permanent
-/// artifacts remain physically separated.
+/// Record. Source-aware inference uses the channel-preserving decoder directly;
+/// this helper explicitly requests a mono mix for callers that need one.
 pub struct RecordOpusMixer {
     tracks: Vec<BufferedRecordOpusDecoder>,
     output_samples_16k: u64,
@@ -395,6 +413,7 @@ impl RecordOpusMixer {
         }
         Ok(Some(DecodedPcmChunk {
             start_sample,
+            channels: 1,
             samples,
         }))
     }
@@ -745,7 +764,7 @@ fn ogg_crc(chunks: &[&[u8]]) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ogg::{PacketWriteEndInfo, PacketWriter};
     use opus2::{Application, Encoder};
@@ -755,7 +774,7 @@ mod tests {
         write_signal_fixture(path, channels, frames, 0.25, 0.017)
     }
 
-    fn write_signal_fixture(
+    pub(crate) fn write_signal_fixture(
         path: &Path,
         channels: usize,
         frames: usize,
@@ -879,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_internal_mono_and_stereo_to_bounded_16k_mono() {
+    fn preserves_source_channels_and_frame_positions_for_aec() {
         for channels in [1, 2] {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join(format!("{channels}.opus"));
@@ -887,14 +906,24 @@ mod tests {
             let mut decoder = RecordOpusDecoder::open(&path).unwrap();
             let mut next_sample = 0_u64;
             let mut non_silent = false;
+            let mut independent_channels = false;
             while let Some(chunk) = decoder.read_chunk().unwrap() {
                 assert_eq!(chunk.start_sample(), next_sample);
-                assert!(chunk.samples().len() <= RECORD_OPUS_FRAME_SAMPLES_16K);
+                assert_eq!(chunk.channels(), channels);
+                assert!(chunk.frames() <= RECORD_OPUS_FRAME_SAMPLES_16K);
+                assert_eq!(chunk.samples().len(), chunk.frames() * channels);
                 assert!(chunk.samples().iter().all(|sample| sample.is_finite()));
                 non_silent |= chunk.samples().iter().any(|sample| sample.abs() > 0.01);
-                next_sample += chunk.samples().len() as u64;
+                if channels == 2 {
+                    independent_channels |= chunk
+                        .samples()
+                        .chunks_exact(2)
+                        .any(|pair| (pair[0] - pair[1]).abs() > 0.005);
+                }
+                next_sample += chunk.frames() as u64;
             }
             assert!(non_silent);
+            assert!(channels == 1 || independent_channels);
             assert_eq!(next_sample, source_samples / 3);
             assert_eq!(
                 decoder.summary(),
@@ -914,7 +943,7 @@ mod tests {
             let mut decoder = RecordOpusDecoder::open(path).unwrap();
             let mut samples = Vec::new();
             while let Some(chunk) = decoder.read_chunk().unwrap() {
-                samples.extend_from_slice(chunk.samples());
+                samples.extend(chunk.mono_samples());
             }
             assert!(decoder.summary().is_some());
             samples

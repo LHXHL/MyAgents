@@ -107,7 +107,7 @@ export function buildMirrorPlan(sourceLock, originLock) {
   if (
     sourceLock?.schemaVersion !== 1 ||
     sourceLock?.packId !== "local-standard-speech" ||
-    sourceLock?.packRevision !== "local-standard-speech-v2" ||
+    sourceLock?.packRevision !== "local-standard-speech-v3" ||
     originLock?.schemaVersion !== 1 ||
     originLock?.packId !== sourceLock.packId ||
     originLock?.packRevision !== sourceLock.packRevision ||

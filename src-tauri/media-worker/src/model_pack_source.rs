@@ -17,7 +17,7 @@ const EXPECTED_MODEL_PATHS: [&str; 5] = [
     "models/sensevoice/model.int8.onnx",
     "models/sensevoice/tokens.txt",
     "models/vad/silero_vad.int8.onnx",
-    "models/diarization/pyannote-segmentation-3.0.int8.onnx",
+    "models/diarization/pyannote-segmentation-3.0.onnx",
     "models/diarization/3dspeaker-eres2net-base-zh-16k.onnx",
 ];
 
@@ -246,7 +246,7 @@ pub fn validate_source_lock_json(json: &str) -> Result<(), SourceLockError> {
     let lock: SourceLock = serde_json::from_str(json).map_err(|_| SourceLockError::InvalidJson)?;
     if lock.schema_version != 1
         || lock.pack_id != "local-standard-speech"
-        || lock.pack_revision != "local-standard-speech-v2"
+        || lock.pack_revision != "local-standard-speech-v3"
         || lock.download_hard_limit_bytes != 300 * 1024 * 1024
     {
         return Err(SourceLockError::InvalidIdentity);
@@ -531,9 +531,7 @@ fn inspect_installed_pack_inner(
         sense_voice_model: path("models/sensevoice/model.int8.onnx")?,
         sense_voice_tokens: path("models/sensevoice/tokens.txt")?,
         silero_vad_model: path("models/vad/silero_vad.int8.onnx")?,
-        pyannote_segmentation_model: path(
-            "models/diarization/pyannote-segmentation-3.0.int8.onnx",
-        )?,
+        pyannote_segmentation_model: path("models/diarization/pyannote-segmentation-3.0.onnx")?,
         speaker_embedding_model: path("models/diarization/3dspeaker-eres2net-base-zh-16k.onnx")?,
     })
 }
@@ -722,7 +720,7 @@ mod tests {
         );
         assert_eq!(plan.legal_artifacts.len(), 5);
         assert_eq!(plan.source_download_bytes, 209_767_948);
-        assert_eq!(plan.installed_model_bytes, 280_896_862);
+        assert_eq!(plan.installed_model_bytes, 285_349_269);
         assert_eq!(plan.download_hard_limit_bytes, 300 * 1024 * 1024);
     }
 
@@ -737,8 +735,8 @@ mod tests {
             Err(SourceLockError::SizeMismatch)
         );
         let install_drift = MODEL_PACK_SOURCE_LOCK.replace(
-            "\"installedModelBytes\": 280896862",
-            "\"installedModelBytes\": 280896861",
+            "\"installedModelBytes\": 285349269",
+            "\"installedModelBytes\": 285349268",
         );
         assert_eq!(
             validate_source_lock_json(&install_drift),
@@ -874,8 +872,8 @@ mod tests {
         assert!(manifest_matches_source_lock(crlf.as_bytes()));
 
         let drift = MODEL_PACK_SOURCE_LOCK.replace(
-            "\"packRevision\": \"local-standard-speech-v2\"",
             "\"packRevision\": \"local-standard-speech-v3\"",
+            "\"packRevision\": \"local-standard-speech-v2\"",
         );
         assert!(!manifest_matches_source_lock(drift.as_bytes()));
         assert!(!manifest_matches_source_lock(b"{}"));

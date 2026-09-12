@@ -2,7 +2,7 @@ import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_CONTROL_BYTES = 256 * 1024;
 const SAMPLE_RATE = 16_000;
 const MAX_FRAME_SAMPLES = 5 * SAMPLE_RATE;
@@ -20,7 +20,7 @@ function controlFrame(value) {
 }
 
 function pcmFrame(identity, sequence, startSample, samples) {
-  const payload = Buffer.alloc(34 + samples.length * 2);
+  const payload = Buffer.alloc(52 + samples.length * 2);
   payload[0] = 2;
   payload.writeUInt32BE(PROTOCOL_VERSION, 1);
   payload.writeBigUInt64BE(BigInt(identity.workerGeneration), 5);
@@ -28,8 +28,9 @@ function pcmFrame(identity, sequence, startSample, samples) {
   payload.writeBigUInt64BE(BigInt(sequence), 14);
   payload.writeBigUInt64BE(BigInt(startSample), 22);
   payload.writeUInt32BE(samples.length, 30);
+  payload[34] = 1; // source channels; no capture timestamp in a legacy WAV fixture
   for (let index = 0; index < samples.length; index += 1) {
-    payload.writeInt16LE(samples[index], 34 + index * 2);
+    payload.writeInt16LE(samples[index], 52 + index * 2);
   }
   const prefix = Buffer.alloc(4);
   prefix.writeUInt32BE(payload.length);
@@ -373,7 +374,7 @@ export async function runMediaWorkerLive({
         workloadKind: "record_live_asr",
         input: {
           type: "live_pcm",
-          streams: [{ track: "microphone", firstSequence: 0, firstSample: 0 }],
+          streams: [{ track: "microphone", channels: 1, firstSequence: 0, firstSample: 0, publishFromRecordSample: 0 }],
         },
         nativeManifestPath,
         onnxRuntimePath,

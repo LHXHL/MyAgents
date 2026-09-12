@@ -6,7 +6,6 @@
 
 use ogg::{PacketWriteEndInfo, PacketWriter};
 use opus2::{Application, Bitrate, Channels, Encoder};
-use ringbuf::traits::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -104,7 +103,7 @@ fn run_archive_worker(
     track: AudioTrackKind,
     path: PathBuf,
     format: SourceFormat,
-    mut consumer: ringbuf::HeapCons<f32>,
+    mut consumer: super::audio::RealtimeTrackReader,
     stop: Arc<AtomicBool>,
     overrun_samples: Arc<AtomicU64>,
     wake_rx: mpsc::Receiver<()>,
@@ -118,6 +117,9 @@ fn run_archive_worker(
     let mut encoded = Vec::with_capacity(16_384);
 
     loop {
+        if stop.load(Ordering::Acquire) {
+            consumer.finish_input();
+        }
         let count = consumer.pop_slice(&mut input);
         if count > 0 {
             resampler.process(&input[..count], &mut encoded)?;

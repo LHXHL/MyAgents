@@ -1,11 +1,14 @@
 //! Platform capture adapters behind one RecordingManager-owned contract.
 
+use super::timing::CaptureTimePoint;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, SupportedStreamConfig};
+use myagents_media_worker_protocol::record_timeline::CaptureTimeQuality;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::audio::{RealtimeTrackSink, SourceFormat};
@@ -129,6 +132,14 @@ pub struct CaptureTrackSink {
     analysis: Option<RealtimeTrackSink>,
     activity: CaptureActivity,
     enabled: Arc<AtomicBool>,
+    clock: Arc<Mutex<CaptureClockEpoch>>,
+}
+
+#[derive(Default)]
+struct CaptureClockEpoch {
+    started: Option<Instant>,
+    media_sample: u64,
+    epoch: u64,
 }
 
 impl CaptureTrackSink {
@@ -138,7 +149,66 @@ impl CaptureTrackSink {
             analysis,
             activity: CaptureActivity::default(),
             enabled: Arc::new(AtomicBool::new(true)),
+            clock: Arc::new(Mutex::new(CaptureClockEpoch::default())),
         }
+    }
+
+    pub(crate) fn timeline(
+        &self,
+    ) -> Result<Option<myagents_media_worker_protocol::record_timeline::RecordTrackTimeline>, String>
+    {
+        self.archive.capture_timeline()
+    }
+
+    pub(crate) fn set_media_epoch(&self, started: Option<Instant>, media_ms: u64) {
+        if let Ok(mut clock) = self.clock.lock() {
+            clock.started = started;
+            clock.media_sample = media_ms.saturating_mul(16);
+            clock.epoch = clock.epoch.saturating_add(1);
+        }
+    }
+
+    fn capture_time(
+        &self,
+        captured: Option<Instant>,
+        frames: usize,
+    ) -> Option<(
+        std::sync::MutexGuard<'_, CaptureClockEpoch>,
+        CaptureTimePoint,
+        usize,
+    )> {
+        let clock = self.clock.try_lock().ok()?;
+        let started = clock.started?;
+        let sample_rate = u128::from(self.archive.source_format().sample_rate);
+        let (elapsed, quality, skipped_frames) = match captured {
+            Some(at) if at < started => {
+                // Capture timestamps refer to the first frame. A delayed
+                // pre-pause buffer is outside this admission epoch; retain only
+                // complete frames at/after resume, without losing their onset.
+                let skipped =
+                    (started.duration_since(at).as_nanos() * sample_rate).div_ceil(1_000_000_000);
+                if skipped >= frames as u128 {
+                    return None;
+                }
+                let offset =
+                    Duration::from_nanos((skipped * 1_000_000_000).div_ceil(sample_rate) as u64);
+                (
+                    (at + offset).duration_since(started),
+                    CaptureTimeQuality::Clock,
+                    skipped as usize,
+                )
+            }
+            Some(at) => (at.duration_since(started), CaptureTimeQuality::Clock, 0),
+            None => (started.elapsed(), CaptureTimeQuality::Estimated, 0),
+        };
+        let time = CaptureTimePoint {
+            record_sample: clock
+                .media_sample
+                .saturating_add((elapsed.as_nanos() * 16_000 / 1_000_000_000) as u64),
+            quality,
+            epoch: clock.epoch,
+        };
+        Some((clock, time, skipped_frames))
     }
 
     pub(crate) fn activity(&self) -> CaptureActivity {
@@ -156,84 +226,204 @@ impl CaptureTrackSink {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn push_f32(&self, samples: &[f32]) {
+        self.push_f32_captured(samples, None);
+    }
+
+    fn push_f32_captured(&self, samples: &[f32], captured: Option<Instant>) {
+        // Hold the existing epoch owner across both deliveries. Pause cannot
+        // split one physical callback between archive and analysis generations.
+        let channels = usize::from(self.archive.source_format().channels);
+        let Some((_epoch, time, skipped)) = self.capture_time(captured, samples.len() / channels)
+        else {
+            return;
+        };
+        let samples = &samples[skipped * channels..];
+        let time = Some(time);
         if !self.enabled() {
             self.activity.set_level_percent(0);
-            self.archive.push_silence(samples.len());
+            self.archive.push_silence_at(
+                samples.len(),
+                time.map(|mut time| {
+                    time.quality = CaptureTimeQuality::Gap;
+                    time
+                }),
+            );
             if let Some(analysis) = self.analysis.as_ref() {
-                analysis.push_silence(samples.len());
+                analysis.push_silence_at(
+                    samples.len(),
+                    time.map(|mut time| {
+                        time.quality = CaptureTimeQuality::Gap;
+                        time
+                    }),
+                );
             }
             return;
         }
         self.activity
-            .set_level_percent(self.archive.push_f32(samples));
+            .set_level_percent(self.archive.push_f32_at(samples, time));
         if let Some(analysis) = self.analysis.as_ref() {
-            let _ = analysis.push_f32(samples);
+            let _ = analysis.push_f32_at(samples, time);
         }
     }
 
-    fn push_i16(&self, samples: &[i16]) {
+    fn push_i16_captured(&self, samples: &[i16], captured: Option<Instant>) {
+        // Hold the existing epoch owner across both deliveries. Pause cannot
+        // split one physical callback between archive and analysis generations.
+        let channels = usize::from(self.archive.source_format().channels);
+        let Some((_epoch, time, skipped)) = self.capture_time(captured, samples.len() / channels)
+        else {
+            return;
+        };
+        let samples = &samples[skipped * channels..];
+        let time = Some(time);
         if !self.enabled() {
             self.activity.set_level_percent(0);
-            self.archive.push_silence(samples.len());
+            self.archive.push_silence_at(
+                samples.len(),
+                time.map(|mut time| {
+                    time.quality = CaptureTimeQuality::Gap;
+                    time
+                }),
+            );
             if let Some(analysis) = self.analysis.as_ref() {
-                analysis.push_silence(samples.len());
+                analysis.push_silence_at(
+                    samples.len(),
+                    time.map(|mut time| {
+                        time.quality = CaptureTimeQuality::Gap;
+                        time
+                    }),
+                );
             }
             return;
         }
         self.activity
-            .set_level_percent(self.archive.push_i16(samples));
+            .set_level_percent(self.archive.push_i16_at(samples, time));
         if let Some(analysis) = self.analysis.as_ref() {
-            let _ = analysis.push_i16(samples);
+            let _ = analysis.push_i16_at(samples, time);
         }
     }
 
-    fn push_i32(&self, samples: &[i32]) {
+    fn push_i32_captured(&self, samples: &[i32], captured: Option<Instant>) {
+        // Hold the existing epoch owner across both deliveries. Pause cannot
+        // split one physical callback between archive and analysis generations.
+        let channels = usize::from(self.archive.source_format().channels);
+        let Some((_epoch, time, skipped)) = self.capture_time(captured, samples.len() / channels)
+        else {
+            return;
+        };
+        let samples = &samples[skipped * channels..];
+        let time = Some(time);
         if !self.enabled() {
             self.activity.set_level_percent(0);
-            self.archive.push_silence(samples.len());
+            self.archive.push_silence_at(
+                samples.len(),
+                time.map(|mut time| {
+                    time.quality = CaptureTimeQuality::Gap;
+                    time
+                }),
+            );
             if let Some(analysis) = self.analysis.as_ref() {
-                analysis.push_silence(samples.len());
+                analysis.push_silence_at(
+                    samples.len(),
+                    time.map(|mut time| {
+                        time.quality = CaptureTimeQuality::Gap;
+                        time
+                    }),
+                );
             }
             return;
         }
         self.activity
-            .set_level_percent(self.archive.push_i32(samples));
+            .set_level_percent(self.archive.push_i32_at(samples, time));
         if let Some(analysis) = self.analysis.as_ref() {
-            let _ = analysis.push_i32(samples);
+            let _ = analysis.push_i32_at(samples, time);
         }
     }
 
-    fn push_i8(&self, samples: &[i8]) {
+    fn push_i8_captured(&self, samples: &[i8], captured: Option<Instant>) {
+        // Hold the existing epoch owner across both deliveries. Pause cannot
+        // split one physical callback between archive and analysis generations.
+        let channels = usize::from(self.archive.source_format().channels);
+        let Some((_epoch, time, skipped)) = self.capture_time(captured, samples.len() / channels)
+        else {
+            return;
+        };
+        let samples = &samples[skipped * channels..];
+        let time = Some(time);
         if !self.enabled() {
             self.activity.set_level_percent(0);
-            self.archive.push_silence(samples.len());
+            self.archive.push_silence_at(
+                samples.len(),
+                time.map(|mut time| {
+                    time.quality = CaptureTimeQuality::Gap;
+                    time
+                }),
+            );
             if let Some(analysis) = self.analysis.as_ref() {
-                analysis.push_silence(samples.len());
+                analysis.push_silence_at(
+                    samples.len(),
+                    time.map(|mut time| {
+                        time.quality = CaptureTimeQuality::Gap;
+                        time
+                    }),
+                );
             }
             return;
         }
         self.activity
-            .set_level_percent(self.archive.push_i8(samples));
+            .set_level_percent(self.archive.push_i8_at(samples, time));
         if let Some(analysis) = self.analysis.as_ref() {
-            let _ = analysis.push_i8(samples);
+            let _ = analysis.push_i8_at(samples, time);
         }
     }
 
     #[cfg(target_os = "macos")]
-    fn push_planar_f32(&self, planes: &[&[f32]]) {
+    fn push_planar_f32_captured(&self, planes: &[&[f32]], captured: Option<Instant>) {
+        // Hold the existing epoch owner across both deliveries. Pause cannot
+        // split one physical callback between archive and analysis generations.
+        let channels = usize::from(self.archive.source_format().channels);
+        if planes.len() != channels {
+            return;
+        }
+        let frames = planes.iter().map(|plane| plane.len()).min().unwrap_or(0);
+        let Some((_epoch, time, skipped)) = self.capture_time(captured, frames) else {
+            return;
+        };
+        // SourceFormat caps channels at 32. Slice on the stack so capture
+        // callbacks never allocate while clipping the epoch boundary.
+        let mut remaining = [&[][..]; 32];
+        for (target, plane) in remaining.iter_mut().zip(planes) {
+            *target = &plane[skipped..frames];
+        }
+        let planes = &remaining[..channels];
+        let time = Some(time);
+        let sample_count = planes.iter().map(|plane| plane.len()).min().unwrap_or(0) * planes.len();
         if !self.enabled() {
             self.activity.set_level_percent(0);
-            self.archive.push_planar_silence(planes);
+            self.archive.push_silence_at(
+                sample_count,
+                time.map(|mut time| {
+                    time.quality = CaptureTimeQuality::Gap;
+                    time
+                }),
+            );
             if let Some(analysis) = self.analysis.as_ref() {
-                analysis.push_planar_silence(planes);
+                analysis.push_silence_at(
+                    sample_count,
+                    time.map(|mut time| {
+                        time.quality = CaptureTimeQuality::Gap;
+                        time
+                    }),
+                );
             }
             return;
         }
         self.activity
-            .set_level_percent(self.archive.push_planar_f32(planes));
+            .set_level_percent(self.archive.push_planar_f32_at(planes, time));
         if let Some(analysis) = self.analysis.as_ref() {
-            let _ = analysis.push_planar_f32(planes);
+            let _ = analysis.push_planar_f32_at(planes, time);
         }
     }
 }
@@ -591,7 +781,41 @@ impl CaptureSession for PlatformCaptureSession {
 mod capture_sink_tests {
     use super::{CaptureRunState, CaptureTrackSink};
     use crate::recording::audio::{create_realtime_ring, SourceFormat};
-    use ringbuf::traits::Consumer;
+
+    #[test]
+    fn resume_admits_only_samples_captured_in_the_current_epoch() {
+        use std::time::{Duration, Instant};
+        let format = SourceFormat {
+            sample_rate: 16_000,
+            channels: 2,
+        };
+        let mut archive = create_realtime_ring(format, 1).unwrap();
+        let mut analysis = create_realtime_ring(format, 1).unwrap();
+        let sink = CaptureTrackSink::new(archive.sink.clone(), Some(analysis.sink.clone()));
+        let resumed = Instant::now();
+        sink.set_media_epoch(None, 2_000);
+        sink.push_f32_captured(&[0.9; 8], Some(resumed));
+        sink.set_media_epoch(Some(resumed), 2_000);
+        // A queued pre-pause buffer cannot become current estimated audio.
+        sink.push_f32_captured(&[0.8; 8], Some(resumed - Duration::from_secs(1)));
+        // Keep the two stereo frames at/after resume, including the onset.
+        sink.push_f32_captured(
+            &[0.7, 0.7, 0.6, 0.6, 0.5, 0.4, 0.3, 0.2],
+            Some(resumed - Duration::from_micros(125)),
+        );
+        for consumer in [&mut archive.consumer, &mut analysis.consumer] {
+            let mut actual = [0.0; 32];
+            let count = consumer.pop_slice(&mut actual);
+            assert_eq!(&actual[..count], &[0.5, 0.4, 0.3, 0.2]);
+        }
+        let timeline = sink.timeline().unwrap().unwrap();
+        assert_eq!(timeline.spans[0].record_start, 32_000);
+        assert_eq!(timeline.spans[0].source_end, 2);
+        assert_eq!(
+            timeline.spans[0].quality,
+            myagents_media_worker_protocol::record_timeline::CaptureTimeQuality::Clock
+        );
+    }
 
     #[test]
     fn disabled_source_writes_silence_without_shortening_its_timeline() {
@@ -602,6 +826,7 @@ mod capture_sink_tests {
         let mut archive = create_realtime_ring(format, 1).unwrap();
         let analysis = create_realtime_ring(format, 1).unwrap();
         let sink = CaptureTrackSink::new(archive.sink.clone(), Some(analysis.sink));
+        sink.set_media_epoch(Some(std::time::Instant::now()), 0);
 
         sink.push_f32(&[0.5; 4]);
         sink.set_enabled(false);
@@ -739,25 +964,25 @@ fn open_cpal_stream(
     match endpoint.config.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
             config,
-            move |data: &[f32], _| sink.push_f32(data),
+            move |data: &[f32], info| sink.push_f32_captured(data, cpal_capture_time(info)),
             error_callback,
             None,
         ),
         SampleFormat::I16 => device.build_input_stream(
             config,
-            move |data: &[i16], _| sink.push_i16(data),
+            move |data: &[i16], info| sink.push_i16_captured(data, cpal_capture_time(info)),
             error_callback,
             None,
         ),
         SampleFormat::I32 => device.build_input_stream(
             config,
-            move |data: &[i32], _| sink.push_i32(data),
+            move |data: &[i32], info| sink.push_i32_captured(data, cpal_capture_time(info)),
             error_callback,
             None,
         ),
         SampleFormat::I8 => device.build_input_stream(
             config,
-            move |data: &[i8], _| sink.push_i8(data),
+            move |data: &[i8], info| sink.push_i8_captured(data, cpal_capture_time(info)),
             error_callback,
             None,
         ),
@@ -826,6 +1051,7 @@ fn open_macos_system_stream(
             if output_type != SCStreamOutputType::Audio {
                 return;
             }
+            let captured = macos_capture_time(&sample);
             let valid_format = sample.format_description().is_some_and(|format| {
                 format.audio_is_float()
                     && !format.audio_is_big_endian()
@@ -849,7 +1075,7 @@ fn open_macos_system_stream(
                     let bytes = buffer.data();
                     let (prefix, samples, suffix) = unsafe { bytes.align_to::<f32>() };
                     if prefix.is_empty() && suffix.is_empty() && buffer.number_channels == 2 {
-                        sink.push_f32(samples);
+                        sink.push_f32_captured(samples, captured);
                     } else {
                         report_malformed_sck(&events, &malformed_reported);
                     }
@@ -869,7 +1095,7 @@ fn open_macos_system_stream(
                         && left.number_channels == 1
                         && right.number_channels == 1
                     {
-                        sink.push_planar_f32(&[left_samples, right_samples]);
+                        sink.push_planar_f32_captured(&[left_samples, right_samples], captured);
                     } else {
                         report_malformed_sck(&events, &malformed_reported);
                     }
@@ -947,4 +1173,39 @@ mod tests {
             || true
         ));
     }
+}
+
+/// Translate between clocks using their simultaneous readings. Callback
+/// arrival is used only to bridge clock domains, never as the capture instant.
+fn cpal_capture_time(info: &cpal::InputCallbackInfo) -> Option<Instant> {
+    let now = Instant::now();
+    let timestamp = info.timestamp();
+    let latency = timestamp
+        .callback
+        .checked_duration_since(timestamp.capture)?;
+    (latency <= Duration::from_secs(10)).then_some(())?;
+    now.checked_sub(latency)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_capture_time(sample: &screencapturekit::cm::CMSampleBuffer) -> Option<Instant> {
+    use screencapturekit::cm::{CMClock, CMTime};
+    // apple-cf 0.9.3 CMClock::time() is a documented placeholder returning an
+    // invalid CMTime. Call the framework primitive, with the same repr(C) type.
+    #[link(name = "CoreMedia", kind = "framework")]
+    unsafe extern "C" {
+        fn CMClockGetTime(clock: *const std::ffi::c_void) -> CMTime;
+    }
+    let clock = CMClock::host_time_clock();
+    let now = Instant::now();
+    let host_time = unsafe { CMClockGetTime(clock.as_ptr()) };
+    let capture_time = sample.presentation_timestamp();
+    if host_time.epoch != capture_time.epoch {
+        return None;
+    }
+    let latency = host_time.as_seconds()? - capture_time.as_seconds()?;
+    if !latency.is_finite() || !(0.0..=10.0).contains(&latency) {
+        return None;
+    }
+    now.checked_sub(Duration::from_secs_f64(latency))
 }

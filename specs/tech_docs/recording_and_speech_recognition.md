@@ -25,8 +25,8 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 - 录音接纳后由 `RecordingManager` 独立持有 wake lock；获取失败不阻止录音，但 snapshot 与 lifecycle 保留 `RECORDING_WAKE_LOCK_UNAVAILABLE`，Record Detail 显示非阻塞警告。它只防止 idle sleep，不承诺合盖、用户主动睡眠、OS 强制休眠或断电期间继续采集。
 - 没有 transcript 的历史音频在转录区域显示“开始转录”。只有用户点击后才调用 `cmd_speech_record_transcribe`；安装模型、打开详情或启动 App 都不会自动扫描历史 Record。
 - 人工纠错只覆盖 speaker rename、merge 与 exact segment reassign。原始 transcript revision 保留，override 单独持久化并在 projection/export/search 时合成；不提供任意字词改写。
-- 段落归属由 `RecordStore` 在当前 diarization projection 的 `segmentSpeakerAttributions` 派生，页面、export、search 与 `content.md` 共用该结果。有效人工 reassign 优先；否则在共同 16 kHz 时间线上取段落与 speaker turn 的正长度半开区间交集，并按 merge 后 canonical identity 去重：零个为 unknown、一个为 single、多个为 multiple。禁止 midpoint miss / 无结果默认映射到 Speaker A；原 ASR 段落保持不变。历史 `content.md` 在既有 discussion admission 重建，Record 搜索在既有 startup baseline 重建，不增加迁移或扫描器。
-- 所有录音模式只投影当前 Record 内的匿名 `Speaker A/B/C`；物理麦克风不代表“我”。单轨直接 diarize，双物理轨由同一 Media Worker 按共同媒体时间线有界混合后做一次 Record-wide clustering。speaker embedding 只在 exact Worker generation 内短暂存在并在结束时主动清理，不持久化声纹，也不跨 Record 复用身份。
+- `RecordStore::read_speech_projection` 在同一锁内读取正文与人物，`cmd_record_transcript` 返回成对的 `RecordSpeechProjection`。页面、export、search 与 `content.md` 共用段落归属：人工 reassign 优先；来源相符的半开区间中，已知至少两个人物为 multiple；已知不足两人且有实质 unknown 活动为 unknown；其余一人为 single，无人为 unknown。按人工 merge 后 canonical identity 计数，保留 ASR 原段落和真实同时发言，不切词或默认 Speaker A。Renderer 整体替换同一 processing/source snapshot 的结果。历史讨论文档和搜索复用既有重建入口，不增加扫描器。
+- microphone/system 与人物是不同维度，每轨可有多人，同人可跨轨，麦克风不代表“我”。已知来源的原轨分别推理，再融合为当前 Record 人物与一份有序文稿。稳定人物 ID 独立于模型临时编号；匿名 `Speaker A/B/C` 按首次有效活动展示，真实旧 schema 保留旧字母。embedding 只在 exact Worker generation 内短暂存在并主动清理，不持久化或跨 Record 复用。
 - audio Record 结束保存后，`RecordStore` 在 Record 根目录生成唯一的 `content.md` 当前态文稿，包含元数据、当前 speaker projection、转写、现场笔记与重点 Mark。它是可重建的派生 artifact：最终转写、diarization、speaker override、metadata 或 timeline 变化后原子覆盖刷新；录音中不生成，损坏或缺失时由 AI 讨论接纳入口按当前 Record revision 重建。Renderer、Session 与 TaskStore 都不维护第二份副本。AI 讨论仍以该文稿为主；`RecordStore` 同时返回经 artifact inventory 验证的实际音轨绝对路径，仅供 Agent 需要时核对原始声音。
 - 托盘只消费 `RecordingManager` projection：录音中 icon 增加状态圆点，菜单出现“正在录音...”，点击打开 exact Record Tab。托盘不拥有录音状态或导航 history。
 - SearchEngine 复用现有 Tantivy + jieba 建立 Record index；`RecordStore` change broadcast 驱动 upsert/delete，搜索按 `record_id` 合并 title/content/tag/transcript/speaker 命中，每个 Record 最多返回一项。
@@ -41,7 +41,7 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 - Ogg archive/test 与 bundled libopus 共享固定内部 profile。Worker reader 保留分配前 packet 上限、连续 page sequence 与 fail-closed 校验；
 - Opus 浮点解码和附件 sinc 重采样允许产生正常的 full-scale overshoot；两条 decoder 都在输出边界将有限 PCM 限幅到 `[-1, 1]` 后交给推理。NaN/Inf 仍是解码错误，不能当作静音吞掉。
 - sherpa 的 `max_speech_duration` 只是促使端点出现的软参数。native VAD adapter 按模型窗口喂入，基于连续 detected speech 预算强制 flush，并预留 onset lookback；静音、自然端点、pause flush 和 reset 清除预算，保证长段在达到 ASR 硬上限前形成有界结果。
-- diarization 模型推理属于 sherpa-onnx；自有代码只负责有界窗口、跨窗口 identity、重叠裁决、稀疏 fallback 与敏感 embedding 清理；
+- diarization 模型推理属于 sherpa-onnx，受控 source patch 暴露原始 chunk/slot 活动、独占干净语音与可缺失 embedding；局部和全局融合复用 native complete-link，无 HDBSCAN noise 吸附、第二个 embedding extractor 或固定人数假设；
 - transcript revision 与 recording lifecycle 共享 `DurableRecordJournal` 的 regular-file、identity/schema、sequence/checksum、单行上限、durable append 与 torn-tail repair。
 
 引入新 primitive 前应证明现有依赖无法表达关键约束；没有缺口时不保留双实现或 feature flag。
@@ -63,7 +63,7 @@ job metadata 位于：
 <app-data>/speech-recognition/private/<jobId>/...
 ```
 
-Record backfill / diarization 在 App 重启后保留原 job ID，清除旧 Worker generation 并按持久顺序重排；Agent job 在进程边界收敛为 `interrupted`。每个 job 的 `pipeline` 在 admission 时冻结 provider、model-pack revision 与 ONNX Runtime revision。队列执行必须按该 snapshot 解析资源，active pack 的后续变化只影响新 job。
+Record 的整次处理以发起 backfill job ID 为 `processingId`，ASR 和 diarization 沿用既有 job 类型及各自 Worker generation；后台人工身份匹配在 diarization Worker 内完成。admission 固化原音频/时间映射、人工锚点、模型 manifest hash、共享 ORT identity 与算法 fingerprint。ASR 成功只写 Manager 私有候选，root 保持非终态；人物与身份 evidence 完整后才提交。重启保留 processing/job ID，清除旧 generation，依持久候选恢复阶段；已提交 Record manifest 可修复尚未 terminal 的 job。Agent job 在进程边界收敛为 `interrupted`。队列按冻结 snapshot 解析资源，active pack 的变化只影响新处理。
 
 App-global compute admission 固定为 `RecordLive > RecordBackfill > RecordDiarization > AgentAttachment/DocumentOcr/SpeechModelValidation > BackgroundResourceValidation`，同优先级按 coordinator ticket FIFO。Speech 自己的 durable queue 在申请 lease 前也按同一 kind priority 选下一项，因此较晚到达的 backfill 不会被已经等待 lease 的 attachment 隐藏。只有 `RecordLive` waiter 会要求已运行 workload cooperative yield；其它优先级只裁决下一次 admission。speech batch/live 收到 yield signal 后立即向 exact generation 发 `Yield`，从信号时刻计 15 秒后 force-stop，job ID 保持不变并以新 generation 重排。
 
@@ -71,11 +71,21 @@ Worker settlement 统一有界：合法 `Completed/Failed` 后最多给 30 秒�
 
 Worker 结果只有同时满足 exact `(jobId, generation)`、协议 shape、业务数量/时间轴上限且当前 generation 仍持有 publish authority 时才能提交。Record ASR 成功后由同一 Manager 排队 diarization；stale generation、cancelled generation 和失败 probe 都不能发布内容。
 
-`mixed` 只属于双轨最终 transcript 的结果身份。共享协议 reader 必须接受该结果，但 live PCM、InputAck 和物理轨 checkpoint 不接受 `mixed`。回归测试必须经过实际 `write_control_frame → read_worker_response → Manager` 路径，不能只分别验证 Worker 输出和 Manager 业务 helper。
+只有真实 legacy mixed artifact 才作为一个 mixed 来源推理；已知双轨结果保留 microphone/system。普通 stereo 附件不能被猜成物理双来源。live PCM、InputAck 和物理轨 checkpoint 不接受 mixed。身份 evidence 在说话人批次结束后，按冻结人物集合完整、有序、分批返回；shape/顺序/代次错误是任务失败，不是低置信弃权。回归经过实际 framed protocol 和 Manager 接收路径。
 
 Record 最终 transcript 与 diarization 结果先以唯一 UUID 文件名写入对应目录并同步，再由 `record.json` 原子接纳其 artifact；当前已引用文件不提前覆盖。提交失败仅在磁盘清单证实未引用时删除该次文件，提交成功后清理上一份已拥有的结果。读取兼容旧 `transcript/snapshot.json`、`diarization/result.json`；旧版半提交造成的失配引用在加载时降级为待重试的 failed projection，同步失效引用这些结果的讨论文档，原始音频保持严格校验且不被派生结果故障隐藏。未入清单的旧结果不自动接纳，显式重转直接生成新的结果。
 
 失败 job 保留最后确认的处理 stage；失败收尾不再一律将 stage 改成 `publishing`。Record 详情通过现有 `cmd_record_get` 从 SpeechRecognitionManager 的最新 backfill job 投影结构化失败原因，Record manifest 不持久化第二份 job error。协议读帧拒绝只记录固定原因枚举、job/generation 与 IO kind，不记录响应正文或原始 stderr。
+
+正文与人物的 UUID 候选由 Store 在同一锁内原子接纳为兼容的 artifact 对，并重读最新人工事实后裁决继承。重跑期间旧 final（包括 ASR-only final）继续可读；失败或取消保留旧稿。只有从未有 final 且 ASR 已成功时，人物计算失败可以发布 unknown 正文并保留真实错误；提交失败不适用该例外。取消、删除与恢复按整次 processing 收敛，私有候选不取得展示权。 Publishing metadata 写失败须进入既有失败结算。终态写盘失败不能让已退出的执行者继续显示 Running：Manager 仍更新当前终态、结算子任务并清理私有候选；重启以 Store 已提交 processing 结果或既有失败/缺失候选事实收敛。失败意图未持久化时不发布首次 partial final，错误记固定日志，不新增重试队列。
+
+### 稳定人物与人工锚点
+
+人工姓名、merge/reassign 与原始音频区间由 Store 持有；模型标签和自动继承关系属于该次结果。首次显式操作或 legacy 首次重跑时绑定原始事实，后续改名不从自动继承的新模型重建人工证据。merge 保留各原身份的 `identityScopes`：各组成身份分别核验后恢复人工关系，不重新要求用户已合并的声音证明为同一声纹。 已迁移段落改派仍校验原操作 revision 和范围，但旧绑定与当前目标须经过同一最新 merge 关系解析，之后显式合并不能让有效人工修正丢失。
+
+段落改派从身份比较双方屏蔽，再独立按原始区间投影；新操作只替代实际覆盖的旧 scope，未覆盖部分保留，被替代部分以后不得复活。发布在锁内裁决最新 human revision；运行中的新 merge 只能组合已经验证的原组成证据。
+
+Worker 复用同一 native diarizer 从原轨提取有界锚点，以瞬态向量验证声音、双向时间覆盖、竞争者距离和独立干净区间。Worker 不接收姓名，也不持久保存声纹向量；人工姓名由 Store 保存。Store 与 Worker 共用 protocol 的接受规则。证据不足时旧标注保留但不作用于新稿，不返回冲突清单、概率或强制核对任务。数值门槛须经独立会议校准，单测不证明匹配质量达标。
 
 ### Agent attachment job scope
 
@@ -87,19 +97,31 @@ Record 最终 transcript 与 diarization 结果先以唯一 UUID 文件名写入
 
 资源在录音 admission 时已 ready 才会接纳 live workload；缺资源的录音只做权威 Ogg Opus 归档。模型包后续安装只改变 capability，不扫描或自动排队这些历史 Record。
 
-每个 physical track 的 callback 经一个固定 fan-out 先写 archive ring，再写可选 analysis ring。ring 的单次读取边界不保证落在 interleaved channel frame 边界；两个后台 writer 共用的 streaming `rubato` adapter 必须跨读取保留未完整的 source frame，只允许在整条输入结束时拒绝真正残缺的 frame。analysis 只落一份固定路径的 16 kHz mono raw PCM16 spool，不自创媒体容器。`SpeechRecognitionManager` 只读取已 `flush + sync_data` 的 committed sample，逐个有界 binary frame 发给 exact-generation Worker，并校验 ACK、heartbeat checkpoint、segment revision 和 terminal metrics。Worker response 使用 bounded reader channel 和 120 秒基础设施超时；超时只重启当前 live generation，不影响 archive。
+每个 physical track 的 callback 经一个固定 fan-out 先写 archive ring，再写可选 analysis ring。ring 的单次读取边界不保证落在 interleaved channel frame 边界；两个后台 writer 共用的 streaming `rubato` adapter 必须跨读取保留未完整的 source frame，只允许在整条输入结束时拒绝真正残缺的 frame。analysis 每个物理来源只落一份固定路径的 16 kHz、至多 stereo raw PCM16 spool；通道、源帧和 Record 时间位于既有 metadata/protocol，不自创媒体容器。`SpeechRecognitionManager` 只读取已 `flush + sync_data` 的 committed sample，逐个有界 binary frame 发给 exact-generation Worker，并校验 ACK、heartbeat checkpoint、segment revision 和 terminal metrics。Worker response 使用 bounded reader channel 和 120 秒基础设施超时；超时只重启当前 live generation，不影响 archive。
 
 活跃录音中的单路开关仍由 `RecordingManager` 持有：它不热换设备、`CapturePlan` 或 source identity，只令对应 archive/analysis sink 在原回调时序中写入等长静音，并把该路电平归零。这样重新打开后继续同一 generation，双轨、transcript 与笔记共用的媒体时间线不会因关闭一路而压缩或错位。完成态若同时存在 microphone/system 而没有持久 `mixed` artifact，Renderer 直接同步播放两条 Range 数据流形成默认混合监听；单轨选择仍只播放对应物理轨，不为播放额外引入 mixer 进程或派生文件。
 
-Pause 先停止两个 ring 的 admission，再暂停设备；analysis writer 排空、刷新 resampler 并 fsync 后，Manager 以每轨 exact sample boundary 发送 `Flush`。Worker 在该边界强制结束 VAD 句段、发布稳定整句并重置 VAD，不写虚假静音，也不把 wall pause 算入媒体时间。暂停不足 10 分钟时保留 live Worker、ASR/VAD session 与 `RecordLive` lease；连续暂停达到 10 分钟后，pause epoch fence 允许 exact generation 用 `Yielded` checkpoint 退出并释放模型/lease。Resume 会使旧 timer 失效；若 Worker 已卸载，则从同一 append-only spool 与 durable transcript journal 的 exact offset 创建新 generation，卸载不消耗 crash retry budget。暂停中 Stop 在已 flush boundary 直接收敛 live journal，不为结束动作重载模型，永久 Ogg 与后续 backfill 不受影响。
+Pause 先关闭 Manager 媒体 epoch 并等待 callback 的 archive/analysis fan-out 完成，再关闭 ring admission 并暂停设备。Sink 发布屏障保证预留源帧已完成 PCM/metadata 发布，不能把异步平台 pause 当作 callback drain。恢复时按完整 source frame 裁剪已知旧采集时间，只保留新 epoch 内的样本；analysis writer 排空、刷新 resampler 并 fsync 后，Manager 以每轨 exact sample boundary 发送 `Flush`。Worker 在该边界强制结束 VAD 句段、发布稳定整句并重置 VAD，不写虚假静音，也不把 wall pause 算入媒体时间。暂停不足 10 分钟时保留 live Worker、ASR/VAD session 与 `RecordLive` lease；连续暂停达到 10 分钟后，pause epoch fence 允许 exact generation 用 `Yielded` checkpoint 退出并释放模型/lease。Resume 会使旧 timer 失效；若 Worker 已卸载，则从同一 append-only spool 与 durable transcript journal 的 exact offset 创建新 generation，卸载不消耗 crash retry budget。暂停中 Stop 在已 flush boundary 直接收敛 live journal，不为结束动作重载模型，永久 Ogg 与后续 backfill 不受影响。
 
-live revision 写入 `transcript/revisions.jsonl`，复用 `DurableRecordJournal`。Worker-local ID 不成为产品 identity；RecordStore 按 `track + start + end` 生成稳定 segment ID，同边界重算只递增 revision。generation 失败时从最后 durable segment end 重放，以重建尚未发布的 VAD pending state；每帧 ACK 仍即时校验，但不能仅从最后 ACK 继续，否则会丢掉已 ACK、尚未形成稳定句段的语音。
+live revision 写入 `transcript/revisions.jsonl`，复用 `DurableRecordJournal`。Worker-local ID 不成为产品 identity；RecordStore 按 `track + start + end` 生成稳定 segment ID，同边界重算只递增 revision。generation 失败时按 Record 推理安全前沿映射回原轨，并回读有界 DSP 历史，重建 AEC/VAD 和未成句语音；已发布区间不重发。source frame ACK 仅证明传输接纳，不代表 Record 时间或推理完成。
 
-Stop 先停止并落盘 capture/archive/analysis，再提交永久 Ogg artifact；archive 结束时必须编码足以覆盖 source media 与 Opus pre-skip 的最小尾包，异常恢复把最后 checkpoint 收敛到其真实可解码的 EOS granule，不能把尚待后续 packet drain 的 lookahead 发布成媒体时长。只有本次录音在开始时已接纳 live workload，才会用最终 analysis boundary 收敛 live Worker，并自动为永久 Ogg 接纳 recording-final backfill。双物理轨的最终 backfill 复用同一个有界时间线 mixer，只做一次 Record-wide VAD/ASR 并发布 `mixed` segment；不得分别转写 microphone/system 后再拼接或做文本去重。stop 命令返回的终态 snapshot 只是 operation receipt，不再拥有 RecordingManager slot；Renderer 释放该 owner 后由 RecordStore 的 final-transcript `upsert` 重新读取并替换 live projection。analysis 失败不把可用音频判坏。异常退出恢复只清理 Record 内两个固定 spool 文件；只对 manifest 表明此前已经接纳 live transcription 的 interrupted Record 恢复 backfill，普通历史录音保持手动“开始转录”。
+Stop 先停止并落盘 capture/archive/analysis，再提交永久 Ogg artifact；archive 结束时必须编码足以覆盖 source media 与 Opus pre-skip 的最小尾包，异常恢复把最后 checkpoint 收敛到其真实可解码的 EOS granule，不能把尚待后续 packet drain 的 lookahead 发布成媒体时长。只有本次录音在开始时已接纳 live workload，才会用最终 analysis boundary 收敛 live Worker，并自动为永久 Ogg 接纳 recording-final backfill。最终 backfill 与 live 共用来源/时间/AEC 预处理；原轨分别 VAD/ASR，共享一份 ASR 模型；沿用 live 的每来源 stateful VAD 实例（含 Silero 模型），按媒体时间稳定汇集原段落，保留短应答、真实重叠和重复发言，不凭文字相似去重。stop 命令返回的终态 snapshot 只是 operation receipt，不再拥有 RecordingManager slot；Renderer 释放该 owner 后由 RecordStore 的 final-transcript `upsert` 重新读取并替换 live projection。analysis 失败不把可用音频判坏。异常退出恢复只清理 Record 内两个固定 spool 文件；只对 manifest 表明此前已经接纳 live transcription 的 interrupted Record 恢复 backfill，普通历史录音保持手动“开始转录”。
+
+## 原轨时间与声学处理
+
+原始 Ogg 是回放和重算权威。RecordingManager 将 CPAL capture timestamp / SCK PTS 映射到自身单调媒体时钟，持久保存有界的原样本到 Record 样本 spans，区分 clock、estimated、gap 与 discontinuity。暂停冻结媒体时间，来源开关与归档 overrun 保留有位置的缺口；Opus pre-skip/EOS 和 resampler/DSP 延迟都回到该坐标。没有可靠时钟的旧区间不能取得跨来源高置信 authority。
+
+`record_timeline` 是推理/迁移的坐标契约；Renderer `recordPlayback` 使用同一份 parity fixture。合听直接播放两条原轨，按 Record clock 同步 seek/rate；leading gap、来源缺口与单轨提前结束不压缩总时间，不生成永久 cleaned PCM 或混音文件。
+
+live/final 共用来源、时间与回声预处理。Media Worker 使用 Sonora AEC3，只对麦克风应用 AEC，系统轨作参考并保留；参考缺失或时钟不可靠时保守 bypass。外部仍接收 10 ms 帧，内部复用库的 FrameBlocker/BlockFramer，把媒体时间对应的 64 sample render/capture 块依次送入 BlockProcessor；保留必要 HPF，不开启 AGC/NS。未建立可用线性回声路径时，默认路径增益为 0，避免仅因系统播放活跃便压低耳机中的本地语音；已学习路径的残余回声估计仍启用，收敛期间不确定的回声不能算消除成功。回声传播延迟与采集时钟偏移是不同事实，128 sample 帧处理延迟由上层 drain/映射补偿，不得移动本地人时间。只有原始 mic、参考、清理后各声道均具备可靠波形/时间证据时才标记 echo-only；ASR 跳过前 flush/reset，diarization 提取声纹前排除。短近端、双讲和不确定观察保留，不能按远端活跃静音 mic。
+
+原始活动、身份建模与弱证据归属分开：当前至少 2 秒模型预测独占语音才参与局部 complete-link 和中心/witness；该时长是待真实语料校准的资格参数，不表示模型已证明单人纯度。较短有效向量只向固定建模组尝试归属，要求所有成员距离低于同一 cut、与最近竞争成员保持至少 0.10 间隔且无活动冲突；不更新中心/witness，不通过弱观察串联人物。两个同时活动的弱槽位若竞争同一身份，则都保留 unknown。已归属的独占活动仍传播同源/跨源不能合并约束；缺向量、歧义和无可靠建模组均保留 unknown。窗口 ownership 只去除重复权重；上下文有活动而主窗口缺失时，按各 native chunk 最大同时活动数补 unknown，不叠加重复窗口票数。并发 unknown 不是同一人物，不能按 `(source, None)` 合并。可靠同源槽位重叠及跨源独占活动建立不能合并约束，complete-link 不能经第三人物绕过它；可靠 echo-only 在此前排除。
+
+局部融合窗口为 300 秒、相邻重叠 11 秒；模型仍按 10 秒 chunk 推理。每窗最多 192 raw observations / 32 local prototypes，两来源共用 2048 global prototypes 上限。窗口长度须同时约束原始证据和整场候选密度：沿用旧 68 秒窗口会让五人八小时录音在约 6.5 小时耗尽全局预算。当前参数使八小时每来源约 100 窗，无需扩大全局距离矩阵或以强行合并换内存；异常碎裂等超限仍明确失败，不截掉末尾、不丢少数人物。
 
 ## 用户模型包
 
-当前 pack identity 固定为 `local-standard-speech / local-standard-speech-v2`。编译期 source lock 位于 `src-tauri/media-worker/model-pack-source-lock.json`，固定：
+当前 pack identity 固定为 `local-standard-speech / local-standard-speech-v3`。pyannote segmentation 3.0 使用同一已锁定上游 archive 中的 FP32 模型：分段漏检会使后续声纹匹配无从归属，不能靠放宽聚类距离修复。SenseVoice、Silero 和 ERes2Net 不变，source 下载字节数不变，安装体积增加 4,452,407 字节；模型文件与 pack revision 一起更新，不覆盖已发布 v2 的身份。编译期 source lock 位于 `src-tauri/media-worker/model-pack-source-lock.json`，固定：
 
 - 四项第一方镜像 asset 与各自 URL、upstream revision、size、SHA-256、格式和许可；
 - 五个实际推理文件的 archive source path、安装相对路径、size 与 SHA-256；

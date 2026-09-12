@@ -1,7 +1,28 @@
 import type {
   RecordTranscriptDelta,
   RecordTranscriptSnapshot,
+  RecordSpeechProjection,
 } from '@/../shared/types/record';
+
+/** Publish text and people together; their revision counters have different
+ * domains, so independently picking the largest counter can mix two reruns. */
+export function reconcileRecordSpeechProjection(
+  current: RecordSpeechProjection,
+  next: RecordSpeechProjection,
+): RecordSpeechProjection {
+  if (next.diarization && (!next.transcript
+    || next.diarization.recordId !== next.transcript.recordId
+    || next.diarization.processingId !== next.transcript.processingId)) return current;
+  const transcript = reconcileRecordTranscriptSnapshot(current.transcript, next.transcript);
+  if (transcript !== next.transcript) return current;
+  const sameProcessing = current.transcript?.recordId === next.transcript?.recordId
+    && current.transcript?.processingId === next.transcript?.processingId;
+  const diarization = sameProcessing && current.diarization && next.diarization
+    && current.diarization.projectionRevision === next.diarization.projectionRevision
+    && current.diarization.overrideRevision > next.diarization.overrideRevision
+    ? current.diarization : next.diarization;
+  return { transcript, diarization };
+}
 
 /**
  * Live journal revisions and the finalized transcript projection are separate

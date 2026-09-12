@@ -61,7 +61,7 @@ function identity() {
 }
 
 function response(type, fields = {}) {
-  return { type, protocolVersion: 1, identity: identity(), ...fields };
+  return { type, protocolVersion: 2, identity: identity(), ...fields };
 }
 
 async function waitUntil(predicate, timeoutMs) {
@@ -217,14 +217,15 @@ test("speech long evidence validates multi-batch timelines without content", () 
         revision: 1,
         batchIndex: 0,
         isLast: false,
-        turns: [{ startSample: 0, endSample: 20_000, globalSpeaker: 0 }],
+        turns: [{ source: "microphone", startSample: 0, endSample: 20_000, globalSpeaker: 0 }],
       }),
       response("speaker_turn_batch", {
         revision: 1,
         batchIndex: 1,
         isLast: true,
-        turns: [{ startSample: 16_000, endSample: 32_000, globalSpeaker: 1 }],
+        turns: [{ source: "microphone", startSample: 16_000, endSample: 32_000, globalSpeaker: 1 }],
       }),
+      response("identity_evidence_batch", { revision: 1, batchIndex: 0, isLast: true, evidence: [] }),
       response("completed", {
         metrics: {
           sourceSamples: 32_000,
@@ -420,13 +421,14 @@ test("shared batch client summarizes diarization without transcript content", ()
       response("speaker_turn_batch", {
         batchIndex: 0,
         isLast: false,
-        turns: [{ startSample: 0, endSample: 16_000, globalSpeaker: 0 }],
+        turns: [{ source: "microphone", startSample: 0, endSample: 16_000, globalSpeaker: 0 }],
       }),
       response("speaker_turn_batch", {
         batchIndex: 1,
         isLast: true,
-        turns: [{ startSample: 16_000, endSample: 32_000, globalSpeaker: 1 }],
+        turns: [{ source: "microphone", startSample: 16_000, endSample: 32_000, globalSpeaker: 1 }],
       }),
+      response("identity_evidence_batch", { revision: 1, batchIndex: 0, isLast: true, evidence: [] }),
       response("completed", {
         metrics: {
           sourceSamples: 32_000,
@@ -462,7 +464,7 @@ test("shared batch client rejects a broken diarization batch sequence", () => {
           response("speaker_turn_batch", {
             batchIndex: 1,
             isLast: true,
-            turns: [{ startSample: 0, endSample: 16_000, globalSpeaker: 0 }],
+            turns: [{ source: "microphone", startSample: 0, endSample: 16_000, globalSpeaker: 0 }],
           }),
           response("completed", {
             metrics: {
@@ -528,9 +530,9 @@ process.stdin.on("data", chunk => {
       const command = JSON.parse(payload.subarray(1));
       identity = command.identity;
       if (command.type === "start") {
-        setTimeout(() => send({type:"ready", protocolVersion:1, identity}), 100);
+        setTimeout(() => send({type:"ready", protocolVersion:2, identity}), 100);
       } else if (command.type === "finalize") {
-        send({type:"completed", protocolVersion:1, identity, metrics:{sourceSamples,segments:1,speakers:0,elapsedMs:1,peakWorkingBytes:null}});
+        send({type:"completed", protocolVersion:2, identity, metrics:{sourceSamples,segments:1,speakers:0,elapsedMs:1,peakWorkingBytes:null}});
       }
       continue;
     }
@@ -539,13 +541,13 @@ process.stdin.on("data", chunk => {
     const sampleCount = payload.readUInt32BE(30);
     const endSample = startSample + sampleCount;
     sourceSamples += sampleCount;
-    send({type:"input_ack", protocolVersion:1, identity, track:"microphone", sequence, endSample});
+    send({type:"input_ack", protocolVersion:2, identity, track:"microphone", sequence, endSample});
     if (!emitted && endSample >= 320) {
       emitted = true;
       const segmentEndSample = identity.workloadId.endsWith("_invalid") ? 300 : 320;
-      send({type:"transcript_segment", protocolVersion:1, identity, segmentId:"segment-1", track:"microphone", startSample:0, endSample:segmentEndSample, text:"fixture transcript", language:"en", revision:1});
+      send({type:"transcript_segment", protocolVersion:2, identity, segmentId:"segment-1", track:"microphone", startSample:0, endSample:segmentEndSample, text:"fixture transcript", language:"en", revision:1});
     }
-    send({type:"heartbeat", protocolVersion:1, identity, stage:"vad", checkpoint:{streams:[{track:"microphone",lastAckSequence:sequence,analysisSample:endSample}],analysisSample:endSample}});
+    send({type:"heartbeat", protocolVersion:2, identity, stage:"vad", checkpoint:{streams:[{track:"microphone",lastAckSequence:sequence,analysisSample:endSample}],analysisSample:endSample}});
   }
 });
 process.stdin.on("end", () => process.exit(0));
@@ -712,7 +714,7 @@ test(
     writeFileSync(
       worker,
       `#!/usr/bin/env node
-const response = {type:"ready",protocolVersion:1,identity:{workloadId:"wrong",workerGeneration:1}};
+const response = {type:"ready",protocolVersion:2,identity:{workloadId:"wrong",workerGeneration:1}};
 const json = Buffer.from(JSON.stringify(response));
 const payload = Buffer.concat([Buffer.from([1]), json]);
 const prefix = Buffer.alloc(4);
@@ -766,12 +768,13 @@ process.stdin.on("data", chunk => {
     const command = JSON.parse(payload.subarray(1));
     identity = command.identity;
     if (command.type === "start") {
-      send({type:"ready",protocolVersion:1,identity});
-      send({type:"heartbeat",protocolVersion:1,identity,stage:"decoding",checkpoint:{streams:[],analysisSample:0}});
+      send({type:"ready",protocolVersion:2,identity});
+      send({type:"heartbeat",protocolVersion:2,identity,stage:"decoding",checkpoint:{streams:[],analysisSample:0}});
     } else if (command.type === "ping") {
-      send({type:"pong",protocolVersion:1,identity,nonce:command.nonce});
-      send({type:"speaker_turn_batch",protocolVersion:1,identity,revision:1,batchIndex:0,isLast:true,turns:[]});
-      send({type:"completed",protocolVersion:1,identity,metrics:{sourceSamples:1,segments:0,speakers:0,elapsedMs:1,peakWorkingBytes:null}});
+      send({type:"pong",protocolVersion:2,identity,nonce:command.nonce});
+      send({type:"speaker_turn_batch",protocolVersion:2,identity,revision:1,batchIndex:0,isLast:true,turns:[]});
+      send({type:"identity_evidence_batch",protocolVersion:2,identity,revision:1,batchIndex:0,isLast:true,evidence:[]});
+      send({type:"completed",protocolVersion:2,identity,metrics:{sourceSamples:1,segments:0,speakers:0,elapsedMs:1,peakWorkingBytes:null}});
     }
   }
 });
@@ -800,6 +803,7 @@ process.stdin.on("end", () => process.exit(0));
       "heartbeat",
       "pong",
       "speaker_turn_batch",
+      "identity_evidence_batch",
       "completed",
     ]);
     rmSync(root, { recursive: true, force: true });
@@ -893,4 +897,14 @@ test("quality corpus preparation rejects a cache symlink into the repository", (
   assert.notEqual(outcome.status, 0);
   assert.match(outcome.stderr, /must stay outside the repository/);
   rmSync(root, { recursive: true, force: true });
+});
+
+
+test('unknown detected speech remains missing identity instead of a synthetic DER speaker', async () => {
+  const { collectKnownSpeakerTurns } = await import('./media-worker-batch-client.mjs');
+  const turns = collectKnownSpeakerTurns([{ type: 'speaker_turn_batch', batchIndex: 0, turns: [
+    { source: 'microphone', startSample: 0, endSample: 1600, globalSpeaker: null },
+    { source: 'system', startSample: 0, endSample: 3200, globalSpeaker: 0 },
+  ] }]);
+  assert.deepEqual(turns, [{ speaker: 'speaker_0', startSeconds: 0, endSeconds: 0.2 }]);
 });

@@ -10,7 +10,10 @@ use rubato::{
     WindowFunction,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+
+use super::timing::{CaptureTimePoint, CaptureTimeline};
+use myagents_media_worker_protocol::record_timeline::RecordTrackTimeline;
 
 const RESAMPLER_CHUNK_FRAMES: usize = 1_024;
 const RESAMPLER_SINC_LENGTH: usize = 128;
@@ -42,121 +45,175 @@ impl SourceFormat {
 
 #[derive(Clone)]
 pub struct RealtimeTrackSink {
-    producer: Arc<Mutex<ringbuf::HeapProd<f32>>>,
-    channels: u16,
+    producer: Arc<Mutex<CaptureProducer>>,
+    source_frames: Arc<AtomicU64>,
+    timeline: Arc<Mutex<CaptureTimeline>>,
+    format: SourceFormat,
     accepting: Arc<AtomicBool>,
+    publication: Arc<RwLock<()>>,
     overrun_samples: Arc<AtomicU64>,
     wake: mpsc::SyncSender<()>,
 }
 
 impl RealtimeTrackSink {
+    pub(super) fn source_format(&self) -> SourceFormat {
+        self.format
+    }
+
     pub fn set_accepting(&self, accepting: bool) {
-        self.accepting.store(accepting, Ordering::Release);
+        if !accepting {
+            // Reject new work before waiting for callbacks already publishing.
+            // A backend pause request is not a callback completion barrier.
+            self.accepting.store(false, Ordering::Release);
+        }
+        let _boundary = self
+            .publication
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if accepting {
+            self.accepting.store(true, Ordering::Release);
+        }
     }
 
     pub(super) fn wake_worker(&self) {
         let _ = self.wake.try_send(());
     }
 
-    pub fn push_f32(&self, samples: &[f32]) -> u8 {
-        self.push_converted(samples.iter().copied())
+    pub fn capture_timeline(&self) -> Result<Option<RecordTrackTimeline>, String> {
+        self.timeline
+            .lock()
+            .map_err(|_| "capture timeline lock poisoned".to_string())?
+            .snapshot()
+            .map_err(str::to_string)
     }
 
+    #[cfg(test)]
+    pub fn push_f32(&self, samples: &[f32]) -> u8 {
+        self.push_f32_at(samples, None)
+    }
+
+    pub(super) fn push_f32_at(&self, samples: &[f32], time: Option<CaptureTimePoint>) -> u8 {
+        self.push_converted(samples.iter().copied(), time)
+    }
+
+    #[cfg(test)]
     pub fn push_i16(&self, samples: &[i16]) -> u8 {
+        self.push_i16_at(samples, None)
+    }
+
+    pub(super) fn push_i16_at(&self, samples: &[i16], time: Option<CaptureTimePoint>) -> u8 {
         self.push_converted(
             samples
                 .iter()
                 .map(|sample| *sample as f32 / i16::MAX as f32),
+            time,
         )
     }
 
-    pub fn push_i32(&self, samples: &[i32]) -> u8 {
+    pub(super) fn push_i32_at(&self, samples: &[i32], time: Option<CaptureTimePoint>) -> u8 {
         self.push_converted(
             samples
                 .iter()
                 .map(|sample| *sample as f32 / i32::MAX as f32),
+            time,
         )
     }
 
-    pub fn push_i8(&self, samples: &[i8]) -> u8 {
-        self.push_converted(samples.iter().map(|sample| *sample as f32 / i8::MAX as f32))
+    pub(super) fn push_i8_at(&self, samples: &[i8], time: Option<CaptureTimePoint>) -> u8 {
+        self.push_converted(
+            samples.iter().map(|sample| *sample as f32 / i8::MAX as f32),
+            time,
+        )
     }
 
     #[cfg(target_os = "macos")]
-    pub fn push_planar_f32(&self, planes: &[&[f32]]) -> u8 {
+    pub(super) fn push_planar_f32_at(
+        &self,
+        planes: &[&[f32]],
+        time: Option<CaptureTimePoint>,
+    ) -> u8 {
         if !self.accepting.load(Ordering::Acquire)
-            || planes.len() != self.channels as usize
+            || planes.len() != self.format.channels as usize
             || planes.is_empty()
         {
             return 0;
         }
         let frames = planes.iter().map(|plane| plane.len()).min().unwrap_or(0);
-        let Ok(mut producer) = self.producer.try_lock() else {
-            self.overrun_samples
-                .fetch_add((frames * self.channels as usize) as u64, Ordering::Relaxed);
-            return 0;
-        };
-        let channels = self.channels as usize;
-        let accepted_frames = frames.min(producer.vacant_len() / channels);
-        let mut peak = 0.0_f32;
-        for frame in 0..accepted_frames {
-            for plane in planes {
-                let sample = plane[frame].clamp(-1.0, 1.0);
-                peak = peak.max(sample.abs());
-                let pushed = producer.try_push(sample);
-                debug_assert!(pushed.is_ok());
-            }
-        }
-        let dropped = ((frames - accepted_frames) * channels) as u64;
-        drop(producer);
-        if dropped > 0 {
-            self.overrun_samples.fetch_add(dropped, Ordering::Relaxed);
-        }
-        self.wake_worker();
-        peak_percent(peak)
+        let channels = self.format.channels as usize;
+        self.push_converted(
+            (0..frames * channels).map(|index| planes[index % channels][index / channels]),
+            time,
+        )
     }
 
     /// Preserve the source timeline while intentionally excluding its content.
     /// This stays allocation-free on the realtime callback thread.
-    pub fn push_silence(&self, sample_count: usize) -> u8 {
-        self.push_converted(std::iter::repeat_n(0.0, sample_count))
+    pub(super) fn push_silence_at(
+        &self,
+        sample_count: usize,
+        time: Option<CaptureTimePoint>,
+    ) -> u8 {
+        self.push_converted(std::iter::repeat_n(0.0, sample_count), time)
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn push_planar_silence(&self, planes: &[&[f32]]) -> u8 {
-        if planes.len() != self.channels as usize || planes.is_empty() {
+    fn push_converted(
+        &self,
+        samples: impl ExactSizeIterator<Item = f32>,
+        time: Option<CaptureTimePoint>,
+    ) -> u8 {
+        // This guard defines admission and lives through reservation, PCM and
+        // metadata publication, including overflow accounting. Never wait on
+        // the realtime thread. The protected value is only a lifetime token.
+        let Ok(_publication) = self.publication.try_read() else {
             return 0;
-        }
-        let frames = planes.iter().map(|plane| plane.len()).min().unwrap_or(0);
-        self.push_silence(frames.saturating_mul(self.channels as usize))
-    }
-
-    fn push_converted(&self, samples: impl ExactSizeIterator<Item = f32>) -> u8 {
+        };
         if !self.accepting.load(Ordering::Acquire) {
             return 0;
         }
+        let channels = self.format.channels as usize;
         let sample_count = samples.len();
+        let frame_count = sample_count / channels;
+        let source_start = self
+            .source_frames
+            .fetch_add(frame_count as u64, Ordering::AcqRel);
         let Ok(mut producer) = self.producer.try_lock() else {
             self.overrun_samples
-                .fetch_add(sample_count as u64, Ordering::Relaxed);
+                .fetch_add((frame_count * channels) as u64, Ordering::Relaxed);
+            self.wake_worker();
             return 0;
         };
-        let channels = self.channels as usize;
-        let aligned_samples = sample_count - sample_count % channels;
-        let accepted_samples = aligned_samples.min(producer.vacant_len() / channels * channels);
+        let accepted_frames = if producer.chunks.is_full() {
+            0
+        } else {
+            frame_count.min(producer.samples.vacant_len() / channels)
+        };
+        let accepted_samples = accepted_frames * channels;
         let mut peak = 0.0_f32;
-        for (index, sample) in samples.enumerate() {
-            if index < accepted_samples {
-                let sample = sample.clamp(-1.0, 1.0);
-                peak = peak.max(sample.abs());
-                let pushed = producer.try_push(sample);
-                debug_assert!(pushed.is_ok());
-            }
+        for sample in samples.take(accepted_samples) {
+            let sample = if sample.is_finite() {
+                sample.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            peak = peak.max(sample.abs());
+            let pushed = producer.samples.try_push(sample);
+            debug_assert!(pushed.is_ok());
         }
-        let dropped = sample_count.saturating_sub(accepted_samples) as u64;
+        if accepted_frames > 0 {
+            // Publish metadata after PCM, so the consumer never observes an
+            // available chunk whose samples have not been published yet.
+            let pushed = producer.chunks.try_push(CaptureChunk {
+                source_start,
+                frames: accepted_frames as u64,
+                time,
+            });
+            debug_assert!(pushed.is_ok());
+        }
+        let dropped = (frame_count - accepted_frames) * channels;
         drop(producer);
         if dropped > 0 {
-            self.overrun_samples.fetch_add(dropped, Ordering::Relaxed);
+            self.overrun_samples
+                .fetch_add(dropped as u64, Ordering::Relaxed);
         }
         self.wake_worker();
         peak_percent(peak)
@@ -173,9 +230,138 @@ fn peak_percent(peak: f32) -> u8 {
     (((decibels - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
+/// Original source coordinates survive ring overrun. Small metadata records
+/// accompany the existing PCM ring; audio remains in its preallocated buffer.
+#[derive(Clone, Copy)]
+struct CaptureChunk {
+    source_start: u64,
+    frames: u64,
+    time: Option<CaptureTimePoint>,
+}
+
+struct CaptureProducer {
+    samples: ringbuf::HeapProd<f32>,
+    chunks: ringbuf::HeapProd<CaptureChunk>,
+}
+
+pub(super) struct RealtimeTrackReader {
+    samples: ringbuf::HeapCons<f32>,
+    chunks: ringbuf::HeapCons<CaptureChunk>,
+    current: Option<CaptureChunk>,
+    position: u64,
+    channels: usize,
+    source_frames: Arc<AtomicU64>,
+    finishing: bool,
+    sample_rate: u32,
+    timeline: Arc<Mutex<CaptureTimeline>>,
+}
+
+impl RealtimeTrackReader {
+    pub fn close_resampler_epoch(&mut self, output_frames: u64) {
+        if let Ok(mut timeline) = self.timeline.lock() {
+            timeline.close_resampler_epoch(self.sample_rate, self.position, output_frames);
+        }
+    }
+    /// Call only after the producer has stopped. Until then an unpublished
+    /// callback cannot be treated as a missing tail.
+    pub fn finish_input(&mut self) {
+        self.finishing = true;
+    }
+
+    pub fn resume_input(&mut self) {
+        self.finishing = false;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.current.is_none()
+            && self.chunks.is_empty()
+            && (!self.finishing || self.position >= self.source_frames.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    pub fn occupied_len(&self) -> usize {
+        self.samples.occupied_len()
+    }
+
+    pub fn pop_slice(&mut self, output: &mut [f32]) -> usize {
+        let capacity = output.len() / self.channels;
+        let mut written = 0;
+        while written < capacity {
+            if self.current.is_none() {
+                self.current = self.chunks.try_pop();
+                if let Some(chunk) = self.current {
+                    if let Ok(mut timeline) = self.timeline.lock() {
+                        if self.position < chunk.source_start {
+                            timeline.observe(
+                                self.sample_rate,
+                                self.position,
+                                chunk.source_start - self.position,
+                                None,
+                                true,
+                            );
+                        }
+                        timeline.observe(
+                            self.sample_rate,
+                            chunk.source_start,
+                            chunk.frames,
+                            chunk.time,
+                            false,
+                        );
+                    }
+                }
+            }
+            let Some(chunk) = self.current.as_mut() else {
+                if self.finishing {
+                    let tail = self
+                        .source_frames
+                        .load(Ordering::Acquire)
+                        .saturating_sub(self.position);
+                    let frames = (tail as usize).min(capacity - written);
+                    if let Ok(mut timeline) = self.timeline.lock() {
+                        timeline.observe(
+                            self.sample_rate,
+                            self.position,
+                            frames as u64,
+                            None,
+                            true,
+                        );
+                    }
+                    output[written * self.channels..(written + frames) * self.channels].fill(0.0);
+                    written += frames;
+                    self.position += frames as u64;
+                }
+                break;
+            };
+            // An overflow hole is inserted where it occurred, never appended
+            // at the end after compressing the following real speech.
+            if self.position < chunk.source_start {
+                let frames =
+                    ((chunk.source_start - self.position) as usize).min(capacity - written);
+                output[written * self.channels..(written + frames) * self.channels].fill(0.0);
+                written += frames;
+                self.position += frames as u64;
+                continue;
+            }
+            let frames = (chunk.frames as usize).min(capacity - written);
+            let destination =
+                &mut output[written * self.channels..(written + frames) * self.channels];
+            let count = self.samples.pop_slice(destination);
+            debug_assert_eq!(count, destination.len());
+            written += frames;
+            self.position += frames as u64;
+            chunk.source_start += frames as u64;
+            chunk.frames -= frames as u64;
+            if chunk.frames == 0 {
+                self.current = None;
+            }
+        }
+        written * self.channels
+    }
+}
+
 pub(super) struct RealtimeRingParts {
     pub sink: RealtimeTrackSink,
-    pub consumer: ringbuf::HeapCons<f32>,
+    pub consumer: RealtimeTrackReader,
     pub stop: Arc<AtomicBool>,
     pub overrun_samples: Arc<AtomicU64>,
     pub wake_rx: mpsc::Receiver<()>,
@@ -194,7 +380,13 @@ pub(super) fn create_realtime_ring(
         .and_then(|samples| samples.checked_mul(seconds))
         .ok_or_else(|| "realtime ring capacity overflow".to_string())?;
     let (producer, consumer) = HeapRb::<f32>::new(capacity).split();
-    let producer = Arc::new(Mutex::new(producer));
+    let (chunks, chunk_reader) = HeapRb::<CaptureChunk>::new(4_096).split();
+    let producer = Arc::new(Mutex::new(CaptureProducer {
+        samples: producer,
+        chunks,
+    }));
+    let source_frames = Arc::new(AtomicU64::new(0));
+    let timeline = Arc::new(Mutex::new(CaptureTimeline::default()));
     let accepting = Arc::new(AtomicBool::new(true));
     let overrun_samples = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
@@ -202,12 +394,25 @@ pub(super) fn create_realtime_ring(
     Ok(RealtimeRingParts {
         sink: RealtimeTrackSink {
             producer,
-            channels: format.channels,
+            source_frames: source_frames.clone(),
+            timeline: timeline.clone(),
+            format,
             accepting,
+            publication: Arc::new(RwLock::new(())),
             overrun_samples: overrun_samples.clone(),
             wake,
         },
-        consumer,
+        consumer: RealtimeTrackReader {
+            samples: consumer,
+            chunks: chunk_reader,
+            current: None,
+            position: 0,
+            channels: usize::from(format.channels),
+            source_frames,
+            finishing: false,
+            sample_rate: format.sample_rate,
+            timeline,
+        },
         stop,
         overrun_samples,
         wake_rx,
@@ -226,7 +431,6 @@ pub(super) struct StreamingAudioResampler {
     pending_frames: usize,
     input_frames: u64,
     emitted_frames: u64,
-    delay_frames: usize,
 }
 
 impl StreamingAudioResampler {
@@ -256,7 +460,6 @@ impl StreamingAudioResampler {
                 pending_frames: 0,
                 input_frames: 0,
                 emitted_frames: 0,
-                delay_frames: 0,
             });
         }
 
@@ -279,7 +482,6 @@ impl StreamingAudioResampler {
         .map_err(|error| format!("create audio resampler: {error}"))?;
         let input_planes = resampler.input_buffer_allocate(true);
         let output_planes = resampler.output_buffer_allocate(true);
-        let delay_frames = resampler.output_delay();
         Ok(Self {
             input_sample_rate: format.sample_rate,
             output_sample_rate,
@@ -292,7 +494,6 @@ impl StreamingAudioResampler {
             pending_frames: 0,
             input_frames: 0,
             emitted_frames: 0,
-            delay_frames,
         })
     }
 
@@ -393,13 +594,13 @@ impl StreamingAudioResampler {
             .process_into_buffer(&self.input_planes, &mut self.output_planes, None)
             .map_err(|error| format!("resample audio: {error}"))?;
         self.pending_frames = 0;
-        let first_frame = self.delay_frames.min(produced_frames);
-        self.delay_frames -= first_frame;
-        let available_frames = produced_frames - first_frame;
-        let emitted_now = target_frames.map_or(available_frames, |target| {
-            available_frames.min(target.saturating_sub(self.emitted_frames) as usize)
+        // SincFixedIn 0.16.2 already centres its returned samples at the
+        // source origin. Trimming output_delay() here shifts real speech;
+        // lookahead is satisfied by finish(), not by discarding the head.
+        let emitted_now = target_frames.map_or(produced_frames, |target| {
+            produced_frames.min(target.saturating_sub(self.emitted_frames) as usize)
         });
-        for frame in first_frame..first_frame + emitted_now {
+        for frame in 0..emitted_now {
             for channel in 0..self.output_channels {
                 output.push(self.output_planes[channel][frame]);
             }
@@ -450,6 +651,93 @@ impl Drop for StreamingAudioResampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_admission_waits_for_the_last_accepted_callback_before_tail_flush() {
+        let mut parts = create_realtime_ring(
+            SourceFormat {
+                sample_rate: 16_000,
+                channels: 1,
+            },
+            1,
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let producer = parts.sink.clone();
+        let callback = std::thread::spawn(move || {
+            producer.push_converted(
+                (0..320).map(|i| {
+                    if i == 0 {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    }
+                    0.25
+                }),
+                None,
+            );
+        });
+        entered_rx.recv().unwrap();
+        let closing = parts.sink.clone();
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let close = std::thread::spawn(move || {
+            closing.set_accepting(false);
+            closed_tx.send(()).unwrap();
+        });
+        while parts.sink.accepting.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        let closed_before_callback = closed_rx
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_ok();
+        release_tx.send(()).unwrap();
+        callback.join().unwrap();
+        close.join().unwrap();
+        assert!(
+            !closed_before_callback,
+            "pause/stop can flush an unpublished accepted callback as a missing tail"
+        );
+        parts.consumer.finish_input();
+        let mut output = vec![0.0; 320];
+        assert_eq!(parts.consumer.pop_slice(&mut output), 320);
+        assert!(output.iter().all(|sample| *sample == 0.25));
+        assert!(parts.consumer.is_empty());
+        parts.sink.push_f32(&[0.5; 320]);
+        assert!(parts.consumer.is_empty());
+    }
+
+    #[test]
+    fn resampler_keeps_markers_at_absolute_capture_time() {
+        for (source_rate, output_rate) in [(44_100, 48_000), (48_000, 16_000), (8_000, 48_000)] {
+            let mut resampler = StreamingAudioResampler::new(
+                SourceFormat {
+                    sample_rate: source_rate,
+                    channels: 1,
+                },
+                output_rate,
+                1,
+            )
+            .unwrap();
+            let input = (0..source_rate * 2)
+                .map(|i| {
+                    let offset = (i as f32 - source_rate as f32) / (source_rate as f32 * 0.0005);
+                    (-offset * offset).exp() * 0.5
+                })
+                .collect::<Vec<_>>();
+            let mut output = Vec::new();
+            for chunk in input.chunks(777) {
+                resampler.process(chunk, &mut output).unwrap();
+            }
+            resampler.finish(&mut output).unwrap();
+            let peak = (0..output.len())
+                .max_by(|a, b| output[*a].total_cmp(&output[*b]))
+                .unwrap();
+            assert!(
+                peak.abs_diff(output_rate as usize) <= 8,
+                "rate={source_rate}/{output_rate} peak={peak}"
+            );
+        }
+    }
 
     #[test]
     fn mature_resampler_preserves_exact_media_time_with_bounded_input() {
@@ -554,6 +842,37 @@ mod tests {
             stopband_rms < passband_rms * 0.02,
             "stopband RMS {stopband_rms} was not suppressed relative to {passband_rms}"
         );
+    }
+
+    #[test]
+    fn ring_overflow_keeps_the_hole_before_following_speech_and_at_the_tail() {
+        let mut parts = create_realtime_ring(
+            SourceFormat {
+                sample_rate: 8_000,
+                channels: 2,
+            },
+            1,
+        )
+        .unwrap();
+        parts.sink.push_f32(&vec![0.1; 16_006]);
+        let mut first = vec![0.0; 16_000];
+        assert_eq!(parts.consumer.pop_slice(&mut first), 16_000);
+        assert!(first.iter().all(|value| *value == 0.1));
+        parts.sink.push_f32(&[0.2, 0.3, 0.4, 0.5]);
+        let mut next = [1.0; 10];
+        assert_eq!(parts.consumer.pop_slice(&mut next), 10);
+        assert_eq!(&next[..6], &[0.0; 6]);
+        assert_eq!(&next[6..], &[0.2, 0.3, 0.4, 0.5]);
+
+        parts.sink.push_f32(&vec![0.6; 16_004]);
+        assert_eq!(parts.consumer.pop_slice(&mut first), 16_000);
+        parts.sink.set_accepting(false);
+        parts.consumer.finish_input();
+        let mut tail = [1.0; 4];
+        assert_eq!(parts.consumer.pop_slice(&mut tail), 4);
+        assert_eq!(tail, [0.0; 4]);
+        assert!(parts.consumer.is_empty());
+        assert_eq!(parts.overrun_samples.load(Ordering::Relaxed), 10);
     }
 
     #[test]

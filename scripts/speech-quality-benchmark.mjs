@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertExpectedMediaWorkerBatch,
+  collectKnownSpeakerTurns,
   runMediaWorkerBatch,
 } from "./media-worker-batch-client.mjs";
 import {
@@ -307,24 +308,6 @@ function collectTranscript(responses) {
     )
     .map((response) => response.text)
     .join(" ");
-}
-
-function collectSpeakerTurns(responses) {
-  return responses
-    .filter((response) => response.type === "speaker_turn_batch")
-    .sort((left, right) => left.batchIndex - right.batchIndex)
-    .flatMap((response) => response.turns)
-    .sort(
-      (left, right) =>
-        left.startSample - right.startSample ||
-        left.endSample - right.endSample ||
-        left.globalSpeaker - right.globalSpeaker,
-    )
-    .map((turn) => ({
-      speaker: `speaker_${turn.globalSpeaker}`,
-      startSeconds: turn.startSample / SAMPLE_RATE,
-      endSeconds: turn.endSample / SAMPLE_RATE,
-    }));
 }
 
 function thresholdResults(metrics) {
@@ -641,6 +624,8 @@ for (const [index, { entry, source, snapshot }] of preparedCases.entries()) {
     workerMetrics: summary.completedMetrics,
     transcriptSegments: summary.counts.transcript_segment ?? 0,
     speakerTurns: summary.speakerTurnCount,
+    unknownSpeakerTurns: result.responses.filter((response) => response.type === 'speaker_turn_batch')
+      .flatMap((response) => response.turns).filter((turn) => turn.globalSpeaker === null).length,
   });
   if (entry.kind === "asr") {
     metricRequest.asr.push({
@@ -657,7 +642,7 @@ for (const [index, { entry, source, snapshot }] of preparedCases.entries()) {
       group: entry.group,
       collarSeconds: entry.collarSeconds,
       reference: entry.reference,
-      hypothesis: collectSpeakerTurns(result.responses),
+      hypothesis: collectKnownSpeakerTurns(result.responses),
     });
   }
 }

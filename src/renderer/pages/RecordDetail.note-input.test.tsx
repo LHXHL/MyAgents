@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   recordAddMark: vi.fn(),
   recordAddNote: vi.fn(),
   recordGet: vi.fn(),
+  recordSpeechProjection: vi.fn(),
   recordTranscript: vi.fn(),
   recordTranscriptDelta: vi.fn(),
   recordDiarization: vi.fn(),
@@ -43,9 +44,8 @@ vi.mock('@/api/recording', async (importOriginal) => {
     ...actual,
     recordAddMark: mocks.recordAddMark,
     recordAddNote: mocks.recordAddNote,
-    recordTranscript: mocks.recordTranscript,
+    recordSpeechProjection: mocks.recordSpeechProjection,
     recordTranscriptDelta: mocks.recordTranscriptDelta,
-    recordDiarization: mocks.recordDiarization,
     recordReassignSegmentSpeaker: mocks.recordReassignSegmentSpeaker,
     recordTimeline: mocks.recordTimeline,
     recordingSnapshot: mocks.recordingSnapshot,
@@ -179,6 +179,9 @@ describe('RecordDetail note input', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     HTMLElement.prototype.scrollTo = vi.fn();
     mocks.recordGet.mockResolvedValue(RECORD);
+    mocks.recordSpeechProjection.mockImplementation(async () => ({
+      transcript: await mocks.recordTranscript(), diarization: await mocks.recordDiarization(),
+    }));
     mocks.recordTranscript.mockResolvedValue(null);
     mocks.recordTranscriptDelta.mockResolvedValue(null);
     mocks.recordDiarization.mockResolvedValue(null);
@@ -960,6 +963,7 @@ describe('RecordDetail note input', () => {
     const primaryAudio = screen.getByTestId(
       'recording-primary-audio',
     ) as HTMLAudioElement;
+    Object.defineProperty(primaryAudio, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA });
     fireEvent.loadedMetadata(primaryAudio);
 
     expect(primaryAudio.currentTime).toBe(9);
@@ -1075,7 +1079,11 @@ describe('RecordDetail note input', () => {
       segmentSpeakerAttributions: { 'segment-0': { kind: 'unknown' }, 'segment-1': { kind: 'multiple' }, 'segment-2': { kind: 'single', speakerId: 1 } },
     };
     mocks.recordDiarization.mockResolvedValue(projection);
-    mocks.recordReassignSegmentSpeaker.mockResolvedValue({ ...projection, overrideRevision: 1, segmentSpeakerAttributions: { ...projection.segmentSpeakerAttributions, 'segment-1': { kind: 'single', speakerId: 0 } } });
+    mocks.recordReassignSegmentSpeaker.mockImplementation(async () => {
+      const next = { ...projection, overrideRevision: 1, segmentSpeakerAttributions: { ...projection.segmentSpeakerAttributions, 'segment-1': { kind: 'single', speakerId: 0 } } };
+      mocks.recordDiarization.mockResolvedValue(next);
+      return next;
+    });
     render(<RecordDetail recordId={RECORD.id} isActive={false} initialRecordingSnapshot={SNAPSHOT} />);
     const lines = await screen.findAllByTestId('transcript-speaker-line');
     expect(lines).toHaveLength(3);

@@ -14,6 +14,7 @@ import test from 'node:test';
 import {
   extractSherpaBuildSource,
   patchHclustWindowsFenvPragma,
+  patchSherpaRawEvidence,
   patchSherpaWindowsOnnxRuntimeImport,
 } from './sherpa-source-extraction.mjs';
 
@@ -159,6 +160,23 @@ test('rejects missing or ambiguous hclust pragmas without changing the source', 
       );
       assert.equal(readFileSync(sourcePath, 'utf8'), source);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('raw speaker extension rejects an unverified upstream before writing files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'myagents-sherpa-raw-drift-'));
+  try {
+    const core = join(root, 'sherpa-onnx/csrc');
+    mkdirSync(core, { recursive: true });
+    const header = join(core, 'offline-speaker-diarization.h');
+    const unknown = '#include <string>\nclass OfflineSpeakerDiarization {};\n';
+    writeFileSync(header, unknown);
+    assert.throws(() => patchSherpaRawEvidence(root), /does not match/);
+    assert.equal(readFileSync(header, 'utf8'), unknown);
+    assert.equal(existsSync(join(core, 'myagents-raw-evidence.h')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

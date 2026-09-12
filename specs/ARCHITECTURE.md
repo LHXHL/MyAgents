@@ -173,6 +173,8 @@ Task、Goal 与 Agent Channel 都复用 Product Session 和同一 Runtime queue�
 
 DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列、Worker generation、取消与结果发布；Document/Media Worker 只执行单次计算，不拥有队列、持久化或公开 artifact。共享 ONNX Runtime 与本地计算优先级由 Rust 应用级 owner 协调。
 
+Record 的物理音轨与媒体时钟由 RecordingManager 持有；Media Worker 按来源处理回声、转录和人物证据。SpeechRecognitionManager 将 ASR、人物与后台标注匹配绑定为同一次处理，RecordStore 在锁内裁决最新人工事实并一次发布正文和人物。稳定人物属于当前 Record；模型编号、物理来源与真实身份不能互相替代，也不建立跨 Record 声纹库。
+
 详见 [Pit-of-Success](./tech_docs/pit_of_success.md)、[Tool Attachment](./tech_docs/tool_attachment_pipeline.md)、[文档转换](./tech_docs/document_processing.md) 和 [录音与语音识别](./tech_docs/recording_and_speech_recognition.md)。
 
 ## 模块地图

@@ -7,8 +7,8 @@
 
 use crate::model_pack_source::VerifiedModelPack;
 use crate::native_adapter::{
-    ADAPTER_ABI_VERSION, AsrEngine, DiarizerEngine, NativeAdapterError, NativeApiV1,
-    NativeBuildIdentity, VadEngine, cluster_embeddings, create_asr_engine, create_diarizer_engine,
+    ADAPTER_ABI_VERSION, AsrEngine, DiarizerEngine, NativeAdapterError, NativeApiV2,
+    NativeBuildIdentity, VadEngine, cluster_distances, create_asr_engine, create_diarizer_engine,
     create_vad_engine, validate_api,
 };
 use serde::Deserialize;
@@ -26,11 +26,19 @@ const SHERPA_ONNX_VERSION: &str = "1.13.6";
 const SHERPA_ONNX_COMMIT: &str = "1cb484af5e69d3c7803c1eb0b3b5ab8041e0e911";
 const ONNX_RUNTIME_VERSION: &str = "1.28.0";
 const ONNX_RUNTIME_REVISION: &str = "v1.28.0@da9b5e364c465de65c49d91e696cd6485270757f";
-const REQUIRED_LEGAL_FILES: [&str; 5] = [
+const REQUIRED_LEGAL_FILES: [&str; 13] = [
     "legal/LIBOPUS-LICENSE",
     "legal/OPUS2-LICENSE-APACHE",
     "legal/OPUS2-LICENSE-MIT",
     "legal/SHERPA-ONNX-LICENSE",
+    "legal/RUBATO-LICENSE",
+    "legal/SONORA-LICENSE",
+    "legal/SONORA-AEC3-LICENSE",
+    "legal/SONORA-AGC2-LICENSE",
+    "legal/SONORA-COMMON-AUDIO-LICENSE",
+    "legal/SONORA-FFT-LICENSE",
+    "legal/SONORA-NS-LICENSE",
+    "legal/SONORA-SIMD-LICENSE",
     "legal/SPEECH_INFERENCE_NOTICES.md",
 ];
 
@@ -456,10 +464,10 @@ fn expected_signing_kind(platform: &str) -> &'static str {
     }
 }
 
-type GetApi = unsafe extern "C" fn(u32) -> *const NativeApiV1;
+type GetApi = unsafe extern "C" fn(u32) -> *const NativeApiV2;
 
 pub struct LoadedNativeAdapter {
-    api: NonNull<NativeApiV1>,
+    api: NonNull<NativeApiV2>,
     build_identity: NativeBuildIdentity,
     // Drop in dependency order: adapter -> sherpa -> runtime.
     _adapter: PlatformLibrary,
@@ -539,16 +547,17 @@ impl LoadedNativeAdapter {
         .map_err(NativeBundleError::Adapter)
     }
 
-    pub fn cluster_embeddings(
+    pub fn cluster_distances(
         &self,
-        embeddings: &[Vec<f32>],
-        distance_threshold: f32,
+        distances: &[f64],
+        node_count: usize,
+        distance_threshold: f64,
     ) -> Result<Vec<u32>, NativeBundleError> {
-        cluster_embeddings(self.api(), embeddings, distance_threshold)
+        cluster_distances(self.api(), distances, node_count, distance_threshold)
             .map_err(NativeBundleError::Adapter)
     }
 
-    pub fn api(&self) -> &NativeApiV1 {
+    pub fn api(&self) -> &NativeApiV2 {
         // SAFETY: The pointer is validated during construction and the owning
         // library fields cannot be dropped before `self`.
         unsafe { self.api.as_ref() }
@@ -664,7 +673,7 @@ mod tests {
         let manifest = json!({
             "schemaVersion": 1,
             "capability": "speech-inference",
-            "adapterAbiVersion": 1,
+            "adapterAbiVersion": 2,
             "platform": platform,
             "architecture": architecture,
             "buildFingerprint": "f".repeat(64),

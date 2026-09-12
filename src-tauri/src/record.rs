@@ -5,6 +5,7 @@
 //! commits through this store.
 
 use chrono::{DateTime, Datelike, Utc};
+use myagents_media_worker_protocol::record_timeline::RecordTrackTimeline;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -25,6 +26,12 @@ use crate::durable_journal::{
 use crate::record_analytics::{self, AnalyticsSource, AnalyticsSurface, RecordUseOperation};
 use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOptions};
 use crate::{ulog_info, ulog_warn};
+
+mod speaker_identity;
+pub use speaker_identity::RecordInheritedAssignment;
+pub(crate) use speaker_identity::RecordSpeechBaseline;
+pub use speaker_identity::RecordSpeechSourceSnapshot;
+use speaker_identity::{RecordAssignmentAnchor, RecordPersonAnchor};
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const RECORD_MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
@@ -97,7 +104,7 @@ pub enum DiarizationStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioTrackKind {
     Microphone,
@@ -125,6 +132,10 @@ pub struct RecordArtifact {
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_timeline: Option<RecordTrackTimeline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_time_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -438,12 +449,16 @@ pub struct AudioRecordCreateInput {
 
 #[derive(Debug, Clone)]
 pub struct AudioTrackArtifactInput {
+    pub timeline: Option<RecordTrackTimeline>,
+    pub capture_time_error: Option<String>,
     pub track: AudioTrackKind,
     pub relative_path: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedRecordMedia {
+    pub timeline: Option<RecordTrackTimeline>,
+    pub capture_time_error: Option<String>,
     pub record_id: String,
     pub revision: u64,
     pub track: AudioTrackKind,
@@ -838,6 +853,8 @@ pub struct RecordSpeechProvenance {
     pub provider: String,
     pub model_pack_revision: String,
     pub onnx_runtime_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm_revision: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -846,6 +863,10 @@ pub struct RecordTranscriptSnapshot {
     pub schema_version: u32,
     pub record_id: String,
     pub projection_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_snapshot: Option<RecordSpeechSourceSnapshot>,
     pub state: String,
     pub sample_rate: u32,
     pub provenance: RecordSpeechProvenance,
@@ -907,9 +928,20 @@ impl Drop for SensitiveTranscriptInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordSpeakerTurn {
+    /// None is a real legacy observation with unknown physical source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AudioTrackKind>,
     pub start_sample: u64,
     pub end_sample: u64,
-    pub global_speaker: u32,
+    pub global_speaker: Option<u32>,
+}
+
+/// One Store read owns the final text and the effective human attribution.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordSpeechProjection {
+    pub transcript: Option<RecordTranscriptSnapshot>,
+    pub diarization: Option<RecordDiarizationProjection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -918,15 +950,27 @@ pub struct RecordDiarizationResult {
     pub schema_version: u32,
     pub record_id: String,
     pub projection_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_snapshot: Option<RecordSpeechSourceSnapshot>,
     pub sample_rate: u32,
     pub provenance: RecordSpeechProvenance,
     pub turns: Vec<RecordSpeakerTurn>,
+    /// Model labels are scoped to this result; person IDs belong to the Record.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub person_bindings: BTreeMap<u32, u32>,
+    #[serde(default)]
+    pub next_person_id: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inherited_assignments: BTreeMap<String, RecordInheritedAssignment>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordSpeakerProjection {
     pub speaker_id: u32,
+    pub display_index: u32,
     pub custom_name: Option<String>,
     pub merged_into: Option<u32>,
 }
@@ -957,6 +1001,8 @@ pub struct RecordDiarizationProjection {
     pub schema_version: u32,
     pub record_id: String,
     pub projection_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_id: Option<String>,
     pub sample_rate: u32,
     pub provenance: RecordSpeechProvenance,
     pub turns: Vec<RecordSpeakerTurn>,
@@ -977,6 +1023,10 @@ struct RecordSpeakerOverrides {
     renames: BTreeMap<u32, String>,
     merges: BTreeMap<u32, u32>,
     reassignments: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    person_anchors: BTreeMap<u32, RecordPersonAnchor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    assignment_anchors: BTreeMap<String, RecordAssignmentAnchor>,
 }
 
 impl RecordSpeakerOverrides {
@@ -989,6 +1039,8 @@ impl RecordSpeakerOverrides {
             renames: BTreeMap::new(),
             merges: BTreeMap::new(),
             reassignments: BTreeMap::new(),
+            person_anchors: BTreeMap::new(),
+            assignment_anchors: BTreeMap::new(),
         }
     }
 }
@@ -1404,11 +1456,17 @@ impl RecordStore {
             }
             let relative = validate_record_relative_path(&artifact.relative_path)?;
             let source = resolve_plain_record_artifact(&stored.path, &relative)?;
-            inventory.push(record_artifact_from_file(
-                &source,
-                &relative,
-                "audio/ogg-opus",
-            )?);
+            if artifact
+                .timeline
+                .as_ref()
+                .is_some_and(|timeline| !timeline.is_valid())
+            {
+                return Err("invalid capture timeline".to_string());
+            }
+            let mut item = record_artifact_from_file(&source, &relative, "audio/ogg-opus")?;
+            item.capture_timeline = artifact.timeline;
+            item.capture_time_error = artifact.capture_time_error;
+            inventory.push(item);
             actual_tracks.push(artifact.track);
         }
         let size_bytes = inventory
@@ -1481,6 +1539,8 @@ impl RecordStore {
             return Err("Record media no longer matches its inventory".to_string());
         }
         Ok(ResolvedRecordMedia {
+            timeline: artifact.capture_timeline.clone(),
+            capture_time_error: artifact.capture_time_error.clone(),
             record_id: id.to_string(),
             revision: stored.record.revision,
             track,
@@ -1501,6 +1561,9 @@ impl RecordStore {
         track: AudioTrackKind,
     ) -> Result<ResolvedRecordMedia, String> {
         let media = self.resolve_record_media(id, track).await?;
+        if media.capture_time_error.is_some() {
+            return Err("SPEECH_CAPTURE_TIME_UNAVAILABLE".to_string());
+        }
         let actual = sha256_regular_file_exact(&media.path, media.size_bytes)?;
         if actual != media.sha256 {
             return Err("Record media digest no longer matches its inventory".to_string());
@@ -1758,7 +1821,10 @@ impl RecordStore {
         Ok(updated)
     }
 
-    pub async fn commit_recording_final_transcript(
+    // Historical artifact producer used by migration fixtures. Production has
+    // one atomic publication entry point for the whole processing.
+    #[cfg(test)]
+    async fn commit_recording_final_transcript(
         &self,
         id: &str,
         segments: Vec<RecordTranscriptSegment>,
@@ -1801,6 +1867,8 @@ impl RecordStore {
             schema_version: 1,
             record_id: id.to_string(),
             projection_revision,
+            processing_id: None,
+            source_snapshot: None,
             state: "recording_final".into(),
             sample_rate: SPEECH_SAMPLE_RATE as u32,
             provenance,
@@ -1846,7 +1914,8 @@ impl RecordStore {
         Ok(snapshot)
     }
 
-    pub async fn commit_diarization_result(
+    #[cfg(test)]
+    async fn commit_diarization_result(
         &self,
         id: &str,
         turns: Vec<RecordSpeakerTurn>,
@@ -1883,12 +1952,17 @@ impl RecordStore {
                 }
             });
         let result = RecordDiarizationResult {
-            schema_version: 1,
+            schema_version: 2,
             record_id: id.to_string(),
             projection_revision,
+            processing_id: None,
+            source_snapshot: None,
             sample_rate: SPEECH_SAMPLE_RATE as u32,
             provenance,
             turns,
+            person_bindings: BTreeMap::new(),
+            next_person_id: 0,
+            inherited_assignments: BTreeMap::new(),
         };
         let bytes = serde_json::to_vec_pretty(&result)
             .map_err(|error| format!("serialize diarization result: {error}"))?;
@@ -1985,6 +2059,14 @@ impl RecordStore {
         read_diarization_projection_for_stored(stored)
     }
 
+    pub async fn read_speech_projection(&self, id: &str) -> Result<RecordSpeechProjection, String> {
+        let inner = self.inner.read().await;
+        let stored = inner
+            .get(id)
+            .ok_or_else(|| format!("Record not found: {id}"))?;
+        read_speech_projection_for_stored(stored)
+    }
+
     pub async fn rename_speaker(
         &self,
         input: RecordSpeakerRenameInput,
@@ -2000,12 +2082,13 @@ impl RecordStore {
             &input.record_id,
             input.expected_override_revision,
             input.updated_at_wall_time,
-            move |_stored, model, overrides| {
+            move |stored, model, overrides| {
                 let speakers = model_speaker_ids(model);
                 if !speakers.contains(&input.speaker_id) {
                     return Err("Speaker not found".to_string());
                 }
                 let speaker_id = resolve_merged_speaker(input.speaker_id, &overrides.merges)?;
+                speaker_identity::capture_person_anchor(stored, model, overrides, speaker_id)?;
                 overrides.renames.insert(speaker_id, name);
                 Ok(())
             },
@@ -2021,7 +2104,7 @@ impl RecordStore {
             &input.record_id,
             input.expected_override_revision,
             input.updated_at_wall_time,
-            move |_stored, model, overrides| {
+            move |stored, model, overrides| {
                 let speakers = model_speaker_ids(model);
                 if !speakers.contains(&input.source_speaker_id)
                     || !speakers.contains(&input.target_speaker_id)
@@ -2033,6 +2116,8 @@ impl RecordStore {
                 if source == target {
                     return Err("Speakers are already merged".to_string());
                 }
+                speaker_identity::capture_person_anchor(stored, model, overrides, source)?;
+                speaker_identity::capture_person_anchor(stored, model, overrides, target)?;
                 for merged_target in overrides.merges.values_mut() {
                     if *merged_target == source {
                         *merged_target = target;
@@ -2077,6 +2162,16 @@ impl RecordStore {
                     return Err("Transcript segment not found".to_string());
                 }
                 let speaker_id = resolve_merged_speaker(input.speaker_id, &overrides.merges)?;
+                speaker_identity::capture_person_anchor(stored, model, overrides, speaker_id)?;
+                let anchor = speaker_identity::capture_assignment_anchor(
+                    stored,
+                    &input.segment_id,
+                    overrides.revision.saturating_add(1),
+                )?;
+                speaker_identity::supersede_assignments(overrides, &anchor)?;
+                overrides
+                    .assignment_anchors
+                    .insert(input.segment_id.clone(), anchor);
                 overrides.reassignments.insert(input.segment_id, speaker_id);
                 Ok(())
             },
@@ -2122,6 +2217,7 @@ impl RecordStore {
         if overrides.revision != expected_override_revision {
             return Err("RECORD_SPEAKER_OVERRIDE_REVISION_CONFLICT".to_string());
         }
+        speaker_identity::bind_legacy_overrides(&stored, Some(&model), &mut overrides)?;
         mutate(&stored, &model, &mut overrides)?;
         overrides.revision = overrides.revision.saturating_add(1);
         overrides.updated_at_wall_time = updated_at_wall_time;
@@ -2140,7 +2236,8 @@ impl RecordStore {
             record: updated,
             ..stored
         };
-        let projection = project_diarization(&updated_stored, model, overrides)?;
+        let transcript = read_current_transcript(&updated_stored)?;
+        let projection = project_diarization(model, overrides, transcript.as_ref())?;
         inner.insert(record_id.to_string(), updated_stored);
         self.emit_change(record_id, RecordChangeKind::Upsert);
         Ok(projection)
@@ -2517,38 +2614,44 @@ impl RecordStore {
     }
 
     pub async fn search_documents(&self, id: &str) -> Result<Vec<RecordSearchDocument>, String> {
-        let stored = self
-            .inner
-            .read()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("Record not found: {id}"))?;
-        tokio::task::spawn_blocking(move || build_record_search_documents(&stored))
-            .await
-            .map_err(|error| format!("Record search projection panicked: {error}"))?
+        let inner = Arc::clone(&self.inner);
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // A cloned manifest does not lease the referenced files. Read
+            // artifacts and mutable human facts under the publication lock.
+            let guard = inner.blocking_read();
+            let stored = guard
+                .get(&id)
+                .ok_or_else(|| format!("Record not found: {id}"))?;
+            build_record_search_documents(stored)
+        })
+        .await
+        .map_err(|error| format!("Record search projection panicked: {error}"))?
     }
 
     pub async fn all_search_documents(&self) -> Vec<RecordSearchDocument> {
-        let stored = self
-            .inner
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let ids = self.inner.read().await.keys().cloned().collect::<Vec<_>>();
+        let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
-            stored
-                .iter()
-                .flat_map(|record| match build_record_search_documents(record) {
-                    Ok(documents) => documents,
-                    Err(error) => {
-                        ulog_warn!(
-                            "[record-search] skipped derived content recordId={} error={}",
-                            record.record.id,
-                            error
-                        );
-                        vec![base_record_search_document(record)]
+            ids.iter()
+                .flat_map(|id| {
+                    // Release between Records so a baseline does not hold the
+                    // write boundary for the entire library. Observer replay
+                    // handles Records created or deleted during the baseline.
+                    let guard = inner.blocking_read();
+                    let Some(record) = guard.get(id) else {
+                        return Vec::new();
+                    };
+                    match build_record_search_documents(record) {
+                        Ok(documents) => documents,
+                        Err(error) => {
+                            ulog_warn!(
+                                "[record-search] skipped derived content recordId={} error={}",
+                                record.record.id,
+                                error
+                            );
+                            vec![base_record_search_document(record)]
+                        }
                     }
                 })
                 .collect()
@@ -3286,6 +3389,15 @@ fn validate_audio_discussion_document_artifact(
 }
 
 fn validate_speech_provenance(provenance: &RecordSpeechProvenance) -> Result<(), String> {
+    if provenance
+        .algorithm_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err("speech algorithm revision is invalid".into());
+    }
     for (label, value) in [
         ("provider", provenance.provider.as_str()),
         ("model revision", provenance.model_pack_revision.as_str()),
@@ -3469,6 +3581,8 @@ fn project_live_transcript(
         schema_version: 1,
         record_id: record_id.to_string(),
         projection_revision,
+        processing_id: None,
+        source_snapshot: None,
         state,
         sample_rate: SPEECH_SAMPLE_RATE as u32,
         provenance,
@@ -3539,12 +3653,22 @@ fn validate_speaker_turns(
         return Err("diarization turn count exceeds the fixed limit".to_string());
     }
     let max_sample = record_max_speech_sample(audio)?;
-    let mut previous_key: Option<(u64, u64, u32)> = None;
+    let mut previous_key = None;
     for turn in turns {
-        if turn.start_sample >= turn.end_sample || turn.end_sample > max_sample {
+        if turn.start_sample >= turn.end_sample
+            || turn.end_sample > max_sample
+            || turn
+                .source
+                .is_some_and(|source| !audio.tracks.contains(&source))
+        {
             return Err("diarization turn inventory is invalid".to_string());
         }
-        let key = (turn.start_sample, turn.end_sample, turn.global_speaker);
+        let key = (
+            turn.start_sample,
+            turn.end_sample,
+            turn.source,
+            turn.global_speaker,
+        );
         if previous_key.is_some_and(|previous| previous > key) {
             return Err("diarization turns are not in stable timeline order".to_string());
         }
@@ -3571,7 +3695,16 @@ fn read_transcript_snapshot(path: &Path) -> Result<RecordTranscriptSnapshot, Str
         .map_err(|error| format!("parse transcript snapshot: {error}"));
     bytes.zeroize();
     let snapshot: RecordTranscriptSnapshot = parsed?;
-    if snapshot.schema_version != 1
+    if !matches!(snapshot.schema_version, 1 | 2)
+        || (snapshot.schema_version == 1
+            && (snapshot.processing_id.is_some() || snapshot.source_snapshot.is_some()))
+        || (snapshot.schema_version == 2
+            && !snapshot.processing_id.as_deref().is_some_and(is_safe_id))
+        || (snapshot.schema_version == 2
+            && snapshot
+                .source_snapshot
+                .as_ref()
+                .map_or(true, |source| !source.is_valid()))
         || snapshot.projection_revision == 0
         || snapshot.state != "recording_final"
         || snapshot.sample_rate != SPEECH_SAMPLE_RATE as u32
@@ -3610,18 +3743,51 @@ fn read_diarization_result(path: &Path) -> Result<RecordDiarizationResult, Strin
     let bytes = read_bounded_regular_file(path, TRANSCRIPT_SNAPSHOT_MAX_BYTES)?;
     let result: RecordDiarizationResult = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse diarization result: {error}"))?;
-    if result.schema_version != 1
+    if !matches!(result.schema_version, 1..=3)
+        || (result.schema_version < 3
+            && (result.processing_id.is_some()
+                || result.source_snapshot.is_some()
+                || !result.person_bindings.is_empty()
+                || result.next_person_id != 0
+                || !result.inherited_assignments.is_empty()))
+        || (result.schema_version >= 2 && result.turns.iter().any(|turn| turn.source.is_none()))
+        || (result.schema_version == 3 && !result.processing_id.as_deref().is_some_and(is_safe_id))
+        || (result.schema_version == 3
+            && result
+                .source_snapshot
+                .as_ref()
+                .map_or(true, |source| !source.is_valid()))
         || result.projection_revision == 0
         || result.sample_rate != SPEECH_SAMPLE_RATE as u32
         || !is_safe_id(&result.record_id)
     {
         return Err("diarization result identity is invalid".to_string());
     }
+    if result.schema_version == 3 {
+        let labels = result
+            .turns
+            .iter()
+            .filter_map(|turn| turn.global_speaker)
+            .collect::<BTreeSet<_>>();
+        if labels != result.person_bindings.keys().copied().collect()
+            || result
+                .person_bindings
+                .values()
+                .any(|person| *person >= result.next_person_id)
+        {
+            return Err("diarization person inventory is invalid".into());
+        }
+    }
     Ok(result)
 }
 
 fn model_speaker_ids(model: &RecordDiarizationResult) -> BTreeSet<u32> {
-    model.turns.iter().map(|turn| turn.global_speaker).collect()
+    model
+        .turns
+        .iter()
+        .filter_map(|turn| turn.global_speaker)
+        .map(|label| speaker_identity::person_for_label(model, label))
+        .collect()
 }
 
 fn resolve_merged_speaker(speaker_id: u32, merges: &BTreeMap<u32, u32>) -> Result<u32, String> {
@@ -3652,12 +3818,13 @@ fn read_speaker_overrides(stored: &StoredRecord) -> Result<RecordSpeakerOverride
     {
         return Err("Record speaker overrides are invalid".to_string());
     }
-    let bytes = fs::read(&path).map_err(|error| format!("read speaker overrides: {error}"))?;
+    let bytes = read_bounded_regular_file(&path, DIARIZATION_OVERRIDES_MAX_BYTES)?;
     let overrides: RecordSpeakerOverrides = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse speaker overrides: {error}"))?;
-    if overrides.schema_version != 1 || overrides.record_id != stored.record.id {
+    if !matches!(overrides.schema_version, 1 | 2) || overrides.record_id != stored.record.id {
         return Err("Record speaker override identity mismatch".to_string());
     }
+    speaker_identity::validate_anchor_shapes(&overrides)?;
     Ok(overrides)
 }
 
@@ -3665,9 +3832,10 @@ fn write_speaker_overrides(
     stored: &StoredRecord,
     overrides: &RecordSpeakerOverrides,
 ) -> Result<(), String> {
-    if overrides.record_id != stored.record.id || overrides.schema_version != 1 {
+    if overrides.record_id != stored.record.id || !matches!(overrides.schema_version, 1 | 2) {
         return Err("Record speaker override identity mismatch".to_string());
     }
+    speaker_identity::validate_anchor_shapes(overrides)?;
     let bytes = serde_json::to_vec_pretty(overrides)
         .map_err(|error| format!("serialize speaker overrides: {error}"))?;
     if bytes.is_empty() || bytes.len() as u64 > DIARIZATION_OVERRIDES_MAX_BYTES {
@@ -3717,6 +3885,24 @@ fn read_current_transcript(
 fn read_diarization_projection_for_stored(
     stored: &StoredRecord,
 ) -> Result<Option<RecordDiarizationProjection>, String> {
+    Ok(read_speech_projection_for_stored(stored)?.diarization)
+}
+
+fn read_speech_projection_for_stored(
+    stored: &StoredRecord,
+) -> Result<RecordSpeechProjection, String> {
+    let transcript = read_current_transcript(stored)?;
+    let diarization = read_diarization_for_transcript(stored, transcript.as_ref())?;
+    Ok(RecordSpeechProjection {
+        transcript,
+        diarization,
+    })
+}
+
+fn read_diarization_for_transcript(
+    stored: &StoredRecord,
+    transcript: Option<&RecordTranscriptSnapshot>,
+) -> Result<Option<RecordDiarizationProjection>, String> {
     if stored.record.kind != RecordKind::Audio {
         return Err(format!("Record is not audio: {}", stored.record.id));
     }
@@ -3735,7 +3921,7 @@ fn read_diarization_projection_for_stored(
     };
     let model = read_owned_diarization_result(&stored.record.id, &stored.path, audio, artifact)?;
     let overrides = read_speaker_overrides(stored)?;
-    project_diarization(stored, model, overrides).map(Some)
+    project_diarization(model, overrides, transcript).map(Some)
 }
 
 fn base_record_search_document(stored: &StoredRecord) -> RecordSearchDocument {
@@ -3765,8 +3951,10 @@ fn build_record_search_documents(
         .audio
         .as_ref()
         .ok_or_else(|| format!("audio Record summary missing: {}", stored.record.id))?;
-    let transcript = read_current_transcript(stored)?;
-    let diarization = read_diarization_projection_for_stored(stored)?;
+    let RecordSpeechProjection {
+        transcript,
+        diarization,
+    } = read_speech_projection_for_stored(stored)?;
     if let Some(transcript) = transcript.as_ref() {
         for segment in &transcript.segments {
             let speaker_terms = export_speaker_label(segment, diarization.as_ref(), false);
@@ -3803,12 +3991,19 @@ fn build_record_search_documents(
 }
 
 fn project_diarization(
-    stored: &StoredRecord,
     model: RecordDiarizationResult,
     overrides: RecordSpeakerOverrides,
+    transcript: Option<&RecordTranscriptSnapshot>,
 ) -> Result<RecordDiarizationProjection, String> {
     let speaker_ids = model_speaker_ids(&model);
-    let transcript = read_current_transcript(stored)?;
+    if model.schema_version == 3
+        && transcript.as_ref().map_or(true, |snapshot| {
+            snapshot.processing_id != model.processing_id
+                || snapshot.source_snapshot != model.source_snapshot
+        })
+    {
+        return Err("Record speech result processing identity mismatch".into());
+    }
     let transcript_segment_ids = transcript
         .as_ref()
         .map(|snapshot| {
@@ -3821,7 +4016,16 @@ fn project_diarization(
         .unwrap_or_default();
     let mut conflicts = Vec::new();
     let mut speakers = Vec::with_capacity(speaker_ids.len());
-    for speaker_id in speaker_ids.iter().copied() {
+    let mut seen = BTreeSet::new();
+    let mut display_indices = BTreeMap::new();
+    let ordered_speakers = model
+        .turns
+        .iter()
+        .filter_map(|turn| turn.global_speaker)
+        .map(|label| speaker_identity::person_for_label(&model, label))
+        .filter(|person| seen.insert(*person))
+        .collect::<Vec<_>>();
+    for speaker_id in ordered_speakers {
         let custom_name = overrides.renames.get(&speaker_id).cloned();
         let merged_into = match overrides.merges.get(&speaker_id).copied() {
             Some(target) if speaker_ids.contains(&target) => {
@@ -3845,8 +4049,16 @@ fn project_diarization(
             }
             None => None,
         };
+        let canonical = merged_into.unwrap_or(speaker_id);
+        let next_index = display_indices.len() as u32;
+        let display_index = *display_indices.entry(canonical).or_insert(next_index);
         speakers.push(RecordSpeakerProjection {
             speaker_id,
+            display_index: if model.schema_version < 3 {
+                speaker_id
+            } else {
+                display_index
+            },
             custom_name,
             merged_into,
         });
@@ -3862,9 +4074,20 @@ fn project_diarization(
     let mut segment_speaker_overrides = BTreeMap::new();
     for (segment_id, speaker_id) in &overrides.reassignments {
         let resolved = resolve_merged_speaker(*speaker_id, &overrides.merges);
+        let same_original_result = overrides.assignment_anchors.get(segment_id).map_or(
+            model.schema_version < 3,
+            |anchor| {
+                transcript.as_ref().is_some_and(|snapshot| {
+                    anchor.excluded_intervals.is_empty()
+                        && anchor.processing_id == snapshot.processing_id
+                        && anchor.transcript_revision == snapshot.projection_revision
+                })
+            },
+        );
         match resolved {
             Ok(resolved)
-                if transcript_segment_ids.contains(segment_id)
+                if same_original_result
+                    && transcript_segment_ids.contains(segment_id)
                     && speaker_ids.contains(&resolved) =>
             {
                 segment_speaker_overrides.insert(segment_id.clone(), resolved);
@@ -3875,17 +4098,86 @@ fn project_diarization(
             }),
         }
     }
+    for (segment_id, inherited) in &model.inherited_assignments {
+        // A user edit made after the candidate was computed wins immediately;
+        // removed/replaced operations cannot be resurrected by a stale binding.
+        let current_anchor = overrides
+            .assignment_anchors
+            .get(&inherited.original_segment_id);
+        let current_target = overrides
+            .reassignments
+            .get(&inherited.original_segment_id)
+            .and_then(|target| resolve_merged_speaker(*target, &overrides.merges).ok());
+        let scope_still_valid = current_anchor.is_some_and(|anchor| {
+            transcript.as_ref().is_some_and(|snapshot| {
+                let Some(source) = &snapshot.source_snapshot else {
+                    return false;
+                };
+                let Some(segment) = snapshot
+                    .segments
+                    .iter()
+                    .find(|segment| &segment.segment_id == segment_id)
+                else {
+                    return false;
+                };
+                speaker_identity::original_interval_for_inventory(
+                    &source.artifacts,
+                    segment.track,
+                    segment.start_sample,
+                    segment.end_sample,
+                    true,
+                )
+                .is_some_and(|interval| {
+                    speaker_identity::assignment_covers(anchor, &source.audio_identity, &interval)
+                })
+            })
+        });
+        // Inheritance freezes the original operation, not the current canonical
+        // identity: an explicit later merge applies to both representations.
+        let Ok(inherited_target) = resolve_merged_speaker(inherited.speaker_id, &overrides.merges)
+        else {
+            continue;
+        };
+        if scope_still_valid
+            && current_anchor
+                .is_some_and(|anchor| anchor.operation_revision == inherited.operation_revision)
+            && current_target == Some(inherited_target)
+            && speaker_ids.contains(&inherited_target)
+            && transcript_segment_ids.contains(segment_id)
+        {
+            segment_speaker_overrides
+                .entry(segment_id.clone())
+                .or_insert(inherited_target);
+        }
+    }
+    if model.schema_version == 3 {
+        // Unmatched historical facts remain in the private override artifact;
+        // they never become a user-facing review queue or conflict counter.
+        conflicts.clear();
+    }
     conflicts.sort_by(|left, right| {
         left.kind
             .cmp(&right.kind)
             .then_with(|| left.target_id.cmp(&right.target_id))
     });
-    let canonical_speakers = speakers
+    let canonical_people = speakers
         .iter()
         .map(|speaker| {
             (
                 speaker.speaker_id,
                 speaker.merged_into.unwrap_or(speaker.speaker_id),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let canonical_speakers = model
+        .turns
+        .iter()
+        .filter_map(|turn| turn.global_speaker)
+        .map(|label| {
+            let person = speaker_identity::person_for_label(&model, label);
+            (
+                label,
+                canonical_people.get(&person).copied().unwrap_or(person),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -3913,13 +4205,24 @@ fn project_diarization(
                 .collect()
         })
         .unwrap_or_default();
+    let projected_turns = model
+        .turns
+        .iter()
+        .map(|turn| RecordSpeakerTurn {
+            global_speaker: turn
+                .global_speaker
+                .map(|label| speaker_identity::person_for_label(&model, label)),
+            ..turn.clone()
+        })
+        .collect();
     Ok(RecordDiarizationProjection {
         schema_version: model.schema_version,
         record_id: model.record_id,
         projection_revision: model.projection_revision,
+        processing_id: model.processing_id,
         sample_rate: model.sample_rate,
         provenance: model.provenance,
-        turns: model.turns,
+        turns: projected_turns,
         override_revision: overrides.revision,
         speakers,
         segment_speaker_overrides,
@@ -3933,22 +4236,47 @@ fn project_segment_speaker_attribution(
     turns: &[RecordSpeakerTurn],
     canonical_speakers: &BTreeMap<u32, u32>,
 ) -> RecordSegmentSpeakerAttribution {
-    let mut speaker = None;
-    // Half-open intervals: a turn touching the paragraph boundary contributes
-    // no evidence. A midpoint miss can still have useful overlap elsewhere.
+    let mut known = BTreeSet::new();
+    let mut unknown = Vec::new();
     for turn in turns.iter().filter(|turn| {
-        turn.start_sample < segment.end_sample && segment.start_sample < turn.end_sample
+        // Unknown legacy source can explain an actual mixed paragraph, never
+        // silently acquire microphone or system authority.
+        (turn.source == Some(segment.track)
+            || (turn.source.is_none() && segment.track == AudioTrackKind::Mixed))
+            && turn.start_sample < segment.end_sample
+            && segment.start_sample < turn.end_sample
     }) {
-        let canonical = canonical_speakers
-            .get(&turn.global_speaker)
-            .copied()
-            .unwrap_or(turn.global_speaker);
-        if speaker.is_some_and(|existing| existing != canonical) {
-            return RecordSegmentSpeakerAttribution::Multiple;
+        if let Some(speaker) = turn.global_speaker {
+            known.insert(canonical_speakers.get(&speaker).copied().unwrap_or(speaker));
+        } else {
+            unknown.push((
+                turn.start_sample.max(segment.start_sample),
+                turn.end_sample.min(segment.end_sample),
+            ));
         }
-        speaker = Some(canonical);
     }
-    speaker
+    // Two positively observed identities win even when more speech is unknown.
+    if known.len() >= 2 {
+        return RecordSegmentSpeakerAttribution::Multiple;
+    }
+    unknown.sort_unstable();
+    let mut unknown_duration = 0_u64;
+    let mut covered_end = segment.start_sample;
+    for (start, end) in unknown {
+        unknown_duration += end.saturating_sub(start.max(covered_end));
+        covered_end = covered_end.max(end);
+    }
+    // Limit boundary jitter without letting an 80 ms fixed tolerance swallow a
+    // short reply. Only explicitly detected unknown speech counts, not silence.
+    let tolerance = (SPEECH_SAMPLE_RATE * 80 / 1_000)
+        .min((segment.end_sample - segment.start_sample) / 5)
+        .max(1);
+    if unknown_duration >= tolerance {
+        return RecordSegmentSpeakerAttribution::Unknown;
+    }
+    known
+        .into_iter()
+        .next()
         .map(|speaker_id| RecordSegmentSpeakerAttribution::Single { speaker_id })
         .unwrap_or(RecordSegmentSpeakerAttribution::Unknown)
 }
@@ -4036,6 +4364,9 @@ fn write_speech_projection(
     kind: SpeechProjectionKind,
     bytes: &[u8],
 ) -> Result<RecordArtifact, String> {
+    if bytes.is_empty() || bytes.len() as u64 > TRANSCRIPT_SNAPSHOT_MAX_BYTES {
+        return Err("speech projection exceeds the fixed size limit".into());
+    }
     let (_, prefix, artifact_kind) = kind.paths();
     let relative = PathBuf::from(format!("{prefix}{}.json", Uuid::new_v4().simple()));
     let path = record_path.join(&relative);
@@ -4054,10 +4385,19 @@ fn write_speech_projection(
     result
 }
 
+#[cfg(test)]
 fn publish_speech_projection(
     stored: &StoredRecord,
     updated: &Record,
     artifact: &RecordArtifact,
+) -> Result<(), String> {
+    publish_speech_projections(stored, updated, std::slice::from_ref(artifact))
+}
+
+fn publish_speech_projections(
+    stored: &StoredRecord,
+    updated: &Record,
+    artifacts: &[RecordArtifact],
 ) -> Result<(), String> {
     let committed = persist_existing_record(
         &stored.path,
@@ -4073,21 +4413,28 @@ fn publish_speech_projection(
             read_bounded_regular_file(&stored.path.join("record.json"), RECORD_MANIFEST_MAX_BYTES)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<RecordManifest>(&bytes).ok());
-        if manifest.is_some_and(|manifest| {
-            !manifest
-                .artifacts
-                .iter()
-                .any(|entry| entry.path == artifact.path)
-        }) {
-            remove_owned_speech_projection(&stored.path, artifact);
+        if let Some(manifest) = manifest {
+            for artifact in artifacts {
+                if !manifest
+                    .artifacts
+                    .iter()
+                    .any(|entry| entry.path == artifact.path)
+                {
+                    remove_owned_speech_projection(&stored.path, artifact);
+                }
+            }
         }
-    } else if let Some(previous) = stored
-        .record
-        .artifacts
-        .iter()
-        .find(|entry| entry.kind == artifact.kind && entry.path != artifact.path)
-    {
-        remove_owned_speech_projection(&stored.path, previous);
+    } else {
+        for previous in &stored.record.artifacts {
+            if SpeechProjectionKind::from_artifact(previous).is_some()
+                && !updated
+                    .artifacts
+                    .iter()
+                    .any(|current| current.path == previous.path)
+            {
+                remove_owned_speech_projection(&stored.path, previous);
+            }
+        }
     }
     committed
 }
@@ -4121,6 +4468,8 @@ fn record_artifact_from_file(
         size_bytes: metadata.len(),
         sha256: sha256_regular_file_exact(source, metadata.len())?,
         source_revision: None,
+        capture_timeline: None,
+        capture_time_error: None,
     })
 }
 
@@ -4634,7 +4983,14 @@ fn export_speaker_label(
                     .speakers
                     .iter()
                     .find(|speaker| speaker.speaker_id == *speaker_id)
-                    .and_then(|speaker| speaker.custom_name.clone())
+                    .map(|speaker| {
+                        speaker.custom_name.clone().unwrap_or_else(|| {
+                            format!(
+                                "Speaker {}",
+                                speaker_letter_for_export(speaker.display_index)
+                            )
+                        })
+                    })
             })
             .unwrap_or_else(|| format!("Speaker {}", speaker_letter_for_export(*speaker_id))),
         Some(RecordSegmentSpeakerAttribution::Multiple) => if zh {
@@ -4668,8 +5024,10 @@ fn render_record_text_export(
     locale: &str,
 ) -> Result<String, String> {
     let zh = locale == "zh-CN";
-    let transcript = read_current_transcript(stored)?;
-    let diarization = read_diarization_projection_for_stored(stored)?;
+    let RecordSpeechProjection {
+        transcript,
+        diarization,
+    } = read_speech_projection_for_stored(stored)?;
     let timeline = read_timeline_projection(stored)?;
     let audio = stored
         .record
@@ -5390,7 +5748,10 @@ pub async fn cmd_record_get(
         let transcription_failure = record
             .audio
             .as_ref()
-            .filter(|audio| audio.transcription_status == TranscriptionStatus::Failed)
+            .filter(|audio| {
+                audio.transcription_status == TranscriptionStatus::Failed
+                    || audio.diarization_status == DiarizationStatus::Failed
+            })
             .and_then(|_| speech.record_transcription_failure(&id));
         RecordDetailResponse {
             record,
@@ -5420,8 +5781,8 @@ pub async fn cmd_record_discussion_context(
 pub async fn cmd_record_transcript(
     state: tauri::State<'_, ManagedRecordStore>,
     id: String,
-) -> Result<Option<RecordTranscriptSnapshot>, String> {
-    state.read_transcript_projection(&id).await
+) -> Result<RecordSpeechProjection, String> {
+    state.read_speech_projection(&id).await
 }
 
 #[tauri::command]
@@ -5609,6 +5970,7 @@ pub async fn cmd_record_set_archived(
 #[tauri::command]
 pub async fn cmd_record_delete(
     state: tauri::State<'_, ManagedRecordStore>,
+    speech: tauri::State<'_, crate::speech_recognition::ManagedSpeechRecognition>,
     id: String,
     surface: Option<AnalyticsSurface>,
 ) -> Result<(), String> {
@@ -5616,6 +5978,7 @@ pub async fn cmd_record_delete(
         .get(&id)
         .await
         .ok_or_else(|| format!("Record not found: {id}"))?;
+    speech.cancel_record_processing(&id).await?;
     state.delete(&id).await?;
     record_analytics::emit_record_use(
         &record,
@@ -5890,6 +6253,7 @@ mod tests {
             .await
             .unwrap();
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "local-standard-speech-v2".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -5976,6 +6340,8 @@ mod tests {
                 CaptureStatus::Interrupted,
                 1_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6018,6 +6384,7 @@ mod tests {
             .begin_live_transcript(
                 &record.id,
                 RecordSpeechProvenance {
+                    algorithm_revision: None,
                     provider: "local".into(),
                     model_pack_revision: "local-standard-speech-v2".into(),
                     onnx_runtime_version: "1.28.0".into(),
@@ -6089,6 +6456,8 @@ mod tests {
                 CaptureStatus::Ready,
                 5_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6096,6 +6465,7 @@ mod tests {
             .await
             .unwrap();
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "local-standard-speech-v2".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -6138,9 +6508,10 @@ mod tests {
                 .commit_diarization_result(
                     &record.id,
                     vec![RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 1_000,
                         end_sample: 20_000,
-                        global_speaker: 0,
+                        global_speaker: Some(0),
                     }],
                     provenance.clone(),
                 )
@@ -6222,6 +6593,8 @@ mod tests {
                 CaptureStatus::Ready,
                 1_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6241,6 +6614,7 @@ mod tests {
                     revision: 1,
                 }],
                 RecordSpeechProvenance {
+                    algorithm_revision: None,
                     provider: "local".into(),
                     model_pack_revision: "revision".into(),
                     onnx_runtime_version: "1.28.0".into(),
@@ -6283,6 +6657,8 @@ mod tests {
                 CaptureStatus::Ready,
                 5_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6299,6 +6675,7 @@ mod tests {
         end: u64,
     ) -> Result<(), String> {
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "local-standard-speech-v2".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -6308,9 +6685,10 @@ mod tests {
                 .commit_diarization_result(
                     id,
                     vec![RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 0,
                         end_sample: end,
-                        global_speaker: 0,
+                        global_speaker: Some(0),
                     }],
                     provenance,
                 )
@@ -6334,6 +6712,899 @@ mod tests {
                 .await
                 .map(|_| ())
         }
+    }
+
+    #[test]
+    fn queued_search_reads_a_committed_projection_after_old_artifacts_are_reclaimed() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for baseline in [false, true] {
+                let temp = tempdir().unwrap();
+                let store = store_at(temp.path());
+                let (id, _) = speech_projection_fixture(&store).await;
+                publish_speech_fixture(&store, &id, false, 10_000)
+                    .await
+                    .unwrap();
+                // Delay actual file reads without adding a production hook.
+                // The query may be queued while a rerun publishes and GC's its predecessor.
+                let (started, admitted) = std::sync::mpsc::channel();
+                let (release, blocked) = std::sync::mpsc::channel();
+                let blocker = tokio::task::spawn_blocking(move || {
+                    started.send(()).unwrap();
+                    let _ = blocked.recv_timeout(std::time::Duration::from_secs(5));
+                });
+                admitted
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                let mut query = Box::pin(async {
+                    if baseline {
+                        Ok(store.all_search_documents().await)
+                    } else {
+                        store.search_documents(&id).await
+                    }
+                });
+                assert!(futures::poll!(query.as_mut()).is_pending());
+                publish_speech_fixture(&store, &id, false, 20_000)
+                    .await
+                    .unwrap();
+                release.send(()).unwrap();
+                blocker.await.unwrap();
+                let documents = query
+                    .await
+                    .expect("publication must not invalidate a queued reader");
+                assert!(
+                    documents
+                        .iter()
+                        .any(|document| document.content.contains("synthetic speech")),
+                    "baseline search must not silently drop the transcript"
+                );
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn processing_publishes_one_generation_and_migrates_latest_human_name_by_evidence() {
+        use myagents_media_worker_protocol::record_identity::PersonMatchEvidence;
+        use myagents_media_worker_protocol::record_timeline::{CaptureTimeQuality, TrackTimeSpan};
+        let temp = tempdir().unwrap();
+        let store = store_at(temp.path());
+        let (id, root) = speech_projection_fixture(&store).await;
+        store
+            .finalize_audio_capture(
+                &id,
+                CaptureStatus::Ready,
+                5_000,
+                vec![AudioTrackArtifactInput {
+                    track: AudioTrackKind::Microphone,
+                    relative_path: audio_track_relative_path(AudioTrackKind::Microphone),
+                    capture_time_error: None,
+                    timeline: Some(RecordTrackTimeline {
+                        spans: vec![TrackTimeSpan {
+                            source_start: 0,
+                            source_end: 80_000,
+                            record_start: 0,
+                            record_end: 80_000,
+                            quality: CaptureTimeQuality::Clock,
+                            discontinuity: false,
+                        }],
+                    }),
+                }],
+            )
+            .await
+            .unwrap();
+        let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
+            provider: "local".into(),
+            model_pack_revision: "test".into(),
+            onnx_runtime_version: "1.28.0".into(),
+        };
+        let segments = || {
+            vec![RecordTranscriptSegment {
+                segment_id: "first".into(),
+                track: AudioTrackKind::Microphone,
+                start_sample: 0,
+                end_sample: 32_000,
+                text: "synthetic words".into(),
+                language: None,
+                revision: 1,
+            }]
+        };
+        let turns = |label| {
+            vec![RecordSpeakerTurn {
+                source: Some(AudioTrackKind::Microphone),
+                start_sample: 0,
+                end_sample: 32_000,
+                global_speaker: Some(label),
+            }]
+        };
+        let first = store.prepare_speech_processing(&id).await.unwrap();
+        store
+            .commit_speech_processing(
+                &first,
+                "processing-first",
+                segments(),
+                Some(turns(0)),
+                vec![],
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        store
+            .rename_speaker(RecordSpeakerRenameInput {
+                record_id: id.clone(),
+                speaker_id: 0,
+                name: "Earlier synthetic name".into(),
+                expected_override_revision: 0,
+                updated_at_wall_time: 1,
+            })
+            .await
+            .unwrap();
+        let baseline = store.prepare_speech_processing(&id).await.unwrap();
+        store
+            .rename_speaker(RecordSpeakerRenameInput {
+                record_id: id.clone(),
+                speaker_id: 0,
+                name: "Latest synthetic name".into(),
+                expected_override_revision: 1,
+                updated_at_wall_time: 2,
+            })
+            .await
+            .unwrap();
+        let proof = PersonMatchEvidence {
+            person_id: 0,
+            model_labels: vec![9],
+            reference_samples: 32_000,
+            reference_covered_samples: 32_000,
+            candidate_samples: 32_000,
+            candidate_covered_samples: 32_000,
+            independent_clean_spans: 2,
+            maximum_voice_distance: 100_000,
+            nearest_alternative_distance: 500_000,
+            activity_conflict: false,
+            has_unresolved_activity: false,
+        };
+        // A failed manifest switch must leave both old immutable artifacts readable.
+        fs::rename(root.join("record.json"), root.join("record.backup")).unwrap();
+        fs::create_dir(root.join("record.json")).unwrap();
+        assert!(store
+            .commit_speech_processing(
+                &baseline,
+                "processing-second",
+                segments(),
+                Some(turns(9)),
+                vec![proof.clone()],
+                provenance.clone()
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .read_recording_final_transcript(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .processing_id
+                .as_deref(),
+            Some("processing-first")
+        );
+        assert_eq!(
+            store
+                .read_diarization_result(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .processing_id
+                .as_deref(),
+            Some("processing-first")
+        );
+        fs::remove_dir(root.join("record.json")).unwrap();
+        fs::rename(root.join("record.backup"), root.join("record.json")).unwrap();
+        store
+            .commit_speech_processing(
+                &baseline,
+                "processing-second",
+                segments(),
+                Some(turns(9)),
+                vec![proof],
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        let projection = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            projection.processing_id.as_deref(),
+            Some("processing-second")
+        );
+        assert_eq!(projection.speakers[0].speaker_id, 0);
+        assert_eq!(
+            projection.speakers[0].custom_name.as_deref(),
+            Some("Latest synthetic name")
+        );
+        assert_eq!(
+            projection.segment_speaker_attributions["first"],
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 0 }
+        );
+        assert!(store
+            .commit_speech_processing(
+                &baseline,
+                "processing-stale",
+                segments(),
+                Some(turns(9)),
+                vec![],
+                provenance.clone()
+            )
+            .await
+            .is_err());
+        let next = store.prepare_speech_processing(&id).await.unwrap();
+        assert!(store
+            .commit_speech_processing(
+                &next,
+                "processing-incomplete",
+                segments(),
+                None,
+                vec![],
+                provenance.clone()
+            )
+            .await
+            .is_err());
+        // Numerically matching model label 0 without proof gets a new person,
+        // never the historical name; unmatched facts remain private.
+        store
+            .commit_speech_processing(
+                &next,
+                "processing-third",
+                segments(),
+                Some(turns(0)),
+                vec![],
+                provenance,
+            )
+            .await
+            .unwrap();
+        let projection = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.speakers[0].speaker_id, 1);
+        assert_eq!(projection.speakers[0].display_index, 0);
+        assert_eq!(projection.speakers[0].custom_name, None);
+        assert!(projection.conflicts.is_empty());
+        let restarted = store_at(temp.path());
+        assert_eq!(
+            restarted
+                .read_diarization_projection(&id)
+                .await
+                .unwrap()
+                .unwrap(),
+            projection
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_manual_reassignment_survives_reruns_without_reviving_superseded_scope() {
+        use myagents_media_worker_protocol::record_identity::PersonMatchEvidence;
+        let temp = tempdir().unwrap();
+        let store = store_at(temp.path());
+        let (id, _) = speech_projection_fixture(&store).await;
+        store
+            .finalize_audio_capture(
+                &id,
+                CaptureStatus::Ready,
+                12_000,
+                vec![AudioTrackArtifactInput {
+                    track: AudioTrackKind::Microphone,
+                    relative_path: audio_track_relative_path(AudioTrackKind::Microphone),
+                    capture_time_error: None,
+                    timeline: None,
+                }],
+            )
+            .await
+            .unwrap();
+        let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
+            provider: "local".into(),
+            model_pack_revision: "test".into(),
+            onnx_runtime_version: "1.28.0".into(),
+        };
+        let segments = |prefix: &str, split: bool| {
+            let intervals = if split {
+                vec![
+                    (0, 16_000),
+                    (16_000, 32_000),
+                    (32_000, 64_000),
+                    (64_000, 96_000),
+                    (96_000, 128_000),
+                    (128_000, 160_000),
+                    (160_000, 192_000),
+                ]
+            } else {
+                vec![
+                    (0, 32_000),
+                    (32_000, 64_000),
+                    (64_000, 96_000),
+                    (96_000, 128_000),
+                    (128_000, 160_000),
+                    (160_000, 192_000),
+                ]
+            };
+            intervals
+                .into_iter()
+                .enumerate()
+                .map(
+                    |(index, (start_sample, end_sample))| RecordTranscriptSegment {
+                        segment_id: format!("{prefix}-{index}"),
+                        track: AudioTrackKind::Microphone,
+                        start_sample,
+                        end_sample,
+                        text: "synthetic utterance".into(),
+                        language: None,
+                        revision: index as u64 + 1,
+                    },
+                )
+                .collect::<Vec<_>>()
+        };
+        let turns = |round| {
+            let ranges = match round {
+                0 => vec![
+                    (0, 32_000, 0),
+                    (32_000, 64_000, 1),
+                    (64_000, 96_000, 0),
+                    (96_000, 128_000, 1),
+                    (128_000, 160_000, 0),
+                    (160_000, 192_000, 2),
+                ],
+                1 => vec![
+                    (0, 64_000, 1),
+                    (64_000, 96_000, 0),
+                    (96_000, 128_000, 1),
+                    (128_000, 160_000, 0),
+                    (160_000, 192_000, 2),
+                ],
+                _ => vec![
+                    (0, 16_000, 2),
+                    (16_000, 32_000, 0),
+                    (32_000, 64_000, 1),
+                    (64_000, 96_000, 0),
+                    (96_000, 128_000, 1),
+                    (128_000, 160_000, 0),
+                    (160_000, 192_000, 2),
+                ],
+            };
+            ranges
+                .into_iter()
+                .map(|(start_sample, end_sample, label)| RecordSpeakerTurn {
+                    source: Some(AudioTrackKind::Microphone),
+                    start_sample,
+                    end_sample,
+                    global_speaker: Some(label),
+                })
+                .collect::<Vec<_>>()
+        };
+        let evidence = |baseline: &RecordSpeechBaseline, turns: &[RecordSpeakerTurn]| {
+            baseline
+                .person_anchors
+                .iter()
+                .map(|(person, anchor)| {
+                    let reference_samples = anchor
+                        .intervals()
+                        .iter()
+                        .map(|i| i.end_sample - i.start_sample)
+                        .sum();
+                    let candidate_samples = turns
+                        .iter()
+                        .filter(|turn| turn.global_speaker == Some(*person))
+                        .map(|t| t.end_sample - t.start_sample)
+                        .sum();
+                    PersonMatchEvidence {
+                        person_id: *person,
+                        model_labels: if candidate_samples > 0 {
+                            vec![*person]
+                        } else {
+                            vec![]
+                        },
+                        reference_samples,
+                        reference_covered_samples: reference_samples,
+                        candidate_samples,
+                        candidate_covered_samples: candidate_samples,
+                        independent_clean_spans: 2,
+                        maximum_voice_distance: 100_000,
+                        nearest_alternative_distance: 500_000,
+                        activity_conflict: false,
+                        has_unresolved_activity: false,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let baseline = store.prepare_speech_processing(&id).await.unwrap();
+        store
+            .commit_speech_processing(
+                &baseline,
+                "assignment-first",
+                segments("old", false),
+                Some(turns(0)),
+                vec![],
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        store
+            .reassign_segment_speaker(RecordSegmentSpeakerReassignInput {
+                record_id: id.clone(),
+                segment_id: "old-0".into(),
+                speaker_id: 1,
+                expected_override_revision: 0,
+                updated_at_wall_time: 1,
+            })
+            .await
+            .unwrap();
+        let baseline = store.prepare_speech_processing(&id).await.unwrap();
+        assert_eq!(
+            baseline.person_anchors[&0].intervals()[0].start_sample,
+            64_000,
+            "wrong model identity must release explicitly reassigned speech"
+        );
+        assert_eq!(
+            baseline.person_anchors[&1].intervals()[0].start_sample,
+            32_000,
+            "reassignment does not redefine the target voice"
+        );
+        let second_turns = turns(1);
+        store
+            .commit_speech_processing(
+                &baseline,
+                "assignment-second",
+                segments("split", true),
+                Some(second_turns.clone()),
+                evidence(&baseline, &second_turns),
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        let before = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.segment_speaker_overrides.get("split-0"), Some(&1));
+        assert_eq!(before.segment_speaker_overrides.get("split-1"), Some(&1));
+        // Start another processing before the edit: publication must use the
+        // latest operation scopes, not restore the frozen old whole paragraph.
+        let pending = store.prepare_speech_processing(&id).await.unwrap();
+        store
+            .reassign_segment_speaker(RecordSegmentSpeakerReassignInput {
+                record_id: id.clone(),
+                segment_id: "split-1".into(),
+                speaker_id: 0,
+                expected_override_revision: 1,
+                updated_at_wall_time: 2,
+            })
+            .await
+            .unwrap();
+        let edited = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(edited.segment_speaker_overrides.get("split-0"), Some(&1));
+        assert_eq!(edited.segment_speaker_overrides.get("split-1"), Some(&0));
+        // A late paragraph correction remains a scoped operation on the new text;
+        // it never redefines the acoustic identity of either participant.
+        let third_turns = turns(2);
+        store
+            .commit_speech_processing(
+                &pending,
+                "assignment-stale-proof",
+                segments("third", true),
+                Some(third_turns.clone()),
+                evidence(&pending, &third_turns),
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        let projection = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            projection.segment_speaker_overrides.get("third-1"),
+            Some(&1)
+        );
+        let inner = store.inner.read().await;
+        let overrides = read_speaker_overrides(inner.get(&id).unwrap()).unwrap();
+        let old = &overrides.assignment_anchors["old-0"];
+        assert_eq!(old.excluded_intervals.len(), 1);
+        assert_eq!(
+            (
+                old.excluded_intervals[0].start_sample,
+                old.excluded_intervals[0].end_sample
+            ),
+            (16_000, 32_000)
+        );
+        drop(inner);
+        let fresh = store.prepare_speech_processing(&id).await.unwrap();
+        store
+            .commit_speech_processing(
+                &fresh,
+                "assignment-fourth",
+                segments("fourth", true),
+                Some(third_turns.clone()),
+                evidence(&fresh, &third_turns),
+                provenance,
+            )
+            .await
+            .unwrap();
+        let projection = store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            projection.segment_speaker_overrides.get("fourth-0"),
+            Some(&1)
+        );
+        assert_eq!(
+            projection.segment_speaker_overrides.get("fourth-1"),
+            Some(&0)
+        );
+        // The model still attributes fourth-0 to a third person. Merging the
+        // inherited manual target must preserve the correction to the new target.
+        store
+            .rename_speaker(RecordSpeakerRenameInput {
+                record_id: id.clone(),
+                speaker_id: 0,
+                name: "Synthetic merge destination".into(),
+                expected_override_revision: 2,
+                updated_at_wall_time: 3,
+            })
+            .await
+            .unwrap();
+        let projection = store
+            .merge_speakers(RecordSpeakerMergeInput {
+                record_id: id.clone(),
+                source_speaker_id: 1,
+                target_speaker_id: 0,
+                expected_override_revision: 3,
+                updated_at_wall_time: 4,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            projection.segment_speaker_overrides.get("fourth-0"),
+            Some(&0)
+        );
+        assert_eq!(
+            projection.segment_speaker_attributions["fourth-0"],
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 0 }
+        );
+        assert!(store
+            .search_documents(&id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|doc| doc.media_ms == Some(0)
+                && doc.content == "Synthetic merge destination\nsynthetic utterance"));
+        let export_temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = export_temp.path().join("merged.txt");
+        store
+            .export_text(RecordTextExportInput {
+                record_id: id.clone(),
+                destination_path: destination.to_string_lossy().into_owned(),
+                format: RecordTextExportFormat::Text,
+                locale: "en-US".into(),
+            })
+            .await
+            .unwrap();
+        assert!(fs::read_to_string(destination)
+            .unwrap()
+            .contains("[00:00] Synthetic merge destination: synthetic utterance"));
+        let discussion = store.ensure_audio_discussion_document(&id).await.unwrap();
+        assert!(fs::read_to_string(discussion)
+            .unwrap()
+            .contains("[00:00] **Synthetic merge destination**: synthetic utterance"));
+        let restarted = store_at(temp.path());
+        assert_eq!(
+            restarted
+                .read_diarization_projection(&id)
+                .await
+                .unwrap()
+                .unwrap(),
+            projection
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_merge_preserves_original_identities_before_and_during_reruns() {
+        use myagents_media_worker_protocol::record_identity::PersonMatchEvidence;
+        for merge_during_processing in [false, true] {
+            let temp = tempdir().unwrap();
+            let store = store_at(temp.path());
+            let (id, _) = speech_projection_fixture(&store).await;
+            let provenance = RecordSpeechProvenance {
+                algorithm_revision: None,
+                provider: "local".into(),
+                model_pack_revision: "test".into(),
+                onnx_runtime_version: "1.28.0".into(),
+            };
+            let segments = || {
+                [(0, 32_000), (32_000, 64_000)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (start_sample, end_sample))| RecordTranscriptSegment {
+                        segment_id: format!("sentence-{i}"),
+                        track: AudioTrackKind::Microphone,
+                        start_sample,
+                        end_sample,
+                        text: "synthetic speech".into(),
+                        language: None,
+                        revision: 1,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let turns = |labels: [u32; 2]| {
+                [(0, 32_000), (32_000, 64_000)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (start_sample, end_sample))| RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
+                        start_sample,
+                        end_sample,
+                        global_speaker: Some(labels[i]),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let baseline = store.prepare_speech_processing(&id).await.unwrap();
+            store
+                .commit_speech_processing(
+                    &baseline,
+                    "merge-first",
+                    segments(),
+                    Some(turns([0, 1])),
+                    vec![],
+                    provenance.clone(),
+                )
+                .await
+                .unwrap();
+            store
+                .rename_speaker(RecordSpeakerRenameInput {
+                    record_id: id.clone(),
+                    speaker_id: 1,
+                    name: "Synthetic merged identity".into(),
+                    expected_override_revision: 0,
+                    updated_at_wall_time: 1,
+                })
+                .await
+                .unwrap();
+            let before_merge = store.prepare_speech_processing(&id).await.unwrap();
+            store
+                .merge_speakers(RecordSpeakerMergeInput {
+                    record_id: id.clone(),
+                    source_speaker_id: 0,
+                    target_speaker_id: 1,
+                    expected_override_revision: 1,
+                    updated_at_wall_time: 2,
+                })
+                .await
+                .unwrap();
+            let after_merge = store.prepare_speech_processing(&id).await.unwrap();
+            assert_eq!(after_merge.person_anchors.len(), 1);
+            assert_eq!(after_merge.person_anchors[&1].identity_scopes.len(), 2);
+            let baseline = if merge_during_processing {
+                before_merge
+            } else {
+                after_merge
+            };
+            let proof = |person_id, model_labels, reference_samples| PersonMatchEvidence {
+                person_id,
+                model_labels,
+                reference_samples,
+                reference_covered_samples: reference_samples,
+                candidate_samples: reference_samples,
+                candidate_covered_samples: reference_samples,
+                independent_clean_spans: 2,
+                maximum_voice_distance: 100_000,
+                nearest_alternative_distance: 500_000,
+                activity_conflict: false,
+                has_unresolved_activity: false,
+            };
+            let evidence = if merge_during_processing {
+                vec![proof(0, vec![5], 32_000), proof(1, vec![9], 32_000)]
+            } else {
+                vec![proof(1, vec![5, 9], 64_000)]
+            };
+            store
+                .commit_speech_processing(
+                    &baseline,
+                    "merge-second",
+                    segments(),
+                    Some(turns([5, 9])),
+                    evidence,
+                    provenance.clone(),
+                )
+                .await
+                .unwrap();
+            let projection = store
+                .read_diarization_projection(&id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(projection.speakers.len(), 1);
+            assert_eq!(projection.speakers[0].speaker_id, 1);
+            assert_eq!(
+                projection.speakers[0].custom_name.as_deref(),
+                Some("Synthetic merged identity")
+            );
+            for attribution in projection.segment_speaker_attributions.values() {
+                assert_eq!(
+                    *attribution,
+                    RecordSegmentSpeakerAttribution::Single { speaker_id: 1 }
+                );
+            }
+            // Renaming after automatic inheritance must not flatten the two
+            // original human identities into the current model's one person.
+            store
+                .rename_speaker(RecordSpeakerRenameInput {
+                    record_id: id.clone(),
+                    speaker_id: 1,
+                    name: "Latest synthetic merged name".into(),
+                    expected_override_revision: 2,
+                    updated_at_wall_time: 3,
+                })
+                .await
+                .unwrap();
+            let next = store.prepare_speech_processing(&id).await.unwrap();
+            assert_eq!(next.person_anchors[&1].identity_scopes.len(), 2);
+            store
+                .commit_speech_processing(
+                    &next,
+                    "merge-third",
+                    segments(),
+                    Some(turns([3, 8])),
+                    vec![proof(1, vec![3, 8], 64_000)],
+                    provenance,
+                )
+                .await
+                .unwrap();
+            let restarted = store_at(temp.path());
+            let projection = restarted
+                .read_diarization_projection(&id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(projection.speakers.len(), 1);
+            assert_eq!(
+                projection.speakers[0].custom_name.as_deref(),
+                Some("Latest synthetic merged name")
+            );
+        }
+    }
+
+    #[test]
+    fn persisted_human_anchor_boundaries_cannot_expand_an_operation_or_mix_old_schema() {
+        use speaker_identity::OriginalSpeechInterval;
+        let interval = |start_sample, end_sample| OriginalSpeechInterval {
+            source: AudioTrackKind::Microphone,
+            start_sample,
+            end_sample,
+        };
+        let mut overrides = RecordSpeakerOverrides::empty("anchor-test");
+        overrides.schema_version = 2;
+        overrides.revision = 3;
+        overrides.person_anchors.insert(
+            1,
+            RecordPersonAnchor {
+                audio_identity: "a".repeat(64),
+                identity_scopes: vec![vec![interval(0, 16_000)]],
+                has_unresolved_activity: false,
+            },
+        );
+        overrides.reassignments.insert("original".into(), 1);
+        overrides.assignment_anchors.insert(
+            "original".into(),
+            RecordAssignmentAnchor {
+                audio_identity: "a".repeat(64),
+                operation_revision: 2,
+                transcript_revision: 1,
+                processing_id: Some("original-processing".into()),
+                interval: Some(interval(16_000, 32_000)),
+                excluded_intervals: vec![interval(24_000, 32_000)],
+            },
+        );
+        assert!(speaker_identity::validate_anchor_shapes(&overrides).is_ok());
+        let mut invalid = overrides.clone();
+        invalid.schema_version = 1;
+        assert!(speaker_identity::validate_anchor_shapes(&invalid).is_err());
+        let mut invalid = overrides.clone();
+        invalid
+            .assignment_anchors
+            .get_mut("original")
+            .unwrap()
+            .excluded_intervals[0]
+            .start_sample = 0;
+        assert!(speaker_identity::validate_anchor_shapes(&invalid).is_err());
+        let mut invalid = overrides.clone();
+        invalid
+            .assignment_anchors
+            .get_mut("original")
+            .unwrap()
+            .operation_revision = 4;
+        assert!(speaker_identity::validate_anchor_shapes(&invalid).is_err());
+        let mut invalid = overrides;
+        invalid.person_anchors.get_mut(&1).unwrap().identity_scopes[0]
+            .push(interval(8_000, 24_000));
+        assert!(speaker_identity::validate_anchor_shapes(&invalid).is_err());
+    }
+
+    #[tokio::test]
+    async fn first_partial_final_remains_readable_and_cannot_be_replaced_by_another_partial() {
+        let temp = tempdir().unwrap();
+        let store = store_at(temp.path());
+        let (id, _) = speech_projection_fixture(&store).await;
+        let baseline = store.prepare_speech_processing(&id).await.unwrap();
+        let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
+            provider: "local".into(),
+            model_pack_revision: "test".into(),
+            onnx_runtime_version: "1.28.0".into(),
+        };
+        let segments = || {
+            vec![RecordTranscriptSegment {
+                segment_id: "first".into(),
+                track: AudioTrackKind::Microphone,
+                start_sample: 0,
+                end_sample: 32_000,
+                text: "readable first final".into(),
+                language: None,
+                revision: 1,
+            }]
+        };
+        store
+            .commit_speech_processing(
+                &baseline,
+                "first-partial",
+                segments(),
+                None,
+                vec![],
+                provenance.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .read_diarization_projection(&id)
+            .await
+            .unwrap()
+            .is_none());
+        let next = store.prepare_speech_processing(&id).await.unwrap();
+        assert!(store
+            .commit_speech_processing(
+                &next,
+                "second-partial",
+                segments(),
+                None,
+                vec![],
+                provenance
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .read_recording_final_transcript(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .processing_id
+                .as_deref(),
+            Some("first-partial")
+        );
     }
 
     #[tokio::test]
@@ -6615,9 +7886,10 @@ mod tests {
             revision: 1,
         };
         let turn = |start, end, speaker| RecordSpeakerTurn {
+            source: Some(AudioTrackKind::Microphone),
             start_sample: start,
             end_sample: end,
-            global_speaker: speaker,
+            global_speaker: Some(speaker),
         };
         let canonical = BTreeMap::new();
         assert_eq!(
@@ -6659,12 +7931,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_and_unknown_activity_follow_the_single_projection_precedence() {
+        let segment = RecordTranscriptSegment {
+            segment_id: "short".into(),
+            track: AudioTrackKind::Microphone,
+            start_sample: 0,
+            end_sample: 1_600,
+            text: "嗯".into(),
+            language: None,
+            revision: 1,
+        };
+        let turn = |source, speaker, start, end| RecordSpeakerTurn {
+            source,
+            global_speaker: speaker,
+            start_sample: start,
+            end_sample: end,
+        };
+        let canonical = BTreeMap::new();
+        let system = turn(Some(AudioTrackKind::System), Some(0), 0, 1600);
+        assert_eq!(
+            project_segment_speaker_attribution(&segment, &[system], &canonical),
+            RecordSegmentSpeakerAttribution::Unknown
+        );
+        let known = turn(Some(AudioTrackKind::Microphone), Some(0), 0, 1600);
+        let unknown = turn(Some(AudioTrackKind::Microphone), None, 0, 400);
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                &[known.clone(), unknown.clone()],
+                &canonical
+            ),
+            RecordSegmentSpeakerAttribution::Unknown
+        );
+        let second = turn(Some(AudioTrackKind::Microphone), Some(1), 600, 1600);
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                &[known.clone(), second, unknown],
+                &canonical
+            ),
+            RecordSegmentSpeakerAttribution::Multiple
+        );
+        let edge = turn(Some(AudioTrackKind::Microphone), None, 0, 1);
+        assert_eq!(
+            project_segment_speaker_attribution(&segment, &[known, edge], &canonical),
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 0 }
+        );
+        let legacy: RecordSpeakerTurn =
+            serde_json::from_str(r#"{"startSample":0,"endSample":1600,"globalSpeaker":7}"#)
+                .unwrap();
+        assert_eq!(legacy.source, None);
+        assert_eq!(
+            project_segment_speaker_attribution(
+                &segment,
+                std::slice::from_ref(&legacy),
+                &canonical
+            ),
+            RecordSegmentSpeakerAttribution::Unknown
+        );
+        let mixed = RecordTranscriptSegment {
+            track: AudioTrackKind::Mixed,
+            ..segment
+        };
+        assert_eq!(
+            project_segment_speaker_attribution(&mixed, &[legacy], &canonical),
+            RecordSegmentSpeakerAttribution::Single { speaker_id: 7 }
+        );
+    }
+
     #[tokio::test]
     async fn speaker_attribution_uses_overlap_without_inventing_a_default_identity() {
         let temp = tempdir().unwrap();
         let store = store_at(temp.path());
         let (id, root) = speech_projection_fixture(&store).await;
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "speech-pack-1".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -6694,19 +8036,22 @@ mod tests {
                 &id,
                 vec![
                     RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 0,
                         end_sample: 4_000,
-                        global_speaker: 1,
+                        global_speaker: Some(1),
                     },
                     RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 32_000,
                         end_sample: 36_000,
-                        global_speaker: 1,
+                        global_speaker: Some(1),
                     },
                     RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 44_000,
                         end_sample: 48_000,
-                        global_speaker: 2,
+                        global_speaker: Some(2),
                     },
                 ],
                 provenance,
@@ -6796,6 +8141,8 @@ mod tests {
                 CaptureStatus::Ready,
                 5_000,
                 vec![AudioTrackArtifactInput {
+                    timeline: None,
+                    capture_time_error: None,
                     track: AudioTrackKind::Microphone,
                     relative_path: "audio/microphone.opus".into(),
                 }],
@@ -6825,6 +8172,7 @@ mod tests {
             }]
         );
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "speech-pack-1".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -6861,14 +8209,16 @@ mod tests {
                 &record.id,
                 vec![
                     RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 0,
                         end_sample: 20_000,
-                        global_speaker: 0,
+                        global_speaker: Some(0),
                     },
                     RecordSpeakerTurn {
+                        source: Some(AudioTrackKind::Microphone),
                         start_sample: 20_000,
                         end_sample: 40_000,
-                        global_speaker: 1,
+                        global_speaker: Some(1),
                     },
                 ],
                 provenance.clone(),
@@ -6933,9 +8283,10 @@ mod tests {
             .commit_diarization_result(
                 &record.id,
                 vec![RecordSpeakerTurn {
+                    source: Some(AudioTrackKind::Microphone),
                     start_sample: 0,
                     end_sample: 40_000,
-                    global_speaker: 2,
+                    global_speaker: Some(2),
                 }],
                 provenance,
             )
@@ -7004,10 +8355,14 @@ mod tests {
                 5_000,
                 vec![
                     AudioTrackArtifactInput {
+                        timeline: None,
+                        capture_time_error: None,
                         track: AudioTrackKind::Microphone,
                         relative_path: "audio/microphone.opus".into(),
                     },
                     AudioTrackArtifactInput {
+                        timeline: None,
+                        capture_time_error: None,
                         track: AudioTrackKind::System,
                         relative_path: "audio/system.opus".into(),
                     },
@@ -7016,6 +8371,7 @@ mod tests {
             .await
             .unwrap();
         let provenance = RecordSpeechProvenance {
+            algorithm_revision: None,
             provider: "local".into(),
             model_pack_revision: "speech-pack-1".into(),
             onnx_runtime_version: "1.28.0".into(),
@@ -7025,7 +8381,7 @@ mod tests {
                 &record.id,
                 vec![RecordTranscriptSegment {
                     segment_id: "segment-1".into(),
-                    track: AudioTrackKind::Mixed,
+                    track: AudioTrackKind::Microphone,
                     start_sample: 16_000,
                     end_sample: 32_000,
                     text: "hello".into(),
@@ -7040,9 +8396,10 @@ mod tests {
             .commit_diarization_result(
                 &record.id,
                 vec![RecordSpeakerTurn {
+                    source: Some(AudioTrackKind::Microphone),
                     start_sample: 16_000,
                     end_sample: 32_000,
-                    global_speaker: 0,
+                    global_speaker: Some(0),
                 }],
                 provenance,
             )
