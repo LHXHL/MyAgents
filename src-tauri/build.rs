@@ -3,7 +3,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-#[path = "src/resource_signature.rs"]
+#[path = "src/resource_signature_core.rs"]
 mod resource_signature;
 mod build_cliproxy;
 

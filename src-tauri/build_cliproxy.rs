@@ -21,7 +21,7 @@ pub fn verify_bundle(app_version: &str, sdk_version: &str) {
     for path in [root.clone(), source_path.clone()] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    println!("cargo:rerun-if-changed=src/resource_signature.rs");
+    println!("cargo:rerun-if-changed=src/resource_signature_core.rs");
     let read = |name: &str, limit: u64| {
         let path = root.join(name);
         let metadata = fs::symlink_metadata(&path).unwrap_or_else(|_| {
