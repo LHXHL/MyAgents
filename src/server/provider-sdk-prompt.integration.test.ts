@@ -13,7 +13,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: mocks.query,
   tool: (_name: string, _description: string, _schema: unknown, handler: () => unknown) => ({ handler }),
 }));
 import { generateTitle } from './title-generator';
-import { verifyCliProxySubscription } from './provider-verify';
 
 const provider: ProviderEnv = { providerId: 'antigravity-sub', apiProtocol: 'anthropic',
   endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' } };
@@ -42,20 +41,4 @@ it.each([true, false])('preserves title instructions and tool isolation (managed
   expect(options.tools).toEqual([]);
   expect(options.mcpServers).toEqual({});
   expect(options.strictMcpConfig).toBe(true);
-});
-
-it('uses the main Query SDK mode while still requiring the verification tool proof', async () => {
-  const grant = bind();
-  mocks.query.mockImplementation(({ options }) => ({ close: vi.fn(), async *[Symbol.asyncIterator]() {
-    const proof = await options.mcpServers['subscription-verification'].tools[0].handler();
-    yield { type: 'assistant', message: { content: proof.content } };
-    yield { type: 'result', subtype: 'success' };
-  } }));
-  expect(await verifyCliProxySubscription({ model: 'approved-model', accountGeneration: grant.accountGeneration, operationId: randomUUID() })).toEqual({ success: true });
-  const options = mocks.query.mock.calls[0][0].options;
-  expect(options.systemPrompt).toMatchObject({ type: 'preset', preset: 'claude_code', append: expect.stringContaining('connection tool') });
-  expect(options.tools).toEqual([]);
-  expect(options.settingSources).toEqual([]);
-  expect(options.strictMcpConfig).toBe(true);
-  expect(mocks.api.mock.calls.at(-1)?.[0]).toBe('/api/cliproxy/binding/release');
 });

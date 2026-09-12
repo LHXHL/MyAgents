@@ -8,18 +8,16 @@ import { homedir } from 'os';
 import { basename, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { execFileSync, execSync } from 'child_process';
-import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort } from './agent-session';
 import type { ProviderEnv } from './provider-types';
 import { applyContextWindowSuffixForContextLength } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
-import { getPreparedModelPolicy, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
 import { sdkSubprocessUserMessage } from './utils/sdk-subprocess-diagnostics';
 import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
-import { CLIPROXY_VERIFICATION_PROMPT, cliproxySdkSystemPrompt } from '../shared/cliproxy';
 import type { Provider } from '../shared/config-types';
 import { resolveProviderForModel, TOKENDANCE_PROVIDER_ID } from '../shared/tokendance';
 import { findEffectiveProvider, loadConfig as loadProviderConfig } from './utils/admin-config';
@@ -133,9 +131,7 @@ async function verifyViaSdk(
     diagnostic?: (signal: AbortSignal) => Promise<ProbeOutcome | undefined>;
     /** Managed subscription activation requires the SDK's terminal success. */
     requireTerminalResult?: boolean;
-    managedToolProbe?: boolean;
     controller?: AbortController;
-    thinkingApproved?: boolean;
   },
 ): Promise<{
   success: boolean;
@@ -144,21 +140,10 @@ async function verifyViaSdk(
   failureKind?: SubscriptionVerifyFailureKind;
   retryable?: boolean;
 }> {
-  const TIMEOUT_MS = opts.managedToolProbe ? 90_000 : 30_000;
+  const TIMEOUT_MS = 30_000;
   const startTime = Date.now();
   const stderrMessages: string[] = [];
   const controller = opts.controller ?? new AbortController();
-  const proof = randomUUID();
-  let toolCalled = false;
-  let proofReturned = false;
-  const probe = opts.managedToolProbe ? createSdkMcpServer({
-    name: 'subscription-verification',
-    tools: [tool('check_connection', 'Return a connection verification code. No side effects.', {}, async () => {
-      toolCalled = true;
-      return { content: [{ type: 'text' as const, text: proof }] };
-    })],
-  }) : undefined;
-
   // Kick off the diagnostic in parallel with the SDK. It has its own ≤15s cap
   // (withAbortSignal) so it's resolved well before the 30s timeout — the
   // timeout branch reads it without blocking. `diagController` cancels it when
@@ -237,9 +222,7 @@ async function verifyViaSdk(
     async function* simplePrompt() {
       yield {
         type: 'user' as const,
-        message: { role: 'user' as const, content: opts.managedToolProbe
-          ? 'Call the check_connection tool exactly once, then reply with the exact code returned by the tool.'
-          : 'It\'s a test, directly reply "1"' },
+        message: { role: 'user' as const, content: 'It\'s a test, directly reply "1"' },
         parent_tool_use_id: null,
         session_id: opts.sessionId,
       };
@@ -255,14 +238,14 @@ async function verifyViaSdk(
       try { return new URL(env.ANTHROPIC_BASE_URL!).host === 'api.anthropic.com'; }
       catch { return false; }
     })();
-    const thinkingConfig = (opts.thinkingApproved ?? (isOfficialAnthropicApi || isClaudeModel))
+    const thinkingConfig = (isOfficialAnthropicApi || isClaudeModel)
       ? { type: 'adaptive' as const }
       : { type: 'disabled' as const };
 
     const testQuery = await createGuardedSdkQuery(cliPath, () => query({
       prompt: simplePrompt(),
       options: {
-        maxTurns: opts.managedToolProbe ? 3 : 1,
+        maxTurns: 1,
         abortController: controller,
         sessionId: opts.sessionId,
         cwd,
@@ -273,15 +256,13 @@ async function verifyViaSdk(
         env,
         thinking: thinkingConfig,
         stderr: (message: string) => {
-          if (opts.managedToolProbe) return;
           console.error(`[${logPrefix}] stderr:`, message);
           stderrMessages.push(message);
         },
-        systemPrompt: opts.managedToolProbe ? cliproxySdkSystemPrompt(CLIPROXY_VERIFICATION_PROMPT)
-          : { type: 'preset' as const, preset: 'claude_code' as const },
+        systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
         includePartialMessages: true,
         persistSession: false,
-        mcpServers: probe ? { 'subscription-verification': probe } : {},
+        mcpServers: {},
         strictMcpConfig: true,
         tools: [],
         // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
@@ -349,7 +330,7 @@ async function verifyViaSdk(
           const assistantMsg = message as { error?: string; message?: { content?: Array<{ text?: string }> } };
           if (assistantMsg.error) {
             const errorDetail = assistantMsg.message?.content?.[0]?.text ?? assistantMsg.error;
-            if (!opts.managedToolProbe) console.error(`[${logPrefix}] auth error: ${errorDetail}`);
+            console.error(`[${logPrefix}] auth error: ${errorDetail}`);
             const parsed = parseError(errorDetail.toLowerCase(), errorDetail);
             // Store the first auth error so the timeout handler can use it
             // if the SDK keeps retrying and our timeout fires first.
@@ -361,7 +342,6 @@ async function verifyViaSdk(
             console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
             return { success: true };
           }
-          if (toolCalled && assistantMsg.message?.content?.some(block => block.text?.includes(proof))) proofReturned = true;
           continue;
         }
 
@@ -372,9 +352,6 @@ async function verifyViaSdk(
           };
 
           if (resultMsg.subtype === 'success') {
-            if (opts.managedToolProbe && (!toolCalled || !proofReturned)) {
-              return { success: false, error: '模型未完成工具调用与结果回传验证' };
-            }
             console.log(`[${logPrefix}] verification successful`);
             return { success: true };
           }
@@ -384,7 +361,7 @@ async function verifyViaSdk(
           const errorText = (errorsArray && errorsArray.length > 0)
             ? errorsArray.join('; ')
             : resultMsg.subtype || '验证失败';
-          if (!opts.managedToolProbe) console.error(`[${logPrefix}] error: ${errorText} (subtype: ${resultMsg.subtype})`);
+          console.error(`[${logPrefix}] error: ${errorText} (subtype: ${resultMsg.subtype})`);
           const parsed = parseError(errorText);
           const stderrHint = stderrMessages.length > 0
             ? ` (详情: ${stderrMessages.join('; ').slice(0, 100)})`
@@ -415,7 +392,7 @@ async function verifyViaSdk(
   } catch (error) {
     diagController.abort();
     const errorMsg = error instanceof Error ? error.message : String(error);
-    if (!opts.managedToolProbe) console.error(`[${logPrefix}] SDK exception: ${errorMsg}`);
+    console.error(`[${logPrefix}] SDK exception: ${errorMsg}`);
     const sdkLaunchMessage = sdkSubprocessUserMessage(error, stderrMessages);
     if (sdkLaunchMessage) {
       return { success: false, error: sdkLaunchMessage, detail: errorMsg };
@@ -430,39 +407,6 @@ async function verifyViaSdk(
       detail: parsed.detail,
       retryable: parsed.retryable,
     };
-  }
-}
-
-/** Rust registers the exact candidate/active verification operation before
- * dispatch. This one-shot never changes the Global Sidecar's provider state. */
-export async function verifyCliProxySubscription(args: {
-  model: string; accountGeneration: string; operationId: string;
-}): Promise<{ success: boolean; error?: string }> {
-  const controller = new AbortController();
-  let prepared: PreparedProvider | undefined;
-  try {
-    const providerEnv: ProviderEnv = {
-      providerId: 'antigravity-sub', apiProtocol: 'anthropic', authType: 'api_key',
-      endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' },
-      modelAliases: { fable: args.model, sonnet: args.model, opus: args.model, haiku: args.model },
-    };
-    prepared = await prepareProviderBinding({ providerEnv, model: args.model, controller, purpose: {
-      purpose: 'verification', expectedAccountGeneration: args.accountGeneration,
-      verificationOperationId: args.operationId,
-    } });
-    await prepared.beforeTurn();
-    const result = await verifyViaSdk(buildClaudeSessionEnv(prepared.providerEnv, args.model, { providerId: 'antigravity-sub' }), {
-      model: args.model, providerId: 'antigravity-sub', sessionId: randomUUID(),
-      logPrefix: 'cliproxy/verify', settingSources: [], requireTerminalResult: true, managedToolProbe: true, controller,
-      thinkingApproved: getPreparedModelPolicy(prepared.providerEnv)?.thinking,
-      parseError: () => ({ error: '模型验证失败，请检查账号与网络后重试' }),
-    });
-    return result.success ? { success: true } : { success: false, error: '模型工具验证未通过，可以重试或选择其他兼容模型' };
-  } catch {
-    return { success: false, error: '模型验证未完成，请检查组件状态后重试' };
-  } finally {
-    controller.abort();
-    await prepared?.release();
   }
 }
 

@@ -52,7 +52,7 @@ import {
 } from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
-import { assertManagedProviderPrepared, getPreparedModelPolicy, ManagedProxyError, prepareProviderBinding, projectManagedSubagentInput, type PreparedProvider } from './utils/managed-proxy-binding';
+import { assertManagedProviderPrepared, getPreparedModelPolicy, ManagedProxyError, prepareProviderBinding, type PreparedProvider } from './utils/managed-proxy-binding';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
   SESSION_PLANS_GITIGNORE_PATTERN,
@@ -6277,9 +6277,8 @@ export function buildClaudeSessionEnv(
   // Hoisted above the OpenAI early return so both protocol paths benefit.
   const resolvedModel = modelOverride ?? configState.currentModel;
   const aliases = resolveSessionModelAliases(effectiveProviderEnv?.modelAliases, resolvedModel);
-  if (boundModelPolicy) env.CLAUDE_CODE_SUBAGENT_MODEL = boundModelPolicy.id;
   const resolveContextLength = (model: string | undefined): number | undefined => (
-    boundModelPolicy ? boundModelPolicy.contextLength ?? undefined : opts?.contextWindowSnapshot
+    boundModelPolicy && model === boundModelPolicy.id ? boundModelPolicy.contextLength ?? undefined : opts?.contextWindowSnapshot
       ? lookupSnapshotModelContextLength(opts.contextWindowSnapshot, model)
       : lookupProviderModelContextLength(model, effectiveProviderId)
   );
@@ -11092,7 +11091,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   ensureActiveSessionBridgeRegistered({ freshToken: true });
   const launchProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
   const launchAgentDefinitionsSource = configState.currentAgentDefinitions;
-  let launchContextWindowSnapshot = snapshotProviderModelContextLengths([
+  const launchContextWindowSnapshot = snapshotProviderModelContextLengths([
     configState.currentModel,
     ...Object.values(configState.currentProviderEnv?.modelAliases ?? {}),
     ...Object.values(launchAgentDefinitionsSource ?? {}).map(agent => agent.model),
@@ -11177,16 +11176,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (lifecycleState.abortRequested) bindingController.abort();
     bindingController.signal.throwIfAborted();
     const boundModelPolicy = getPreparedModelPolicy(preparedProvider.providerEnv);
-    if (boundModelPolicy) {
-      const admittedModels = new Set([boundModelPolicy.id, 'inherit', 'fable', 'sonnet', 'opus', 'haiku']);
-      for (const agent of Object.values(launchAgentDefinitionsSource ?? {})) {
-        if (agent.model && !admittedModels.has(agent.model)) {
-          throw new Error('Antigravity 子 Agent 必须使用本次已准入的模型或其模型别名');
-        }
-      }
-      launchContextWindowSnapshot = new Map([...launchContextWindowSnapshot.keys()]
-        .map(model => [model, boundModelPolicy.contextLength ?? undefined]));
-    }
     const env = buildClaudeSessionEnv(preparedProvider.providerEnv, undefined, {
       bridgeToken: activeSessionBridgeToken ?? undefined,
       providerId: launchProviderId,
@@ -11433,7 +11422,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       try { return new URL(configState.currentProviderEnv.baseUrl!).host === 'api.anthropic.com'; }
       catch { return false; }
     })());
-    const thinkingConfig = (boundModelPolicy ? boundModelPolicy.thinking : (isOfficialAnthropicApi || isClaudeModel))
+    const thinkingConfig = (boundModelPolicy?.thinking ?? (isOfficialAnthropicApi || isClaudeModel))
       ? { type: 'adaptive' as const }
       : { type: 'disabled' as const };
 
@@ -11993,8 +11982,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // (see isPlanModeInEffect for the two desync windows this closes).
               const effectiveMode = isPlanModeInEffect(configState.currentPermissionMode, pre.permission_mode) ? 'plan' : configState.currentPermissionMode;
               if (!shouldBlockToolInPlanMode(pre.tool_name, effectiveMode)) {
-                const updatedInput = projectManagedSubagentInput(boundModelPolicy, pre.tool_name, pre.tool_input);
-                if (updatedInput) return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput } };
                 return {}; // not plan mode, or a read-only / control-transfer tool → normal flow
               }
               console.log(`[permission] plan-mode hard gate denied: ${pre.tool_name} (local=${configState.currentPermissionMode}, hook=${pre.permission_mode ?? 'n/a'})`);

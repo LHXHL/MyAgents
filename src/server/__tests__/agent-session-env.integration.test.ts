@@ -7,6 +7,7 @@ import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { randomUUID } from 'node:crypto';
 import * as managementClient from '../utils/management-api-client';
 import { prepareProviderBinding } from '../utils/managed-proxy-binding';
+import { materializeProviderRouteEnv } from '../utils/admin-config';
 import { applyWindowsUtf8SubprocessEnv, buildClaudeSessionEnv } from '../agent-session';
 import {
   applyContextWindowSuffixForContextLength,
@@ -16,6 +17,29 @@ import {
 
 describe('managed subscription SDK env', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+  it.each([
+    { mainContext: 1_000_000, childContext: 200_000, mainSuffix: '[1m]', childSuffix: '' },
+    { mainContext: 200_000, childContext: 1_000_000, mainSuffix: '', childSuffix: '[1m]' },
+  ])('keeps routed split aliases scoped to their own context: $mainContext / $childContext', async ({ mainContext, childContext, mainSuffix, childSuffix }) => {
+    vi.stubEnv('MYAGENTS_SIDECAR_ID', 'test-session');
+    const grant = { providerId: 'antigravity-sub', baseUrl: 'http://127.0.0.1:15432', apiKey: 'local-test-key'.repeat(4),
+      instanceGeneration: randomUUID(), accountGeneration: randomUUID(), leaseId: randomUUID(),
+      modelPolicy: { id: 'main-model', thinking: false, contextLength: mainContext } };
+    vi.spyOn(managementClient, 'managementApi').mockImplementation(async path => path.endsWith('/acquire')
+      ? { ok: true, binding: grant } : { ok: true });
+    const providerEnv = materializeProviderRouteEnv({
+      kind: 'subscription', providerId: 'antigravity-sub', model: 'main-model',
+    }, { providerModelAliases: { 'antigravity-sub': { sonnet: 'child-model', opus: 'main-model' } } });
+    const prepared = await prepareProviderBinding({ controller: new AbortController(), model: 'main-model', providerEnv });
+    try {
+      const env = buildClaudeSessionEnv(prepared.providerEnv, 'main-model', {
+        providerId: 'antigravity-sub', contextWindowSnapshot: new Map([['child-model', childContext]]),
+      });
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(`child-model${childSuffix}`);
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe(`main-model${mainSuffix}`);
+    } finally { await prepared.release(); }
+  });
+
   it('uses the execution binding and approved capability snapshot instead of inherited routing or edited metadata', async () => {
     vi.stubEnv('MYAGENTS_SIDECAR_ID', 'test-session');
     vi.stubEnv('ANTHROPIC_BASE_URL', 'https://other.example');

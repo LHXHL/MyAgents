@@ -196,7 +196,6 @@ impl Instance {
             .current_dir(&run_dir)
             .arg("-config")
             .arg(&config_path)
-            .arg("-local-model")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

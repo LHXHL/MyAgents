@@ -181,7 +181,6 @@
   },
   "providers": {
     "cliproxy": {
-      "modelState": {"unknown": "Not verified with this account", "succeeded": "Model verified", "failed": "Model temporarily unavailable"},
       "description": "Sign in to Antigravity to use your subscription models.",
       "continueConnection": "Continue connection",
       "moreActions": "More actions",
@@ -189,8 +188,6 @@
       "loginTitle": "Connect Antigravity",
       "close": "Close",
       "preparingLogin": "Opening authorization…",
-      "verifyHint": "Verify model access for this account.",
-      "refreshHint": "Refresh models to continue verification. No need to sign in again.",
       "account": "Saved account",
       "disconnected": "Not connected",
       "newAccount": "New account",
@@ -199,11 +196,7 @@
       "disconnect": "Disconnect",
       "retryCleanup": "Retry cleanup",
       "cancel": "Cancel",
-      "verify": "Verify model",
       "refreshModels": "Refresh models",
-      "verificationModel": "Verification model",
-      "noModels": "No compatible models",
-      "modelsStale": "Refresh the model catalog. Availability depends on verification with this account.",
       "checkUpdate": "Check for updates",
       "disabled": "Currently paused. You can keep or disconnect your account.",
       "browserHint": "Complete authorization in your browser within 5 minutes.",
@@ -216,11 +209,11 @@
       },
       "phase": {
         "authorizing": "Waiting for browser authorization",
-        "awaiting-verification": "Verification needed",
-        "verifying": "Verifying tool use",
-        "waiting-to-commit": "Waiting for current tasks",
+        "stored": "Resume login",
+        "authorized": "Logged in, saving account",
+        "waiting-to-commit": "Logged in, switching account",
         "cancelling": "Cancelling",
-        "failed": "Failed"
+        "failed": "Login incomplete"
       },
       "update": {
         "idle": "Ready",
@@ -230,7 +223,8 @@
         "ready": "Update ready",
         "waiting-to-switch": "Waiting for current tasks to finish",
         "failed": "Update incomplete"
-      }
+      },
+      "connected": "Logged in"
     },
     "tokendance": {
       "partner": "Official",

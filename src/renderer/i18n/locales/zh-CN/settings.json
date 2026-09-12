@@ -181,7 +181,6 @@
   },
   "providers": {
     "cliproxy": {
-      "modelState": {"unknown": "尚未在当前账号验证", "succeeded": "此模型验证成功", "failed": "此模型暂时不可用"},
       "description": "登录 Antigravity，使用订阅模型。",
       "continueConnection": "继续连接",
       "moreActions": "更多操作",
@@ -189,8 +188,6 @@
       "loginTitle": "连接 Antigravity",
       "close": "关闭",
       "preparingLogin": "正在打开授权页面…",
-      "verifyHint": "验证当前账号的模型连接。",
-      "refreshHint": "刷新模型后继续验证，无需重复登录。",
       "account": "已保存账号",
       "disconnected": "尚未连接",
       "newAccount": "新账号",
@@ -199,11 +196,7 @@
       "disconnect": "断开连接",
       "retryCleanup": "重试清理",
       "cancel": "取消",
-      "verify": "验证模型",
       "refreshModels": "刷新模型",
-      "verificationModel": "用于验证的模型",
-      "noModels": "暂无兼容模型",
-      "modelsStale": "模型目录待刷新，实际可用性以当前账号验证结果为准。",
       "checkUpdate": "检查更新",
       "disabled": "当前暂停使用，可以保留账号或断开连接。",
       "browserHint": "请在系统浏览器完成授权，授权窗口有效期为 5 分钟。",
@@ -216,11 +209,11 @@
       },
       "phase": {
         "authorizing": "等待浏览器授权",
-        "awaiting-verification": "等待模型验证",
-        "verifying": "正在验证工具调用",
-        "waiting-to-commit": "等待当前任务结束",
+        "stored": "继续完成登录",
+        "authorized": "登录成功，正在保存",
+        "waiting-to-commit": "登录成功，正在切换账号",
         "cancelling": "正在取消",
-        "failed": "操作失败"
+        "failed": "登录未完成"
       },
       "update": {
         "idle": "已就绪",
@@ -230,7 +223,8 @@
         "ready": "更新已准备",
         "waiting-to-switch": "等待当前任务结束后更新",
         "failed": "更新未完成"
-      }
+      },
+      "connected": "已登录"
     },
     "tokendance": {
       "partner": "官方",

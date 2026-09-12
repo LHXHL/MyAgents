@@ -21,14 +21,16 @@ test('source size and digest both gate packaging', () => {
   assert.throws(() => checkArchive(bytes, { size: bytes.length + 1, sha256 }));
   assert.throws(() => checkArchive(Buffer.from('modified'), { size: bytes.length, sha256 }));
 });
-test('internal work does not accidentally become public model approval', () => {
+test('component publication needs production artifacts but never model approvals', () => {
   const input = approval();
   const manifest = validateApproval(input, [record('darwin-arm64')]);
-  assert.deepEqual(manifest.component.compatibility.models, []);
+  assert.equal(manifest.component.compatibility.models, undefined);
   input.controls.providerMode = 'enabled';
   assert.throws(() => validateApproval(input, [record('darwin-arm64')]));
   input.compatibility.models = [{ id: 'synthetic-only', tools: true, thinking: false, inputModalities: ['text'], outputModalities: ['text'] }];
   assert.throws(() => validateApproval(input, Object.keys(source.platforms).map(record)));
+  delete input.compatibility.models;
+  assert.doesNotThrow(() => validateApproval(input, Object.keys(source.platforms).map(platform => ({ ...record(platform), platformSigning: 'developer-id' }))));
 });
 test('duplicate platform and incompatible App/SDK records are rejected', () => {
   assert.throws(() => validateApproval(approval(), [record('darwin-arm64'), record('darwin-arm64')]));
@@ -48,7 +50,7 @@ test('publication cannot undo a policy or silently replace a compatibility revis
   assert.throws(() => assertPublicationRevision(old, next));
   next.controls.policyRevision++;
   assert.doesNotThrow(() => assertPublicationRevision(old, next));
-  next.component.compatibility.models = [{ id: 'different' }];
+  next.component.compatibility.credentialCompatibleVersions = ['0.0.1'];
   assert.throws(() => assertPublicationRevision(old, next));
   next.component.compatibility.revision++;
   assert.doesNotThrow(() => assertPublicationRevision(old, next));

@@ -16,6 +16,8 @@ pub(super) struct AccountRef {
     pub generation: String,
     pub attempt_id: String,
     pub phase: String,
+    #[serde(default)]
+    pub authorized_at: Option<String>,
     pub verified_model: Option<String>,
     pub verified_at: Option<String>,
     pub verification_identity: Option<String>,
@@ -38,6 +40,7 @@ impl AccountRef {
             generation: Uuid::new_v4().to_string(),
             attempt_id: Uuid::new_v4().to_string(),
             phase: "authorizing".to_owned(),
+            authorized_at: None,
             verified_model: None,
             verified_at: None,
             verification_identity: None,
@@ -103,7 +106,7 @@ impl Accounts {
         if self.disconnecting
             || self.cleanup.contains(&candidate.id)
             || candidate.generation != generation
-            || candidate.verified_model.is_none()
+            || candidate.authorized_at.is_none()
         {
             return Err(Error::cancelled());
         }
@@ -313,7 +316,8 @@ mod tests {
         };
         let old = AccountRef::candidate();
         let mut next = AccountRef::candidate();
-        next.verified_model = Some("tested".to_owned());
+        next.phase = "authorized".to_owned();
+        next.authorized_at = Some("2026-09-13T00:00:00Z".to_owned());
         let mut state = Accounts {
             active: Some(old.clone()),
             candidate: Some(next.clone()),
@@ -336,7 +340,8 @@ mod tests {
     fn cancelling_candidate_cannot_commit_or_delete_active() {
         let old = AccountRef::candidate();
         let mut next = AccountRef::candidate();
-        next.verified_model = Some("tested".to_owned());
+        next.phase = "authorized".to_owned();
+        next.authorized_at = Some("2026-09-13T00:00:00Z".to_owned());
         let mut state = Accounts {
             active: Some(old.clone()),
             candidate: Some(next.clone()),
@@ -345,6 +350,19 @@ mod tests {
         state.begin_cancel_candidate();
         assert!(state.commit_candidate(&next.generation).is_err());
         assert!(!state.cleanup.contains(&old.id));
+    }
+
+    #[test]
+    fn native_authorization_commits_without_model_verification() {
+        let mut candidate = AccountRef::candidate();
+        candidate.phase = "authorized".to_owned();
+        candidate.authorized_at = Some("2026-09-13T00:00:00Z".to_owned());
+        let mut accounts = Accounts {
+            candidate: Some(candidate.clone()),
+            ..Accounts::default()
+        };
+        accounts.commit_candidate(&candidate.generation).unwrap();
+        assert!(accounts.active.unwrap().verified_model.is_none());
     }
     #[test]
     fn restart_preserves_cancellation_until_registered_credentials_are_removed() {

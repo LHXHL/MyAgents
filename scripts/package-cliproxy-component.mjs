@@ -26,7 +26,9 @@ export function checkArchive(bytes, pin) {
   if (bytes.length !== pin.size || hash(bytes) !== pin.sha256) throw new Error('Upstream artifact differs from the pinned source');
 }
 export function validateApproval(approval, platformRecords) {
-  const { controls, compatibility } = approval;
+  const { controls } = approval;
+  const compatibility = { ...approval.compatibility };
+  delete compatibility.models; // Legacy approval records do not govern model availability.
   if (!controls || !Number.isSafeInteger(controls.policyRevision) || controls.policyRevision <= 0
     || !['internal', 'disabled', 'enabled'].includes(controls.providerMode)
     || !Array.isArray(controls.revokedVersions) || !Array.isArray(controls.revokedArtifacts)
@@ -34,25 +36,15 @@ export function validateApproval(approval, platformRecords) {
   if (!compatibility || compatibility.sdkVersion !== pkg.dependencies['@anthropic-ai/claude-agent-sdk']
     || !Array.isArray(compatibility.appVersions) || !compatibility.appVersions.includes(pkg.version)
     || !Number.isSafeInteger(compatibility.revision) || compatibility.revision <= 0
-    || !Array.isArray(compatibility.models) || !Array.isArray(compatibility.credentialCompatibleVersions)) throw new Error('Invalid compatibility record');
-  const ids = new Set();
-  for (const model of compatibility.models) {
-    if (typeof model.id !== 'string' || !model.id.trim() || model.id.length > 256 || ids.has(model.id)
-      || model.tools !== true || typeof model.thinking !== 'boolean'
-      || !Array.isArray(model.inputModalities) || !Array.isArray(model.outputModalities)
-      || (model.maxTestedContext != null && (!Number.isSafeInteger(model.maxTestedContext) || model.maxTestedContext <= 0))) {
-      throw new Error('Invalid tested model record');
-    }
-    ids.add(model.id);
-  }
+    || !Array.isArray(compatibility.credentialCompatibleVersions)) throw new Error('Invalid compatibility record');
   const seenPlatforms = new Set();
   for (const record of platformRecords) {
     if (!platforms.includes(record.platform) || record.version !== source.version || record.commit !== source.commit
       || seenPlatforms.has(record.platform) || record.artifact.sourceSha256 !== source.platforms[record.platform].sha256) throw new Error('Platform source record mismatch');
     seenPlatforms.add(record.platform);
   }
-  if (controls.providerMode === 'enabled' && (ids.size === 0 || platforms.some(platform => !platformRecords.some(r => r.platform === platform))
-    || platformRecords.some(r => r.platformSigning === 'ad-hoc'))) throw new Error('Public enabled requires approved models and all production platform artifacts');
+  if (controls.providerMode === 'enabled' && (platforms.some(platform => !platformRecords.some(r => r.platform === platform))
+    || platformRecords.some(r => r.platformSigning === 'ad-hoc'))) throw new Error('Public enabled requires all production platform artifacts');
   return { schemaVersion: 1, controls, component: { version: source.version, tag: source.tag, commit: source.commit,
     compatibility, artifacts: Object.fromEntries(platformRecords.map(record => [record.platform, record.artifact])) } };
 }

@@ -24,6 +24,7 @@ describe('Sidecar production composition', () => {
     ['GET', '/health', 'common'],
     ['GET', '/refs/12345678', 'common'],
     ['POST', '/api/provider/verify', 'global'],
+    ['POST', '/api/cliproxy/control', 'common'],
     ['POST', '/api/process/graceful-shutdown', 'global'],
     ['POST', '/api/browser/session/retire', 'global'],
     ['POST', '/api/mcp/oauth/discover', 'global'],
@@ -117,6 +118,7 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/api/im/enqueue'],
     ['global', 'POST', '/api/inbox/drain'],
     ['session', 'POST', '/api/provider/verify'],
+    ['session', 'POST', '/api/cliproxy/verify'],
     ['session', 'POST', '/api/mcp/oauth/start'],
     ['session', 'POST', '/mcp/playwright'],
     ['session', 'POST', '/api/browser/session/retire'],
@@ -136,6 +138,8 @@ describe('Sidecar production composition', () => {
 
   it.each([
     ['global', 'POST', '/api/provider/verify'],
+    ['global', 'POST', '/api/cliproxy/control'],
+    ['session', 'POST', '/api/cliproxy/control'],
     ['global', 'POST', '/api/mcp/oauth/start'],
     ['global', 'POST', '/mcp/playwright'],
     ['global', 'POST', '/api/browser/session/retire'],

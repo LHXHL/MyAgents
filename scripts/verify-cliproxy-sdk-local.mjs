@@ -6,12 +6,12 @@ import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { projectManagedSubagentInput } from '../src/server/utils/managed-proxy-binding.ts';
 const require = createRequire(import.meta.url);
 const native = join(dirname(require.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`)), process.platform === 'win32' ? 'claude.exe' : 'claude');
 const scratch=mkdtempSync(join(tmpdir(),'myagents-cliproxy-agent-contract-'));
-const model='synthetic-approved';
-const requests=[]; let hookCalls=0; let terminal=false; let childSeen=false;
+const model='synthetic-main';
+const childModel='synthetic-other-model';
+const requests=[]; let terminal=false; let childSeen=false;
 const controller=new AbortController();
 const server=http.createServer(async(req,res)=>{
   let text='';for await(const chunk of req) text+=chunk;
@@ -19,8 +19,8 @@ const server=http.createServer(async(req,res)=>{
   if(req.url.includes('count_tokens')){res.writeHead(200,{'content-type':'application/json'});res.end('{"input_tokens":10}');return;}
   if(!req.url.startsWith('/v1/messages')){res.writeHead(404);res.end();return;}
   const messages=JSON.stringify(body.messages);
-  const child=messages.includes('CHILD_CONTRACT_PROMPT');
   const done=body.messages?.some(m=>Array.isArray(m.content)&&m.content.some(b=>b.type==='tool_result'));
+  const child=messages.includes('CHILD_CONTRACT_PROMPT')&&!done;
   requests.push({model:body.model,child,done}); if(child)childSeen=true;
   const block=(!child&&!done)?{type:'tool_use',id:'tool_contract_1',name:'Agent',input:{description:'Check selected model',prompt:'CHILD_CONTRACT_PROMPT reply CHILD_OK',subagent_type:'contract-agent',run_in_background:false}}:{type:'text',text:'CONTRACT_OK'};
   res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache'});
@@ -46,14 +46,13 @@ try{
     CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST:'1',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',ENABLE_CLAUDEAI_MCP_SERVERS:'false',
     CLAUDE_CODE_USE_BEDROCK:'',CLAUDE_CODE_USE_VERTEX:'',CLAUDE_CODE_USE_FOUNDRY:'',
     HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,ALL_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,all_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1',
-    CLAUDE_CODE_SUBAGENT_MODEL:model,ANTHROPIC_DEFAULT_SONNET_MODEL:model,ANTHROPIC_DEFAULT_OPUS_MODEL:model,ANTHROPIC_DEFAULT_HAIKU_MODEL:model,ANTHROPIC_DEFAULT_FABLE_MODEL:model};
+    ANTHROPIC_DEFAULT_SONNET_MODEL:model,ANTHROPIC_DEFAULT_OPUS_MODEL:model,ANTHROPIC_DEFAULT_HAIKU_MODEL:model,ANTHROPIC_DEFAULT_FABLE_MODEL:model};
   q=query({prompt:'Run the contract-agent then report its answer.',options:{cwd:scratch,env,model,tools:['Agent'],mcpServers:{},settingSources:[],strictMcpConfig:true,
     permissionMode:'bypassPermissions',allowDangerouslySkipPermissions:true,maxTurns:3,abortController:controller,persistSession:false,
     pathToClaudeCodeExecutable:native,
-    agents:{'contract-agent':{description:'Check model binding',prompt:'Obey the synthetic contract.',tools:[],model:'forbidden-frontmatter-model'}},
-    hooks:{PreToolUse:[{hooks:[async input=>{const updatedInput=projectManagedSubagentInput({id:model,thinking:false},input.tool_name,input.tool_input);if(updatedInput){hookCalls++;return{hookSpecificOutput:{hookEventName:'PreToolUse',updatedInput}};}return{};}]}]}}});
+    agents:{'contract-agent':{description:'Check model binding',prompt:'Obey the synthetic contract.',tools:[],model:childModel}}}});
   for await(const message of q){if(message.type==='result'){terminal=message.subtype==='success';break;}}
-  assert.equal(terminal,true);assert.equal(hookCalls,1);assert.equal(childSeen,true);assert.ok(requests.length>=3);assert.ok(requests.every(r=>r.model===model));
+  assert.equal(terminal,true);assert.equal(childSeen,true);assert.ok(requests.length>=3);assert.ok(requests.filter(r=>r.child).every(r=>r.model===childModel));assert.ok(requests.filter(r=>!r.child).every(r=>r.model===model));
   assert.equal(proxyRequests,0);
-  console.log(JSON.stringify({success:true,hookCalls,proxyRequests,requests}));
+  console.log(JSON.stringify({success:true,proxyRequests,requests}));
 }finally{clearTimeout(timer);controller.abort();q?.close();server.closeAllConnections();proxy.closeAllConnections();await Promise.all([new Promise(r=>server.close(r)),new Promise(r=>proxy.close(r))]);rmSync(scratch,{recursive:true,force:true});}

@@ -518,7 +518,6 @@ pub fn run() {
             cliproxy::cmd_cliproxy_cancel,
             cliproxy::cmd_cliproxy_disconnect,
             cliproxy::cmd_cliproxy_retry_cleanup,
-            cliproxy::cmd_cliproxy_verify,
             cliproxy::cmd_cliproxy_models,
             cliproxy::cmd_cliproxy_check_update,
             tokendance::cmd_tokendance_auth_open,

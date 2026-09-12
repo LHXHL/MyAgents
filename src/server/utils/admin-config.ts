@@ -1111,6 +1111,13 @@ export function resolveProviderEnv(
     ? subscriptionAuth?.kind
     : undefined;
   const isManagedOauth = subscriptionAuthKind === 'host-managed-oauth';
+  // Resolve persisted alias choices before choosing the credential transport.
+  const presetAliases = (provider as Record<string, unknown>).modelAliases as Record<string, string> | undefined;
+  const aliasOverrides = c.providerModelAliases as Record<string, Record<string, string>> | undefined;
+  const userOverrides = aliasOverrides?.[providerId];
+  const mergedAliases = presetAliases || userOverrides
+    ? { ...presetAliases, ...userOverrides }
+    : undefined;
   if (subscriptionAuthKind === 'proxy-managed') {
     if (providerId !== ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
         || subscriptionAuth?.kind !== 'proxy-managed'
@@ -1121,7 +1128,7 @@ export function resolveProviderEnv(
       apiProtocol: 'anthropic',
       authType: 'api_key',
       endpointSource: { kind: 'cliproxy', providerId },
-      modelAliases: completeModelAliases(undefined, model),
+      modelAliases: completeModelAliases(mergedAliases, model),
     };
   }
   if (provider.type === 'subscription' && !isManagedOauth) return undefined;
@@ -1151,13 +1158,6 @@ export function resolveProviderEnv(
   if (provider.maxOutputTokensParamName) result.maxOutputTokensParamName = provider.maxOutputTokensParamName as ResolvedProviderEnv['maxOutputTokensParamName'];
   if (provider.upstreamFormat) result.upstreamFormat = provider.upstreamFormat as ResolvedProviderEnv['upstreamFormat'];
 
-  // Model aliases: merge preset defaults with user overrides (from config.providerModelAliases)
-  const presetAliases = (provider as Record<string, unknown>).modelAliases as Record<string, string> | undefined;
-  const aliasOverrides = c.providerModelAliases as Record<string, Record<string, string>> | undefined;
-  const userOverrides = aliasOverrides?.[providerId];
-  const mergedAliases = presetAliases || userOverrides
-    ? { ...presetAliases, ...userOverrides }
-    : undefined;
   const completedAliases = completeModelAliases(mergedAliases);
   if (completedAliases) {
     result.modelAliases = completedAliases;

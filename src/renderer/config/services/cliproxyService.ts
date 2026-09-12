@@ -10,8 +10,6 @@ export const connectCliProxy = (): Promise<CliProxyStatus> => invoke('cmd_clipro
 export const cancelCliProxy = (attemptId: string): Promise<CliProxyStatus> => invoke('cmd_cliproxy_cancel', { attemptId });
 export const disconnectCliProxy = (): Promise<CliProxyStatus> => invoke('cmd_cliproxy_disconnect');
 export const retryCliProxyCleanup = (): Promise<CliProxyStatus> => invoke('cmd_cliproxy_retry_cleanup');
-export const verifyCliProxy = (accountGeneration: string, model: string): Promise<CliProxyStatus> =>
-  invoke('cmd_cliproxy_verify', { accountGeneration, model });
 export const checkCliProxyUpdate = (): Promise<CliProxyStatus> => invoke('cmd_cliproxy_check_update');
 export async function discoverCliProxyModels(accountGeneration: string): Promise<DiscoveredModel[]> {
   const models = await invoke<ModelEntity[]>('cmd_cliproxy_models', { accountGeneration });

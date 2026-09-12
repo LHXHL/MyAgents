@@ -4,7 +4,7 @@ import type { ProviderEnv } from '../provider-types';
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock('./management-api-client', () => ({ managementApi: api }));
-import { assertManagedProviderPrepared, controlManagedProxyBinding, prepareProviderBinding, projectManagedSubagentInput, validateManagedProxyBinding } from './managed-proxy-binding';
+import { assertManagedProviderPrepared, controlManagedProxyBinding, prepareProviderBinding, validateManagedProxyBinding } from './managed-proxy-binding';
 
 const provider: ProviderEnv = { providerId: 'antigravity-sub', apiProtocol: 'anthropic',
   endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' } };
@@ -27,12 +27,13 @@ describe('managed proxy Query resource', () => {
     expect(outcomes.map(body => body.terminal)).toEqual(['succeeded', 'failed']);
     expect(outcomes.every(body => body.leaseId === grant.leaseId && body.operationId === api.mock.calls[0][2].operationId)).toBe(true);
   });
-  it('keeps project/plugin and nested SDK agents on the admitted model alias', () => {
-    const input = { prompt: 'delegate', subagent_type: 'plugin-agent', model: 'another-model' };
-    expect(projectManagedSubagentInput(binding().modelPolicy, 'Agent', input)).toEqual({ ...input, model: 'sonnet' });
-    expect(projectManagedSubagentInput(undefined, 'Agent', input)).toBeUndefined();
-    expect(projectManagedSubagentInput(binding().modelPolicy, 'Bash', input)).toBeUndefined();
-    expect(input.model).toBe('another-model');
+  it('preserves explicit provider aliases instead of forcing every subagent onto the main model', async () => {
+    vi.stubEnv('MYAGENTS_SIDECAR_ID', 'session-test');
+    api.mockImplementation(async path => path.endsWith('/acquire') ? { ok: true, binding: binding() } : { ok: true });
+    const resource = await prepareProviderBinding({ providerEnv: { ...provider, modelAliases: { sonnet: 'gemini-3.8-flash-high', opus: 'another-native-model' } }, model: 'approved', controller: new AbortController() });
+    expect(resource.providerEnv?.modelAliases?.sonnet).toBe('gemini-3.8-flash-high');
+    expect(resource.providerEnv?.modelAliases?.opus).toBe('another-native-model');
+    await resource.release();
   });
   it('refuses unresolved or persisted bindings; keeps the original provider reference non-secret', async () => {
     vi.stubEnv('MYAGENTS_SIDECAR_ID', 'session-test');

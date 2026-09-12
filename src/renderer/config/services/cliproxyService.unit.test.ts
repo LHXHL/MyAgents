@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import type { CliProxyStatus } from '../../../shared/cliproxy';
-import { cancelCliProxy, discoverCliProxyModels, shouldShowCliProxyProvider, verifyCliProxy } from './cliproxyService';
+import { cancelCliProxy, discoverCliProxyModels, shouldShowCliProxyProvider } from './cliproxyService';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 describe('CLIProxy settings projection', () => {
@@ -10,14 +10,13 @@ describe('CLIProxy settings projection', () => {
     const status = { policy: { usable: false }, active: null, candidate: null, cleanup: null } as CliProxyStatus;
     expect(shouldShowCliProxyProvider(status)).toBe(false);
     expect(shouldShowCliProxyProvider({ ...status, cleanup: { scope: 'retired', failed: true } })).toBe(true);
-    expect(shouldShowCliProxyProvider({ ...status, active: { generation: 'account', status: 'stored' } })).toBe(true);
+    expect(shouldShowCliProxyProvider({ ...status, active: { generation: 'account', status: 'connected' } })).toBe(true);
     expect(shouldShowCliProxyProvider(null)).toBe(false);
   });
-  it('targets cancellation by attempt and verification by account generation', async () => {
+  it('targets cancellation by exact attempt', async () => {
     vi.mocked(invoke).mockResolvedValue({});
-    await cancelCliProxy('attempt'); await verifyCliProxy('generation', 'tested-model');
+    await cancelCliProxy('attempt');
     expect(invoke).toHaveBeenCalledWith('cmd_cliproxy_cancel', { attemptId: 'attempt' });
-    expect(invoke).toHaveBeenCalledWith('cmd_cliproxy_verify', { accountGeneration: 'generation', model: 'tested-model' });
   });
   it('uses only Rust-projected capabilities for model discovery', async () => {
     vi.mocked(invoke).mockResolvedValue([{ model: 'tested-model', modelName: 'Model', contextLength: 32_000,

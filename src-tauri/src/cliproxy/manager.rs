@@ -21,13 +21,6 @@ struct Lease {
     model: String,
     binding: Binding,
 }
-#[derive(Clone)]
-struct Verification {
-    id: String,
-    account_generation: String,
-    model: String,
-    component_identity: String,
-}
 #[derive(Default)]
 struct Runtime {
     accounts: Accounts,
@@ -39,7 +32,6 @@ struct Runtime {
     model_identities: BTreeMap<String, String>,
     account_errors: BTreeMap<String, Error>,
     emails: BTreeMap<String, String>,
-    verification: Option<Verification>,
     cancel: Option<watch::Sender<bool>>,
     draining: bool,
     shutting_down: bool,
@@ -104,7 +96,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 model_identities: BTreeMap::new(),
                 account_errors: BTreeMap::new(),
                 emails: BTreeMap::new(),
-                verification: None,
                 cancel: None,
                 draining: false,
                 shutting_down: false,
@@ -174,7 +165,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             let mut state = self.state.lock().await;
             if let Some(candidate) = &mut state.accounts.candidate {
                 // No OAuth state or inferred successful commit survives App exit.
-                candidate.phase = "awaiting-verification".to_owned();
+                candidate.phase = "stored".to_owned();
                 candidate.verified_model = None;
                 candidate.verified_at = None;
                 candidate.verification_identity = None;
@@ -384,10 +375,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             Some("incompatible") => "incompatible",
             Some(_) => "invalid",
         };
-        let current_identity = components.current.as_ref().and_then(|i| {
-            i.identity(&self.components.app_version, &self.components.sdk_version)
-                .ok()
-        });
         let state = self.state.lock().await;
         let instance_state = |instance: &Option<Arc<Instance>>| match instance {
             Some(instance) if instance.alive() => {
@@ -404,33 +391,13 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             json!({ "generation": a.generation, "email": state.emails.get(&a.generation),
             "status": if state.account_errors.get(&a.generation).is_some_and(|e| matches!(e.code.as_str(), "reauth_required" | "account_not_saved")) {
                 "reauth-required"
-            } else if a.verified_model.is_some() { "verified" } else { "stored" }, "verifiedModel": a.verified_model, "verifiedAt": a.verified_at,
+            } else { "connected" },
                 "error": state.account_errors.get(&a.generation) })
         };
         let candidate = state.accounts.candidate.as_ref().map(|a| {
             json!({ "attemptId": a.attempt_id, "generation": a.generation,
             "phase": a.phase, "email": state.emails.get(&a.generation), "error": state.account_errors.get(&a.generation) })
         });
-        let model_verification: BTreeMap<_, _> = state
-            .accounts
-            .candidate
-            .as_ref()
-            .or(state.accounts.active.as_ref())
-            .map(|a| {
-                a.model_checks
-                    .iter()
-                    .filter(|(_, check)| {
-                        Some(&check.component_identity) == current_identity.as_ref()
-                    })
-                    .map(|(model, check)| {
-                        (
-                            model.clone(),
-                            json!({"status":check.status,"checkedAt":check.checked_at}),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let models = state
             .accounts
             .candidate
@@ -457,29 +424,22 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 "scope": if state.accounts.disconnecting { "all" } else if state.accounts.candidate.as_ref().is_some_and(|a| state.accounts.cleanup.contains(&a.id)) { "candidate" } else { "retired" },
                 "failed": state.error.is_some() }) },
             "modelsStale": state.accounts.candidate.as_ref().or(state.accounts.active.as_ref()).is_some_and(|a| !state.model_identities.contains_key(&a.generation)),
-            "models": models, "modelVerification": model_verification, "error": state.error
-            , "verification": state.verification.as_ref().map(|v| json!({ "accountGeneration": v.account_generation, "model": v.model, "phase": "running" }))
+            "models": models, "error": state.error
         })
     }
 
     pub async fn connect(self: &Arc<Self>) -> Result<Value> {
-        {
-            let state = self.state.lock().await;
-            Self::check_state(&state)?;
-            if state.accounts.candidate.is_some() {
-                drop(state);
-                return Ok(self.status().await);
-            }
-        }
         let guard = Arc::clone(&self.account_operation)
             .try_lock_owned()
             .map_err(|_| Error::new("operation_pending", "账号操作正在进行"))?;
         let (cancel, cancelled) = watch::channel(false);
-        let account = AccountRef::candidate();
+        let existing = self.state.lock().await.accounts.candidate.clone();
+        let resuming = existing.is_some();
+        let account = existing.unwrap_or_else(AccountRef::candidate);
         {
             let mut state = self.state.lock().await;
             Self::check_state(&state)?;
-            if !state.accounts.cleanup.is_empty() || state.accounts.candidate.is_some() {
+            if !state.accounts.cleanup.is_empty() {
                 return Err(Error::new("cleanup_pending", "请先完成已有账号操作"));
             }
             let mut next = state.accounts.clone();
@@ -492,7 +452,12 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let _guard = guard;
-            if let Err(error) = manager.login(&account, cancelled.clone()).await {
+            let result = if resuming {
+                manager.resume_login(&account, cancelled.clone()).await
+            } else {
+                manager.login(&account, cancelled.clone()).await
+            };
+            if let Err(error) = result {
                 // OAuth outcome is unknown until native account load succeeds.
                 // Stop the sole writer before any candidate directory deletion.
                 let authorized = manager
@@ -506,7 +471,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                         a.generation == account.generation
                             && matches!(
                                 a.phase.as_str(),
-                                "awaiting-verification" | "verifying" | "waiting-to-commit"
+                                "authorized" | "stored" | "waiting-to-commit"
                             )
                     });
                 if !authorized {
@@ -529,7 +494,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     let _ = manager.cleanup().await;
                 }
                 if authorized {
-                    if let Err(cleanup_error) = manager.record_account_failure(&account, &error).await {
+                    if let Err(cleanup_error) =
+                        manager.record_account_failure(&account, &error).await
+                    {
                         manager.set_error(cleanup_error).await;
                     }
                 } else if error.code != "cancelled" {
@@ -608,47 +575,100 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 _ => tokio::time::sleep(Duration::from_millis(700)).await,
             }
         }
+        self.complete_authorization(account, &installed, &instance, cancelled)
+            .await
+    }
+
+    async fn resume_login(
+        &self,
+        account: &AccountRef,
+        cancelled: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let start = self.active_start.lock().await;
+        let installed = self.selected(true).await?;
+        let existing = self
+            .state
+            .lock()
+            .await
+            .candidate
+            .clone()
+            .filter(|i| i.account_generation == account.generation && i.alive());
+        let instance = match existing {
+            Some(instance) => instance,
+            None => {
+                self.start_for(account, &installed, cancelled.clone(), true)
+                    .await?
+            }
+        };
+        drop(start);
+        self.complete_authorization(account, &installed, &instance, cancelled)
+            .await
+    }
+
+    async fn complete_authorization(
+        &self,
+        account: &AccountRef,
+        installed: &Installed,
+        instance: &Arc<Instance>,
+        cancelled: watch::Receiver<bool>,
+    ) -> Result<()> {
         let summary = instance
             .client
             .account()
             .await?
-            .ok_or_else(|| Error::new("authorization_failed", "授权结果未保存，请重新连接"))?;
+            .ok_or_else(|| Error::new("account_not_saved", "账号授权未保存，请重新连接"))?;
+        self.record_authorization(account, summary, &cancelled)
+            .await?;
+        self.commit(account, installed, instance, cancelled).await?;
+        self.project_config().await?;
+        self.emit();
+        crate::ulog_info!("[cliproxy] account connected; refreshing native model catalog");
+        // Model discovery is independent of the durable login commit.
+        let formal = self
+            .state
+            .lock()
+            .await
+            .active
+            .clone()
+            .ok_or_else(Error::cancelled)?;
+        let result = self.refresh_for(account, &formal, installed).await;
+        self.project_config().await?;
+        self.emit();
+        result.map(|_| ())
+    }
+
+    async fn record_authorization(
+        &self,
+        account: &AccountRef,
+        summary: super::client::Account,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<()> {
+        if summary.disabled {
+            return Err(Error::new("reauth_required", "账号当前不可用，请重新连接"));
+        }
         {
             let mut state = self.state.lock().await;
             Self::check_state(&state)?;
+            if *cancelled.borrow() || state.accounts.cleanup.contains(&account.id) {
+                return Err(Error::cancelled());
+            }
             let candidate = state
                 .accounts
                 .candidate
                 .as_mut()
                 .filter(|a| a.generation == account.generation)
                 .ok_or_else(Error::cancelled)?;
-            if *cancelled.borrow() {
-                return Err(Error::cancelled());
-            }
-            candidate.phase = "awaiting-verification".to_owned();
+            candidate.phase = "authorized".to_owned();
+            candidate
+                .authorized_at
+                .get_or_insert_with(|| chrono::Utc::now().to_rfc3339());
             self.store.write_accounts(&state.accounts)?;
+            state.account_errors.remove(&account.generation);
             if let Some(email) = summary.email {
                 state.emails.insert(account.generation.clone(), email);
             }
         }
-        crate::ulog_info!("[cliproxy] browser authorization confirmed; discovering models");
-        self.refresh_for(account, &instance, &installed).await?;
-        self.emit();
-        let models = self
-            .state
-            .lock()
-            .await
-            .models
-            .get(&account.generation)
-            .cloned()
-            .unwrap_or_default();
-        let model = models
-            .first()
-            .and_then(|m| m["model"].as_str())
-            .ok_or_else(|| Error::new("no_compatible_model", "此账号暂时没有通过兼容验证的模型"))?
-            .to_owned();
-        self.verify_locked(account, &installed, &instance, &model, cancelled)
-            .await
+        Ok(())
     }
 
     async fn start_for(
@@ -818,7 +838,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         instance: &Instance,
         installed: &Installed,
     ) -> Result<Vec<Value>> {
-        let component = self.components.allowed(installed).await?;
+        self.components.allowed(installed).await?;
         let summary = instance
             .client
             .account()
@@ -827,14 +847,24 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         if summary.disabled {
             return Err(Error::new("reauth_required", "账号当前不可用，请检查连接"));
         }
-        let (registered, routed, definitions) = tokio::try_join!(
+        let (registered, routed, definitions) = tokio::join!(
             instance.client.registered_models(&summary.name),
             instance.client.routed_models(),
             instance.client.definitions()
-        )?;
-        crate::ulog_info!("[cliproxy] model catalog registered={} routed={} definitions={} approved={}",
-            registered.len(), routed.len(), definitions.len(), component.compatibility.models.len());
-        let models = super::models::project(&registered, &routed, &definitions, &component)?;
+        );
+        // Native views can refresh independently. Metadata is enrichment, not admission.
+        let (registered, routed) = match (registered, routed) {
+            (Err(error), Err(_)) => return Err(error),
+            (registered, routed) => (registered.unwrap_or_default(), routed.unwrap_or_default()),
+        };
+        let definitions = definitions.unwrap_or_default();
+        crate::ulog_info!(
+            "[cliproxy] native model catalog registered={} routed={} definitions={}",
+            registered.len(),
+            routed.len(),
+            definitions.len()
+        );
+        let models = super::models::project(&registered, &routed, &definitions)?;
         let mut state = self.state.lock().await;
         if !state
             .accounts
@@ -858,225 +888,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             state.emails.insert(account.generation.clone(), email);
         }
         Ok(models)
-    }
-
-    pub async fn verify(self: &Arc<Self>, generation: &str, model: &str) -> Result<Value> {
-        let guard = Arc::clone(&self.account_operation)
-            .try_lock_owned()
-            .map_err(|_| Error::new("operation_pending", "账号操作正在进行"))?;
-        let account = {
-            let state = self.state.lock().await;
-            Self::check_state(&state)?;
-            state
-                .accounts
-                .candidate
-                .iter()
-                .chain(state.accounts.active.iter())
-                .find(|a| a.generation == generation)
-                .cloned()
-                .ok_or_else(Error::cancelled)?
-        };
-        let (cancel, cancelled) = watch::channel(false);
-        self.state.lock().await.cancel = Some(cancel);
-        let manager = Arc::clone(self);
-        let model = model.to_owned();
-        tauri::async_runtime::spawn(async move {
-            let _guard = guard;
-            let result = async {
-                let start = manager.active_start.lock().await;
-                let installed = manager.selected(true).await?;
-                let existing = {
-                    let state = manager.state.lock().await;
-                    state
-                        .candidate
-                        .iter()
-                        .chain(state.active.iter())
-                        .find(|i| i.account_generation == account.generation && i.alive())
-                        .cloned()
-                };
-                let instance = if let Some(instance) = existing {
-                    instance
-                } else {
-                    let instance = manager
-                        .start_for(&account, &installed, cancelled.clone(), true)
-                        .await?;
-                    let candidate = manager
-                        .state
-                        .lock()
-                        .await
-                        .accounts
-                        .candidate
-                        .as_ref()
-                        .is_some_and(|a| a.generation == account.generation);
-                    if candidate {
-                        manager
-                            .install_candidate_instance(&account, Arc::clone(&instance), &cancelled)
-                            .await?;
-                    } else {
-                        manager.state.lock().await.active = Some(Arc::clone(&instance));
-                    }
-                    if let Err(error) = manager.components.activate(&installed).await {
-                        instance.stop().await?;
-                        return Err(error);
-                    }
-                    instance
-                };
-                manager.refresh_for(&account, &instance, &installed).await?;
-                drop(start);
-                manager
-                    .verify_locked(&account, &installed, &instance, &model, cancelled)
-                    .await
-            }
-            .await;
-            if let Err(error) = result {
-                if let Err(cleanup_error) = manager.record_account_failure(&account, &error).await {
-                    manager.set_error(cleanup_error).await;
-                }
-            }
-            manager.finish_account_operation().await;
-            manager.emit();
-        });
-        Ok(self.status().await)
-    }
-
-    async fn verify_locked(
-        &self,
-        account: &AccountRef,
-        installed: &Installed,
-        instance: &Arc<Instance>,
-        model: &str,
-        mut cancelled: watch::Receiver<bool>,
-    ) -> Result<()> {
-        let component = self.components.allowed(installed).await?;
-        if !component.supports_model(model) {
-            return Err(Error::new("model_unapproved", "此模型尚未通过兼容验证"));
-        }
-        let verification = Verification {
-            id: Uuid::new_v4().to_string(),
-            account_generation: account.generation.clone(),
-            model: model.to_owned(),
-            component_identity: installed
-                .identity(&self.components.app_version, &self.components.sdk_version)?,
-        };
-        {
-            let mut state = self.state.lock().await;
-            Self::check_state(&state)?;
-            state.verification = Some(verification.clone());
-            if let Some(candidate) = &mut state.accounts.candidate {
-                if candidate.generation == account.generation {
-                    candidate.phase = "verifying".to_owned();
-                }
-            }
-            state.error = None;
-        }
-        self.emit();
-        let result = tokio::select! {
-            _ = cancelled.changed() => Err(Error::cancelled()),
-            result = async {
-                let dispatch = crate::sse_proxy::acquire_global_dispatch_with_wait(&self.sidecars).await
-                    .map_err(|_| Error::new("verification_runtime", "验证运行时暂时不可用"))?;
-                let url = dispatch.url_for_path("/api/cliproxy/verify").map_err(|_| Error::contract())?;
-                let response = crate::local_http::json_client(Duration::from_secs(120)).post(url)
-                    .json(&json!({ "model": model, "accountGeneration": account.generation, "operationId": verification.id }))
-                    .send().await.map_err(|_| Error::new("verification_network", "模型验证未完成，请检查网络后重试"))?;
-                super::client::bounded_json(response).await
-            } => result,
-        };
-        let success = result.as_ref().is_ok_and(|v| v["success"] == true);
-        {
-            let mut state = self.state.lock().await;
-            if !state
-                .verification
-                .as_ref()
-                .is_some_and(|v| v.id == verification.id)
-                || *cancelled.borrow()
-            {
-                return Err(Error::cancelled());
-            }
-            state.verification = None;
-            if let Some(candidate) = &mut state.accounts.candidate {
-                if candidate.generation == account.generation {
-                    candidate.phase = "awaiting-verification".to_owned();
-                }
-            }
-        }
-        if !success {
-            if !*cancelled.borrow() {
-                let mut state = self.state.lock().await;
-                let mut next = state.accounts.clone();
-                if !next.disconnecting {
-                    if let Some(account) = next
-                        .active
-                        .iter_mut()
-                        .chain(next.candidate.iter_mut())
-                        .find(|a| {
-                            a.generation == account.generation && !next.cleanup.contains(&a.id)
-                        })
-                    {
-                        account.model_checks.insert(
-                            model.to_owned(),
-                            super::store::ModelCheck {
-                                status: super::types::TerminalOutcome::Failed,
-                                checked_at: chrono::Utc::now().to_rfc3339(),
-                                component_identity: verification.component_identity.clone(),
-                            },
-                        );
-                        let saved = self.store.write_accounts(&next);
-                        if saved.is_ok() || saved.as_ref().is_err_and(|e| e.code == "storage_sync")
-                        {
-                            state.accounts = next;
-                        }
-                        saved?;
-                    }
-                }
-            }
-            return Err(result.err().unwrap_or_else(|| {
-                Error::new(
-                    "verification_failed",
-                    "已授权，但模型工具验证未通过；可以重试或选择其他兼容模型",
-                )
-            }));
-        }
-        // Native HTTP success and SDK idle are insufficient; this is the
-        // verification endpoint's full tool-round-trip terminal result.
-        self.components.allowed(installed).await?;
-        {
-            let mut state = self.state.lock().await;
-            Self::check_state(&state)?;
-            let accounts = &mut state.accounts;
-            let account = accounts
-                .candidate
-                .iter_mut()
-                .chain(accounts.active.iter_mut())
-                .find(|a| a.generation == account.generation)
-                .ok_or_else(Error::cancelled)?;
-            account.verified_model = Some(model.to_owned());
-            account.verified_at = Some(chrono::Utc::now().to_rfc3339());
-            account.verification_identity = Some(verification.component_identity.clone());
-            account.model_checks.insert(
-                model.to_owned(),
-                super::store::ModelCheck {
-                    status: super::types::TerminalOutcome::Succeeded,
-                    checked_at: chrono::Utc::now().to_rfc3339(),
-                    component_identity: verification.component_identity,
-                },
-            );
-            self.store.write_accounts(&state.accounts)?;
-        }
-        let is_candidate = self
-            .state
-            .lock()
-            .await
-            .accounts
-            .candidate
-            .as_ref()
-            .is_some_and(|a| a.generation == account.generation);
-        if is_candidate {
-            self.commit(account, installed, instance, cancelled).await?;
-        }
-        self.project_config().await?;
-        self.emit();
-        Ok(())
     }
 
     async fn record_account_failure(&self, account: &AccountRef, error: &Error) -> Result<()> {
@@ -1126,10 +937,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
     async fn finish_account_operation(&self) {
         let mut state = self.state.lock().await;
         state.cancel = None;
-        state.verification = None;
         if let Some(candidate) = &mut state.accounts.candidate {
-            if matches!(candidate.phase.as_str(), "verifying" | "waiting-to-commit") {
-                candidate.phase = "awaiting-verification".to_owned();
+            if candidate.phase == "waiting-to-commit" {
+                candidate.phase = "stored".to_owned();
                 if let Err(error) = self.store.write_accounts(&state.accounts) {
                     state.error = Some(error);
                 }
@@ -1270,7 +1080,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 return Err(error);
             }
             state.accounts = next;
-            state.verification = None;
             generation
         };
         self.changed.notify_waiters();
@@ -1303,7 +1112,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             next.begin_disconnect();
             let saved = self.store.write_accounts(&next);
             state.accounts = next;
-            state.verification = None;
             saved?;
         }
         self.changed.notify_waiters();
@@ -1472,13 +1280,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             if state.draining {
                 return Err(Error::new("draining", "正在切换模型组件，请稍候"));
             }
-            let account = state
-                .accounts
-                .active
-                .clone()
-                .filter(|a| a.verified_model.is_some())
-                .ok_or_else(|| {
-                    Error::new("account_unavailable", "请先连接并验证 Antigravity 账号")
+            let account =
+                state.accounts.active.clone().ok_or_else(|| {
+                    Error::new("account_unavailable", "请先登录 Antigravity 账号")
                 })?;
             if let Some(active) = &state.active {
                 if active.alive() && active.component_identity == identity {
@@ -1490,7 +1294,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     let fresh = state.model_identities.get(&account.generation) == Some(&identity);
                     drop(state);
                     if !fresh {
-                        self.refresh_for(&account, &active, &installed).await?;
+                        let _ = self.refresh_for(&account, &active, &installed).await;
                         self.project_config().await?;
                     }
                     return Ok((active, installed));
@@ -1525,12 +1329,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         let instance = self
             .start_for(&account, &installed, self.shutdown.subscribe(), false)
             .await?;
-        if let Err(error) = self.refresh_for(&account, &instance, &installed).await {
-            // Local process probes already succeeded. Missing authorization or
-            // model discovery is an account error, not a failed executable.
-            instance.stop().await?;
-            return Err(error);
-        }
+        let _ = self.refresh_for(&account, &instance, &installed).await;
         let mut state = self.state.lock().await;
         if Self::check_state(&state).is_err()
             || state.draining
@@ -1588,13 +1387,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             request.sidecar_id, request.operation_id
         );
         self.reconcile_dead_leases().await;
-        let identity = serde_json::to_string(&(
-            &request.model,
-            &request.purpose,
-            &request.expected_account_generation,
-            &request.verification_operation_id,
-        ))
-        .map_err(|_| Error::contract())?;
+        let identity = request.model.clone();
         loop {
             // Register notification before observing the slot; a concurrent
             // completion cannot be lost between unlock and await.
@@ -1635,81 +1428,17 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         sidecar_generation: u64,
         key: &str,
     ) -> Result<Binding> {
-        let (instance, installed) = if request.purpose == "verification" {
-            let state = self.state.lock().await;
-            Self::check_state(&state)?;
-            let verify = state
-                .verification
-                .as_ref()
-                .filter(|v| {
-                    Some(&v.id) == request.verification_operation_id.as_ref()
-                        && Some(&v.account_generation)
-                            == request.expected_account_generation.as_ref()
-                        && v.model == request.model
-                })
-                .ok_or_else(|| Error::new("verification_expired", "此模型验证已失效"))?;
-            let instance = state
-                .candidate
-                .iter()
-                .chain(state.active.iter())
-                .find(|i| i.account_generation == verify.account_generation && i.alive())
-                .cloned()
-                .ok_or_else(Error::cancelled)?;
-            drop(state);
-            (instance, self.selected(false).await?)
-        } else if request.purpose == "execution" {
-            self.ensure_active().await?
-        } else {
-            return Err(Error::contract());
-        };
-        let component = self.components.allowed(&installed).await?;
-        if !component.supports_model(&request.model) {
-            return Err(Error::new("model_unapproved", "此模型尚未通过兼容验证"));
-        }
+        let (instance, installed) = self.ensure_active().await?;
+        self.components.allowed(&installed).await?;
         if installed.identity(&self.components.app_version, &self.components.sdk_version)?
             != instance.component_identity
         {
             return Err(Error::cancelled());
         }
-        if !instance
-            .client
-            .routed_models()
-            .await?
-            .iter()
-            .any(|model| model == &request.model)
-        {
-            self.state
-                .lock()
-                .await
-                .model_identities
-                .remove(&instance.account_generation);
-            return Err(Error::new(
-                "model_unavailable",
-                "此模型当前不能由该账号路由",
-            ));
-        }
         let mut state = self.state.lock().await;
         Self::check_state(&state)?;
-        if state.draining && request.purpose == "execution" {
+        if state.draining {
             return Err(Error::new("draining", "正在等待当前任务结束后切换"));
-        }
-        if !state
-            .models
-            .get(&instance.account_generation)
-            .is_some_and(|models| models.iter().any(|m| m["model"] == request.model))
-        {
-            return Err(Error::new(
-                "model_unavailable",
-                "此模型当前不能由该账号路由",
-            ));
-        }
-        if request.purpose == "verification"
-            && !state
-                .verification
-                .as_ref()
-                .is_some_and(|v| Some(&v.id) == request.verification_operation_id.as_ref())
-        {
-            return Err(Error::cancelled());
         }
         if let Some(lease) = state.leases.get(key) {
             if lease.model != request.model
@@ -1727,20 +1456,15 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             account_generation: instance.account_generation.clone(),
             lease_id: Uuid::new_v4().to_string(),
             model_policy: {
-                let approved = component
-                    .compatibility
-                    .models
-                    .iter()
-                    .find(|m| m.id == request.model)
-                    .ok_or_else(Error::contract)?;
                 let model = state
                     .models
                     .get(&instance.account_generation)
                     .and_then(|models| models.iter().find(|m| m["model"] == request.model))
-                    .ok_or_else(Error::contract)?;
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 super::types::ModelPolicy {
                     id: request.model.clone(),
-                    thinking: approved.thinking,
+                    thinking: model["thinking"].as_bool(),
                     context_length: model["contextLength"].as_u64(),
                     max_output_tokens: model["maxOutputTokens"].as_u64(),
                 }
@@ -1776,7 +1500,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         );
         let installed = self.selected(false).await?;
         self.components.allowed(&installed).await?;
-        let (instance, model) = {
+        {
             let state = self.state.lock().await;
             let lease = state
                 .leases
@@ -1794,18 +1518,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 self.schedule_proxy_reconcile();
                 return Err(Error::new("draining", "网络设置已变更，正在切换模型连接"));
             }
-            (instance, lease.model.clone())
-        };
-        if !instance.client.routed_models().await?.contains(&model) {
-            self.state
-                .lock()
-                .await
-                .model_identities
-                .remove(&instance.account_generation);
-            return Err(Error::new(
-                "model_unavailable",
-                "此模型当前不能由该账号路由",
-            ));
         }
         let state = self.state.lock().await;
         Self::check_state(&state)?;
@@ -1829,9 +1541,6 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 "binding_expired",
                 "组件连接已变更，请重新准备请求",
             ));
-        }
-        if !installed.component()?.supports_model(&lease.model) {
-            return Err(Error::new("model_unapproved", "此模型已不在当前兼容清单中"));
         }
         Ok(())
     }
@@ -2061,11 +1770,10 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
 
     async fn stop_for_policy(&self) -> Result<()> {
         {
-            let mut state = self.state.lock().await;
+            let state = self.state.lock().await;
             if let Some(cancel) = &state.cancel {
                 let _ = cancel.send(true);
             }
-            state.verification = None;
         }
         // Immediate stop precedes the normal drain's birth fence. Repeat after
         // acquiring it to catch a process that passed admission before policy.
@@ -2267,7 +1975,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                     candidate.verified_model = None;
                     candidate.verified_at = None;
                     candidate.verification_identity = None;
-                    candidate.phase = "awaiting-verification".to_owned();
+                    candidate.phase = "stored".to_owned();
                 }
                 // Invalidate candidate proof before committing the component.
                 // Nothing fallible follows the durable component switch.
@@ -2373,11 +2081,10 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
             return Err(Error::contract());
         }
         {
-            let mut state = self.state.lock().await;
+            let state = self.state.lock().await;
             if let Some(cancel) = &state.cancel {
                 let _ = cancel.send(true);
             }
-            state.verification = None;
         }
         self.stop_consumers().await;
         let _update = self.update_check.lock().await;
@@ -2442,22 +2149,28 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         let models = active
             .and_then(|a| state.models.get(&a.generation))
             .cloned();
-        let verified_model = active.and_then(|a| a.verified_model.clone());
-        let verified_at = active.and_then(|a| a.verified_at.clone());
+        let connected_at = active.map(|a| {
+            a.authorized_at
+                .clone()
+                .or_else(|| a.verified_at.clone())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+        });
         let path = &self.config_path;
         if !path.exists() {
             return Ok(());
         }
         crate::config_io::with_config_lock(&path, false, |config| {
             let id = "antigravity-sub";
-            if let Some(at) = &verified_at {
+            if let Some(at) = &connected_at {
                 config["providerVerifyStatus"][id] = json!({ "status": "valid", "verifiedAt": at });
                 if config["providerPrimaryModels"][id]
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .is_none()
                 {
-                    config["providerPrimaryModels"][id] = json!(verified_model);
+                    if let Some(model) = models.as_ref().and_then(|models| models.first()) {
+                        config["providerPrimaryModels"][id] = model["model"].clone();
+                    }
                 }
             } else if let Some(statuses) = config["providerVerifyStatus"].as_object_mut() {
                 statuses.remove(id);
@@ -2500,6 +2213,102 @@ mod tests {
         installed: Installed,
     }
     #[tokio::test]
+    async fn confirmed_native_login_is_usable_without_any_model_request_or_catalog() {
+        let _serial = LIFECYCLE.lock().await;
+        let fixture = Fixture::new().await;
+        let mut account = AccountRef::candidate();
+        // Old persisted candidates use an ambiguous verification phase. Native
+        // confirmation, not that phase or a model result, restores the account.
+        account.phase = "awaiting-verification".to_owned();
+        fixture.manager.state.lock().await.accounts.candidate = Some(account.clone());
+        let (_cancel, cancelled) = watch::channel(false);
+        fixture
+            .manager
+            .record_authorization(
+                &account,
+                super::super::client::Account {
+                    name: "synthetic-native-record".to_owned(),
+                    kind: "antigravity".to_owned(),
+                    email: None,
+                    disabled: false,
+                },
+                &cancelled,
+            )
+            .await
+            .unwrap();
+        let saved = fixture.manager.store.read_accounts().unwrap();
+        assert!(saved.candidate.as_ref().unwrap().authorized_at.is_some());
+        assert!(saved.candidate.as_ref().unwrap().verified_model.is_none());
+        {
+            let mut state = fixture.manager.state.lock().await;
+            state
+                .accounts
+                .commit_candidate(&account.generation)
+                .unwrap();
+            state.account_errors.insert(
+                account.generation.clone(),
+                Error::new("catalog_unavailable", "Catalog unavailable"),
+            );
+        }
+        fixture.manager.components.state.lock().await.current = Some(fixture.installed.clone());
+        std::fs::write(&fixture.manager.config_path, "{}").unwrap();
+        fixture.manager.project_config().await.unwrap();
+        let status = fixture.manager.status().await;
+        assert_eq!(status["active"]["status"], "connected");
+        assert!(status["candidate"].is_null());
+        assert_eq!(status["models"], json!([]));
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(&fixture.manager.config_path).unwrap()).unwrap();
+        assert_eq!(
+            config["providerVerifyStatus"]["antigravity-sub"]["status"],
+            "valid"
+        );
+        assert!(config["providerPrimaryModels"]["antigravity-sub"].is_null());
+    }
+
+    #[tokio::test]
+    async fn late_or_disabled_native_authorization_cannot_promote_a_candidate() {
+        let _serial = LIFECYCLE.lock().await;
+        let fixture = Fixture::new().await;
+        let account = AccountRef::candidate();
+        fixture.manager.state.lock().await.accounts.candidate = Some(account.clone());
+        let (_cancel, cancelled) = watch::channel(false);
+        let summary = |disabled| super::super::client::Account {
+            name: "synthetic-native-record".to_owned(),
+            kind: "antigravity".to_owned(),
+            email: None,
+            disabled,
+        };
+        assert!(fixture
+            .manager
+            .record_authorization(&account, summary(true), &cancelled)
+            .await
+            .is_err());
+        assert!(fixture
+            .manager
+            .state
+            .lock()
+            .await
+            .accounts
+            .candidate
+            .as_ref()
+            .unwrap()
+            .authorized_at
+            .is_none());
+        fixture
+            .manager
+            .state
+            .lock()
+            .await
+            .accounts
+            .begin_cancel_candidate();
+        assert!(fixture
+            .manager
+            .record_authorization(&account, summary(false), &cancelled)
+            .await
+            .is_err());
+    }
+    #[tokio::test]
     async fn account_errors_stay_with_their_generation_in_the_status_projection() {
         let fixture = Fixture::new().await;
         let active = AccountRef::candidate();
@@ -2509,14 +2318,24 @@ mod tests {
             state.accounts.active = Some(active.clone());
             state.accounts.candidate = Some(candidate.clone());
             state.error = Some(Error::new("component_failure", "Component failure"));
-            state.account_errors.insert(active.generation.clone(), Error::new("active_failure", "Active failure"));
+            state.account_errors.insert(
+                active.generation.clone(),
+                Error::new("active_failure", "Active failure"),
+            );
         }
         let status = fixture.manager.status().await;
         assert_eq!(status["active"]["error"]["code"], "active_failure");
         assert!(status["candidate"]["error"].is_null());
-        fixture.manager.record_account_failure(&candidate, &Error::new("model_approval_missing", "Missing approval")).await.unwrap();
+        fixture
+            .manager
+            .record_account_failure(
+                &candidate,
+                &Error::new("catalog_unavailable", "Catalog unavailable"),
+            )
+            .await
+            .unwrap();
         let status = fixture.manager.status().await;
-        assert_eq!(status["candidate"]["error"]["code"], "model_approval_missing");
+        assert_eq!(status["candidate"]["error"]["code"], "catalog_unavailable");
         assert_eq!(status["error"]["code"], "component_failure");
     }
     #[tokio::test]
@@ -2525,14 +2344,20 @@ mod tests {
             let fixture = Fixture::new().await;
             let active = has_active.then(AccountRef::candidate);
             let mut candidate = AccountRef::candidate();
-            candidate.phase = "awaiting-verification".to_owned();
+            candidate.phase = "stored".to_owned();
             {
                 let mut state = fixture.manager.state.lock().await;
                 state.accounts.active = active.clone();
                 state.accounts.candidate = Some(candidate.clone());
             }
-            fixture.manager.record_account_failure(&candidate,
-                &Error::new("account_not_saved", "Candidate authorization was not saved")).await.unwrap();
+            fixture
+                .manager
+                .record_account_failure(
+                    &candidate,
+                    &Error::new("account_not_saved", "Candidate authorization was not saved"),
+                )
+                .await
+                .unwrap();
             let status = fixture.manager.status().await;
             assert!(status["candidate"].is_null());
             assert!(status["cleanup"].is_null());
@@ -2623,6 +2448,28 @@ mod tests {
             self.processes.push(Arc::clone(&instance));
             instance
         }
+    }
+
+    #[tokio::test]
+    async fn retained_login_waits_for_the_process_birth_fence() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+
+        let _serial = LIFECYCLE.lock().await;
+        let fixture = Fixture::new().await;
+        let account = AccountRef::candidate();
+        let (_cancel, cancelled) = watch::channel(false);
+        let fence = fixture.manager.active_start.lock().await;
+        let mut resume = Box::pin(fixture.manager.resume_login(&account, cancelled));
+        // Policy stop joins this same fence after cancelling births. Even
+        // component selection must wait, before any writer can be created.
+        let waiting = poll_fn(|cx| Poll::Ready(resume.as_mut().poll(cx).is_pending())).await;
+        assert!(waiting, "retained login bypassed the process birth fence");
+        drop(fence);
+        // This isolated fixture has no installed executable; after admission
+        // it must terminate without starting a writer or contacting a provider.
+        assert!(resume.await.is_err());
+        assert!(fixture.manager.state.lock().await.candidate.is_none());
     }
 
     #[tokio::test]
@@ -2820,7 +2667,7 @@ mod tests {
                         lease_id: request.lease_id.clone().unwrap(),
                         model_policy: super::super::types::ModelPolicy {
                             id: "model-b".to_owned(),
-                            thinking: false,
+                            thinking: Some(false),
                             context_length: None,
                             max_output_tokens: None,
                         },

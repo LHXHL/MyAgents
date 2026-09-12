@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ManagedProxyBinding, ManagedProxyPurpose } from '../../shared/cliproxy';
+import type { ManagedProxyBinding } from '../../shared/cliproxy';
 import { cliproxySdkSystemPrompt } from '../../shared/cliproxy';
 import { completeModelAliases } from '../../shared/config-types';
 import type { ProviderEnv } from '../provider-types';
@@ -40,7 +40,7 @@ export function validateManagedProxyBinding(value: unknown): ManagedProxyBinding
     ) || typeof binding.baseUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(binding.baseUrl)
     || Number(new URL(binding.baseUrl).port) > 65535
     || !binding.modelPolicy || typeof binding.modelPolicy.id !== 'string'
-    || typeof binding.modelPolicy.thinking !== 'boolean'
+    || (binding.modelPolicy.thinking != null && typeof binding.modelPolicy.thinking !== 'boolean')
     || ![binding.modelPolicy.contextLength, binding.modelPolicy.maxOutputTokens].every(
       value => value == null || (Number.isSafeInteger(value) && value > 0),
     )) {
@@ -67,15 +67,6 @@ export function getPreparedSdkSystemPrompt(env: ProviderEnv | undefined, prompt:
   return getPreparedModelPolicy(env) ? cliproxySdkSystemPrompt(prompt) : prompt;
 }
 
-/** SDK-loaded project/plugin agent frontmatter can also specify a full model
- * ID. Its Agent-tool override takes precedence; the alias below is bound to
- * this Query's admitted model, including for nested agents. */
-export function projectManagedSubagentInput(policy: ManagedProxyBinding['modelPolicy'] | undefined,
-  toolName: string, input: unknown): Record<string, unknown> | undefined {
-  if (!policy || (toolName !== 'Agent' && toolName !== 'Task') || !input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  return { ...input, model: 'sonnet' };
-}
-
 export type PreparedProvider = {
   providerEnv: ProviderEnv | undefined;
   beforeTurn(): Promise<void>;
@@ -89,7 +80,6 @@ export async function prepareProviderBinding(args: {
   providerEnv: ProviderEnv | undefined;
   model: string;
   controller: AbortController;
-  purpose?: ManagedProxyPurpose;
   onDrain?: () => void;
 }): Promise<PreparedProvider> {
   const { providerEnv, controller } = args;
@@ -125,7 +115,7 @@ export async function prepareProviderBinding(args: {
   };
   try {
     const result = await managementApi('/api/cliproxy/binding/acquire', 'POST', {
-      sidecarId, operationId, model: args.model, ...(args.purpose ?? { purpose: 'execution' }),
+      sidecarId, operationId, model: args.model,
     }, { timeoutMs: 90_000, parentSignal: controller.signal });
     requireSuccess(result);
     owner.binding = validateManagedProxyBinding(result.binding);
@@ -142,7 +132,7 @@ export async function prepareProviderBinding(args: {
     controller.signal.throwIfAborted();
     const effective: ProviderEnv = {
       ...providerEnv, baseUrl: owner.binding.baseUrl, apiKey: owner.binding.apiKey, authType: 'api_key',
-      modelAliases: completeModelAliases(undefined, owner.binding.modelPolicy.id),
+      modelAliases: completeModelAliases(providerEnv.modelAliases, owner.binding.modelPolicy.id),
     };
     preparedEnvs.set(effective, owner.binding.modelPolicy);
     return {

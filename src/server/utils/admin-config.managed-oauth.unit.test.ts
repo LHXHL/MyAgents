@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { canonicalizeManagedProviderEnv, materializeProviderRouteEnv, resolveProviderEnv } from './admin-config';
 
 describe('xai-sub managed ProviderEnv materialization', () => {
+  it('preserves persisted split model aliases when materializing a CLIProxy route', () => {
+    const env = materializeProviderRouteEnv({
+      kind: 'subscription', providerId: 'antigravity-sub', model: 'main-model',
+    }, { providerModelAliases: { 'antigravity-sub': { sonnet: 'child-model', opus: 'main-model' } } });
+    expect(env?.modelAliases).toMatchObject({ sonnet: 'child-model', opus: 'main-model' });
+    expect(canonicalizeManagedProviderEnv(env!)?.modelAliases).toEqual(env?.modelAliases);
+  });
+
   it('materializes Antigravity routes as a non-secret builtin endpoint reference', () => {
     const env = materializeProviderRouteEnv({ kind: 'subscription', providerId: 'antigravity-sub', model: 'tested-model' }, {});
     expect(env).toMatchObject({ providerId: 'antigravity-sub', apiProtocol: 'anthropic',

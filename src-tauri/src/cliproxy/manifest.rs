@@ -39,23 +39,13 @@ impl Controls {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ApprovedModel {
-    pub id: String,
-    pub tools: bool,
-    pub thinking: bool,
-    pub input_modalities: BTreeSet<String>,
-    pub output_modalities: BTreeSet<String>,
-    pub max_tested_context: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Compatibility {
     pub app_versions: BTreeSet<String>,
     pub sdk_version: String,
     pub revision: u64,
-    /// Ordered by verified default preference, not a catalog of entitlements.
-    pub models: Vec<ApprovedModel>,
+    /// Read old signed records without restoring their superseded model gate.
+    #[serde(rename = "models", default, skip_serializing)]
+    pub _legacy_models: Option<serde_json::Value>,
     /// Each listed version has passed *both directions* with this version.
     /// A downgrade never restores a historical snapshot of token contents.
     pub credential_compatible_versions: BTreeSet<String>,
@@ -221,22 +211,7 @@ impl Component {
         {
             return Err(Error::contract());
         }
-        let mut models = BTreeSet::new();
-        if self.compatibility.models.iter().any(|model| {
-            model.id.trim().is_empty()
-                || model.id.len() > 256
-                || !model.tools
-                || !models.insert(&model.id)
-        }) {
-            return Err(Error::contract());
-        }
         Ok(artifact)
-    }
-    pub fn supports_model(&self, model: &str) -> bool {
-        self.compatibility
-            .models
-            .iter()
-            .any(|m| m.id == model && m.tools)
     }
     pub fn credential_compatible(&self, other: &Self) -> bool {
         // The newer approval attests both directions. A shipped older
@@ -339,7 +314,7 @@ pub(super) mod tests {
                 app_versions: BTreeSet::from(["0.4.16".to_owned()]),
                 sdk_version: "0.3.261".to_owned(),
                 revision: 1,
-                models: vec![],
+                _legacy_models: None,
                 credential_compatible_versions: BTreeSet::new(),
             },
             artifacts: BTreeMap::from([(

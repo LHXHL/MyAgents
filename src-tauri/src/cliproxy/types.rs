@@ -47,7 +47,7 @@ pub struct Binding {
 #[serde(rename_all = "camelCase")]
 pub struct ModelPolicy {
     pub id: String,
-    pub thinking: bool,
+    pub thinking: Option<bool>,
     pub context_length: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
@@ -58,9 +58,6 @@ pub struct BindingRequest {
     pub sidecar_id: String,
     pub operation_id: String,
     pub model: String,
-    pub purpose: String,
-    pub expected_account_generation: Option<String>,
-    pub verification_operation_id: Option<String>,
 }
 
 #[derive(Deserialize)]

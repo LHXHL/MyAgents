@@ -113,10 +113,6 @@ pub async fn cmd_cliproxy_retry_cleanup() -> Result<Value> {
     manager()?.retry_cleanup().await
 }
 #[tauri::command]
-pub async fn cmd_cliproxy_verify(account_generation: String, model: String) -> Result<Value> {
-    manager()?.verify(&account_generation, &model).await
-}
-#[tauri::command]
 pub async fn cmd_cliproxy_models(account_generation: String) -> Result<Vec<Value>> {
     manager()?.refresh(&account_generation).await
 }

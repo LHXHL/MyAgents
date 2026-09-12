@@ -15,15 +15,13 @@ export type CliProxyError = { code: string; message: string };
 export type CliProxyAccount = {
   generation: string;
   email?: string | null;
-  status: 'stored' | 'verified' | 'reauth-required';
-  verifiedAt?: string | null;
-  verifiedModel?: string | null;
+  status: 'connected' | 'reauth-required';
   error?: CliProxyError | null;
 };
 export type CliProxyCandidate = {
   attemptId: string;
   generation: string;
-  phase: 'authorizing' | 'awaiting-verification' | 'verifying' | 'waiting-to-commit' | 'cancelling' | 'failed';
+  phase: 'authorizing' | 'stored' | 'authorized' | 'waiting-to-commit' | 'cancelling' | 'failed';
   email?: string | null;
   expiresAt?: string | null;
   error?: CliProxyError | null;
@@ -47,8 +45,6 @@ export type CliProxyStatus = {
   cleanup?: { scope: 'candidate' | 'retired' | 'all'; failed: boolean } | null;
   models: ModelEntity[];
   modelsStale: boolean;
-  modelVerification?: Record<string, { status: 'succeeded' | 'failed'; checkedAt: string }>;
-  verification?: { accountGeneration: string; model: string; phase: 'running' } | null;
   error?: CliProxyError | null;
 };
 
@@ -60,9 +56,6 @@ export type ManagedProxyBinding = {
   instanceGeneration: string;
   accountGeneration: string;
   leaseId: string;
-  /** Bound compatibility decisions; never inferred from user-edited metadata. */
-  modelPolicy: { id: string; thinking: boolean; contextLength?: number | null; maxOutputTokens?: number | null };
+  /** Native model metadata; absence does not prevent an upstream request. */
+  modelPolicy: { id: string; thinking?: boolean | null; contextLength?: number | null; maxOutputTokens?: number | null };
 };
-export type ManagedProxyPurpose =
-  | { purpose: 'execution' }
-  | { purpose: 'verification'; expectedAccountGeneration: string; verificationOperationId: string };

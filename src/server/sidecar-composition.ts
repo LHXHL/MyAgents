@@ -131,6 +131,8 @@ const GLOBAL_EXACT_PATHS = new Set([
 const GLOBAL_PREFIXES = ['/api/mcp/oauth/', '/api/session-tags/'] as const;
 
 const COMMON_EXACT_PATHS = new Set([
+  // Both Global one-shots and Session Queries own managed-provider leases.
+  '/api/cliproxy/control',
   '/api/runtime/models',
   '/api/runtime/permission-modes',
   '/api/project-capabilities',

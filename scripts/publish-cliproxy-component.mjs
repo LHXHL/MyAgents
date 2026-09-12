@@ -32,7 +32,7 @@ export function publicationPlan(manifest, readArtifact) {
     return { filename, size: artifact.size, sha256: artifact.sha256 };
   });
   return { mode: manifest.controls.providerMode, policyRevision: manifest.controls.policyRevision,
-    version: manifest.component.version, models: manifest.component.compatibility.models.map(m => m.id), files };
+    version: manifest.component.version, files };
 }
 
 export function assertPublicationRevision(previous, incoming) {
