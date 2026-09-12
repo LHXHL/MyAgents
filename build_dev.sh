@@ -6,6 +6,13 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLIPROXY_BUILD_ONLY=false
+if [ "${1:-}" = "--build-only" ]; then
+    CLIPROXY_BUILD_ONLY=true
+elif [ "$#" -gt 0 ]; then
+    echo "Usage: ./build_dev.sh [--build-only]"
+    exit 1
+fi
 
 # 加载 .env 文件（如果存在）
 if [ -f "${PROJECT_DIR}/.env" ]; then
@@ -66,10 +73,16 @@ echo -e "${BLUE}[准备] 检查原生推理构建依赖 (${DEV_NATIVE_TARGET})..
 node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs" "$DEV_NATIVE_TARGET" --check-prerequisites
 echo -e "${GREEN}✓ 原生推理构建依赖检查完成${NC}"
 echo ""
+CLIPROXY_HOST_PLATFORM="darwin-x64"
+if [[ "$DEV_NATIVE_TARGET" == "aarch64-apple-darwin" ]]; then CLIPROXY_HOST_PLATFORM="darwin-arm64"; fi
+node "${PROJECT_DIR}/scripts/package-cliproxy-component.mjs" stage \
+    --from "${MYAGENTS_CLIPROXY_DISTRIBUTION_DIR:-${PROJECT_DIR}/src-tauri/resources/cliproxy-cache/distribution}" \
+    --platform "$CLIPROXY_HOST_PLATFORM"
 
 # 杀死残留 MyAgents 实例（避免生产版和 debug 版同时运行互相打架）
 # 优先使用 PID lock file 精确杀——只杀 MyAgents 主进程，不误杀其他 node 进程。
 # SIGKILL(-9) 防止 macOS Automatic Termination 自动重启被杀的 .app。
+if [ "$CLIPROXY_BUILD_ONLY" != true ]; then
 echo -e "${BLUE}[准备] 杀死残留进程...${NC}"
 LOCK_FILE="$HOME/.myagents/app.lock"
 if [ -f "$LOCK_FILE" ]; then
@@ -88,6 +101,7 @@ pkill -9 -f "node.*server-dist.js" 2>/dev/null || true
 sleep 1  # 等待进程完全退出
 echo -e "${GREEN}✓ 进程已清理${NC}"
 echo ""
+fi
 
 # 清理旧构建（包括 Rust 缓存的 resources）
 echo -e "${BLUE}[准备] 清理旧构建...${NC}"

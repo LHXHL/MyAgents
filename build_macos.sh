@@ -539,6 +539,9 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
 
     echo -e "  ${CYAN}确保 Node.js 匹配目标架构 (${NODE_TARGET_ARCH})...${NC}"
     "${PROJECT_DIR}/scripts/download_nodejs.sh" --target "$NODE_TARGET_ARCH"
+    node "${PROJECT_DIR}/scripts/package-cliproxy-component.mjs" stage \
+        --from "${MYAGENTS_CLIPROXY_DISTRIBUTION_DIR:-${PROJECT_DIR}/src-tauri/resources/cliproxy-cache/distribution}" \
+        --platform "darwin-${NODE_TARGET_ARCH}"
 
     # ---- 重新填充 sharp-runtime 资源以匹配目标架构 ----
     prepare_sharp_runtime "$NODE_TARGET_ARCH"
@@ -653,6 +656,9 @@ fi
 echo ""
 echo -e "${CYAN}恢复 Node.js staging 到当前主机架构 (${HOST_NODE_TARGET_ARCH})...${NC}"
 "${PROJECT_DIR}/scripts/download_nodejs.sh" --target "$HOST_NODE_TARGET_ARCH"
+node "${PROJECT_DIR}/scripts/package-cliproxy-component.mjs" stage \
+    --from "${MYAGENTS_CLIPROXY_DISTRIBUTION_DIR:-${PROJECT_DIR}/src-tauri/resources/cliproxy-cache/distribution}" \
+    --platform "darwin-${HOST_NODE_TARGET_ARCH}"
 
 echo ""
 

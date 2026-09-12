@@ -3,6 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { canonicalizeManagedProviderEnv, materializeProviderRouteEnv, resolveProviderEnv } from './admin-config';
 
 describe('xai-sub managed ProviderEnv materialization', () => {
+  it('materializes Antigravity routes as a non-secret builtin endpoint reference', () => {
+    const env = materializeProviderRouteEnv({ kind: 'subscription', providerId: 'antigravity-sub', model: 'tested-model' }, {});
+    expect(env).toMatchObject({ providerId: 'antigravity-sub', apiProtocol: 'anthropic',
+      endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' } });
+    expect(env).not.toHaveProperty('baseUrl');
+    expect(env).not.toHaveProperty('apiKey');
+    expect(env).not.toHaveProperty('credentialSource');
+    const restored = canonicalizeManagedProviderEnv({ ...env, baseUrl: 'http://127.0.0.1:19999', apiKey: 'persisted-key' });
+    expect(restored).not.toHaveProperty('baseUrl');
+    expect(restored).not.toHaveProperty('apiKey');
+    expect(restored?.endpointSource).toEqual(env?.endpointSource);
+  });
   it('materializes a non-secret Responses provider reference without an API key', () => {
     const env = resolveProviderEnv('xai-sub', {});
 

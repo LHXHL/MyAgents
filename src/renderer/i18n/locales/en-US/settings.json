@@ -180,6 +180,50 @@
     }
   },
   "providers": {
+    "cliproxy": {
+      "modelState": {"unknown": "Not verified with this account", "succeeded": "Model verified", "failed": "Model temporarily unavailable"},
+      "description": "Connect your Antigravity account through the bundled CLIProxy component.",
+      "account": "Saved account",
+      "disconnected": "Not connected",
+      "newAccount": "New account",
+      "connect": "Connect",
+      "reconnect": "Change account",
+      "disconnect": "Disconnect",
+      "retryCleanup": "Retry cleanup",
+      "cancel": "Cancel",
+      "verify": "Verify model",
+      "refreshModels": "Refresh models",
+      "verificationModel": "Verification model",
+      "noModels": "No compatible models",
+      "modelsStale": "Refresh the model catalog. Availability depends on verification with this account.",
+      "checkUpdate": "Check for updates",
+      "disabled": "Currently paused. You can keep or disconnect your account.",
+      "browserHint": "Complete authorization in your browser within 5 minutes.",
+      "operationFailed": "The operation did not complete. Please retry.",
+      "loginToDiscover": "Connect and verify your Antigravity account first.",
+      "accountState": {
+        "stored": "Verification needed",
+        "verified": "Verified",
+        "reauth-required": "Reconnect required"
+      },
+      "phase": {
+        "authorizing": "Waiting for browser authorization",
+        "awaiting-verification": "Verification needed",
+        "verifying": "Verifying tool use",
+        "waiting-to-commit": "Waiting for current tasks",
+        "cancelling": "Cancelling",
+        "failed": "Failed"
+      },
+      "update": {
+        "idle": "Ready",
+        "checking": "Checking for updates",
+        "downloading": "Downloading",
+        "installing": "Installing",
+        "ready": "Update ready",
+        "waiting-to-switch": "Waiting for current tasks to finish",
+        "failed": "Update incomplete"
+      }
+    },
     "tokendance": {
       "partner": "Official",
       "intro": "Register once for a range of models, with discounts up to 50%",

@@ -296,6 +296,9 @@ pub async fn start_management_api() -> Result<u16, String> {
         // Secret-bearing internal route. Identity is validated against the
         // live Session:Sidecar generation; responses are never cacheable.
         .route("/api/grok/bearer", post(grok_bearer_handler))
+        .route("/api/cliproxy/binding/acquire", post(cliproxy_acquire_handler).layer(DefaultBodyLimit::max(4096)))
+        .route("/api/cliproxy/binding/check", post(cliproxy_check_handler).layer(DefaultBodyLimit::max(4096)))
+        .route("/api/cliproxy/binding/release", post(cliproxy_release_handler).layer(DefaultBodyLimit::max(4096)))
         // Bridge messages carry base64-encoded media attachments (images/files).
         // Default axum 2MB limit is too small — raise to 50MB for this API.
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024));
@@ -1017,6 +1020,43 @@ async fn browser_identity_checkpoint_handler(
             "error": error,
         })),
     }
+}
+
+fn cliproxy_identity(headers: &HeaderMap, sidecar_id: &str) -> Result<u64, serde_json::Value> {
+    validate_current_sidecar_request(headers, sidecar_id)?;
+    request_sidecar_generation(headers).map_err(|Json(value)| value)
+}
+
+async fn cliproxy_acquire_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::BindingRequest>) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+    let sidecar_id = request.sidecar_id.clone();
+    let operation_id = request.operation_id.clone();
+    match crate::cliproxy::acquire_binding(request, generation).await {
+        Ok(binding) => {
+            // The process may die during component startup. Settle the exact
+            // acquire before returning; a later same-ID Sidecar cannot adopt it.
+            if let Err(error) = validate_current_sidecar_request(&headers, &sidecar_id) {
+                let _ = crate::cliproxy::release_binding(crate::cliproxy::types::LeaseRequest { sidecar_id, operation_id, lease_id: Some(binding.lease_id), terminal: None }, generation).await;
+                return no_store_json(error);
+            }
+            no_store_json(serde_json::json!({ "ok": true, "binding": binding }))
+        }
+        Err(error) => no_store_json(serde_json::json!({ "ok": false, "code": error.code, "error": error.message })),
+    }
+}
+async fn cliproxy_check_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::LeaseRequest>) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+    cliproxy_result(crate::cliproxy::check_binding(request, generation).await)
+}
+async fn cliproxy_release_handler(headers: HeaderMap, Json(request): Json<crate::cliproxy::types::LeaseRequest>) -> (HeaderMap, Json<serde_json::Value>) {
+    let generation = match cliproxy_identity(&headers, &request.sidecar_id) { Ok(generation) => generation, Err(error) => return no_store_json(error) };
+    cliproxy_result(crate::cliproxy::release_binding(request, generation).await)
+}
+fn cliproxy_result(result: Result<(), crate::cliproxy::types::Error>) -> (HeaderMap, Json<serde_json::Value>) {
+    no_store_json(match result {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({ "ok": false, "code": error.code, "error": error.message }),
+    })
 }
 
 async fn grok_bearer_handler(

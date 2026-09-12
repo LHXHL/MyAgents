@@ -184,7 +184,7 @@ function providerEnvForRouteRequest(request: {
     if (authKind === 'sdk-native') {
       return { providerEnv: 'subscription', model: request.providerRoute.model };
     }
-    if (authKind !== 'host-managed-oauth') {
+    if (authKind !== 'host-managed-oauth' && authKind !== 'proxy-managed') {
       return {
         providerEnv: undefined,
         error: `Subscription provider '${request.providerRoute.providerId}' cannot execute in builtin runtime`,

@@ -180,6 +180,50 @@
     }
   },
   "providers": {
+    "cliproxy": {
+      "modelState": {"unknown": "尚未在当前账号验证", "succeeded": "此模型验证成功", "failed": "此模型暂时不可用"},
+      "description": "使用 Antigravity 账号，通过内置 CLIProxy 连接模型。",
+      "account": "已保存账号",
+      "disconnected": "尚未连接",
+      "newAccount": "新账号",
+      "connect": "连接账号",
+      "reconnect": "更换账号",
+      "disconnect": "断开连接",
+      "retryCleanup": "重试清理",
+      "cancel": "取消",
+      "verify": "验证模型",
+      "refreshModels": "刷新模型",
+      "verificationModel": "用于验证的模型",
+      "noModels": "暂无兼容模型",
+      "modelsStale": "模型目录待刷新，实际可用性以当前账号验证结果为准。",
+      "checkUpdate": "检查更新",
+      "disabled": "当前暂停使用，可以保留账号或断开连接。",
+      "browserHint": "请在系统浏览器完成授权，授权窗口有效期为 5 分钟。",
+      "operationFailed": "操作未完成，请重试。",
+      "loginToDiscover": "请先连接并验证 Antigravity 账号。",
+      "accountState": {
+        "stored": "待验证",
+        "verified": "已验证",
+        "reauth-required": "需重新授权"
+      },
+      "phase": {
+        "authorizing": "等待浏览器授权",
+        "awaiting-verification": "等待模型验证",
+        "verifying": "正在验证工具调用",
+        "waiting-to-commit": "等待当前任务结束",
+        "cancelling": "正在取消",
+        "failed": "操作失败"
+      },
+      "update": {
+        "idle": "已就绪",
+        "checking": "正在检查更新",
+        "downloading": "正在下载",
+        "installing": "正在安装",
+        "ready": "更新已准备",
+        "waiting-to-switch": "等待当前任务结束后更新",
+        "failed": "更新未完成"
+      }
+    },
     "tokendance": {
       "partner": "官方",
       "intro": "一键注册使用各类模型，最低折扣至50%",

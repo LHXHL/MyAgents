@@ -3,6 +3,7 @@ import {
   isBuiltinSubscriptionProviderId,
   isProviderEnabled,
   XAI_SUBSCRIPTION_PROVIDER_ID,
+  ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   type BuiltinSubscriptionProviderId,
 } from './config-types';
 
@@ -59,7 +60,7 @@ export function hasProviderRouteCredential(
   if (provider.type === 'subscription') {
     if (!isBuiltinSubscriptionProviderId(provider.id)) return false;
     const status = credentials.verifyStatus?.[provider.id];
-    if (provider.id === XAI_SUBSCRIPTION_PROVIDER_ID) {
+    if (provider.id === XAI_SUBSCRIPTION_PROVIDER_ID || provider.id === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID) {
       return status?.status === 'valid';
     }
     return (

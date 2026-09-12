@@ -52,6 +52,7 @@ import {
 } from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { createGuardedSdkQuery } from './utils/sdk-child-launch-guard';
+import { assertManagedProviderPrepared, getPreparedModelPolicy, ManagedProxyError, prepareProviderBinding, projectManagedSubagentInput, type PreparedProvider } from './utils/managed-proxy-binding';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
   SESSION_PLANS_GITIGNORE_PATTERN,
@@ -2185,12 +2186,15 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 }
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
+let managedQueryController: AbortController | undefined;
+
 function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
   const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // This is the only abort-request write path. The lifecycle owner flips the
   // flag; this facade performs the cross-owner cleanup chain below.
   requestAbort();
+  managedQueryController?.abort();
   clearBuiltinQueryMcpOwner(lifecycleState.query ?? undefined);
   // Unconfirmed in-flight items belong to the SDK subprocess that is about
   // to die. Do not silently clear them (leaves UI pills behind) and do not
@@ -3539,6 +3543,19 @@ export async function setSessionModel(model: string, opts?: { imConfigSync?: boo
         abortPersistentSession();
         schedulePreWarm();
       }
+    }
+    return;
+  }
+
+  // A proxy lease admits one model and bakes its aliases into this Query.
+  // A live setModel would bypass the new model's Rust admission decision.
+  if (configState.currentProviderEnv?.endpointSource) {
+    if (lifecycleState.query) {
+      scheduleDeferredRestart('provider');
+      applyDeferredRestartIfNeeded();
+    } else if (managedQueryController) {
+      managedQueryController.abort();
+      schedulePreWarm();
     }
     return;
   }
@@ -6138,6 +6155,20 @@ export function buildClaudeSessionEnv(
   // "host owns auth", which blocks fallback to the local Claude Code
   // subscription store. Anthropic-sub must leave this unset so CC owns OAuth.
   const effectiveProviderEnv = providerEnv ?? configState.currentProviderEnv;
+  assertManagedProviderPrepared(effectiveProviderEnv);
+  const boundModelPolicy = getPreparedModelPolicy(effectiveProviderEnv);
+  if (boundModelPolicy && modelOverride && modelOverride !== boundModelPolicy.id) {
+    throw new ManagedProxyError('binding_model_mismatch', '执行模型与本次订阅连接不匹配');
+  }
+  if (boundModelPolicy) {
+    // This Query uses only its local binding. Preserve native subscriptions'
+    // inherited login behavior elsewhere, while sealing every alternate auth
+    // input here against the SDK's parent-environment overlay.
+    for (const key of CC_AUTH_ENV_VARS_TO_SEAL) env[key] = '';
+    env.CLAUDE_CODE_USE_BEDROCK = '';
+    env.CLAUDE_CODE_USE_VERTEX = '';
+    env.CLAUDE_CODE_USE_FOUNDRY = '';
+  }
   const effectiveProviderId = opts?.providerId
     ?? effectiveProviderEnv?.providerId
     ?? (providerEnv === undefined
@@ -6246,8 +6277,9 @@ export function buildClaudeSessionEnv(
   // Hoisted above the OpenAI early return so both protocol paths benefit.
   const resolvedModel = modelOverride ?? configState.currentModel;
   const aliases = resolveSessionModelAliases(effectiveProviderEnv?.modelAliases, resolvedModel);
+  if (boundModelPolicy) env.CLAUDE_CODE_SUBAGENT_MODEL = boundModelPolicy.id;
   const resolveContextLength = (model: string | undefined): number | undefined => (
-    opts?.contextWindowSnapshot
+    boundModelPolicy ? boundModelPolicy.contextLength ?? undefined : opts?.contextWindowSnapshot
       ? lookupSnapshotModelContextLength(opts.contextWindowSnapshot, model)
       : lookupProviderModelContextLength(model, effectiveProviderId)
   );
@@ -6310,6 +6342,10 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
+  if (boundModelPolicy) {
+    if (boundModelPolicy.maxOutputTokens) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(boundModelPolicy.maxOutputTokens);
+    else env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '';
+  }
   const modelContextLength = resolveContextLength(resolvedModel);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
@@ -6319,7 +6355,8 @@ export function buildClaudeSessionEnv(
     // SDK's built-in default (MODEL_CONTEXT_WINDOW_DEFAULT=200K) applies,
     // exactly per product requirement #4. Logging only when a model is
     // actually set — empty configState.currentModel at pre-warm is a normal startup state.
-    delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    if (boundModelPolicy) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '';
+    else delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     if (resolvedModel) {
       console.log(`[env] No contextLength found for model=${resolvedModel} — SDK default 200K applies`);
     }
@@ -11055,36 +11092,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   ensureActiveSessionBridgeRegistered({ freshToken: true });
   const launchProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
   const launchAgentDefinitionsSource = configState.currentAgentDefinitions;
-  const launchContextWindowSnapshot = snapshotProviderModelContextLengths([
+  let launchContextWindowSnapshot = snapshotProviderModelContextLengths([
     configState.currentModel,
     ...Object.values(configState.currentProviderEnv?.modelAliases ?? {}),
     ...Object.values(launchAgentDefinitionsSource ?? {}).map(agent => agent.model),
   ], launchProviderId);
-  const env = buildClaudeSessionEnv(undefined, undefined, {
-    bridgeToken: activeSessionBridgeToken ?? undefined,
-    providerId: launchProviderId,
-    contextWindowSnapshot: launchContextWindowSnapshot,
-  });
-  const launchModel = applyContextWindowSuffixForContextLength(
-    configState.currentModel,
-    lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
-  );
-  const launchAgentDefinitions = launchAgentDefinitionsSource
-    ? Object.fromEntries(
-        Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
-          name,
-          agent.model
-            ? {
-                ...agent,
-                model: applyContextWindowSuffixForContextLength(
-                  agent.model,
-                  lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
-                ),
-              }
-            : agent,
-        ]),
-      )
-    : null;
   console.log(`[agent] ${preWarm ? 'pre-warm' : 'start'} session cwd=${agentDir}`);
   resetAbortFlag();
   resetAbortFlag();
@@ -11148,8 +11160,58 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let activeQuery: Query | null = null;
   let activeQueryAuthority: BuiltinQueryAuthority | null = null;
   const queryProductSessionId = sessionId;
+  const bindingController = new AbortController();
+  let preparedProvider: PreparedProvider | undefined;
 
   try {
+    if (configState.currentProviderEnv?.endpointSource) managedQueryController = bindingController;
+    preparedProvider = await prepareProviderBinding({
+      providerEnv: configState.currentProviderEnv,
+      model: configState.currentModel ?? '',
+      controller: bindingController,
+      onDrain: () => {
+        scheduleDeferredRestart('provider');
+        applyDeferredRestartIfNeeded();
+      },
+    });
+    if (lifecycleState.abortRequested) bindingController.abort();
+    bindingController.signal.throwIfAborted();
+    const boundModelPolicy = getPreparedModelPolicy(preparedProvider.providerEnv);
+    if (boundModelPolicy) {
+      const admittedModels = new Set([boundModelPolicy.id, 'inherit', 'fable', 'sonnet', 'opus', 'haiku']);
+      for (const agent of Object.values(launchAgentDefinitionsSource ?? {})) {
+        if (agent.model && !admittedModels.has(agent.model)) {
+          throw new Error('Antigravity 子 Agent 必须使用本次已准入的模型或其模型别名');
+        }
+      }
+      launchContextWindowSnapshot = new Map([...launchContextWindowSnapshot.keys()]
+        .map(model => [model, boundModelPolicy.contextLength ?? undefined]));
+    }
+    const env = buildClaudeSessionEnv(preparedProvider.providerEnv, undefined, {
+      bridgeToken: activeSessionBridgeToken ?? undefined,
+      providerId: launchProviderId,
+      contextWindowSnapshot: launchContextWindowSnapshot,
+    });
+    const launchModel = applyContextWindowSuffixForContextLength(
+      configState.currentModel,
+      lookupSnapshotModelContextLength(launchContextWindowSnapshot, configState.currentModel),
+    );
+    const launchAgentDefinitions = launchAgentDefinitionsSource
+      ? Object.fromEntries(
+          Object.entries(launchAgentDefinitionsSource).map(([name, agent]) => [
+            name,
+            agent.model
+              ? {
+                  ...agent,
+                  model: applyContextWindowSuffixForContextLength(
+                    agent.model,
+                    lookupSnapshotModelContextLength(launchContextWindowSnapshot, agent.model),
+                  ),
+                }
+              : agent,
+          ]),
+        )
+      : null;
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
       configState.currentPermissionMode,
       currentScenario,
@@ -11325,7 +11387,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     );
     console.log(`[agent] starting query with model: ${configState.currentModel ?? 'default'}, permissionMode: ${configState.currentPermissionMode} -> SDK: ${sdkPermissionMode}, MCP: ${mcpStatus}, cleanupPeriodDays: ${claudeTranscriptCleanupPeriodDays}, ${resumeFrom ? `resume: ${resumeFrom}` : `sessionId: ${effectiveSdkSessionId}`}${effectiveResumeAt ? `, resumeSessionAt: ${effectiveResumeAt}` : ''}${forkMode ? `, FORK mode (forkPoint: ${forkResumeAt}${rewindResumeAt && rewindResumeAt !== forkResumeAt ? `, rewind→${rewindResumeAt}` : ''})` : ''}`);
 
-    const promptGen = messageGenerator();
+    const promptGen = messageGenerator(preparedProvider);
 
     // Set session cron context so the im-cron tool can create tasks for non-IM sessions
     // IM sessions set imCronContext separately (in the IM message handler in index.ts)
@@ -11367,11 +11429,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const isClaudeModel = modelLower.includes('sonnet-4') || modelLower.includes('sonnet-5')
       || modelLower.includes('opus-4') || modelLower.includes('opus-5')
       || modelLower.includes('fable-5') || modelLower.includes('mythos-5');
-    const isOfficialAnthropicApi = !configState.currentProviderEnv?.baseUrl || (() => {
+    const isOfficialAnthropicApi = !configState.currentProviderEnv?.endpointSource && (!configState.currentProviderEnv?.baseUrl || (() => {
       try { return new URL(configState.currentProviderEnv.baseUrl!).host === 'api.anthropic.com'; }
       catch { return false; }
-    })();
-    const thinkingConfig = (isOfficialAnthropicApi || isClaudeModel)
+    })());
+    const thinkingConfig = (boundModelPolicy ? boundModelPolicy.thinking : (isOfficialAnthropicApi || isClaudeModel))
       ? { type: 'adaptive' as const }
       : { type: 'disabled' as const };
 
@@ -11426,6 +11488,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     const commonQueryOptions = {
+      ...(configState.currentProviderEnv?.endpointSource ? { abortController: bindingController } : {}),
       enableFileCheckpointing: true,
       thinking: thinkingConfig,
       effort: sdkEffort,
@@ -11930,6 +11993,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // (see isPlanModeInEffect for the two desync windows this closes).
               const effectiveMode = isPlanModeInEffect(configState.currentPermissionMode, pre.permission_mode) ? 'plan' : configState.currentPermissionMode;
               if (!shouldBlockToolInPlanMode(pre.tool_name, effectiveMode)) {
+                const updatedInput = projectManagedSubagentInput(boundModelPolicy, pre.tool_name, pre.tool_input);
+                if (updatedInput) return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput } };
                 return {}; // not plan mode, or a read-only / control-transfer tool → normal flow
               }
               console.log(`[permission] plan-mode hard gate denied: ${pre.tool_name} (local=${configState.currentPermissionMode}, hook=${pre.permission_mode ?? 'n/a'})`);
@@ -13643,6 +13708,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
       } else if (sdkMessage.type === 'result') {
+        await preparedProvider?.reportTerminal(sdkMessage.subtype === 'success');
         await builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
@@ -13654,6 +13720,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
     }
   } catch (error) {
+    await preparedProvider?.reportTerminal(false);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
     // (issue #174) Pre-launch abort sentinel — clean exit, not a real error.
     // Skip the loud session-error log + the all-recovery branches below;
@@ -13933,6 +14000,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     releaseBuiltinMcpAdmissionOwner();
     configState.currentCapabilitySnapshot = null;
     try { session?.close(); } catch { /* subprocess 可能已退出 */ }
+    if (managedQueryController === bindingController) managedQueryController = undefined;
+    await preparedProvider?.release().catch(() => {
+      console.warn('[cliproxy] Query binding release was not confirmed');
+    });
 
     // PRD #124: unregister the bridge token now that the SDK subprocess
     // has exited. If the session restarts, `startStreamingSession` mints
@@ -14097,7 +14168,7 @@ async function rejectPromotedMessageBeforeDispatch(
   schedulePostTerminalQueueDrain('recovery');
 }
 
-async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
+async function* messageGenerator(preparedProvider: PreparedProvider): AsyncGenerator<SDKUserMessage> {
   // (v0.2.12) Mid-turn injection restored.
   //
   // Yield queued transcriptState.messages immediately so the CLI subprocess receives them
@@ -14131,6 +14202,26 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
     }
     beginPromotedItem(item);
+    try {
+      await preparedProvider.beforeTurn();
+    } catch (error) {
+      if (error instanceof ManagedProxyError && error.code === 'draining') {
+        // Admission has not reached the SDK. Keep the existing queue item for
+        // the replacement Query; its cancellation and delivery IDs stay intact.
+        requeuePromotedItemBeforeSdkDispatch(item);
+        scheduleDeferredRestart('provider');
+        applyDeferredRestartIfNeeded();
+        return;
+      }
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        error: error instanceof Error ? error.message : '托管订阅连接不可用',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      scheduleDeferredRestart('provider');
+      applyDeferredRestartIfNeeded();
+      return;
+    }
     const promotedQuery = lifecycleState.query;
     let desiredCapabilities: EffectiveProjectCapabilitySnapshot;
     try {

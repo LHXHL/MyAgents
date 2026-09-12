@@ -16,7 +16,7 @@ MyAgents 把“用户选择哪个 Provider / model”与“执行时如何取得
 - `baseUrl`、`apiKey`、`authType`；
 - `apiProtocol`、OpenAI upstream format / token limit；
 - model aliases；
-- host-managed credential 的非 secret reference。
+- host-managed credential 或 proxy-managed endpoint 的非 secret reference。
 
 它只供 Sidecar 当前执行、probe、title/vision one-shot 或 Bridge 使用。新 Session 不能把 materialized API key 写回 session metadata；legacy `providerEnvJson` 只在兼容读取边界使用并在外部 projection 中 redacted / 移除。Agent / IM Channel 配置仍可能维护供后台自启动的兼容 projection，但 `config.json` 的 Provider/API-key 配置仍是 credential authority，projection 不能成为第二份可编辑真相。
 
@@ -41,8 +41,9 @@ Agent / Channel defaults 保留 Provider choice，不把 managed runtime project
 | 普通 API Provider | `config.json` / Provider API key store | 按 Provider definition 生成 `ProviderEnv` |
 | `xai-sub` | Rust `GrokAuthManager` | `ProviderEnv` 只携带 managed credential reference，Bridge 每请求取 bearer |
 | `codex-sub` | Managed Codex Runtime | 不进入 builtin ProviderEnv |
+| `antigravity-sub` | 原版 CLIProxy；Rust 只拥有组件、账号目录和准入 | endpointSource → 异步 binding → SDK 直连 Anthropic 接口 |
 
-Subscription 是产品/计费类型，不决定 auth owner。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
+Subscription 是产品/计费类型，不决定 auth owner。新增 subscription 必须显式选择 `sdk-native`、`host-managed-oauth`、`proxy-managed` 或 `runtime-managed`，不能把所有 subscription 当成“空 ProviderEnv”。
 
 ## API Provider env
 
@@ -102,6 +103,12 @@ MyAgents 仍拥有 Session、permission、proxy scope 和 tool surface，但不�
 6. completion 只上报 status 与 generation，不记录 bearer。
 
 One-shot verification 必须在完整 SDK / translator terminal success 后才提交 verified state。收到 2xx headers 不等于 turn 成功；旧 generation 的 late failure 不能污染新登录 lineage。
+
+## CLIProxy subscription
+
+`antigravity-sub` 沿用 builtin SDK。Rust `CliProxyManager` 管理原版组件、active/candidate 目录、浏览器回调运输和 Query lease；OAuth/refresh 与协议转换归 CLIProxy。统一 `prepareProviderBinding()` 覆盖主 Query、pre-warm、标题、vision、验证及后台 Session。binding 携带已批准模型能力，SDK env builder 拒绝未准备或持久化拷贝的 endpoint reference。
+
+账号清理、更新 draining、稳定 history、资源批准与原版接口合同见 [托管 CLIProxy](./managed_cliproxy.md)。Grok 继续使用自己的 Rust OAuth + Responses Bridge，不做迁移。
 
 ## OpenAI Bridge
 

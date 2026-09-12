@@ -3,6 +3,9 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
 };
+#[path = "src/resource_signature.rs"]
+mod resource_signature;
+mod build_cliproxy;
 
 const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_ENABLED",
@@ -15,6 +18,12 @@ const MANAGED_CODEX_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-codex-runti
 const MANAGED_BROWSER_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-browser-runtime.json";
 
 fn main() {
+    let package_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../package.json");
+    println!("cargo:rerun-if-changed={}", package_path.display());
+    let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(package_path).expect("package.json")).expect("package.json JSON");
+    let sdk = package["dependencies"]["@anthropic-ai/claude-agent-sdk"].as_str().expect("pinned Claude SDK version");
+    println!("cargo:rustc-env=MYAGENTS_CLAUDE_SDK_VERSION={sdk}");
+    build_cliproxy::verify_bundle(package["version"].as_str().expect("App version"), sdk);
     expose_managed_codex_runtime_lock();
     expose_managed_browser_runtime_lock();
     expose_space_build_env();

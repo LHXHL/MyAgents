@@ -549,7 +549,8 @@ import { imEventBus } from './utils/im-event-bus';
 import { buildImCancelledPayload } from './utils/im-terminal-payload';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { raceWithAbortSignal } from './utils/cancellation';
-import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
+import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription, verifyCliProxySubscription } from './provider-verify';
+import { controlManagedProxyBinding } from './utils/managed-proxy-binding';
 import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
 // openai-bridge is lazy-loaded via ensureBridgeHandler() below — only users on
 // OpenAI-protocol providers (DeepSeek/Moonshot/etc.) ever hit /v1/messages, so
@@ -3684,7 +3685,35 @@ async function main() {
         }
       }
 
-      // POST /api/grok/verify — same one-shot SDK + Responses Bridge path as
+      if (pathname === '/api/cliproxy/control' && request.method === 'POST') {
+        try {
+          const result = await controlManagedProxyBinding(await request.json(), async () => {
+            const result = await getSessionEngine().stopTurn();
+            if (!result.success) throw new Error('Session stop failed');
+          });
+          return jsonResponse({ success: result.accepted, settled: result.settled }, result.accepted ? 200 : 409);
+        } catch {
+          return jsonResponse({ success: false }, 409);
+        }
+      }
+      if (pathname === '/api/cliproxy/verify' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as Record<string, unknown>;
+          const uuid = /^[0-9a-f-]{36}$/i;
+          if (typeof payload.model !== 'string' || !payload.model || payload.model.length > 256
+            || typeof payload.accountGeneration !== 'string' || !uuid.test(payload.accountGeneration)
+            || typeof payload.operationId !== 'string' || !uuid.test(payload.operationId)) {
+            return jsonResponse({ success: false }, 400);
+          }
+          return jsonResponse(await verifyCliProxySubscription({
+            model: payload.model, accountGeneration: payload.accountGeneration, operationId: payload.operationId,
+          }));
+        } catch {
+          return jsonResponse({ success: false, error: '模型验证未完成' }, 409);
+        }
+      }
+
+      // Grok uses the existing Responses Bridge and host-managed OAuth owner.
       // normal chat, with a non-secret managed OAuth ProviderEnv.
       if (pathname === '/api/grok/verify' && request.method === 'POST') {
         try {

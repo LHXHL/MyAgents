@@ -4,12 +4,44 @@ import { delimiter, join, resolve } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import { randomUUID } from 'node:crypto';
+import * as managementClient from '../utils/management-api-client';
+import { prepareProviderBinding } from '../utils/managed-proxy-binding';
 import { applyWindowsUtf8SubprocessEnv, buildClaudeSessionEnv } from '../agent-session';
 import {
   applyContextWindowSuffixForContextLength,
   lookupSnapshotModelContextLength,
   snapshotProviderModelContextLengths,
 } from '../utils/model-capabilities';
+
+describe('managed subscription SDK env', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+  it('uses the execution binding and approved capability snapshot instead of inherited routing or edited metadata', async () => {
+    vi.stubEnv('MYAGENTS_SIDECAR_ID', 'test-session');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://other.example');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'inherited-secret');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'inherited-oauth');
+    const grant = { providerId: 'antigravity-sub', baseUrl: 'http://127.0.0.1:15432', apiKey: 'local-test-key'.repeat(4),
+      instanceGeneration: randomUUID(), accountGeneration: randomUUID(), leaseId: randomUUID(),
+      modelPolicy: { id: 'approved-model', thinking: false, contextLength: 32_000, maxOutputTokens: 4_000 } };
+    vi.spyOn(managementClient, 'managementApi').mockImplementation(async path => path.endsWith('/acquire')
+      ? { ok: true, binding: grant } : { ok: true });
+    const prepared = await prepareProviderBinding({ controller: new AbortController(), model: 'approved-model',
+      providerEnv: { providerId: 'antigravity-sub', apiProtocol: 'anthropic',
+        endpointSource: { kind: 'cliproxy', providerId: 'antigravity-sub' }, modelAliases: { sonnet: 'unapproved-model' } } });
+    try {
+      const env = buildClaudeSessionEnv(prepared.providerEnv, 'approved-model', { providerId: 'antigravity-sub' });
+      expect(env.ANTHROPIC_BASE_URL).toBe(grant.baseUrl);
+      expect(env.ANTHROPIC_API_KEY).toBe(grant.apiKey);
+      expect(env.ANTHROPIC_AUTH_TOKEN).not.toBe('inherited-secret');
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).not.toBe('inherited-oauth');
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('approved-model');
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('32000');
+      expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('4000');
+      expect(() => buildClaudeSessionEnv(prepared.providerEnv, 'another-model')).toThrow('不匹配');
+    } finally { await prepared.release(); }
+  });
+});
 
 describe('buildClaudeSessionEnv npm prefix isolation', () => {
   afterEach(() => {
