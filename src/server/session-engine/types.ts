@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
 import type {
@@ -468,7 +469,7 @@ export interface SessionEngine {
     decision: 'deny' | 'allow_once' | 'always_allow',
     reason?: string,
   ): Promise<boolean>;
-  respondAskUserQuestion(requestId: string, answers: Record<string, string> | null): Promise<boolean>;
+  respondAskUserQuestion(requestId: string, answers: AskUserQuestionAnswers | null): Promise<boolean>;
   respondPlanApproval(requestId: string, approved: boolean, feedback?: string): Promise<boolean>;
   rewindToUserMessage(userMessageId: string): Promise<CapabilityOperationResult>;
   forkAtAssistantMessage(

@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 /**
  * Desktop-channel session brain for the floating ball companion (PRD 0.2.35).
  *
@@ -1664,10 +1665,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     /** 回答 ask-user-question（D13）。answers=null 表示用户取消（SDK deny+interrupt）。
      *  与 permission 同纪律：成功后才清卡片（W4，乐观清除会卡死后端 pending）。 */
     const respondAskUserQuestion = useCallback(
-        async (answers: Record<string, string> | null) => {
+        async (answers: AskUserQuestionAnswers | null) => {
             const sid = sessionIdRef.current;
             const req = askReq;
-            if (!sid || !req) return;
+            if (!sid || !req) throw new Error('Question is no longer pending');
             try {
                 const resp = await floatingProxyFetch(sid, '/api/ask-user-question/respond', {
                     method: 'POST',
@@ -1679,6 +1680,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             } catch (err) {
                 console.error('[fb] ask-user-question respond failed:', err);
                 setError(fbText('answerSendFailed'));
+                throw err;
             }
         },
         [askReq],

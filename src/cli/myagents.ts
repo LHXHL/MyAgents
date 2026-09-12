@@ -71,6 +71,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
+    if (arg === '-h') { flags.help = true; i++; continue; }
     if (arg.startsWith('--')) {
       // Support both `--key value` and `--key=value` forms. The equals form
       // is ubiquitous in GNU-style CLIs; without it, callers (especially AI
@@ -370,7 +371,7 @@ Commands:
   diagnose  Diagnose external runtime state (auth, features, MCP, apps, env)
 
 Global flags:
-  --help      Show help for any command
+  -h, --help  Show help for any command
   --json      Output as JSON
   --dry-run   Preview only commands whose exact leaf help documents support;
               unsupported mutations fail without applying changes
@@ -1733,7 +1734,7 @@ function printSessionList(
       + pad(String(session.runtime ?? 'builtin'), 14)
       + String(session.title ?? 'New Chat'),
     );
-    if (session.lastMessagePreview) {
+    if (session.lastMessagePreview && String(session.lastMessagePreview).trim() !== String(session.title ?? '').trim()) {
       console.log(`  ${String(session.lastMessagePreview)}`);
     }
   }
@@ -2749,6 +2750,7 @@ async function main(): Promise<void> {
   if (flags.help) {
     const result = await callApi('help', { path: positional });
     printResult('help', 'help', result, jsonMode);
+    process.exitCode = commandResultExitCode(result);
     return;
   }
 

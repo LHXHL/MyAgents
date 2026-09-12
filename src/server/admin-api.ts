@@ -2718,7 +2718,31 @@ RECOVERY
   ${input.recovery}`;
 }
 
+const LEAF_HELP: Record<string, string> = {
+  status: `myagents status — Show current configuration and active Session status
+
+Read-only. Reports MCP, provider, permission, and current Session state.
+OPTIONS
+  --json    Return the structured response
+  -h, --help    Show this help without running the command`,
+  version: `myagents version — Show the App and Sidecar build identity
+
+Read-only. Reports version, build mode, source identity, and Node version.
+OPTIONS
+  --json    Return the structured response
+  -h, --help    Show this help without running the command`,
+  reload: `myagents reload — Reload configuration for the current Session
+
+Requires a Session Sidecar. Re-reads MCP and sub-agent configuration and
+restarts the Session runtime to apply it. This does not rebuild the App.
+OPTIONS
+  --workspacePath PATH    Workspace to resolve configuration from
+  --json    Return the structured response
+  -h, --help    Show this help without reloading anything`,
+};
+
 const HELP_TEXTS: Record<string, string> = {
+  ...LEAF_HELP,
   anydoc: `myagents anydoc — Convert one local document to Markdown with offline OCR
 
 Commands:
@@ -4625,31 +4649,21 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
     return { success: true, data: { text: HELP_TEXTS[matchedKey] } };
   }
 
-  // Derive the group list from HELP_TEXTS so it can't drift as new commands
-  // are added (issue #205 gap #5: the previous hardcoded list claimed only
-  // 8 groups existed and omitted im / task / runtime / cc-plugin / session,
-  // turning `myagents im --help` into a misleading "use one of these
-  // unrelated groups" message). Append the leaf commands that aren't in
-  // HELP_TEXTS but are still valid top-level invocations.
-  const groups = [
-    ...new Set(Object.keys(HELP_TEXTS).map((key) => key.split('/')[0])),
-  ].sort();
-  const leafCommands = ['status', 'reload', 'version'];
-  const header = group
-    ? `Unknown command group "${group}".`
-    : 'myagents — Available commands';
-  return {
-    success: true,
-    data: {
-      text: `${header}
-
-Command groups (run "myagents <group> --help" for details):
+  const groups = [...new Set(Object.keys(HELP_TEXTS).map(key => key.split('/')[0]))]
+    .filter(key => !Object.hasOwn(LEAF_HELP, key)).sort();
+  const commands = `Command groups (run "myagents <group> --help" for details):
   ${groups.join(', ')}
 
 Leaf commands:
-  ${leafCommands.join(', ')}`,
-    },
+  ${Object.keys(LEAF_HELP).join(', ')}`;
+  if (group) return {
+    success: false,
+    code: 'UNKNOWN_COMMAND_GROUP',
+    error: `Unknown command group "${group}".`,
+    suggestion: commands,
+    suggestedCommand: 'myagents --help',
   };
+  return { success: true, data: { text: `myagents — Available commands\n\n${commands}` } };
 }
 
 export async function handleAnydocConvert(payload: {

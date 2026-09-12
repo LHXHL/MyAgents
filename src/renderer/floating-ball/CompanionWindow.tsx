@@ -1399,9 +1399,10 @@ export default function CompanionWindow() {
                         )}
                         {session.askReq && (
                             <AskUserQuestionPrompt
+                                key={session.askReq.requestId}
                                 request={session.askReq}
-                                onSubmit={(_, answers) => void session.respondAskUserQuestion(answers)}
-                                onCancel={() => void session.respondAskUserQuestion(null)}
+                                onSubmit={(_, answers) => session.respondAskUserQuestion(answers)}
+                                onCancel={() => session.respondAskUserQuestion(null)}
                             />
                         )}
                         {session.planReq && (

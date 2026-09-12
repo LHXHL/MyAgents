@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../../shared/types/askUserQuestion';
 import { dshSessionOwnedPaths } from './owned-paths';
 import { resolveProviderForModel } from '../../../shared/tokendance';
 import type { MethodParams } from './protocol-types';
@@ -68,7 +69,7 @@ import {
 import { executeDshProductHostTool, resolveDshMcpCredential } from './extension-host';
 import { createDshInitializeParams } from './initialize';
 import { resolveDshRuntimeInstallation, verifyDshHandoffInstallation } from './installation';
-import { reconcileExpiredDshInteractionResponse } from './interaction-response';
+import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
 import { dshPermissionReview } from './permission-display';
 import { releaseLargeValueRef } from '../../utils/large-value-store';
 import { DshMutationController } from './mutations';
@@ -581,9 +582,9 @@ function answerValue(
       const id = typeof question.id === 'string' ? question.id : `question-${index}`;
       const label = typeof question.question === 'string' ? question.question : undefined;
       const value = answerMap[id] ?? answerMap[String(index)] ?? (label ? answerMap[label] : undefined);
-      if (typeof value !== 'string') return [];
-      const selected = value.split(',').map(entry => entry.trim()).filter(Boolean);
-      return [{ id, selected: selected.length > 0 ? selected : [value] }];
+      const labels = Array.isArray(question.options)
+        ? question.options.map(option => string(object(option, 'DSH question option').label, 'DSH option label')) : [];
+      return [buildDshQuestionAnswer(id, value, labels, question.multiSelect === true)];
     }),
   };
 }
@@ -1766,6 +1767,13 @@ export class DshRuntime implements AgentRuntime {
     }
     process.onEvent({ kind: result.state === 'cancelled' ? 'user_message_cancelled' : 'user_message_accepted', clientUserMessageId: input.clientUserMessageId });
     return result.state;
+  }
+
+  async respondAskUserQuestion(runtimeProcess: RuntimeProcess, requestId: string, answers: AskUserQuestionAnswers | null): Promise<void> {
+    const process = dshProcess(runtimeProcess);
+    if (process.pendingInteractions.get(requestId)?.kind !== 'ask_user') throw new Error('DSH question is no longer pending');
+    await this.respondPermission(runtimeProcess, requestId, answers === null ? 'deny' : 'allow_once', undefined, undefined,
+      answers === null ? undefined : { answers });
   }
 
   async respondPermission(

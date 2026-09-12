@@ -186,11 +186,11 @@ DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列�
 | System Prompt | Node；产品 append、Workspace 指令和逐轮 reminder 分层组装 | [Prompt](./tech_docs/system_prompt_architecture.md)、[Reminder](./tech_docs/system_reminder_protocol.md) |
 | SessionEngine | Node facade；builtin/external Runtime 的唯一 route-facing 入口 | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Builtin Session | Node；Claude Agent SDK Query、queue、turn、transcript 与配置 owner 分层 | [Session](./tech_docs/session_architecture.md) |
-| Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证；保留有效结果、可选统计和 Shell 输出诊断；任务树入口暂不开放；协作设置保留在隐藏开发者区域 | [DSH 集成、会话任务树与输出交付](./tech_docs/myagents_dsh_integrated_runtime.md) |
+| Integrated DSH | Session Sidecar 中的 DSH adapter；原生 Runtime 生命周期、生成协议与不可变交付验证；保留有效结果、可选统计和 Shell 输出诊断；问答保留选项/自定义文字并按真实回执结算；任务树入口暂不开放；协作设置保留在隐藏开发者区域 | [DSH 集成、会话任务树与输出交付](./tech_docs/myagents_dsh_integrated_runtime.md) |
 | External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
-| CLI / Admin API | App-owned CLI bundle；Node 解析命令，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
+| CLI / Admin API | App-owned CLI bundle；Node 解析命令与帮助、退出状态，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |
 | Task Center | Rust TaskStore、TaskApplication 与 TaskScheduler | [任务中心](./tech_docs/task_center.md)、[Provider routing](./tech_docs/task_provider_routing.md) |
 | Goal | Rust SessionGoalManager + Node goal orchestrator；Session 一等状态 | [Session](./tech_docs/session_architecture.md) |

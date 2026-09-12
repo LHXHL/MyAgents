@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 /**
  * TabProvider - Provides isolated state for each Tab
  *
@@ -6669,7 +6670,7 @@ export default function TabProvider({
 
   // Respond to AskUserQuestion request
   const respondAskUserQuestion = useCallback(
-    async (answers: Record<string, string> | null) => {
+    async (answers: AskUserQuestionAnswers | null) => {
       if (isRestoreActionBlocked(persistedRestoreLifecycleRef.current.phase)) {
         throw new Error(
           'Question response is unavailable while Session restore is unresolved',

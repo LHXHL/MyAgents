@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "artifactId": "myagents-dsh",
   "handoff": {
-    "manifestSha256": "731e64636d12a3f7619a3bb5281b736fbd0a25a7a3bfde2ae09aa6f2f5e09942",
-    "sourceCommit": "0a37da4191005ed6bc81bc18d37ef9c060996927",
-    "runtimeManifestSha256": "57511a51b09c808eae1242fd222ded74b9b88cf97d48c3f89a568ad64fe6ff69",
-    "compatibilitySha256": "548b36d63b7509a9f802c98e84d8fcc87ce26af451fa5cfd3b9326a5a868510f",
+    "manifestSha256": "d277191cfaea10ceaac19b4977b5130ba611dbfe4d98c668684a1ff2218d583f",
+    "sourceCommit": "b5117ed7da513199ccfb34c62a07826c7b08dfc7",
+    "runtimeManifestSha256": "55ac058296091312bc8dcac8b01400ff1d680e753bc5d788192d0903b397b2ed",
+    "compatibilitySha256": "d498e1bd91879a3ed331b2700b3827a230c1c4bb77b7b006367d516e1f596ac0",
     "generatedClientSha256": "a64f284d6a42be5b455326087dea9795320435310396ee7fd3d523c4cb262417",
     "noticesSha256": "87c309495ba89799010acb98a611bb56a8cb3409bf7694476ca43b0917448118"
   },
@@ -37,21 +37,21 @@
       "target": "darwin-arm64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "2730066c934e188b43ed214fea772179b46dda36aaef7112fad5bfaafa42c6a1"
+        "8b2e7fb3baf9864a1fabfd644d62f07e1806caf3e42d1d1feb1ee9312959ecfd"
       ]
     },
     {
       "target": "linux-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "11da2ca2a7206a6c7b59c69d943264dafc4ed798dae07ec0033fc5ecd006016b"
+        "125ab49399a07cd3cf25201639ee601e8c16bfb7f6fe554dbc45f78bedfefa60"
       ]
     },
     {
       "target": "win32-x64",
       "claim": "implementation-complete_pending-native-validation",
       "evidenceSha256": [
-        "c415bd5d7e26a0e6448da5ca9e4f2439524559bff761afbe845a8d79ec41763d"
+        "2d48c53caca45d15f3d1d03e92ef2256341c1ccee55bdbcbf273ac1a4384bdad"
       ]
     }
   ],

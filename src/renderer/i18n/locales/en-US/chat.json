@@ -574,7 +574,9 @@
       "questionAria": "Question {{index}}: {{header}}",
       "previous": "Previous",
       "submit": "Submit",
-      "next": "Next"
+      "next": "Next",
+      "submitFailed": "Could not submit your answers. Your choices are saved; retry or cancel.",
+      "cancelFailed": "Could not cancel. Retry, or use the composer Stop button to end this turn."
     },
     "planPrompt": {
       "submitFeedback": "Submit feedback",

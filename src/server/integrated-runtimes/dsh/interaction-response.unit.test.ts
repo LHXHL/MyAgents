@@ -1,6 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { reconcileExpiredDshInteractionResponse } from './interaction-response';
+import { buildDshQuestionAnswer, reconcileExpiredDshInteractionResponse } from './interaction-response';
+
+describe('DSH question answers', () => {
+  it('preserves selected labels and custom text independently, including commas', () => {
+    expect(buildDshQuestionAnswer('q', {
+      selected: ['One, two', 'Three'], custom: 'Write locally, then continue',
+    }, ['One, two', 'Three'], true)).toEqual({
+      id: 'q', selected: ['One, two', 'Three'], custom: 'Write locally, then continue',
+    });
+  });
+
+  it('interprets legacy strings using the question options without splitting free text', () => {
+    expect(buildDshQuestionAnswer('q', 'One, two', ['One, two', 'Three'], false))
+      .toEqual({ id: 'q', selected: ['One, two'] });
+    expect(buildDshQuestionAnswer('q', 'One,Three', ['One', 'Three'], true))
+      .toEqual({ id: 'q', selected: ['One', 'Three'] });
+    expect(buildDshQuestionAnswer('q', 'Write locally, then continue', ['One', 'Three'], false))
+      .toEqual({ id: 'q', selected: [], custom: 'Write locally, then continue' });
+  });
+});
 
 describe('DSH interaction response reconciliation', () => {
   it('settles an interaction when DSH reports that it already expired', () => {

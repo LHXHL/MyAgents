@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import { AlertCircle, CheckCircle, Loader2, X } from 'lucide-react';
 import React, {
   memo,
@@ -98,7 +99,7 @@ interface MessageListProps {
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
   onAskUserQuestionSubmit?: (
     requestId: string,
-    answers: Record<string, string>,
+    answers: AskUserQuestionAnswers,
   ) => void | Promise<void>;
   onAskUserQuestionCancel?: (requestId: string) => void | Promise<void>;
   pendingExitPlanMode?: ExitPlanModeRequest | null;
@@ -291,7 +292,7 @@ type FooterProps = {
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
   onAskUserQuestionSubmit?: (
     requestId: string,
-    answers: Record<string, string>,
+    answers: AskUserQuestionAnswers,
   ) => void;
   onAskUserQuestionCancel?: (requestId: string) => void;
   showStatus: boolean;

@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../shared/types/askUserQuestion';
 import {
   appendFileSync,
   cpSync,
@@ -5903,7 +5904,7 @@ async function main() {
         try {
           const payload = (await request.json()) as {
             requestId: string;
-            answers: Record<string, string> | null; // null means user cancelled
+            answers: AskUserQuestionAnswers | null; // null means user cancelled
           };
 
           // Route by pending-request ownership, NOT live session state

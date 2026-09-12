@@ -97,7 +97,7 @@ scope 错误。普通无 Session 身份的外部 CLI 保留全局管理行为。
 myagents <group> <action> [args] [flags]
 ```
 
-命令按 owner 分组：配置与能力（MCP/model/skill/tool/plugin/config）、Agent 与 Runtime、Session/Goal、Task/Record/Speech、Space/IM，以及 status/version/reload 等应用控制。canonical group、action、flag 和输出字段以当前 bundle 的顶层/leaf `--help` 为准；本文只记录跨命令的路由、身份和 mutation 规则，不维护静态全集。
+命令按 owner 分组：配置与能力（MCP/model/skill/tool/plugin/config）、Agent 与 Runtime、Session/Goal、Task/Record/Speech、Space/IM，以及 status/version/reload 等应用控制。status/version/reload 与分组命令都提供 `-h` / `--help`；帮助请求不执行对应业务，失败响应使用非零退出码，普通文本错误输出到 stderr。canonical group、action、flag 和输出字段以当前 bundle 的顶层/leaf `--help` 为准；本文只记录跨命令的路由、身份和 mutation 规则，不维护静态全集。
 
 所有 mutation 对未知 flag fail closed。`--dry-run` 只有在 leaf help 明确声明支持时才有效；不能把拒绝执行描述成成功预览。
 

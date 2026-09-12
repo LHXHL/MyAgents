@@ -31,6 +31,7 @@ import { compileDshModelExecutionProfile } from "./profile-compiler";
 import { DSH_CANONICAL_WEB_ADAPTER_ID } from "./canonical-web-provider";
 import { DshRuntimeProcessHost, redactDshDiagnosticLine } from "./process-host";
 import { DshMutationController } from './mutations';
+import { buildDshQuestionAnswer } from './interaction-response';
 import { buildDshTurnProjectionSnapshot } from '../../session-engine/dsh-turn-reconciliation';
 import {
   DSH_REVERSE_METHOD_NAMES,
@@ -333,7 +334,7 @@ describe.runIf(nativeSmokeEnabled)(
         { id: 'fixture-child-inherited-call', name: 'bash', input: { command: 'printf inherited-child', workdir: 'child', description: 'Verify the shared directory grant' } },
         { id: 'fixture-child-review-call', name: 'bash', input: { command: `printf approved-child; ${curl} http://dsh-shell-fixture.invalid/child`, description: 'Verify child approval at another directory' } },
         undefined, // The foreground child completes before the root continues.
-        { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [{ header: 'Review', question: 'Continue the synthetic plan check?', options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }], multiSelect: false }] } },
+        { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [0, 1, 2].map(index => ({ header: `Step ${index}`, question: `Choose synthetic step ${index}`, options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }, { label: 'Review, then continue', description: 'Review first' }, { label: 'Later', description: 'Defer' }], multiSelect: index === 1 })) } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
         { id: 'fixture-plan-write-call', name: 'Write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
         { id: 'fixture-plan-shell-call', name: 'bash', input: { command: 'printf plan-shell-research', workdir: 'child', description: 'Inspect while Plan mode is active' } },
@@ -479,8 +480,18 @@ describe.runIf(nativeSmokeEnabled)(
           await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
           const next = approvals[approvalIndex++]!;
           expect(next.kind).toBe(kind);
-          const schema = next.schema as { questions: { id: string; options: { label: string }[]; intent?: { approve: string } }[] };
-          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: [question.intent?.approve ?? question.options[0]!.label] })) } });
+          const schema = next.schema as { questions: { id: string; multiSelect?: boolean; options: { label: string }[]; intent?: { approve: string } }[] };
+          if (kind === 'ask_user') {
+            expect(schema.questions).toHaveLength(3);
+            const invalid = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers: schema.questions.map(question => ({ id: question.id, selected: ['invalid synthetic option'] })) } });
+            expect(invalid).toMatchObject({ state: 'rejected', code: 'interaction_response_invalid' });
+          }
+          const answers = schema.questions.map((question, index) => buildDshQuestionAnswer(question.id,
+            kind === 'plan_approval' ? { selected: [question.intent!.approve] }
+              : index === 2 ? { selected: [], custom: 'Write locally, then continue' }
+                : { selected: index === 1 ? ['Continue', 'Review, then continue'] : ['Continue'] },
+            question.options.map(option => option.label), question.multiSelect === true));
+          const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'answered', value: { answers } });
           expect(result.state).toBe('applied');
         };
         await approveCall('fixture-child-review-call');
@@ -505,6 +516,8 @@ describe.runIf(nativeSmokeEnabled)(
         for (const result of toolResults) expect((result.event as Record<string, unknown>).result).toMatchObject({ isError: false });
         expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
         expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
+        expect(JSON.stringify(modelToolResults.get('fixture-question-call'))).toContain('Write locally, then continue');
+        expect(JSON.stringify(modelToolResults.get('fixture-question-call'))).toContain('Review, then continue');
         expect(requests).toBe(calls.length + 1);
         expect(planSystemPrompt).toContain('Bash or PowerShell tool only for read-only inspection');
         expect(modelToolResults.get('fixture-plan-shell-call')).toBeDefined();

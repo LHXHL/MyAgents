@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl, RuntimeAgentWorkTree } from '../../shared/types/subagent-lifecycle';
 // AgentRuntime abstraction types (v0.1.59)
 // Defines the interface that all runtime implementations must satisfy
@@ -615,6 +616,9 @@ export interface AgentRuntime {
     process: RuntimeProcess,
     input: { clientOperationId: string; clientUserMessageId: string },
   ): Promise<'cancelled' | 'delivered'>;
+
+  /** Deliver lossless structured answers when supported by the Runtime. */
+  respondAskUserQuestion?(process: RuntimeProcess, requestId: string, answers: AskUserQuestionAnswers | null): Promise<void>;
 
   /** Respond to a permission request from the runtime */
   respondPermission(

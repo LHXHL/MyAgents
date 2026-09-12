@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { RuntimeAgentWorkControl } from '../../shared/types/subagent-lifecycle';
 // External Runtime Session Handler (v0.1.59)
 //
@@ -62,7 +63,7 @@ import type {
   AskUserQuestionInput,
   AskUserQuestion,
 } from '../../shared/types/askUserQuestion';
-import { withQuestionTextAnswerKeys } from '../../shared/types/askUserQuestion';
+import { withQuestionTextAnswerKeys, questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import {
   getExternalRuntime,
   getCurrentRuntimeSource,
@@ -7014,7 +7015,7 @@ export function hasPendingExternalPlanApproval(requestId: string): boolean {
  */
 export async function respondExternalAskUserQuestion(
   requestId: string,
-  answers: Record<string, string> | null,
+  answers: AskUserQuestionAnswers | null,
 ): Promise<boolean> {
   const pending = getExternalAskUserQuestion(requestId);
   if (!pending) {
@@ -7037,7 +7038,9 @@ export async function respondExternalAskUserQuestion(
   }
 
   try {
-    if (answers === null) {
+    if (active.runtime.respondAskUserQuestion) {
+      await active.runtime.respondAskUserQuestion(active.process, requestId, answers);
+    } else if (answers === null) {
       console.log(
         `[external-session] AskUserQuestion cancelled for requestId=${requestId}`,
       );
@@ -7067,7 +7070,7 @@ export async function respondExternalAskUserQuestion(
         .questions;
       const updatedInput = {
         ...pending.input,
-        answers: withQuestionTextAnswerKeys(askQuestions, answers),
+        answers: withQuestionTextAnswerKeys(askQuestions, questionAnswersAsText(answers)),
       };
       await active.runtime.respondPermission(
         active.process,

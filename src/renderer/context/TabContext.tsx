@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 /**
  * TabContext - React Context for per-Tab state isolation
  * 
@@ -246,7 +247,7 @@ export interface TabContextValue extends TabState {
     respondPermission: (decision: 'deny' | 'allow_once' | 'always_allow', requestId?: string) => Promise<void>;
 
     // AskUserQuestion handling
-    respondAskUserQuestion: (answers: Record<string, string> | null) => Promise<void>;
+    respondAskUserQuestion: (answers: AskUserQuestionAnswers | null) => Promise<void>;
 
     // PlanMode handling.
     // `feedback` (issue #182): user's optional 「修改意见」 forwarded only on

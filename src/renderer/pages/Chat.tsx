@@ -1,3 +1,4 @@
+import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
 import type { FilePreviewHandle } from '@/components/FilePreviewModal';
 import {
   AlertTriangle,
@@ -5951,7 +5952,7 @@ export default function Chat({
   );
 
   const handleAskUserQuestionSubmit = useCallback(
-    (_requestId: string, answers: Record<string, string>) => {
+    (_requestId: string, answers: AskUserQuestionAnswers) => {
       return respondAskUserQuestion(answers);
     },
     [respondAskUserQuestion],

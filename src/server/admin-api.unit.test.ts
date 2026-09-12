@@ -468,15 +468,22 @@ describe('admin-api help registry', () => {
     expect(taskText).toContain('must be paired with --model');
   });
 
+  it.each(['status', 'version', 'reload'])('serves help for the %s leaf without executing it', async command => {
+    const { handleHelp } = await import('./admin-api');
+    const result = handleHelp({ path: [command] });
+    expect(result.success).toBe(true);
+    expect((result.data as { text: string }).text).toContain(`myagents ${command}`);
+    expect((result.data as { text: string }).text).toContain('--json');
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
     const result = handleHelp({ path: ['definitely-not-a-command'] });
-    const text = (result.data as { text?: string } | undefined)?.text ?? '';
 
-    expect(result.success).toBe(true);
-    expect(text).toContain('Unknown command group "definitely-not-a-command"');
-    expect(text).toContain('vision');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown command group "definitely-not-a-command"');
+    expect(result.suggestion).toContain('vision');
   });
 
   it('does not expose the legacy issue alias as a help command group', async () => {
@@ -485,9 +492,9 @@ describe('admin-api help registry', () => {
     const result = handleHelp({ path: ['issue'] });
     const text = (result.data as { text?: string } | undefined)?.text ?? '';
 
-    expect(result.success).toBe(true);
-    expect(text).toContain('Unknown command group "issue"');
-    expect(text).toContain('space');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown command group "issue"');
+    expect(result.suggestion).toContain('space');
     expect(text).not.toContain('Legacy read-only alias');
   });
 

@@ -1,3 +1,4 @@
+import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { randomUUID } from 'node:crypto';
 import {
   cancelQueueItem,
@@ -905,7 +906,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async respondAskUserQuestion(requestId, answers) {
-      return handleAskUserQuestionResponse(requestId, answers);
+      return handleAskUserQuestionResponse(requestId, answers === null ? null : questionAnswersAsText(answers));
     },
 
     async respondPlanApproval(requestId, approved, feedback) {

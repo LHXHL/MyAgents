@@ -29,6 +29,20 @@ export interface AskUserQuestionInput {
   metadata?: { source?: string };
 }
 
+/** Desktop answers preserve option labels and free text separately. Strings remain accepted from legacy/CLI callers. */
+export interface AskUserQuestionAnswer {
+  selected: string[];
+  custom?: string;
+}
+export type AskUserQuestionAnswers = Record<string, string | AskUserQuestionAnswer>;
+
+/** Projection for runtimes whose question tool accepts only display text. */
+export function questionAnswersAsText(answers: AskUserQuestionAnswers): Record<string, string> {
+  return Object.fromEntries(Object.entries(answers).map(([id, answer]) => [id,
+    typeof answer === 'string' ? answer : [...answer.selected, ...(answer.custom ? [answer.custom] : [])].join(','),
+  ]));
+}
+
 /**
  * Re-key AskUserQuestion answers by question text for the SDK-binary contract.
  *

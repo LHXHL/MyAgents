@@ -59,6 +59,29 @@ describe('myagents CLI port authority', () => {
   });
 });
 
+describe('CLI help and Session list output', () => {
+  it.each(['status', 'version', 'reload'])('accepts -h and --help for %s', command => {
+    for (const flag of ['-h', '--help']) {
+      const parsed = parseArgs([command, flag]);
+      expect(parsed).toEqual({ positional: [command], flags: { help: true } });
+      expect(validateCliCommand(parsed.positional, true)).toBeUndefined();
+    }
+    expect(parseArgs(['-h', command]).positional).toEqual([command]);
+  });
+
+  it('prints a duplicate title/preview once and keeps distinct previews', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    printResult('session', 'list', { success: true, data: [
+      { sessionId: 'one', title: 'Same title', lastMessagePreview: 'Same title' },
+      { sessionId: 'two', title: 'Another title', lastMessagePreview: 'Recent reply' },
+    ] }, false);
+    const output = log.mock.calls.flat().join('\n');
+    expect(output.match(/Same title/g)).toHaveLength(1);
+    expect(output).toContain('Recent reply');
+    log.mockRestore();
+  });
+});
+
 describe('skill source normalization', () => {
   it('resolves only explicit relative local paths against the CLI caller cwd', () => {
     const cwd = join(tmpdir(), 'skill-caller');
