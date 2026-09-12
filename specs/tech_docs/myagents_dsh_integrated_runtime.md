@@ -1346,3 +1346,10 @@ execution only prints a content-free plan; apply requires its unchanged digest a
 Sidecar/Runtime processes. Eight reset tests plus twenty existing mutation tests pass with real
 SessionStore over synthetic homes. Actual development planning found 23 eligible old Sessions;
 no real data has been removed. Execution follows candidate Runtime and Host journey verification.
+
+Host source regression passes 4,228 unit, 1,301 DOM and 541 integration tests, with eight
+explicit skips, plus 146 build-script tests (five platform skips). The initial concurrent build
+run hit the unrelated media-worker identity fixture's one-second startup deadline; the unchanged
+fixture passes both independently and in the subsequent complete run. Attachment reference scans
+are skipped when no candidate attachment roots exist. These are source gates before ingestion,
+not acceptance of the historical staged Runtime for protocol 5.0.0.

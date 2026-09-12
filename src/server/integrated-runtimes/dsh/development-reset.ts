@@ -63,6 +63,7 @@ async function boundedText(path: string): Promise<string | undefined> {
 /** Inspect only for shared attachment references; no text is logged or copied into the plan. */
 async function sharedAttachmentRoots(dataRoot: string, survivors: readonly SessionMetadata[], roots: readonly string[]): Promise<Set<string>> {
   const shared = new Set<string>();
+  if (roots.length === 0) return shared;
   const scan = (value: unknown): void => {
     if (typeof value === 'string') {
       const normalized = value.replaceAll('\\', '/');
