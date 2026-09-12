@@ -10948,7 +10948,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "ed6eb7df2eb3798f8ef054934af1c642af265106e0fbaf9739ef3006fbc16b84",
+                    "const": "da5724f9de16c91344037529dad379ef9716796a10ce2cdcb02116ef102a7323",
                     "type": "string"
                   },
                   "diagnostics": {
@@ -14935,7 +14935,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "contractSha256": {
-                    "const": "ed6eb7df2eb3798f8ef054934af1c642af265106e0fbaf9739ef3006fbc16b84",
+                    "const": "da5724f9de16c91344037529dad379ef9716796a10ce2cdcb02116ef102a7323",
                     "type": "string"
                   },
                   "diagnostics": {

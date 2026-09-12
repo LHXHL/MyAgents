@@ -97,6 +97,19 @@ function host(webProvider = provider(), statusCode = 200): DshCanonicalWebHost {
 }
 
 describe('DshCanonicalWebHost', () => {
+  it('returns successful structured WebFetch content without inventing utility usage', async () => {
+    const webProvider = provider();
+    webProvider.runUtility.mockResolvedValue({
+      answer: 'Useful answer', citations: [], truncated: false,
+    });
+    const result = await host(webProvider).execute({
+      tool: 'WebFetch', input: { url: 'https://example.com/final', prompt: 'Summarize' },
+      authority: authority('WebFetch'),
+    }, context());
+    expect(result).toMatchObject({ state: 'succeeded', structured: { answer: 'Useful answer' } });
+    expect(result.structured).not.toHaveProperty('usage');
+  });
+
   it('reports the actual HTTP failure without calling the utility model', async () => {
     const webProvider = provider();
     const result = await host(webProvider, 404).execute({

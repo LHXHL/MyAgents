@@ -2241,7 +2241,6 @@
           "finalUrl",
           "answer",
           "citations",
-          "usage",
           "truncated"
         ],
         "type": "object"
@@ -2505,7 +2504,6 @@
           "query",
           "results",
           "citations",
-          "usage",
           "truncated",
           "searchCount",
           "durationMs"
