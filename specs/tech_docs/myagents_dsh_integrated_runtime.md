@@ -1486,3 +1486,16 @@ also explicitly executed successfully against the new staged Runtime, including 
 changes and 12 process generations. The default suite remains credential-free. Lint retains
 13 pre-existing dependency-cruiser warnings and zero errors. The final App build and its separate
 resource/signature/native checks are identified by the external receipt above.
+
+
+### Plan Shell development delivery (2026-09-12)
+
+U15-D08/W09 retains the selected Bash/PowerShell tool in Plan under prompt-guided read-only research and the existing Shell permission owner. Write/Edit remain limited to the managed plan file, and submission still requires approval. This follow-up supersedes the preceding Runtime identity for the new development package; the earlier UPG15 receipts remain historical.
+
+Runtime source `7261f7bbd29c1a2883bfe0b21178ce8bae1545f1` passes the complete clean-source pre-artifact gate (`1bcdc0c55149304de29b54917c04304baa116de3d58affee9a850b49d2bc1074`), including typecheck/lint/build, 848 tests, source/seam validation, native network/ownership tests, fault cases and three soaks. The new packed Runtime is `50ab714fa197c87e67b2ac50a2d064cc2b893e68793ad1742764403b3603a243` with 17,905 files. Official handoff `2b5d71758a719e9caea13efff181877ccb2ad630668d0e47d9d3f71b01e0c969` supplies protocol 5.0.0 with schema `69a37de60ad8d05dc62649f1c3b177cbdfe8792fc73760d5849f000c1ec0acbe` and the regenerated tool/profile contracts. The pinned DSH package bytes are unchanged.
+
+Official ingestion, complete resource verification and clean Runtime source freshness pass. Host typecheck/lint and 178 DSH tests pass; the six normally skipped native cases also pass explicitly against staged resources, including the new Plan Shell result/prompt assertions and 12 process generations. The handoff-policy suite passes.
+
+This is a local development handoff for user end-to-end testing. Its platform claims bind the new Runtime and implementation gate; the complete credentialed native model campaign has not been rerun, so all three claims remain `implementation-complete_pending-native-validation`. The local deterministic process tests do not substitute for that campaign.
+
+The requested Debug App is rebuilt at the existing `src-tauri/target/debug/bundle/macos/MyAgents.app` path after stopping the old App processes. Exact Host source, signing/resource verification and tests from the App's own resources are recorded after this Host source freeze in the [development receipt](../../../MyAgents-dsh-release-work/plan-shell-20260912/plan-shell-development-receipt.json). No source or historical artifact is relabeled by that receipt.

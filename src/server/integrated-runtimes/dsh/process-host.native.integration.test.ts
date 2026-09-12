@@ -328,10 +328,12 @@ describe.runIf(nativeSmokeEnabled)(
         { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [{ header: 'Review', question: 'Continue the synthetic plan check?', options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }], multiSelect: false }] } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
         { id: 'fixture-plan-write-call', name: 'Write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
+        { id: 'fixture-plan-shell-call', name: 'bash', input: { command: 'printf plan-shell-research', workdir: 'child', description: 'Inspect while Plan mode is active' } },
         { id: 'fixture-exit-plan-call', name: 'ExitPlanMode', input: {} },
       ];
       let requests = 0;
       let childSystemPrompt = '';
+      let planSystemPrompt = '';
       let resumedRootInput = '';
       const proxyRequests: string[] = [];
       const childResults = new Map<string, { content?: unknown; is_error?: boolean }>();
@@ -355,6 +357,7 @@ describe.runIf(nativeSmokeEnabled)(
         }
         const tool = calls[requests++];
         if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
+        if (tool?.id === 'fixture-plan-shell-call') planSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
         if (tool?.id === 'fixture-question-call') resumedRootInput = JSON.stringify(modelRequest.messages);
         let input: Record<string, unknown> | undefined = tool?.input;
         if (tool?.id === 'fixture-plan-write-call') {
@@ -489,6 +492,10 @@ describe.runIf(nativeSmokeEnabled)(
         expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
         expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
         expect(requests).toBe(calls.length + 1);
+        expect(planSystemPrompt).toContain('Bash or PowerShell tool only for read-only inspection');
+        expect(modelToolResults.get('fixture-plan-shell-call')).toBeDefined();
+        expect(modelToolResults.get('fixture-plan-shell-call')?.is_error).not.toBe(true);
+        expect(JSON.stringify(modelToolResults.get('fixture-plan-shell-call')?.content)).toContain('plan-shell-research');
         expect(await readFile(join(fixture.workspace, 'native-file-tools/note.txt'), 'utf8')).toBe('ALPHA\r\nBETA\r\n');
         expect(JSON.stringify(modelToolResults.get('fixture-large-read')?.content)).toContain('short line');
         const imageResult = modelToolResults.get('fixture-image-read');

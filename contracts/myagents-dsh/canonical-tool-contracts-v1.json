@@ -1384,8 +1384,7 @@
       },
       "permissionClass": "process.execute",
       "planPolicy": {
-        "denialCode": "plan_mode_side_effect_forbidden",
-        "mode": "denied",
+        "mode": "allowed",
         "revision": "operation-birth-and-durable-session"
       },
       "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
@@ -1614,8 +1613,7 @@
       },
       "permissionClass": "process.execute",
       "planPolicy": {
-        "denialCode": "plan_mode_side_effect_forbidden",
-        "mode": "denied",
+        "mode": "allowed",
         "revision": "operation-birth-and-durable-session"
       },
       "resultSemantics": "Pinned official DSH tool output, rendering and Jobs lifecycle.",
