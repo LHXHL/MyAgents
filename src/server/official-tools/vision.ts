@@ -27,6 +27,7 @@ import {
 import { processImage } from '../utils/imageResize';
 import { applyContextWindowSuffixForContextLength } from '../utils/model-capabilities';
 import { createGuardedSdkQuery } from '../utils/sdk-child-launch-guard';
+import { getPreparedModelPolicy, prepareProviderBinding, type PreparedProvider } from '../utils/managed-proxy-binding';
 import { sdkSubprocessUserMessage } from '../utils/sdk-subprocess-diagnostics';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import type { SessionMetadata } from '../types/session';
@@ -179,7 +180,9 @@ function materializeVisionProviderEnv(
   const env = resolveProviderEnv(providerId, config, model);
   const provider = findEffectiveProvider(providerId, config);
   if (provider?.type === 'subscription') {
-    return {};
+    // Native Anthropic has no materialized credentials; managed subscriptions
+    // must preserve the resolver's execution reference for async preparation.
+    return env ?? {};
   }
   if (provider?.type === 'api' && !env) {
     throw new VisionToolError(`Provider '${providerId}' needs a valid API key before it can drive image understanding.`, 409, {
@@ -375,9 +378,17 @@ async function runVisionQuery(args: {
   const bridge = args.providerEnv?.apiProtocol === 'openai'
     ? startOneShotBridge(args.providerEnv, args.model, `official-vision:${args.providerEnv.baseUrl ?? args.providerId}`)
     : null;
+  const controller = new AbortController();
+  let prepared: PreparedProvider | undefined;
+  const deadline = setTimeout(() => controller.abort(), remainingMs(args.deadlineMs));
   try {
-    return await runVisionQueryInner({ ...args, bridgeToken: bridge?.token });
+    prepared = await prepareProviderBinding({ providerEnv: args.providerEnv, model: args.model, controller });
+    await prepared.beforeTurn();
+    return await runVisionQueryInner({ ...args, providerEnv: prepared.providerEnv, bridgeToken: bridge?.token, controller, prepared });
   } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    await prepared?.release().catch(() => console.warn('[cliproxy] Vision binding release was not confirmed'));
     bridge?.release();
   }
 }
@@ -391,9 +402,11 @@ async function runVisionQueryInner(args: {
   prompt: string;
   deadlineMs: number;
   bridgeToken?: string;
+  controller: AbortController;
+  prepared: PreparedProvider;
 }): Promise<string> {
   const sessionId = randomUUID();
-  const abortController = new AbortController();
+  const abortController = args.controller;
   const env = buildClaudeSessionEnv(args.providerEnv, args.model, {
     bridgeToken: args.bridgeToken,
     providerId: args.providerId,
@@ -457,6 +470,7 @@ async function runVisionQueryInner(args: {
       tools: [],
       model: launchModel,
       abortController,
+      ...(getPreparedModelPolicy(args.providerEnv) ? { thinking: { type: getPreparedModelPolicy(args.providerEnv)!.thinking ? 'adaptive' as const : 'disabled' as const } } : {}),
     },
   }));
 
@@ -469,7 +483,10 @@ async function runVisionQueryInner(args: {
   });
 
   try {
-    return await Promise.race([extractVisionText(visionQuery), timeoutPromise]);
+    return await Promise.race([extractVisionText(visionQuery, args.providerEnv?.endpointSource ? args.prepared : undefined), timeoutPromise]);
+  } catch (error) {
+    await args.prepared.reportTerminal(false);
+    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
     if (!abortController.signal.aborted) abortController.abort();
@@ -477,8 +494,9 @@ async function runVisionQueryInner(args: {
   }
 }
 
-async function extractVisionText(visionQuery: AsyncIterable<unknown>): Promise<string> {
+async function extractVisionText(visionQuery: AsyncIterable<unknown>, prepared?: PreparedProvider): Promise<string> {
   let lastText = '';
+  let success = false;
   for await (const message of visionQuery) {
     if (!message || typeof message !== 'object') continue;
     const record = message as Record<string, unknown>;
@@ -486,11 +504,18 @@ async function extractVisionText(visionQuery: AsyncIterable<unknown>): Promise<s
       const text = textFromContent((record.message as { content?: unknown } | undefined)?.content);
       if (text) lastText = text;
     } else if (record.type === 'result') {
+      success = record.subtype === 'success';
+      await prepared?.reportTerminal(success);
+      if (prepared && !success) throw new VisionToolError('Vision model request did not complete.', 502);
       const messages = (record as { messages?: Array<{ role?: string; content?: unknown }> }).messages;
       const assistant = messages?.filter(m => m.role === 'assistant').pop();
       const text = textFromContent(assistant?.content);
       if (text) lastText = text;
     }
+  }
+  if (prepared && !success) {
+    await prepared.reportTerminal(false);
+    throw new VisionToolError('Vision model request did not complete.', 502);
   }
   if (!lastText.trim()) throw new VisionToolError('Vision model returned no text.', 502);
   return lastText.trim();

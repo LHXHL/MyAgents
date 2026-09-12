@@ -17,7 +17,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端。React Renderer 提供
 | 内置 Node.js v24 | Global/Session Sidecar、Plugin Bridge、MCP Server、CLI 与随 App 运行的 Node 工具 |
 | Claude Agent SDK / 外部 CLI Runtime | 具体模型会话和工具执行；只能经 SessionEngine 进入产品 Session |
 
-正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
+正常安装中的 MyAgents 自有 Node 服务使用随 App 发布的 Node.js v24，无需用户安装系统 Node。核心服务的资源缺失回退、CLI 的严格资源定位，以及用户工具的 PATH 优先级分别由对应启动入口决定，见 [Bundled Node](./tech_docs/bundled_node.md)。SDK native binary、Codex、Claude Code、Gemini、CLIProxy、Document Worker 和 Media Worker 都是独立进程，不共享 Node 进程内状态。
 
 ## 全景架构
 
@@ -186,6 +186,7 @@ DocumentProcessingManager 和 SpeechRecognitionManager 分别拥有全局队列�
 | Builtin Session | Node；Claude Agent SDK Query、queue、turn、transcript 与配置 owner 分层 | [Session](./tech_docs/session_architecture.md) |
 | External Runtime | Node；Claude Code/Codex/Gemini adapter、进程与 normalized event | [Multi-Agent Runtime](./tech_docs/multi_agent_runtime.md) |
 | Provider / OpenAI Bridge | Node + Rust credential owner；Provider route materialization 与协议转换 | [第三方 Provider](./tech_docs/third_party_providers.md) |
+| 托管 CLIProxy | Rust 拥有组件/账号目录/进程与执行 lease；原版 CLIProxy 拥有 OAuth/refresh/协议转换，SDK 仍属 builtin | [CLIProxy](./tech_docs/managed_cliproxy.md) |
 | Custom MCP OAuth | Node state store；Global scheduler 主动刷新，Session Sidecar 观察 credential revision | [冷启动](./tech_docs/sidecar_cold_start.md) |
 | CLI / Admin API | App-owned CLI bundle；Node 解析命令，Management API 进入 Rust owner | [CLI](./tech_docs/cli_architecture.md) |
 | 内置小助理 | `bundled-agents/myagents_helper/` 模板 + Global Sidecar Admin API；不建立第二套业务 authority | [CLI](./tech_docs/cli_architecture.md) |

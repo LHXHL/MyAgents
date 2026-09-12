@@ -1053,6 +1053,7 @@ pub async fn install_pending_update(
                 ));
             }
             crate::browser::close_all_browsers(browser_state.inner(), &app).await;
+            crate::cliproxy::quiesce_for_update().await.map_err(|error| error.message)?;
             crate::sidecar::shutdown_for_update_verified(&app, &state)?;
 
             // Step 5: Install — spawns NSIS installer and calls exit(0).

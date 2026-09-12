@@ -220,16 +220,21 @@ export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
 export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
 export const XAI_SUBSCRIPTION_PRIMARY_MODEL = 'grok-4.6';
 
+/** OAuth and protocol translation are owned by the managed CLIProxy process. */
+export const ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID = 'antigravity-sub';
+
 export type BuiltinSubscriptionProviderId =
   | typeof SUBSCRIPTION_PROVIDER_ID
-  | typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+  | typeof XAI_SUBSCRIPTION_PROVIDER_ID
+  | typeof ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID;
 
 export function isBuiltinSubscriptionProviderId(
   providerId: string | null | undefined,
 ): providerId is BuiltinSubscriptionProviderId {
   return (
     providerId === SUBSCRIPTION_PROVIDER_ID ||
-    providerId === XAI_SUBSCRIPTION_PROVIDER_ID
+    providerId === XAI_SUBSCRIPTION_PROVIDER_ID ||
+    providerId === ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID
   );
 }
 
@@ -241,6 +246,7 @@ type ProviderOrderable = {
 const MISSING_PROVIDER_INSERT_AFTER: Record<string, string> = {
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: SUBSCRIPTION_PROVIDER_ID,
   [XAI_SUBSCRIPTION_PROVIDER_ID]: CODEX_SUBSCRIPTION_PROVIDER_ID,
+  [ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID]: XAI_SUBSCRIPTION_PROVIDER_ID,
 };
 
 export function normalizeProviderOrder(
@@ -414,7 +420,14 @@ export type ProviderExecution =
 export type SubscriptionAuthPolicy =
   | { kind: 'sdk-native' }
   | { kind: 'host-managed-oauth' }
+  | { kind: 'proxy-managed'; proxy: 'cliproxy' }
   | { kind: 'runtime-managed' };
+
+/** Persistent routing may refer to this owner, never to its port or local key. */
+export type ManagedProviderEndpoint = {
+  kind: 'cliproxy';
+  providerId: typeof ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID;
+};
 
 /** Non-secret reference carried by builtin ProviderEnv for host-owned OAuth. */
 export type ManagedProviderCredential = {
@@ -1591,6 +1604,21 @@ export const PRESET_PROVIDERS: Provider[] = [
         source: 'preset',
       },
     ],
+  },
+  {
+    id: ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
+    name: 'Antigravity（订阅）',
+    subtitle: '通过 CLIProxy 使用已授权的 Antigravity 账号',
+    vendor: 'Google',
+    cloudProvider: 'CLIProxy',
+    type: 'subscription',
+    subscriptionAuth: { kind: 'proxy-managed', proxy: 'cliproxy' },
+    execution: { kind: 'builtin' },
+    primaryModel: '',
+    isBuiltin: true,
+    apiProtocol: 'anthropic',
+    config: {},
+    models: [],
   },
   {
     id: 'anthropic-api',
