@@ -151,10 +151,10 @@ jobs:
       - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
 
   # CLIProxy native lifecycle fixtures require a supported Unix platform.
-  # Keep Linux's broad Rust gate and execute these fixtures on macOS explicitly.
+  # Keep Linux's broad Rust gate; apple-metal requires the Xcode 26 SDK.
   macos-cliproxy:
     name: macOS CLIProxy lifecycle
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

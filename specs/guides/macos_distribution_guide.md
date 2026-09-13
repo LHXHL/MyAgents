@@ -16,7 +16,7 @@
 
 - [x] Apple Developer 账号（付费版，$99/年）
 - [ ] macOS 电脑（用于生成证书）
-- [ ] Xcode 14+ 已安装
+- [ ] Xcode 26+ 已安装（当前 apple-metal 原生依赖需要对应 SDK）
 - [ ] Tauri 项目可正常构建
 
 ---
