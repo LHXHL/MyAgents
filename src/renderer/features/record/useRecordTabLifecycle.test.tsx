@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { createRef, useEffect, type RefObject } from 'react';
+import { createRef, useEffect, useLayoutEffect, type RefObject } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RecordingSnapshot } from '@/../shared/types/record';
@@ -33,14 +33,19 @@ const adapterRef = createRef<TabLifecycleAdapter<RecordTab, RecordTabCloseReason
 function Harness({
   dependencies,
   lifecycleRef,
+  onDialogCommit,
 }: {
   dependencies: Dependencies;
   lifecycleRef: RefObject<TabLifecycleAdapter<RecordTab, RecordTabCloseReason> | null>;
+  onDialogCommit?: () => void;
 }) {
   const lifecycle = useRecordTabLifecycle(dependencies);
   useEffect(() => {
     lifecycleRef.current = lifecycle.adapter;
   }, [lifecycle.adapter, lifecycleRef]);
+  useLayoutEffect(() => {
+    if (lifecycle.dialog) onDialogCommit?.();
+  }, [lifecycle.dialog, onDialogCommit]);
   return lifecycle.dialog;
 }
 
@@ -69,6 +74,23 @@ async function requestAdmission(reason: 'user' | 'record-deleted' = 'user'): Pro
 }
 
 describe('useRecordTabLifecycle', () => {
+  it.each([
+    ['Cancel', 'blocked'],
+    ['Stop', 'allow'],
+  ] as const)('handles %s as soon as the confirmation is committed', async (button, expected) => {
+    const settled = vi.fn();
+    const clickOnce = vi.fn().mockImplementationOnce(() => {
+      // Exercise the visible-DOM boundary before passive effects run.
+      screen.getByRole('button', { name: button }).click();
+    });
+    render(<Harness dependencies={dependencies()} lifecycleRef={adapterRef} onDialogCommit={clickOnce} />);
+    await act(async () => {
+      void requestAdmission().then(settled);
+    });
+    expect(settled).toHaveBeenCalledWith(expected);
+    expect(screen.queryByText('Close recording')).not.toBeInTheDocument();
+  });
+
   it('blocks ordinary close while recording-start admission is pending', async () => {
     const getRecordingSnapshot = vi.fn(async () => snapshot);
     render(
