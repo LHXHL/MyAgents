@@ -47,6 +47,10 @@ SDK 请求使用与主 Query 一致的 `claude_code` preset + 非空任务 appen
 
 Binding acquire 由 Rust manager 自己的异步任务完成，HTTP 请求只等待结果。会话切模型、materialization 或 vision 超时取消 HTTP 时，不得中断组件 birth 的健康检查、attempt 清理和 current 指针提交。取消的 operation 经现有 release 收敛；无人接收的新 lease 由 manager 立即释放。启动失败同样必须走完原有进程清理，不能留下“存活 child + 未完成 attempt”再错误回退到 previous identity。失败 attempt 服从组件选择/回退规则，不清除账号凭据。
 
+启动后台初始化完成后，仅为保留的已登录账号预热 CLIProxy，复用同一个 `active_start` 与健康检查入口。Query/one-shot 的 CLIProxy binding 在 App-owned task 内先加入 `initialize_serialized`，再选择组件并等待进程健康；连接账号和显式刷新也先等待初始化。已 ready 时不等待账号操作锁。其他 Provider 不走此 binding 分支，不等待 CLIProxy，也不受它的故障影响。预热只是优化，不能代替执行前的依赖保证。
+
+Manager 构造结果包含成功或具体错误；构造失败不得退化成永久“尚未初始化”。状态 JSON 解码失败使用 `state_format`，区别于文件 IO 的 `storage`；日志仅记录文件名、解码类别及行列，不记录文档值。真实存储或签名失败不得以空状态静默覆盖。
+
 会话预热连续失败达到上限后，队列恢复不能重新清零预算；尚未派发的输入经既有取消入口收敛。用户再次发送或显式配置变化才开启新的恢复上下文。
 
 正常升级/账号替换通过 Rust → 准确 Sidecar generation 的 `/api/cliproxy/control` 通知 operation/lease/instance。此路由为 common capability，因为 Global one-shot 和 Session Query 均可持有 lease。已准入 turn 结束后释放，空闲 Query 保存 resume 后退出；控制响应收敛丢失的 release，不设独立心跳或过期强杀，不重放已执行工具。
@@ -199,6 +203,8 @@ MYAGENTS_CLIPROXY_DISTRIBUTION_DIR=/path/to/distribution ./build_dev.sh --build-
 ```
 
 ## 验证与维护
+
+开发版与正式版共用 `~/.myagents`。0.4.17 发布前使用 `component/appVersions` 的实验组件状态不是公开兼容契约；若本机残留该格式，应在退出 App 后备份并移走 `providers/cliproxy/component-state.json`，由正式包的签名资源重建组件记录。保留 `antigravity-sub/account-state.json` 与所有 `accounts/*/auth`，不删除登录信息，也不把任意正式状态损坏都当成可自动重置的缓存。
 
 - `node --test scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
 - Rust `cliproxy::` 测试：签名原文、固定 Installed 条目、资源保存、账号及进程生命周期；无账号/公网依赖。平台相关 fixture 在受支持的 macOS 执行，Linux 保留纯策略/文件合同测试。

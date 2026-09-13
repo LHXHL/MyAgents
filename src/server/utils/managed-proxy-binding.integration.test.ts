@@ -13,6 +13,17 @@ const binding = () => ({ providerId: 'antigravity-sub', baseUrl: 'http://127.0.0
 afterEach(() => { vi.unstubAllEnvs(); api.mockReset(); });
 
 describe('managed proxy Query resource', () => {
+  it('does not contact or wait for CLIProxy for other providers', async () => {
+    api.mockRejectedValue(new Error('CLIProxy initialization failed'));
+    const ordinary: ProviderEnv = { providerId: 'other', apiProtocol: 'anthropic', baseUrl: 'https://example.invalid', apiKey: 'test' };
+    const resource = await prepareProviderBinding({ providerEnv: ordinary, model: 'model', controller: new AbortController() });
+    expect(resource.providerEnv).toBe(ordinary);
+    await resource.beforeTurn();
+    await resource.reportTerminal(true);
+    await resource.release();
+    expect(api).not.toHaveBeenCalled();
+  });
+
   it('reports each real terminal for its exact lease and does not record cancellation or released results', async () => {
     vi.stubEnv('MYAGENTS_SIDECAR_ID', 'session-test');
     const grant = binding();

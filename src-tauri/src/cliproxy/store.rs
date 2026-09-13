@@ -268,7 +268,13 @@ pub(super) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<O
     let bytes = fs::read(path).map_err(|_| Error::storage())?;
     serde_json::from_slice(&bytes)
         .map(Some)
-        .map_err(|_| Error::storage())
+        .map_err(|error| {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("state.json");
+            // Do not log parser text: it can include values from the document.
+            crate::ulog_warn!("[cliproxy] state decode failed file={} category={:?} line={} column={}",
+                name, error.classify(), error.line(), error.column());
+            Error::new("state_format", format!("组件状态文件 {name} 格式不兼容或已损坏"))
+        })
 }
 
 pub(super) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -308,6 +314,18 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_state_is_distinct_from_an_io_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("account-state.json");
+        fs::write(&path, br#"{"active":"secret-value"}"#).unwrap();
+        let error = read_json::<Accounts>(&path).err().unwrap();
+        assert_eq!(error.code, "state_format");
+        assert!(error.message.contains("account-state.json"));
+        assert!(!error.message.contains("secret-value"));
+        assert_eq!(read_json::<Accounts>(temp.path()).err().unwrap().code, "storage");
+    }
+
     #[test]
     fn replacement_and_cleanup_intent_share_one_commit() {
         let temp = tempfile::tempdir().unwrap();

@@ -147,11 +147,32 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
     }
 
     pub async fn initialize_serialized(self: &Arc<Self>, had_prior_instance: bool) -> Result<()> {
+        if *self.shutdown.borrow() {
+            return Err(Error::cancelled());
+        }
+        if self.state.lock().await.ready {
+            return Ok(());
+        }
         let _operation = self.account_operation.lock().await;
+        if *self.shutdown.borrow() {
+            return Err(Error::cancelled());
+        }
         if self.state.lock().await.ready {
             return Ok(());
         }
         self.initialize(had_prior_instance).await
+    }
+
+    pub async fn prewarm(self: &Arc<Self>) -> Result<()> {
+        let has_account = {
+            let state = self.state.lock().await;
+            state.accounts.active.is_some() && !state.accounts.disconnecting && !state.shutting_down
+        };
+        if has_account && self.components.controls().await?.allows(cfg!(debug_assertions)) {
+            self.ensure_active().await?;
+            crate::ulog_info!("[cliproxy] retained account process ready");
+        }
+        Ok(())
     }
 
     async fn initialize(self: &Arc<Self>, _had_prior_instance: bool) -> Result<()> {
@@ -445,6 +466,7 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
     }
 
     pub async fn connect(self: &Arc<Self>) -> Result<Value> {
+        self.initialize_serialized(false).await?;
         let guard = Arc::clone(&self.account_operation)
             .try_lock_owned()
             .map_err(|_| Error::new("operation_pending", "账号操作正在进行"))?;
@@ -1222,7 +1244,8 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         Ok(())
     }
 
-    pub async fn refresh(&self, generation: &str) -> Result<Vec<Value>> {
+    pub async fn refresh(self: &Arc<Self>, generation: &str) -> Result<Vec<Value>> {
+        self.initialize_serialized(false).await?;
         let _guard = self
             .account_operation
             .try_lock()
@@ -1431,6 +1454,10 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         {
             return Err(Error::contract());
         }
+        // Only managed-provider bindings join initialization. This runs in
+        // the App-owned acquire task, so a cancelled HTTP waiter cannot abort
+        // startup cleanup or leave a half-initialized component behind.
+        self.initialize_serialized(false).await?;
         let key = format!(
             "{}:{sidecar_generation}:{}",
             request.sidecar_id, request.operation_id
@@ -2156,7 +2183,9 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
                 let _ = cancel.send(true);
             }
         }
-        let _ = self.shutdown.send(true);
+        // Shutdown is durable in memory even before startup creates its first
+        // subscriber; send() alone discards the value when nobody is listening.
+        self.shutdown.send_replace(true);
         self.changed.notify_waiters();
         let _update = self.update_check.lock().await;
         self.stop_consumers().await;
@@ -2596,6 +2625,46 @@ mod tests {
                 "request settlement must preserve shared CLIProxy"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn cold_binding_waits_for_initialization_before_selecting_a_component() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+
+        let _serial = LIFECYCLE.lock().await;
+        let fixture = Fixture::new().await;
+        fixture.manager.state.lock().await.ready = false;
+        let initialization = fixture.manager.account_operation.lock().await;
+        let mut request = Box::pin(fixture.manager.acquire_owned(BindingRequest {
+            sidecar_id: "sidecar".to_owned(),
+            operation_id: Uuid::new_v4().to_string(),
+            model: "model-a".to_owned(),
+        }, 7));
+        assert!(poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx).is_pending())).await,
+            "binding must join startup instead of reporting an unready component");
+        fixture.manager.state.lock().await.ready = true;
+        drop(initialization);
+        // No executable is installed in this fixture. Selection may fail only
+        // after initialization, with its actual resource error.
+        assert_eq!(request.await.err().unwrap().code, "bundled_missing");
+    }
+
+    #[tokio::test]
+    async fn prewarm_without_a_retained_account_does_not_start_a_process() {
+        let fixture = Fixture::new().await;
+        fixture.manager.prewarm().await.unwrap();
+        assert!(fixture.manager.state.lock().await.active.is_none());
+        assert!(!fixture.manager.components.root.exists());
+    }
+
+    #[tokio::test]
+    async fn initialization_cannot_restart_after_shutdown() {
+        let fixture = Fixture::new().await;
+        fixture.manager.state.lock().await.ready = false;
+        fixture.manager.shutdown().await.unwrap();
+        assert_eq!(fixture.manager.initialize_serialized(false).await.err().unwrap().code, "cancelled");
+        assert!(!fixture.manager.state.lock().await.ready);
     }
 
     #[tokio::test]
