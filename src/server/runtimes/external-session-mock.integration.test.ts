@@ -98,6 +98,8 @@ class FakeRuntime implements AgentRuntime {
   private rejectDispatchAck: boolean;
   private rejectStop: boolean;
   private readonly rejectConfig: boolean;
+  private readonly rejectPermissionConfig: boolean;
+  effectivePermissionMode = '';
   private readonly emitInterruptedOnStop: boolean;
   private readonly emitSessionCompleteOnStop: boolean;
   private nextTurnNumber = 1;
@@ -115,6 +117,7 @@ class FakeRuntime implements AgentRuntime {
     rejectDispatchAck?: boolean;
     rejectStop?: boolean;
     rejectConfig?: boolean;
+    rejectPermissionConfig?: boolean;
     emitInterruptedOnStop?: boolean;
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
@@ -126,6 +129,7 @@ class FakeRuntime implements AgentRuntime {
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
     this.rejectConfig = options.rejectConfig === true;
+    this.rejectPermissionConfig = options.rejectPermissionConfig === true;
     this.emitInterruptedOnStop = options.emitInterruptedOnStop === true;
     this.emitSessionCompleteOnStop = options.emitSessionCompleteOnStop === true;
     this.deferStopBeforeResult = options.deferStopBeforeResult === true;
@@ -242,6 +246,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async startSession(options: SessionStartOptions, onEvent: UnifiedEventCallback): Promise<RuntimeProcess> {
+    this.effectivePermissionMode = options.permissionMode ?? '';
     this.startSessionInitialMessages.push(options.initialTurn?.message);
     this.startSessionResumeIds.push(options.resumeSessionId);
     this.startSessionHasHostDispatcher.push(Boolean(
@@ -289,6 +294,11 @@ class FakeRuntime implements AgentRuntime {
 
   async setModel(): Promise<void> {
     if (this.rejectConfig) throw new Error('fake config apply failed');
+  }
+
+  async setPermissionMode(_process: RuntimeProcess, mode: string | undefined): Promise<void> {
+    if (this.rejectPermissionConfig && mode === 'full-auto') throw new Error('Approve for me unsupported');
+    this.effectivePermissionMode = mode ?? '';
   }
 
   async respondPermission(
@@ -459,6 +469,7 @@ async function createHarness(
     unconfirmedDispatchStop?: boolean;
     unconfirmedStop?: boolean;
     rejectConfig?: boolean;
+    rejectPermissionConfig?: boolean;
     emitInterruptedOnStop?: boolean;
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
@@ -537,6 +548,7 @@ async function createHarness(
     rejectDispatchAck: options.unconfirmedDispatchStop,
     rejectStop: options.unconfirmedDispatchStop || options.unconfirmedStop,
     rejectConfig: options.rejectConfig,
+    rejectPermissionConfig: options.rejectPermissionConfig,
     emitInterruptedOnStop: options.emitInterruptedOnStop,
     emitSessionCompleteOnStop: options.emitSessionCompleteOnStop,
     deferRejectedSend: options.deferRejectedSend,
@@ -2206,6 +2218,27 @@ describe('external SessionEngine with fake runtime', () => {
     expect(new Date(terminalAt ?? 0).getTime()).toBeGreaterThanOrEqual(
       new Date(admittedAt ?? 0).getTime(),
     );
+  });
+
+  it('blocks queued dispatch when a next-turn permission change from Full Access is rejected', async () => {
+    const harness = await createHarness([], { rejectPermissionConfig: true });
+    const sessionId = 'session-next-turn-permission-reject';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.externalSession.prewarmExternalSession({
+      sessionId, workspacePath, scenario: { type: 'desktop' },
+    });
+    await harness.externalSession.setExternalPermissionMode('no-restrictions');
+    expect(harness.runtime.effectivePermissionMode).toBe('no-restrictions');
+    const request = desktopRequest(sessionId, workspacePath, 'must not run with old Full Access');
+    request.permissionMode = 'full-auto';
+    const result = await harness.engine.sendDesktopMessage(request);
+    expect(result).toMatchObject({ success: true, queued: true });
+    await expect(result.dispatchAcceptance).resolves.toEqual({
+      accepted: false, error: expect.stringContaining('Approve for me unsupported'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+    expect(harness.runtime.effectivePermissionMode).toBe('no-restrictions');
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages ?? []).toEqual([]);
   });
 
   it('does not advance activity when active-runtime config rejects before transport', async () => {

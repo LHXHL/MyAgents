@@ -3053,6 +3053,13 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
         }
 
+        // A Session Sidecar may publish only its own active snapshot. The
+        // Global surface remains available for unopened metadata management.
+        if (sidecarComposition.mode === 'production' && sidecarRole === 'session'
+          && sessionId !== getRuntimeSessionIdForRequest()) {
+          return jsonResponse({ success: false, error: 'Session does not belong to this Sidecar.' }, 409);
+        }
+
         // Snapshot fields (v0.1.69): send `null` to clear (revert to agent fallback);
         // omit a field to leave it unchanged.
         interface PatchPayload {

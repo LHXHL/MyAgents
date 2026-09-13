@@ -2311,7 +2311,9 @@ async function applyRuntimeConfigFieldAtBoundary(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[external-session] external-config ${mode} failed: field=${key} runtime=${active.runtime.type ?? getCurrentRuntimeType()} sessionId=${getExternalLifecycleSessionId() || '(none)'} error=${message}`);
-    if (mode === 'live_session_rpc' && (key === 'model' || key === 'permissionMode')) {
+    // Both native RPC and next-turn setters can reject unsupported policy.
+    // Never dispatch under the previous (possibly broader) permissions.
+    if (key === 'model' || key === 'permissionMode') {
       return `${key} ${mode} failed: ${message}`;
     }
     warnings.push(`${key} ${mode} failed: ${message}`);

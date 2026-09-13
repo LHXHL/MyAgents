@@ -2718,7 +2718,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       setSessionMeta(result.metadata);
       return;
     }
-    const updated = await patchSessionMetadata(sessionId, patch);
+    const updated = await patchSessionMetadata(sessionId, patch, { type: 'tab', id: tabId });
     if (!updated) {
       throw new Error(`Session ${sessionId} not found.`);
     }

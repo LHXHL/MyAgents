@@ -34,7 +34,7 @@ import {
   type RuntimeSource,
   type RuntimeType,
 } from '@/../shared/types/runtime';
-import { isPermissionModeForRuntimeIdentity } from '@/../shared/providerExecution';
+import { isPermissionModeForRuntimeIdentity, managedCodexProviderPermissionToRuntimePermission } from '@/../shared/providerExecution';
 import type { McpServerDefinition } from '@/config/types';
 import type { RuntimeConfig } from '@/../shared/types/runtime';
 import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
@@ -427,7 +427,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
   // Permission-mode options — runtime-specific. Each runtime defines its
   // own set of permission strings (builtin: auto/plan/fullAgency/custom;
   // CC: default/acceptEdits/bypassPermissions/plan/dontAsk/auto;
-  // Codex: suggest/auto-edit/full-auto/no-restrictions; Gemini:
+  // Codex: auto-edit/full-auto/no-restrictions (managed uses product projection); Gemini:
   // default/autoEdit/yolo/plan). Sourcing from the canonical
   // `getRuntimePermissionModes` registry means adding a new runtime's
   // perm modes only requires updating that one switch — the picker here
@@ -435,7 +435,18 @@ export function TaskAdvancedConfigEditor(props: Props) {
   const permissionOptions = useMemo(
     () => [
       { value: FOLLOW_VALUE, label: t('advanced.permissionFollow') },
-      ...getRuntimePermissionModes(effectiveRuntime)
+      ...(effectiveRuntime === 'codex' && effectiveRuntimeSource === 'managed-provider'
+        ? getRuntimePermissionModes('builtin').flatMap((m) => {
+          const value = managedCodexProviderPermissionToRuntimePermission(m.value);
+          return value ? [{
+            ...m, value,
+            label: t(`chat:input.permissionModes.${m.value}.label`, { defaultValue: m.label }),
+            description: m.value === 'auto'
+              ? t('chat:input.permissionModes.full-auto.description')
+              : t(`chat:input.permissionModes.${m.value}.description`, { defaultValue: m.description }),
+          }] : [];
+        })
+        : getRuntimePermissionModes(effectiveRuntime))
         .filter((m) => isPermissionModeForRuntimeIdentity(
           m.value,
           effectiveRuntime,
@@ -444,7 +455,7 @@ export function TaskAdvancedConfigEditor(props: Props) {
         .map((m) => ({
         value: m.value,
         label: m.description
-          ? `${m.label} · ${t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
+          ? `${m.label} · ${effectiveRuntimeSource === 'managed-provider' ? m.description : t(`advanced.permissionModes.${effectiveRuntime}.${m.value}`, { defaultValue: m.description })}`
           : m.label,
         })),
     ],
@@ -545,7 +556,10 @@ export function TaskAdvancedConfigEditor(props: Props) {
               value={permissionMode ?? FOLLOW_VALUE}
               options={permissionOptions}
               onChange={(v) => setPermissionMode(v ? v : undefined)}
-              placeholder={t('advanced.permissionPlaceholder')}
+              placeholder={effectiveRuntime === 'codex' && permissionMode === 'suggest'
+                ? `${t('chat:input.permissionModes.suggest.label')} · ${t('chat:input.permissionModes.suggest.description')}`
+                : t('advanced.permissionPlaceholder')}
+              ariaLabel={t('advanced.permissionLabel')}
               size="md"
             />
           </FieldRow>

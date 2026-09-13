@@ -627,9 +627,9 @@
       },
       "codex": {
         "suggest": "Run only trusted commands automatically; confirm the rest",
-        "auto-edit": "Edit files automatically and run commands in the sandbox",
-        "full-auto": "Act autonomously in the sandbox and ask as needed",
-        "no-restrictions": "Skip all approvals and sandbox restrictions"
+        "auto-edit": "Run in the workspace; ask before internet access or editing other files",
+        "full-auto": "Codex reviews approval requests; only potentially unsafe actions need confirmation",
+        "no-restrictions": "Access files and the internet without approval"
       }
     }
   },

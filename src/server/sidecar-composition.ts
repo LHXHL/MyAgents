@@ -202,8 +202,8 @@ function classifySessionsRoute(pathname: string, method: string): SidecarCapabil
     return method === 'GET' || method === 'POST' ? 'global' : null;
   }
   if (/^\/sessions\/[^/]+$/.test(pathname)) {
-    if (method === 'GET') return 'common';
-    if (method === 'PATCH' || method === 'DELETE') return 'global';
+    if (method === 'GET' || method === 'PATCH') return 'common';
+    if (method === 'DELETE') return 'global';
     return null;
   }
   if (/^\/sessions\/[^/]+\/(?:stats|since\/[^/]+)$/.test(pathname) && method === 'GET') {

@@ -37,7 +37,7 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],
     ['GET', '/sessions/session-1', 'common'],
-    ['PATCH', '/sessions/session-1', 'global'],
+    ['PATCH', '/sessions/session-1', 'common'],
     ['POST', '/chat/send', 'session'],
     ['POST', '/cron/execute-sync', 'session'],
     ['POST', '/goal/execute-sync', 'session'],
@@ -122,7 +122,7 @@ describe('Sidecar production composition', () => {
     ['session', 'POST', '/api/mcp/oauth/start'],
     ['session', 'POST', '/mcp/playwright'],
     ['session', 'POST', '/api/browser/session/retire'],
-    ['session', 'PATCH', '/sessions/session-1'],
+    ['session', 'DELETE', '/sessions/session-1'],
   ] as const)('%s rejects wrong-role %s %s before the real handler', async (role, method, path) => {
     const realHandler = vi.fn(async () => new Response('handled'));
     const handler = composeSidecarRequestHandler(
@@ -144,6 +144,8 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/mcp/playwright'],
     ['global', 'POST', '/api/browser/session/retire'],
     ['session', 'POST', '/chat/send'],
+    ['session', 'PATCH', '/sessions/session-1'],
+    ['global', 'PATCH', '/sessions/session-1'],
     ['session', 'POST', '/cron/execute-sync'],
     ['session', 'POST', '/goal/execute-sync'],
     ['session', 'POST', '/api/im/enqueue'],

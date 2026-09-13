@@ -1118,6 +1118,7 @@ describe('Codex app-server protocol helpers', () => {
       input: [{ type: 'text', text: 'hi' }],
       cwd: '/tmp/ws',
       approvalPolicy: 'never',
+      approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
       model: 'gpt-5.2-codex',
       summary: 'concise',
@@ -1378,6 +1379,7 @@ describe('Codex app-server protocol helpers', () => {
     })).toMatchObject({
       model: 'gpt-5.2-codex',
       approvalPolicy: 'never',
+      approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
       effort: 'xhigh',
     });

@@ -122,6 +122,21 @@ IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须�
 
 Codex 使用 JSON-RPC 2.0 app-server，一个进程在 Product Session 生命周期内持久存在。adapter 拥有 initialize、thread start/resume/read/fork、turn start/steer/interrupt、权限请求与订阅关联。
 
+权限 UI 与 native 参数按 runtime source 分流，保留历史持久化 ID：
+
+| Source / UI | 内部值 | approvalPolicy | sandbox | approvalsReviewer |
+|---|---|---|---|---|
+| managed 规划 | suggest | untrusted | read-only | user |
+| managed 行动 | auto-edit | on-request | workspace-write | auto_review |
+| managed 自主行动 | no-restrictions | never | danger-full-access | user |
+| system Ask for approval | auto-edit | on-request | workspace-write | user |
+| system Approve for me | full-auto | on-request | workspace-write | auto_review |
+| system Full Access | no-restrictions | never | danger-full-access | user |
+
+system 菜单只提供上述三项；历史 suggest 仍按只读恢复，并保留真实只读显示。auto_review 是原生审批 reviewer，不等于 never 或直接开放网络。start/resume 与每轮 turn/start 均显式传 reviewer，避免切回人工审批时沿用旧 reviewer；原生响应未启用请求的 auto_review 时明确报不支持，不能静默降级。
+
+现有 Process 保存该 generation 的 workspace sandbox：从原生 config/read 读取 network/额外 writable roots/tmp exclusions，再以 thread/start/resume 返回的 workspaceWrite 有效策略校准；从 Full Access 切回时仍使用该配置。只读规划保持旧网络限制。不得用 thread/resume 配置尚无 rollout 的预热 thread，也不得逐轮硬编码 networkAccess=false 覆盖原生配置。未获批 command/exec 代理探针受网络限制只表示需要审批，不能据此显示整个 Codex 不可用。MyAgents Host Tool 自有审批仍属于客户端 dispatcher，不因原生 auto_review 绕过。
+
 一个 Session Sidecar 最终只绑定一个 root thread。RPC response 和 notification 可乱序到达，turn owner 必须按 thread、turn 与 caller message identity 关联，不能仅凭“收到 completed”提交错误 turn。
 
 Codex Rewind/Fork 只在 runtime capability 和精确 root-turn anchor 同时可用时开放：

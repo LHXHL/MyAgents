@@ -148,19 +148,19 @@
       },
       "suggest": {
         "label": "Suggest",
-        "description": "Auto-run trusted commands; ask for everything else"
+        "description": "Read-only; auto-run trusted commands and ask for other operations"
       },
       "auto-edit": {
-        "label": "Auto-Edit",
-        "description": "Edit files automatically and run commands in the sandbox"
+        "label": "Ask for approval",
+        "description": "Run in the workspace; ask before internet access or editing other files"
       },
       "full-auto": {
-        "label": "Full Auto",
-        "description": "Run autonomously in the sandbox and ask when needed"
+        "label": "Approve for me",
+        "description": "Codex reviews approval requests; only potentially unsafe actions need confirmation"
       },
       "no-restrictions": {
-        "label": "No Restrictions",
-        "description": "Skip all approvals and sandbox restrictions"
+        "label": "Full Access",
+        "description": "Access files and the internet without approval"
       }
     },
     "slashCommands": {

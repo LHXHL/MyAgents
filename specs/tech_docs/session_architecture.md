@@ -62,6 +62,8 @@ backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未被 
 
 ### 3.1 配置快照
 
+已打开 Chat 的配置快照修改通过 `sessionSidecarFetch` 携带 Tab owner 调用 `PATCH /sessions/:id`，由对应 Session Sidecar 的 `SessionStore` 同时发布磁盘 metadata 并更新活动 V2 binding。不能经 Global Sidecar 保存后仅推送 runtime config：下一轮的 Session 快照会仍读到旧 binding，覆盖刚选的新配置。生产 Session Sidecar 只接受自身 Session ID 的 PATCH；未打开会话的标题、收藏等管理修改保留 Global 入口。
+
 `configSnapshotAt` 存在表示 Session 拥有自己的执行配置快照。此后缺失字段代表产品默认或未固定，不能重新回落到 Agent/Project 当前值。Agent/Project 配置只用于：
 
 - 新 Session 模板；

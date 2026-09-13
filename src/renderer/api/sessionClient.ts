@@ -344,18 +344,24 @@ export async function updateSession(
         providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
         providerEnvJson?: string | null;
         origin?: SessionOrigin | null;
-    }
+    },
+    owner?: { type: 'tab' | 'companion'; id: string },
 ): Promise<SessionMetadata | null> {
     // #305: throw on HTTP / JSON failure instead of returning null.
     // Pre-fix: catch-all → null → callers treated persistence failures as
     // "session not found" silently, and `persistInputOptionChange` swallowed
     // them as success. Now `patchSnapshot` rejects on real failure so the
     // toast warning "配置未能完全保存" actually fires for the user.
-    const result = await apiFetch(`/sessions/${sessionId}`, {
+    const options: RequestInit = {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
-    });
+    };
+    // Live configuration edits must update the same active transcript binding
+    // that supplies the next turn's snapshot. Global writes only update disk.
+    const result = owner
+        ? await sessionSidecarFetch(sessionId, owner, `/sessions/${sessionId}`, options)
+        : await apiFetch(`/sessions/${sessionId}`, options);
     if (!result.ok) {
         // 404 ("Session not found") is the one legitimate null — race where
         // the session was deleted out from under us. Other status codes are
