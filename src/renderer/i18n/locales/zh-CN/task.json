@@ -140,6 +140,7 @@
     "transcriptFailedTimeoutHint": "本地转写处理超时。请减少其他运行中的任务后重试。",
     "transcriptFailedInferenceHint": "本地语音处理失败。可重试；若持续失败，请检查语音识别工具并反馈错误码。",
     "transcriptFailureDetails": "错误详情",
+    "rerunTranscription": "重新转写",
     "retryTranscription": "重新转录",
     "transcriptPending": "音频已保存，正在处理转写",
     "transcriptEmpty": "尚无转写内容",

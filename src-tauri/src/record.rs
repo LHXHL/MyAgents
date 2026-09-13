@@ -8161,15 +8161,14 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         );
+        assert_eq!(discussion_context.audio_sources.len(), 1);
+        let audio_source = &discussion_context.audio_sources[0];
+        assert_eq!(audio_source.track, AudioTrackKind::Microphone);
+        // The media resolver preserves the configured root spelling. macOS
+        // /var and /private/var can name the same file without equal strings.
         assert_eq!(
-            discussion_context.audio_sources,
-            vec![RecordDiscussionAudioSource {
-                track: AudioTrackKind::Microphone,
-                path: fs::canonicalize(root.join("audio/microphone.opus"))
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned(),
-            }]
+            fs::canonicalize(&audio_source.path).unwrap(),
+            fs::canonicalize(root.join("audio/microphone.opus")).unwrap()
         );
         let provenance = RecordSpeechProvenance {
             algorithm_revision: None,

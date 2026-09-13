@@ -12,6 +12,7 @@ import {
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Square,
   Trash2,
   Volume2,
@@ -1673,6 +1674,20 @@ export default function RecordDetail({
         ],
       },
       {
+        // Existing results remain readable while the Manager processes a new
+        // candidate. Their presence must not hide the explicit rerun entrance.
+        items: transcript && !ownsCaptureSlot && !completedTranscriptionFailed
+          ? [{
+              icon: <RotateCcw className="h-3.5 w-3.5" />,
+              label: t('records.rerunTranscription'),
+              onClick: () => void handleStartTranscription(),
+              disabled: !modelPack?.usable || transcriptionStatus !== 'ready'
+                || record?.audio?.diarizationStatus === 'queued'
+                || record?.audio?.diarizationStatus === 'running',
+            }]
+          : [],
+      },
+      {
         items: tracks.map((track) => ({
           icon: <Download className="h-3.5 w-3.5" />,
           label: t('records.exportAudioTrack', {
@@ -1724,6 +1739,11 @@ export default function RecordDetail({
     ],
     [
       canDiscuss,
+      completedTranscriptionFailed,
+      handleStartTranscription,
+      modelPack?.usable,
+      transcript,
+      transcriptionStatus,
       handleArchive,
       handleExportAudio,
       handleExportText,

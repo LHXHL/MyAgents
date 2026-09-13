@@ -140,6 +140,7 @@
     "transcriptFailedTimeoutHint": "Local transcription timed out. Reduce other running tasks, then retry.",
     "transcriptFailedInferenceHint": "Local speech processing failed. Retry; if it persists, check the speech recognition tool and report the error code.",
     "transcriptFailureDetails": "Error details",
+    "rerunTranscription": "Transcribe again",
     "retryTranscription": "Retry transcription",
     "transcriptPending": "Audio is saved. Transcript processing is in progress.",
     "transcriptEmpty": "No transcript yet",
