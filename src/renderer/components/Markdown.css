@@ -450,3 +450,26 @@
   .md-editor-host .md-projection-Table:not(.md-projection-nested) > .md-table-shell > .markdown-table-actions { right:-36px; }
 }
 @media (hover:none) { .markdown-table-actions { opacity:1; pointer-events:auto; } }
+
+/* Short cells contribute their natural text width; long cells stop shrinking at
+   16em. The hidden probe changes min-content only, leaving room to grow wider. */
+.markdown-table, .md-table-shell { --markdown-table-readable-width:16em; }
+[data-table-sizing]::before {
+  content:attr(data-table-sizing);
+  display:block;
+  inline-size:max-content;
+  max-inline-size:var(--markdown-table-readable-width);
+  block-size:0;
+  overflow:hidden;
+  white-space:pre;
+  visibility:hidden;
+  user-select:none;
+  pointer-events:none;
+}
+.markdown-table-cell, .markdown-table-header,
+.md-table-shell td, .md-table-shell th,
+.md-table-shell .markdown-content { overflow-wrap:anywhere; }
+.markdown-table-scroll, .md-table-scroll {
+  scrollbar-width:thin;
+  scrollbar-color:var(--line-strong) transparent;
+}

@@ -15,6 +15,15 @@ const codeBlockSource = readFileSync(
 );
 
 describe("Markdown typography contract", () => {
+  it("contributes content widths for short IDs, line breaks and long Chinese cells", () => {
+    const { container } = render(<Markdown raw>{"| 编号 | 成员 | 描述 |\n| --- | --- | --- |\n| 01 | 张明<br>产品经理 | 完成需求分析并整理用户反馈和功能优先级 |"}</Markdown>);
+    const cells = container.querySelectorAll("tbody td");
+    expect([...cells].map(cell => cell.getAttribute("data-table-sizing"))).toEqual([
+      "01", "张明\n产品经理", "完成需求分析并整理用户反馈和功能优先级",
+    ]);
+    expect(cells[0].textContent).toBe("01");
+    expect(cells[1].querySelectorAll("br")).toHaveLength(1);
+  });
   it("uses one default rhythm for normal chat and document rendering", () => {
     const { container } = render(
       <Markdown raw>

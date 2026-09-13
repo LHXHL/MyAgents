@@ -40,7 +40,7 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 
 阅读角色与共享Markdown一致：正文500、标题/强调600；CM语法高亮也消费同一字重token。mini cell使用所在th/td的字体角色，避免进入编辑时回退normal；代码、整篇/局部源码明确保持normal。mark/kbd投影直接服从共享Markdown样式。列表标记由语法祖先深度决定，widget equality包含深度以支持缩进变化；只改变装饰，不改写源码空白。标题行高消费现有Type Scale，源码空行保持原编辑语义，不把阅读段落margin施加到每一cm-line。
 
-整表复制/下载复用阅读表格的 TableActions、剪贴板及下载 transport。动作经 CompositionGate 等待已开始的输入完成，然后只读当前 CM 文档；按源位置用共享 Markdown pipeline 定位对应表格，避免虚拟 DOM 或尚未完成的增量语法树截断导出行，并保留文档级引用定义。解析仅在显式导出时发生，不进入逐键/逐帧渲染。宽表使用面板 container 的可用宽度与表格自然列宽；嵌套由语法祖先判定（包括列表续段），表格不越出引用/列表边界。
+整表复制/下载复用阅读表格的 TableActions、剪贴板及下载 transport。动作经 CompositionGate 等待已开始的输入完成，然后只读当前 CM 文档；按源位置用共享 Markdown pipeline 定位对应表格，避免虚拟 DOM 或尚未完成的增量语法树截断导出行，并保留文档级引用定义。解析仅在显式导出时发生，不进入逐键/逐帧渲染。宽表使用面板 container 的可用宽度与表格自然列宽；阅读和编辑共用局部 `useTableIntrinsicSizing`，将已挂载单元格的呈现文本映射为不可见、零高度的 CSS 宽度探针。探针自然宽度以16em封顶，只贡献最小内容宽度，不限制宽屏展开，也不进入复制/下载数据；DOM内容变化才更新，不读取几何或扫描全文。虚拟行只在挂载时参与布局，不提供离屏列宽索引；mini编辑与只读内容遵循同一规则，取消固定96px列宽；嵌套由语法祖先判定（包括列表续段），表格不越出引用/列表边界。
 
 查找仍以 CM SearchQuery / Panel 为 authority，`EditorSearchPanel` 仅把 panel 当前 query/readOnly 投影进 React portal；修改查询、前后导航、多选和替换调用原生 CM effect/command，替换进入同一父文档 history。主 CM 开启多选及原生 drawSelection，避免“选择全部匹配”被归一化为单选。快捷键使用 search-panel scope；选择工具栏不包含查找。面板占用顶部布局槽并靠右，避免覆盖正文；进阶选项/替换复用 Popover，实际 portal DOM 挂载时移动焦点，Escape 先关闭选项并返回触发按钮，再关闭查找。
 

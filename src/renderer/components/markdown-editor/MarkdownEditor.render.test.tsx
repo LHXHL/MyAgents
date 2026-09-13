@@ -55,4 +55,14 @@ describe('live projections through the real sanitized Markdown pipeline', () => 
     await waitFor(() => expect(container.querySelector('.md-projection-Table')?.classList.contains('md-projection-nested')).toBe(false));
   });
 
+  it('sizes a footnoted short cell from its visible reference, excluding hidden definition bodies', async () => {
+    const source = '| 编号 | 状态 |\n| --- | --- |\n| 01[^a] | 好 |\n\n[^a]: 很长的脚注说明不应该把编号列撑成宽列';
+    const ref = createRef<MarkdownEditorHandle>();
+    const { container } = render(<MarkdownEditor ref={ref} path="footnote.md" initialSource={source} sourceMode={false} allowImages={false} onChange={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('td .footnotes')).not.toBeNull());
+    const cell = container.querySelector('td[data-md-column="0"]')!;
+    await waitFor(() => expect(cell.getAttribute('data-table-sizing')).toBe('011'));
+    expect(ref.current?.getSource()).toBe(source);
+  });
+
 });
