@@ -41,11 +41,11 @@ SDK 的 `sessionId` 与 `resume` 互斥。`resumeSessionAt` 只是在已选定�
 
 ### 2.2 pending materialization
 
-`pending-{tabId}` 是尚未实体化的新 Tab identity。首个被 Runtime 接纳的 turn 才把它迁移为真实 Product Session。
+`pending-{tabId}` 是尚未实体化的新 Tab identity。普通惰性出生在首个被 Runtime 接纳的 turn 时实体化；显式桌面出生可在首轮前完成 prepare → owner rekey → commit，绑定真实 Product Session。已提交的空 V2 Session 仍是有效会话，不能按 legacy 空草稿规则隐藏。
 
-迁移由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内线性化：metadata 发布、已有 transcript 的重命名以及失败回滚必须表现为一次 identity 迁移，不能产生两个可继续分叉的会话。
+identity 迁移由既有 Session binding owner 裁决，不能产生两个可继续分叉的会话。V2 的 binding CAS 修改当前内存 metadata，保存由 TranscriptWriter 后台完成；legacy 路径由 `SessionStore` 在 source/target transcript 锁与 sessions index 锁内完成 metadata 发布、已有 transcript 重命名及失败回滚。
 
-backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未被 Runtime 接纳的 metadata。turn admission 与 rollback 通过同一存储层 CAS 竞争；admission 赢后发布 Session，rollback 赢后该 turn 必须在发布 accepted 之前失败。
+backend-created draft 使用 `materializationState: 'prepared'` 隐藏尚未提交的 metadata。所属出生事务 commit 或首轮 admission 与 rollback 经同一 binding/CAS 入口裁决；commit/admission 赢后清除 prepared，rollback 赢后不得继续发布 accepted。逻辑绑定成功不等同于 V2 已写盘，保存状态独立报告。
 
 ### 2.3 删除
 
@@ -195,7 +195,7 @@ V2 的 live projection 与异步 writer 同属 SessionStore。约 100 ms 的持�
 
 Rust 按 `(sidecar key, generation)` 把控制请求和 SSE 代理到当前进程。每次实际 replacement 都产生新 generation；旧 generation 的 response、terminal、activity 和 notification claim 必须丢弃。
 
-REST 是冷启动和重连后的 Session snapshot authority，SSE 只提供 snapshot 之后的增量事件。前端先读取历史与当前状态，再按 revision 接收 live event；不能把断线期间缺失的 SSE 当成历史不存在。
+已恢复历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量，并拒绝 cold-history replay 覆盖该 baseline。尚未采用 REST baseline 的 SSE-native 新生会话，可在重连时采用有序 cold-history snapshot 修复遗漏的正文与创建事件；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
 
 SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继续执行并持久化；只有显式 Stop、Session lifecycle 命令、Runtime terminal 或 Sidecar termination 能改变执行状态。
 
