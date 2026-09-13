@@ -547,7 +547,7 @@ test('every setup, dev, and release entry point delegates native resources to on
   );
   assert.match(
     packageJson.scripts['tauri:dev'],
-    /^npm run prepare:native-inference && tauri dev$/,
+    /^node scripts\/prepare-cliproxy\.mjs && npm run prepare:native-inference && tauri dev$/,
   );
   assert.match(nativeResourceScript, /prepare-document-processing\.mjs/);
   assert.match(nativeResourceScript, /prepare-speech-inference\.mjs/);
@@ -738,4 +738,15 @@ test('all native build entrypoints prepare Cuse for the explicit target', () => 
     assert.match(source, /codesign --force --options runtime --timestamp --sign "\$APPLE_SIGNING_IDENTITY" "\$\{PROJECT_DIR\}\/bundled-skills\/cuse\/scripts\/cuse"/);
   }
   assert.equal(tauriConfig.bundle.resources['../bundled-skills'], 'bundled-skills');
+});
+
+
+test('setup, local builds and CI share signed CLIProxy preparation without a publication cache', () => {
+  for (const name of ['setup.sh', 'setup_windows.ps1', 'build_dev.sh', 'build_dev_win.ps1', 'build_macos.sh', 'build_windows.ps1', '.github/workflows/test.yml']) {
+    const text = readFileSync(resolve(repoRoot, name), 'utf8');
+    assert.match(text, /scripts[\\/]prepare-cliproxy\.mjs/, name);
+    assert.doesNotMatch(text, /package-cliproxy-component\.mjs["']? stage|cliproxy-cache[\\/]distribution/, name);
+  }
+  assert.match(speechResourceScript, /-DBUILD_TESTING=\$\{speechNativeTestPlan\(target\)\.buildTesting\}/);
+  assert.match(speechResourceScript, /runSpeechNativeTests\(\{ target, buildDir: adapterBuild/);
 });

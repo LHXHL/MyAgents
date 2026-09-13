@@ -75,9 +75,7 @@ echo -e "${GREEN}✓ 原生推理构建依赖检查完成${NC}"
 echo ""
 CLIPROXY_HOST_PLATFORM="darwin-x64"
 if [[ "$DEV_NATIVE_TARGET" == "aarch64-apple-darwin" ]]; then CLIPROXY_HOST_PLATFORM="darwin-arm64"; fi
-node "${PROJECT_DIR}/scripts/package-cliproxy-component.mjs" stage \
-    --from "${MYAGENTS_CLIPROXY_DISTRIBUTION_DIR:-${PROJECT_DIR}/src-tauri/resources/cliproxy-cache/distribution}" \
-    --platform "$CLIPROXY_HOST_PLATFORM"
+node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs" "$CLIPROXY_HOST_PLATFORM"
 
 # 杀死残留 MyAgents 实例（避免生产版和 debug 版同时运行互相打架）
 # 优先使用 PID lock file 精确杀——只杀 MyAgents 主进程，不误杀其他 node 进程。

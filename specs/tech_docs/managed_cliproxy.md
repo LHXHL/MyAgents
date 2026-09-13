@@ -114,7 +114,9 @@ Rust 构建与运行时共用 `src-tauri/src/cliproxy_policy.rs` 的门槛选择
 
 只按正常流程更新 App 版本与代码。**不修改 minAppVersion，不重签 CLIProxy 清单，不重打 CLIProxy ZIP，也不修改组件 source lock。**
 
-构建使用 `MYAGENTS_CLIPROXY_DISTRIBUTION_DIR`，未设置时使用 `src-tauri/resources/cliproxy-cache/distribution`。该目录持有已签名清单和随包平台 ZIP。`build_dev.sh`、macOS/Windows 正式构建脚本都会先 stage；Rust build.rs 再检查同一签名信任根、锁定的 source、平台、最低 App 版本、大小和摘要。
+setup、开发构建、macOS/Windows 正式构建、直接 `npm run tauri:dev` 与 CI 统一调用 `scripts/prepare-cliproxy.mjs [platform]`。默认读取仓库 `.github/cliproxy/` 的签名快照，按 source lock 下载 immutable ZIP，校验大小/SHA-256 后写入 `src-tauri/resources/cliproxy-cache/artifacts/<digest>.zip`，再投影到 `resources/cliproxy`。完整缓存可离线复用，损坏缓存重新获取；无需本机发布目录、私钥或 minisign。Rust build.rs 仍检查同一签名信任根、锁定的 source、平台、最低 App 版本、大小和摘要。
+
+只有明确设置 `MYAGENTS_CLIPROXY_DISTRIBUTION_DIR` 时才使用指定的本地签名清单及平台 ZIP；这是离线/组件发布验收入口，缺失或损坏直接报错，不自动改用网络资源。普通客户端构建不读取线上 latest 清单，不受组件线上策略后续变动影响。Linux 没有 CLIProxy 平台产物，遵从 Rust 的平台门槛，不下载该组件。
 
 支持目标缺少资源时构建失败。Windows 的 compile CI 和 macOS 组件测试从 `.github/cliproxy/` 的已签名快照获取 immutable 资源，不需要私钥。快照仅在随包组件或资源策略需要更新时调整，不跟随每次 App 升版。
 
@@ -190,16 +192,15 @@ node scripts/publish-cliproxy-component.mjs /tmp/cliproxy-update/distribution --
 
 脚本核对线上当前策略不会被回退或丢失，上传本地新增 immutable ZIP，验证全部引用的线上 bytes，再更新清单及签名。配置了 `CF_ZONE_ID` 与 `CF_API_TOKEN` 则清 CDN 缓存；最后必须确认公开清单、签名和预期内容一致。命令失败不能宣称已发布；保留输出目录与日志定位具体阶段，不直接重打同版本 ZIP。
 
-如需更新随包基线，将完整签名清单与所需 ZIP 放入本机默认 distribution，执行 stage/build，并把同一清单及签名复制到 `.github/cliproxy/`。只发布线上更新时不用改这些客户端构建输入。
+如需更新随包基线，先确保 immutable ZIP 已在线发布，再更新 source lock，并把完整签名清单及签名复制到 `.github/cliproxy/`；普通 prepare/build 会自行下载对应产物。尚未发布的本地组件验收可以显式指定 distribution。只发布线上更新时不用改这些客户端构建输入。
 
 ```sh
-node scripts/package-cliproxy-component.mjs stage --from /path/to/distribution --platform darwin-arm64
-./build_dev.sh --build-only
+MYAGENTS_CLIPROXY_DISTRIBUTION_DIR=/path/to/distribution ./build_dev.sh --build-only
 ```
 
 ## 验证与维护
 
-- `node --test scripts/package-cliproxy-component.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
+- `node --test scripts/package-cliproxy-component.test.mjs scripts/prepare-cliproxy.test.mjs`：门槛选择、同门槛替换、保留旧门槛、未来 App/SDK 升版复用资源、发布完整性与 CI 下载。
 - Rust `cliproxy::` 测试：签名原文、固定 Installed 条目、资源保存、账号及进程生命周期；无账号/公网依赖。平台相关 fixture 在受支持的 macOS 执行，Linux 保留纯策略/文件合同测试。
 - `verify-cliproxy-contract.mjs` 和 ignored `native_process_management_contract`：显式使用已核验的原版程序做真实进程/管理接口检查，不登录账号。
 - `npm run verify:cliproxy:sdk-local`：真实已安装 SDK + 本地模拟服务，检查 loopback、子 Agent 模型选择，不访问 Google。

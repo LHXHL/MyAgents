@@ -112,7 +112,7 @@ jobs:
         with:
           node-version: 24
       - name: Prepare signed CLIProxy build inputs
-        run: node scripts/prepare-cliproxy-ci.mjs win32-x64
+        run: node scripts/prepare-cliproxy.mjs win32-x64
       - name: Verify selective Sherpa source extraction on Windows
         run: node --test scripts/sherpa-source-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.92.0
@@ -165,7 +165,7 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Prepare signed CLIProxy build inputs
-        run: node scripts/prepare-cliproxy-ci.mjs
+        run: node scripts/prepare-cliproxy.mjs
       - name: Prepare non-executed Tauri resource paths
         run: |
           mkdir -p src-tauri/resources/{claude-agent-sdk,sharp-runtime,tsx-runtime,nodejs,speech-inference,cli,document-processing}

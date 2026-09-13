@@ -334,6 +334,9 @@ try {
     Pop-Location
     Write-Host "OK - Rust 依赖下载完成" -ForegroundColor Green
 
+    & node "$ProjectDir\scripts\prepare-cliproxy.mjs" win32-x64
+    if ($LASTEXITCODE -ne 0) { throw "CLIProxy 内置资源准备失败" }
+
     Write-Host "`nStep 7.5/8: 准备离线文档与语音推理资源" -ForegroundColor Blue
     & node "$ProjectDir\scripts\prepare-native-inference.mjs" "x86_64-pc-windows-msvc"
     if ($LASTEXITCODE -ne 0) {

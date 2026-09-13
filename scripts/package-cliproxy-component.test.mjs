@@ -5,7 +5,7 @@ import test from 'node:test';
 import { checkArchive, validateApproval } from './package-cliproxy-component.mjs';
 import { assertPublicationRevision, publicationPlan } from './publish-cliproxy-component.mjs';
 import { compareVersions, selectRelease, selectBundledRelease, mergeReleases } from './cliproxy-release-policy.mjs';
-import { ciArtifact, fetchArtifact } from './prepare-cliproxy-ci.mjs';
+import { bundledArtifact, fetchArtifact } from './prepare-cliproxy.mjs';
 
 const source = JSON.parse(readFileSync(new URL('../src/shared/managed-cliproxy-source.json', import.meta.url)));
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
@@ -86,7 +86,7 @@ test('App and SDK bumps reuse the signed bundle while online selection remains i
   const manifest = JSON.parse(readFileSync(new URL('../.github/cliproxy/manifest-v1.json', import.meta.url)));
   for (const app of ['0.4.17', '0.4.18', '0.4.99']) {
     const future = { ...pkg, version: app, dependencies: { '@anthropic-ai/claude-agent-sdk': '99.0.0' } };
-    for (const platform of Object.keys(source.platforms)) assert.equal(ciArtifact(manifest, source, future, platform).sourceSha256, source.platforms[platform].sha256);
+    for (const platform of Object.keys(source.platforms)) assert.equal(bundledArtifact(manifest, source, future, platform).sourceSha256, source.platforms[platform].sha256);
   }
 });
 test('publication retains existing thresholds and immutable version bytes', () => {

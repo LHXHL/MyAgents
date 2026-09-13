@@ -19,6 +19,8 @@ import {
 import {
   MINIMUM_SPEECH_CMAKE_VERSION,
   speechBuildPrerequisiteFailures,
+  speechNativeTestPlan,
+  runSpeechNativeTests,
 } from './prepare-speech-inference.mjs';
 
 function git(cwd, args) {
@@ -176,3 +178,28 @@ test('managed ORT source cache recovers interrupted Git states without refetchin
   assert.equal(git(cache, ['rev-parse', '--verify', 'HEAD']), lockedCommit);
   assert.equal(git(cache, ['remote', 'get-url', 'origin']), upstreamBare);
 });
+
+// A target that can be compiled need not be executable on the build host.
+for (const [host, target, runs] of [
+  ['aarch64-apple-darwin', 'aarch64-apple-darwin', true],
+  ['aarch64-apple-darwin', 'x86_64-apple-darwin', false],
+  ['x86_64-apple-darwin', 'aarch64-apple-darwin', false],
+  ['x86_64-pc-windows-msvc', 'x86_64-pc-windows-msvc', true],
+  ['x86_64-unknown-linux-gnu', 'x86_64-unknown-linux-gnu', true],
+]) {
+  test(`speech native test execution ${host} -> ${target}`, () => {
+    const plan = speechNativeTestPlan(target, host);
+    assert.equal(plan.buildTesting, runs ? 'ON' : 'OFF');
+    const calls = [];
+    const result = runSpeechNativeTests({ target, hostTarget: host, buildDir: 'build with spaces', env: {} },
+      (...args) => calls.push(args));
+    assert.equal(result, runs ? 'passed' : 'not-run-cross-target');
+    assert.equal(calls.length, runs ? 1 : 0);
+    if (runs) {
+      assert.equal(calls[0][0], 'ctest');
+      assert.equal(calls[0][1][1], 'build with spaces');
+      assert.throws(() => runSpeechNativeTests({ target, hostTarget: host, buildDir: 'b', env: {} },
+        () => { throw new Error('test assertion failed'); }), /test assertion failed/);
+    }
+  });
+}

@@ -192,12 +192,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-ColorOutput "✓ Node.js 项目依赖已就绪" "Green"
-if ($env:MYAGENTS_CLIPROXY_DISTRIBUTION_DIR) {
-    $cliproxyDistribution = $env:MYAGENTS_CLIPROXY_DISTRIBUTION_DIR
-} else {
-    $cliproxyDistribution = "$PROJECT_DIR\src-tauri\resources\cliproxy-cache\distribution"
-}
-& node "$PROJECT_DIR\scripts\package-cliproxy-component.mjs" stage --from "$cliproxyDistribution" --platform win32-x64
+& node "$PROJECT_DIR\scripts\prepare-cliproxy.mjs" win32-x64
 if ($LASTEXITCODE -ne 0) { throw "Approved CLIProxy bundle staging failed" }
 Write-Host ""
 
