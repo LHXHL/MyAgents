@@ -100,6 +100,7 @@ echo ""
 # 准备 host target 的离线文档与语音推理资源。setup 完成后用户可直接运行
 # `npm run tauri:dev`；prepare owner 自带 fingerprint，重复 setup 为 no-op。
 echo -e "${BLUE}[6/6] 准备离线文档与语音推理资源${NC}"
+node "${PROJECT_DIR}/scripts/prepare-cliproxy.mjs"
 node "${PROJECT_DIR}/scripts/prepare-native-inference.mjs"
 echo -e "${GREEN}✓ 原生推理资源 ready${NC}"
 echo ""

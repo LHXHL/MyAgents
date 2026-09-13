@@ -467,3 +467,10 @@ npx tauri signer generate -w ~/.tauri/myagents.key
 ### Cuse 桌面操作 Skill
 
 Mac 正式/开发构建会按目标拉取并校验 Cuse 完整 Skill+CLI，再对 CLI 使用客户端身份签名。Windows 构建使用独立 Windows 包。资源随 App 更新，全局关闭状态保留；协议、低层构建准备命令和校验规则见 [Cuse bundle](../tech_docs/cuse_bundle.md)。
+
+
+### 原生资源的构建与测试架构
+
+CLIProxy 的 setup、开发/发布构建和 CI 共用 `scripts/prepare-cliproxy.mjs`，默认消费仓库签名快照并自动下载锁定资源，完整摘要缓存可离线使用；不要求开发者生成发布清单或持有组件签名密钥。组件更新及显式本地 distribution 用法见 [CLIProxy 操作手册](../tech_docs/managed_cliproxy.md)。
+
+Speech 的 adapter 按目标架构编译。本机 target 冷构建启用 `BUILD_TESTING=ON` 并执行 CTest，任一测试失败即中止；跨架构构建使用 `BUILD_TESTING=OFF`，输出 `NOT RUN` 及目标/宿主，不尝试执行目标二进制，不要求 Rosetta 或模拟器。比如 Apple Silicon 上 Both 的 Intel 阶段只做目标编译/链接/资源校验，其运行测试应在 Intel 环境完成；跨编译成功不等于 Intel 运行验证通过。命中完整 prepared cache 时沿既有规则直接复用产物，并不重复声明测试通过。

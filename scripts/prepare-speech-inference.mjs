@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import {
   acquireLockedResource,
   computeBuildFingerprint,
+  hostDocumentTarget,
   sha256File,
 } from './document-processing-resource-cache.mjs';
 import {
@@ -394,6 +395,24 @@ function publishPreparedBundle(source, expectedBundle) {
   return true;
 }
 
+// Build and execution hosts are different facts. Cross packaging must not
+// require Rosetta/emulators; target-native CI owns execution of those tests.
+// Required context: specs/guides/build_and_release_guide.md (native resources).
+export function speechNativeTestPlan(target, hostTarget = hostDocumentTarget()) {
+  return { buildTesting: target === hostTarget ? 'ON' : 'OFF' };
+}
+
+export function runSpeechNativeTests({ target, buildDir, env, hostTarget = hostDocumentTarget() }, execute = execFileSync) {
+  if (speechNativeTestPlan(target, hostTarget).buildTesting === 'OFF') {
+    console.log(`Speech native tests NOT RUN: cross-compiling ${target} on ${hostTarget}; run tests on the target architecture.`);
+    return 'not-run-cross-target';
+  }
+  execute('ctest', ['--test-dir', buildDir, '--build-config', 'Release', '--output-on-failure'], {
+    stdio: 'inherit', env,
+  });
+  return 'passed';
+}
+
 function configurePlatformArgs() {
   if (targetLock.platform === 'macos') {
     return [
@@ -731,6 +750,7 @@ export async function prepareSpeechInference(options, documentResult) {
         '-B',
         adapterBuild,
         '-DCMAKE_BUILD_TYPE=Release',
+        `-DBUILD_TESTING=${speechNativeTestPlan(target).buildTesting}`,
         `-DMYAGENTS_SHERPA_INCLUDE_DIR=${sherpaSource}`,
         `-DMYAGENTS_SHERPA_LIBRARY=${sherpaLinkLibrary}`,
         `-DMYAGENTS_HCLUST_INCLUDE_DIR=${hclustIncludeRoot}`,
@@ -745,8 +765,7 @@ export async function prepareSpeechInference(options, documentResult) {
     );
     const nativeTestLibraryVariable = targetLock.platform === 'windows' ? 'PATH'
       : targetLock.platform === 'macos' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
-    execFileSync('ctest', ['--test-dir', adapterBuild, '--build-config', 'Release', '--output-on-failure'], {
-      stdio: 'inherit',
+    runSpeechNativeTests({ target, buildDir: adapterBuild,
       env: {
         ...process.env,
         [nativeTestLibraryVariable]: [adapterBuild, dirname(sherpaLibrary), ortLibraryRoot,
