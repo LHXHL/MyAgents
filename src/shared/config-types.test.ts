@@ -118,7 +118,6 @@ describe('normalizeProviderOrder', () => {
       SUBSCRIPTION_PROVIDER_ID,
       CODEX_SUBSCRIPTION_PROVIDER_ID,
       XAI_SUBSCRIPTION_PROVIDER_ID,
-      ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
     expect(normalizeProviderOrder(
@@ -561,6 +560,7 @@ describe('Managed Codex provider readiness', () => {
       SUBSCRIPTION_PROVIDER_ID,
       CODEX_SUBSCRIPTION_PROVIDER_ID,
       XAI_SUBSCRIPTION_PROVIDER_ID,
+      ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
   });
