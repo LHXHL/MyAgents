@@ -279,6 +279,49 @@ describe('SSE event priority registration', () => {
 });
 
 describe('SSE unified-log policy', () => {
+  it('delivers every transcript operation and save status without per-packet logging', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { client, response } = createSseClient(() => undefined);
+    const reader = response.body!.getReader();
+    try {
+      let revision = 0;
+      const scope = { sessionId: 'synthetic-session', nextRevision: () => ++revision };
+      const expected: Array<{ event: string; data: unknown }> = [];
+      const emit = (event: string, payload: unknown) => {
+        broadcastLive(event, payload, scope);
+        expected.push({ event, data: { sessionId: scope.sessionId, liveRevision: revision, payload } });
+      };
+      for (let i = 0; i < 40; i++) {
+        emit('chat:transcript-operation', {
+          operation: { kind: 'text-append', messageId: 'm1', field: 'text', text: 'x', offset: i },
+        });
+        emit('chat:transcript-save-status', { state: 'healthy', liveRevision: i + 1 });
+      }
+      emit('chat:message-error', { message: 'synthetic error' });
+      emit('chat:message-stopped', null);
+      emit('chat:message-complete', { output_tokens: 40 });
+      client.close();
+      const raw = await drain(reader);
+      const events = raw.split('\n\n').flatMap(frame => {
+        const event = /^event: (.+)$/m.exec(frame)?.[1];
+        const data = /^data: (.+)$/m.exec(frame)?.[1];
+        return event && data ? [{ event, data: JSON.parse(data) }] : [];
+      });
+      expect(events.filter(({ event }) => expected.some(item => item.event === event))).toEqual(expected);
+      expect(SSE_EVENT_PRIORITIES['chat:transcript-operation']).toBe('critical');
+      expect(SSE_EVENT_PRIORITIES['chat:transcript-save-status']).toBe('critical');
+      const messages = log.mock.calls.map(args => args.join(' '));
+      expect(messages.some(message => message.includes('[sse] chat:transcript-'))).toBe(false);
+      for (const event of ['chat:message-error', 'chat:message-stopped', 'chat:message-complete']) {
+        expect(messages.filter(message => message.includes(`[sse] ${event} ->`))).toHaveLength(1);
+      }
+    } finally {
+      client.close();
+      reader.releaseLock();
+      log.mockRestore();
+    }
+  });
+
   it('keeps every streaming delta silent and logs only the terminal event', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
