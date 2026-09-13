@@ -42,6 +42,14 @@
   --transition-duration-300: var(--duration-slow);
 }
 
+/* Markdown lives in a separately loaded stylesheet. Keep its reading roles
+   emitted even when Tailwind cannot discover their use in a utility class. */
+@theme static {
+  --font-weight-prose: 500;
+  --font-weight-emphasis: 600;
+  --font-weight-normal: 400;
+}
+
 /* Product Type Scale; Theme-owned values stay in the registered Theme package. */
 @theme {
   /* Type Scale — 单一真相源（PRD 0.2.34 Part 1-3，档位职责见 DESIGN.md §3.3）。

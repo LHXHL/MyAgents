@@ -214,12 +214,12 @@ const TableRowComponent: Components['tr'] = ({ children }) => (
 // 表格 = text-sm(14px)：嵌在 16px 正文里的密集内容比正文低一档（13px 会造成
 // 肉眼可见跳变，PRD 0.2.34 P0-1 定为 14）。v2.5 起 ui 档本身就是 14px，原 dense
 // 专用档（text-md）与其 lint 白名单机制已随 Part 3 合并删除。
-const TableCellComponent: Components['td'] = ({ children }) => (
-  <td className="markdown-table-cell">{children}</td>
+const TableCellComponent: Components['td'] = ({ children, node: _node, ...props }) => (
+  <td {...props} className="markdown-table-cell">{children}</td>
 );
 
-const TableHeaderComponent: Components['th'] = ({ children }) => (
-  <th className="markdown-table-header">
+const TableHeaderComponent: Components['th'] = ({ children, node: _node, ...props }) => (
+  <th {...props} className="markdown-table-header">
     {children}
   </th>
 );
@@ -232,38 +232,38 @@ const BlockquoteComponent: Components['blockquote'] = ({ children }) => (
 );
 
 // Custom heading components - H1:22px H2:20px H3:18px H4-H6:16px
-const H1Component: Components['h1'] = ({ children }) => (
-  <h1 className="markdown-heading markdown-h1">
+const H1Component: Components['h1'] = ({ children, className, node: _node, ...props }) => (
+  <h1 {...props} className={['markdown-heading markdown-h1', className].filter(Boolean).join(' ')}>
     {children}
   </h1>
 );
 
-const H2Component: Components['h2'] = ({ children }) => (
-  <h2 className="markdown-heading markdown-h2">
+const H2Component: Components['h2'] = ({ children, className, node: _node, ...props }) => (
+  <h2 {...props} className={['markdown-heading markdown-h2', className].filter(Boolean).join(' ')}>
     {children}
   </h2>
 );
 
-const H3Component: Components['h3'] = ({ children }) => (
-  <h3 className="markdown-heading markdown-h3">
+const H3Component: Components['h3'] = ({ children, className, node: _node, ...props }) => (
+  <h3 {...props} className={['markdown-heading markdown-h3', className].filter(Boolean).join(' ')}>
     {children}
   </h3>
 );
 
-const H4Component: Components['h4'] = ({ children }) => (
-  <h4 className="markdown-heading markdown-h4">
+const H4Component: Components['h4'] = ({ children, className, node: _node, ...props }) => (
+  <h4 {...props} className={['markdown-heading markdown-h4', className].filter(Boolean).join(' ')}>
     {children}
   </h4>
 );
 
-const H5Component: Components['h5'] = ({ children }) => (
-  <h5 className="markdown-heading markdown-h5">
+const H5Component: Components['h5'] = ({ children, className, node: _node, ...props }) => (
+  <h5 {...props} className={['markdown-heading markdown-h5', className].filter(Boolean).join(' ')}>
     {children}
   </h5>
 );
 
-const H6Component: Components['h6'] = ({ children }) => (
-  <h6 className="markdown-heading markdown-h6">
+const H6Component: Components['h6'] = ({ children, className, node: _node, ...props }) => (
+  <h6 {...props} className={['markdown-heading markdown-h6', className].filter(Boolean).join(' ')}>
     {children}
   </h6>
 );

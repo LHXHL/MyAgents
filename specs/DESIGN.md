@@ -260,10 +260,13 @@ App Shell 使用“全局侧栏 + 顶部 Tab”的双层注意力模型，完整
 
 ### 8.3 Markdown、代码与表格
 
-- Markdown H1/H2/H3/H4–H6 使用统一 Type Scale，`strong` 不超过 semibold。
-- 行内代码使用 code surface 和 `--font-code`；多行代码块拥有 Header、语言、复制和独立横向滚动。
+- Markdown H1/H2/H3/H4–H6 使用统一 Type Scale 和主文字色 `ink`；正文、列表、引用与表格正文使用阅读角色 `--font-weight-prose`（500），标题、`strong` 与表头使用 `--font-weight-emphasis`（600）。这些角色只作用于 Markdown，不改变外围 UI 字重。
+- 标题与内容间距为 8px，连续标题同样收紧；普通紧凑列表项间距为 4px，带段落的松散列表为 8px，嵌套列表以缩进和标记区分层级。compact 按自身密度统一缩小。
+- 行内代码使用 code surface 和 `--font-code`；多行代码块拥有 Header、语言、复制和独立横向滚动。代码、公式与辅助工具栏保持 normal 字重，不继承正文增重。
 - 常规 Markdown 表格正文和表头均使用 14px；compact 变体两者维持 12px；表格容器自己横向滚动，不撑破消息或 Drawer。
-- 链接使用 Accent 并保持下划线或其他非颜色识别；引用使用弱表面和结构边界，不降低到不可读灰度。
+- 表格保留 Markdown 作者指定的左/中/右对齐，多行单元格顶端对齐；表头不强制大写或加字距。
+- 链接使用 Accent 并保持下划线或其他非颜色识别；引用使用 `ink-secondary` 和结构边界，不降低到不可读灰度。
+- `mark` 使用 Accent 弱背景和主文字色；`kbd` 使用代码字体、Inset 表面和描边；`details/summary` 保留原生展开与键盘语义，映射现有表面、边框和 focus token；脚注保留隐藏标题并使用分隔线和次级文字色。图片保持比例与容器内最大宽度。
 
 ### 8.4 流式、恢复与空态
 
