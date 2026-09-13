@@ -1,34 +1,7 @@
-//! Batch existence check for workspace-relative paths.
-//!
-//! Mirrors the sidecar `/agent/check-paths` endpoint: takes an array of
-//! workspace-relative paths and returns a `{ exists, type }` map. Used by
-//! `FileActionContext` to decorate inline-code path mentions in AI output
-//! (turn `<code>src/foo.ts</code>` into a clickable preview affordance only
-//! when the file actually exists).
-//!
-//! # Why we mirror the sidecar shape
-//!
-//! `FileActionContext` already coalesces calls into a 50ms batch + a 200-path
-//! cap. We keep the same `Record<string, {exists, type}>` shape so the
-//! renderer side is a one-line wiring change.
-//!
-//! # Path checks
-//!
-//! Bad inputs (empty string, traversal escape, non-existent) collapse to
-//! `{ exists: false, type: 'file' }` rather than erroring the whole batch —
-//! matches the sidecar fallback so a single bad path doesn't poison the
-//! cache for the others.
-//!
-//! Cross-review round 2 (Codex MED-3): we use
-//! `resolve_existing_inside_workspace` (canonicalize + prefix-check), the
-//! same gate as `read_preview` and `download_file`. Without this, an
-//! `evil_link → /etc/passwd` inside the workspace would report
-//! `{exists:true, type:'file'}` here — the renderer turns that into a
-//! clickable preview chip, the user clicks, and the read command rejects
-//! with "Path escapes workspace via symlink". Surfacing the rejection as
-//! `{exists:false}` here keeps the chip from appearing in the first place.
-//! Broken symlinks (canonicalize fails → "File not found") collapse to
-//! `{exists:false}` which is also the desired UI behavior.
+//! Batched file facts for rendered links. Workspace references that resolve
+//! to ordinary external symlinks return a canonical local target. Existence,
+//! read/policy errors and missing paths are distinct; mutation stays behind
+//! the existing workspace path boundary.
 
 use std::collections::HashMap;
 
@@ -49,6 +22,10 @@ pub struct PathInfo {
     /// to mirror the sidecar's fallback shape.
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,78 +79,84 @@ pub async fn cmd_check_local_paths(
     Ok(CheckPathsResult { results })
 }
 
-fn check_one(workspace_root: &std::path::Path, raw: &str) -> PathInfo {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return PathInfo {
-            exists: false,
-            kind: "file".to_string(),
-        };
-    }
-    // Use the canonical resolver — same gate as `read_preview`/`download_file`.
-    // Symlinks escaping the workspace, broken symlinks, traversal escapes,
-    // and missing files all collapse to `{exists:false, type:'file'}` so the
-    // renderer's inline-code chip stays consistent with the read commands.
-    let resolved = match resolve_existing_inside_workspace(workspace_root, trimmed) {
-        Ok(p) => p,
-        Err(_) => {
-            return PathInfo {
-                exists: false,
-                kind: "file".to_string(),
-            }
-        }
-    };
-    // `resolved` is canonicalized, so this metadata call follows no further
-    // links. We use `metadata` (not `symlink_metadata`) on purpose: the
-    // canonical path is already the real file/dir.
-    match std::fs::metadata(&resolved) {
-        Ok(m) if m.is_dir() => PathInfo {
-            exists: true,
-            kind: "dir".to_string(),
-        },
-        Ok(_) => PathInfo {
-            exists: true,
-            kind: "file".to_string(),
-        },
-        Err(_) => PathInfo {
-            exists: false,
-            kind: "file".to_string(),
-        },
+fn unavailable(error: Option<String>) -> PathInfo {
+    PathInfo {
+        exists: false,
+        kind: "file".into(),
+        resolved_path: None,
+        error,
     }
 }
 
-fn check_one_local(raw: &str, workspace: Option<&str>) -> PathInfo {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return PathInfo {
-            exists: false,
-            kind: "file".to_string(),
-        };
-    }
-
-    let resolved = match validate_external_open_path(trimmed, workspace) {
-        Ok(p) => p,
-        Err(_) => {
-            return PathInfo {
-                exists: false,
-                kind: "file".to_string(),
+fn inspect_path(path: &std::path::Path, local: bool) -> PathInfo {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() || metadata.is_dir() => {
+            if metadata.is_file() {
+                if let Err(error) = std::fs::File::open(path) {
+                    return unavailable(Some(error.to_string()));
+                }
+            }
+            PathInfo {
+                exists: true,
+                kind: if metadata.is_dir() { "dir" } else { "file" }.into(),
+                resolved_path: local.then(|| {
+                    crate::sidecar::normalize_external_path(path.to_path_buf())
+                        .to_string_lossy()
+                        .into_owned()
+                }),
+                error: None,
             }
         }
-    };
+        Ok(_) => unavailable(Some("Not a regular file or directory".into())),
+        Err(error) => {
+            unavailable((error.kind() != std::io::ErrorKind::NotFound).then(|| error.to_string()))
+        }
+    }
+}
 
-    match std::fs::metadata(&resolved) {
-        Ok(m) if m.is_dir() => PathInfo {
-            exists: true,
-            kind: "dir".to_string(),
-        },
-        Ok(_) => PathInfo {
-            exists: true,
-            kind: "file".to_string(),
-        },
-        Err(_) => PathInfo {
-            exists: false,
-            kind: "file".to_string(),
-        },
+fn check_one(workspace_root: &std::path::Path, raw: &str) -> PathInfo {
+    if raw.trim().is_empty() {
+        return unavailable(None);
+    }
+    if let Ok(path) = resolve_existing_inside_workspace(workspace_root, raw.trim()) {
+        return inspect_path(&path, false);
+    }
+    // A real symlink outside the workspace is a local read target. Its
+    // canonical path goes back to the renderer so menus cannot mutate it via
+    // workspace-relative commands. This fallback ONLY returns a local read
+    // capability, never a workspace-relative write target. Local policy must
+    // inspect the canonical target itself (the workspace lexical guard also
+    // rejects legitimate links to the OS temporary directory).
+    if std::path::Path::new(raw.trim()).is_absolute() {
+        return unavailable(Some("Path must be relative to workspace root".into()));
+    }
+    check_one_local(&workspace_root.join(raw.trim()).to_string_lossy(), None)
+}
+
+fn check_one_local(raw: &str, workspace: Option<&str>) -> PathInfo {
+    if raw.trim().is_empty() {
+        return unavailable(None);
+    }
+    match validate_external_open_path(raw.trim(), workspace) {
+        Ok(path) => inspect_path(&path, true),
+        Err(error) => {
+            // Preserve permission/policy failures; only a genuine OS NotFound
+            // becomes a missing-file result. No diagnostic is inferred from
+            // translated platform error text.
+            let target = if let Some(relative) = raw.trim().strip_prefix("~/") {
+                #[cfg(windows)]
+                let home = std::env::var_os("USERPROFILE");
+                #[cfg(not(windows))]
+                let home = std::env::var_os("HOME");
+                home.map(std::path::PathBuf::from).map(|p| p.join(relative))
+            } else {
+                Some(std::path::PathBuf::from(raw.trim()))
+            };
+            let missing = target
+                .and_then(|p| std::fs::metadata(p).err())
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+            unavailable((!missing).then_some(error))
+        }
     }
 }
 
@@ -260,7 +243,7 @@ mod tests {
     // command behavior.
     #[cfg(unix)]
     #[tokio::test]
-    async fn rejects_symlink_escape_as_not_found() {
+    async fn returns_local_read_target_for_ordinary_external_symlink() {
         use std::os::unix::fs::symlink;
         let ws = make_test_workspace("check_paths_symlink_escape");
         let outside = std::env::temp_dir().join(format!("check_outside_{}", std::process::id()));
@@ -275,9 +258,20 @@ mod tests {
         )
         .await
         .unwrap();
-        // Surfaces as not-found rather than exists:true — chip won't appear,
-        // user can't click to fail later.
-        assert_eq!(res.results.get("evil_link.txt").unwrap().exists, false);
+        let info = res.results.get("evil_link.txt").unwrap();
+        assert!(info.exists);
+        assert_eq!(
+            info.resolved_path.as_deref(),
+            Some(
+                crate::sidecar::normalize_external_path(fs::canonicalize(&target).unwrap())
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(
+            resolve_existing_inside_workspace(&ws, "evil_link.txt").is_err(),
+            "workspace writes/reads do not gain external mutation authority"
+        );
         let _ = fs::remove_dir_all(&ws);
         let _ = fs::remove_dir_all(&outside);
     }

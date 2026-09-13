@@ -931,6 +931,11 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
 
   const handleSplitFilePreview = useCallback(async (file: SplitPreviewFile, options?: { initialEditMode?: boolean }) => {
     const request = ++filePreviewRequestRef.current;
+    if (fullscreenPreviewFile) {
+      if (fullscreenFilePreviewRef.current && !await fullscreenFilePreviewRef.current.prepareTransition(file.path)) return;
+      if (request === filePreviewRequestRef.current) setFullscreenPreviewFile({ ...file, initialEditMode: options?.initialEditMode });
+      return;
+    }
     if (splitFilePreviewRef.current && !await splitFilePreviewRef.current.prepareTransition(file.path)) return;
     if (request !== filePreviewRequestRef.current) return;
     const ext = file.name.toLowerCase().split('.').pop();
@@ -951,7 +956,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
       setSplitActiveView('file');
     }
     // Keep workspace open — user can dismiss it manually
-  }, [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded]);
+  }, [isSplitViewEnabled, agentDir, startBrowserSplitTransitionIfNeeded, fullscreenPreviewFile]);
 
   useEffect(() => {
     if (!pendingFilePreview) return;
@@ -5220,6 +5225,27 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
   }, [onNewSession, resetSession, surfaces.channel, sessionId, newSessionKeepingBinding]);
 
   return (
+          <BrowserPanelContext.Provider value={browserPanelCtx}>
+          {/*
+            FileActionProvider.refreshTrigger intentionally excludes
+            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
+            tools complete, and tying every completion to a full cache wipe
+            caused requery storms. The ref-counted workspace watcher is the
+            filesystem mutation authority; FileActionProvider invalidates the
+            old affordance and mounted consumers lazily re-request in batches.
+            Explicit UI refreshes remain a second controlled source.
+          */}
+          <AsyncQuestionContext.Provider value={questionActions}>
+          <FileActionProvider
+            previewHandleRef={actionFilePreviewRef}
+            workspacePath={agentDir}
+            onInsertReference={handleInsertReference}
+            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
+            onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
+            onQuoteFile={handleQuoteFile}
+            onQuoteSelection={handleQuoteFileSelection}
+            onRevealInTree={handleRevealInTree}
+          >
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
@@ -5497,27 +5523,6 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
           />
 
           {/* Message list with max-width */}
-          <BrowserPanelContext.Provider value={browserPanelCtx}>
-          {/*
-            FileActionProvider.refreshTrigger intentionally excludes
-            toolCompleteCount. toolCompleteCount bumps when AI file-modifying
-            tools complete, and tying every completion to a full cache wipe
-            caused requery storms. The ref-counted workspace watcher is the
-            filesystem mutation authority; FileActionProvider invalidates the
-            old affordance and mounted consumers lazily re-request in batches.
-            Explicit UI refreshes remain a second controlled source.
-          */}
-          <AsyncQuestionContext.Provider value={questionActions}>
-          <FileActionProvider
-            previewHandleRef={actionFilePreviewRef}
-            workspacePath={agentDir}
-            onInsertReference={handleInsertReference}
-            refreshTrigger={workspaceRefreshTrigger + workspaceChangeSignal}
-            onFilePreviewExternal={isSplitViewEnabled && !isNarrowLayout ? handleSplitFilePreview : undefined}
-            onQuoteFile={handleQuoteFile}
-            onQuoteSelection={handleQuoteFileSelection}
-            onRevealInTree={handleRevealInTree}
-          >
             <MessageList
               messages={chatScrollModel.data}
               streamingMessage={streamingMessage}
@@ -5596,9 +5601,7 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
                 />
               </div>
             )}
-          </FileActionProvider>
-          </AsyncQuestionContext.Provider>
-          </BrowserPanelContext.Provider>
+
 
           {/* Text selection floating menu for quoting AI text */}
           <SelectionCommentMenu
@@ -6328,5 +6331,8 @@ export default function Chat({ registerFileEditSubmitter, windowPresentation, on
         />
       )}
     </div>
+          </FileActionProvider>
+          </AsyncQuestionContext.Provider>
+          </BrowserPanelContext.Provider>
   );
 }

@@ -300,6 +300,8 @@
     "expand": "Expand"
   },
   "fileActions": {
+    "checking": "Checking file",
+    "checkFailed": "Unable to check file; click to retry",
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Copy failed",

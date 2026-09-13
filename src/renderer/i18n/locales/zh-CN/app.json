@@ -300,6 +300,8 @@
     "expand": "展开"
   },
   "fileActions": {
+    "checking": "正在检查文件",
+    "checkFailed": "文件检查失败，可点击重试",
     "copy": "复制",
     "copied": "已复制",
     "copyFailed": "复制失败",

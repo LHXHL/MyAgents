@@ -23,7 +23,7 @@ describe('classifyInlineCodeTarget', () => {
     ['https://example.com/%ZZ', { kind: 'plain' }],
     ['javascript:alert(1)', { kind: 'plain' }],
     ['foo://bar', { kind: 'plain' }],
-    ['foo()', { kind: 'plain' }],
+    ['foo()', { kind: 'file', path: 'foo()' }],
   ])('classifies %s', (input, expected) => {
     expect(classifyInlineCodeTarget(input)).toEqual(expected);
   });
@@ -42,5 +42,12 @@ describe('shortenPathForDisplay', () => {
 
   it('keeps non-user paths unchanged', () => {
     expect(shortenPathForDisplay('/opt/MyAgents')).toBe('/opt/MyAgents');
+  });
+});
+
+
+describe('native filename candidates', () => {
+  it.each(['Makefile', 'LICENSE', 'x', '.zshrc', 'src/app/[id]/page.tsx', 'docs/plan (final).md', 'notes.md:12', 'notes.md:12:3'])('defers %s to actual filesystem existence', value => {
+    expect(looksLikeFilePath(value)).toBe(true);
   });
 });

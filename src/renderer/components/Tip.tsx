@@ -30,6 +30,7 @@ export default function Tip({
   align = 'center',
   disabled = false,
   className = '',
+  wrap = false,
 }: {
   label: string;
   shortcut?: string;
@@ -38,6 +39,7 @@ export default function Tip({
   align?: 'center' | 'end';
   disabled?: boolean;
   className?: string;
+  wrap?: boolean;
 }) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -57,6 +59,7 @@ export default function Tip({
       // Activation consumes the hint, even if the child stops bubbling or
       // hides/reparents its surface. Keep native focus for keyboard users.
       onClickCapture={dismiss}
+      onContextMenuCapture={dismiss}
       onFocusCapture={() => setFocusedWithin(true)}
       onBlurCapture={(event) => {
         const nextTarget = event.relatedTarget;
@@ -81,7 +84,7 @@ export default function Tip({
         >
           <span
             role="tooltip"
-            className="block whitespace-nowrap rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-dark-text)]"
+            className={`block ${wrap ? "max-w-[min(32rem,calc(100vw-2rem))] whitespace-normal break-all" : "whitespace-nowrap"} rounded-md bg-[var(--button-dark-bg)]/90 px-2.5 py-1.5 text-xs leading-tight text-[var(--button-dark-text)]`}
           >
             {label}
             {shortcut && (

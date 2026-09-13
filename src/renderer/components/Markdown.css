@@ -473,3 +473,15 @@
   scrollbar-width:thin;
   scrollbar-color:var(--line-strong) transparent;
 }
+
+/* File/web links share typography across prose, headings and tables. A code
+   label changes the font, not the target's interactive surface or color. */
+.markdown-content-link:has(code) {
+  font-size: 0.9em;
+}
+.markdown-content-link code {
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  padding: 0;
+}

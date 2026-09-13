@@ -26,6 +26,14 @@ macOS 编辑菜单的 Undo / Redo 由 `macos_edit_menu` 路由：先用真正的
 
 设置页的 `onSave` 调用方保留预览 / 编辑入口，编辑底座为 CM 源码模式；不因此获得 workspace 图片、watcher 或冲突处理。外部 local 文件只读；其他代码继续 Monaco。文件操作的 context 类型 / 消费 hook 位于 `context/fileActionState.ts`，Provider 仍在 `FileActionContext.tsx`，避免 Markdown 消费者反向导入挂载自身预览的 Provider。
 
+## 文件链接与操作身份
+
+`markdown/ContentLink` 统一普通 Markdown 与反引号文件引用的目标、图标、完整原始地址提示、点击和右键；显式 anchor 的 href 拥有目标，标题内部的 inline code 只呈现格式。原生路径保留字面 `%` / `#` 等字符，URL 在引用边界解码；行/列后缀与文件名分别解析。聊天相对路径以工作区为基准，文档链接以当前文档目录为基准，不模糊搜索同名文件。href 的安全规范化与原始引用呈现分离；hover 与复制保留相对/绝对写法，绝对化/canonical target 仅用于校验和打开。
+
+Chat 的 `FileActionProvider` 覆盖消息、分屏和全屏预览；consumer 不另建文件缓存。缓存刷新只裁决结果是否可写入缓存，用户操作的取消由 workspace identity / 最新导航意图裁决。未找到与校验失败分开，已有负结果在新出现的引用或显式交互时重新检查，并复用有限缓存 lease；不引入后台扫描。
+
+Rust `check_paths` 返回文件事实与可选 `resolvedPath` / `error`。工作区符号链接指向普通外部文件时返回 canonical local target；预览和菜单沿 local 只读入口，不能由此扩大 workspace mutation 权限。用户主动打开普通本地文件支持其它卷与相邻工作区，保留 canonical credential/system exclusions 和真实 OS 可读性检查。未知格式仍提供系统打开/定位入口；不把文件存在等同于所有格式均可预览。
+
 ## 源码与投影
 
 CM 内部位置统一为 LF 坐标，`decodeSource` / `encodeSource` 是 IO / 比较 / 引用边界。不要直接用 `state.doc.toString()` 保存原文件：它会归一化混合换行。未编辑语法、空白、末尾换行和 BOM 均不得被片段渲染或 AST 序列化改写。删除使独立 CR 与 LF 新相邻时，只把该 CR 显式化为 CRLF，以免两个逻辑换行落盘后合成一个；格式变更仍随同一历史撤销。

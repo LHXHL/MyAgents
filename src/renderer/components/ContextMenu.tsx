@@ -1,5 +1,7 @@
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useTabActive, useTabApiOptional } from '@/context/TabContext';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 
@@ -19,23 +21,23 @@ interface ContextMenuProps {
     y: number;
     items: ContextMenuItem[];
     onClose: () => void;
-    /**
-     * Stacking layer. Defaults to 50 (matches inline panel usages like the file
-     * tree). Callers that portal the menu OVER a higher overlay (e.g. Monaco
-     * inside the z-[210] FilePreviewModal) must pass a value above that overlay so
-     * the menu isn't rendered behind it — and so Cmd+W/Esc close ordering stays
-     * correct (useCloseLayer uses the same value).
-     */
+    /** Menus sit above previews (210) and selection controls (300).
+     * The same layer determines Cmd+W dismissal priority. */
     zIndex?: number;
 }
 
-export default function ContextMenu({ x, y, items, onClose, zIndex = 50 }: ContextMenuProps) {
+export default function ContextMenu({ x, y, items, onClose, zIndex = 320 }: ContextMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
+    const tab = useTabApiOptional();
+    const tabActive = useTabActive();
+    const active = !tab || tabActive;
+    useEffect(() => { if (!active) onClose(); }, [active, onClose]);
 
     // Cmd+W dismissal: always active while mounted (component only renders when open)
-    useCloseLayer(() => { onClose(); return true; }, zIndex);
+    useCloseLayer(() => { if (!active) return false; onClose(); return true; }, zIndex);
 
     useEffect(() => {
+        if (!active) return;
         const handleClickOutside = (event: MouseEvent) => {
             if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
                 onClose();
@@ -56,7 +58,7 @@ export default function ContextMenu({ x, y, items, onClose, zIndex = 50 }: Conte
             document.removeEventListener('mousedown', handleClickOutside);
             document.removeEventListener('keydown', handleEscape);
         };
-    }, [onClose]);
+    }, [onClose, active]);
 
     // Adjust position to keep menu in viewport
     useEffect(() => {
@@ -80,7 +82,10 @@ export default function ContextMenu({ x, y, items, onClose, zIndex = 50 }: Conte
         }
     }, [x, y]);
 
-    return (
+    if (!active) return null;
+    // Coordinates are viewport-relative. The menu owns its portal so callers
+    // inside transformed/clipped panels cannot accidentally trap it.
+    return createPortal(
         <div
             ref={menuRef}
             className="fixed min-w-[160px] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] py-1.5 shadow-lg backdrop-blur"
@@ -120,6 +125,6 @@ export default function ContextMenu({ x, y, items, onClose, zIndex = 50 }: Conte
                     </button>
                 )
             )}
-        </div>
+        </div>, document.body
     );
 }

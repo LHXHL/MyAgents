@@ -14,15 +14,17 @@ import './Markdown.css';
 
 import { lazy, Suspense, memo, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { Components } from 'react-markdown';
+import type { Element } from 'hast';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
+import ContentLink from './markdown/ContentLink';
+import { MarkdownDocumentDirectoryContext } from './markdown/linkContext';
 import MarkdownTable from './markdown/MarkdownTable';
 const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
-import { useOpenWebLink } from '@/context/BrowserPanelContext';
-import { useFileAction, useFileLinkAction } from '@/context/fileActionState';
+import { useFileAction } from '@/context/fileActionState';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 import { preprocessMarkdownContent } from '@/utils/markdownPreprocess';
 import {
@@ -33,7 +35,7 @@ import {
   convertFrontmatter,
 } from '@/utils/markdownPipeline';
 import { canonicalizeLegacyMyAgentsResourceUrl } from '@/utils/myagentsProtocol';
-import { fileUrlToPath, resolveAgainstWorkspace, resolveDocumentFileLink } from '@/utils/workspaceFileLinks';
+import { fileUrlToPath, resolveAgainstWorkspace } from '@/utils/workspaceFileLinks';
 
 // ── Streaming leading-edge fade ──
 // While streaming, wrap the LAST few characters of the last text node in a
@@ -93,55 +95,9 @@ const REHYPE_PLUGINS_STREAMING: ComponentProps<typeof ReactMarkdown>['rehypePlug
 // Custom link component that opens links in embedded browser panel (if available)
 // or falls back to system browser. Supports text selection for copying.
 // Strips react-markdown's hast `node` prop so it doesn't get spread onto the DOM <a>.
-const MarkdownLink = memo(function MarkdownLink({
-  href,
-  children,
-  basePath = '',
-  node: _node,
-  ...props
-}: React.ComponentProps<'a'> & { node?: unknown; basePath?: string }) {
-  const fileLinkAction = useFileLinkAction();
-  const openWebLink = useOpenWebLink();
-
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault();
-
-    // Check if user is selecting text - don't open link if selecting
-    const selection = window.getSelection();
-    const hasSelection = selection && selection.toString().length > 0;
-
-    if (!hasSelection && href) {
-      // Cmd (macOS) / Ctrl (Win/Linux) + click bypasses the embedded browser
-      // panel and opens directly in the system default browser.
-      const forceExternal = e.metaKey || e.ctrlKey;
-      const actionHref = resolveDocumentFileLink(href, basePath);
-      if (fileLinkAction?.openFileLink(actionHref, { forceExternal })) {
-        return;
-      }
-      openWebLink(href, { forceExternal });
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!href) return;
-    if (fileLinkAction?.openFileLinkMenu(e.clientX, e.clientY, resolveDocumentFileLink(href, basePath))) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
-
-  return (
-    <a
-      href={href}
-      onClick={handleClick}
-      onContextMenu={handleContextMenu}
-      className="text-[var(--accent-warm)] underline decoration-[var(--accent-warm)]/40 underline-offset-2 transition-colors hover:text-[var(--accent-warm-hover)] hover:decoration-[var(--accent-warm)]/60"
-      style={{ userSelect: 'text' }}
-      {...props}
-    >
-      {children}
-    </a>
-  );
+const MarkdownLink = memo(function MarkdownLink({ href, children, basePath = '', node, ...props }: React.ComponentProps<'a'> & { node?: Element; basePath?: string }) {
+  const originalHref = (node?.data as { originalHref?: unknown } | undefined)?.originalHref;
+  return <ContentLink reference={href ?? ''} displayReference={typeof originalHref === 'string' ? originalHref : href} basePath={basePath} {...props}>{children}</ContentLink>;
 });
 
 // Custom code component - handles both inline and block code
@@ -500,7 +456,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
       img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
         <MarkdownImage src={props.src} alt={props.alt} basePath={basePath} workspacePath={workspacePath} />
       ),
-      a: (props: React.ComponentProps<'a'> & { node?: unknown }) => {
+      a: (props: React.ComponentProps<'a'> & { node?: Element }) => {
         let number: number | undefined;
         if (props.href?.startsWith('#user-content-fn-')) {
           try { number = footnoteNumbers?.get(decodeURIComponent(props.href.slice('#user-content-fn-'.length))); } catch { /* keep the source fragment's link */ }
@@ -511,6 +467,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
   }, [basePath, workspacePath, footnoteNumbers]);
 
   return (
+    <MarkdownDocumentDirectoryContext.Provider value={basePath}>
     <div className={`markdown-content min-w-0 max-w-full break-words${compact ? ' markdown-content--compact' : ''}`}>
       <ReactMarkdown
         urlTransform={MARKDOWN_URL_TRANSFORM}
@@ -521,6 +478,7 @@ const Markdown = memo(function Markdown({ children, compact = false, preserveNew
         {processedContent}
       </ReactMarkdown>
     </div>
+    </MarkdownDocumentDirectoryContext.Provider>
   );
 });
 

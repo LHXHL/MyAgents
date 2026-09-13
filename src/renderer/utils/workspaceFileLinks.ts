@@ -9,15 +9,6 @@ export type FileActionTarget =
   | { scope: 'workspace'; path: string; initialLineNumber?: number }
   | { scope: 'local'; path: string; initialLineNumber?: number };
 
-const EXTENSIONLESS_FILE_NAMES = new Set([
-  'makefile',
-  'dockerfile',
-  'license',
-  'readme',
-  'changelog',
-  'agents',
-]);
-
 export function resolveWorkspaceFileLinkTarget(
   href: string,
   workspacePath: string | null | undefined,
@@ -32,12 +23,14 @@ export function resolveWorkspaceFileLinkTarget(
 export function resolveFileLinkTarget(
   href: string,
   workspacePath: string | null | undefined,
+  format: 'url' | 'native' = 'url',
 ): FileActionTarget | null {
   const workspace = workspacePath?.trim();
   const raw = href?.trim();
   if (!raw || raw.startsWith('#')) return null;
 
-  const { base, line: hashLine } = stripHashLine(raw);
+  const { base: hashBase, line: hashLine } = stripHashLine(raw);
+  const base = format === 'url' ? hashBase.split('#')[0] : hashBase;
   // Line annotations belong to the reference syntax, not the decoded filename:
   // `report%3A12` is a file named `report:12`, while `report:12` selects line 12.
   const { path: referencePath, line: suffixLine } = stripLineSuffix(base);
@@ -47,22 +40,25 @@ export function resolveFileLinkTarget(
   // Protocol/fragment syntax belongs to the encoded reference too. A decoded
   // filename such as `note:12.md` or `#note.md` is an ordinary native filename.
   if (!filePath && hasUnsupportedScheme(referencePath)) return null;
-  const localPath = filePath ?? decodeUriLoose(referencePath);
+  const localPath = filePath ?? (format === 'url' ? decodeUriLoose(referencePath) : referencePath);
 
   const initialLineNumber = suffixLine ?? hashLine;
-  const relativePath = workspace ? toWorkspaceRelativePath(localPath, workspace) : null;
+  const relativePath = workspace && !localPath.startsWith('~/') ? toWorkspaceRelativePath(localPath, workspace) : null;
   if (relativePath) {
     return initialLineNumber
       ? { scope: 'workspace', path: relativePath, initialLineNumber }
       : { scope: 'workspace', path: relativePath };
   }
 
-  if (isAbsolutePath(localPath)) {
+  if (localPath.startsWith('~/') || isAbsolutePath(localPath)) {
     return initialLineNumber
       ? { scope: 'local', path: localPath, initialLineNumber }
       : { scope: 'local', path: localPath };
   }
 
+  if (workspace && !isAbsolutePath(localPath)) {
+    return { scope: 'local', path: `${stripTrailingSlash(workspace)}/${localPath}`, ...(initialLineNumber ? { initialLineNumber } : {}) };
+  }
   return null;
 }
 
@@ -72,7 +68,7 @@ export function resolveFileActionTarget(
   options?: { parseLineReference?: boolean },
 ): FileActionTarget | null {
   if (options?.parseLineReference || /^file:\/\//i.test(rawPath.trim())) {
-    return resolveFileLinkTarget(rawPath, workspacePath);
+    return resolveFileLinkTarget(rawPath, workspacePath, 'native');
   }
 
   // Structured tool `file_path` values are native filenames, not Markdown
@@ -124,7 +120,7 @@ function stripHashLine(raw: string): { base: string; line?: number } {
 }
 
 function stripLineSuffix(rawPath: string): { path: string; line?: number } {
-  const match = /^(.*):(\d+)(?::\d+)?$/.exec(rawPath);
+  const match = /^(.*?):(\d+)(?::\d+)?$/.exec(rawPath);
   if (!match) return { path: rawPath };
 
   const base = match[1];
@@ -208,7 +204,6 @@ export function toWorkspaceRelativePath(rawPath: string | null | undefined, work
   }
 
   const windowsStyle = isWindowsPath(workspacePath);
-  if (!looksLikeRelativeFileReference(path, windowsStyle)) return null;
   return normalizeRelativePath(path, windowsStyle);
 }
 
@@ -238,9 +233,9 @@ function absoluteToWorkspaceRelative(rawPath: string, rawWorkspace: string): str
   const comparableWorkspace = normalizeWorkspacePathIdentity(workspace);
 
   if (comparablePath === comparableWorkspace) return null;
-  if (!comparablePath.startsWith(`${comparableWorkspace}/`)) return null;
-
-  return normalizeRelativePath(path.slice(workspace.length + 1));
+  const prefix = comparableWorkspace.endsWith('/') ? comparableWorkspace : `${comparableWorkspace}/`;
+  if (!comparablePath.startsWith(prefix)) return null;
+  return normalizeRelativePath(path.slice(prefix.length));
 }
 
 function normalizeRelativePath(rawPath: string, windowsStyle = false): string | null {
@@ -260,18 +255,6 @@ function normalizeRelativePath(rawPath: string, windowsStyle = false): string | 
   }
 
   return stack.length > 0 ? stack.join('/') : null;
-}
-
-function looksLikeRelativeFileReference(rawPath: string, windowsStyle: boolean): boolean {
-  const path = windowsStyle ? rawPath.trim().replace(/\\/g, '/') : rawPath.trim();
-  if (!path) return false;
-  if (path.startsWith('./') || path.startsWith('../')) return true;
-  if (path.includes('/')) return true;
-
-  const name = path.toLowerCase();
-  if (name.startsWith('.')) return true;
-  if (EXTENSIONLESS_FILE_NAMES.has(name)) return true;
-  return /\.[^./\\]+$/.test(path);
 }
 
 function isAbsolutePath(rawPath: string): boolean {

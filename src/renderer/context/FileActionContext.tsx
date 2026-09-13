@@ -181,7 +181,10 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
   // ---------- Path cache ----------
   const workspaceIdentity = normalizeWorkspacePathIdentity(workspacePath ?? '');
-  const cacheContextIdentity = `${workspaceIdentity}\0${refreshTrigger ?? 0}`;
+  const cacheContextIdentity = workspaceIdentity;
+  const workspaceIdentityRef = useRef(workspaceIdentity);
+  workspaceIdentityRef.current = workspaceIdentity;
+  const previousWorkspaceRef = useRef(workspaceIdentity);
   const cacheContextIdentityRef = useRef(cacheContextIdentity);
   cacheContextIdentityRef.current = cacheContextIdentity;
   const cacheContextInitializedRef = useRef(false);
@@ -207,7 +210,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
     let earliestExpiry = Number.POSITIVE_INFINITY;
     for (const entry of pathCacheRef.current.values()) {
-      if (entry.scope === 'local') {
+      if (entry.scope === 'local' || !entry.info.exists) {
         earliestExpiry = Math.min(earliestExpiry, entry.verifiedAt + LOCAL_PATH_LEASE_MS);
       }
     }
@@ -221,7 +224,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       let invalidated = false;
       const expiredKeys: string[] = [];
       for (const [key, entry] of pathCacheRef.current) {
-        if (entry.scope === 'local' && entry.verifiedAt + LOCAL_PATH_LEASE_MS <= now) {
+        if ((entry.scope === 'local' || !entry.info.exists) && entry.verifiedAt + LOCAL_PATH_LEASE_MS <= now) {
           pathCacheRef.current.delete(key);
           expiredKeys.push(key);
           invalidated = true;
@@ -250,7 +253,11 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
     cacheGenerationRef.current += 1;
     pathCacheRef.current.clear();
-    closeMenu();
+    if (previousWorkspaceRef.current !== workspaceIdentity) {
+      previousWorkspaceRef.current = workspaceIdentity;
+      previewRequestIdRef.current += 1;
+      closeMenu();
+    }
     const currentPrefix = `${cacheContextIdentity}\0`;
     for (const key of pendingTargetsRef.current.keys()) {
       if (!key.startsWith(currentPrefix)) pendingTargetsRef.current.delete(key);
@@ -279,7 +286,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       }
     }
     setCacheVersion(v => v + 1);
-  }, [cacheContextIdentity, closeMenu]);
+  }, [cacheContextIdentity, refreshTrigger, closeMenu, workspaceIdentity]);
 
   // Clean up batch timer on unmount
   useEffect(() => {
@@ -370,7 +377,9 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
         if (fileServiceRef.current.isAvailable) {
           for (let offset = 0; offset < workspacePaths.length; offset += MAX_PATHS_PER_BATCH) {
             const paths = workspacePaths.slice(offset, offset + MAX_PATHS_PER_BATCH);
-            const resp = await fileServiceRef.current.checkPaths({ paths });
+            const resp = await fileServiceRef.current.checkPaths({ paths }).catch(error => ({
+              results: Object.fromEntries(paths.map(path => [path, { exists: false, type: 'file' as const, error: String(error) }])),
+            }));
             const isCurrent = commitResponse(
               'workspace',
               resp.results ?? {},
@@ -386,15 +395,33 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
           const resp = await fileServiceRef.current.checkLocalPaths({
             paths,
             workspace: workspacePath,
-          });
+          }).catch(error => ({ results: Object.fromEntries(paths.map(path => [path, { exists: false, type: 'file' as const, error: String(error) }])) }));
           const isCurrent = commitResponse('local', resp.results ?? {}, new Set(paths), Date.now());
           releaseChunk('local', paths);
           if (!isCurrent) return;
         }
-      } catch {
-        // Silently ignore — paths will stay un-cached and remain as plain <code>
+      } catch (error) {
+        if (isMountedRef.current && requestGeneration === cacheGenerationRef.current && requestContextIdentity === cacheContextIdentityRef.current) {
+          for (const [key, target] of targetEntries) {
+            if (!pathCacheRef.current.has(key) && mountedTargetsRef.current.get(key)?.count) {
+              pathCacheRef.current.set(key, { info: { exists: false, type: 'file', error: String(error) }, scope: target.scope, verifiedAt: Date.now() });
+            }
+          }
+          setCacheVersion(version => version + 1);
+          scheduleLocalLeaseExpiryRef.current();
+        }
       } finally {
-        for (const [key] of targetEntries) inFlightTargetKeysRef.current.delete(key);
+        for (const [key] of targetEntries) {
+          inFlightTargetKeysRef.current.delete(key);
+          // A watcher refresh invalidates cache facts, not mounted consumers.
+          // Requeue after releasing the old flight so its replacement can run.
+          if (isMountedRef.current && requestGeneration !== cacheGenerationRef.current) {
+            const mounted = mountedTargetsRef.current.get(key);
+            if (mounted?.count && key.startsWith(`${cacheContextIdentityRef.current}\0`)) {
+              enqueueTargetRef.current(key, mounted.target);
+            }
+          }
+        }
       }
     })();
   }, [workspacePath]);
@@ -403,7 +430,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     const key = targetCacheKey(target, cacheContextIdentityRef.current);
     const cached = pathCacheRef.current.get(key);
     if (!cached) return null;
-    if (cached.scope === 'local' && cached.verifiedAt + LOCAL_PATH_LEASE_MS <= Date.now()) {
+    if ((cached.scope === 'local' || !cached.info.exists) && cached.verifiedAt + LOCAL_PATH_LEASE_MS <= Date.now()) {
       return null;
     }
     return cached.info;
@@ -432,6 +459,9 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     } else {
       mountedTargetsRef.current.set(key, { target, count: 1 });
     }
+    // A newly mounted occurrence is a fresh opportunity to validate a former
+    // miss/error (e.g. the model has just created the file).
+    if (pathCacheRef.current.get(key)?.info.exists === false) pathCacheRef.current.delete(key);
     enqueueTarget(key, target);
 
     return () => {
@@ -543,6 +573,8 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
 
   const invalidateTarget = useCallback((target: FileActionTarget) => {
     cachePathInfo(target, null);
+    const key = targetCacheKey(target, cacheContextIdentityRef.current);
+    if (mountedTargetsRef.current.get(key)?.count) enqueueTargetRef.current(key, target);
   }, [cachePathInfo]);
 
   const handlePreview = useCallback((path: string, options?: { initialLineNumber?: number; scope?: FileActionScope }): boolean => {
@@ -551,6 +583,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     const svc = fileServiceRef.current;
     if (scope === 'workspace' && !svc.isAvailable) return false;
     const requestId = ++previewRequestIdRef.current;
+    const requestWorkspace = workspaceIdentityRef.current;
     const focusTarget = createFocusTarget(options?.initialLineNumber);
     const localPath = scope === 'local' ? path : undefined;
     const workspaceForLocal = workspacePath;
@@ -566,7 +599,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       return;
     }
     if (!onFilePreviewExternalRef.current && previewRef.current && !await previewRef.current.prepareTransition(path)) return;
-    if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+    if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
     if (richDocKind) {
       const fileData = {
         name: fileName,
@@ -596,10 +629,10 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
           const resp = scope === 'local'
             ? await svc.downloadLocalFile({ fullPath: path, workspace: workspaceForLocal })
             : await svc.downloadFile({ path });
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
           openImagePreview(`data:${resp.mimeType};base64,${resp.data}`, resp.name || fileName);
         } catch (err) {
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
           invalidateTarget({ scope, path });
           console.error('[FileAction] Failed to load image:', err);
           toastRef.current?.error(t('fileActions.imageLoadFailed'));
@@ -617,7 +650,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
           const resp = scope === 'local'
             ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
             : await svc.readPreview({ path });
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
           onFilePreviewExternalRef.current?.({
             name: resp.name,
             content: resp.content,
@@ -629,7 +662,7 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
             focusTarget,
           });
         } catch (err) {
-          if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+          if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
           invalidateTarget({ scope, path });
           console.error('[FileAction] Failed to load preview:', err);
           toastRef.current?.error(t('fileActions.previewLoadFailed'));
@@ -671,14 +704,14 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
         const resp = scope === 'local'
           ? await svc.readLocalPreview({ fullPath: path, workspace: workspaceForLocal })
           : await svc.readPreview({ path });
-        if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+        if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
         setPreviewFile(prev => (
           prev?.requestId === requestId
             ? { ...prev, content: resp.content, size: resp.size, name: resp.name, isLoading: false }
             : prev
         ));
       } catch (err) {
-        if (!isMountedRef.current || requestId !== previewRequestIdRef.current) return;
+        if (!isMountedRef.current || requestId !== previewRequestIdRef.current || requestWorkspace !== workspaceIdentityRef.current) return;
         invalidateTarget({ scope, path });
         setPreviewFile(prev => (
           prev?.requestId === requestId
@@ -720,8 +753,8 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
         workspace: workspacePath,
       });
       return resp.results[target.path] ?? null;
-    } catch {
-      return null;
+    } catch (error) {
+      return { exists: false, type: 'file', error: String(error) };
     }
   }, [workspacePath]);
 
@@ -729,22 +762,18 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     current: boolean;
     info: PathInfo | null;
   }> => {
-    const requestGeneration = cacheGenerationRef.current;
-    const requestContextIdentity = cacheContextIdentityRef.current;
-    const requestKey = targetCacheKey(target, requestContextIdentity);
-    const requestVersion = (targetRequestVersionRef.current.get(requestKey) ?? 0) + 1;
-    targetRequestVersionRef.current.set(requestKey, requestVersion);
+    const requestWorkspace = workspaceIdentityRef.current;
+    const generation = cacheGenerationRef.current;
+    const key = targetCacheKey(target, cacheContextIdentityRef.current);
+    const requestVersion = (targetRequestVersionRef.current.get(key) ?? 0) + 1;
+    targetRequestVersionRef.current.set(key, requestVersion);
     const info = await getTargetPathInfo(target);
-    if (
-      !isMountedRef.current ||
-      requestGeneration !== cacheGenerationRef.current ||
-      requestContextIdentity !== cacheContextIdentityRef.current ||
-      targetRequestVersionRef.current.get(requestKey) !== requestVersion
-    ) {
-      return { current: false, info: null };
-    }
-    cachePathInfo(target, info, requestContextIdentity);
+    if (!isMountedRef.current || requestWorkspace !== workspaceIdentityRef.current) return { current: false, info: null };
+    // Cache freshness and user intent have different owners. A watcher event
+    // can invalidate this cache write without cancelling the user's action.
+    if (generation === cacheGenerationRef.current && requestVersion === targetRequestVersionRef.current.get(key)) cachePathInfo(target, info);
     return { current: true, info };
+
   }, [cachePathInfo, getTargetPathInfo]);
 
   const openTargetWithDefault = useCallback((target: FileActionTarget) => {
@@ -778,10 +807,11 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       if (!result.current || intentId !== openTargetIntentIdRef.current) return;
       const pathInfo = result.info;
       if (!pathInfo?.exists) {
-        toastRef.current?.error(t('fileActions.targetUnavailable'));
+        toastRef.current?.error(pathInfo?.error ? `${t('fileActions.checkFailed')}: ${pathInfo.error}` : t('fileActions.targetUnavailable'));
         return;
       }
 
+      if (pathInfo.resolvedPath) target = { ...target, scope: 'local', path: pathInfo.resolvedPath };
       if (options?.forceExternal) {
         openTargetWithDefault(target);
         return;
@@ -834,9 +864,10 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
       if (!result.current || intentId !== menuIntentIdRef.current) return;
       const pathInfo = result.info;
       if (!pathInfo?.exists) {
-        toastRef.current?.error(t('fileActions.targetUnavailable'));
+        toastRef.current?.error(pathInfo?.error ? `${t('fileActions.checkFailed')}: ${pathInfo.error}` : t('fileActions.targetUnavailable'));
         return;
       }
+      if (pathInfo.resolvedPath) target = { ...target, scope: 'local', path: pathInfo.resolvedPath };
       showFileMenu(x, y, target.path, pathInfo.type, options?.displayPath, {
         scope: target.scope,
         initialLineNumber: target.initialLineNumber,
@@ -1022,10 +1053,11 @@ export function FileActionProvider({ previewHandleRef, children, workspacePath, 
     checkFileTarget,
     subscribeFileTarget,
     cacheVersion,
+    refreshFileTarget: invalidateTarget,
     openFileTargetMenu,
     openFileTarget,
     workspacePath,
-  }), [checkPath, checkFileTarget, subscribeFileTarget, cacheVersion, openFileTargetMenu, openFileTarget, workspacePath]);
+  }), [checkPath, checkFileTarget, subscribeFileTarget, cacheVersion, invalidateTarget, openFileTargetMenu, openFileTarget, workspacePath]);
 
   const linkActionValue = useMemo<FileLinkActionContextValue>(() => ({
     openFileLink,

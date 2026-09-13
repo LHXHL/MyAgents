@@ -336,3 +336,34 @@ describe('resolveFileActionTarget', () => {
     });
   });
 });
+
+
+describe('file reference syntax preserves native identity', () => {
+  it.each(['src/App.tsx:42:7', 'file:///workspace/src/App.tsx:42:7'])('parses line before column in %s', reference => {
+    expect(resolveFileLinkTarget(reference, '/workspace')).toEqual({scope:'workspace', path:'src/App.tsx', initialLineNumber:42});
+  });
+  it.each(['Makefile', 'x', 'src/app/[id]/page.tsx', 'docs/plan (final).md', 'docs/rate%20.md', 'docs/note#chapter.md'])('preserves native %s', reference => {
+    expect(resolveFileActionTarget(reference, '/workspace', {parseLineReference:true})).toEqual({scope:'workspace', path:reference});
+  });
+  it('separates a document fragment from the filename', () => {
+    expect(resolveFileLinkTarget('docs/note.md#overview', '/workspace')).toEqual({scope:'workspace', path:'docs/note.md'});
+  });
+  it('routes home and sibling references through the local file owner', () => {
+    expect(resolveFileLinkTarget('~/notes.md', '/workspace')).toEqual({scope:'local', path:'~/notes.md'});
+    expect(resolveFileLinkTarget('../notes.md', '/workspace')).toEqual({scope:'local', path:'/workspace/../notes.md'});
+  });
+  it('handles filesystem root workspaces without doubling the separator', () => {
+    expect(resolveFileLinkTarget('D:/a.md', 'D:/')).toEqual({scope:'workspace', path:'a.md'});
+    expect(resolveFileLinkTarget('/a.md', '/')).toEqual({scope:'workspace', path:'a.md'});
+  });
+});
+
+
+describe('document paths crossing the workspace', () => {
+  it('retains rebased parent traversal as a local read target', () => {
+    expect(resolveFileLinkTarget('docs/../../outside.md', '/work/project')).toEqual({ scope: 'local', path: '/work/project/docs/../../outside.md' });
+  });
+  it('accepts native Windows parent references', () => {
+    expect(resolveFileLinkTarget('docs\\..\\..\\outside.md', 'C:\\work', 'native')).toEqual({ scope: 'local', path: 'C:/work/docs\\..\\..\\outside.md' });
+  });
+});

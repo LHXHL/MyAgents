@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createPortal } from 'react-dom';
 
 import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
@@ -104,11 +103,7 @@ export default function LinkContextMenuProvider({ children }: { children: React.
     return (
         <>
             {children}
-            {menu &&
-                createPortal(
-                    <ContextMenu x={menu.x} y={menu.y} items={items} onClose={closeMenu} />,
-                    document.body,
-                )}
+            {menu && <ContextMenu x={menu.x} y={menu.y} items={items} onClose={closeMenu} />}
         </>
     );
 }

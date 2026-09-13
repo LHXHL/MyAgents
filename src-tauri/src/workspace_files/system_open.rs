@@ -1,51 +1,7 @@
-//! "Open in Finder/Explorer" + "Open with default app".
-//!
-//! Four commands:
-//! - `cmd_workspace_open_in_finder` — workspace-relative path, reveals in OS
-//!   file manager (`open -R` / `explorer /select,` / `xdg-open <parent>`).
-//! - `cmd_workspace_open_with_default` — workspace-relative path, hands off
-//!   to the OS default-app dispatcher.
-//! - `cmd_open_path_external` (Phase D.5) — absolute path, used by the
-//!   Skill/Command detail panels to reveal `~/.myagents/skills/...` files
-//!   that live OUTSIDE any chat workspace. Validated against `home_dir` /
-//!   `tmp_dir` prefix (mirrors sidecar `/agent/open-path`) so a malicious
-//!   absolute path can't escape into `/etc` or similar.
-//! - `cmd_open_path_with_default` (issue #125) — absolute path, opens with
-//!   the OS default app. Used by BrowserPanel's "open in external browser"
-//!   button when previewing a local HTML file. Same safety surface as
-//!   `cmd_open_path_external` (canonicalize + home/tmp prefix + credential
-//!   blacklist) — only the spawn target differs (`open <path>` vs `open -R`).
-//!   The renderer's `openExternal()` helper detects `file://` URLs and
-//!   absolute paths and routes through this command, because Tauri's
-//!   `shell:allow-open` scope regex `^((mailto:\w+)|(tel:\w+)|(https?://\w+)).+`
-//!   rejects both. v0.2.7 had a partial fix that extracted the bare path
-//!   from `file://` and called `shell.open(<path>)` — that also failed the
-//!   regex (and produced `/C:/...` paths on Windows).
-//!
-//! Issue #125 follow-up: both `cmd_open_path_external` and
-//! `cmd_open_path_with_default` accept an optional `workspace` argument.
-//! When the caller is operating inside a chat workspace (BrowserPanel
-//! previewing a workspace HTML file, SkillDetailPanel revealing a
-//! project-scoped skill at `<project>/.claude/skills/<name>/`, etc.), the
-//! workspace root is canonicalized and added as a third trusted prefix
-//! alongside home/tmp. Otherwise Windows users with workspaces on `D:\`
-//! (or any non-system drive / mapped drive) hit `Path not allowed` because
-//! `D:\workspace\foo.html` doesn't start with `USERPROFILE` (typically
-//! `C:\Users\...`) nor with `%TEMP%`.
-//!
-//! The home-anchored credential blacklist (`<home>/.ssh`, `<home>/.aws`,
-//! `Library/Keychains`, …) still applies. It does NOT cover credential
-//! dirs placed inside the workspace (`<workspace>/.ssh/`) — that's
-//! consistent with the rest of the app's blacklist, which keys on the
-//! current user's home dir. The two extra workspace-arg defenses
-//! (filesystem-root rejection + canonicalized system-blacklist check)
-//! exist to keep `workspace = "/"` or `workspace = "/private"` from
-//! turning the home-anchored blacklist into the only line of defense.
-//!
-//! All variants fire-and-forget — the spawned command's stdout/stderr is
-//! dropped deliberately so we don't block the IPC reply. Rust
-//! `process_cmd::new` is used (not raw `std::process::Command`) so Windows
-//! builds suppress the console-window flash per the CLAUDE.md red-line.
+//! User-directed local file open/reveal. Workspace commands retain their
+//! containment checks; local commands canonicalize the target and allow
+//! ordinary files on any volume, retaining credential/system exclusions.
+//! They do not authorize editing, executing, or uploading the referenced file.
 
 use std::path::{Path, PathBuf};
 
@@ -54,12 +10,8 @@ use serde::Serialize;
 use super::path_safety::{resolve_existing_inside_workspace, validate_workspace_root};
 use crate::process_cmd;
 
-/// Optional workspace context passed by the renderer to widen the
-/// trusted-roots whitelist beyond home/tmp. `None` for callers that
-/// have no workspace concept (e.g. a global skill at
-/// `~/.myagents/skills/<name>/`); `Some(path)` for callers that know the
-/// path being opened belongs to a specific chat workspace (BrowserPanel
-/// preview, project-scope SkillDetailPanel / CommandDetailPanel).
+/// Retained wire context for callers; local read permission is determined by
+/// the actual file, independently of workspace mutation containment.
 type WorkspaceArg = Option<String>;
 
 #[derive(Debug, Serialize)]
@@ -106,11 +58,8 @@ pub async fn cmd_workspace_open_with_default(
 /// Skill/Command detail panels to open `~/.myagents/skills/<name>/SKILL.md`
 /// (which lives outside any chat workspace).
 ///
-/// Security model: the path must canonicalize to somewhere under the user's
-/// home directory or the system tmp directory. This mirrors sidecar
-/// `/agent/open-path` and rejects paths under `/etc`, `/System`, etc. Symlink
-/// escape is closed by canonicalizing both ends (the path AND the home dir)
-/// before the prefix check.
+/// Existing ordinary local files are allowed on any volume. The canonical
+/// target still passes the application's credential/system exclusions.
 #[tauri::command]
 pub async fn cmd_open_path_external(
     full_path: String,
@@ -151,155 +100,32 @@ pub async fn cmd_open_path_with_default(
     Ok(SystemOpenResult { success: true })
 }
 
-/// Validate that `full_path` (absolute) canonicalizes to somewhere safe to
-/// reveal in the OS file manager: under home_dir, tmp_dir, or — when the
-/// caller passes one — the active chat workspace root. The path MUST NOT
-/// resolve under any credential / system blacklist enforced by
-/// `validate_file_path` (`~/.ssh`, `~/.aws`, `Library/Keychains`,
-/// `/etc`, `C:\Windows`, etc.), and it must currently exist. Returns the
-/// canonical path on success.
-///
-/// Workspace whitelist (issue #125 follow-up): on Windows, workspaces
-/// frequently live on non-system drives (`D:\`, mapped drives), so the
-/// home/tmp predicate alone rejects every legitimate "open in external
-/// browser" / "reveal project skill" click. Trusting a caller-provided
-/// workspace closes that gap, but the workspace arg itself MUST be hardened:
-///
-/// 1. `validate_workspace_root` rejects blacklisted roots (`/etc`,
-///    `C:\Windows`, …).
-/// 2. We additionally reject filesystem roots (`/`, `C:\`, `D:\`, …).
-///    Without this, `workspace = "/"` passes step 1 (root is not in any
-///    blacklist), then `canonical.starts_with("/")` matches everything.
-///    On macOS the project-wide blacklist would still let `/etc/hosts`
-///    through that hole because `/etc` is a symlink to `/private/etc` and
-///    the blacklist matches the source rather than the canonicalized
-///    target — so anchoring the workspace at `/` would expose the entire
-///    filesystem to the credential blacklist's blind spots.
-///
-/// Note on workspace-relative credentials: the project-wide
-/// `validate_file_path` blacklist matches `<home>/.ssh`, `<home>/.gnupg`,
-/// etc. — NOT `<workspace>/.ssh`. A user who chooses to put credential
-/// directories inside their workspace (atypical) won't get extra
-/// protection from this command. The protection is best-effort and
-/// matches the rest of the app's surface; if/when the project-wide
-/// blacklist gains workspace-relative rules, this command inherits them
-/// for free.
-///
-/// Cross-review round 2 (Codex MED-1): the home/tmp prefix check alone is
-/// insufficient — `~/.ssh/id_rsa` lives under home and would slip through.
-/// Additionally calling `validate_file_path` (the project-wide credential
-/// blacklist used by templates / sidecar) closes that gap. The sidecar
-/// `/agent/open-path` did NOT have this guard; this is a deliberate
-/// hardening over the original behavior.
+/// User-directed local read/open policy. Ordinary files on external volumes
+/// and sibling workspaces are valid targets too. This does not authorize any
+/// workspace mutation; canonical credential/system exclusions still apply.
 pub(super) fn validate_external_open_path(
     full_path: &str,
-    workspace: Option<&str>,
+    _workspace: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let target = PathBuf::from(full_path);
+    let target = if let Some(relative) = full_path.strip_prefix("~/") {
+        home_dir()
+            .ok_or("Cannot resolve home directory")?
+            .join(relative)
+    } else {
+        PathBuf::from(full_path)
+    };
     if !target.is_absolute() {
         return Err("Path must be absolute".to_string());
     }
-    // Canonicalize the candidate first — fails clean if the path doesn't
-    // exist, which is the right surface for a reveal-in-finder call (the
-    // sidecar returned 404 in this case; we surface it as an error).
-    let canonical =
-        std::fs::canonicalize(&target).map_err(|_| "File or folder not found".to_string())?;
-
-    let home = home_dir().ok_or_else(|| "Cannot resolve home directory".to_string())?;
-    let canonical_home = std::fs::canonicalize(&home).unwrap_or(home);
-
+    let canonical = std::fs::canonicalize(&target).map_err(|error| error.to_string())?;
     let tmp = std::env::temp_dir();
     let canonical_tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
-
-    // Workspace prefix is canonicalized via the same path the rest of the
-    // workspace_files commands use. `validate_workspace_root` rejects
-    // blacklisted roots (`/etc`, `C:\Windows`, etc.). We additionally
-    // reject filesystem roots (`/`, drive roots like `C:\`) so a malicious
-    // caller can't pass `workspace = "/"` and turn `canonical.starts_with`
-    // into a tautology — which on macOS would expose `/etc/hosts` etc.
-    // because the blacklist matches `/etc` but canonicalize resolves to
-    // `/private/etc` (Codex cross-review HIGH-1, issue #125 follow-up).
-    let canonical_workspace: Option<PathBuf> = match workspace {
-        Some(w) if !w.trim().is_empty() => {
-            let resolved = validate_workspace_root(w.trim())?;
-            let canonical = std::fs::canonicalize(&resolved).unwrap_or(resolved);
-            if is_filesystem_root(&canonical) {
-                return Err("Workspace root must not be a filesystem root".to_string());
-            }
-            Some(canonical)
-        }
-        _ => None,
-    };
-
-    // Prefix-check against canonicalized roots so a symlink chain can't
-    // escape into /etc via a tmp/home/workspace-shaped lure.
-    let Some(TrustedPrefixMatch {
-        in_home,
-        in_tmp,
-        in_workspace,
-    }) = match_trusted_prefix(
-        &canonical,
-        &canonical_home,
-        &canonical_tmp,
-        canonical_workspace.as_deref(),
-    )
-    else {
-        return Err("Path not allowed".to_string());
-    };
-    // Apply the project-wide credential / system blacklist on the
-    // canonicalized path — blocks `~/.ssh`, `~/.gnupg`, `~/.aws`, Library/
-    // Keychains, Library/Cookies, etc. even though the home prefix passed.
-    //
-    // On Windows, `canonicalize` returns paths with the `\\?\` verbatim
-    // prefix, while `validate_file_path` builds blacklist roots via
-    // `home.join(".ssh")` etc. without that prefix. Strip the prefix via
-    // `normalize_external_path` first, otherwise `starts_with` comparisons
-    // inside `validate_file_path` would silently miss and let
-    // `~/.ssh/id_rsa` slip through (issue #125 cross-review).
-    //
-    // Note: `validate_file_path` keys on `<home>/.ssh` etc., NOT
-    // `<workspace>/.ssh` — a credential dir placed inside the workspace
-    // is NOT covered by this guard. That's consistent with the rest of
-    // the app's blacklist surface.
-    //
-    // Skip this lexical blacklist for tmp-trusted paths. On macOS the system
-    // temp dir canonicalizes under `/private/var/folders/...`, and
-    // `validate_file_path`'s (correctly stricter) `/private/var` entry would
-    // otherwise reject every `$TMPDIR` file — breaking reveal/open for
-    // SkillDetailPanel / CommandDetailPanel / GlobalPluginsPanel /
-    // useWorkspaceFileService (B1, cross-review). A path already proven under
-    // the canonical tmp root is trusted (symlink chains were resolved before
-    // the prefix match) and tmp never holds the credential dirs this blacklist
-    // guards. home paths still run it (they need the ~/.ssh etc. credential
-    // checks and never live under /private/var); workspace paths get the extra
-    // canonicalized re-check below.
-    if !in_tmp {
+    if !canonical.starts_with(&canonical_tmp) {
         let normalized = crate::sidecar::normalize_external_path(canonical.clone());
-        if let Some(s) = normalized.to_str() {
-            crate::commands::validate_file_path(s)?;
+        crate::commands::validate_file_path(&normalized.to_string_lossy())?;
+        if canonical_starts_with_canonical_blacklist(&canonical) {
+            return Err("Path not allowed".to_string());
         }
-    }
-
-    // Defense-in-depth against the macOS `/etc → /private/etc` symlink
-    // gap: `validate_file_path`'s blacklist is keyed lexically on `/etc`,
-    // but the canonical target `/private/etc/hosts` doesn't start_with
-    // `/etc`. Canonicalize each blacklisted system root ourselves and
-    // re-check. Without this, a renderer passing
-    // `workspace = "/private"` (which `validate_workspace_root` accepts)
-    // could open `/etc/hosts` because the canonical target lives under
-    // both the canonical workspace and the post-canonicalize form of
-    // `/etc`. Keeping this check inside the open-path command keeps the
-    // shared `validate_file_path` surface untouched (Codex re-review
-    // HIGH-1, #125 follow-up).
-    //
-    // Only applied when the path got through the prefix check **purely**
-    // via the workspace branch — paths under home/tmp are already
-    // trusted by the existing rules, and tmp on macOS lives under
-    // `/private/var/folders/...` which would otherwise trip the
-    // canonicalized `/var` entry.
-    if in_workspace && !in_home && !in_tmp && canonical_starts_with_canonical_blacklist(&canonical)
-    {
-        return Err("Path not allowed".to_string());
     }
     Ok(canonical)
 }
@@ -354,50 +180,6 @@ fn canonical_starts_with_canonical_blacklist(canonical: &Path) -> bool {
 /// at least one `Component::Normal` is portable across Unix / Windows /
 /// the verbatim-prefix variants `canonicalize` produces on Windows.
 ///
-/// Used to reject `workspace = "/"` etc. — see `validate_external_open_path`.
-fn is_filesystem_root(path: &Path) -> bool {
-    !path
-        .components()
-        .any(|c| matches!(c, std::path::Component::Normal(_)))
-}
-
-/// Outcome of the trusted-prefix check. The downstream blacklist logic
-/// branches on `in_home` / `in_tmp` (existing trust) vs `in_workspace`
-/// only (workspace branch wants extra canonicalized-blacklist scrutiny).
-struct TrustedPrefixMatch {
-    in_home: bool,
-    in_tmp: bool,
-    in_workspace: bool,
-}
-
-/// Pure predicate over canonicalized inputs: returns `Some(match)` if
-/// `canonical` starts with **any** of `canonical_home`, `canonical_tmp`,
-/// or `canonical_workspace`, otherwise `None`. Extracted so the
-/// workspace branch is unit-testable without filesystem setup.
-fn match_trusted_prefix(
-    canonical: &Path,
-    canonical_home: &Path,
-    canonical_tmp: &Path,
-    canonical_workspace: Option<&Path>,
-) -> Option<TrustedPrefixMatch> {
-    let in_home = canonical.starts_with(canonical_home);
-    let in_tmp = canonical.starts_with(canonical_tmp);
-    let in_workspace = canonical_workspace
-        .map(|ws| canonical.starts_with(ws))
-        .unwrap_or(false);
-    if !in_home && !in_tmp && !in_workspace {
-        return None;
-    }
-    Some(TrustedPrefixMatch {
-        in_home,
-        in_tmp,
-        in_workspace,
-    })
-}
-
-/// Cross-platform home dir lookup. We avoid the `home` crate to keep
-/// dependencies tight; `HOME` (Unix) / `USERPROFILE` (Windows) are stable
-/// since the early '90s and the rest of the codebase already relies on them.
 fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -575,7 +357,7 @@ mod tests {
     fn validate_external_open_rejects_etc() {
         let res = validate_external_open_path("/etc/hosts", None);
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("not allowed"));
+        assert!(res.unwrap_err().contains("denied"));
     }
 
     // Issue #125 follow-up: a workspace path outside home/tmp (the canonical
@@ -659,22 +441,12 @@ mod tests {
     // `validate_file_path`'s `/etc` blacklist entry.
     #[cfg(not(windows))]
     #[test]
-    fn validate_external_open_rejects_filesystem_root_workspace() {
+    fn ordinary_local_file_is_not_rejected_by_root_workspace_context() {
         let p = std::env::temp_dir().join(format!("ws_open_root_arg_{}", std::process::id()));
         fs::write(&p, "x").unwrap();
         let res = validate_external_open_path(p.to_string_lossy().as_ref(), Some("/"));
+        assert!(res.is_ok());
         let _ = fs::remove_file(&p);
-        assert!(
-            res.is_err(),
-            "workspace='/' must be rejected, got {:?}",
-            res
-        );
-        let err = res.unwrap_err();
-        assert!(
-            err.contains("filesystem root") || err.contains("not allowed"),
-            "expected filesystem-root rejection, got: {}",
-            err
-        );
     }
 
     // Concrete macOS regression: the bypass that motivated the filesystem-
@@ -698,89 +470,6 @@ mod tests {
     // the host's home/tmp layout. Codex re-review MED-2: the original
     // workspace test passed via the tmp fallback under macOS, so the
     // workspace branch wasn't being verified.
-    #[test]
-    fn match_trusted_prefix_workspace_only() {
-        // canonical lives under workspace, NOT under home or tmp.
-        let m = match_trusted_prefix(
-            Path::new("/data/project/foo.html"),
-            Path::new("/Users/alice"),
-            Path::new("/private/var/folders/x"),
-            Some(Path::new("/data/project")),
-        )
-        .expect("path under workspace must match");
-        assert!(!m.in_home);
-        assert!(!m.in_tmp);
-        assert!(m.in_workspace);
-    }
-
-    #[test]
-    fn match_trusted_prefix_rejects_outside_all() {
-        let m = match_trusted_prefix(
-            Path::new("/elsewhere/foo.html"),
-            Path::new("/Users/alice"),
-            Path::new("/private/var/folders/x"),
-            Some(Path::new("/data/project")),
-        );
-        assert!(m.is_none(), "path outside all roots must fail");
-    }
-
-    #[test]
-    fn match_trusted_prefix_no_workspace_arg_uses_home_only() {
-        // Without a workspace arg, only home/tmp are trusted.
-        let m = match_trusted_prefix(
-            Path::new("/Users/alice/project/foo.html"),
-            Path::new("/Users/alice"),
-            Path::new("/private/var/folders/x"),
-            None,
-        )
-        .expect("home path must match");
-        assert!(m.in_home);
-        assert!(!m.in_tmp);
-        assert!(!m.in_workspace);
-    }
-
-    #[test]
-    fn match_trusted_prefix_overlap_marks_both_branches() {
-        // Workspace inside home — both branches should match. Downstream
-        // logic uses the in_home flag to skip the canonical blacklist.
-        let m = match_trusted_prefix(
-            Path::new("/Users/alice/project/foo.html"),
-            Path::new("/Users/alice"),
-            Path::new("/private/var/folders/x"),
-            Some(Path::new("/Users/alice/project")),
-        )
-        .expect("path matches both home and workspace");
-        assert!(m.in_home);
-        assert!(m.in_workspace);
-    }
-
-    // Sanity check for `is_filesystem_root` — Unix, Windows drive,
-    // verbatim, and UNC shapes.
-    #[test]
-    fn is_filesystem_root_recognizes_roots_and_paths() {
-        assert!(is_filesystem_root(Path::new("/")));
-        assert!(!is_filesystem_root(Path::new("/Users/foo")));
-        assert!(!is_filesystem_root(Path::new("/tmp/x")));
-        // Verbatim / drive / UNC Windows shapes — all should be classified
-        // as roots when no Normal component follows. UNC `\\server\share`
-        // is treated as a root (a share root is structurally equivalent
-        // to a drive root); `\\server\share\project` has a Normal segment
-        // and is therefore not a root.
-        #[cfg(windows)]
-        {
-            assert!(is_filesystem_root(Path::new("C:\\")));
-            assert!(is_filesystem_root(Path::new("\\\\?\\C:\\")));
-            assert!(!is_filesystem_root(Path::new("C:\\Users\\foo")));
-            assert!(is_filesystem_root(Path::new("\\\\server\\share")));
-            assert!(!is_filesystem_root(Path::new("\\\\server\\share\\project")));
-        }
-    }
-
-    // Codex re-review: the macOS `/etc → /private/etc` gap also reaches
-    // `/private` and `/private/etc` as workspace args. `/etc/hosts`
-    // canonicalizes to `/private/etc/hosts`, which under the lexical
-    // blacklist `/etc` does NOT match. The canonicalized-blacklist
-    // re-check must close this.
     #[cfg(target_os = "macos")]
     #[test]
     fn validate_external_open_rejects_etc_hosts_via_private_workspace() {
