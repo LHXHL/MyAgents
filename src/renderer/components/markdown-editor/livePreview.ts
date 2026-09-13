@@ -9,6 +9,7 @@ export interface Projection {
   /** Immutable CM document identity; a table never copies all its cells to React. */
   tableDocument?: Text;
   containerPrefix?: string;
+  nestedContainer?: boolean;
   definitions?: string;
   footnoteNumbers?: ReadonlyMap<string, number>;
 }
@@ -40,7 +41,7 @@ class RenderWidget extends WidgetType {
   constructor(readonly projection: Projection, readonly block: boolean) { super(); }
   eq(other: RenderWidget) {
     const a = this.projection, b = other.projection;
-    return a.kind === b.kind && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
+    return a.kind === b.kind && a.from === b.from && a.to === b.to && a.source === b.source && a.tableDocument === b.tableDocument && a.renderSource === b.renderSource && a.containerPrefix === b.containerPrefix && a.nestedContainer === b.nestedContainer && a.definitions === b.definitions && a.footnoteNumbers === b.footnoteNumbers;
   }
   toDOM(view: EditorView) {
     const element = document.createElement(this.block ? 'div' : 'span');
@@ -57,6 +58,7 @@ class RenderWidget extends WidgetType {
     return true;
   }
   decorateContainer(element: HTMLElement) {
+    element.classList.toggle('md-projection-nested', this.projection.nestedContainer === true);
     const prefix = this.projection.containerPrefix ?? '';
     element.classList.toggle('md-projection-quoted', prefix.includes('>'));
     const marker = /([-+*]|\d+[.)])\s*$/.exec(prefix)?.[1];
@@ -157,12 +159,16 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
       // Table input lives in a cell projection. A parent cursor alone must not
       // turn the entire table into source (explicit source action does).
       const renderSource = name === 'MathBlock' ? '$$\n' + node.node.getChildren('MathText').map(part => state.sliceDoc(part.from, part.to)).join('\n') + '\n$$' : undefined;
+      let nestedContainer = false;
+      for (let parent = node.node.parent; parent; parent = parent.parent) {
+        if (parent.name === 'ListItem' || parent.name === 'Blockquote') { nestedContainer = true; break; }
+      }
       const lineStart = state.doc.lineAt(a).from, prefix = state.sliceDoc(lineStart, a);
       const blockStart = /^[\s>]*(?:(?:[-+*]|\d+[.)])\s+)?$/.test(prefix) ? lineStart : a;
       if (blockStart < a) {
         for (let index = ranges.length - 1; index >= 0; index--) if (ranges[index].from >= blockStart && ranges[index].to <= a) ranges.splice(index, 1);
       }
-      add(blockStart, b, Decoration.replace({ block: true, widget: new RenderWidget({ kind: name, from: a, to: b, source: name === 'Table' ? '' : text(), tableDocument: name === 'Table' ? state.doc : undefined, renderSource, containerPrefix: blockStart < a ? prefix : undefined, definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, true) }));
+      add(blockStart, b, Decoration.replace({ block: true, widget: new RenderWidget({ kind: name, from: a, to: b, source: name === 'Table' ? '' : text(), tableDocument: name === 'Table' ? state.doc : undefined, renderSource, nestedContainer, containerPrefix: blockStart < a ? prefix : undefined, definitions: state.field(definitions).source, footnoteNumbers: state.field(definitions).footnoteNumbers }, true) }));
       return false;
     }
     if ((['Image', 'InlineMath', 'FootnoteReference'].includes(name) || name === 'Link' && !node.node.getChild('URL')) && !selected(a, b) && !isRaw(a, b)) {

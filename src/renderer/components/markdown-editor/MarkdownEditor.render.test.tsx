@@ -6,7 +6,7 @@ vi.mock('@/hooks/useTauriFileDrop', () => ({ useTauriFileDrop: () => ({ register
 vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ isAvailable: false }) }));
 vi.mock('@/context/BrowserPanelContext', () => ({ useOpenWebLink: () => vi.fn() }));
 vi.mock('@/context/fileActionState', () => ({ useFileLinkAction: () => null, useFileAction: () => null, useFileTargetInfo: () => null }));
-vi.mock('../Toast', () => ({ useToast: () => ({ error: vi.fn() }) }));
+vi.mock('../Toast', () => ({ useToast: () => ({ error: vi.fn() }), useToastOptional: () => null }));
 vi.mock('@/theme', () => {
   const theme = { adapters: { prism: {} }, resolvedColorScheme: 'light' };
   return { useResolvedTheme: () => theme };
@@ -42,6 +42,17 @@ describe('live projections through the real sanitized Markdown pipeline', () => 
     await act(async () => ref.current?.replaceSource(edited, false));
     await waitFor(() => expect(markers()).toEqual(['•', '◦', '◦', '◦']));
     expect(ref.current?.getSource()).toBe(edited);
+  });
+
+  it.each(['- Item', '1. Item'])('constrains tables in list continuations (%s) and refreshes after unnesting', async (item) => {
+    const table = '| A | B |\n| --- | --- |\n| value | second |';
+    const source = item + '\n\n' + table.split('\n').map(line => '   ' + line).join('\n');
+    const ref = createRef<MarkdownEditorHandle>();
+    const { container } = render(<MarkdownEditor ref={ref} path="nested.md" initialSource={source} sourceMode={false} allowImages={false} onChange={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('.md-projection-Table')?.classList.contains('md-projection-nested')).toBe(true));
+    expect(ref.current?.getSource()).toBe(source);
+    await act(async () => ref.current?.replaceSource(table, false));
+    await waitFor(() => expect(container.querySelector('.md-projection-Table')?.classList.contains('md-projection-nested')).toBe(false));
   });
 
 });

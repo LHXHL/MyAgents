@@ -406,3 +406,47 @@
     overflow-y: hidden;
   }
 }
+
+/* Width belongs to the pane, not the window: sidebars and split previews stay clear. */
+.markdown-wide-surface, .md-editor-host { container: markdown-surface / inline-size; }
+.markdown-table { position:relative; min-width:0; max-width:100%; padding-right:36px; }
+.md-editor-host .md-table-shell { max-width:100%; min-width:0; padding-right:36px; }
+.markdown-table-scroll { max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; }
+.markdown-wide-surface .ai-message-content > .markdown-content:not(.markdown-content--compact) > .markdown-table,
+.md-editor-host .md-projection-Table:not(.md-projection-nested) > .md-table-shell {
+  width:max-content;
+  min-width:100%;
+  max-width:max(100%, calc(100cqw - 104px));
+  position:relative;
+  left:50%;
+  transform:translateX(-50%);
+  padding-right:36px;
+}
+.markdown-table-actions {
+  position:absolute; top:4px; right:0; z-index:2;
+  display:flex; flex-direction:column; gap:2px;
+  padding:2px; border:1px solid var(--line); border-radius:var(--radius-md);
+  background:var(--paper-elevated); box-shadow:var(--shadow-xs);
+  opacity:0; pointer-events:none; transition:opacity .12s;
+}
+.markdown-table:hover > .markdown-table-actions,
+.markdown-table:focus-within > .markdown-table-actions,
+.md-table-shell:hover > .markdown-table-actions,
+.md-table-shell:focus-within > .markdown-table-actions { opacity:1; pointer-events:auto; }
+.markdown-table-actions button,
+.md-editor-shell .markdown-table-actions button {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; min-height:28px; padding:0;
+  color:var(--ink-secondary); border-radius:var(--radius);
+}
+.markdown-table-actions button:hover { color:var(--ink); background:var(--hover-bg); }
+.markdown-table-actions button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.markdown-table-actions button[aria-disabled="true"] { opacity:.5; cursor:wait; }
+.markdown-table-error { position:absolute; right:0; top:100%; width:180px; padding:8px; background:var(--paper-elevated); color:var(--error); font-size:var(--text-xs); }
+@container markdown-surface (min-width:860px) {
+  .markdown-wide-surface .ai-message-content > .markdown-content:not(.markdown-content--compact) > .markdown-table,
+  .md-editor-host .md-projection-Table:not(.md-projection-nested) > .md-table-shell { padding-right:0; }
+  .markdown-wide-surface .ai-message-content > .markdown-content:not(.markdown-content--compact) > .markdown-table > .markdown-table-actions,
+  .md-editor-host .md-projection-Table:not(.md-projection-nested) > .md-table-shell > .markdown-table-actions { right:-36px; }
+}
+@media (hover:none) { .markdown-table-actions { opacity:1; pointer-events:auto; } }

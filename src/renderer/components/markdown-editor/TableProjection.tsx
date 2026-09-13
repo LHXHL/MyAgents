@@ -12,6 +12,9 @@ import CustomSelect from '../CustomSelect';
 import { importImage } from './imageImport';
 import { compositionGate } from './compositionGate';
 import { editLink, wrapSelection } from './editorCommands';
+import TableActions from '../markdown/TableActions';
+import { editorTableSnapshot } from './tableExport';
+import type { TableSnapshot } from '@/utils/tableExport';
 
 interface Props { projection: Projection; view: EditorView; workspacePath?: string | null; basePath: string; focused: boolean; presentationActive?: boolean; onActivate(): void }
 
@@ -190,6 +193,12 @@ export default function TableProjection({ projection, view, workspacePath, baseP
   const extraTo = rowCount < 60 ? rowCount : Math.min(rowCount, rowWindow.to + 1);
   const extraCells = Array.from({ length: extraTo - extraFrom }, (_, index) => model.rows.at(extraFrom + index)).some(row => row && row.cells.length > model.columns);
   return <div className="md-table-shell">
+    <TableActions disabled={!presentationActive} getSnapshot={() => new Promise<TableSnapshot>((resolve, reject) => {
+      void view.state.facet(compositionGate).run(() => {
+        try { resolve(editorTableSnapshot(view.state, latest.current.projection.from)); }
+        catch (error) { reject(error); }
+      }).then(executed => { if (!executed) reject(new Error('Editor closed')); });
+    })} />
     <div className="md-block-actions">
       <CustomSelect ariaLabel={t('markdownEditor.table.actions')} placeholder={t('markdownEditor.table.actions')} compact popoverMinWidth={208} disabled={!presentationActive} value="" onChange={value => act(value as TableAction)}
         options={(['row-before', 'row-after', 'delete-row', 'column-before', 'column-after', 'delete-column', 'align-left', 'align-center', 'align-right'] as const)

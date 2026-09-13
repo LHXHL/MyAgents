@@ -665,7 +665,7 @@ const MessageList = memo(function MessageList({
     <MessageListPresentationContext.Provider value={canLayoutVirtualList}>
     <div
       ref={viewportRootRef}
-      className="relative flex-1"
+      className="relative flex-1 markdown-wide-surface"
       data-streaming={isStreaming || undefined}
       data-viewport-phase={isViewportRecoveryFenced ? 'recovering' : (canLayoutVirtualList ? 'renderable' : 'suspended')}
       style={isViewportRecoveryFenced && windowPresentation.surfaceAvailable

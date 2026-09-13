@@ -54,7 +54,7 @@ span.md-projection p { display:inline; }
 .md-table-shell { padding:4px 0 12px; }
 .md-table-shell > .md-block-actions { top:-34px; display:flex; align-items:center; gap:2px; white-space:nowrap; }
 .md-table-scroll { overflow-x:auto; overscroll-behavior-x:contain; border:1px solid var(--line); border-radius:var(--md-block-radius); }
-.md-table-shell table { font-weight:var(--font-weight-prose); border-collapse:separate; border-spacing:0; width:100%; table-layout:fixed; font-size:14px; line-height:22px; }
+.md-table-shell table { font-weight:var(--font-weight-prose); border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; table-layout:auto; font-size:14px; line-height:22px; }
 .md-table-shell td, .md-table-shell th { border:0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:6px 10px; min-width:96px; vertical-align:top; outline:none; }
 .md-table-shell tr > :last-child { border-right:0; }
 .md-table-shell tr:last-child > * { border-bottom:0; }

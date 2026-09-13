@@ -193,6 +193,11 @@
     "configureModel": "Configure a model first →"
   },
   "markdown": {
+    "tableActions": "Table actions",
+    "copyTable": "Copy table",
+    "downloadTable": "Download Excel",
+    "tableCopied": "Table copied",
+    "tableActionFailed": "Table action failed. Try again.",
     "copyCode": "Copy code",
     "copy": "Copy",
     "copied": "Copied",

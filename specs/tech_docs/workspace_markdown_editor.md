@@ -40,6 +40,8 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 
 阅读角色与共享Markdown一致：正文500、标题/强调600；CM语法高亮也消费同一字重token。mini cell使用所在th/td的字体角色，避免进入编辑时回退normal；代码、整篇/局部源码明确保持normal。mark/kbd投影直接服从共享Markdown样式。列表标记由语法祖先深度决定，widget equality包含深度以支持缩进变化；只改变装饰，不改写源码空白。标题行高消费现有Type Scale，源码空行保持原编辑语义，不把阅读段落margin施加到每一cm-line。
 
+整表复制/下载复用阅读表格的 TableActions、剪贴板及下载 transport。动作经 CompositionGate 等待已开始的输入完成，然后只读当前 CM 文档；按源位置用共享 Markdown pipeline 定位对应表格，避免虚拟 DOM 或尚未完成的增量语法树截断导出行，并保留文档级引用定义。解析仅在显式导出时发生，不进入逐键/逐帧渲染。宽表使用面板 container 的可用宽度与表格自然列宽；嵌套由语法祖先判定（包括列表续段），表格不越出引用/列表边界。
+
 查找仍以 CM SearchQuery / Panel 为 authority，`EditorSearchPanel` 仅把 panel 当前 query/readOnly 投影进 React portal；修改查询、前后导航、多选和替换调用原生 CM effect/command，替换进入同一父文档 history。主 CM 开启多选及原生 drawSelection，避免“选择全部匹配”被归一化为单选。快捷键使用 search-panel scope；选择工具栏不包含查找。面板占用顶部布局槽并靠右，避免覆盖正文；进阶选项/替换复用 Popover，实际 portal DOM 挂载时移动焦点，Escape 先关闭选项并返回触发按钮，再关闭查找。
 
 全局/局部源码的退出控件由编辑器统一作为顶部居中的独立浮层显示，覆盖正文而不占文档流、不增加标题栏或正文顶部留白；只有按钮接收指针事件，外围区域可穿透到正文，层级低于查找/链接浮层。退出后焦点回到同一个文档。圆角、面板和搜索高亮引用既有主题 token；表格圆角在水平滚动容器外框裁切，虚拟占位行不增加边框/间距；代码首部与末行分别应用相同圆角，不改写源码或增加每行垂直间距。
@@ -81,4 +83,4 @@ Theme 经 `@/theme` 公共 API 读取；CM syntax colors 从既有 `adapters.pri
 
 DOM composition 事件仅证明调度和 view identity，不能代替真实输入法验收。Chrome 或独立 WKWebView 的开发态 harness 也不能证明真实 Tauri OS drop、Windows WebView2 或完整 cold 性能。具体发布证据与尚未关闭的 mandatory 检查留在对应 PRD 执行台账，不把未测项写成实现已通过。
 
-表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。
+表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，渲染/编辑热路径中仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。

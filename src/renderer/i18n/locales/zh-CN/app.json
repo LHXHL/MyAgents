@@ -193,6 +193,11 @@
     "configureModel": "请先配置模型 →"
   },
   "markdown": {
+    "tableActions": "表格操作",
+    "copyTable": "复制表格",
+    "downloadTable": "下载 Excel",
+    "tableCopied": "已复制表格",
+    "tableActionFailed": "表格操作失败，请重试。",
     "copyCode": "复制代码",
     "copy": "复制",
     "copied": "已复制",

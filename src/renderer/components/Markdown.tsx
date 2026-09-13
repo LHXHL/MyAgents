@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 
 import CodeBlock from './markdown/CodeBlock';
 import InlineCode from './markdown/InlineCode';
+import MarkdownTable from './markdown/MarkdownTable';
 const MermaidDiagram = lazy(() => import('./markdown/MermaidDiagram'));
 import { useOpenWebLink } from '@/context/BrowserPanelContext';
 import { useFileAction, useFileLinkAction } from '@/context/fileActionState';
@@ -192,15 +193,7 @@ const PreComponent: Components['pre'] = ({ children }) => {
   return <>{children}</>;
 };
 
-// Custom table components for better styling
-const TableComponent: Components['table'] = ({ children }) => (
-  <div className="markdown-table max-w-full overflow-x-auto rounded-lg border border-[var(--line)]">
-    <table className="m-0 min-w-full divide-y divide-[var(--line)]">
-      {children}
-    </table>
-  </div>
-);
-
+// Shared table surface and per-table actions.
 const TableHeadComponent: Components['thead'] = ({ children }) => (
   <thead className="bg-[var(--paper-inset)]/40">{children}</thead>
 );
@@ -317,7 +310,7 @@ const markdownComponents: Components = {
   a: MarkdownLink,
   code: CodeComponent,
   pre: PreComponent,
-  table: TableComponent,
+  table: MarkdownTable,
   thead: TableHeadComponent,
   tr: TableRowComponent,
   td: TableCellComponent,

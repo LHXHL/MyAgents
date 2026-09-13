@@ -54,7 +54,7 @@ describe("Markdown typography contract", () => {
     expect(root?.querySelector("blockquote")).toHaveClass(
       "markdown-blockquote",
     );
-    expect(root?.querySelector("table")?.parentElement).toHaveClass(
+    expect(root?.querySelector("table")?.closest(".markdown-table")).toHaveClass(
       "markdown-table",
       "max-w-full",
     );

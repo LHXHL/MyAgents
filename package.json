@@ -140,9 +140,12 @@
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
     "sharp": "0.34.5",
     "socks": "^2.8.7",
     "undici": "^8.1.0",
+    "unified": "11.0.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.1.12"
   },
