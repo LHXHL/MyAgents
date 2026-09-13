@@ -209,7 +209,7 @@ export default function TableProjection({ projection, view, workspacePath, baseP
       <button onClick={() => { void view.state.facet(compositionGate).run(() => { view.dispatch({ effects: revealBlock.of(latest.current.projection), selection: { anchor: latest.current.projection.from } }); view.focus(); }); }}>{t('markdownEditor.editSource')}</button>
     </div>
     {extraCells && <span className="md-table-extra">{t('markdownEditor.table.extraCells')}</span>}
-    <div className="md-table-scroll"><table ref={tableElement}><tbody>
+    <div className="md-table-scroll overflow-x-auto"><table ref={tableElement}><tbody>
       {(() => {
         const indices = rowCount < 60 ? Array.from({ length: rowCount }, (_, index) => index) : [0, ...Array.from({ length: Math.max(0, rowWindow.to - rowWindow.from + 1) }, (_, index) => rowWindow.from + index)];
         if (focused && active && !indices.includes(active.row)) indices.push(active.row);

@@ -9,7 +9,7 @@ const MarkdownTable: Components['table'] = ({ children, node }) => {
   useTableIntrinsicSizing(tableRef);
   return (
   <div className="markdown-table max-w-full">
-    <div className="markdown-table-scroll rounded-lg border border-[var(--line)]">
+    <div className="markdown-table-scroll overflow-x-auto rounded-lg border border-[var(--line)]">
       <table ref={tableRef} className="m-0 min-w-full divide-y divide-[var(--line)]">{children}</table>
     </div>
     {node && <TableActions getSnapshot={() => tableSnapshotFromHast(node)} />}

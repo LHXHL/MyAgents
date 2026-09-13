@@ -1,6 +1,7 @@
 import { act, render, waitFor } from '@testing-library/react';
 import { createRef } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { resolveHorizontalGestureOwnership } from '@/hooks/tabSwipeGestureOwnership';
 import MarkdownEditor, { type MarkdownEditorHandle } from './MarkdownEditor';
 vi.mock('@/hooks/useTauriFileDrop', () => ({ useTauriFileDrop: () => ({ registerZone: vi.fn(), unregisterZone: vi.fn() }) }));
 vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ isAvailable: false }) }));
@@ -53,6 +54,20 @@ describe('live projections through the real sanitized Markdown pipeline', () => 
     expect(ref.current?.getSource()).toBe(source);
     await act(async () => ref.current?.replaceSource(table, false));
     await waitFor(() => expect(container.querySelector('.md-projection-Table')?.classList.contains('md-projection-nested')).toBe(false));
+  });
+
+  it('exposes the live table scroller to the app gesture ownership gate', async () => {
+    const { container } = render(<MarkdownEditor path="table.md" initialSource={'| A | B |\n| --- | --- |\n| value | second |'} sourceMode={false} allowImages={false} onChange={vi.fn()} onSave={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('.md-table-scroll td')).not.toBeNull());
+    const scroller = container.querySelector<HTMLElement>('.md-table-scroll')!;
+    Object.defineProperties(scroller, { clientWidth: { value: 100 }, scrollWidth: { value: 300 } });
+    const owners: string[] = [];
+    container.addEventListener('wheel', event => { owners.push(resolveHorizontalGestureOwnership(event, container).owner); });
+    for (const scrollLeft of [0, 100, 200]) {
+      scroller.scrollLeft = scrollLeft;
+      scroller.querySelector('td')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 96 }));
+    }
+    expect(owners).toEqual(['inner-horizontal', 'inner-horizontal', 'inner-horizontal']);
   });
 
   it('sizes a footnoted short cell from its visible reference, excluding hidden definition bodies', async () => {

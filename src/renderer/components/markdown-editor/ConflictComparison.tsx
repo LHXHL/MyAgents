@@ -100,7 +100,7 @@ export default function ConflictComparison({ snapshot, stale, visible: open = tr
       <div className="md-conflict-panes">
         {(['local', 'disk'] as const).map(side => <div className="md-conflict-pane" key={side}>
           <div className="md-conflict-pane-heading"><strong>{t(`markdownEditor.conflict.${side}`)}</strong><button disabled={locked} onClick={() => selectAll(side)}>{t('markdownEditor.conflict.useAll')}</button></div>
-          <div className="md-conflict-lines" ref={element => { paneRefs.current[side] = element; }} onScroll={event => {
+          <div className="md-conflict-lines overflow-auto" ref={element => { paneRefs.current[side] = element; }} onScroll={event => {
             const top = event.currentTarget.scrollTop; setScrollTop(top);
             const rowIndex = Math.min(visible.length - 1, Math.floor(top / 26));
             const anchor = visible[rowIndex];

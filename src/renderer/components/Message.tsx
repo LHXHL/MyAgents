@@ -439,7 +439,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
           {/* 用户与 AI 正文都由 Markdown 默认变体承载 16px/1.625；article 的
               text-base 只负责气泡内非 Markdown prose fallback。 */}
           <div className="group/user-actions flex w-fit max-w-[85%] flex-col items-end">
-            <article className="relative w-fit max-w-full rounded-2xl border border-[var(--line)] bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
+            <article className="relative w-fit max-w-full rounded-2xl bg-[var(--message-user-bg)] p-4 text-base text-[var(--ink)] select-text">
               {/* System injection tag badge */}
               {systemTag && (
                 <div className="mb-2 -mt-0.5">

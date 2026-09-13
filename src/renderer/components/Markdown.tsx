@@ -305,9 +305,16 @@ const HrComponent: Components['hr'] = () => (
   <hr className="markdown-rule border-[var(--line)]" />
 );
 
+// Display math is a native horizontal scroller, including in live preview.
+const SpanComponent: Components['span'] = ({ className, node: _node, ...props }) => (
+  <span {...props} className={className?.split(' ').includes('katex-display')
+    ? `${className} overflow-x-auto` : className} />
+);
+
 // Combine all custom components
 const markdownComponents: Components = {
   a: MarkdownLink,
+  span: SpanComponent,
   code: CodeComponent,
   pre: PreComponent,
   table: MarkdownTable,

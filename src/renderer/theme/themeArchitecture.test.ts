@@ -89,6 +89,8 @@ describe('Theme architecture guardrails', () => {
 
   it('keeps the global sidebar structural surface scoped to App Shell chrome', () => {
     const consumers = rendererSourceFiles()
+      // Theme definitions may alias message surfaces; UI consumers stay scoped.
+      .filter(file => !file.startsWith(`${root}/src/renderer/theme/themes/`))
       .filter(file => source(file.slice(root.length + 1)).includes('var(--global-sidebar-bg)'))
       .map(file => file.slice(root.length + 1));
 
