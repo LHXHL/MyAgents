@@ -54,6 +54,40 @@ pub(super) struct CliProxyManager<R: tauri::Runtime = tauri::Wry> {
     shutdown: watch::Sender<bool>,
 }
 
+// A successful oneshot send is not proof that the HTTP awaiter consumed it.
+// Keep the grant owned while buffered; dropping either side releases exactly
+// this lease until acquire hands it to the existing binding/release protocol.
+struct UnclaimedBinding<R: tauri::Runtime> {
+    manager: Arc<CliProxyManager<R>>,
+    request: LeaseRequest,
+    sidecar_generation: u64,
+    binding: Option<Binding>,
+}
+impl<R: tauri::Runtime> UnclaimedBinding<R> {
+    fn claim(mut self) -> Binding {
+        self.binding
+            .take()
+            .expect("binding can only be claimed once")
+    }
+}
+impl<R: tauri::Runtime> Drop for UnclaimedBinding<R> {
+    fn drop(&mut self) {
+        if let Some(binding) = self.binding.take() {
+            let manager = Arc::clone(&self.manager);
+            let request = LeaseRequest {
+                sidecar_id: self.request.sidecar_id.clone(),
+                operation_id: self.request.operation_id.clone(),
+                lease_id: Some(binding.lease_id),
+                terminal: None,
+            };
+            let generation = self.sidecar_generation;
+            tauri::async_runtime::spawn(async move {
+                let _ = manager.release(&request, generation).await;
+            });
+        }
+    }
+}
+
 impl<R: tauri::Runtime> CliProxyManager<R> {
     pub fn new(app: tauri::AppHandle<R>) -> Result<Arc<Self>> {
         let data = crate::app_dirs::myagents_data_dir().ok_or_else(Error::storage)?;
@@ -1375,6 +1409,39 @@ impl<R: tauri::Runtime> CliProxyManager<R> {
         request: BindingRequest,
         sidecar_generation: u64,
     ) -> Result<Binding> {
+        // Component birth belongs to the App, not the HTTP awaiter. A model
+        // switch or caller timeout must not drop start_for between publishing
+        // its child and completing readiness/attempt/pointer settlement.
+        let manager = Arc::clone(self);
+        let (reply, received) = tokio::sync::oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let abandoned = LeaseRequest {
+                sidecar_id: request.sidecar_id.clone(),
+                operation_id: request.operation_id.clone(),
+                lease_id: None,
+                terminal: None,
+            };
+            let result = manager.acquire_owned(request, sidecar_generation).await;
+            let result = result.map(|binding| UnclaimedBinding {
+                manager,
+                request: abandoned,
+                sidecar_generation,
+                binding: Some(binding),
+            });
+            // Failed send or unread buffered value both drop the grant owner.
+            let _ = reply.send(result);
+        });
+        received
+            .await
+            .map_err(|_| Error::cancelled())?
+            .map(UnclaimedBinding::claim)
+    }
+
+    async fn acquire_owned(
+        self: &Arc<Self>,
+        request: BindingRequest,
+        sidecar_generation: u64,
+    ) -> Result<Binding> {
         if Uuid::parse_str(&request.operation_id).is_err()
             || request.model.is_empty()
             || request.model.len() > 256
@@ -2448,6 +2515,158 @@ mod tests {
             self.processes.push(Arc::clone(&instance));
             instance
         }
+    }
+
+    #[tokio::test]
+    async fn successful_grant_is_owned_until_received_even_after_send() {
+        let _serial = LIFECYCLE.lock().await;
+        for delivery in ["closed-before-send", "dropped-after-send", "claimed"] {
+            let mut fixture = Fixture::new().await;
+            let instance = fixture.process("account");
+            let operation_id = Uuid::new_v4().to_string();
+            let key = format!("sidecar:7:{operation_id}");
+            let request = LeaseRequest {
+                sidecar_id: "sidecar".to_owned(),
+                operation_id: operation_id.clone(),
+                lease_id: None,
+                terminal: None,
+            };
+            let binding = Binding {
+                provider_id: "antigravity-sub".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                api_key: "synthetic".to_owned(),
+                instance_generation: instance.generation.clone(),
+                account_generation: "account".to_owned(),
+                lease_id: Uuid::new_v4().to_string(),
+                model_policy: super::super::types::ModelPolicy {
+                    id: "model-b".to_owned(),
+                    thinking: None,
+                    context_length: None,
+                    max_output_tokens: None,
+                },
+            };
+            {
+                let mut state = fixture.manager.state.lock().await;
+                state
+                    .operations
+                    .begin(&key, "sidecar", 7, "model-b")
+                    .unwrap();
+                state.operations.acquire(&key).unwrap();
+                state.leases.insert(
+                    key.clone(),
+                    Lease {
+                        sidecar_id: "sidecar".to_owned(),
+                        sidecar_generation: 7,
+                        operation_id,
+                        model: "model-b".to_owned(),
+                        binding: binding.clone(),
+                    },
+                );
+                state.active = Some(Arc::clone(&instance));
+            }
+            let grant = UnclaimedBinding {
+                manager: Arc::clone(&fixture.manager),
+                request,
+                sidecar_generation: 7,
+                binding: Some(binding),
+            };
+            let (send, receive) = tokio::sync::oneshot::channel();
+            if delivery == "closed-before-send" {
+                drop(receive);
+                assert!(send.send(grant).is_err());
+            } else {
+                assert!(send.send(grant).is_ok());
+                if delivery == "dropped-after-send" {
+                    // This is the handoff race: send succeeded, but no caller
+                    // consumed the binding before its HTTP future was dropped.
+                    drop(receive);
+                } else {
+                    let claimed = receive.await.unwrap().claim();
+                    assert_eq!(fixture.manager.state.lock().await.leases.len(), 1);
+                    fixture
+                        .manager
+                        .release(
+                            &LeaseRequest {
+                                sidecar_id: "sidecar".to_owned(),
+                                operation_id: key.split(':').next_back().unwrap().to_owned(),
+                                lease_id: Some(claimed.lease_id),
+                                terminal: None,
+                            },
+                            7,
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if fixture.manager.state.lock().await.operations.phase(&key)
+                        == Some(super::super::operations::Phase::Released)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(fixture.manager.state.lock().await.leases.is_empty());
+            assert!(
+                instance.alive(),
+                "request settlement must preserve shared CLIProxy"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_binding_transport_still_settles_the_owned_startup() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+
+        let _serial = LIFECYCLE.lock().await;
+        let fixture = Fixture::new().await;
+        let operation_id = Uuid::new_v4().to_string();
+        let key = format!("sidecar:7:{operation_id}");
+        let fence = fixture.manager.active_start.lock().await;
+        let mut request = Box::pin(fixture.manager.acquire(
+            BindingRequest {
+                sidecar_id: "sidecar".to_owned(),
+                operation_id: operation_id.clone(),
+                model: "model-a".to_owned(),
+            },
+            7,
+        ));
+        assert!(poll_fn(|cx| Poll::Ready(request.as_mut().poll(cx).is_pending())).await);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if fixture.manager.state.lock().await.operations.phase(&key)
+                    == Some(super::super::operations::Phase::Preparing)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // HTTP disconnect/model switch cancels the awaiter, not App-owned startup.
+        drop(request);
+        drop(fence);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if fixture.manager.state.lock().await.operations.phase(&key)
+                    == Some(super::super::operations::Phase::Released)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled transport stranded component preparation");
+        // This fixture has no executable; failure still has to finish the
+        // operation after the transport disappears, rather than leave Preparing.
+        assert!(fixture.manager.state.lock().await.leases.is_empty());
     }
 
     #[tokio::test]

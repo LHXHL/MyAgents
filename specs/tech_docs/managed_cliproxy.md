@@ -43,6 +43,12 @@ SDK 请求使用与主 Query 一致的 `claude_code` preset + 非空任务 appen
 
 取消候选只清理候选；断开覆盖该 Provider 的所有已登记目录。两者先保存删除意图，后停止 writer 并删目录。`retry_cleanup` 仅重试已有目标，不能把 retired/candidate 清理扩展成断开 active。写意图失败时不返回成功，本进程保持对应准入关闭。普通停止不扫描或误杀其他 CLIProxy 安装。
 
+同一供应商内切模型复用 active CLIProxy 和账号目录。模型 key、别名与模型能力绑定到 SDK Query 的执行连接，因此会话可重建 Query/lease，但不会以切模型为由替换应用级 CLIProxy。组件只因组件升级、代理设置变化、账号替换或故障恢复而更换。
+
+Binding acquire 由 Rust manager 自己的异步任务完成，HTTP 请求只等待结果。会话切模型、materialization 或 vision 超时取消 HTTP 时，不得中断组件 birth 的健康检查、attempt 清理和 current 指针提交。取消的 operation 经现有 release 收敛；无人接收的新 lease 由 manager 立即释放。启动失败同样必须走完原有进程清理，不能留下“存活 child + 未完成 attempt”再错误回退到 previous identity。旧版本遗留的失败 attempt 继续服从既有组件选择/回退规则，不清除账号凭据。
+
+会话预热连续失败达到上限后，队列恢复不能重新清零预算；尚未派发的输入经既有取消入口收敛。用户再次发送或显式配置变化才开启新的恢复上下文。
+
 正常升级/账号替换通过 Rust → 准确 Sidecar generation 的 `/api/cliproxy/control` 通知 operation/lease/instance。此路由为 common capability，因为 Global one-shot 和 Session Query 均可持有 lease。已准入 turn 结束后释放，空闲 Query 保存 resume 后退出；控制响应收敛丢失的 release，不设独立心跳或过期强杀，不重放已执行工具。
 
 断开/明确停用经 SessionEngine 停止持久 Query，辅助请求只取消自己的 AbortController；通信失败由 Rust 停止自己持有的代理。准确 Sidecar generation 死亡同时回收其全部 operation/lease。

@@ -14096,8 +14096,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const turnBoundaryQueueLength = getTurnBoundaryQueue().length;
     if ((messageQueueLength > 0 || turnBoundaryQueueLength > 0) && !lifecycleState.processing && lifecycleState.query === null) {
       const hasOnlyTurnBoundaryQueue = messageQueueLength === 0 && turnBoundaryQueueLength > 0;
-      if (lifecycleState.preWarmDisabled) {
-        console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s), pre-warm disabled → draining`);
+      if (lifecycleState.preWarmDisabled || lifecycleState.preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
+        // A queued item cannot grant itself another startup retry budget. Once
+        // preparation is exhausted, settle unsent input; a user/config action
+        // can explicitly start a new recovery context.
+        console.warn(`[agent] Safety net: ${messageQueueLength + turnBoundaryQueueLength} orphaned message(s), pre-warm unavailable → draining`);
         drainQueueWithCancellation();
       } else if (hasOnlyTurnBoundaryQueue) {
         if (lifecycleState.preWarmTimer) {
