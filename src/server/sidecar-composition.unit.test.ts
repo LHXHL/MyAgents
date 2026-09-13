@@ -33,6 +33,8 @@ describe('Sidecar production composition', () => {
     ['GET', '/api/runtime/permission-modes?type=codex', 'common'],
     ['GET', '/api/runtime/type', 'session'],
     ['GET', '/sessions', 'global'],
+    ['POST', '/sessions', 'global'],
+    ['POST', '/api/session/birth', 'session'],
     ['GET', '/api/session-tags', 'global'],
     ['POST', '/api/session-tags/assign', 'global'],
     ['POST', '/api/session-tags/manage', 'global'],
@@ -113,6 +115,8 @@ describe('Sidecar production composition', () => {
 
   it.each([
     ['global', 'POST', '/chat/send'],
+    ['global', 'POST', '/api/session/birth'],
+    ['session', 'POST', '/sessions'],
     ['global', 'POST', '/cron/execute-sync'],
     ['global', 'POST', '/goal/execute-sync'],
     ['global', 'POST', '/api/im/enqueue'],
@@ -144,6 +148,7 @@ describe('Sidecar production composition', () => {
     ['global', 'POST', '/mcp/playwright'],
     ['global', 'POST', '/api/browser/session/retire'],
     ['session', 'POST', '/chat/send'],
+    ['session', 'POST', '/api/session/birth'],
     ['session', 'PATCH', '/sessions/session-1'],
     ['global', 'PATCH', '/sessions/session-1'],
     ['session', 'POST', '/cron/execute-sync'],

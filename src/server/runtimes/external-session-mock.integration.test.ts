@@ -4822,6 +4822,7 @@ describe('external SessionEngine with fake runtime', () => {
     const harness = await createHarness([
       { kind: 'success', text: 'first answer' },
       { kind: 'success', text: 'second answer' },
+      { kind: 'success', text: 'source continues after fork' },
     ], { conversationBranching: true });
     const sessionId = 'session-codex-fork';
     const workspacePath = join(harness.home, 'workspace');
@@ -4833,6 +4834,15 @@ describe('external SessionEngine with fake runtime', () => {
     }
     const sourceBefore = (await harness.sessionStore.getSessionData(sessionId))!;
     const firstAssistant = sourceBefore.messages.find(message => message.role === 'assistant')!;
+    const nativeBranch = harness.runtime.branchConversation!.bind(harness.runtime);
+    harness.runtime.branchConversation = async (process, boundary) => {
+      const branch = await nativeBranch(process, boundary);
+      // Codex hands off the fork's native writer by retiring this process.
+      // The source Product Session must resume its original native identity.
+      await harness.runtime.stopSession(process);
+      harness.runtime.emitForTest({ kind: 'session_complete', subtype: 'success', result: '' });
+      return branch;
+    };
 
     const result = await harness.engine.forkAtAssistantMessage(firstAssistant.id);
     expect(result).toMatchObject({ success: true, agentDir: workspacePath });
@@ -4858,5 +4868,14 @@ describe('external SessionEngine with fake runtime', () => {
     expect(forked?.messages.map(message => message.role)).toEqual(['user', 'assistant']);
     expect(forked?.messages[0]?.content).toBe('first question');
     expect(forked?.messages[1]?.content).toContain('first answer');
+    const continued = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'continue source'));
+    await expect(continued.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionResumeIds.at(-1)).toBe(sourceBefore.runtimeSessionId);
+    const sourceAfter = (await harness.sessionStore.getSessionData(sessionId))!;
+    expect(sourceAfter.runtimeSessionId).toBe(sourceBefore.runtimeSessionId);
+    expect(sourceAfter.messages).toHaveLength(6);
+    expect(sourceAfter.messages.at(-1)?.content).toContain('source continues after fork');
+    expect((await harness.sessionStore.getSessionData(result.newSessionId!))?.messages).toEqual(forked?.messages);
   });
 });

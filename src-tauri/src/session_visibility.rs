@@ -190,6 +190,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn matches_node_visibility_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/shared/fixtures/session-history-visibility.json"
+        ))
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut session = fixture["base"].clone();
+            session
+                .as_object_mut()
+                .unwrap()
+                .extend(case["patch"].as_object().unwrap().clone());
+            assert_eq!(
+                is_history_visible_session(&session, directory.path()),
+                case["visible"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
     fn versioned_birth_is_visible_before_transcript_statistics_are_published() {
         let directory = tempfile::tempdir().unwrap();
         let mut session = legacy_managed_codex_session();

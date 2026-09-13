@@ -256,12 +256,15 @@ export async function createSession(
         const post = async (id: string, body: MaterializePostBody): Promise<MaterializeResponse> => {
             const preparing = body.phase === 'prepare';
             const response = await sessionSidecarFetch(id, owner,
-                preparing ? '/sessions' : '/api/session/materialize', {
+                preparing ? '/api/session/birth' : '/api/session/materialize', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(preparing ? { ...payload, prepareOnCurrentSidecar: true } : body),
+                    body: JSON.stringify(preparing ? payload : body),
                 });
+            if (!response.ok) {
+                const error = await response.json().catch(() => null) as { error?: string } | null;
+                throw new Error(error?.error ?? `Session creation failed (HTTP ${response.status}).`);
+            }
             const result = await response.json() as MaterializeResponse & { session?: SessionMetadata };
-            if (!response.ok) throw new Error(result.error ?? 'Session creation failed.');
             return preparing ? { ...result, sessionId: result.session?.id, metadata: result.session } : result;
         };
         try {

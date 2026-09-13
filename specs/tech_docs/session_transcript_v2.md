@@ -51,6 +51,8 @@ Rust 在 metadata 尚未发布的窗口，沿 active 或 recovering SessionSidec
 
 REST 返回同一 revision 的历史、live overlay 与保存状态。恢复刷新整个已加载范围；分页请求仅保存有界的 post-snapshot 操作重放，跨 Session/restore/connection 的旧响应被丢弃。展示长度与磁盘文本 offset 不等价，paced reveal 与全文修正按显示目标合并。
 
+V2 用户正文只由 canonical `message-create` / 内容操作建立；较早的 live-user-echo 只投影受理状态，不能成为正文基线。若首次连接尚未识别 V2、legacy 回声已显示同 ID，canonical 创建仍接管正文。前端本地附件预览在用户创建时合并，晚到回声不能丢掉预览；不要用显示层 offset 去重掩盖两种基线混用。尚未 REST adoption 的 SSE-native 新会话重连，仍用有序 cold-history snapshot 补齐错过的创建/正文；已 REST 恢复的 Tab 按既有护栏拒绝该快照。
+
 Chat Tab 与桌宠复用 `transcriptDisplay`、`transcriptToolDisplay`、`liveRevisionFence` 和 toast consumer。桌宠只转换自身的 `ai`/`text` 展示形状，不另定义 V2 内容语义；连接/重连从 REST 建立 baseline，revision gap 刷新已展示范围。旧格式继续 legacy chunk 路径；复用的 Sidecar 不重新推送工作区 MCP/Agent 默认配置。
 
 `chat:transcript-save-status` 与 REST transcriptSaveStatus 只产生 toast：故障 5 秒、恢复 3 秒，同一 Session/instance/incident 在 ToastProvider 生命周期去重。发送、插话、工具、草稿和焦点保持可用。恢复必须对应实际提交、出生 metadata 已发布、记录缺口消失；单次试写成功不能宣称恢复。

@@ -403,6 +403,105 @@ describe('TabProvider session activity ownership', () => {
     tauriHarness.listeners.clear();
   });
 
+  it.each(['echo-first', 'canonical-first', 'late-format'] as const)(
+    'uses canonical user content exactly once with %s admission', async order => {
+      const sessionId = 'pending-v2-user-admission';
+      render(<TabProvider tabId="v2-user-admission" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      if (order !== 'late-format') emit('chat:init', { sessionId, transcriptFormat: 2 });
+      const message = { id: 'user-admission', role: 'user', content: 'first part; second part', timestamp: new Date(0).toISOString(), asyncQuestionReply: { questionId: 'q', questionIndex: 0 } };
+      const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+      const operation = (value: unknown) => emit('chat:transcript-operation', { sessionId, operation: value });
+      if (order !== 'canonical-first') echo();
+      if (order === 'echo-first') expect(readActivity().historyCount).toBe(0);
+      operation({ kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } });
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 0, text: 'first part; ' });
+      operation({ kind: 'text-append', messageId: message.id, field: 'text', offset: 12, text: 'second part' });
+      if (order === 'canonical-first') echo();
+      expect(readActivity().historyCount).toBe(1);
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual([message.content]);
+      expect(JSON.parse(screen.getByTestId('question-replies').textContent!)).toEqual([message.asyncQuestionReply]);
+    },
+  );
+
+  it.each(['no-echo', 'echo-only', 'created-without-text'] as const)(
+    'recovers a missed V2 user admission on SSE-native reconnect (%s)', async received => {
+      const sessionId = 'pending-v2-reconnect';
+      render(<TabProvider tabId="v2-reconnect" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('chat:init', { sessionId, transcriptFormat: 2 });
+      const message = { id: 'reconnect-user', role: 'user', content: 'admitted while disconnected', timestamp: new Date(0).toISOString(), turnId: 'turn', transcriptState: 'complete' };
+      // Keep an earlier visible row: reconnect init must preserve this Tab.
+      emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, id: 'earlier', content: 'earlier' } } });
+      if (received !== 'no-echo') emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+      if (received === 'created-without-text') emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, content: '' } } });
+      act(() => {
+        sseHarness.state.statusHandler?.('disconnected');
+        sseHarness.state.generation += 1;
+        sseHarness.state.statusHandler?.('connected');
+      });
+      emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+      emit('chat:message-replay', { sessionId, replayKind: 'cold-history', message });
+      expect(JSON.parse(screen.getByTestId('history-content').textContent!)).toEqual(['earlier', message.content]);
+      expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['echo-first', 'canonical-first'] as const)('keeps local attachment previews with %s V2 admission', async order => {
+    const sessionId = 'pending-v2-preview';
+    let tab!: ReturnType<typeof useTabState>;
+    function PreviewProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="v2-preview" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PreviewProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2 });
+    await act(async () => {
+      await tab.sendMessage('image', [{ id: 'image-1', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
+    });
+    const message = { id: 'image-user', role: 'user', content: 'image', timestamp: new Date(0).toISOString(), attachments: [{ id: 'image-1', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/test.png', size: 5 }] };
+    const echo = () => emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message });
+    if (order === 'echo-first') echo();
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...message, content: '', turnId: 'turn', transcriptState: 'complete' } } });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'text-append', messageId: message.id, field: 'text', offset: 0, text: 'image' } });
+    if (order === 'canonical-first') echo();
+    expect(tab.historyMessages).toHaveLength(1);
+    expect(tab.historyMessages[0]).toMatchObject({ content: 'image', attachments: [{ id: 'image-1', relativePath: 'attachments/test.png', previewUrl: 'data:image/png;base64,aW1hZ2U=' }] });
+  });
+
+  it('keeps pending image previews on their own message when full cold history replays older users first', async () => {
+    const sessionId = 'pending-v2-preview-reconnect';
+    let tab!: ReturnType<typeof useTabState>;
+    function PreviewProbe() {
+      const value = useTabState();
+      useEffect(() => { tab = value; }, [value]);
+      return <Probe />;
+    }
+    tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })));
+    render(<TabProvider tabId="preview-reconnect" agentDir="/tmp/workspace" sessionId={sessionId} claimSessionOpeningTransition={allowSessionOpening}><PreviewProbe /></TabProvider>);
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:init', { sessionId, transcriptFormat: 2 });
+    const base = { role: 'user', timestamp: new Date(0).toISOString(), turnId: 'turn', transcriptState: 'complete' };
+    const earlier = { ...base, id: 'older-user', content: 'earlier text only' };
+    const sameNameImage = { ...base, id: 'older-image', content: 'older image', attachments: [{ id: 'old-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/old.png', size: 5 }] };
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: earlier } });
+    await act(async () => {
+      await tab.sendMessage('new image', [{ id: 'new-image', name: 'test.png', file: new File(['image'], 'test.png', { type: 'image/png' }), preview: 'data:image/png;base64,aW1hZ2U=' }]);
+    });
+    const newest = { ...base, id: 'new-user', content: 'new image', attachments: [{ id: 'new-image', name: 'test.png', mimeType: 'image/png', relativePath: 'attachments/new.png', size: 5 }] };
+    emit('chat:message-replay', { sessionId, replayKind: 'live-user-echo', message: newest });
+    emit('chat:init', { sessionId, transcriptFormat: 2, sessionState: 'idle' });
+    for (const message of [earlier, sameNameImage, newest]) emit('chat:message-replay', { sessionId, replayKind: 'cold-history', message });
+    expect(tab.historyMessages[0].attachments).toBeUndefined();
+    expect(tab.historyMessages[1].attachments?.[0].previewUrl).not.toBe('data:image/png;base64,aW1hZ2U=');
+    expect(tab.historyMessages[2]).toMatchObject({ content: 'new image', attachments: [{ id: 'new-image', previewUrl: 'data:image/png;base64,aW1hZ2U=' }] });
+    emit('chat:transcript-operation', { sessionId, operation: { kind: 'message-create', message: { ...base, id: 'later-text', content: 'next plain text' } } });
+    expect(tab.historyMessages[3].attachments).toBeUndefined();
+  });
+
   it('keeps V2 interleaved segments and late original-tool results without duplicate legacy chunks', async () => {
     render(<TabProvider tabId="v2-stream" agentDir="/tmp/workspace" sessionId="pending-v2-stream" claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
     await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());

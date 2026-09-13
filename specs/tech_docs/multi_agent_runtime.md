@@ -145,7 +145,7 @@ Codex Rewind/Fork 只在 runtime capability 和精确 root-turn anchor 同时可
 - 成功 terminal 后持久化 native turn anchor；
 - Rewind 保留 Product Session id，截断 MyAgents transcript并切换 native branch；
 - Fork 创建新 Product Session 并复制截止边界的产品 transcript；
-- native branch 创建成功后解除 source app-server 的临时订阅；
+- native branch 创建成功后，adapter 必须通过既有 stop 流程确认 source app-server 进程退出，才返回 replacement identity；`thread/unsubscribe` 仅解除事件订阅，不能证明 native writer 已释放（Runtime 可能延迟卸载）。源 Product Session 与 native identity 保留，下一轮沿既有 resume 路径启动；
 - process termination 不确定时不提交产品 mutation。
 
 不得用 experimental rollback、Renderer mirror 或猜测的 previous-turn id 替代 native history。产品 transcript 仍由 SessionStore 拥有，不从 Codex rollout 反向重建。

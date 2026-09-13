@@ -4452,13 +4452,14 @@ export class CodexRuntime implements AgentRuntime {
       throw new RuntimeConversationBranchError(code, 'Codex could not create the conversation branch');
     }
 
-    try {
-      await codexProc.rpc.call('thread/unsubscribe', { threadId: replacementId }, 10_000);
-    } catch {
-      await this.stopSession(codexProc);
-      if (!codexProc.exited) {
-        throw new RuntimeConversationBranchError('unsubscribe_failed', 'Codex branch subscription could not be released');
-      }
+    // Unsubscribe only removes event delivery. Current app-server versions
+    // retain the loaded fork (and its native writer) for an inactivity grace
+    // period, so another Session process cannot resume it yet. Retire this
+    // exact process before publishing the replacement identity. The source
+    // keeps its threadId and resumes through the existing lifecycle on send.
+    await this.stopSession(codexProc);
+    if (!codexProc.exited) {
+      throw new RuntimeConversationBranchError('unsubscribe_failed', 'Codex branch writer could not be released');
     }
     return { kind: 'native-thread', runtimeSessionId: replacementId };
   }

@@ -94,7 +94,11 @@ session selected IDs
 
 所有 Session 操作经 `src/server/session-engine/` 选择 adapter。Route handler 不自行判断 builtin/external，也不借用另一 Runtime 的 reset、Session 创建或 identity 逻辑。
 
-Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管理。只有 adapter 完成自己的 Runtime 清理和准备后，新的 binding 才能发布。Global Sidecar 可以加载公共类型和工具，但不能创建 Product Session 或通过 Chat、IM、Inbox 间接建立当前 binding。
+Product Session 的 prepare/commit/rollback 由 `product-session-binding.ts` 管理。只有 adapter 完成自己的 Runtime 清理和准备后，新的 binding 才能发布。Global Sidecar 可以加载公共类型和工具，但不能建立当前 Product Session binding；Chat、IM、Inbox 也不能间接授予它此权限。
+
+桌面 Tab / Companion 的 pending 出生由当前 Session Sidecar 的 `POST /api/session/birth` 准备快照，再走既有 materialize commit/rollback。Global 的 `POST /sessions` 仅创建未打开 target；不能用 payload flag 将当前 Session 出生发往 Global 路由。生产 role gate 必须参与入口回归测试，development-union 的成功不能证明生产边界正确。
+
+版本化 Session 不参与 legacy pre-query 空草稿启发式：V2 已 commit 的空会话可读取，统计是否发布不能推翻出生。Node / Rust 的可见性判断共用 `session-history-visibility.json` 测试表；prepared 与系统维护会话继续独立隐藏。
 
 ### 4.2 builtin
 

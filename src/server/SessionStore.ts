@@ -815,6 +815,10 @@ function isDesktopOrUnknownOrigin(session: SessionMetadata): boolean {
 }
 
 export function isLegacyPreQueryManagedCodexDraft(session: SessionMetadata): boolean {
+    // Versioned births have an explicit lifecycle. Empty or lagging transcript
+    // statistics cannot turn a committed V2 Session into a legacy draft.
+    // Keep this boundary aligned with Rust via session-history-visibility.json.
+    if (session.transcriptFormat !== undefined) return false;
     if (session.materializationState === 'prepared') return false;
     if (!isManagedCodexRuntimeBackedBirth(session)) return false;
     if (!isDesktopOrUnknownOrigin(session)) return false;

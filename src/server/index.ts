@@ -2755,11 +2755,12 @@ async function main() {
         }
       }
 
-      // POST /sessions - Create a new session
-      if (pathname === '/sessions' && request.method === 'POST') {
+      // Current pending Session birth belongs to its Session Sidecar.
+      // Global /sessions only creates unopened targets; the route determines
+      // authority so a payload flag cannot cross the production role gate.
+      if ((pathname === '/sessions' || pathname === '/api/session/birth') && request.method === 'POST') {
         type CreateSessionPayload = {
           agentDir: string;
-          prepareOnCurrentSidecar?: boolean;
           runtime?: string;
           runtimeSource?: RuntimeSource;
           seedMaxPermission?: boolean;
@@ -2932,7 +2933,7 @@ async function main() {
             ? payload.materializationSourceSessionId.trim()
             : undefined;
         }
-        if (payload.prepareOnCurrentSidecar) {
+        if (pathname === '/api/session/birth') {
           const engine = getSessionEngine();
           const identity = engine.getRuntimeIdentity();
           if (!identity.sessionId || getSessionMetadata(identity.sessionId)

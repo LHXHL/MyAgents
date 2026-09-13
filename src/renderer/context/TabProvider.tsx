@@ -1181,7 +1181,7 @@ export default function TabProvider({
     // render, not during setState call — so reading a local variable set inside an
     // updater is unreliable). This ref is always synchronously up-to-date.
     const toolNameMapRef = useRef<Map<string, string>>(new Map());
-    // Pending attachments to merge with next user message from SSE replay
+    // Pending local previews transfer to the next admitted user message (V2 create or V1 replay).
     const pendingAttachmentsRef = useRef<{
         id: string;
         name: string;
@@ -2072,7 +2072,15 @@ export default function TabProvider({
                 flushTranscriptToolEvents();
                 if (operation.kind === 'message-create') {
                     const message = wireSessionMessageToMessage(operation.message as WireSessionMessage);
-                    if (historyMessagesRef.current.some(row => row.id === message.id) || streamingMessageRef.current?.id === message.id) break;
+                    const existing = historyMessagesRef.current.find(row => row.id === message.id);
+                    if ((existing && message.role !== 'user') || streamingMessageRef.current?.id === message.id) break;
+                    // A pre-init legacy echo may have projected this user ID before
+                    // V2 was known. Canonical creation owns the content baseline;
+                    // only local image previews survive its adoption.
+                    if (message.role === 'user') {
+                        message.attachments = mergeAttachmentPreviews(message.attachments, pendingAttachmentsRef.current ?? existing?.attachments);
+                        pendingAttachmentsRef.current = null;
+                    }
                     if (streamingMessageRef.current) {
                         const previous = streamingMessageRef.current;
                         setHistoryMessages(rows => upsertMessageById(rows, previous));
@@ -2232,8 +2240,9 @@ export default function TabProvider({
                 // loadSession is in flight (both guard the cold-history race); ADDITIONALLY
                 // skip COLD-HISTORY for a REST-restored session (REST owns the ordered,
                 // paginated history — older pages come via ?before=). A LIVE echo must
-                // ALWAYS render, else a new user message vanishes after a restore (#0608
-                // Codex review).
+                // retain admission side effects after restore; V2 body text comes
+                // from canonical operations, while SSE-native reconnect still
+                // adopts the coherent cold snapshot below.
                 const isColdHistoryReplay = payload.replayKind === COLD_HISTORY_REPLAY_KIND;
                 const currentIdForReplay = currentSessionIdRef.current;
                 const connectedIdForReplay = attachedSseSessionIdRef.current;
@@ -2276,8 +2285,7 @@ export default function TabProvider({
                     isNewSessionRef.current = false;
                 }
                 const alreadyDisplayed = seenIdsRef.current.has(msg.id);
-                if (alreadyDisplayed && !(isV2 && isExplicitLiveEcho)) break;
-                seenIdsRef.current.add(msg.id);
+                if (alreadyDisplayed && !(isV2 && (isExplicitLiveEcho || isColdHistoryReplay))) break;
 
                 if (isExplicitLiveEcho && msg.role === 'user') {
                     // This is the authoritative admission signal for an IM turn.
@@ -2290,10 +2298,32 @@ export default function TabProvider({
                     });
                 }
 
+                if (isV2 && isExplicitLiveEcho) {
+                    // Admission echoes can precede canonical creation. They do not
+                    // own V2 body text; otherwise its subsequent append repeats it.
+                    // Before creation, keep pending previews for that admission.
+                    if (msg.role === 'user' && alreadyDisplayed) {
+                        setHistoryMessages(rows => rows.map(row => row.id === msg.id ? {
+                            ...row,
+                            attachments: mergeAttachmentPreviews(normalizeWireAttachments(msg.attachments), row.attachments),
+                        } : row));
+                    }
+                    break;
+                }
+
+                seenIdsRef.current.add(msg.id);
                 let attachments = normalizeWireAttachments(msg.attachments);
                 if (msg.role === 'user' && pendingAttachmentsRef.current) {
-                    attachments = mergeAttachmentPreviews(attachments, pendingAttachmentsRef.current);
-                    pendingAttachmentsRef.current = null;
+                    // A cold snapshot starts with older users, not necessarily
+                    // the pending send. V2 preserves attachment IDs on ingress;
+                    // only its matching new row can claim these local previews.
+                    const canClaimPendingPreviews = !isV2 || !isColdHistoryReplay
+                        || (!alreadyDisplayed && attachments?.some(attachment =>
+                            pendingAttachmentsRef.current?.some(preview => preview.id === attachment.id)));
+                    if (canClaimPendingPreviews) {
+                        attachments = mergeAttachmentPreviews(attachments, pendingAttachmentsRef.current);
+                        pendingAttachmentsRef.current = null;
+                    }
                 }
 
                 // Replayed assistant messages are completed — mark thinking blocks as isComplete
@@ -2320,7 +2350,15 @@ export default function TabProvider({
                     asyncQuestionReply: msg.asyncQuestionReply,
                     ...getAssistantTurnMetrics(msg),
                 };
-                if (alreadyDisplayed) {
+                if (isV2 && isColdHistoryReplay) {
+                    // SSE-native births have no REST baseline yet. Reconnect's
+                    // coherent snapshot repairs missed creation/text events;
+                    // REST-restored Tabs rejected this replay above.
+                    setHistoryMessages(rows => upsertMessageById(rows, {
+                        ...wireSessionMessageToMessage(msg),
+                        attachments: mergeAttachmentPreviews(attachments, rows.find(row => row.id === msg.id)?.attachments),
+                    }));
+                } else if (alreadyDisplayed) {
                     setHistoryMessages(rows => rows.map(row => row.id === msg.id ? { ...row, attachments } : row));
                 } else setHistoryMessages(prev => appendUniqueMessageById(prev, replayMessage));
                 break;

@@ -59,6 +59,9 @@ export default defineConfig({
           css: { include: /theme\/.*\.css/ },
           include: [
             'src/shared/**/*.test.ts',
+            // Neutral wiring tests connect renderer clients to server policy
+            // without importing across either production runtime boundary.
+            'src/test/**/*.unit.test.ts',
             'src/renderer/**/*.test.ts',
             'src/cli/**/*.unit.test.ts',
             'src/server/**/*.unit.test.ts',
