@@ -97,8 +97,9 @@ class CheckboxWidget extends WidgetType {
   ignoreEvent() { return true; }
 }
 class BulletWidget extends WidgetType {
-  eq() { return true; }
-  toDOM() { const bullet = document.createElement('span'); bullet.textContent = '•'; bullet.className = 'md-list-bullet'; return bullet; }
+  constructor(readonly depth: number) { super(); }
+  eq(other: BulletWidget) { return this.depth === other.depth; }
+  toDOM() { const bullet = document.createElement('span'); bullet.textContent = ['•', '◦', '▪'][Math.min(this.depth, 3) - 1]; bullet.className = 'md-list-bullet'; return bullet; }
   ignoreEvent() { return false; }
 }
 
@@ -206,7 +207,13 @@ function project(state: EditorState, from: number, to: number): DecorationSet {
     const parentActive = parent && selected(parent.from, parent.to);
     if (name === 'ListMark' && !selected(state.doc.lineAt(a).from, state.doc.lineAt(a).to)) {
       if (/^\s+\[[ xX]\]/.test(state.sliceDoc(b, Math.min(b + 6, state.doc.length)))) hidden(a, Math.min(b + 1, state.doc.length));
-      else if (/[-+*]/.test(text())) add(a, b, Decoration.replace({ widget: new BulletWidget() }));
+      else if (/[-+*]/.test(text())) {
+        let depth = 0;
+        for (let ancestor = node.node.parent; ancestor; ancestor = ancestor.parent) {
+          if (ancestor.name === 'BulletList' || ancestor.name === 'OrderedList') depth++;
+        }
+        add(a, b, Decoration.replace({ widget: new BulletWidget(depth) }));
+      }
       else add(a, b, Decoration.mark({ class: 'md-list-marker' }));
     }
     if (['HeaderMark', 'EmphasisMark', 'StrikethroughMark', 'CodeMark', 'QuoteMark', 'LinkMark', 'CodeInfo'].includes(name) && !parentActive && !isRaw(a, b)) hidden(a, ['HeaderMark', 'QuoteMark'].includes(name) && state.sliceDoc(b, b + 1) === ' ' ? b + 1 : b);

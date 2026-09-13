@@ -31,4 +31,17 @@ describe('live projections through the real sanitized Markdown pipeline', () => 
     expect(document.querySelector('.katex')).toBeNull();
     expect(ref.current?.getSource()).toBe(source);
   });
+  it('renders list depth from syntax and refreshes markers after an indentation edit without rewriting source', async () => {
+    const source = '- Parent\n  - Child\n    - Grandchild\n\n1. Ordered\n   - Mixed';
+    const ref = createRef<MarkdownEditorHandle>();
+    const { container } = render(<MarkdownEditor ref={ref} path="lists.md" initialSource={source} sourceMode={false} allowImages={false} onChange={vi.fn()} onSave={vi.fn()} />);
+    const markers = () => [...container.querySelectorAll('.md-list-bullet')].map(element => element.textContent);
+    await waitFor(() => expect(markers()).toEqual(['•', '◦', '▪', '◦']));
+    expect(ref.current?.getSource()).toBe(source);
+    const edited = source.replace('    - Grandchild', '  - Grandchild');
+    await act(async () => ref.current?.replaceSource(edited, false));
+    await waitFor(() => expect(markers()).toEqual(['•', '◦', '◦', '◦']));
+    expect(ref.current?.getSource()).toBe(edited);
+  });
+
 });
